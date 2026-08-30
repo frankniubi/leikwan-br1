@@ -67,7 +67,7 @@ public sealed class UnixUltraLeaseClient
             body.CopyTo(frame, 4);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(leases.Count == 1 ? _timeout : TimeSpan.FromSeconds(20));
+            timeout.CancelAfter(leases.Count == 1 ? _timeout : TimeSpan.FromSeconds(50));
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
             await using var stream = new NetworkStream(socket, ownsSocket: false);

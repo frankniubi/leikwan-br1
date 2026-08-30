@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.30.4"
+AGENT_VERSION = "2026.08.30.6"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -46,7 +46,9 @@ DEFAULT_MANAGED_CONFIG = {
     "log_level": "INFO",
     "wireguard_listen_port": 0,
     "wireguard_fallback_tcp_port": 0,
-    "ultra_selection_mode": "single",
+    # Request a bounded candidate batch at Ultra start; the runtime selects
+    # one best path and keeps it sticky for the policy generation.
+    "ultra_selection_mode": "auto",
 }
 
 
@@ -131,6 +133,30 @@ def forward_runtime_service_name(forward: dict) -> str:
 
 def normalize_ultra_selection_mode(value: object) -> str:
     return "auto" if str(value or "").strip().lower() == "auto" else "single"
+
+
+def ultra_endpoint_key(lease: object) -> tuple[str, int, str] | None:
+    if not isinstance(lease, dict):
+        return None
+    endpoint = lease.get("endpoint")
+    if not isinstance(endpoint, dict):
+        return None
+    try:
+        port = int(endpoint.get("port", 0) or 0)
+    except (TypeError, ValueError):
+        port = 0
+    ip = str(endpoint.get("ip", "") or "").strip().lower()
+    if not ip or port <= 0:
+        return None
+    # selection_ref identifies a logical line even when multiple lines share
+    # one relay socket. Fall back to the username for legacy fixtures.
+    selection_ref = str(lease.get("selection_ref", "") or "").strip()
+    if selection_ref == "":
+        credential = lease.get("credential")
+        if not isinstance(credential, dict):
+            credential = {}
+        selection_ref = str(credential.get("user", "") or "").strip().lower()
+    return (ip, port, selection_ref)
 MPTCP_PROTOCOL = getattr(socket, "IPPROTO_MPTCP", 262)
 MPTCP_FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 HELPER_CANDIDATE_KINDS = {"rented_group_leg", "donated_slave_leg"}  # donor_candidate_consumed_as_helper
@@ -638,7 +664,7 @@ def resolve_ultra_leases(
     device_id: str,
     forwards: list[dict],
     *,
-    selection_mode: str = "single",
+    selection_mode: str = "auto",
 ) -> list[dict]:
     normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
     max_candidates = 4 if normalized_selection_mode == "auto" else 1
@@ -695,6 +721,9 @@ def resolve_ultra_leases(
         if forward_id <= 0:
             continue
         candidates = leases_by_forward.setdefault(forward_id, [])
+        candidate_key = ultra_endpoint_key(item)
+        if candidate_key is not None and any(ultra_endpoint_key(candidate) == candidate_key for candidate in candidates):
+            continue
         if len(candidates) < max_candidates:
             candidates.append(item)
     result: list[dict] = []
@@ -713,7 +742,17 @@ def resolve_ultra_leases(
 def ultra_lease_candidates(forward: dict) -> list[dict]:
     raw = forward.get("_ultra_leases") if isinstance(forward, dict) else None
     if isinstance(raw, list):
-        candidates = [item for item in raw if isinstance(item, dict)]
+        candidates = []
+        seen_endpoints: set[tuple[str, int, str]] = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = ultra_endpoint_key(item)
+            if key is not None and key in seen_endpoints:
+                continue
+            if key is not None:
+                seen_endpoints.add(key)
+            candidates.append(item)
         if candidates:
             return candidates[:4]
     single = forward.get("_ultra_lease") if isinstance(forward, dict) else None
@@ -1058,7 +1097,7 @@ class ClientAgent:
         return pathlib.Path(__file__).with_name("install_forward_runtime.py")
 
     def ultra_selection_mode(self) -> str:
-        return normalize_ultra_selection_mode(self.config.get("ultra_selection_mode", "single"))
+        return normalize_ultra_selection_mode(self.config.get("ultra_selection_mode", "auto"))
 
     def semantic_agent_config(self) -> dict:
         payload = dict(self.config)
@@ -2596,9 +2635,9 @@ class ClientAgent:
             if not 1 <= len(encoded) <= 65536:
                 return False
             frame = struct.pack(">I", len(encoded)) + encoded
-            # The runtime probes immediately after accepting even one lease;
-            # allow the full probe window before treating delivery as failed.
-            timeout = 20.0
+            # Candidate batches allow association setup, a 30-second UDP
+            # window, and response margin; single-lease delivery stays short.
+            timeout = 50.0 if len(wire_leases) > 1 else 3.0
             for attempt in range(3):
                 try:
                     deadline = time.monotonic() + min(3.0, timeout)

@@ -41,11 +41,10 @@ func writeFrame(writer io.Writer, payload []byte) error {
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := writer.Write(header[:]); err != nil {
+	if err := writeAll(writer, header[:]); err != nil {
 		return err
 	}
-	_, err := writer.Write(payload)
-	return err
+	return writeAll(writer, payload)
 }
 
 var (
@@ -186,11 +185,8 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		return
 	}
 	defer file.Close()
-	deadline := 2 * time.Second
-	if server.config.AutoSelect {
-		deadline = 20 * time.Second
-	}
-	_ = file.SetDeadline(time.Now().Add(deadline))
+	deadline := time.Now().Add(controlDeadlineDuration(server.config))
+	_ = file.SetDeadline(deadline)
 	payload, err := readFrame(file)
 	if err != nil {
 		_ = writeJSONFrame(file, map[string]any{"ok": false, "error": "frame_invalid"})
@@ -200,17 +196,45 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
 	var selected ProviderLease
 	var probeResult udpProbeResult
+	var selectionEpoch uint64
 	if err == nil {
-		if len(leases) > 1 && !server.config.AutoSelect {
+		coordinator := selectionCoordinatorFor(policy.ForwardID)
+		selectionEpoch = coordinator.begin()
+		coordinator.runMu.Lock()
+		defer coordinator.runMu.Unlock()
+		if !coordinator.isLatest(selectionEpoch) {
+			err = errSelectionSuperseded
+		}
+		if err != nil {
+			goto selectionDone
+		}
+		if storeHasGeneration(server.store, policy.PolicyGeneration) {
+			var stickyMatch bool
+			selected, stickyMatch = stickyLeaseForPolicy(server.store, policy, leases)
+			if !stickyMatch {
+				// Do not silently ACK a refresh that cannot prove the selected
+				// path. That would leave an expiring credential in the runtime.
+				err = ErrLeaseInvalid
+			}
+		} else if len(leases) > 1 && !server.config.AutoSelect {
 			err = ErrLeaseInvalid
-		} else if server.config.AutoSelect {
+		} else if server.config.AutoSelect && len(leases) > 1 {
 			log.Printf("Establishing Connection with the Server ...")
-			selectionContext, cancel := context.WithTimeout(context.Background(), deadline)
-			selected, probeResult, err = selectBestLease(selectionContext, server.config, policy, leases)
-			cancel()
+			remaining := time.Until(deadline) - selectionResponseGrace
+			if remaining <= 0 {
+				err = context.DeadlineExceeded
+			} else {
+				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
+				selected, probeResult, err = selectBestLease(selectionContext, server.config, policy, leases)
+				cancel()
+			}
 		} else {
 			selected = leases[0]
 		}
+	}
+selectionDone:
+	if err == nil && selectionEpoch != 0 && !selectionCoordinatorFor(policy.ForwardID).isLatest(selectionEpoch) {
+		err = errSelectionSuperseded
 	}
 	if err == nil {
 		err = server.store.Replace(policy, selected)

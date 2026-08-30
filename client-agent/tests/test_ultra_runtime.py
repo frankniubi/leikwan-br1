@@ -79,7 +79,7 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertFalse(config["udp_prewarm"])
         self.assertEqual(0, config["udp_keepalive_interval_seconds"])
 
-    def test_ultra_renders_only_generic_direct_binary_runtime(self):
+    def test_ultra_renders_generic_direct_binary_with_auto_selection(self):
         rendered = MODULE.render_forward_runtime(sample_forward(), {})
         self.assertEqual("ultra-forward-42", rendered["service_name"])
         generated_text = rendered["service_unit"] + rendered["start_script"]
@@ -109,12 +109,13 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertEqual("/run/ultra/location.lock", config["location_lock_path"])
         self.assertNotIn("fallback_policy", config)
         self.assertEqual(["Shanghai", "上海"], config["zone_aliases"]["shanghai"])
-        self.assertFalse(config["auto_select"])
-        self.assertNotIn("probe_target", config)
-        self.assertNotIn("probe_workers", config)
-        self.assertNotIn("probe_timeout_ms", config)
-        self.assertNotIn("probe_samples", config)
-        self.assertNotIn("probe_interval_ms", config)
+        self.assertTrue(config["auto_select"])
+        self.assertEqual("1.1.1.1:53", config["probe_target"])
+        self.assertEqual(4, config["probe_workers"])
+        self.assertEqual(30, config["probe_duration_seconds"])
+        self.assertEqual(800, config["probe_timeout_ms"])
+        self.assertEqual(30, config["probe_samples"])
+        self.assertEqual(1000, config["probe_interval_ms"])
         self.assertIn("ReadWritePaths=/run/ultra /var/lib/ultra", rendered["service_unit"])
         self.assertFalse(any(item["path"].endswith(".access.json") for item in rendered["files"]))
 
@@ -125,9 +126,10 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertTrue(config["auto_select"])
         self.assertEqual("1.1.1.1:53", config["probe_target"])
         self.assertEqual(4, config["probe_workers"])
-        self.assertEqual(300, config["probe_timeout_ms"])
-        self.assertEqual(20, config["probe_samples"])
-        self.assertEqual(100, config["probe_interval_ms"])
+        self.assertEqual(30, config["probe_duration_seconds"])
+        self.assertEqual(800, config["probe_timeout_ms"])
+        self.assertEqual(30, config["probe_samples"])
+        self.assertEqual(1000, config["probe_interval_ms"])
 
     def test_ultra_fails_closed_without_resolved_material(self):
         forward = sample_forward()

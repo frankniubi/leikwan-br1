@@ -410,7 +410,9 @@ final class ClientAgentController extends BaseController
                 ? max(1, min(4, (int) ($item['max_candidates'] ?? 4)))
                 : 1;
             $baseNonce = strtolower(trim((string) ($item['nonce'] ?? '')));
-            for ($candidateOffset = 0; $candidateOffset < $maxCandidates; $candidateOffset++) {
+            $issuedCandidates = [];
+            $forwardLeaseCount = 0;
+            for ($candidateOffset = 0; $candidateOffset < 8 && $forwardLeaseCount < $maxCandidates; $candidateOffset++) {
                 $candidateRequest = $item;
                 $candidateRequest['candidate_offset'] = $candidateOffset;
                 if ($candidateOffset > 0) {
@@ -418,7 +420,20 @@ final class ClientAgentController extends BaseController
                 }
                 $result = $this->ultraLeases->issueLease($candidateRequest, (int) $client['id'], $deviceId, $policy);
                 if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
-                    $leases[] = $result['lease'];
+                    $candidateLease = $result['lease'];
+                    $endpoint = is_array($candidateLease['endpoint'] ?? null) ? $candidateLease['endpoint'] : [];
+                    $endpointKey = strtolower(trim((string) ($endpoint['ip'] ?? ''))) . ':' . (int) ($endpoint['port'] ?? 0);
+                    $selectionRef = trim((string) ($candidateLease['selection_ref'] ?? ''));
+                    if ($selectionRef === '') {
+                        $credential = is_array($candidateLease['credential'] ?? null) ? $candidateLease['credential'] : [];
+                        $selectionRef = strtolower(trim((string) ($credential['user'] ?? '')));
+                    }
+                    $selectionKey = $endpointKey . ':' . $selectionRef;
+                    if ($endpointKey !== ':' && !isset($issuedCandidates[$selectionKey])) {
+                        $issuedCandidates[$selectionKey] = true;
+                        $leases[] = $candidateLease;
+                        $forwardLeaseCount++;
+                    }
                     continue;
                 }
                 $lastError = (string) ($result['error'] ?? $lastError);
@@ -1247,6 +1262,7 @@ final class ClientAgentController extends BaseController
             'cfwg_latency_watchdog',
             'runtime_refresh',
             'cfwg_edge_pins',
+            'ultra_selection_mode',
         ];
         $snapshot = array_fill_keys(array_merge(['master_url'], $managedKeys), null);
         $snapshot['master_url'] = $this->agentBaseUrl();
@@ -1257,6 +1273,10 @@ final class ClientAgentController extends BaseController
                 $snapshot[$key] = $stored[$key];
             }
         }
+        // Ultra candidate racing is now the default runtime contract. Older
+        // agents stored the previous implicit "single" value; publishing
+        // "auto" here migrates them on the next authenticated config pull.
+        $snapshot['ultra_selection_mode'] = 'auto';
         $snapshot['cfwg_latency_watchdog'] = $this->mergeCfwgLatencyWatchdogDefaults(
             is_array($snapshot['cfwg_latency_watchdog']) ? $snapshot['cfwg_latency_watchdog'] : []
         );

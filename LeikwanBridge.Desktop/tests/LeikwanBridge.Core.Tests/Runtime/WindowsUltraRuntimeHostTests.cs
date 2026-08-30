@@ -73,9 +73,10 @@ public sealed class WindowsUltraRuntimeHostTests
         var root = bootstrap.RootElement;
         Assert.True(root.GetProperty("auto_select").GetBoolean());
         Assert.Equal("1.1.1.1:53", root.GetProperty("probe_target").GetString());
-        Assert.Equal(300, root.GetProperty("probe_timeout_ms").GetInt32());
-        Assert.Equal(20, root.GetProperty("probe_samples").GetInt32());
-        Assert.Equal(100, root.GetProperty("probe_interval_ms").GetInt32());
+        Assert.Equal(30, root.GetProperty("probe_duration_seconds").GetInt32());
+        Assert.Equal(800, root.GetProperty("probe_timeout_ms").GetInt32());
+        Assert.Equal(30, root.GetProperty("probe_samples").GetInt32());
+        Assert.Equal(1000, root.GetProperty("probe_interval_ms").GetInt32());
         Assert.True(root.GetProperty("udp_prewarm").GetBoolean());
         Assert.Equal(5, root.GetProperty("udp_keepalive_interval_seconds").GetInt32());
         host.Stop(forward.ForwardId);

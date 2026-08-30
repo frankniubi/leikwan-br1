@@ -225,7 +225,11 @@ public sealed class ConfigPollingService
                 IReadOnlyList<UltraLease> leases;
                 try
                 {
-                    leases = await _api.ResolveUltraLeasesAsync(effectiveForward, ct);
+                    // Request a bounded candidate batch on every Ultra lease
+                    // refresh. The runtime keeps the selected path sticky for
+                    // the policy generation, while this supplies fresh
+                    // credentials for the same candidate.
+                    leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -317,7 +321,7 @@ public sealed class ConfigPollingService
             IReadOnlyList<UltraLease> leases;
             try
             {
-                leases = await _api.ResolveUltraLeasesAsync(effectiveForward, ct);
+                leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

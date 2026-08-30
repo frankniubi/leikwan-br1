@@ -51,9 +51,9 @@ public sealed class UltraLeaseClient
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)body.Length);
             body.CopyTo(frame, 4);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            // The runtime probes immediately, including a single candidate;
-            // keep the pipe open for the full bounded probe window.
-            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            // Candidate batches allow association setup, the 30-second probe,
+            // and response/write margin; single-lease delivery remains short.
+            timeout.CancelAfter(TimeSpan.FromSeconds(leases.Count > 1 ? 50 : 2));
             await using var pipe = new NamedPipeClientStream(
                 ".", PipeName(forwardId), PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(timeout.Token);

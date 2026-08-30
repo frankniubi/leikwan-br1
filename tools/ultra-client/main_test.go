@@ -47,6 +47,212 @@ func TestBuildHandshakeRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
+type partialTestWriter struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (w *partialTestWriter) Write(payload []byte) (int, error) {
+	if len(payload) > w.max {
+		payload = payload[:w.max]
+	}
+	return w.buf.Write(payload)
+}
+
+func TestWriteAllHandlesPartialWrites(t *testing.T) {
+	w := &partialTestWriter{max: 2}
+	want := []byte("complete handshake payload")
+	if err := writeAll(w, want); err != nil {
+		t.Fatalf("writeAll() error = %v", err)
+	}
+	if !bytes.Equal(w.buf.Bytes(), want) {
+		t.Fatalf("writeAll() wrote %x, want %x", w.buf.Bytes(), want)
+	}
+}
+
+type handshakeTimeoutTestError struct{}
+
+func (handshakeTimeoutTestError) Error() string   { return "timeout" }
+func (handshakeTimeoutTestError) Timeout() bool   { return true }
+func (handshakeTimeoutTestError) Temporary() bool { return true }
+
+func TestHandshakeFallbackDoesNotRetryProviderConnectTimeout(t *testing.T) {
+	connectErr := fmt.Errorf("provider connect: %w", handshakeTimeoutTestError{})
+	if isRetryableHandshakeError(connectErr) {
+		t.Fatal("provider connect timeout was classified as a handshake failure")
+	}
+	handshakeErr := fmt.Errorf("stream handshake: %w", markHandshakePhase(handshakeTimeoutTestError{}))
+	if !isRetryableHandshakeError(handshakeErr) {
+		t.Fatal("handshake timeout was not classified as retryable")
+	}
+}
+
+func TestDialStreamFallsBackToLegacyGreetingAfterEOF(t *testing.T) {
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	user, credential, host := "test-user", "test-credential", "example.com"
+	current, err := buildHandshake(user, credential, 1, host, 443)
+	if err != nil {
+		t.Fatalf("build current handshake: %v", err)
+	}
+	legacy, err := buildHandshakeWithGreeting(user, credential, 1, host, 443, legacyHandshakeGreeting)
+	if err != nil {
+		t.Fatalf("build legacy handshake: %v", err)
+	}
+
+	handshakes := make(chan []byte, 2)
+	serverErr := make(chan error, 1)
+	go func() {
+		for index, size := range []int{len(current), len(legacy)} {
+			conn, acceptErr := listener.AcceptTCP()
+			if acceptErr != nil {
+				serverErr <- acceptErr
+				return
+			}
+			func() {
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+				payload := make([]byte, size)
+				if _, readErr := io.ReadFull(conn, payload); readErr != nil {
+					serverErr <- readErr
+					return
+				}
+				handshakes <- payload
+				if index == 0 {
+					return
+				}
+				if _, writeErr := conn.Write([]byte{5, 2, 1, 0, 4, 1, 1, 0, 1, 1, 0x12, 0x34, 0, 0}); writeErr != nil {
+					serverErr <- writeErr
+					return
+				}
+			}()
+		}
+		serverErr <- nil
+	}()
+
+	lease := ProviderLease{
+		IP:       "127.0.0.1",
+		Port:     listener.Addr().(*net.TCPAddr).Port,
+		User:     []byte(user),
+		Password: []byte(credential),
+	}
+	conn, err := dialStream(lease, host, 443, time.Second)
+	if err != nil {
+		t.Fatalf("dialStream() error = %v", err)
+	}
+	defer conn.Close()
+
+	first := <-handshakes
+	second := <-handshakes
+	if !bytes.Equal(first, current) {
+		t.Fatalf("first greeting = %x, want current %x", first, current)
+	}
+	if !bytes.Equal(second, legacy) {
+		t.Fatalf("fallback greeting = %x, want legacy %x", second, legacy)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("fake server: %v", err)
+	}
+}
+
+func TestArmDatagramFallsBackToLegacyGreetingAfterEOF(t *testing.T) {
+	tcpListener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer tcpListener.Close()
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer udpConn.Close()
+
+	user, credential := "test-user", "test-credential"
+	port := tcpListener.Addr().(*net.TCPAddr).Port
+	udpPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+	current, err := buildHandshake(user, credential, 3, "127.0.0.1", port)
+	if err != nil {
+		t.Fatalf("build current handshake: %v", err)
+	}
+	legacy, err := buildHandshakeWithGreeting(user, credential, 3, "127.0.0.1", port, legacyHandshakeGreeting)
+	if err != nil {
+		t.Fatalf("build legacy handshake: %v", err)
+	}
+
+	handshakes := make(chan []byte, 2)
+	serverErr := make(chan error, 1)
+	go func() {
+		for index, size := range []int{len(current), len(legacy)} {
+			conn, acceptErr := tcpListener.AcceptTCP()
+			if acceptErr != nil {
+				serverErr <- acceptErr
+				return
+			}
+			func() {
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+				payload := make([]byte, size)
+				if _, readErr := io.ReadFull(conn, payload); readErr != nil {
+					serverErr <- readErr
+					return
+				}
+				handshakes <- payload
+				if index == 0 {
+					return
+				}
+				encodedPort := uint16(udpPort) ^ 0x0101
+				reply := []byte{4, 1, 1, 0, 1, 7, 0x10, 0x20, byte(encodedPort >> 8), byte(encodedPort)}
+				if _, writeErr := conn.Write(reply); writeErr != nil {
+					serverErr <- writeErr
+				}
+			}()
+		}
+		serverErr <- nil
+	}()
+
+	go func() {
+		payload := make([]byte, 2048)
+		_ = udpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, addr, readErr := udpConn.ReadFromUDP(payload)
+		if readErr != nil {
+			return
+		}
+		if n < 7 {
+			return
+		}
+		response := append([]byte{0, 0, 0, 1, 2, 0, 0, 0, 0, 0}, []byte("ack")...)
+		_, _ = udpConn.WriteToUDP(response, addr)
+	}()
+
+	lease := ProviderLease{
+		IP:       "127.0.0.1",
+		Port:     port,
+		User:     []byte(user),
+		Password: []byte(credential),
+	}
+	session, err := armDatagram(lease, time.Second)
+	if err != nil {
+		t.Fatalf("armDatagram() error = %v", err)
+	}
+	defer session.Close()
+
+	first := <-handshakes
+	second := <-handshakes
+	if !bytes.Equal(first, current) {
+		t.Fatalf("first greeting = %x, want current %x", first, current)
+	}
+	if !bytes.Equal(second, legacy) {
+		t.Fatalf("fallback greeting = %x, want legacy %x", second, legacy)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("fake server: %v", err)
+	}
+}
+
 func TestReadStreamAcksConsumesUltraPreludeAndPreservesPayload(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
@@ -111,6 +317,27 @@ func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	decoded, ok := unwrapDatagram(down)
 	if !ok || !bytes.Equal(decoded, payload) {
 		t.Fatal("datagram response did not unwrap")
+	}
+}
+
+func TestDatagramSessionResponseAcceptsReservedReferenceFrame(t *testing.T) {
+	sid := []byte{0x10, 0x20, 0x30}
+	// The reference relay returns a standard SOCKS UDP frame and does not
+	// echo the client-side SID. Keep the payload opaque here.
+	packet := append([]byte{0, 0, 0, 1, 2, 0, 0, 0, 0, 0}, []byte("reference")...)
+	if !validDatagramSessionResponse(packet, sid) {
+		t.Fatal("reserved reference response was rejected")
+	}
+}
+
+func TestDatagramKeepaliveDetectionRequiresReservedFrame(t *testing.T) {
+	response := append([]byte{0, 0, 0, 1, 1, 1, 1, 1, 0, 53}, []byte(keepPayloadHex)...)
+	if isDatagramKeepaliveResponse(response, response[10:]) {
+		t.Fatal("keepalive payload alone was accepted as a protocol marker")
+	}
+	reserved := append([]byte{0, 0, 0, 1, 2, 0, 0, 0, 0, 0}, []byte("different opaque body")...)
+	if !isDatagramKeepaliveResponse(reserved, reserved[10:]) {
+		t.Fatal("reserved keepalive response was rejected")
 	}
 }
 
@@ -179,10 +406,13 @@ func (provider *testUDPProvider) serveUDP() {
 		if count < 16 {
 			continue
 		}
+		if bytes.Equal(packet[10:14], net.IPv4(2, 0, 0, 0).To4()) && binary.BigEndian.Uint16(packet[14:16]) == 0 {
+			response := append([]byte{0, 0, 0, 1, 2, 0, 0, 0, 0, 0}, []byte(keepPayloadHex)...)
+			_, _ = provider.udp.WriteToUDP(response, client)
+			continue
+		}
 		payload := append([]byte(nil), packet[16:]...)
-		response := make([]byte, 10+len(payload))
-		copy(response[:4], []byte{0, 0, 0, 1})
-		copy(response[10:], payload)
+		response := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, 0, 53}, payload...)
 		_, _ = provider.udp.WriteToUDP(response, client)
 	}
 }
@@ -436,14 +666,13 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 			if count < 16 {
 				continue
 			}
-			payload := append([]byte(nil), buffer[16:count]...)
-			if bytes.Equal(payload, []byte(keepPayloadHex)) {
-				_, _ = providerUDP.WriteToUDP(make([]byte, 28), client)
+			if bytes.Equal(buffer[10:14], net.IPv4(2, 0, 0, 0).To4()) && binary.BigEndian.Uint16(buffer[14:16]) == 0 {
+				response := append([]byte{0, 0, 0, 1, 2, 0, 0, 0, 0, 0}, []byte(keepPayloadHex)...)
+				_, _ = providerUDP.WriteToUDP(response, client)
 				continue
 			}
-			response := make([]byte, 10+len(payload))
-			copy(response[:4], []byte{0, 0, 0, 1})
-			copy(response[10:], payload)
+			payload := append([]byte(nil), buffer[16:count]...)
+			response := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, 0, 53}, payload...)
 			_, _ = providerUDP.WriteToUDP(response, client)
 		}
 	}()

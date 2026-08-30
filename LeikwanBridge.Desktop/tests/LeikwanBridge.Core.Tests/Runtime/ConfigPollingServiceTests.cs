@@ -278,7 +278,7 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
-    public async Task SyncOnceAsync_UsesSingleUltraLeaseByDefault()
+    public async Task SyncOnceAsync_UsesCandidateBatchForDesktopUltra()
     {
         using var tempDir = new TempStateDirectory();
         var payload = BuildUltraPullResponseJson().Replace("\"transport\": \"tcp\"", "\"transport\": \"tcp+udp\"", StringComparison.Ordinal);
@@ -298,7 +298,7 @@ public sealed class ConfigPollingServiceTests
         await service.SyncOnceAsync();
 
         Assert.NotNull(applied);
-        Assert.Single(applied!.RuntimeLeases);
+        Assert.Equal(2, applied!.RuntimeLeases.Count);
         Assert.Equal("tcp+udp", applied.RuntimeLeases[0].Transport);
         foreach (var lease in applied.RuntimeLeases)
             lease.Dispose();

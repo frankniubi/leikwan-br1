@@ -133,16 +133,16 @@ public sealed class MasterApiClient : IDisposable
     }
 
     /// <summary>
-    /// Resolves the stable, single Ultra lease used by normal forwards.
-    /// Candidate racing is deliberately opt-in because a cold UDP probe can
-    /// select a different path from the one validated by the desktop client.
+    /// Resolves one stable Ultra lease for callers that explicitly require a
+    /// single candidate. Desktop production polling uses the bounded auto
+    /// selection method below and keeps the chosen path sticky in the runtime.
     /// </summary>
     public Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesAsync(ForwardConfig forward, CancellationToken ct = default)
         => ResolveUltraLeasesCoreAsync(forward, autoSelect: false, ct);
 
     /// <summary>
-    /// Explicit diagnostic/experimentation path for bounded candidate racing.
-    /// Production callers should use <see cref="ResolveUltraLeasesAsync"/>.
+    /// Resolves a bounded candidate batch for the runtime's initial quality
+    /// selection. The runtime activates only one candidate per generation.
     /// </summary>
     public Task<IReadOnlyList<UltraLease>> ResolveUltraLeasesAutoAsync(ForwardConfig forward, CancellationToken ct = default)
         => ResolveUltraLeasesCoreAsync(forward, autoSelect: true, ct);
