@@ -42,7 +42,7 @@ Linux was built with the existing garble/reproducibility script. Windows was bui
 
 ## Platform Sample Status
 
-- Windows sample: local Release publish and Inno Setup package completed; static bootstrap and bundled-helper hash checks passed. A live Program Files replacement was not performed in this worktree because it would stop the user-owned running client and requires an operational maintenance window.
+- Windows sample: local Release publish and Inno Setup package completed; static bootstrap and bundled-helper hash checks passed. The all-users `C:\Program Files\LeiKwan Bridge` install was force-replaced with `0.1.19.9`, both root/bin Ultra helpers match the published SHA-256, and `leikwan-client-win.exe` was relaunched. Rollback copy: `C:\ProgramData\LeiKwan Bridge\backups\force-replace-20260830-114020`.
 - Linux sample: the live Panel artifact source and static shadows are updated; installer ordering and authenticated desired-hash convergence are covered by tests. No remote Linux client was restarted or mutated; each live client must report the new helper hash after its next authenticated pull.
 - macOS sample: arm64 and x86_64 Release packages were built on the remote macOS builder with the final Ultra runtime source, then published and hash-verified. No end-user macOS runtime smoke test was run; device-level launch/forward validation remains an operational follow-up.
 
