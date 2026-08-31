@@ -55,6 +55,26 @@ if (($normalized['line_id'] ?? 0) !== 453
     failUltraInventory('inventory line was not normalized and categorized');
 }
 
+$audited = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 327,
+    'title' => 'Shanghai-Korea-DYN',
+    'access_class' => 'dynamic_ingress',
+    'native_udp_state' => 'unverified',
+    'route_class' => 'single_telecom',
+    'pricing_class' => 'paid',
+    'pricing_evidence' => 'audit-plan',
+    'audit_at' => '2026-08-19T15:33:09Z',
+    'config_sha256' => str_repeat('e', 64),
+], $zones, 1_893_456_000);
+if (($audited['access_class'] ?? '') !== 'dynamic_ingress'
+    || ($audited['native_udp_state'] ?? '') !== 'unverified'
+    || ($audited['route_class'] ?? '') !== 'single_telecom'
+    || ($audited['pricing_class'] ?? '') !== 'paid'
+    || ($audited['audit_at'] ?? '') !== '2026-08-19 15:33:09'
+    || ($audited['is_enabled'] ?? 1) !== 0) {
+    failUltraInventory('audited line classifications were not preserved');
+}
+
 $catalogNormalized = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 453,
     'title' => 'ambiguous title containing 北京 and 上海 and 美国',
@@ -100,7 +120,7 @@ $source = file_get_contents(__DIR__ . '/../src/Support/UltraInventoryService.php
 foreach ([
     'MAX_INVENTORY_LINES = 256',
     'is_source_present = 0',
-    "'is_enabled' => 0",
+    "'is_enabled' => \$rawAccess === 'native_udp' && \$rawNativeState === 'verified' ? 1 : 0",
     'admin_ingress_zone',
     'admin_destination_zone',
     'catalog_ingress_label',

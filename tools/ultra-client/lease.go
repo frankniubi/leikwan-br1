@@ -19,6 +19,7 @@ type leaseFrame struct {
 	QuotaRemainingBytes int64  `json:"quota_remaining_bytes"`
 	TargetDigest        string `json:"target_digest"`
 	SelectionRef        string `json:"selection_ref"`
+	SelectionTier       string `json:"selection_tier"`
 	NonceHash           string `json:"nonce_hash"`
 	Endpoint            struct {
 		IP   string `json:"ip"`
@@ -35,6 +36,10 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 	if err != nil {
 		return Policy{}, ProviderLease{}, ErrLeaseInvalid
 	}
+	selectionTier, tierErr := normalizeSelectionTier(f.SelectionTier)
+	if tierErr != nil {
+		return Policy{}, ProviderLease{}, ErrLeaseInvalid
+	}
 	policy := Policy{
 		Protocol: f.Protocol, ForwardID: f.ForwardID, SessionTicket: f.SessionTicket,
 		PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
@@ -43,7 +48,7 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 	}
 	lease := ProviderLease{
 		LeaseID: f.LeaseID, PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
-		Transport: f.Transport, SelectionRef: f.SelectionRef, NonceHash: f.NonceHash,
+		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier, NonceHash: f.NonceHash,
 		IP: net.ParseIP(strings.TrimSpace(f.Endpoint.IP)).String(), Port: f.Endpoint.Port,
 		User: []byte(f.Credential.User), Password: []byte(f.Credential.Password),
 	}

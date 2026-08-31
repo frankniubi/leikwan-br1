@@ -346,6 +346,7 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.Equal(2, leases.Count);
         Assert.Equal("203.0.113.20", leases[0].ProviderIp);
         Assert.Equal("203.0.113.21", leases[1].ProviderIp);
+        Assert.Equal("paid", leases[0].SelectionTier);
     }
 
     private sealed class NotModifiedHandler : HttpMessageHandler
@@ -451,7 +452,7 @@ public sealed class MasterApiClientDesktopLoginTests
                           "protocol": "leikwan-ultra-policy-v2", "forward_id": 42, "session_ticket": "ticket-a",
                           "lease_id": "lease-a", "policy_generation": "{{generation}}", "expires_at": "{{expires}}", "transport": "tcp+udp",
                           "rate_limit_mbps": 0, "quota_remaining_bytes": 1048576, "target_digest": "{{digest}}",
-                          "selection_ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "selection_ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", "selection_tier": "paid", "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                           "endpoint": { "ip": "203.0.113.20", "port": 5438 }, "credential": { "user": "line-user", "password": "line-password" }
                         },
                         {

@@ -488,7 +488,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					}
 				}()
 				defer close(connectionDone)
-				status.UpdateTCP(lease.SelectionRef, time.Since(started))
+				status.UpdateTCPWithTier(lease.SelectionRef, lease.SelectionTier, time.Since(started))
 				done := make(chan struct{}, 2)
 				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
 				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
@@ -925,6 +925,7 @@ func (association *udpAssociation) close() {
 type udpWarmSession struct {
 	session         *DatagramSession
 	selectionRef    string
+	selectionTier   string
 	started         time.Time
 	keepaliveCancel context.CancelFunc
 	err             error
@@ -1172,7 +1173,7 @@ func serveUDPOnConn(
 		association.pending = nil
 		associationMu.Unlock()
 		publishAssociationCounts()
-		status.UpdateUDP(warm.selectionRef, time.Since(warm.started))
+		status.UpdateUDPWithTier(warm.selectionRef, warm.selectionTier, time.Since(warm.started))
 		for _, queuedPayload := range queued {
 			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
 			if packetErr != nil {
@@ -1191,6 +1192,7 @@ func serveUDPOnConn(
 	}
 	startNativeSetup := func(key string, association *udpAssociation, lease ProviderLease) {
 		selectionRef := lease.SelectionRef
+		selectionTier := lease.SelectionTier
 		go func() {
 			select {
 			case setupSlots <- struct{}{}:
@@ -1217,7 +1219,7 @@ func serveUDPOnConn(
 				closeAssociation(key, association)
 				return
 			}
-			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, started: started})
+			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started})
 		}()
 	}
 	startWarmWait := func(key string, association *udpAssociation, lease ProviderLease) {
@@ -1256,6 +1258,7 @@ func serveUDPOnConn(
 			}
 			lease := snapshot.Lease
 			selectionRef := lease.SelectionRef
+			selectionTier := lease.SelectionTier
 			started := time.Now()
 			next, armErr := armDatagram(lease, probeAssociationTimeout(config))
 			<-setupSlots
@@ -1270,7 +1273,7 @@ func serveUDPOnConn(
 			}
 			sessionContext, sessionCancel := context.WithCancel(warmContext)
 			warm := udpWarmSession{
-				session: next, selectionRef: selectionRef, started: started,
+				session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started,
 				keepaliveCancel: sessionCancel,
 			}
 			interval := resolveUDPKeepaliveInterval(config)

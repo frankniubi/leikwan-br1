@@ -1301,6 +1301,13 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     catalog_ingress_label VARCHAR(191) NULL,
     catalog_destination_label VARCHAR(191) NULL,
     config_sha256 CHAR(64) NOT NULL,
+    access_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    native_udp_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    route_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    pricing_class VARCHAR(16) NOT NULL DEFAULT 'unknown',
+    pricing_evidence VARCHAR(255) NULL,
+    audit_at DATETIME NULL,
+    audit_hash CHAR(64) NULL,
     auto_ingress_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
     auto_destination_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
     admin_ingress_zone VARCHAR(32) NULL,
@@ -1319,6 +1326,7 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     CONSTRAINT fk_ultra_lines_source FOREIGN KEY (source_id) REFERENCES ultra_sources(source_id),
     UNIQUE KEY uniq_ultra_source_line (source_id, line_id),
     INDEX idx_ultra_lines_policy (is_source_present, is_enabled, auto_destination_zone, auto_ingress_zone),
+    INDEX idx_ultra_lines_quality (access_class, native_udp_state, pricing_class, is_source_present, is_enabled),
     INDEX idx_ultra_lines_material_expiry (last_material_expires_at)
 );
 

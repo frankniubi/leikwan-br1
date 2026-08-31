@@ -46,6 +46,7 @@ public sealed class UnixUltraLeaseClientTests
         using var document = JsonDocument.Parse(captured);
         Assert.Equal(lease.ForwardId, document.RootElement.GetProperty("forward_id").GetInt32());
         Assert.Equal("203.0.113.20", document.RootElement.GetProperty("endpoint").GetProperty("ip").GetString());
+        Assert.Equal("paid", document.RootElement.GetProperty("selection_tier").GetString());
         TryDelete(socketPath);
     }
 
@@ -111,6 +112,7 @@ public sealed class UnixUltraLeaseClientTests
             RateLimitMbps = 20,
             QuotaRemainingBytes = 1024,
             SelectionRef = "selection-reference-abcdefghijklmnop",
+            SelectionTier = UltraLease.SelectionTierPaid,
             NonceHash = new string('b', 64),
             ProviderIp = "203.0.113.20",
             ProviderPort = 5438,
