@@ -89,7 +89,9 @@ The object has this shape (all fields are non-secret):
       "forward_id": 158,
       "direction": "intl_to_cn",
       "scope_digest": "<sha256>",
-      "transport": "tcp+udp"
+      "transport": "tcp+udp",
+      "route_scopes": ["cn_only", "global"],
+      "default_route_scope": "global"
     }
   ]
 }
@@ -119,6 +121,7 @@ A native request item is:
   "nonce": "<fresh hex nonce>",
   "target_digest": "<native scope digest>",
   "transport": "tcp+udp",
+  "route_scope": "global",
   "selection_mode": "single",
   "max_candidates": 1
 }
@@ -128,8 +131,13 @@ A native request item is:
 digest for this purpose. It is computed as:
 
 ```text
-sha256("native-outbound:v1\n" + forward_id + "\n" + direction + "\n" + transport)
+sha256("native-outbound:v1\n" + forward_id + "\n" + direction + "\n" + transport + "\n" + route_scope)
 ```
+
+`route_scope` is `global` for every direction except an international-to-
+mainland-China direction, where it may be `cn_only` or `global`. The default
+is `global`. The Panel validates the value against the capability for the
+selected carrier; clients cannot invent a third scope.
 
 The server must validate, in this order:
 
@@ -157,6 +165,7 @@ The response lease is:
   "quota_remaining_bytes": 0,
   "selection_ref": "<opaque ref>",
   "direction": "intl_to_cn",
+  "route_scope": "global",
   "scope_digest": "<native scope digest>",
   "endpoint": {"ip": "<address>", "port": 0},
   "credential": {"user": "<temporary user>", "password": "<temporary password>"}
@@ -186,6 +195,14 @@ causes `no_approved_candidate`; it does not reveal the provider name.
 
 - The native lease direction is copied from the carrier forward's normalized
   `forward_combination_direction` and its Ultra line policy.
+- For an international-to-mainland-China direction, `route_scope=cn_only`
+  routes mainland-China destinations through native SOCKS5 and sends all other
+  destinations direct. `route_scope=global` sends all destinations through
+  native SOCKS5.
+- In `cn_only`, the existing bypass-China switch is disabled because it would
+  contradict the selected scope. In `global`, the switch remains an optional
+  override that sends mainland-China destinations direct. Other directions do
+  not show a scope selector and use `global` semantics.
 - Normal endpoint availability, terminal direction bindings, and imported user
   nodes do not gate native visibility or lease authorization.
 - The selected carrier forward is persisted only as a client preference. If it
@@ -209,8 +226,8 @@ causes `no_approved_candidate`; it does not reveal the provider name.
 - `tcp+udp` maps to a SOCKS5 outbound with native UDP support. TUN uses the
   existing platform runtime and full-device route setup.
 - The user's existing bypass-China setting controls a direct route for
-  `geoip-cn`/`geosite-cn`. Default remains `false`; the setting is available
-  while native mode is selected.
+  `geoip-cn`/`geosite-cn` only in `global` scope. Default remains `false`; the
+  setting is hidden or disabled in `cn_only` scope.
 
 ### Android
 
@@ -218,6 +235,8 @@ causes `no_approved_candidate`; it does not reveal the provider name.
   `PullConfigsResponse.native_outbound.enabled` is true.
 - Let the user choose the carrier forward; default to the panel-provided
   `default_forward_id`.
+- When the carrier direction is international-to-mainland-China, show a
+  `仅中国大陆`/`全局` selector, defaulting to `global`; otherwise omit it.
 - Resolve a native lease through the existing Retrofit lease call, parse and
   validate the native protocol, then build a temporary SOCKS5 `ProxyNode` or
   equivalent outbound for `SingboxConfigBuilder`.
@@ -234,6 +253,8 @@ causes `no_approved_candidate`; it does not reveal the provider name.
   proxy/TUN process host.
 - Keep the existing imported-profile UI and storage unchanged. The native mode
   entry is hidden when the capability object is absent.
+- Show the same route-scope selector only for international-to-mainland-China
+  carriers; keep the existing bypass-China control enabled only for `global`.
 
 ### macOS
 
@@ -241,6 +262,8 @@ causes `no_approved_candidate`; it does not reveal the provider name.
 - Reuse the existing proxy and VPN process host with an ephemeral SOCKS5
   profile. Do not add native credentials to `MacConnectionProfileStore`.
 - Preserve the current macOS permission/error path for VPN/TUN startup.
+- Show the route-scope selector only for international-to-mainland-China
+  carriers and apply the same `cn_only`/`global` precedence rules.
 
 ## Error Handling
 
@@ -276,6 +299,8 @@ state filtering, nonce replay, expiry, quota, and provider-field scrubbing.
 Android and desktop tests must cover capability-gated visibility, no-node native
 startup, SOCKS5 TCP+UDP config generation, TUN startup, bypass-China on/off,
 lease expiry/renewal, cleanup, and fallback without changing imported profiles.
+They must also cover both route scopes for an international-to-mainland-China
+carrier and verify that the scope selector is absent for other directions.
 
 Android acceptance is mandatory on a temporary local API 34 `x86_64` emulator,
 not only JVM or physical-device tests. The acceptance APK and its runtime

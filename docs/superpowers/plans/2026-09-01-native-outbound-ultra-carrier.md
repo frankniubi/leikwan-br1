@@ -15,10 +15,11 @@
 - `allow_native_outbound` is stored in `service_plans.feature_flags_json`, defaults to `false`, and is plan-only; a user feature flag may never elevate it.
 - The client-visible label is `原生出口`; the capability object and mode are omitted when the entitlement is absent.
 - The existing `POST /api/client/ultra/lease` remains the only lease endpoint; native items use `purpose=native_outbound` and protocol `leikwan-ultra-native-socks5-v1`.
-- Native scope digest is `sha256("native-outbound:v1\n" + forward_id + "\n" + direction + "\n" + transport)` and replaces the ordinary target digest only for native requests.
+- Native scope digest is `sha256("native-outbound:v1\n" + forward_id + "\n" + direction + "\n" + transport + "\n" + route_scope)` and replaces the ordinary target digest only for native requests.
 - Only `native_socks5_state=verified` candidates may be issued; provider names, source IDs, line IDs, and credentials never enter normal client config, profile stores, logs, or diagnostics.
 - Native lease TTL stays within 60-300 seconds, uses a fresh nonce on every issue/renewal, and shares the existing `ultra_client_leases` replay/revocation fence.
 - TCP+UDP and TUN must work without an imported user node. Existing China-IP bypass controls remain user-selectable and default off.
+- For an international-to-mainland-China carrier, `route_scope` is `cn_only` or `global`, defaults to `global`, and is absent from the GUI for other directions. `cn_only` routes CN destinations native and non-CN destinations direct; `global` routes all native, with bypass-China as an optional CN-direct override.
 - Android acceptance requires a QA APK with both `arm64-v8a` and `x86_64` `libbox` and runtime artifacts; a missing ABI is a build failure.
 - Android acceptance runs on the temporary local API 34 AVD `LeiKwan_QA_API34` and must produce the redacted evidence listed in `docs/superpowers/runbooks/2026-09-01-native-outbound-acceptance.md`.
 - Windows and macOS acceptance uses the already available test machines; no machine provisioning task is added.
@@ -183,7 +184,8 @@ git commit -m "feat(panel): gate native outbound by service plan"
 **Interfaces:**
 - `UltraMode::NATIVE_OUTBOUND_PURPOSE = 'native_outbound'`.
 - `UltraMode::NATIVE_SOCKS5_PROTOCOL = 'leikwan-ultra-native-socks5-v1'`.
-- `UltraMode::nativeScopeDigest(int $forwardId, string $direction, string $transport): string`.
+- `UltraMode::nativeScopeDigest(int $forwardId, string $direction, string $transport, string $routeScope): string`.
+- `UltraMode::nativeRouteScopesForDirection(string $direction): array` returns `['cn_only', 'global']` for international-to-mainland-China and `['global']` otherwise.
 - `UltraLeaseService::issueLease()` accepts `purpose`; omitted purpose preserves the current Ultra protocol.
 - `ClientAgentController` returns `native_outbound` only for entitled assigned active Ultra carriers.
 
@@ -211,11 +213,11 @@ Implement in `UltraMode.php`:
 public const NATIVE_OUTBOUND_PURPOSE = 'native_outbound';
 public const NATIVE_SOCKS5_PROTOCOL = 'leikwan-ultra-native-socks5-v1';
 
-public static function nativeScopeDigest(int $forwardId, string $direction, string $transport): string
+public static function nativeScopeDigest(int $forwardId, string $direction, string $transport, string $routeScope): string
 {
     return hash('sha256', implode("\n", [
         'native-outbound:v1', $forwardId,
-        strtolower(trim($direction)), strtolower(trim($transport)),
+        strtolower(trim($direction)), strtolower(trim($transport)), strtolower(trim($routeScope)),
     ]));
 }
 ```
@@ -231,9 +233,11 @@ candidate resolution must reject a line unless its normalized
 `native_udp_state` unchanged. Add `native_socks5_state` to the line metadata
 projection used by `LeigodTokenBroker` without exposing it to clients.
 
-In `ClientAgentController::resolveUltraLease`, build the native policy target as
-the canonical string `native-outbound:v1\n<forward_id>\n<direction>\n<transport>`
-and compare the request digest to `UltraMode::nativeScopeDigest`. Before calling
+In `ClientAgentController::resolveUltraLease`, normalize and validate
+`route_scope` against `UltraMode::nativeRouteScopesForDirection`, build the
+native policy target as the canonical string
+`native-outbound:v1\n<forward_id>\n<direction>\n<transport>\n<route_scope>`, and
+compare the request digest to `UltraMode::nativeScopeDigest`. Before calling
 `issueLease`, call `planAllowsNativeOutbound($forward)` and return
 `native_outbound_not_allowed` on false.
 
@@ -252,11 +256,12 @@ and add only these scrubbed fields to a native lease:
 `purpose`, `direction`, `scope_digest`, `endpoint`, and `credential`. Never copy
 `source_id`, `line_id`, inventory labels, or upstream names.
 
-Add `native_outbound` construction to the pull response. It must contain only
-the approved carrier IDs, inherited direction, native scope digest, transport,
-and the default carrier ID; omit the whole object when the plan gate or active
-Ultra carrier check fails. Include its stable projection in `forwardRevision`
-so a plan toggle wakes long-poll clients.
+Add `native_outbound` construction to the pull response. Each carrier entry
+must contain only the approved carrier ID, inherited direction, transport,
+allowed `route_scopes`, and default scope (`global`); omit the whole object when
+the plan gate or active Ultra carrier check fails. Include its stable projection
+in `forwardRevision` so a plan toggle or direction change wakes long-poll
+clients.
 
 - [ ] **Step 6: Run panel regression tests and commit**
 
@@ -338,6 +343,8 @@ public sealed class NativeOutboundCapability
     [JsonPropertyName("transport")] public string Transport { get; init; } = "tcp+udp";
     [JsonPropertyName("forward_ids")] public List<int> ForwardIds { get; init; } = [];
     [JsonPropertyName("default_forward_id")] public int? DefaultForwardId { get; init; }
+    [JsonPropertyName("route_scopes")] public List<string> RouteScopes { get; init; } = [];
+    [JsonPropertyName("default_route_scope")] public string DefaultRouteScope { get; init; } = "global";
     [JsonPropertyName("forwards")] public List<NativeOutboundForward> Forwards { get; init; } = [];
 }
 
@@ -345,7 +352,9 @@ public sealed record NativeOutboundForward(
     [property: JsonPropertyName("forward_id")] int ForwardId,
     [property: JsonPropertyName("direction")] string Direction,
     [property: JsonPropertyName("scope_digest")] string ScopeDigest,
-    [property: JsonPropertyName("transport")] string Transport);
+    [property: JsonPropertyName("transport")] string Transport,
+    [property: JsonPropertyName("route_scopes")] IReadOnlyList<string> RouteScopes,
+    [property: JsonPropertyName("default_route_scope")] string DefaultRouteScope);
 
 public sealed record NativeOutboundConfigFragment(string Json, int LocalPort);
 
@@ -354,12 +363,13 @@ public sealed class NativeOutboundLease : IDisposable
     public NativeOutboundLease(
         int forwardId, string leaseId, string policyGeneration,
         DateTimeOffset expiresAt, string transport, string direction,
-        string scopeDigest, string endpointHost, int endpointPort,
+        string routeScope, string scopeDigest, string endpointHost, int endpointPort,
         byte[] user, byte[] password)
     {
         ForwardId = forwardId; LeaseId = leaseId; PolicyGeneration = policyGeneration;
         ExpiresAt = expiresAt; Transport = transport; Direction = direction;
-        ScopeDigest = scopeDigest; EndpointHost = endpointHost; EndpointPort = endpointPort;
+        RouteScope = routeScope; ScopeDigest = scopeDigest;
+        EndpointHost = endpointHost; EndpointPort = endpointPort;
         User = user; Password = password;
     }
 
@@ -369,6 +379,7 @@ public sealed class NativeOutboundLease : IDisposable
     public DateTimeOffset ExpiresAt { get; }
     public string Transport { get; }
     public string Direction { get; }
+    public string RouteScope { get; }
     public string ScopeDigest { get; }
     public string EndpointHost { get; }
     public int EndpointPort { get; }
@@ -394,17 +405,18 @@ contain `leigod`, `source_id`, or `line_id`.
 - [ ] **Step 2: Extend `PullResponse` and `MasterApiClient`**
 
 Add nullable `NativeOutbound` to `PullResponse`. Add
-`ResolveNativeOutboundLeaseAsync(ForwardConfig forward, CancellationToken ct)`
+`ResolveNativeOutboundLeaseAsync(ForwardConfig forward, string routeScope, CancellationToken ct)`
 that computes the capability scope digest, sends one batch item with
 `purpose=native_outbound`, and validates protocol, forward ID, generation,
-ticket, digest, direction, endpoint bounds, credential bounds, and expiry before
-returning a disposable lease. Zero request/response byte arrays in `finally`.
+ticket, digest, direction, route scope, endpoint bounds, credential bounds, and
+expiry before returning a disposable lease. Zero request/response byte arrays in
+`finally`.
 
 - [ ] **Step 3: Add an ephemeral SOCKS5 outbound builder**
 
 Implement `NativeOutboundConfigBuilder.Build(NativeOutboundLease lease, bool
 bypassChina, int localPort): NativeOutboundConfigFragment` as the single shared
-config-fragment builder. It
+config-fragment builder. It reads `lease.RouteScope` and
 emits a sing-box `socks` outbound with `version: 5`, username/password, and UDP
 enabled plus the direct China rules when requested. Windows and macOS consume
 this fragment; it must not call either profile store.
@@ -437,9 +449,10 @@ git commit -m "feat(desktop): add ephemeral native outbound lease"
 - Test: `LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/Runtime/WindowsNativeOutboundTests.cs`
 
 **Interfaces:**
-- Add an in-memory `WindowsNativeOutboundSession` owned by `MainViewModel`.
+- Add an in-memory `WindowsNativeOutboundSession` owned by `MainViewModel`,
+  including the selected `NativeRouteScope`.
 - Add a nullable `NativeOutboundCapability` property and a `NativeCarrierForwardId` property.
-- Add a `StartNativeProxyAsync(WindowsProxyMode mode, int forwardId, ...)` path
+- Add a `NativeRouteScope` property and a `StartNativeProxyAsync(WindowsProxyMode mode, int forwardId, string routeScope, ...)` path
   that calls the Core lease method and never requires `ProxyProfiles`.
 
 - [ ] **Step 1: Test GUI visibility and no-node start behavior**
@@ -453,15 +466,18 @@ selected, and `StartNativeProxyAsync` succeeds with an empty profile list.
 
 Bind a managed mode enum (`ImportedProfile`, `NativeOutbound`) to the existing
 connection page. On pull update, clear `NativeCarrierForwardId` and switch back
-to `ImportedProfile` when capability disappears. Map lease failures to the
-existing generic connection error text.
+to `ImportedProfile` when capability disappears. Normalize the selected scope
+against the carrier's `RouteScopes`, default to `DefaultRouteScope`, and map
+lease failures to the existing generic connection error text.
 
 - [ ] **Step 3: Add GUI controls and localized resources**
 
 Add a compact mode `ComboBox`/segmented control, a carrier-forward selector,
-and a native status line in the connection panel. Put the existing bypass-China
-checkbox next to the mode controls and keep it enabled for native mode. Do not
-show endpoint, username, password, source, or provider text.
+an international-to-mainland-China-only route-scope selector, and a native
+status line in the connection panel. Hide the scope selector for carriers whose
+`RouteScopes` contains only `global`. Put the existing bypass-China checkbox
+next to the mode controls; disable it in `cn_only` and keep it enabled in
+`global`. Do not show endpoint, username, password, source, or provider text.
 
 - [ ] **Step 4: Connect Windows HTTP/TUN/process modes to the ephemeral builder**
 
@@ -492,7 +508,9 @@ git commit -m "feat(windows): expose managed native outbound mode"
 
 **Interfaces:**
 - Extend `MacConnectionMode` with `NativeOutbound` while retaining `Proxy` and `Vpn` behavior.
-- Add `StartNativeAsync(int forwardId, NativeOutboundLease lease, bool bypassChina, ...)` to `IMacConnectionService`.
+- Add `NativeRouteScope` to the in-memory session and
+  `StartNativeAsync(int forwardId, NativeOutboundLease lease, string routeScope,
+  bool bypassChina, ...)` to `IMacConnectionService`.
 - `MacConnectionProfileStore` remains unchanged.
 
 - [ ] **Step 1: Test SOCKS5 config and mode visibility**
@@ -509,9 +527,11 @@ failure, and expiry path. Preserve the current VPN permission error mapping.
 
 - [ ] **Step 3: Add Avalonia controls and localized labels**
 
-Add the same capability-gated mode selector, carrier selector, status/error
-line, and bypass-China toggle used by the Windows experience. Keep imported
-profile editing available and leave its persistence untouched.
+Add the same capability-gated mode selector, carrier selector, route-scope
+selector (only for `cn_only`/`global` carriers), status/error line, and
+bypass-China toggle used by the Windows experience. Keep imported profile
+editing available and leave its persistence untouched; disable bypass-China in
+`cn_only`.
 
 - [ ] **Step 4: Run and commit**
 
@@ -549,6 +569,8 @@ data class NativeOutboundCapability(
     val transport: String,
     val forwardIds: List<Long>,
     val defaultForwardId: Long?,
+    val routeScopes: List<String>,
+    val defaultRouteScope: String,
     val forwards: List<NativeOutboundForward>,
 )
 
@@ -557,21 +579,39 @@ data class NativeOutboundForward(
     val direction: String,
     val scopeDigest: String,
     val transport: String,
+    val routeScopes: List<String>,
+    val defaultRouteScope: String,
 )
+
+data class NativeOutboundLease(
+    val forwardId: Long,
+    val leaseId: String,
+    val policyGeneration: String,
+    val expiresAt: Instant,
+    val transport: String,
+    val direction: String,
+    val routeScope: String,
+    val scopeDigest: String,
+    val endpointHost: String,
+    val endpointPort: Int,
+    val user: ByteArray,
+    val password: ByteArray,
+) : AutoCloseable
 ```
 
 - [ ] **Step 1: Add parser and digest tests**
 
 Parse the optional pull object, compute the exact native scope digest, reject a
-wrong protocol/digest/forward/expiry, and assert a missing object leaves the
-stored mode at `SERVICES`.
+wrong protocol/digest/forward/route scope/expiry, and assert a missing object
+leaves the stored mode at `SERVICES`.
 
 - [ ] **Step 2: Add capability and lease parsing to `PanelRepository`**
 
 Expose `nativeOutboundCapability` from the pull catalog. Add
-`resolveNativeOutboundLease(forwardId)` that sends the existing batch request
-with `purpose`, validates the new protocol and direction, copies credentials to
-mutable byte arrays, and wipes them on parse failure or caller cleanup.
+`resolveNativeOutboundLease(forwardId, routeScope)` that sends the existing batch
+request with `purpose` and the selected `route_scope`, validates the new
+protocol, direction, and scope, copies credentials to mutable byte arrays, and
+wipes them on parse failure or caller cleanup.
 
 - [ ] **Step 3: Add native mode to selection and orchestrator**
 
@@ -579,14 +619,17 @@ For `NATIVE`, require a capability-selected carrier forward but do not inspect
 `proxyNodes` or require `selectedProxyId`. Resolve the lease, create a temporary
 SOCKS5 `ProxyNode`/outbound descriptor, and pass it to `SingboxConfigBuilder`.
 Do not execute `UltraForwardRunner` or start `ultra-client` in this branch.
-Refresh the lease before expiry and stop/clear mode on terminal errors.
+Refresh the lease before expiry and stop/clear mode on terminal errors. Validate
+the selected scope against the carrier, defaulting to `global`.
 
 - [ ] **Step 4: Reuse TUN and bypass-China route construction**
 
-Make the native outbound the `route.final` proxy tag for native mode. Keep the
-existing `geoip-cn`/`geosite-cn` direct rules conditional on `Prefs.bypassChina`;
-do not change its default. Ensure full-device TUN and protected-connectivity
-exceptions still include the lease endpoint.
+Make the native outbound the `route.final` proxy tag for native mode. For
+`cn_only`, add native rules only for `geoip-cn`/`geosite-cn` and direct fallback
+for all other destinations; ignore/disable `Prefs.bypassChina`. For `global`,
+keep the existing direct China rules conditional on `Prefs.bypassChina`; do not
+change its default. Ensure full-device TUN and protected-connectivity exceptions
+still include the lease endpoint.
 
 - [ ] **Step 5: Run Android unit tests and commit**
 
@@ -625,14 +668,17 @@ carrier selector, start action, and generic error state are present.
 Add a segmented mode control or compact menu to the connections surface. Show
 `原生出口` only when `nativeCapability?.enabled == true`; default the carrier
 to `defaultForwardId`, allow changing among `forwards`, and reset to `SERVICES`
-when the capability disappears. Keep node import/pairing cards visible for the
-other modes and avoid showing a fake empty-node warning in native mode.
+when the capability disappears. For an `intl_to_cn` carrier show
+`仅中国大陆`/`全局` and default to `global`; omit the selector for other
+directions. Keep node import/pairing cards visible for the other modes and avoid
+showing a fake empty-node warning in native mode.
 
 - [ ] **Step 3: Add status, error, and bypass affordances**
 
 Show the selected carrier direction as non-secret status text, show a generic
 unavailable message on lease failure, and keep the existing `绕过中国` switch
-available. Do not add endpoint or credential text to any composable.
+available only in `global`; disable or hide it in `cn_only`. Do not add endpoint
+or credential text to any composable.
 
 - [ ] **Step 4: Run GUI/unit tests and commit**
 
@@ -660,9 +706,9 @@ git commit -m "feat(android): show entitlement-gated native outbound UI"
   183 (`arm64`) and 62 (`x86_64`).
 - `build-nekobox-libcore.ps1 -Targets 'android/arm64,android/amd64'` writes an
   AAR containing `jni/arm64-v8a/libbox.so` and `jni/x86_64/libbox.so`.
-- `verify-android-native-artifacts.ps1 -Apk <path>` exits non-zero if any
+- `verify-android-native-artifacts.ps1 -Apk $apk` exits non-zero if any
   required ABI or runtime asset is missing or has the wrong ELF machine.
-- `qa-android-native-outbound.ps1 -Apk <path> -AvdName LeiKwan_QA_API34`
+- `qa-android-native-outbound.ps1 -Apk $apk -AvdName LeiKwan_QA_API34`
   starts a non-persistent emulator, runs connected tests, installs the APK,
   waits for boot, and always stops the emulator.
 

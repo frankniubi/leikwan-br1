@@ -134,6 +134,7 @@ credential files; never put them in a command transcript or handoff.
 | Denied | Pull config with plan flag absent/false | redacted JSON hash + UI screenshot | `native_outbound` absent and no `原生出口` control |
 | Allowed | Enable only `allow_native_outbound` on plan, pull again | redacted JSON + UI screenshot | capability present, `原生出口` visible |
 | Carrier | Select the returned default forward | screenshot/UI dump | direction label matches the Ultra forward direction |
+| Scope | Use an international-to-mainland-China carrier | screenshot/UI dump | `仅中国大陆` and `全局` are visible, default is `全局` |
 | No node | Keep local proxy/node store empty | Room/profile count + screenshot | native start action remains enabled |
 | Revoked | Disable plan or revoke generation, pull/lease again | HTTP status/code with secrets removed | no new lease; mode returns to normal service state |
 
@@ -156,17 +157,21 @@ Perform these checks in order:
 
 1. Select `原生出口` and the default carrier. Confirm the node list is empty
    and the carrier direction is the only provider-independent status shown.
-2. Request VPN permission, start the tunnel, and wait for the connected state.
-3. Verify `dumpsys connectivity` contains the app VPN and `dumpsys vpn` shows a
+2. For an international-to-mainland-China carrier, select `仅中国大陆` and
+   verify mainland-China destinations use native SOCKS5 while a non-CN test
+   destination is direct. Confirm the bypass-China switch is disabled/hidden.
+3. Select `全局` and verify both destinations use native SOCKS5 when bypass-
+   China is off. Turn bypass-China on and verify only mainland-China
+   destinations become direct.
+4. Request VPN permission, start the tunnel, and wait for the connected state.
+5. Verify `dumpsys connectivity` contains the app VPN and `dumpsys vpn` shows a
    running VPN owner. Save both outputs after removing account/device IDs.
-4. Generate one TCP request to the controlled test endpoint and one UDP DNS
+6. Generate one TCP request to the controlled test endpoint and one UDP DNS
    request. Record status code, byte counts, and timestamps from the test
    endpoint; do not record SOCKS credentials.
-5. Toggle `绕过中国` on, rebuild/restart the tunnel, and verify a mainland-CN
-   test IP is direct while a non-CN test IP remains on the native outbound.
-6. Wait through one renewal window. Confirm the tunnel stays connected and the
+7. Wait through one renewal window. Confirm the tunnel stays connected and the
    lease endpoint is never printed in UI/log output.
-7. Stop the tunnel and verify no native credential remains in `filesDir`,
+8. Stop the tunnel and verify no native credential remains in `filesDir`,
    `shared_prefs`, Room databases, APK static assets, or diagnostics.
 
 Required evidence files (all redacted):
@@ -189,7 +194,8 @@ For each platform:
 1. Pull an entitled capability and confirm the GUI shows `原生出口`.
 2. Start native proxy mode with no imported profile; test HTTP/TUN according to
    the platform's existing connection modes.
-3. Test TCP and UDP, then toggle China-IP bypass and repeat the route check.
+3. For an international-to-mainland-China carrier, test both `仅中国大陆`
+   and `全局`; in `全局`, toggle China-IP bypass and repeat the route check.
 4. Revoke the plan, pull, and verify the option disappears and the running
    native process is stopped after the current lease expires.
 5. Scan process arguments, temporary configs, profile stores, and logs for
