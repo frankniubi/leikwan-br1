@@ -166,11 +166,75 @@ const streamPreludeSize = 14
 
 type bufferedConn struct {
 	net.Conn
-	reader *bufio.Reader
+	reader             *bufio.Reader
+	legacyFinalOnce    sync.Once
+	legacyFinalPrefix  []byte
+	legacyFinalPending error
 }
 
 func (conn *bufferedConn) Read(buffer []byte) (int, error) {
+	conn.legacyFinalOnce.Do(conn.consumeLegacyFinal)
+	if len(conn.legacyFinalPrefix) > 0 {
+		count := copy(buffer, conn.legacyFinalPrefix)
+		conn.legacyFinalPrefix = conn.legacyFinalPrefix[count:]
+		return count, nil
+	}
+	if conn.legacyFinalPending != nil {
+		err := conn.legacyFinalPending
+		conn.legacyFinalPending = nil
+		return 0, err
+	}
 	return conn.reader.Read(buffer)
+}
+
+// consumeLegacyFinal handles the delayed command=1 target-connect response.
+// LeiGod sends the four-byte auth ACK first, then emits a ten-byte SOCKS-shaped
+// success/error frame only after the first payload opens the target connection.
+// That control frame must not be exposed to the local application. If the
+// first application byte is not the unambiguous 04 01 prefix, all inspected
+// bytes are retained verbatim.
+func (conn *bufferedConn) consumeLegacyFinal() {
+	first, err := conn.reader.ReadByte()
+	if err != nil {
+		conn.legacyFinalPending = err
+		return
+	}
+	prefix := []byte{first}
+	if first != 4 {
+		conn.legacyFinalPrefix = prefix
+		return
+	}
+	second, err := conn.reader.ReadByte()
+	if err != nil {
+		conn.legacyFinalPrefix = prefix
+		conn.legacyFinalPending = err
+		return
+	}
+	prefix = append(prefix, second)
+	if second != 1 {
+		conn.legacyFinalPrefix = prefix
+		return
+	}
+	// A real application stream may begin with 04 01. Bound only the
+	// remaining optional-frame inspection so an incomplete application prefix
+	// is preserved instead of stalling the stream indefinitely.
+	_ = conn.Conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	defer conn.Conn.SetReadDeadline(time.Time{})
+	for len(prefix) < 10 {
+		item, readErr := conn.reader.ReadByte()
+		if readErr != nil {
+			conn.legacyFinalPrefix = prefix
+			return
+		}
+		prefix = append(prefix, item)
+	}
+	if !validLegacyStreamFinal(prefix) {
+		conn.legacyFinalPrefix = prefix
+		return
+	}
+	if prefix[2] == 0 {
+		conn.legacyFinalPending = errStreamCommandRejected
+	}
 }
 
 func validStreamPrelude(prelude []byte) bool {
@@ -204,8 +268,10 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		return nil, err
 	}
 	if bytes.Equal(first, []byte{5, 2}) {
-		// Compatibility with the older native SOCKS acknowledgement. The
-		// current Ultra TCP relay normally returns the prelude below instead.
+		// LeiGod command=1 normally ends its response at 05 02 01 00. Older
+		// relays appended a ten-byte SOCKS success frame, so inspect (but do not
+		// consume) the next bytes briefly and discard that optional frame only
+		// when its complete shape is unambiguous.
 		second := make([]byte, 2)
 		if _, err := io.ReadFull(reader, second); err != nil {
 			return nil, err
@@ -213,12 +279,18 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
 			return nil, errStreamAuthenticationRejected
 		}
-		final := make([]byte, 10)
-		if _, err := io.ReadFull(reader, final); err != nil {
-			return nil, err
-		}
-		if final[2] == 0 {
-			return nil, errStreamCommandRejected
+		if bytes.Equal(second, []byte{1, 0}) {
+			optionalDeadline := time.Now().Add(100 * time.Millisecond)
+			if optionalDeadline.After(deadline) {
+				optionalDeadline = deadline
+			}
+			_ = conn.SetReadDeadline(optionalDeadline)
+			if optional, peekErr := reader.Peek(10); peekErr == nil && validLegacyStreamFinal(optional) {
+				_, _ = reader.Discard(10)
+				if optional[2] == 0 {
+					return nil, errStreamCommandRejected
+				}
+			}
 		}
 	} else {
 		// The Ultra TCP relay emits eight zero bytes followed by six bytes of
@@ -238,6 +310,11 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		return nil, err
 	}
 	return reader, nil
+}
+
+func validLegacyStreamFinal(final []byte) bool {
+	return len(final) == 10 && final[0] == 4 && final[1] == 1 &&
+		final[3] == 0 && final[4] == 1
 }
 
 func xorOne(value []byte) []byte {
@@ -567,6 +644,102 @@ func makeDatagramEnvelope(mode byte, sid []byte, targetIP string, targetPort int
 	return packet, nil
 }
 
+// decodeLocalUDPRequest accepts the standard Shadowsocks/SOCKS5 UDP request
+// envelope used by local clients. Raw UDP callers (for example game clients
+// using a fixed forward target) remain supported and are returned unchanged.
+// The bool pair is (isSocksUDP, valid). A packet that does not look like a
+// SOCKS5 envelope is intentionally treated as raw data for compatibility.
+func decodeLocalUDPRequest(packet []byte) ([]byte, bool, bool) {
+	if len(packet) < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
+		return packet, false, true
+	}
+	offset := 3
+	addressType := packet[offset]
+	offset++
+	switch addressType {
+	case 1: // IPv4
+		if len(packet) < offset+4+2 {
+			return packet, false, true
+		}
+		offset += 4
+	case 3: // domain name
+		if len(packet) < offset+1 {
+			return packet, false, true
+		}
+		length := int(packet[offset])
+		if length == 0 || len(packet) < offset+1+length+2 {
+			return packet, false, true
+		}
+		offset += 1 + length
+	case 4: // IPv6
+		if len(packet) < offset+16+2 {
+			return packet, false, true
+		}
+		offset += 16
+	default:
+		// A raw game datagram can begin with zero bytes. Only classify a
+		// syntactically recognizable ATYP as a SOCKS packet.
+		return packet, false, true
+	}
+	if len(packet) <= offset+2 {
+		return nil, true, false
+	}
+	offset += 2 // destination port
+	// The Ultra provider forwards the Shadowsocks wire payload unchanged.
+	// Keep ATYP/address/port and remove only the local SOCKS RSV/FRAG bytes.
+	return packet[3:], true, true
+}
+
+func makeLocalUDPResponse(targetIP string, targetPort int, payload []byte) ([]byte, error) {
+	var buffer bytes.Buffer
+	buffer.Write([]byte{0, 0, 0}) // RSV, FRAG
+	if err := appendAddress(&buffer, targetIP, targetPort); err != nil {
+		return nil, err
+	}
+	buffer.Write(payload)
+	return buffer.Bytes(), nil
+}
+
+func makeLocalUDPResponseFromDatagram(info datagramResponseInfo, payload []byte) ([]byte, error) {
+	var buffer bytes.Buffer
+	buffer.Write([]byte{0, 0, 0}) // RSV, FRAG
+	switch info.addressType {
+	case 1:
+		if len(info.address) != net.IPv4len {
+			return nil, errors.New("local UDP response address invalid")
+		}
+		buffer.WriteByte(1)
+		buffer.Write(info.address)
+	case 3:
+		if len(info.address) == 0 || len(info.address) > 255 {
+			return nil, errors.New("local UDP response domain invalid")
+		}
+		buffer.WriteByte(3)
+		buffer.WriteByte(byte(len(info.address)))
+		buffer.Write(info.address)
+	case 4:
+		if len(info.address) != net.IPv6len {
+			return nil, errors.New("local UDP response address invalid")
+		}
+		buffer.WriteByte(4)
+		buffer.Write(info.address)
+	default:
+		return nil, errors.New("local UDP response address type invalid")
+	}
+	var port [2]byte
+	binary.BigEndian.PutUint16(port[:], info.port)
+	buffer.Write(port[:])
+	buffer.Write(payload)
+	return buffer.Bytes(), nil
+}
+
+func unwrapNestedLocalUDPResponse(info datagramResponseInfo, payload []byte) (datagramResponseInfo, []byte) {
+	if nested, valid := decodeDatagramAddressFirst(payload); valid && len(nested.payload) > 0 {
+		return nested, nested.payload
+	}
+	return info, payload
+}
+
 type datagramResponseInfo struct {
 	addressType byte
 	address     []byte
@@ -574,42 +747,53 @@ type datagramResponseInfo struct {
 	payload     []byte
 }
 
-// decodeDatagramResponse parses the provider's SOCKS UDP response envelope.
-// The native relay does not echo the client-side SID: the connected UDP socket
-// is the association boundary, while the response itself is a standard SOCKS
-// UDP frame (RSV/FRAG/ATYP/address/port/payload).
+// decodeDatagramResponse parses either provider response representation. The
+// reference relay normally returns a SOCKS UDP frame with RSV/FRAG, while a
+// Shadowsocks `none` target returns the address-first wire form (ATYP/address/
+// port/payload). Both are bound to the connected provider socket.
 func decodeDatagramResponse(packet []byte) (datagramResponseInfo, bool) {
-	if len(packet) < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
+	if len(packet) >= 4 && packet[0] == 0 && packet[1] == 0 && packet[2] == 0 {
+		info, valid := decodeDatagramAddressFirst(packet[3:])
+		if valid {
+			return info, true
+		}
+	}
+	return decodeDatagramAddressFirst(packet)
+}
+
+func decodeDatagramAddressFirst(packet []byte) (datagramResponseInfo, bool) {
+	if len(packet) < 1 {
 		return datagramResponseInfo{}, false
 	}
-	info := datagramResponseInfo{addressType: packet[3]}
+	info := datagramResponseInfo{addressType: packet[0]}
+	offset := 1
 	var addressEnd int
 	switch info.addressType {
 	case 1: // IPv4
-		if len(packet) < 10 {
+		if len(packet) < offset+4+2 {
 			return datagramResponseInfo{}, false
 		}
-		addressEnd = 8
-		info.address = packet[4:addressEnd]
+		addressEnd = offset + 4
+		info.address = packet[offset:addressEnd]
 	case 3: // domain name
-		if len(packet) < 5 {
+		if len(packet) < offset+1 {
 			return datagramResponseInfo{}, false
 		}
-		domainLength := int(packet[4])
+		domainLength := int(packet[offset])
 		if domainLength == 0 {
 			return datagramResponseInfo{}, false
 		}
-		addressEnd = 5 + domainLength
+		addressEnd = offset + 1 + domainLength
 		if len(packet) < addressEnd+2 {
 			return datagramResponseInfo{}, false
 		}
-		info.address = packet[5:addressEnd]
+		info.address = packet[offset+1 : addressEnd]
 	case 4: // IPv6
-		if len(packet) < 22 {
+		if len(packet) < offset+16+2 {
 			return datagramResponseInfo{}, false
 		}
-		addressEnd = 20
-		info.address = packet[4:addressEnd]
+		addressEnd = offset + 16
+		info.address = packet[offset:addressEnd]
 	default:
 		return datagramResponseInfo{}, false
 	}
@@ -664,6 +848,10 @@ func sendDatagramKeepalive(session *DatagramSession) error {
 	}
 	_, err = session.remote.Write(packet)
 	return err
+}
+
+func logLeaseSelectionStart(forwardID, candidateCount int) {
+	log.Printf("ultra lease selection started forward_id=%d candidates=%d", forwardID, candidateCount)
 }
 
 func openDatagramControl(lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
@@ -886,6 +1074,8 @@ func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *P
 type udpAssociation struct {
 	session          *DatagramSession
 	client           *net.UDPAddr
+	socksUDP         bool
+	localModeSet     bool
 	lastSeen         time.Time
 	lastUserActivity time.Time
 	packetCnt        int
@@ -928,7 +1118,122 @@ type udpWarmSession struct {
 	selectionTier   string
 	started         time.Time
 	keepaliveCancel context.CancelFunc
+	claimed         chan struct{}
 	err             error
+}
+
+// runPersistentWarmWorker keeps one unclaimed UDP association ready for the
+// first local client. A failed keepalive invalidates the association and
+// causes a fresh handshake; a claimed session is handed to the association
+// owner, which starts its own keepalive loop.
+func runPersistentWarmWorker(
+	ctx context.Context,
+	sessions chan udpWarmSession,
+	factory func() (udpWarmSession, error),
+	keepalive func(*DatagramSession) error,
+	interval time.Duration,
+	retryDelay time.Duration,
+) {
+	if interval <= 0 {
+		interval = safeUDPKeepaliveInterval
+	}
+	if retryDelay <= 0 {
+		retryDelay = time.Second
+	}
+	if keepalive == nil {
+		keepalive = func(*DatagramSession) error { return nil }
+	}
+	waitRetry := func() bool {
+		timer := time.NewTimer(retryDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+	removeWarm := func(expected *DatagramSession) {
+		select {
+		case stale := <-sessions:
+			if stale.session == expected {
+				if stale.keepaliveCancel != nil {
+					stale.keepaliveCancel()
+				}
+				if stale.session != nil {
+					stale.session.Close()
+				}
+				return
+			}
+			select {
+			case sessions <- stale:
+			default:
+				if stale.session != nil {
+					stale.session.Close()
+				}
+			}
+		default:
+		}
+	}
+
+	for ctx.Err() == nil {
+		warm, err := factory()
+		if err != nil || warm.session == nil {
+			if !waitRetry() {
+				return
+			}
+			continue
+		}
+		warm.claimed = make(chan struct{})
+		keepaliveContext, keepaliveCancel := context.WithCancel(ctx)
+		warm.keepaliveCancel = keepaliveCancel
+		failed := make(chan struct{}, 1)
+		go func(session *DatagramSession) {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-keepaliveContext.Done():
+					return
+				case <-ticker.C:
+					if err := keepalive(session); err != nil {
+						select {
+						case failed <- struct{}{}:
+						default:
+						}
+						return
+					}
+				}
+			}
+		}(warm.session)
+
+		select {
+		case sessions <- warm:
+		case <-ctx.Done():
+			keepaliveCancel()
+			warm.session.Close()
+			return
+		}
+		select {
+		case <-warm.claimed:
+			// The consumer now owns this session. Keep arming a replacement
+			// so later local associations also start warm.
+			keepaliveCancel()
+			continue
+		case <-failed:
+			keepaliveCancel()
+			removeWarm(warm.session)
+			warm.session.Close()
+			if !waitRetry() {
+				return
+			}
+		case <-ctx.Done():
+			keepaliveCancel()
+			removeWarm(warm.session)
+			warm.session.Close()
+			return
+		}
+	}
 }
 
 type udpRuntimeLimits struct {
@@ -1011,10 +1316,8 @@ func serveUDPOnConn(
 	associations := make(map[string]*udpAssociation)
 	const maxAssociationPackets = 100000
 	const associationIdle = 2 * time.Minute
-	const warmSessionExpiry = associationIdle
 	prewarmEnabled := config.UDPPrewarm && stringsContainsUDP(strings.ToLower(strings.TrimSpace(config.Transport)))
 	var associationMu sync.Mutex
-	warmClaimed := false
 	warmSessions := make(chan udpWarmSession, 1)
 	var warmWorker sync.WaitGroup
 	warmContext, cancelWarm := context.WithCancel(ctx)
@@ -1091,15 +1394,35 @@ func serveUDPOnConn(
 				if isDatagramKeepaliveResponse(readBuffer[:responseCount], nil) {
 					continue
 				}
-				payload, valid := unwrapDatagramForSession(readBuffer[:responseCount])
-				if !valid || len(payload) == 0 {
+				info, valid := decodeDatagramResponse(readBuffer[:responseCount])
+				if !valid {
+					continue
+				}
+				payload := info.payload
+				if len(payload) == 0 {
 					continue
 				}
 				if store.Limiter().Consume(len(payload)) != nil {
 					continue
 				}
 				status.AddUsage(len(payload), 0)
-				_, _ = local.WriteToUDP(payload, association.client)
+				association.sessionMu.Lock()
+				localSocksUDP := association.socksUDP
+				association.sessionMu.Unlock()
+				response := payload
+				if localSocksUDP {
+					// A `none` Shadowsocks target can return its address-first
+					// response inside the relay's outer response envelope. Unwrap
+					// that inner frame before rebuilding the local SOCKS header;
+					// raw UDP associations must continue to receive opaque payloads.
+					info, payload = unwrapNestedLocalUDPResponse(info, payload)
+					var responseErr error
+					response, responseErr = makeLocalUDPResponseFromDatagram(info, payload)
+					if responseErr != nil {
+						continue
+					}
+				}
+				_, _ = local.WriteToUDP(response, association.client)
 			}
 		}()
 
@@ -1222,112 +1545,43 @@ func serveUDPOnConn(
 			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started})
 		}()
 	}
-	startWarmWait := func(key string, association *udpAssociation, lease ProviderLease) {
-		go func() {
-			select {
-			case warm := <-warmSessions:
-				if warm.err != nil || warm.session == nil {
-					startNativeSetup(key, association, lease)
-					return
-				}
-				lease.wipe()
-				attachSession(key, association, warm)
-			case <-warmContext.Done():
-				lease.wipe()
-				closeAssociation(key, association)
-			}
-		}()
-	}
 	if prewarmEnabled {
 		warmWorker.Add(1)
 		go func() {
 			defer warmWorker.Done()
-			select {
-			case setupSlots <- struct{}{}:
-			case <-warmContext.Done():
-				return
-			}
-			snapshot, ok := store.Snapshot()
-			if !ok {
-				<-setupSlots
-				select {
-				case warmSessions <- udpWarmSession{err: errors.New("udp prewarm policy unavailable")}:
-				case <-warmContext.Done():
-				}
-				return
-			}
-			lease := snapshot.Lease
-			selectionRef := lease.SelectionRef
-			selectionTier := lease.SelectionTier
-			started := time.Now()
-			next, armErr := armDatagram(lease, probeAssociationTimeout(config))
-			<-setupSlots
-			lease.wipe()
-			if armErr != nil {
-				status.AddUDPSetupFailure()
-				select {
-				case warmSessions <- udpWarmSession{err: armErr}:
-				case <-warmContext.Done():
-				}
-				return
-			}
-			sessionContext, sessionCancel := context.WithCancel(warmContext)
-			warm := udpWarmSession{
-				session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started,
-				keepaliveCancel: sessionCancel,
-			}
-			interval := resolveUDPKeepaliveInterval(config)
-			if interval > 0 {
-				go func() {
-					ticker := time.NewTicker(interval)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-sessionContext.Done():
-							return
-						case <-ticker.C:
-							if err := sendDatagramKeepalive(next); err != nil {
-								sessionCancel()
-								return
-							}
-						}
-					}
-				}()
-			}
-			if warmContext.Err() != nil {
-				next.Close()
-				return
-			}
-			select {
-			case warmSessions <- warm:
-			case <-warmContext.Done():
-				sessionCancel()
-				next.Close()
-				return
-			}
-			timer := time.NewTimer(warmSessionExpiry)
-			defer timer.Stop()
-			select {
-			case <-warmContext.Done():
-				sessionCancel()
-				closeWarmSession()
-			case <-timer.C:
-				sessionCancel()
-				select {
-				case stale := <-warmSessions:
-					if stale.keepaliveCancel != nil {
-						stale.keepaliveCancel()
-					}
-					if stale.session != nil {
-						stale.session.Close()
-					}
+			runPersistentWarmWorker(
+				warmContext,
+				warmSessions,
+				func() (udpWarmSession, error) {
 					select {
-					case warmSessions <- udpWarmSession{err: errors.New("udp prewarm expired")}:
-					default:
+					case setupSlots <- struct{}{}:
+					case <-warmContext.Done():
+						return udpWarmSession{}, warmContext.Err()
 					}
-				default:
-				}
-			}
+					snapshot, ok := store.Snapshot()
+					if !ok {
+						<-setupSlots
+						return udpWarmSession{}, errors.New("udp prewarm policy unavailable")
+					}
+					lease := snapshot.Lease
+					selectionRef := lease.SelectionRef
+					selectionTier := lease.SelectionTier
+					started := time.Now()
+					next, armErr := armDatagram(lease, probeAssociationTimeout(config))
+					<-setupSlots
+					lease.wipe()
+					if armErr != nil {
+						status.AddUDPSetupFailure()
+						return udpWarmSession{}, armErr
+					}
+					return udpWarmSession{
+						session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started,
+					}, nil
+				},
+				sendDatagramKeepalive,
+				resolveUDPKeepaliveInterval(config),
+				time.Second,
+			)
 		}()
 	}
 	publishAssociationCounts()
@@ -1370,7 +1624,13 @@ func serveUDPOnConn(
 			}
 			return readErr
 		}
-		if err := store.Limiter().Consume(count); err != nil {
+		payload, packetIsSocksUDP, packetValid := decodeLocalUDPRequest(buffer[:count])
+		if !packetValid {
+			status.UpdateError("udp_packet_invalid")
+			continue
+		}
+		payloadCount := len(payload)
+		if err := store.Limiter().Consume(payloadCount); err != nil {
 			status.UpdateError("policy_stopped")
 			continue
 		}
@@ -1397,12 +1657,20 @@ func serveUDPOnConn(
 				continue
 			}
 			association.sessionMu.Lock()
+			modeSet := association.localModeSet
+			modeMatches := !modeSet || association.socksUDP == packetIsSocksUDP
 			hasSession := association.session != nil
 			association.sessionMu.Unlock()
+			if !modeMatches {
+				associationMu.Unlock()
+				lease.wipe()
+				status.UpdateError("udp_packet_mode_changed")
+				continue
+			}
 			if !hasSession {
 				pending = true
 				if len(association.pending) < queuePackets {
-					association.pending = append(association.pending, append([]byte(nil), buffer[:count]...))
+					association.pending = append(association.pending, append([]byte(nil), payload...))
 				} else {
 					queueDropped = true
 				}
@@ -1421,9 +1689,13 @@ func serveUDPOnConn(
 			now := time.Now()
 			association = &udpAssociation{
 				client: &clientCopy, lastSeen: now, lastUserActivity: now, packetCnt: 1,
-				pending:      [][]byte{append([]byte(nil), buffer[:count]...)},
+				pending:      [][]byte{append([]byte(nil), payload...)},
 				setupStarted: true,
 			}
+			association.sessionMu.Lock()
+			association.localModeSet = true
+			association.socksUDP = packetIsSocksUDP
+			association.sessionMu.Unlock()
 			var evicted *udpAssociation
 			associationMu.Lock()
 			if len(associations) >= maxAssociations {
@@ -1445,20 +1717,28 @@ func serveUDPOnConn(
 				evicted.close()
 			}
 			publishAssociationCounts()
-			claimWarm := false
-			associationMu.Lock()
-			if prewarmEnabled && !warmClaimed {
-				warmClaimed = true
-				claimWarm = true
-			}
-			associationMu.Unlock()
-			if claimWarm {
-				startWarmWait(key, association, lease)
-				lease = ProviderLease{}
+			if prewarmEnabled {
+				// Claim only an already-armed warm session. During a retry gap,
+				// use an isolated native setup so this client's first packet is
+				// not held behind the warm worker.
+				select {
+				case warm := <-warmSessions:
+					if warm.err != nil || warm.session == nil {
+						startNativeSetup(key, association, lease)
+					} else {
+						if warm.claimed != nil {
+							close(warm.claimed)
+						}
+						lease.wipe()
+						attachSession(key, association, warm)
+					}
+				default:
+					startNativeSetup(key, association, lease)
+				}
 			} else {
 				startNativeSetup(key, association, lease)
-				lease = ProviderLease{}
 			}
+			lease = ProviderLease{}
 			continue
 		}
 		if needsNativeSetup {
@@ -1485,7 +1765,7 @@ func serveUDPOnConn(
 			continue
 		}
 		current.writeMu.Lock()
-		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetIP, targetPort, buffer[:count])
+		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetIP, targetPort, payload)
 		if packetErr == nil {
 			if _, writeErr := session.remote.Write(packet); writeErr != nil {
 				current.writeMu.Unlock()

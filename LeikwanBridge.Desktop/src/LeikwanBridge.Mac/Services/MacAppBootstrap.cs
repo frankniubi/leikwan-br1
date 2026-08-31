@@ -94,7 +94,7 @@ public static class MacAppBootstrap
         var polling = new ConfigPollingService(api, runtime, state, MacForwardPolicy.Instance);
         var heartbeat = new HeartbeatService(api, state, platformIdentity: identity);
         var health = new HealthCheckService(supervisor, runtime, state, config: config);
-        var diagnostics = new ClientDiagnosticsService(supervisor, config);
+        var diagnostics = new ClientDiagnosticsService(supervisor, config, logDirectory: paths.LogDirectory);
         return new DesktopRuntimeSession(
             api,
             polling,

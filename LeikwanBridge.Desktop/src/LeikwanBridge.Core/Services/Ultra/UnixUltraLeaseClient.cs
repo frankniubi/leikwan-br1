@@ -10,6 +10,7 @@ namespace LeikwanBridge.Core.Services.Ultra;
 public sealed class UnixUltraLeaseClient
 {
     public const int MaxFrameBytes = 64 * 1024;
+    public static readonly TimeSpan BatchTimeout = TimeSpan.FromSeconds(70);
     private readonly TimeSpan _timeout;
 
     public UnixUltraLeaseClient(TimeSpan? timeout = null)
@@ -68,7 +69,7 @@ public sealed class UnixUltraLeaseClient
             body.CopyTo(frame, 4);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(leases.Count == 1 ? _timeout : TimeSpan.FromSeconds(50));
+            timeout.CancelAfter(leases.Count == 1 ? _timeout : BatchTimeout);
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
             await using var stream = new NetworkStream(socket, ownsSocket: false);

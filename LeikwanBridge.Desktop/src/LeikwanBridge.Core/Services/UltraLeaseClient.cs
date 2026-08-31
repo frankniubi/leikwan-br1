@@ -10,6 +10,7 @@ namespace LeikwanBridge.Core.Services;
 public sealed class UltraLeaseClient
 {
     public const int MaxFrameBytes = 64 * 1024;
+    public static readonly TimeSpan BatchTimeout = TimeSpan.FromSeconds(70);
 
     public static string PipeName(int forwardId) => $"leikwan-ultra-forward-{forwardId}";
 
@@ -54,7 +55,7 @@ public sealed class UltraLeaseClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             // Candidate batches allow association setup, the 30-second probe,
             // and response/write margin; single-lease delivery remains short.
-            timeout.CancelAfter(TimeSpan.FromSeconds(leases.Count > 1 ? 50 : 2));
+            timeout.CancelAfter(leases.Count > 1 ? BatchTimeout : TimeSpan.FromSeconds(2));
             await using var pipe = new NamedPipeClientStream(
                 ".", PipeName(forwardId), PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(timeout.Token);

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -156,7 +155,7 @@ func (server *ControlServer) createPipe() (syscall.Handle, error) {
 }
 
 func newPipeSecurityAttributes() (*windowsSecurityAttributes, func(), error) {
-	sddl, err := syscall.UTF16PtrFromString(controlPipeSecurityDescriptor())
+	sddl, err := syscall.UTF16PtrFromString(controlPipeSecurityDescriptorForCurrentUser())
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -219,7 +218,7 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		} else if len(leases) > 1 && !server.config.AutoSelect {
 			err = ErrLeaseInvalid
 		} else if server.config.AutoSelect && len(leases) > 1 {
-			log.Printf("Establishing Connection with the Server ...")
+			logLeaseSelectionStart(policy.ForwardID, len(leases))
 			remaining := time.Until(deadline) - selectionResponseGrace
 			if remaining <= 0 {
 				err = context.DeadlineExceeded

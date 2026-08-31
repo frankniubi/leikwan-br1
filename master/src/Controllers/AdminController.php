@@ -7,6 +7,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\LeigodActivationGateContext;
 use Leikwan\Master\Support\LeigodNormalizationActivationContext;
@@ -149,7 +150,8 @@ final class AdminController extends BaseController
         }
 
         $clients = $this->db->fetchAll(
-            'SELECT id, name, display_host, agent_version, last_sync_at, last_diag_status, last_diag_run_at, last_diag_error, last_diag_result_json
+            'SELECT id, name, display_host, agent_version, last_sync_at, last_diag_status, last_diag_run_at, last_diag_error, last_diag_result_json,
+                    debug_collection_status, debug_collection_expires_at, debug_collection_bytes
              FROM clients
              ORDER BY updated_at DESC, id DESC
              LIMIT 50'
@@ -204,6 +206,7 @@ final class AdminController extends BaseController
                 <td>' . $this->escape((string) ($client['last_diag_status'] ?? 'not run')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</td>
+                <td>' . $this->escape((string) ($client['debug_collection_status'] ?? 'closed')) . ' / ' . (int) ($client['debug_collection_bytes'] ?? 0) . ' bytes</td>
                 <td>' . $this->renderClientDiagnosticsHtml($client) . '</td>
             </tr>';
         }
@@ -254,10 +257,10 @@ final class AdminController extends BaseController
             </div>
             <div class="grid one" style="margin-top:20px;">
               <section class="card">
-                <h3>Client Diagnostics</h3>
+                <h3>Client Diagnostics</h3><p class="muted">Debug collection is private, chunked, authenticated, and capped at 100 MiB per request.</p>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>Agent</th><th>Last Sync</th><th>Diag Status</th><th>Last Run</th><th>Error</th><th>Details</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>Agent</th><th>Last Sync</th><th>Diag Status</th><th>Last Run</th><th>Error</th><th>Debug Collection</th><th>Details</th></tr></thead>
                     <tbody>' . $clientRows . '</tbody>
                   </table>
                 </div>
@@ -4482,6 +4485,7 @@ final class AdminController extends BaseController
             if ($client === null) {
                 throw new ApiException('client_not_found', 404);
             }
+            $debugCollection = (new DebugCollectionStore($this->db, $this->config))->create($clientId);
             $token = bin2hex(random_bytes(24));
             $this->db->execute(
                 'UPDATE clients
@@ -4499,7 +4503,7 @@ final class AdminController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Diagnostics requested. Wait for the client-agent to sync and refresh this page.');
+            SessionAuth::flash('success', 'Diagnostics requested. Debug collection expires at ' . (string) ($debugCollection['expires_at'] ?? '') . '.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request diagnostics: ' . $throwable->getMessage());
         }

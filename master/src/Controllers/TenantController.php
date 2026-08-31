@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\ForwardLineApiContract;
@@ -2434,6 +2435,7 @@ final class TenantController extends BaseController
             if ($client === null) {
                 throw new ApiException('client_not_found', 404);
             }
+            $debugCollection = (new DebugCollectionStore($this->db, $this->config))->create($clientId);
             $token = bin2hex(random_bytes(24));
             $this->db->execute(
                 'UPDATE clients
@@ -2451,7 +2453,7 @@ final class TenantController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Diagnostics requested. Wait for the client-agent to sync and refresh this page.');
+            SessionAuth::flash('success', 'Diagnostics requested. Debug collection expires at ' . (string) ($debugCollection['expires_at'] ?? '') . '.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request diagnostics: ' . $throwable->getMessage());
         }

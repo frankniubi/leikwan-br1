@@ -149,7 +149,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             var leaseDelivered = (leases.Count == 1
                 ? _leaseSender(socketPath, forward.ForwardId, leases[0], CancellationToken.None)
                 : _leaseBatchSender(socketPath, forward.ForwardId, leases, CancellationToken.None))
-                .WaitAsync(TimeSpan.FromSeconds(50))
+                .WaitAsync(UnixUltraLeaseClient.BatchTimeout + TimeSpan.FromSeconds(5))
                 .GetAwaiter()
                 .GetResult();
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);

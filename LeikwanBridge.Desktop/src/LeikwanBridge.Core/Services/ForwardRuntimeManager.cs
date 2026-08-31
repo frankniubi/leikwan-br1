@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services.Platform;
@@ -21,6 +22,7 @@ public class ForwardRuntimeManager : IDisposable
     private readonly Func<string, bool> _binaryExists;
     private readonly Func<int, bool> _portListeningProbe;
     private readonly IUltraRuntimeHost _ultraRuntimeHost;
+    private readonly ConcurrentDictionary<int, object> _forwardLocks = new();
 
     public ForwardRuntimeManager(
         AgentConfig config,
@@ -57,9 +59,12 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void ApplyForward(ForwardConfig forward, string? contractSignature, string applyReason)
     {
-        var applied = _stateManager.LoadApplied();
-        applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
-        ApplyForwardCore(forward, previousState, contractSignature, applyReason);
+        lock (LockFor(forward.ForwardId))
+        {
+            var applied = _stateManager.LoadApplied();
+            applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
+            ApplyForwardCore(forward, previousState, contractSignature, applyReason);
+        }
     }
 
     public virtual void ApplyAuthoritativeAgentConfig(JsonElement? agentConfigJson)
@@ -158,9 +163,9 @@ public class ForwardRuntimeManager : IDisposable
             _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
         }
 
-        // Save applied state
-        var applied = _stateManager.LoadApplied();
-        applied[forwardId.ToString()] = new AppliedForwardState
+        // Save only this forward atomically; sibling forward applies may be
+        // running concurrently during a config reconciliation.
+        var state = new AppliedForwardState
         {
             ForwardId = forwardId,
             Mode = mode,
@@ -178,7 +183,7 @@ public class ForwardRuntimeManager : IDisposable
             UserStopped = false,
             UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
         };
-        _stateManager.SaveApplied(applied);
+        _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
     }
 
     private void ApplyUltraForward(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
@@ -230,35 +235,36 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void StopForward(int forwardId)
     {
-        Log.Information("stopping forward {ForwardId}", forwardId);
-        _ultraRuntimeHost.Stop(forwardId);
-
-        var applied = _stateManager.LoadApplied();
-        if (!applied.TryGetValue(forwardId.ToString(), out var state))
+        lock (LockFor(forwardId))
         {
-            state = new AppliedForwardState
-            {
-                ForwardId = forwardId,
-            };
-        }
+            Log.Information("stopping forward {ForwardId}", forwardId);
+            _ultraRuntimeHost.Stop(forwardId);
 
-        state.ProcessIds = [];
-        state.UserStopped = true;
-        state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        applied[forwardId.ToString()] = state;
-        _stateManager.SaveApplied(applied);
+            var applied = _stateManager.LoadApplied();
+            if (!applied.TryGetValue(forwardId.ToString(), out var state))
+            {
+                state = new AppliedForwardState { ForwardId = forwardId };
+            }
+
+            state.ProcessIds = [];
+            state.UserStopped = true;
+            state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
+        }
     }
 
     public virtual void StopForwardForPolicy(int forwardId)
     {
-        StopForward(forwardId);
-        var applied = _stateManager.LoadApplied();
-        if (!applied.TryGetValue(forwardId.ToString(), out var state))
-            return;
-        state.UserStopped = false;
-        state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        applied[forwardId.ToString()] = state;
-        _stateManager.SaveApplied(applied);
+        lock (LockFor(forwardId))
+        {
+            StopForward(forwardId);
+            var applied = _stateManager.LoadApplied();
+            if (!applied.TryGetValue(forwardId.ToString(), out var state))
+                return;
+            state.UserStopped = false;
+            state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
+        }
     }
 
     public virtual void RestartForward(ForwardConfig forward)
@@ -268,39 +274,45 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void RestartForward(ForwardConfig forward, bool force, string reason)
     {
-        var applied = _stateManager.LoadApplied();
-        applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
+        lock (LockFor(forward.ForwardId))
+        {
+            var applied = _stateManager.LoadApplied();
+            applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
 
-        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-        var contractSignature = ComputeContractSignature(effectiveForward);
-        var signatureMatches = previousState != null
-            && string.Equals(previousState.ContractSignature, contractSignature, StringComparison.Ordinal);
-        if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
-            return;
+            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            var contractSignature = ComputeContractSignature(effectiveForward);
+            var signatureMatches = previousState != null
+                && string.Equals(previousState.ContractSignature, contractSignature, StringComparison.Ordinal);
+            if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
+                return;
 
-        ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
+            ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
+        }
     }
 
     public virtual bool RefreshUltraLease(ForwardConfig forward)
     {
-        var leases = forward.RuntimeLeases.Count > 0
-            ? forward.RuntimeLeases.ToList()
-            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
-        var policy = forward.UltraAccess;
-        try
+        lock (LockFor(forward.ForwardId))
         {
-            if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
-                || leases.Count == 0 || policy is null
-                || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
-                || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
-                return false;
-            return _ultraRuntimeHost.Refresh(forward, leases);
-        }
-        finally
-        {
-            DisposeLeases(leases);
-            forward.RuntimeLease = null;
-            forward.RuntimeLeases.Clear();
+            var leases = forward.RuntimeLeases.Count > 0
+                ? forward.RuntimeLeases.ToList()
+                : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+            var policy = forward.UltraAccess;
+            try
+            {
+                if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                    || leases.Count == 0 || policy is null
+                    || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
+                    || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
+                    return false;
+                return _ultraRuntimeHost.Refresh(forward, leases);
+            }
+            finally
+            {
+                DisposeLeases(leases);
+                forward.RuntimeLease = null;
+                forward.RuntimeLeases.Clear();
+            }
         }
     }
 
@@ -315,6 +327,9 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     public void Dispose() => _supervisor.Dispose();
+
+    private object LockFor(int forwardId)
+        => _forwardLocks.GetOrAdd(forwardId, static _ => new object());
 
     private static void DisposeLeases(IEnumerable<UltraLease> leases)
     {

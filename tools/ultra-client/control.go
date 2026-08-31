@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -181,7 +180,7 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		} else if len(leases) > 1 && !server.config.AutoSelect {
 			err = ErrLeaseInvalid
 		} else if server.config.AutoSelect && len(leases) > 1 {
-			log.Printf("Establishing Connection with the Server ...")
+			logLeaseSelectionStart(policy.ForwardID, len(leases))
 			remaining := time.Until(deadline) - selectionResponseGrace
 			if remaining <= 0 {
 				err = context.DeadlineExceeded

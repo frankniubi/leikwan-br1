@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import concurrent.futures
 import email.message
 import email.utils
 import contextlib
@@ -26,12 +28,13 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.30.6"
+AGENT_VERSION = "2026.08.31.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -50,6 +53,202 @@ DEFAULT_MANAGED_CONFIG = {
     # one best path and keeps it sticky for the policy generation.
     "ultra_selection_mode": "auto",
 }
+
+DEBUG_LOG_CHUNK_BYTES = 256 * 1024
+DEBUG_LOG_BYTE_LIMIT = 100 * 1024 * 1024
+DEBUG_LOG_MAX_FILES = 32
+
+
+def redact_debug_text(value: str) -> str:
+    """Remove bearer material and credential-shaped values before upload."""
+    text = str(value or "").replace("\x00", "")
+    text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(
+        r"(?i)(\b(?:password|passwd|secret|token|credential|session[_-]?ticket|private[_-]?key|api[_-]?key)\b\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:token|password|secret|credential|key)=)[^&\s]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    # Keep logs line-oriented and bounded; control characters can corrupt the
+    # JSON transport or terminal log viewers.
+    text = "\n".join("".join(ch for ch in line if ch in "\t\r" or ord(ch) >= 0x20) for line in text.splitlines())
+    return text
+
+
+def debug_log_paths(config: dict, state_dir: pathlib.Path) -> list[pathlib.Path]:
+    configured = config.get("debug_log_paths") if isinstance(config, dict) else None
+    roots: list[pathlib.Path] = []
+    if isinstance(configured, list):
+        for raw in configured[:DEBUG_LOG_MAX_FILES]:
+            try:
+                candidate = pathlib.Path(str(raw or "")).expanduser()
+            except (TypeError, ValueError):
+                continue
+            if candidate.is_file():
+                roots.append(candidate)
+    if not roots:
+        roots.extend([
+            state_dir.parent / "logs",
+            state_dir / "logs",
+            pathlib.Path("/var/log/leikwan"),
+            pathlib.Path("/var/log/leikwan-client-agent.log"),
+            pathlib.Path(__file__).with_name("logs"),
+        ])
+    files: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        candidates = [root] if root.is_file() else list(root.glob("**/*")) if root.is_dir() else []
+        for path in candidates:
+            if len(files) >= DEBUG_LOG_MAX_FILES or not path.is_file():
+                continue
+            if path.suffix.lower() not in {".log", ".txt", ".out", ".err"}:
+                continue
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    files.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    return files[:DEBUG_LOG_MAX_FILES]
+
+
+def debug_journal_bytes() -> bytes:
+    """Read a bounded service journal when systemd is the configured logger."""
+    journalctl = shutil.which("journalctl")
+    if not journalctl:
+        return b""
+    try:
+        result = subprocess.run(
+            [journalctl, "-u", "leikwan-client-agent.service", "-n", "2000", "--no-pager", "-o", "short-iso"],
+            capture_output=True,
+            check=False,
+            timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return b""
+    if result.returncode not in (0, 1):
+        return b""
+    return bytes(result.stdout or b"")[:DEBUG_LOG_BYTE_LIMIT]
+
+
+def upload_debug_collection(
+    master: str,
+    token: str,
+    client_meta: dict,
+    state_dir: pathlib.Path,
+    config: dict | None = None,
+    post=None,
+) -> dict:
+    """Upload a resumable, sanitized collection without blocking sync_once."""
+    collection = client_meta.get("debug_collection") if isinstance(client_meta, dict) else None
+    if not isinstance(collection, dict):
+        return {"status": "not_requested", "chunks": 0, "bytes": 0}
+    uuid = str(collection.get("uuid", "") or "").strip().lower()
+    status = str(collection.get("status", "") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", uuid) or status != "active":
+        return {"status": "inactive", "chunks": 0, "bytes": 0}
+    expires = parse_rfc3339(collection.get("expires_at"))
+    if expires is not None and expires <= time.time():
+        return {"status": "expired", "chunks": 0, "bytes": 0}
+    state_path = state_dir / "debug-upload-state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if not isinstance(state, dict) or state.get("collection_uuid") != uuid:
+        state = {"collection_uuid": uuid, "next_sequence": 0, "files": {}}
+    if state.get("completed") is True:
+        return {"status": "complete", "chunks": 0, "bytes": 0}
+    files_state = state.get("files") if isinstance(state.get("files"), dict) else {}
+    state["files"] = files_state
+    post = post or (lambda payload: http_json_with_headers(
+        "POST",
+        f"{master.rstrip('/')}/api/client/debug/log",
+        token,
+        payload,
+        extra_headers={
+            "x-device-platform": "linux",
+            "x-device-id": str(client_meta.get("current_device_id", "") or ""),
+        },
+    )[0])
+    total_bytes = 0
+    chunks_sent = 0
+    remaining = DEBUG_LOG_BYTE_LIMIT
+
+    def persist() -> None:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        temporary = state_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(state_path)
+
+    def source_iter():
+        for path in debug_log_paths(config or {}, state_dir):
+            if remaining <= 0:
+                return
+            try:
+                with path.open("rb") as handle:
+                    raw = handle.read(remaining)
+            except OSError:
+                continue
+            if raw:
+                yield str(path), raw
+        if remaining > 0:
+            journal = debug_journal_bytes()
+            if journal:
+                yield "journalctl-leikwan-client-agent.log", journal[:remaining]
+
+    for source_path, raw in source_iter():
+        if remaining <= 0:
+            break
+        sanitized = redact_debug_text(raw.decode("utf-8", errors="replace")).encode("utf-8")[:remaining]
+        if not sanitized:
+            continue
+        digest = hashlib.sha256(sanitized).hexdigest()
+        key = source_path
+        previous = files_state.get(key)
+        if isinstance(previous, dict) and previous.get("sha256") == digest:
+            continue
+        source_name = pathlib.Path(source_path).name[:128]
+        for offset in range(0, len(sanitized), DEBUG_LOG_CHUNK_BYTES):
+            chunk = sanitized[offset : offset + DEBUG_LOG_CHUNK_BYTES]
+            sequence = int(state.get("next_sequence", 0) or 0)
+            payload = {
+                "collection_uuid": uuid,
+                "sequence": sequence,
+                "sha256": hashlib.sha256(chunk).hexdigest(),
+                "chunk_base64": base64.b64encode(chunk).decode("ascii"),
+                "source": source_name,
+            }
+            last_error = None
+            for attempt in range(3):
+                try:
+                    response = post(payload)
+                    if not isinstance(response, dict) or response.get("ok") is not True:
+                        raise RuntimeError("debug upload rejected")
+                    last_error = None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    if attempt < 2:
+                        time.sleep(0.5 * (attempt + 1))
+            if last_error is not None:
+                logging.warning("debug log upload paused: %s", last_error)
+                persist()
+                return {"status": "retry_later", "chunks": chunks_sent, "bytes": total_bytes}
+            state["next_sequence"] = sequence + 1
+            chunks_sent += 1
+            total_bytes += len(chunk)
+            remaining -= len(chunk)
+            persist()
+        files_state[key] = {"sha256": digest, "bytes": len(sanitized)}
+        persist()
+    state["completed"] = True
+    persist()
+    return {"status": "complete", "chunks": chunks_sent, "bytes": total_bytes}
 
 
 def parse_rfc3339(value: object) -> float | None:
@@ -789,10 +988,59 @@ class ClientAgent:
         self.invalid_forward_log_after: dict[int, float] = {}
         self.self_leg_probe_cache: dict[str, dict] = {}
         self._cfwg_latency_watchdog = None
+        self._applied_state_lock = threading.RLock()
+        self._forward_locks: dict[int, threading.RLock] = {}
+        self._forward_locks_guard = threading.Lock()
+        self._debug_upload_lock = threading.Lock()
+        self._debug_upload_thread: threading.Thread | None = None
         logging.basicConfig(
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
         )
+
+    def _forward_lock(self, forward_id: int) -> threading.RLock:
+        if not hasattr(self, "_forward_locks_guard"):
+            self._forward_locks_guard = threading.Lock()
+        if not hasattr(self, "_forward_locks"):
+            self._forward_locks = {}
+        with self._forward_locks_guard:
+            return self._forward_locks.setdefault(int(forward_id), threading.RLock())
+
+    def _save_applied_entry(self, forward_id: int, entry: dict) -> None:
+        if not hasattr(self, "_applied_state_lock"):
+            self._applied_state_lock = threading.RLock()
+        with self._applied_state_lock:
+            applied = self.load_applied()
+            applied[str(forward_id)] = entry
+            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def schedule_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
+        """Start at most one daemon uploader; config sync remains non-blocking."""
+        if not isinstance(client_meta, dict) or not isinstance(client_meta.get("debug_collection"), dict):
+            return
+        if not hasattr(self, "_debug_upload_lock"):
+            self._debug_upload_lock = threading.Lock()
+        if not hasattr(self, "_debug_upload_thread"):
+            self._debug_upload_thread = None
+        with self._debug_upload_lock:
+            if self._debug_upload_thread is not None and self._debug_upload_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._run_debug_log_upload,
+                args=(master, token, dict(client_meta)),
+                name="debug-log-upload",
+                daemon=True,
+            )
+            self._debug_upload_thread = thread
+            thread.start()
+
+    def _run_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
+        try:
+            result = upload_debug_collection(master, token, client_meta, self.state_dir, self.config)
+            if result.get("status") not in {"not_requested", "inactive", "expired", "complete"}:
+                logging.info("debug log upload status=%s chunks=%s bytes=%s", result.get("status"), result.get("chunks"), result.get("bytes"))
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("debug log upload failed: %s", exc)
 
     @staticmethod
     def write_text_if_changed(path: pathlib.Path, content: str, mode: int | None = None) -> bool:
@@ -1372,16 +1620,19 @@ class ClientAgent:
         contract_signature: str,
         rendered_signature: str | None = None,
     ) -> None:
-        applied = self.load_applied()
-        previous = applied.get(str(forward_id), {})
-        if not isinstance(previous, dict):
-            return
-        previous["contract_signature"] = contract_signature
-        if rendered_signature is not None:
-            previous["rendered_signature"] = rendered_signature
-        previous["updated_at"] = int(time.time())
-        applied[str(forward_id)] = previous
-        self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not hasattr(self, "_applied_state_lock"):
+            self._applied_state_lock = threading.RLock()
+        with self._applied_state_lock:
+            applied = self.load_applied()
+            previous = applied.get(str(forward_id), {})
+            if not isinstance(previous, dict):
+                return
+            previous["contract_signature"] = contract_signature
+            if rendered_signature is not None:
+                previous["rendered_signature"] = rendered_signature
+            previous["updated_at"] = int(time.time())
+            applied[str(forward_id)] = previous
+            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def forward_apply_is_noop(self, forward_id: int, contract_signature: str) -> bool:
         previous = self.load_applied().get(str(forward_id), {})
@@ -1862,6 +2113,8 @@ class ClientAgent:
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
+        apply_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="forward-apply")
+        apply_futures: dict[concurrent.futures.Future, tuple[int, str, str, int]] = {}
         for forward_id in unsupported_forward_ids:
             self.log_invalid_forward(forward_id, "stopping unsupported backend_mode=cf_mode")
             self.stop_forward(forward_id, delete_files=True)
@@ -1953,11 +2206,22 @@ class ClientAgent:
                     applied_forward_ids.append(forward_id)
                     logging.debug("forward %s unchanged; skipping no-op runtime apply", forward_id)
                     continue
-                self.apply_forward(runtime_forward, contract_signature=contract_signature, force_runtime_restart=force_runtime_restart)
+                future = apply_executor.submit(
+                    self._apply_forward_task,
+                    runtime_forward,
+                    contract_signature,
+                    force_runtime_restart,
+                )
+                apply_futures[future] = (
+                    forward_id,
+                    mode,
+                    str(forward.get("transport", "tcp+udp")),
+                    len([endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]),
+                )
                 applied_forward_ids.append(forward_id)
             except Exception as exc:  # noqa: BLE001
                 logging.exception(
-                    "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
+                    "failed to queue forward %s mode=%s transport=%s endpoints=%s: %s",
                     forward_id,
                     mode,
                     str(forward.get("transport", "tcp+udp")),
@@ -1965,6 +2229,23 @@ class ClientAgent:
                     exc,
                 )
                 continue
+
+        try:
+            for future in concurrent.futures.as_completed(apply_futures):
+                forward_id, mode, transport, endpoint_count = apply_futures[future]
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logging.exception(
+                        "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
+                        forward_id,
+                        mode,
+                        transport,
+                        endpoint_count,
+                        exc,
+                    )
+        finally:
+            apply_executor.shutdown(wait=True, cancel_futures=False)
 
         applied = self.load_applied()
         for forward_key in list(applied.keys()):
@@ -1978,6 +2259,7 @@ class ClientAgent:
 
         self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
         self.reconcile_global_mptcp_state(self.latest_forwards)
+        self.schedule_debug_log_upload(master, token, client_meta)
         self.run_diagnostics_if_requested(master, token, client_meta, self.latest_forwards)
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
@@ -2420,6 +2702,23 @@ class ClientAgent:
         }
 
     def apply_forward(self, forward: dict, contract_signature: str | None = None, force_runtime_restart: bool = False) -> None:
+        forward_id = int(forward.get("forward_id", 0) or 0) if isinstance(forward, dict) else 0
+        with self._forward_lock(forward_id):
+            self._apply_forward_locked(forward, contract_signature, force_runtime_restart)
+
+    def _apply_forward_task(
+        self,
+        forward: dict,
+        contract_signature: str,
+        force_runtime_restart: bool,
+    ) -> None:
+        self.apply_forward(
+            forward,
+            contract_signature=contract_signature,
+            force_runtime_restart=force_runtime_restart,
+        )
+
+    def _apply_forward_locked(self, forward: dict, contract_signature: str | None = None, force_runtime_restart: bool = False) -> None:
         from install_forward_runtime import render_forward_runtime  # local helper
 
         forward_id = int(forward["forward_id"])
@@ -2598,7 +2897,7 @@ class ClientAgent:
         if stale_path_removed:
             subprocess.run("systemctl daemon-reload", shell=True, check=False)
 
-        applied[str(forward_id)] = {
+        applied_entry = {
             "units": persisted_units,
             "managed_paths": sorted(current_managed_paths),
             "published_mode": self.normalize_mode(forward.get("mode", "single")),
@@ -2607,7 +2906,7 @@ class ClientAgent:
             "rendered_signature": rendered_signature,
             "updated_at": int(time.time()),
         }
-        self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._save_applied_entry(forward_id, applied_entry)
 
     def send_ultra_lease(self, forward_id: int, lease: dict) -> bool:
         return self.send_ultra_leases(forward_id, [lease])
@@ -2637,7 +2936,7 @@ class ClientAgent:
             frame = struct.pack(">I", len(encoded)) + encoded
             # Candidate batches allow association setup, a 30-second UDP
             # window, and response margin; single-lease delivery stays short.
-            timeout = 50.0 if len(wire_leases) > 1 else 3.0
+            timeout = 70.0 if len(wire_leases) > 1 else 3.0
             for attempt in range(3):
                 try:
                     deadline = time.monotonic() + min(3.0, timeout)

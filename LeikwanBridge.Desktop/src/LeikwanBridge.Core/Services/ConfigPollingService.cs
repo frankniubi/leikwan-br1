@@ -13,6 +13,7 @@ public sealed class ConfigPollingService
 {
     private const int LongPollWaitSeconds = 10;
     private const int ReArmDelayMs = 5000;
+    private const int MaxConcurrentForwardOperations = 4;
 
     private readonly MasterApiClient _api;
     private readonly ForwardRuntimeManager _runtimeManager;
@@ -210,114 +211,34 @@ public sealed class ConfigPollingService
             }
         }
 
-        // Apply new/changed forwards
-        foreach (var forward in forwards)
-        {
-            var key = forward.ForwardId.ToString();
-            var hasAppliedState = applied.TryGetValue(key, out var appliedState);
-            if (hasAppliedState && appliedState!.UserStopped)
-                continue;
-
-            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
-            if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
-            {
-                IReadOnlyList<UltraLease> leases;
-                try
-                {
-                    // Request a bounded candidate batch on every Ultra lease
-                    // refresh. The runtime keeps the selected path sticky for
-                    // the policy generation, while this supplies fresh
-                    // credentials for the same candidate.
-                    leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(
-                        "Ultra lease refresh failed for forward {ForwardId} (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
-                        forward.ForwardId,
-                        ex.GetType().Name,
-                        ex is MasterApiException apiException ? apiException.StatusCode : 0,
-                        BoundErrorCode(ex.Message));
-                    if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease refresh exception"))
-                    {
-                        if (IsGrantRefreshError(ex))
-                            Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
-                        continue;
-                    }
-                    Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
-                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
-                    continue;
-                }
-                if (leases.Count == 0)
-                {
-                    if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
-                        continue;
-                    Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
-                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
-                    continue;
-                }
-                effectiveForward.RuntimeLeases = leases.ToList();
-                effectiveForward.RuntimeLease = effectiveForward.RuntimeLeases[0];
-            }
-            var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
-            var signatureMatches = hasAppliedState
-                && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
-
-            if (hasAppliedState && isRunning && signatureMatches)
-            {
-                if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!_runtimeManager.RefreshUltraLease(effectiveForward))
-                    {
-                        if (!TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease delivery failed"))
-                            _runtimeManager.StopForwardForPolicy(forward.ForwardId);
-                    }
-                }
-                continue;
-            }
-
-            try
-            {
-                _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "failed applying forward {ForwardId}", forward.ForwardId);
-            }
-        }
+        // Resolve and apply independent forwards concurrently, but keep a
+        // bounded worker count so a large client cannot exhaust local threads
+        // or sockets. Each task owns its own lease/error boundary.
+        await RunBoundedAsync(
+            forwards,
+            MaxConcurrentForwardOperations,
+            forward => ReconcileForwardAsync(forward, applied, ct),
+            ct);
 
         if (_latestClient is not null)
             ClientUpdated?.Invoke(_latestClient);
         ForwardsUpdated?.Invoke(forwards);
     }
 
-    private async Task RefreshUltraForwardsAsync(CancellationToken ct)
+    private async Task ReconcileForwardAsync(
+        ForwardConfig forward,
+        IReadOnlyDictionary<string, AppliedForwardState> applied,
+        CancellationToken ct)
     {
-        var applied = _stateManager.LoadApplied();
-        foreach (var forward in _latestForwards)
+        var key = forward.ForwardId.ToString();
+        var hasAppliedState = applied.TryGetValue(key, out var appliedState);
+        if (hasAppliedState && appliedState!.UserStopped)
+            return;
+
+        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+        var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+        if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
         {
-            if (forward.ServiceStatus != "active"
-                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var key = forward.ForwardId.ToString();
-            if (applied.TryGetValue(key, out var appliedState) && appliedState.UserStopped)
-                continue;
-
-            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-            var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
-            if (isRunning
-                && effectiveForward.UltraAccess is { } policy
-                && policy.RenewAfter > DateTimeOffset.UtcNow)
-            {
-                continue;
-            }
-
             IReadOnlyList<UltraLease> leases;
             try
             {
@@ -329,57 +250,172 @@ public sealed class ConfigPollingService
             }
             catch (Exception ex)
             {
-                // Keep a currently-running runtime alive through transient API failures;
-                // retry on the next long-poll cycle rather than revoking it immediately.
                 Log.Warning(
-                    "Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
+                    "Ultra lease refresh failed for forward {ForwardId} (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
                     forward.ForwardId,
                     ex.GetType().Name,
                     ex is MasterApiException apiException ? apiException.StatusCode : 0,
                     BoundErrorCode(ex.Message));
-                if (IsGrantRefreshError(ex))
+                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease refresh exception"))
                 {
-                    // Force a non-304 pull so the panel can attach the latest
-                    // ticket/generation after a quota or material rotation.
-                    QueueConfigRefreshSoon();
-                    Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                    if (IsGrantRefreshError(ex))
+                        Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                    return;
                 }
-                continue;
-            }
-
-            if (leases.Count == 0)
-            {
-                if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
-                    continue;
                 Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
-                continue;
+                return;
             }
-
+            if (leases.Count == 0)
+            {
+                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
+                    return;
+                Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
+                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+                return;
+            }
             effectiveForward.RuntimeLeases = leases.ToList();
             effectiveForward.RuntimeLease = effectiveForward.RuntimeLeases[0];
-            var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
-            var signatureMatches = appliedState != null
-                && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);
+        }
+        var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
+        var signatureMatches = hasAppliedState
+            && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
 
-            if (appliedState != null && isRunning && signatureMatches)
-            {
-                if (!_runtimeManager.RefreshUltraLease(effectiveForward))
-                {
-                    if (!TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
-                        _runtimeManager.StopForwardForPolicy(forward.ForwardId);
-                }
-                continue;
-            }
+        if (hasAppliedState && isRunning && signatureMatches)
+        {
+            if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                && !_runtimeManager.RefreshUltraLease(effectiveForward)
+                && !TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease delivery failed"))
+                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            return;
+        }
 
+        try
+        {
+            _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "failed applying forward {ForwardId}", forward.ForwardId);
+        }
+    }
+
+    private static async Task RunBoundedAsync<T>(
+        IEnumerable<T> items,
+        int maxConcurrency,
+        Func<T, Task> action,
+        CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(Math.Max(1, maxConcurrency));
+        var tasks = items.Select(async item =>
+        {
+            await gate.WaitAsync(ct);
             try
             {
-                _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+                // Yield before invoking potentially synchronous runtime work;
+                // otherwise the first non-async forward would monopolize the
+                // caller while the task list is being enumerated.
+                await Task.Yield();
+                ct.ThrowIfCancellationRequested();
+                await action(item);
             }
-            catch (Exception ex)
+            finally
             {
-                Log.Error(ex, "failed applying forward {ForwardId} after lease refresh", forward.ForwardId);
+                gate.Release();
             }
+        });
+        await Task.WhenAll(tasks);
+    }
+
+    private async Task RefreshUltraForwardsAsync(CancellationToken ct)
+    {
+        var applied = _stateManager.LoadApplied();
+        var ultraForwards = _latestForwards.Where(forward =>
+            forward.ServiceStatus == "active"
+            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase));
+        await RunBoundedAsync(ultraForwards, MaxConcurrentForwardOperations,
+            forward => RefreshUltraForwardAsync(forward, applied, ct), ct);
+    }
+
+    private async Task RefreshUltraForwardAsync(
+        ForwardConfig forward,
+        IReadOnlyDictionary<string, AppliedForwardState> applied,
+        CancellationToken ct)
+    {
+        var key = forward.ForwardId.ToString();
+        if (applied.TryGetValue(key, out var appliedState) && appliedState.UserStopped)
+            return;
+
+        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+        var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+        if (isRunning
+            && effectiveForward.UltraAccess is { } policy
+            && policy.RenewAfter > DateTimeOffset.UtcNow)
+            return;
+
+        IReadOnlyList<UltraLease> leases;
+        try
+        {
+            leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(
+                "Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
+                forward.ForwardId,
+                ex.GetType().Name,
+                ex is MasterApiException apiException ? apiException.StatusCode : 0,
+                BoundErrorCode(ex.Message));
+            if (IsGrantRefreshError(ex))
+            {
+                QueueConfigRefreshSoon();
+                Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+            }
+            return;
+        }
+
+        if (leases.Count == 0)
+        {
+            if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
+                return;
+            Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
+            _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            return;
+        }
+
+        effectiveForward.RuntimeLeases = leases.ToList();
+        effectiveForward.RuntimeLease = effectiveForward.RuntimeLeases[0];
+        var contractSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
+        var signatureMatches = appliedState != null
+            && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);
+
+        if (appliedState != null && isRunning && signatureMatches)
+        {
+            if (!_runtimeManager.RefreshUltraLease(effectiveForward)
+                && !TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
+                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            return;
+        }
+
+        try
+        {
+            _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "failed applying forward {ForwardId} after lease refresh", forward.ForwardId);
         }
     }
 

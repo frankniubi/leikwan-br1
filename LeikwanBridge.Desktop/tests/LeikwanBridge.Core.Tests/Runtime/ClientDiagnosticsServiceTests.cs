@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
@@ -9,6 +12,57 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ClientDiagnosticsServiceTests
 {
+    [Fact]
+    public void DebugLogRedactionRemovesCredentialMaterial()
+    {
+        var value = DebugLogUploader.Redact("Authorization: Bearer abc\npassword=hidden token: xyz\nhealthy=true");
+        Assert.DoesNotContain("abc", value);
+        Assert.DoesNotContain("hidden", value);
+        Assert.DoesNotContain("xyz", value);
+        Assert.Contains("healthy=true", value);
+    }
+
+    [Fact]
+    public async Task DebugLogUploaderChunksAndRetries()
+    {
+        var root = Directory.CreateTempSubdirectory("leikwan-debug-");
+        try
+        {
+            var logs = Path.Combine(root.FullName, "logs");
+            var state = Path.Combine(root.FullName, "state");
+            Directory.CreateDirectory(logs);
+            await File.WriteAllTextAsync(Path.Combine(logs, "client.log"), "password=hidden\n" + new string('x', DebugLogUploader.ChunkBytes + 17));
+            var calls = 0;
+            using var api = new MasterApiClient(
+                "https://panel.example.test",
+                "agent-token",
+                httpClientFactory: () => new HttpClient(new StubHandler(() =>
+                {
+                    calls++;
+                    return calls == 1
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json") };
+                })));
+            var uploader = new DebugLogUploader(logs, state);
+            var result = await uploader.UploadAsync(new ClientMeta
+            {
+                DebugCollection = new DebugCollectionMeta
+                {
+                    Uuid = "123e4567-e89b-42d3-a456-426614174000",
+                    Status = "active",
+                    ExpiresAt = "2999-01-01T00:00:00Z",
+                },
+            }, api);
+            Assert.Equal("complete", result.Status);
+            Assert.True(calls >= 3);
+            Assert.True(File.Exists(Path.Combine(state, "debug-upload-state.json")));
+        }
+        finally
+        {
+            try { root.Delete(recursive: true); } catch { }
+        }
+    }
+
     [Fact]
     public void BuildResultsNeverIncludesRemoteOrCredentialMaterial()
     {
@@ -65,5 +119,11 @@ public sealed class ClientDiagnosticsServiceTests
         public IReadOnlyList<int> GetProcessIds(int forwardId) => processIds;
         public IReadOnlyList<string> GetRunningRoles(int forwardId) => [];
         public void Dispose() { }
+    }
+
+    private sealed class StubHandler(Func<HttpResponseMessage> responseFactory) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(responseFactory());
     }
 }

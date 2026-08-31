@@ -149,12 +149,16 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 
     public async Task StartAllAsync(CancellationToken ct)
     {
-        foreach (var forward in Forwards)
-        {
-            ct.ThrowIfCancellationRequested();
-            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
-            await Task.Yield();
-        }
+        await RunBoundedAsync(
+            Forwards,
+            4,
+            forward =>
+            {
+                ct.ThrowIfCancellationRequested();
+                _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+                return Task.CompletedTask;
+            },
+            ct);
         PublishCurrentForwards();
     }
 
@@ -249,6 +253,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         try
         {
             await _diagnostics!.SubmitIfRequestedAsync(client, Forwards, _api, ct);
+            _diagnostics.QueueDebugLogUpload(client, _api, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -300,5 +305,29 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         catch (OperationCanceledException)
         {
         }
+    }
+
+    private static async Task RunBoundedAsync<T>(
+        IEnumerable<T> items,
+        int maxConcurrency,
+        Func<T, Task> action,
+        CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(Math.Max(1, maxConcurrency));
+        var tasks = items.Select(async item =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                await Task.Yield();
+                ct.ThrowIfCancellationRequested();
+                await action(item);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks);
     }
 }

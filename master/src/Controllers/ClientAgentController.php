@@ -13,6 +13,7 @@ use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
+use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\LeigodTokenProvider;
@@ -533,6 +534,7 @@ final class ClientAgentController extends BaseController
                 'group_id' => $client['group_id'] !== null ? (int) $client['group_id'] : null,
                 'diag_request_token' => (string) ($client['last_diag_request_token'] ?? ''),
                 'diag_status' => (string) ($client['last_diag_status'] ?? ''),
+                'debug_collection' => (new DebugCollectionStore($this->db, $this->config))->metadata($client),
                 'agent_config_json' => $agentConfig,
                 'agent_update_request_token' => $updateRequestToken,
                 'agent_update_requested_at' => (string) ($client['agent_update_requested_at'] ?? ''),
@@ -609,6 +611,7 @@ final class ClientAgentController extends BaseController
         }
 
         $forwardRevision = self::forwardRevision($forwards);
+        $debugCollection = (new DebugCollectionStore($this->db, $this->config))->metadata($client);
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
@@ -618,7 +621,7 @@ final class ClientAgentController extends BaseController
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'wstunnel_binary' => $wstunnelBinary,
-        ]);
+        ], ['debug_collection' => $debugCollection]);
 
         return [
             'forwards' => $forwards,
@@ -672,7 +675,7 @@ final class ClientAgentController extends BaseController
      * @param array<string, mixed> $agentConfig
      * @param array<string, array<string, mixed>> $artifactVersions
      */
-    public static function configRevision(string $forwardRevision, array $agentConfig, array $artifactVersions): string
+    public static function configRevision(string $forwardRevision, array $agentConfig, array $artifactVersions, array $extra = []): string
     {
         $artifacts = [];
         foreach ($artifactVersions as $key => $artifact) {
@@ -685,6 +688,7 @@ final class ClientAgentController extends BaseController
             'forward_revision' => $forwardRevision,
             'agent_config' => $agentConfig,
             'artifacts' => $artifacts,
+            'extra' => $extra,
         ], JSON_UNESCAPED_SLASHES));
     }
 
@@ -960,6 +964,43 @@ final class ClientAgentController extends BaseController
         );
 
         return $this->json(['ok' => true]);
+    }
+
+    /**
+     * Receives one authenticated, pre-redacted debug-log chunk. Raw logs are
+     * written below private application storage and are never artifact files.
+     */
+    public function debugLogChunk(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
+        if (strlen($request->rawBody()) > 512 * 1024) {
+            return $this->noStoreJson(['ok' => false, 'error' => 'debug_chunk_too_large'], 413);
+        }
+        $uuid = (string) $request->input('collection_uuid', '');
+        $sequence = filter_var($request->input('sequence', null), FILTER_VALIDATE_INT);
+        // Accept the implementation field names as well as the public
+        // contract aliases so older/newer agents can upload to the same API.
+        $sha256 = (string) $request->input('sha256', $request->input('chunk_sha256', ''));
+        $chunk = $request->input('chunk_base64', $request->input('content_base64', ''));
+        if ($sequence === false || !is_string($chunk)) {
+            return $this->json(['ok' => false, 'error' => 'debug_chunk_invalid'], 422);
+        }
+
+        $result = (new DebugCollectionStore($this->db, $this->config))->append(
+            $client,
+            $uuid,
+            (int) $sequence,
+            $sha256,
+            $chunk,
+        );
+        return $this->noStoreJson([
+            'ok' => true,
+            'accepted' => (bool) ($result['accepted'] ?? false),
+            'duplicate' => (bool) ($result['duplicate'] ?? false),
+            'bytes_received' => (int) ($result['bytes_received'] ?? 0),
+            'byte_limit' => DebugCollectionStore::BYTE_LIMIT,
+        ]);
     }
 
     public function desktopLogin(Request $request, array $params): Response

@@ -43,10 +43,10 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "8f2ddf7bd6b84dab0631070fd72db7b4b7bd85774657c4039bd9ffa788f369b9",
-     "size": 280846,
-     "size_bytes": 280846,
-  "version": "2026.08.30.6"
+    "sha256": "4eba48e2d3974b0c26e58b75f7130a567ed8d08d29caf99f1fb88c4e12daf497",
+     "size": 293742,
+     "size_bytes": 293742,
+  "version": "2026.08.31.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
@@ -364,35 +364,35 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "88ab40954be6abc78e99970908dab701f6ca777322c8b5379244f4ead711326e",
-  "size_bytes": 15831306,
-  "version": "2026.08.31.3"
+  "sha256": "5f116918d756dacbb650e521c5f0e6358ff7f4f3bc5c63ea90957fd1da7cb7b8",
+  "size_bytes": 15769866,
+  "version": "2026.08.31.8"
  },
  "ultra_client_runtime_windows": {
  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
  "build": "go1.26.5 windows/amd64, cgo-disabled, stripped",
- "sha256": "4863e107326af756996a5e8f3edad5d758a57a64368276bb91be21a15bf6f6a6",
- "size_bytes": 6750720,
- "version": "2026.08.31.3"
+ "sha256": "654818d3d298a7c74f84e0269bf7bf3f4066afd01546bcb7d83fc5b850dd66a4",
+ "size_bytes": 6776832,
+ "version": "2026.08.31.8"
  },
  "ultra_client_runtime_macos_x64": {
   "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
   "path": "artifacts/ultra/ultra-client_macos_amd64",
   "architecture": "x86_64",
   "obfuscator": "garble-v0.17.0",
-  "sha256": "df1c50d203baba3a3ad7c30c169ec38e6929e0498eb60c8e21d477cd7265a405",
-  "size_bytes": 14513280,
-  "version": "2026.08.31.3"
+  "sha256": "a5ddac86f7ca1384028bdcd72f2d65e1a7e7901c81b7c73dc9b010a87924f9b0",
+  "size_bytes": 14467712,
+  "version": "2026.08.31.8"
  },
  "ultra_client_runtime_macos_arm64": {
   "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
   "path": "artifacts/ultra/ultra-client_macos_arm64",
   "architecture": "arm64",
   "obfuscator": "garble-v0.17.0",
-  "sha256": "6ad978fba62104cb9f8e0f24ab9e91fb1045bddba28b640e86cefe0d0529f38a",
-  "size_bytes": 12957426,
-  "version": "2026.08.31.3"
+  "sha256": "33cf287e4eb810b7cfbae037e238e3d44c7c364c7fef669e71b8c7b66d5e9bef",
+  "size_bytes": 12945026,
+  "version": "2026.08.31.8"
  },
  "uot_bond_runtime": {
   "artifact_url": "/artifacts/leikwan-uot-bond.py",
@@ -412,8 +412,8 @@
  "windows_client_app": {
   "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
   "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "8f88466f71cedd888e1483b3ebd507d39aec52c61141c7ba0dd96640dda11786",
- "size_bytes": 69361417,
+ "sha256": "853399b925d5d4c85500b58473f227091b3363b2f8fa753614e66f400eccdc33",
+ "size_bytes": 69375174,
  "version": "0.1.20.0"
  },
  "wstunnel_linux_amd64": {

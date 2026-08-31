@@ -64,6 +64,15 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'device_banned',
         'device_untrusted',
         'account_banned',
+        'debug_collection_invalid',
+        'debug_collection_not_found',
+        'debug_collection_expired',
+        'debug_collection_replay',
+        'debug_chunk_replay',
+        'debug_chunk_invalid',
+        'debug_chunk_too_large',
+        'debug_chunk_hash_mismatch',
+        'debug_collection_quota_exceeded',
     ];
     if ($exception instanceof ApiException
         && in_array($exception->getMessage(), $clientSafeCodes, true)

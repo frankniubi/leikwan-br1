@@ -507,6 +507,11 @@ CREATE TABLE IF NOT EXISTS clients (
     last_diag_run_at DATETIME NULL,
     last_diag_result_json JSON NULL,
     last_diag_error TEXT NULL,
+    debug_collection_uuid VARCHAR(64) NULL,
+    debug_collection_expires_at DATETIME NULL,
+    debug_collection_status VARCHAR(16) NOT NULL DEFAULT 'closed',
+    debug_collection_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    debug_collection_next_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0,
     agent_config_json JSON NULL,
     agent_update_request_token VARCHAR(128) NULL,
     agent_update_requested_at DATETIME NULL,
@@ -540,7 +545,20 @@ CREATE TABLE IF NOT EXISTS clients (
     CONSTRAINT fk_clients_default_chain FOREIGN KEY (default_forward_chain_id) REFERENCES forward_chains(id),
     INDEX idx_clients_group (group_id),
     INDEX idx_clients_owner_default_status (owner_user_id, is_default_for_owner, status),
-    INDEX idx_clients_status (status)
+    INDEX idx_clients_status (status),
+    UNIQUE KEY idx_clients_debug_collection_uuid (debug_collection_uuid)
+);
+
+CREATE TABLE IF NOT EXISTS client_debug_chunks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    collection_uuid VARCHAR(64) NOT NULL,
+    sequence BIGINT UNSIGNED NOT NULL,
+    chunk_sha256 CHAR(64) NOT NULL,
+    byte_length INT UNSIGNED NOT NULL,
+    storage_path VARCHAR(768) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE (client_id, collection_uuid, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS client_device_sessions (
