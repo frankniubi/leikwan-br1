@@ -546,7 +546,7 @@ abstract class BaseController
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
-            . '<p class="muted">Windows, Android, and macOS use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent.</p>'
+            . '<p class="muted">Windows, Android, and macOS use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent. Ultra UDP forwards keep a protocol-level association alive while running; requested debug logs are private, redacted, and expire automatically.</p>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,
@@ -554,7 +554,7 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Download the LeiKwan Bridge desktop app for this client.'
+                'Download the current LeiKwan Bridge desktop app for this client.'
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -609,7 +609,7 @@ abstract class BaseController
 
         return '<section class="card" style="margin-top:14px;">'
             . '<h4 style="margin:0 0 8px;">App Download</h4>'
-            . '<div class="muted command-lead">Windows, Android, and macOS use the app install flow. Linux remains available as a local/manual install command for this client.</div>'
+            . '<div class="muted command-lead">Windows, Android, and macOS use the app install flow. Linux remains available as a local/manual install command for this client. Ultra UDP keepalive starts with the forward and remains active for its lifetime.</div>'
             . $this->renderCommandPanel(
                 'Windows App',
                 $windowsAppUrl,

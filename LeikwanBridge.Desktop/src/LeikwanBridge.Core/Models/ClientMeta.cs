@@ -23,6 +23,9 @@ public sealed class ClientMeta
     [JsonPropertyName("diag_status")]
     public string DiagStatus { get; set; } = "ok";
 
+    [JsonPropertyName("debug_collection")]
+    public DebugCollectionMeta? DebugCollection { get; set; }
+
     [JsonPropertyName("agent_config_json")]
     public JsonElement? AgentConfigJson { get; set; }
 
@@ -46,4 +49,22 @@ public sealed class ClientMeta
 
     [JsonPropertyName("desired_mptcp_runtime_sha256")]
     public string DesiredMptcpRuntimeSha256 { get; set; } = "";
+}
+
+public sealed class DebugCollectionMeta
+{
+    [JsonPropertyName("uuid")]
+    public string Uuid { get; set; } = "";
+
+    [JsonPropertyName("expires_at")]
+    public string ExpiresAt { get; set; } = "";
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("byte_limit")]
+    public long ByteLimit { get; set; }
+
+    [JsonPropertyName("bytes_received")]
+    public long BytesReceived { get; set; }
 }

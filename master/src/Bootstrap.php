@@ -367,6 +367,7 @@ final class Bootstrap
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
+        $this->router->add('POST', '/api/client/debug/log', [$clientAgent, 'debugLogChunk']);
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);
         $this->router->add('POST', '/api/ultra/source/inventory', [$ultraSource, 'inventory']);

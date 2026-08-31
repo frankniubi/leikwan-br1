@@ -342,6 +342,31 @@ public sealed class MasterApiClient : IDisposable
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task SubmitDebugLogChunkAsync(
+        string collectionUuid,
+        int sequence,
+        string sha256,
+        string chunkBase64,
+        string source,
+        CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/debug/log";
+        var payload = new
+        {
+            collection_uuid = collectionUuid,
+            sequence,
+            sha256,
+            chunk_base64 = chunkBase64,
+            source,
+        };
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        Log.Debug("uploading sanitized debug log chunk sequence={Sequence}", sequence);
+        var response = await SendAsync(request, ct);
+        await EnsureSuccessOrThrowAsync(response, ct);
+    }
+
     public async Task<bool> TestConnectionAsync(CancellationToken ct = default)
     {
         try

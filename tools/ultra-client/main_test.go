@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -293,6 +297,62 @@ func TestReadStreamAcksAcceptsLegacySocksAck(t *testing.T) {
 	}
 }
 
+func TestReadStreamAcksAcceptsPlainFourByteAck(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	payload := []byte("address-first-payload")
+	go func() { _, _ = server.Write(append([]byte{5, 2, 1, 0}, payload...)) }()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload after four-byte ack = %q, want %q", got, payload)
+	}
+}
+
+func TestBufferedConnDropsDelayedTargetConnectPrelude(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	final := []byte{4, 1, 1, 0, 1, 1, 1, 1, 1, 1}
+	payload := []byte("dns-response")
+	go func() {
+		_, _ = server.Write(append([]byte{5, 2, 1, 0}, final...))
+		_, _ = server.Write(payload)
+	}()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &bufferedConn{Conn: client, reader: reader}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload after delayed target prelude = %q, want %q", got, payload)
+	}
+}
+
+func TestBufferedConnPreservesNonPreludeFirstBytes(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	payload := []byte{4, 1, 9, 8, 7}
+	go func() { _, _ = server.Write(payload) }()
+	conn := &bufferedConn{Conn: client, reader: bufio.NewReader(client)}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("non-prelude bytes changed = %x, want %x", got, payload)
+	}
+}
+
 func TestOutboundStreamTransform(t *testing.T) {
 	input := []byte("GET / HTTP/1.0\r\n\r\n")
 	encoded := xorOne(input)
@@ -317,6 +377,54 @@ func TestDatagramEnvelopeRoundTrip(t *testing.T) {
 	decoded, ok := unwrapDatagram(down)
 	if !ok || !bytes.Equal(decoded, payload) {
 		t.Fatal("datagram response did not unwrap")
+	}
+	addressFirst := append([]byte{1, 1, 1, 1, 1, 0, 53}, payload...)
+	decoded, ok = unwrapDatagram(addressFirst)
+	if !ok || !bytes.Equal(decoded, payload) {
+		t.Fatal("address-first datagram response did not unwrap")
+	}
+}
+
+func TestDecodeLocalUDPRequestSupportsShadowsocksEnvelopeAndRawUDP(t *testing.T) {
+	payload := []byte("dns-payload")
+	request := append([]byte{0, 0, 0, 1, 1, 1, 1, 1, 0, 53}, payload...)
+	decoded, socksUDP, valid := decodeLocalUDPRequest(request)
+	if !valid || !socksUDP || !bytes.Equal(decoded, request[3:]) {
+		t.Fatalf("decoded SOCKS UDP request = payload:%q socks:%v valid:%v", decoded, socksUDP, valid)
+	}
+	raw := []byte("raw-game-payload")
+	decoded, socksUDP, valid = decodeLocalUDPRequest(raw)
+	if !valid || socksUDP || !bytes.Equal(decoded, raw) {
+		t.Fatalf("decoded raw UDP request = payload:%q socks:%v valid:%v", decoded, socksUDP, valid)
+	}
+	response, err := makeLocalUDPResponse("1.1.1.1", 53, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response[:10], request[:10]) || !bytes.Equal(response[10:], payload) {
+		t.Fatalf("local SOCKS UDP response = %x, want header %x + payload", response, request[:10])
+	}
+}
+
+func TestUnwrapNestedLocalUDPResponse(t *testing.T) {
+	inner := append([]byte{1, 1, 1, 1, 1, 0, 53}, []byte("dns-response")...)
+	outer := datagramResponseInfo{
+		addressType: 1,
+		address:     []byte{185, 220, 238, 143},
+		port:        10001,
+		payload:     inner,
+	}
+	gotInfo, gotPayload := unwrapNestedLocalUDPResponse(outer, outer.payload)
+	if gotInfo.addressType != 1 || !bytes.Equal(gotInfo.address, []byte{1, 1, 1, 1}) || gotInfo.port != 53 {
+		t.Fatalf("nested response info = %+v, want target address", gotInfo)
+	}
+	if !bytes.Equal(gotPayload, []byte("dns-response")) {
+		t.Fatalf("nested response payload = %q", gotPayload)
+	}
+	opaque := []byte("raw-game-payload")
+	opaqueInfo, opaquePayload := unwrapNestedLocalUDPResponse(outer, opaque)
+	if opaqueInfo.addressType != outer.addressType || !bytes.Equal(opaquePayload, opaque) {
+		t.Fatalf("opaque response changed: info=%+v payload=%q", opaqueInfo, opaquePayload)
 	}
 }
 
@@ -412,7 +520,22 @@ func (provider *testUDPProvider) serveUDP() {
 			continue
 		}
 		payload := append([]byte(nil), packet[16:]...)
-		response := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, 0, 53}, payload...)
+		// A real `none` Shadowsocks target receives and returns the
+		// address-first wire form. Decode that form in the fixture so the test
+		// exercises the runtime's local SOCKS UDP unwrap/rewrap path instead of
+		// echoing the destination header as application data.
+		responseAddress := []byte{127, 0, 0, 1}
+		responsePort := uint16(53)
+		if info, valid := decodeDatagramAddressFirst(payload); valid {
+			responseAddress = append([]byte(nil), info.address...)
+			responsePort = info.port
+			payload = append([]byte(nil), info.payload...)
+		}
+		response := append([]byte{0, 0, 0, 1}, responseAddress...)
+		var port [2]byte
+		binary.BigEndian.PutUint16(port[:], responsePort)
+		response = append(response, port[:]...)
+		response = append(response, payload...)
 		_, _ = provider.udp.WriteToUDP(response, client)
 	}
 }
@@ -482,6 +605,98 @@ func TestResolveUDPKeepaliveInterval(t *testing.T) {
 	}
 }
 
+func TestPersistentWarmWorkerRearmsAfterKeepaliveFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessions := make(chan udpWarmSession, 1)
+	var arms atomic.Int32
+	var keepalives atomic.Int32
+	factory := func() (udpWarmSession, error) {
+		index := arms.Add(1)
+		return udpWarmSession{
+			session:      &DatagramSession{},
+			selectionRef: fmt.Sprintf("warm-%d", index),
+			started:      time.Now(),
+		}, nil
+	}
+	keepalive := func(*DatagramSession) error {
+		if keepalives.Add(1) == 1 {
+			return errors.New("warm session expired")
+		}
+		return nil
+	}
+	go runPersistentWarmWorker(ctx, sessions, factory, keepalive, time.Millisecond, time.Millisecond)
+
+	first := <-sessions
+	if first.session == nil {
+		t.Fatal("first warm session is missing")
+	}
+	deadline := time.Now().Add(time.Second)
+	for arms.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if arms.Load() < 2 {
+		t.Fatalf("warm worker did not rearm after keepalive failure: arms=%d", arms.Load())
+	}
+	second := <-sessions
+	if second.selectionRef == first.selectionRef {
+		t.Fatalf("warm worker reused failed session: first=%q second=%q", first.selectionRef, second.selectionRef)
+	}
+}
+
+func TestPersistentWarmWorkerRearmsAfterWarmSessionClaim(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessions := make(chan udpWarmSession, 1)
+	var arms atomic.Int32
+	factory := func() (udpWarmSession, error) {
+		arms.Add(1)
+		return udpWarmSession{session: &DatagramSession{}, started: time.Now()}, nil
+	}
+	go runPersistentWarmWorker(ctx, sessions, factory, func(*DatagramSession) error { return nil }, time.Millisecond, time.Millisecond)
+	warm := <-sessions
+	if warm.claimed == nil {
+		t.Fatal("warm session has no claim signal")
+	}
+	close(warm.claimed)
+	deadline := time.Now().Add(time.Second)
+	for arms.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := arms.Load(); got < 2 {
+		t.Fatalf("warm worker did not rearm after claim: arms=%d", got)
+	}
+	select {
+	case replacement := <-sessions:
+		if replacement.session == nil {
+			t.Fatal("replacement warm session is missing")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement warm session was not published")
+	}
+}
+
+func TestLeaseSelectionLogIsNeutral(t *testing.T) {
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	logLeaseSelectionStart(42, 2)
+	message := output.String()
+	if strings.Contains(message, "Establishing Connection with the Server") {
+		t.Fatalf("selection log exposed connection phrase: %q", message)
+	}
+	if !strings.Contains(message, "ultra lease selection started") {
+		t.Fatalf("selection log lost neutral diagnostic text: %q", message)
+	}
+}
+
 func TestServeUDPPrewarmsAssociationBeforeFirstClientPacket(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	runtimeUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -543,6 +758,66 @@ func TestServeUDPPrewarmsAssociationBeforeFirstClientPacket(t *testing.T) {
 	if status.status.UDPQueueDrops != 0 {
 		t.Fatalf("UDP queue drops = %d, want 0 for prewarmed first association", status.status.UDPQueueDrops)
 	}
+}
+
+func TestServeUDPUntanglesLocalShadowsocksEnvelope(t *testing.T) {
+	provider := newTestUDPProvider(t)
+	runtimeUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeUDP.Close()
+	listenPort := runtimeUDP.LocalAddr().(*net.UDPAddr).Port
+	config := Config{
+		ForwardID: 42, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "127.0.0.1:53", Transport: "udp", UDPPrewarm: true,
+		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
+	}
+	store := testUDPStore(t, config, provider)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveUDPOnConn(ctx, config, store, status, runtimeUDP, "127.0.0.1", 53) }()
+	select {
+	case <-provider.firstAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prewarm did not establish provider association")
+	}
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}
+	payload := []byte("dns-payload")
+	request := append([]byte{0, 0, 0, 1, 1, 1, 1, 1, 0, 53}, payload...)
+	if _, err := client.WriteToUDP(request, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 128)
+	count, _, err := client.ReadFromUDP(response)
+	if err != nil {
+		t.Fatalf("SOCKS UDP response missing: %v", err)
+	}
+	wantHeader := []byte{0, 0, 0, 1, 1, 1, 1, 1, 0, 53}
+	if count != len(wantHeader)+len(payload) || !bytes.Equal(response[:len(wantHeader)], wantHeader) || !bytes.Equal(response[len(wantHeader):count], payload) {
+		t.Fatalf("SOCKS UDP response = %x, want header %x + payload %q", response[:count], wantHeader, payload)
+	}
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UDP runtime did not stop")
+	}
+	status.Close()
 }
 
 func TestServeUDPProtocolKeepaliveUsesReservedEnvelope(t *testing.T) {

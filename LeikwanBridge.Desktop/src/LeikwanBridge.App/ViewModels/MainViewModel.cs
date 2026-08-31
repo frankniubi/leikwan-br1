@@ -24,6 +24,7 @@ public partial class MainViewModel : ObservableObject
     private ConfigPollingService? _pollingService;
     private HeartbeatService? _heartbeatService;
     private HealthCheckService? _healthCheckService;
+    private ClientDiagnosticsService? _diagnostics;
     private WireGuardManager? _wgManager;
     private InstalledRuntimeCleanupService? _installedRuntimeCleanup;
     private WindowsProxyConnectionService? _proxyService;
@@ -709,6 +710,12 @@ public partial class MainViewModel : ObservableObject
             _stateManager,
             portPreflight: PortConflictPreflight.Bind(_supervisor, AppDefaults.GetInstallRoot()));
         _pollingService = new ConfigPollingService(_api, _runtimeManager, _stateManager);
+        _diagnostics = new ClientDiagnosticsService(
+            _supervisor,
+            _config,
+            logDirectory: Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "Leikwan", "ClientAgent", "logs"));
         _healthCheckService = new HealthCheckService(_supervisor, _runtimeManager, _stateManager, config: _config);
         _installedRuntimeCleanup = new InstalledRuntimeCleanupService();
 
@@ -725,6 +732,7 @@ public partial class MainViewModel : ObservableObject
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.PullStateChanged += OnPullStateChanged;
         _pollingService.SyncError += OnSyncError;
+        _pollingService.ClientUpdated += client => _diagnostics?.QueueDebugLogUpload(client, _api!, CancellationToken.None);
         _healthCheckService.HealthIssue += OnHealthIssue;
 
         var installRoot = AppDefaults.GetInstallRoot();
@@ -747,6 +755,7 @@ public partial class MainViewModel : ObservableObject
         _runtimeManager?.StopAll();
         _api?.Dispose();
         _api = null;
+        _diagnostics = null;
         IsConnected = false;
         ConnectionStatus = GetString("DashDisconnected");
         Forwards.Clear();
@@ -831,11 +840,17 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAll()
     {
-        foreach (var fwd in Forwards)
-        {
-            if (fwd.Config != null && fwd.Summary.CanStart)
-                await StartForward(fwd);
-        }
+        using var gate = new SemaphoreSlim(4);
+        var tasks = Forwards
+            .Where(fwd => fwd.Config != null && fwd.Summary.CanStart)
+            .Select(async fwd =>
+            {
+                await gate.WaitAsync();
+                try { await StartForward(fwd); }
+                finally { gate.Release(); }
+            })
+            .ToArray();
+        await Task.WhenAll(tasks);
         AddLog("Started all forwards.");
     }
 

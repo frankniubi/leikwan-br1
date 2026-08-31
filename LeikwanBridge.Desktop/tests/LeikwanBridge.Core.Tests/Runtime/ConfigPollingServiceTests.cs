@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
@@ -11,6 +12,42 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ConfigPollingServiceTests
 {
+    [Fact]
+    public async Task SyncOnceAsync_ActivatesIndependentForwardsConcurrentlyAndIsolatesFailure()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildTwoForwardPullResponseJson());
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new TestProcessSupervisor());
+        var started = new ConcurrentDictionary<int, DateTimeOffset>();
+        runtimeManager.OnApply = forward =>
+        {
+            started[forward.ForwardId] = DateTimeOffset.UtcNow;
+            Thread.Sleep(250);
+            if (forward.ForwardId == 901)
+                throw new InvalidOperationException("isolated failure");
+        };
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await service.SyncOnceAsync();
+        stopwatch.Stop();
+
+        Assert.Equal(2, started.Count);
+        Assert.True(started.ContainsKey(901));
+        Assert.True(started.ContainsKey(902));
+        var startGap = (started[901] - started[902]).Duration();
+        Assert.True(startGap < TimeSpan.FromMilliseconds(100), $"forwards were activated serially: elapsed={stopwatch.Elapsed}, gap={startGap}");
+    }
+
     [Fact]
     public void ApplyAuthoritativeConfig_NullOrMissingSidepath_ClearsPreviousState()
     {
@@ -790,6 +827,20 @@ public sealed class ConfigPollingServiceTests
                 "ws_priority": 10
               }
             }
+          ]
+        }
+        """;
+    }
+
+    private static string BuildTwoForwardPullResponseJson()
+    {
+        return """
+        {
+          "ok": true,
+          "client": {"id": 1, "name": "desktop", "display_host": "desktop", "group_id": null, "agent_config_json": {}},
+          "forwards": [
+            {"forward_id": 901, "service_status": "active", "backend_mode": "single", "mode": "single", "listen_port": 19001, "target": "198.51.100.1:443", "transport": "tcp", "endpoints": []},
+            {"forward_id": 902, "service_status": "active", "backend_mode": "single", "mode": "single", "listen_port": 19002, "target": "198.51.100.2:443", "transport": "tcp", "endpoints": []}
           ]
         }
         """;

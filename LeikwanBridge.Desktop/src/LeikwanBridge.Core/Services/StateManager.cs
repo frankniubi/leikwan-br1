@@ -33,6 +33,19 @@ public sealed class StateManager
         SaveJson(path, applied);
     }
 
+    public void UpdateApplied(Action<Dictionary<string, AppliedForwardState>> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        lock (_lock)
+        {
+            var path = Path.Combine(_stateDir, "applied.json");
+            var applied = LoadJson<Dictionary<string, AppliedForwardState>>(path) ?? [];
+            update(applied);
+            var json = JsonSerializer.Serialize(applied, JsonOptions);
+            File.WriteAllText(path, json);
+        }
+    }
+
     public bool RemoveApplied(int forwardId)
     {
         lock (_lock)
