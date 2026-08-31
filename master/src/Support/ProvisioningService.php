@@ -4126,6 +4126,92 @@ final class ProvisioningService
         return $mapping;
     }
 
+    /** @param array<int, array<string, mixed>> $forwards @return array<string, mixed>|null */
+    public function nativeOutboundCapabilityForAssignedForwards(array $forwards): ?array
+    {
+        $eligible = [];
+        $serviceIds = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || (string) ($forward['service_status'] ?? '') !== 'active'
+                || strtolower(trim((string) ($forward['transport'] ?? ''))) !== 'tcp+udp') {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            $serviceId = (int) ($forward['service_id'] ?? 0);
+            if ($forwardId <= 0 || $serviceId <= 0) {
+                continue;
+            }
+            $eligible[$forwardId] = $forward;
+            $serviceIds[$serviceId] = $serviceId;
+        }
+        if ($eligible === [] || $serviceIds === []) {
+            return null;
+        }
+
+        $params = [];
+        $placeholders = [];
+        foreach (array_values($serviceIds) as $index => $serviceId) {
+            $key = 'native_service_' . $index;
+            $params[$key] = $serviceId;
+            $placeholders[] = ':' . $key;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT s.id AS service_id, p.feature_flags_json AS plan_feature_flags_json
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id IN (' . implode(', ', $placeholders) . ')',
+            $params
+        );
+        $allowedServices = [];
+        foreach ($rows as $row) {
+            $serviceId = (int) ($row['service_id'] ?? 0);
+            if ($serviceId > 0 && $this->planAllowsNativeOutbound($row)) {
+                $allowedServices[$serviceId] = true;
+            }
+        }
+
+        $carriers = [];
+        foreach ($eligible as $forwardId => $forward) {
+            if (!isset($allowedServices[(int) ($forward['service_id'] ?? 0)])) {
+                continue;
+            }
+            $direction = substr(UltraMode::redactProviderText(trim((string) ($forward['forward_combination_direction'] ?? ''))), 0, 191);
+            $routeScopes = UltraMode::nativeRouteScopesForDirection($direction);
+            $carriers[] = [
+                'forward_id' => $forwardId,
+                'direction' => $direction,
+                'scope_digest' => UltraMode::nativeScopeDigest($forwardId, $direction, 'tcp+udp', 'global'),
+                'transport' => 'tcp+udp',
+                'route_scopes' => $routeScopes,
+                'default_route_scope' => 'global',
+            ];
+        }
+        if ($carriers === []) {
+            return null;
+        }
+        usort($carriers, static fn(array $left, array $right): int => (int) $left['forward_id'] <=> (int) $right['forward_id']);
+        $forwardIds = array_map(static fn(array $carrier): int => (int) $carrier['forward_id'], $carriers);
+        $routeScopes = [];
+        foreach ($carriers as $carrier) {
+            foreach ((array) $carrier['route_scopes'] as $scope) {
+                $routeScopes[(string) $scope] = true;
+            }
+        }
+        return [
+            'enabled' => true,
+            'protocol' => 'socks5',
+            'lease_protocol' => UltraMode::NATIVE_SOCKS5_PROTOCOL,
+            'transport' => 'tcp+udp',
+            'forward_ids' => $forwardIds,
+            'default_forward_id' => $forwardIds[0],
+            'route_scopes' => array_values(array_keys($routeScopes)),
+            'default_route_scope' => 'global',
+            'forwards' => $carriers,
+        ];
+    }
+
     /**
      * Build broker-only Ultra metadata without placing line numbers in the
      * authenticated client response.
@@ -4169,6 +4255,7 @@ final class ProvisioningService
                     ul.line_id,
                     ul.access_class,
                     ul.native_udp_state,
+                    ul.native_socks5_state,
                     ul.route_class,
                     ul.pricing_class,
                     ul.pricing_evidence,
@@ -4182,8 +4269,8 @@ final class ProvisioningService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
-                    AND ul.access_class = \'native_udp\'
-                    AND ul.native_udp_state = \'verified\'
+                     AND ((ul.access_class = \'native_udp\' AND ul.native_udp_state = \'verified\')
+                          OR ul.native_socks5_state = \'verified\')
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
@@ -4236,6 +4323,7 @@ final class ProvisioningService
                 'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
                 'access_class' => strtolower(trim((string) ($row['access_class'] ?? 'unknown'))),
                 'native_udp_state' => strtolower(trim((string) ($row['native_udp_state'] ?? 'unknown'))),
+                'native_socks5_state' => strtolower(trim((string) ($row['native_socks5_state'] ?? 'unknown'))),
                 'route_class' => strtolower(trim((string) ($row['route_class'] ?? 'unknown'))),
                 'pricing_class' => strtolower(trim((string) ($row['pricing_class'] ?? 'unknown'))),
                 'pricing_evidence' => trim((string) ($row['pricing_evidence'] ?? '')),
