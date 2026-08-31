@@ -38,7 +38,7 @@
   counts, latest relevant commit timestamps, dirty counts, and the selected
   source path. No source code is changed in this task.
 
-- [ ] **Step 1: Enumerate worktrees and compare both directions**
+- [x] **Step 1: Enumerate worktrees and compare both directions**
 
 Run:
 
@@ -56,18 +56,18 @@ foreach ($wt in $worktrees | Where-Object { $_ -match 'leikwan-br1' }) {
 }
 ```
 
-- [ ] **Step 2: Apply the freshness decision rule**
+- [x] **Step 2: Apply the freshness decision rule**
 
 Select `master` unless a worktree's relevant implementation commit is later
 than `master` and its scoped diff is reviewed. A branch that is ahead by count
 but also behind or timestamp-older is historical divergent WIP. Do not copy
 dirty files. Record the decision and the current `master` hash in the handoff.
 
-- [ ] **Step 3: Verify the audit document contains no secrets**
+- [x] **Step 3: Verify the audit document contains no secrets**
 
 Run `rg -ni "password|token|secret|private_key|credential" docs/handoffs/2026-09-01-native-outbound-baseline-audit.md` and ensure only field names or redaction markers occur.
 
-- [ ] **Step 4: Commit the baseline audit without staging source changes**
+- [x] **Step 4: Commit the baseline audit without staging source changes**
 
 ```text
 git add docs/handoffs/2026-09-01-native-outbound-baseline-audit.md
