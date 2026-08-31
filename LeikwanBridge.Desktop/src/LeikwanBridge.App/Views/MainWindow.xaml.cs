@@ -27,6 +27,10 @@ public partial class MainWindow : Window
     private bool _trayReady;
     private bool _proxyUiReady;
     private readonly WindowsAppUpdateService _updateService = new();
+    private readonly CancellationTokenSource _lifecycleCts = new();
+    private Task? _startupTask;
+    private bool _shutdownCloseRequested;
+    private bool _shutdownCloseFinalizing;
 
     public MainWindow()
     {
@@ -49,28 +53,55 @@ public partial class MainWindow : Window
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
 
-        Loaded += async (_, _) =>
+        Loaded += (_, _) =>
+        {
+            _startupTask = InitializeWindowAsync(_lifecycleCts.Token);
+        };
+        StateChanged += OnWindowStateChanged;
+    }
+
+    private async Task InitializeWindowAsync(CancellationToken ct)
+    {
+        try
         {
             EnsureTrayIcon();
-            if (await TryApplyPendingUpdateAsync())
+            ct.ThrowIfCancellationRequested();
+            if (await TryApplyPendingUpdateAsync().ConfigureAwait(true))
                 return;
+
+            ct.ThrowIfCancellationRequested();
             try
             {
-                await _vm.InitializeProxyAsync();
+                await _vm.InitializeProxyAsync(ct);
+                ct.ThrowIfCancellationRequested();
                 PopulateProxyUi();
                 _proxyUiReady = true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
                 SetProxyStatusError(ex.Message);
                 Log.Warning(ex, "local proxy initialization failed");
             }
-            await TryStartRequestedProxyAsync();
-            TryAutoConnect();
+
+            ct.ThrowIfCancellationRequested();
+            await TryStartRequestedProxyAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            await TryAutoConnectAsync(ct);
+            ct.ThrowIfCancellationRequested();
             if (WindowsAppUpdateService.ShouldCheckForUpdatesOnStartup(App.Config))
-                await CheckForUpdatesAsync();
-        };
-        StateChanged += OnWindowStateChanged;
+                await CheckForUpdatesAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "window startup task failed");
+        }
     }
 
     private async void OnConnect_Click(object sender, RoutedEventArgs e)
@@ -327,8 +358,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task TryStartRequestedProxyAsync()
+    private async Task TryStartRequestedProxyAsync(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var request = App.ConsumeStartupProxyRequest();
         if (request is null)
             return;
@@ -346,8 +378,11 @@ public partial class MainWindow : Window
         SetProxyStarting();
         try
         {
-            await _vm.StartProxyAsync(request.Mode, request.ProfileId, request.GameId);
+            await _vm.StartProxyAsync(request.Mode, request.ProfileId, request.GameId, ct);
             SaveCurrentConfig();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || _vm.IsShuttingDown)
+        {
         }
         catch (Exception ex)
         {
@@ -840,7 +875,7 @@ public partial class MainWindow : Window
 
     private async void OnCheckForUpdates_Click(object sender, RoutedEventArgs e)
     {
-        await CheckForUpdatesAsync();
+        await CheckForUpdatesAsync(_lifecycleCts.Token);
     }
 
     private async void OnInstallUpdateNow_Click(object sender, RoutedEventArgs e)
@@ -882,14 +917,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task CheckForUpdatesAsync()
+    private async Task CheckForUpdatesAsync(CancellationToken ct = default)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(App.Config.MasterUrl))
                 return;
 
-            var artifact = await _updateService.FetchWindowsClientArtifactAsync(App.Config.MasterUrl);
+            ct.ThrowIfCancellationRequested();
+            var artifact = await _updateService.FetchWindowsClientArtifactAsync(App.Config.MasterUrl, ct);
+            ct.ThrowIfCancellationRequested();
             var localVersion = GetCurrentAppVersion();
             App.Config.LastUpdateCheckAt = DateTimeOffset.UtcNow.ToString("O");
             SaveCurrentConfig();
@@ -904,6 +941,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (ct.IsCancellationRequested || _vm.IsShuttingDown)
+                return;
             _vm.ReportUpdateCheckFailedForTests(ex.Message);
             Log.Warning(ex, "update check failed");
         }
@@ -1069,14 +1108,72 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             HideToTray();
+            base.OnClosing(e);
+            return;
         }
-        else
+
+        // Closing can be raised more than once (for example when an explicit
+        // Application.Shutdown follows a tray exit). Keep the first event
+        // cancellable while asynchronous cleanup runs, then allow the final
+        // close through after all managed work has been stopped.
+        if (_shutdownCloseFinalizing)
         {
-            _trayLifecycle.MarkClosing();
-            _vm.DisconnectCommand.Execute(null);
-            DisposeTrayIcon();
+            base.OnClosing(e);
+            return;
         }
+
+        if (_shutdownCloseRequested)
+        {
+            e.Cancel = true;
+            base.OnClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        _shutdownCloseRequested = true;
+        _trayLifecycle.MarkClosing();
+        try { _lifecycleCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        _vm.RequestShutdown();
+        DisposeTrayIcon();
+        Hide();
+        _ = CompleteShutdownAndCloseAsync();
         base.OnClosing(e);
+    }
+
+    private async Task CompleteShutdownAndCloseAsync()
+    {
+        Task? shutdownTask = null;
+        try
+        {
+            // Signal VM shutdown immediately, then let the startup state
+            // machine observe cancellation in parallel. Waiting for startup
+            // first can add a full network timeout to every user exit.
+            shutdownTask = _vm.ShutdownForExitAsync();
+            try
+            {
+                await WaitForTaskAsync(_startupTask, TimeSpan.FromSeconds(8)).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "window startup task did not finish cleanly during shutdown");
+            }
+
+            await shutdownTask.WaitAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true);
+        }
+        catch (TimeoutException)
+        {
+            Log.Warning("desktop shutdown exceeded its wait budget; forcing application exit");
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "desktop shutdown cleanup failed; forcing application exit");
+        }
+        finally
+        {
+            _shutdownCloseFinalizing = true;
+            RequestApplicationShutdown();
+        }
     }
 
     protected override void OnClosed(EventArgs e)
@@ -1084,7 +1181,25 @@ public partial class MainWindow : Window
         DisposeTrayIcon();
         _vm.DisposeProxyForShutdown();
         _updateService.Dispose();
+        RequestApplicationShutdown();
         base.OnClosed(e);
+    }
+
+    private static async Task WaitForTaskAsync(Task? task, TimeSpan timeout)
+    {
+        if (task is null)
+            return;
+        try { await task.WaitAsync(timeout).ConfigureAwait(true); }
+        catch (OperationCanceledException) { }
+    }
+
+    private static void RequestApplicationShutdown()
+    {
+        var app = System.Windows.Application.Current;
+        if (app?.Dispatcher is null || app.Dispatcher.HasShutdownStarted || app.Dispatcher.HasShutdownFinished)
+            return;
+        try { app.Shutdown(0); }
+        catch (InvalidOperationException) { }
     }
 
     private void OnWindowStateChanged(object? sender, EventArgs e)
@@ -1128,8 +1243,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void TryAutoConnect()
+    private async Task TryAutoConnectAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(App.Config.MasterUrl);
         if (!string.Equals(App.Config.MasterUrl, normalizedMasterUrl, StringComparison.Ordinal))
         {
@@ -1140,9 +1256,19 @@ public partial class MainWindow : Window
             SettMasterUrl.Text = App.Config.MasterUrl;
         }
 
-        if (_vm.ShouldAutoConnectOnStartup)
+        if (!_vm.ShouldAutoConnectOnStartup)
+            return;
+
+        try
         {
-            _vm.ConnectCommand.Execute(null);
+            await _vm.ConnectCommand.ExecuteAsync(null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || _vm.IsShuttingDown)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "automatic connection failed");
         }
     }
 
@@ -1194,6 +1320,11 @@ public partial class MainWindow : Window
 
     private void ExitFromTray()
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(ExitFromTray));
+            return;
+        }
         if (_trayLifecycle.IsClosing)
             return;
 

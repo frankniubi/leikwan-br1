@@ -16,6 +16,7 @@ namespace LeikwanBridge.App.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    private static readonly TimeSpan ShutdownWaitTimeout = TimeSpan.FromSeconds(12);
     private AgentConfig _config;
     private MasterApiClient? _api;
     private StateManager? _stateManager;
@@ -35,6 +36,12 @@ public partial class MainViewModel : ObservableObject
     private WindowsClientAppArtifact? _availableUpdateArtifact;
     private DispatcherTimer? _usageTimer;
     private readonly RuntimeUsageReader _usageReader = new();
+    private readonly CancellationTokenSource _lifecycleCts = new();
+    private readonly object _shutdownGate = new();
+    private Task? _shutdownTask;
+    private Task? _heartbeatTask;
+    private Action<ClientMeta>? _clientUpdatedHandler;
+    private int _shutdownRequested;
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
@@ -73,6 +80,7 @@ public partial class MainViewModel : ObservableObject
 
     private readonly HashSet<int> _busyForwards = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
+    public bool IsShuttingDown => Volatile.Read(ref _shutdownRequested) != 0;
 
     public MainViewModel()
     {
@@ -92,6 +100,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public async Task InitializeProxyAsync(CancellationToken ct = default)
     {
+        ThrowIfShuttingDown();
         if (_proxyService is null)
         {
             var stateDir = _config.GetEffectiveStateDir();
@@ -117,13 +126,16 @@ public partial class MainViewModel : ObservableObject
         }
 
         await _proxyService.InitializeAsync(ct);
+        ThrowIfShuttingDown();
         if (_proxyGameStore is not null)
         {
             _proxyGameProfiles.Clear();
             _proxyGameProfiles.AddRange(await _proxyGameStore.LoadAsync(ct));
             await ImportDiscoveredNetchModesAsync(_proxyGameStore, ct);
+            ThrowIfShuttingDown();
             _proxyGameStoreInitialized = true;
         }
+        ThrowIfShuttingDown();
         _proxyServiceInitialized = true;
         RefreshProxyProfiles();
         RefreshProxyGameOptions();
@@ -471,6 +483,182 @@ public partial class MainViewModel : ObservableObject
         catch (Exception exception) { Log.Warning(exception, "failed to stop Windows proxy during shutdown"); }
     }
 
+    /// <summary>
+    /// Signals shutdown synchronously so any in-flight connect/start operation
+    /// cannot create new runtime processes while the window is closing.
+    /// Actual cleanup is started by <see cref="ShutdownForExitAsync"/>.
+    /// </summary>
+    public void RequestShutdown()
+    {
+        if (Interlocked.Exchange(ref _shutdownRequested, 1) != 0)
+            return;
+
+        try { _lifecycleCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        try { ConnectCommand.Cancel(); }
+        catch (Exception exception) { Log.Debug(exception, "connect cancellation during shutdown was unavailable"); }
+    }
+
+    /// <summary>
+    /// Stops all background work and managed child processes before the WPF
+    /// application exits. The operation is idempotent and runs off the UI
+    /// dispatcher so service continuations cannot deadlock window close.
+    /// </summary>
+    public Task ShutdownForExitAsync()
+    {
+        RequestShutdown();
+        lock (_shutdownGate)
+        {
+            return _shutdownTask ??= Task.Run(ShutdownCoreAsync);
+        }
+    }
+
+    private async Task ShutdownCoreAsync()
+    {
+        StopUsageRefreshSafely();
+
+        // ConnectAsync can still be in its panel handshake when the user
+        // closes the window. Wait briefly for its cancellation to settle so
+        // we capture every service it may have initialized.
+        await WaitForTaskAsync(ConnectCommand.ExecutionTask, "connect").ConfigureAwait(false);
+
+        var polling = Interlocked.Exchange(ref _pollingService, null);
+        var health = Interlocked.Exchange(ref _healthCheckService, null);
+        DetachServiceHandlers(polling, health);
+
+        var serviceStops = new List<Task>(2);
+        if (polling is not null)
+            serviceStops.Add(StopPollingAsync(polling));
+        if (health is not null)
+            serviceStops.Add(StopHealthAsync(health));
+        if (serviceStops.Count > 0)
+            await Task.WhenAll(serviceStops).ConfigureAwait(false);
+
+        Task? heartbeat;
+        lock (_shutdownGate)
+        {
+            heartbeat = _heartbeatTask;
+        }
+        await WaitForTaskAsync(heartbeat, "heartbeat").ConfigureAwait(false);
+
+        var runtime = Interlocked.Exchange(ref _runtimeManager, null);
+        var supervisor = Interlocked.Exchange(ref _supervisor, null);
+        try
+        {
+            runtime?.StopAll();
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "failed to stop managed forwards during shutdown");
+        }
+        finally
+        {
+            try { runtime?.Dispose(); }
+            catch (Exception exception) { Log.Warning(exception, "failed to dispose forward runtime during shutdown"); }
+            if (runtime is null)
+            {
+                try { supervisor?.Dispose(); }
+                catch (Exception exception) { Log.Warning(exception, "failed to dispose process supervisor during shutdown"); }
+            }
+        }
+
+        var proxy = Interlocked.Exchange(ref _proxyService, null);
+        if (proxy is not null)
+        {
+            proxy.SnapshotChanged -= HandleProxySnapshotChanged;
+            try { await proxy.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception exception) { Log.Warning(exception, "failed to dispose Windows proxy service during shutdown"); }
+        }
+
+        var api = Interlocked.Exchange(ref _api, null);
+        try { api?.Dispose(); }
+        catch (Exception exception) { Log.Warning(exception, "failed to dispose master API during shutdown"); }
+
+        _diagnostics = null;
+        _heartbeatService = null;
+        _wgManager = null;
+        _installedRuntimeCleanup = null;
+        _proxyGameStore = null;
+        _proxyGameProfiles.Clear();
+        _proxyGameStoreInitialized = false;
+        _proxyServiceInitialized = false;
+    }
+
+    private void DetachServiceHandlers(ConfigPollingService? polling, HealthCheckService? health)
+    {
+        if (polling is not null)
+        {
+            polling.ForwardsUpdated -= OnForwardsUpdated;
+            polling.PullStateChanged -= OnPullStateChanged;
+            polling.SyncError -= OnSyncError;
+            if (_clientUpdatedHandler is not null)
+                polling.ClientUpdated -= _clientUpdatedHandler;
+        }
+        _clientUpdatedHandler = null;
+        if (health is not null)
+            health.HealthIssue -= OnHealthIssue;
+    }
+
+    private async Task StopPollingAsync(ConfigPollingService polling)
+    {
+        try { await polling.StopAsync().WaitAsync(ShutdownWaitTimeout).ConfigureAwait(false); }
+        catch (TimeoutException) { Log.Warning("config polling did not stop before shutdown timeout"); }
+        catch (Exception exception) { Log.Warning(exception, "config polling stop failed during shutdown"); }
+    }
+
+    private async Task StopHealthAsync(HealthCheckService health)
+    {
+        try { await health.StopAsync().WaitAsync(ShutdownWaitTimeout).ConfigureAwait(false); }
+        catch (TimeoutException) { Log.Warning("health checks did not stop before shutdown timeout"); }
+        catch (Exception exception) { Log.Warning(exception, "health check stop failed during shutdown"); }
+    }
+
+    private async Task WaitForTaskAsync(Task? task, string name)
+    {
+        if (task is null)
+            return;
+        try
+        {
+            await task.WaitAsync(ShutdownWaitTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Log.Warning("{TaskName} task did not finish before shutdown timeout", name);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            Log.Debug(exception, "{TaskName} task failed while shutting down", name);
+        }
+    }
+
+    private void StopUsageRefreshSafely()
+    {
+        try
+        {
+            var timer = _usageTimer;
+            if (timer is null)
+                return;
+            if (timer.Dispatcher.CheckAccess())
+                StopUsageRefresh();
+            else
+                timer.Dispatcher.BeginInvoke(new Action(StopUsageRefresh));
+        }
+        catch (Exception exception)
+        {
+            Log.Debug(exception, "usage timer cleanup during shutdown failed");
+        }
+    }
+
+    private void ThrowIfShuttingDown()
+    {
+        if (IsShuttingDown)
+            throw new OperationCanceledException("application_shutdown_requested");
+    }
+
     public void DisposeProxyForShutdown()
     {
         try
@@ -674,6 +862,9 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task ConnectAsync(CancellationToken ct)
     {
+        using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifecycleCts.Token);
+        ct = lifecycle.Token;
+        ThrowIfShuttingDown();
         if (string.IsNullOrWhiteSpace(_config.MasterUrl) || string.IsNullOrWhiteSpace(_config.AgentToken))
             return;
 
@@ -686,6 +877,8 @@ public partial class MainViewModel : ObservableObject
             "windows-desktop");
 
         var ok = await _api.TestConnectionAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        ThrowIfShuttingDown();
         if (!ok)
         {
             ConnectionStatus = string.IsNullOrWhiteSpace(_api.LastErrorMessage)
@@ -732,7 +925,13 @@ public partial class MainViewModel : ObservableObject
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.PullStateChanged += OnPullStateChanged;
         _pollingService.SyncError += OnSyncError;
-        _pollingService.ClientUpdated += client => _diagnostics?.QueueDebugLogUpload(client, _api!, CancellationToken.None);
+        _clientUpdatedHandler = client =>
+        {
+            if (IsShuttingDown || _diagnostics is null || _api is null)
+                return;
+            _diagnostics.QueueDebugLogUpload(client, _api, _lifecycleCts.Token);
+        };
+        _pollingService.ClientUpdated += _clientUpdatedHandler;
         _healthCheckService.HealthIssue += OnHealthIssue;
 
         var installRoot = AppDefaults.GetInstallRoot();
@@ -740,6 +939,8 @@ public partial class MainViewModel : ObservableObject
         if (cleaned > 0)
             AddLog($"Stopped {cleaned} stale installed runtime process(es).");
 
+        ct.ThrowIfCancellationRequested();
+        ThrowIfShuttingDown();
         _pollingService.Start(_config.PollIntervalSeconds);
 
         AddLog("Connected to master panel.");
@@ -1117,18 +1318,31 @@ public partial class MainViewModel : ObservableObject
 
     private void OnForwardsUpdated(List<ForwardConfig> forwards)
     {
-        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+        if (IsShuttingDown)
+            return;
+
+        InvokeOnUiThread(() =>
         {
             ApplyForwardSnapshot(forwards, forwardId => _runtimeManager?.IsForwardRunning(forwardId) == true);
             _healthCheckService?.UpdateForwards(forwards);
         });
 
         // Send heartbeat after sync
-        Task.Run(async () =>
+        var heartbeatTask = Task.Run(async () =>
         {
-            try { await _heartbeatService!.SendHeartbeatAsync(); }
+            try
+            {
+                if (IsShuttingDown || _heartbeatService is null)
+                    return;
+                await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+            {
+            }
             catch (Exception ex) { Log.Error(ex, "heartbeat failed"); }
         });
+        lock (_shutdownGate)
+            _heartbeatTask = heartbeatTask;
     }
 
     public void ApplyUsageSnapshot(RuntimeUsageSnapshot snapshot)
@@ -1179,6 +1393,9 @@ public partial class MainViewModel : ObservableObject
 
     private void ApplyUltraPolicyActions(IReadOnlyList<UltraPolicyAction> actions)
     {
+        if (IsShuttingDown)
+            return;
+
         foreach (var action in actions.Take(32))
         {
             if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
@@ -1221,18 +1438,16 @@ public partial class MainViewModel : ObservableObject
 
     private void OnHealthIssue(int forwardId, string issue)
     {
-        System.Windows.Application.Current.Dispatcher.Invoke(() =>
-        {
-            AddLog($"Health issue on forward {forwardId}: {issue}");
-        });
+        if (IsShuttingDown)
+            return;
+        InvokeOnUiThread(() => AddLog($"Health issue on forward {forwardId}: {issue}"));
     }
 
     private void OnProcessOutput(int forwardId, string label, string line)
     {
-        System.Windows.Application.Current.Dispatcher.Invoke(() =>
-        {
-            AddLog($"[fwd-{forwardId}/{label}] {line}");
-        });
+        if (IsShuttingDown)
+            return;
+        InvokeOnUiThread(() => AddLog($"[fwd-{forwardId}/{label}] {line}"));
     }
 
     private void AddLog(string message)
@@ -1249,8 +1464,11 @@ public partial class MainViewModel : ObservableObject
         return app?.TryFindResource(key) as string ?? key;
     }
 
-    private static void InvokeOnUiThread(Action action)
+    private void InvokeOnUiThread(Action action)
     {
+        if (IsShuttingDown)
+            return;
+
         var app = System.Windows.Application.Current;
         if (app?.Dispatcher == null)
         {
@@ -1258,6 +1476,26 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        app.Dispatcher.Invoke(action);
+        var dispatcher = app.Dispatcher;
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return;
+        if (dispatcher.CheckAccess())
+        {
+            if (!IsShuttingDown)
+                action();
+            return;
+        }
+
+        try
+        {
+            dispatcher.Invoke(() =>
+            {
+                if (!IsShuttingDown)
+                    action();
+            });
+        }
+        catch (InvalidOperationException) when (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+        {
+        }
     }
 }
