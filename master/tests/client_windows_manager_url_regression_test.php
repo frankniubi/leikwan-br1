@@ -87,19 +87,25 @@ namespace {
     if (!str_contains($linuxCommand, 'artifacts/install-client-agent.sh')) {
         fail('expected Linux installer download to use artifact base URL');
     }
-    foreach (['bash', 'curl', 'ca-certificates', 'python3', 'coreutils'] as $package) {
-        if (!str_contains($linuxCommand, $package)) {
-            fail('expected Linux installer command to bootstrap ' . $package);
-        }
-    }
-    if (!str_contains($linuxCommand, 'sha256sum -c')) {
-        fail('expected Linux installer command to verify the downloaded installer');
+    if (!str_starts_with($linuxCommand, "curl -fsSL 'https://artifacts.example.com/artifacts/install-client-agent.sh' | bash -s --")) {
+        fail('expected Linux installer command to use the concise artifact bootstrap');
     }
     if (!str_contains($linuxCommand, "--master 'https://panel.example.com' --artifact-base 'https://artifacts.example.com'")) {
         fail('expected Linux installer command to pass separately quoted panel and artifact base URLs');
     }
+    if (!str_contains($linuxCommand, '--client-id 42')) {
+        fail('expected Linux installer command to pass the client id');
+    }
     if (!str_contains($linuxCommand, "--agent-token 'tok-42'")) {
         fail('expected Linux installer command to quote the agent token');
+    }
+    if (strlen($linuxCommand) >= 500) {
+        fail('expected Linux installer command to stay concise');
+    }
+    foreach (['apt-get', 'sha256sum -c', 'manifest=$(mktemp)', 'required Debian command'] as $forbidden) {
+        if (str_contains($linuxCommand, $forbidden)) {
+            fail('did not expect long dependency or manifest preflight in the displayed command: ' . $forbidden);
+        }
     }
 
     echo "ok\n";
