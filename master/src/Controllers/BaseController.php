@@ -270,9 +270,13 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = (string) ($client['agent_token'] ?? '');
 
-        return 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-client-agent.sh')
-            . ' | bash -s -- --master ' . $this->shellQuote($masterUrl)
-            . ' --artifact-base ' . $this->shellQuote($artifactBase)
+        $command = 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-client-agent.sh')
+            . ' | bash -s -- --master ' . $this->shellQuote($masterUrl);
+        if ($artifactBase !== $masterUrl) {
+            $command .= ' --artifact-base ' . $this->shellQuote($artifactBase);
+        }
+
+        return $command
             . ' --client-id ' . $clientId
             . ' --agent-token ' . $this->shellQuote($agentToken);
     }
