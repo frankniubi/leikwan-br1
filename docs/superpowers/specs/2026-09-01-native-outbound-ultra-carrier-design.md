@@ -12,6 +12,16 @@ Android. The user may choose whether mainland-China IP ranges bypass the
 outbound. Provider identity and provider credentials must not be exposed as
 product metadata or persisted client configuration.
 
+## Implementation Baseline Gate
+
+Before implementation code changes, enumerate all registered Git worktrees and
+compare each relevant worktree with `refs/heads/master` using both
+`master..worktree` and `worktree..master` commit counts, latest relevant commit
+timestamp, and dirty-file count. A worktree is selected only when its relevant
+implementation commit is newer than `master` after a scoped diff review;
+historical divergent or dirty worktrees are not copied automatically. Record
+the decision in the implementation handoff.
+
 ## Scope and Non-Goals
 
 ### In scope
@@ -267,18 +277,27 @@ Android and desktop tests must cover capability-gated visibility, no-node native
 startup, SOCKS5 TCP+UDP config generation, TUN startup, bypass-China on/off,
 lease expiry/renewal, cleanup, and fallback without changing imported profiles.
 
-Manual acceptance requires one approved `intl_to_cn` carrier forward and one
-plan with the flag enabled:
+Android acceptance is mandatory on a temporary local API 34 `x86_64` emulator,
+not only JVM or physical-device tests. The acceptance APK and its runtime
+inputs must contain both `arm64-v8a` and `x86_64` slices:
 
-1. Pull config shows `原生出口` only for the entitled client.
-2. Native mode starts with zero imported nodes and carries TCP traffic.
-3. UDP traffic and TUN capture work with bypass-China disabled.
-4. Enabling bypass-China sends mainland-China destinations direct while other
-   destinations remain on the native SOCKS5 outbound.
-5. A client cannot infer `leigod` from pull/lease JSON, UI text, logs, or stored
-   profile files.
-6. Disabling the plan flag hides the option after the next pull and prevents a
-   new lease even if an old carrier forward is still selected.
+- `libbox.aar` contains `jni/arm64-v8a/libbox.so` and
+  `jni/x86_64/libbox.so`;
+- `ultra-client` assets and `libultra_client.so` are built for Android
+  `arm64` and `amd64` and placed under the matching ABI directories;
+- the QA build is produced with the emulator-compatible ABI enabled and fails
+  if either slice is missing.
+
+The temporary VM must boot, install the QA APK, show the entitlement-gated GUI,
+start TUN with zero imported nodes, pass controlled TCP and UDP traffic, renew
+one lease, and leave no lease credential after stop. The exact commands,
+redacted evidence files, and pass/fail table live in
+`docs/superpowers/runbooks/2026-09-01-native-outbound-acceptance.md`.
+
+Windows and macOS acceptance uses the already available test machines. No new
+machine provisioning is required; each platform must still pass the same
+entitlement visibility, no-node startup, TCP/UDP, bypass-China, lease-revoke,
+and provider-redaction checks described in the runbook.
 
 ## Linux Follow-up
 

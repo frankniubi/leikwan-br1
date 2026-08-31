@@ -19,9 +19,59 @@
 - Only `native_socks5_state=verified` candidates may be issued; provider names, source IDs, line IDs, and credentials never enter normal client config, profile stores, logs, or diagnostics.
 - Native lease TTL stays within 60-300 seconds, uses a fresh nonce on every issue/renewal, and shares the existing `ultra_client_leases` replay/revocation fence.
 - TCP+UDP and TUN must work without an imported user node. Existing China-IP bypass controls remain user-selectable and default off.
+- Android acceptance requires a QA APK with both `arm64-v8a` and `x86_64` `libbox` and runtime artifacts; a missing ABI is a build failure.
+- Android acceptance runs on the temporary local API 34 AVD `LeiKwan_QA_API34` and must produce the redacted evidence listed in `docs/superpowers/runbooks/2026-09-01-native-outbound-acceptance.md`.
+- Windows and macOS acceptance uses the already available test machines; no machine provisioning task is added.
 - Preserve all unrelated dirty worktree changes. Stage only files belonging to the current task when committing.
 
 ---
+
+### Task 0: Establish the implementation baseline before coding
+
+**Files:**
+- Create: `docs/handoffs/2026-09-01-native-outbound-baseline-audit.md`
+- Read-only inputs: all paths from `git worktree list --porcelain`
+
+**Interfaces:**
+- Produces a recorded baseline commit, relevant worktree paths, `ahead`/`behind`
+  counts, latest relevant commit timestamps, dirty counts, and the selected
+  source path. No source code is changed in this task.
+
+- [ ] **Step 1: Enumerate worktrees and compare both directions**
+
+Run:
+
+```powershell
+$root = (Get-Location).Path
+$master = (git rev-parse refs/heads/master).Trim()
+$worktrees = @(git worktree list --porcelain | Where-Object { $_ -like 'worktree *' } | ForEach-Object { $_.Substring(9) })
+foreach ($wt in $worktrees | Where-Object { $_ -match 'leikwan-br1' }) {
+    $head = (git -C $wt rev-parse HEAD).Trim()
+    $ahead = git -C $root rev-list --count "$master..$head"
+    $behind = git -C $root rev-list --count "$head..$master"
+    $dirty = @(git -C $wt status --porcelain)
+    git -C $wt log -1 --format="%ci|%H|%s"
+    "$wt|ahead=$ahead|behind=$behind|dirty=$($dirty.Count)"
+}
+```
+
+- [ ] **Step 2: Apply the freshness decision rule**
+
+Select `master` unless a worktree's relevant implementation commit is later
+than `master` and its scoped diff is reviewed. A branch that is ahead by count
+but also behind or timestamp-older is historical divergent WIP. Do not copy
+dirty files. Record the decision and the current `master` hash in the handoff.
+
+- [ ] **Step 3: Verify the audit document contains no secrets**
+
+Run `rg -ni "password|token|secret|private_key|credential" docs/handoffs/2026-09-01-native-outbound-baseline-audit.md` and ensure only field names or redaction markers occur.
+
+- [ ] **Step 4: Commit the baseline audit without staging source changes**
+
+```text
+git add docs/handoffs/2026-09-01-native-outbound-baseline-audit.md
+git commit -m "docs: record native outbound implementation baseline"
+```
 
 ### Task 1: Add the plan entitlement and inventory schema
 
@@ -594,14 +644,113 @@ git add leikwan-android/app/src/main/java/com/leikwan/bridge/ui leikwan-android/
 git commit -m "feat(android): show entitlement-gated native outbound UI"
 ```
 
-### Task 9: Cross-platform regression, documentation, and acceptance evidence
+### Task 9: Produce Android dual-ABI artifacts and run the temporary VM gate
+
+**Files:**
+- Modify: `scripts/build-ultra-android.ps1`
+- Modify: `scripts/build-nekobox-libcore.ps1`
+- Modify: `leikwan-android/app/build.gradle.kts`
+- Create: `scripts/verify-android-native-artifacts.ps1`
+- Create: `scripts/qa-android-native-outbound.ps1`
+- Test: `leikwan-android/app/src/test/java/com/leikwan/bridge/runtime/RuntimeBinaryInstallerTest.kt`
+
+**Interfaces:**
+- `build-ultra-android.ps1 -Architectures arm64,amd64` writes both executable
+  assets and both `libultra_client.so` ABI copies, and validates ELF machines
+  183 (`arm64`) and 62 (`x86_64`).
+- `build-nekobox-libcore.ps1 -Targets 'android/arm64,android/amd64'` writes an
+  AAR containing `jni/arm64-v8a/libbox.so` and `jni/x86_64/libbox.so`.
+- `verify-android-native-artifacts.ps1 -Apk <path>` exits non-zero if any
+  required ABI or runtime asset is missing or has the wrong ELF machine.
+- `qa-android-native-outbound.ps1 -Apk <path> -AvdName LeiKwan_QA_API34`
+  starts a non-persistent emulator, runs connected tests, installs the APK,
+  waits for boot, and always stops the emulator.
+
+- [ ] **Step 1: Write artifact and VM harness tests first**
+
+Assert the artifact verifier accepts a fixture containing both ABI directories,
+rejects an arm64-only AAR/APK, and maps ELF `e_machine=62` to `x86_64`. Assert
+the VM harness targets only `emulator-5556`, waits for `sys.boot_completed=1`,
+and executes cleanup when installation or tests fail.
+
+- [ ] **Step 2: Run the focused tests before implementation**
+
+```text
+cd leikwan-android
+./gradlew testDebugUnitTest --tests '*RuntimeBinaryInstallerTest*'
+cd ..
+pwsh -File scripts/verify-android-native-artifacts.ps1 -Apk artifacts/android/missing.apk
+```
+
+Expected: the Kotlin test or verifier fails because x86_64 artifacts and the
+verification script do not yet exist.
+
+- [ ] **Step 3: Make the Android build emit both ABIs**
+
+Update `build-ultra-android.ps1` to iterate `arm64`/`amd64`, set
+`GOARCH` accordingly, copy to `app/src/main/assets/runtime/arm64-v8a` and
+`runtime/x86_64`, and copy matching `.so` files to `app/src/main/jniLibs`.
+Keep the reproducibility check per architecture and reject a wrong ELF header.
+
+Update `build-nekobox-libcore.ps1` to use `%LOCALAPPDATA%\\Android\\Sdk` (or an
+explicit `ANDROID_HOME`) and invoke the checked-in gomobile command with:
+
+```text
+gomobile-matsuri bind -v -androidapi 21 -target=android/arm64,android/amd64 -trimpath -ldflags="-s -w" -tags="with_conntrack,with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api" .
+```
+
+Fail if `libbox.aar` does not contain both `jni/` slices. In
+`build.gradle.kts`, enable `x86_64` when `qatest=true` or
+`androidX86=true`; keep the existing arm64 production default unless the
+release build explicitly opts into the second ABI.
+
+- [ ] **Step 4: Add artifact verification and the non-persistent VM harness**
+
+`verify-android-native-artifacts.ps1` must inspect the APK/AAR zip entries,
+validate both ELF machines, print only paths/hashes, and return exit code 1 on
+missing or mismatched artifacts. `qa-android-native-outbound.ps1` must launch:
+
+```text
+emulator.exe -avd LeiKwan_QA_API34 -port 5556 -read-only -no-snapshot-load -no-snapshot-save -no-boot-anim -no-window
+```
+
+It waits for `emulator-5556`, checks `ro.product.cpu.abilist` includes
+`x86_64`, installs the QA APK, runs `:app:connectedDebugAndroidTest`, writes
+redacted UI/log/VPN evidence, and kills the instance in `finally`. No existing
+AVD data is wiped or modified.
+
+- [ ] **Step 5: Run the complete Android VM acceptance**
+
+```powershell
+.\\scripts\\build-ultra-android.ps1 -Version 2026.09.01.1 -Architectures arm64,amd64
+.\\scripts\\build-nekobox-libcore.ps1 -Targets 'android/arm64,android/amd64'
+cd leikwan-android
+.\\gradlew.bat :app:assembleDebug -Pqatest=true -PandroidX86=true
+cd ..
+.\\scripts\\verify-android-native-artifacts.ps1 -Apk leikwan-android/app/build/outputs/apk/debug/app-debug.apk
+.\\scripts\\qa-android-native-outbound.ps1 -Apk leikwan-android/app/build/outputs/apk/debug/app-debug.apk -AvdName LeiKwan_QA_API34
+```
+
+The harness is not a substitute for the functional native-mode checks: use the
+runbook's entitled test client to verify no-node startup, TUN, TCP, UDP,
+bypass-China, renewal, revocation, and credential cleanup on the same running
+VM. Record every pass/fail row and evidence filename.
+
+- [ ] **Step 6: Commit only the build/harness files and tests**
+
+```text
+git add scripts/build-ultra-android.ps1 scripts/build-nekobox-libcore.ps1 scripts/verify-android-native-artifacts.ps1 scripts/qa-android-native-outbound.ps1 leikwan-android/app/build.gradle.kts leikwan-android/app/src/test/java/com/leikwan/bridge/runtime/RuntimeBinaryInstallerTest.kt
+git commit -m "test(android): add dual-ABI VM acceptance gate"
+```
+
+### Task 10: Cross-platform regression, documentation, and acceptance evidence
 
 **Files:**
 - Modify: `docs/windows-proxy.md` (managed native mode section)
 - Create: `docs/handoffs/2026-09-01-native-outbound-implementation-handoff.md`
 - Test: existing panel, desktop, and Android suites listed below
 
-- [ ] **Step 1: Run all focused automated suites**
+- [ ] **Step 1: Run all focused automated suites and the acceptance harness**
 
 ```text
 php master/tests/native_outbound_plan_entitlement_test.php
@@ -609,16 +758,21 @@ php master/tests/native_outbound_lease_contract_test.php
 php master/tests/native_outbound_pull_visibility_test.php
 php master/tests/native_socks5_inventory_state_test.php
 php master/tests/ultra_policy_lease_contract_test.php
+php master/tests/native_socks5_probe_test.php
 dotnet test LeikwanBridge.Desktop/LeikwanBridge.Desktop.sln --no-restore
 cd leikwan-android; ./gradlew testDebugUnitTest; cd ..
+pwsh -File scripts/qa-android-native-outbound.ps1 -Apk leikwan-android/app/build/outputs/apk/debug/app-debug.apk -AvdName LeiKwan_QA_API34
 ```
 
 - [ ] **Step 2: Perform the three-platform manual acceptance**
 
-Use one active `intl_to_cn` Ultra carrier and one plan with the flag enabled:
+Use one active `intl_to_cn` Ultra carrier and one plan with the flag enabled;
+follow every row in `docs/superpowers/runbooks/2026-09-01-native-outbound-acceptance.md`:
 
 1. Entitled pull contains `native_outbound`; a disallowed pull omits it.
-2. Windows, macOS, and Android start native mode with zero imported nodes.
+2. Windows and macOS start native mode with zero imported nodes on their
+   existing test machines; Android performs the same check on the temporary
+   x86_64 VM.
 3. TCP and UDP pass through the standard SOCKS5 lease in TUN mode.
 4. Bypass-China off tunnels all destinations; on sends CN ranges direct.
 5. Lease renewal succeeds before expiry; revocation stops new leases.
@@ -628,13 +782,14 @@ Use one active `intl_to_cn` Ultra carrier and one plan with the flag enabled:
 - [ ] **Step 3: Record known platform limits and Linux follow-up**
 
 Document Windows administrator/TUN permission requirements, macOS VPN consent,
-Android `VpnService` behavior, and the Linux follow-up as contract reuse only.
+Android `VpnService` behavior, temporary VM limitations, and the Linux follow-up
+as contract reuse only.
 Do not claim Linux client delivery in this release.
 
 - [ ] **Step 4: Commit documentation and final verification**
 
 ```text
-git add docs/windows-proxy.md docs/handoffs/2026-09-01-native-outbound-implementation-handoff.md
+git add docs/windows-proxy.md docs/handoffs/2026-09-01-native-outbound-implementation-handoff.md docs/superpowers/runbooks/2026-09-01-native-outbound-acceptance.md
 git commit -m "docs: record native outbound rollout and acceptance"
 git diff --check master...HEAD
 git status --short
