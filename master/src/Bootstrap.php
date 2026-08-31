@@ -389,6 +389,8 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/ultra/ultra-client_linux_amd64', [$artifacts, 'ultraClient']);
         $this->router->add('GET', '/artifacts/ultra/ultra-client_windows_amd64.exe', [$artifacts, 'ultraClientWindows']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_macos_amd64', [$artifacts, 'ultraClientMacosX64']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_macos_arm64', [$artifacts, 'ultraClientMacosArm64']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);
