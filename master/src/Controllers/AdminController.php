@@ -5865,6 +5865,7 @@ HTML;
             'allow_custom_slaves' => 'Allow custom slaves',
             'allow_inbound_proxy' => 'Allow inbound proxy',
             'allow_latency_test' => 'Allow latency test',
+            'allow_native_outbound' => 'Native outbound / 原生出口',
         ];
 
         $html = '';
