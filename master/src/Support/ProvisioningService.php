@@ -12657,6 +12657,7 @@ final class ProvisioningService
             'allow_custom_slaves' => false,
             'allow_inbound_proxy' => false,
             'allow_latency_test' => false,
+            'allow_native_outbound' => false,
         ];
     }
 
@@ -12712,6 +12713,18 @@ final class ProvisioningService
             }
         }
         return $flags;
+    }
+
+    /**
+     * Native outbound is an administrator-controlled plan capability. User
+     * feature flags are deliberately ignored so they cannot elevate a plan.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw) && ($raw['allow_native_outbound'] ?? false) === true;
     }
 
     /**
