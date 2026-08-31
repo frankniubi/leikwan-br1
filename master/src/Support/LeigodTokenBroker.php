@@ -245,6 +245,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                     'destination_zone' => $this->zone((string) ($rawLine['destination_zone'] ?? 'unknown')),
                     'access_class' => $this->classification($rawLine['access_class'] ?? 'unknown'),
                     'native_udp_state' => $this->classification($rawLine['native_udp_state'] ?? 'unknown'),
+                    'native_socks5_state' => $this->nativeSocks5State($rawLine['native_socks5_state'] ?? 'unknown'),
                     'pricing_class' => $this->pricingClass($rawLine['pricing_class'] ?? 'unknown'),
                     'pricing_evidence' => substr(trim((string) ($rawLine['pricing_evidence'] ?? '')), 0, 255),
                 ];
@@ -356,6 +357,14 @@ final class LeigodTokenBroker implements LeigodTokenProvider
     {
         $normalized = strtolower(trim((string) $value));
         return in_array($normalized, ['native_udp', 'wireguard_only', 'wireguard', 'dynamic', 'dynamic_ingress', 'relay_unreachable', 'unknown', 'verified', 'failed', 'unverified'], true)
+            ? $normalized
+            : 'unknown';
+    }
+
+    private function nativeSocks5State(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, UltraInventoryService::NATIVE_SOCKS5_STATES, true)
             ? $normalized
             : 'unknown';
     }
