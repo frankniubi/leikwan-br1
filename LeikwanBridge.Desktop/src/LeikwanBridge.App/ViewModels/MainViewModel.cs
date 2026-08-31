@@ -534,6 +534,11 @@ public partial class MainViewModel : ObservableObject
             serviceStops.Add(StopHealthAsync(health));
         if (serviceStops.Count > 0)
             await Task.WhenAll(serviceStops).ConfigureAwait(false);
+        if (health is not null)
+        {
+            try { health.Dispose(); }
+            catch (Exception exception) { Log.Warning(exception, "health check disposal failed during shutdown"); }
+        }
 
         Task? heartbeat;
         lock (_shutdownGate)

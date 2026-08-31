@@ -13,7 +13,7 @@ namespace LeikwanBridge.Core.Services;
 /// Periodic health checks for running forwards.
 /// Port of client_agent.py:ensure_runtime_health().
 /// </summary>
-public sealed class HealthCheckService
+public sealed class HealthCheckService : IDisposable
 {
     private readonly IProcessSupervisor _supervisor;
     private readonly ForwardRuntimeManager _runtimeManager;
@@ -29,6 +29,8 @@ public sealed class HealthCheckService
 
     private CancellationTokenSource? _cts;
     private Task? _checkTask;
+    private int _stopRequested;
+    private bool _disposed;
 
     public event Action<int, string>? HealthIssue;
 
@@ -54,7 +56,11 @@ public sealed class HealthCheckService
 
     public void Start(List<ForwardConfig> forwards, int intervalSeconds = 20)
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(HealthCheckService));
+
         UpdateForwards(forwards);
+        Volatile.Write(ref _stopRequested, 0);
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -80,7 +86,11 @@ public sealed class HealthCheckService
             _forwards[forward.ForwardId] = forward;
     }
 
-    public void Stop() => _cts?.Cancel();
+    public void Stop()
+    {
+        Volatile.Write(ref _stopRequested, 1);
+        _cts?.Cancel();
+    }
 
     public async Task StopAsync()
     {
@@ -95,6 +105,16 @@ public sealed class HealthCheckService
         catch (OperationCanceledException)
         {
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        Stop();
+        _supervisor.ProcessExited -= HandleProcessExited;
     }
 
     public Task RunCheckOnceAsync(List<ForwardConfig> forwards, CancellationToken ct = default)
@@ -439,6 +459,9 @@ public sealed class HealthCheckService
 
     private void HandleProcessExited(int forwardId, string role)
     {
+        if (Volatile.Read(ref _stopRequested) != 0 || _disposed)
+            return;
+
         if (!_forwards.TryGetValue(forwardId, out var forward))
             return;
 

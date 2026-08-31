@@ -120,6 +120,31 @@ public sealed class HealthCheckServiceTests
     }
 
     [Fact]
+    public void ProcessExited_AfterStop_DoesNotRestartAForwardDuringShutdown()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new ForceRecordingForwardRuntimeManager(stateManager, supervisor);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["26"] = CreateAppliedBondState(),
+        });
+        supervisor.RunningRoles.UnionWith(["bond-ingress-leg-0", "bond-ingress-leg-1", "bond-runtime"]);
+        var service = new HealthCheckService(
+            supervisor,
+            runtimeManager,
+            stateManager,
+            port => port is 11024 or 20962 or 20963);
+
+        service.UpdateForwards([CreatePlainTcpMuxBondForward()]);
+        service.Stop();
+        supervisor.TriggerExit(26, "bond-ingress-leg-0");
+
+        Assert.Empty(runtimeManager.RestartRequests);
+    }
+
+    [Fact]
     public async Task RunCheckOnceAsync_UserStoppedForward_DoesNotRestart()
     {
         using var tempDir = new TempStateDirectory();
