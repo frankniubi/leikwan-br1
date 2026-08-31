@@ -10,6 +10,10 @@ final class UltraInventoryService
 {
     public const MAX_INVENTORY_LINES = 256;
     public const MAX_INVENTORY_BYTES = 262144;
+    public const ACCESS_CLASSES = ['native_udp', 'wireguard_only', 'wireguard', 'dynamic', 'dynamic_ingress', 'relay_unreachable', 'unknown'];
+    public const NATIVE_UDP_STATES = ['verified', 'failed', 'unverified', 'unknown'];
+    public const ROUTE_CLASSES = ['bgp', 'single_telecom', 'wireguard', 'direct', 'relay', 'generic', 'unknown'];
+    public const PRICING_CLASSES = ['paid', 'mixed', 'free', 'unknown'];
 
     /** @var callable(): int */
     private $clock;
@@ -76,6 +80,14 @@ final class UltraInventoryService
         if ($discoveryIp !== '' && filter_var($discoveryIp, FILTER_VALIDATE_IP) === false) {
             return null;
         }
+        $rawAccess = self::normalizeEnum($raw['access_class'] ?? 'unknown', self::ACCESS_CLASSES);
+        $rawNativeState = array_key_exists('native_udp_state', $raw)
+            ? self::normalizeEnum($raw['native_udp_state'], self::NATIVE_UDP_STATES)
+            : 'unknown';
+        $auditHash = strtolower(trim((string) ($raw['audit_hash'] ?? '')));
+        if ($auditHash !== '' && preg_match('/^[a-f0-9]{64}$/', $auditHash) !== 1) {
+            $auditHash = null;
+        }
         $timestamp = gmdate('Y-m-d H:i:s', $now);
         return [
             'line_id' => $lineId,
@@ -88,12 +100,18 @@ final class UltraInventoryService
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
             'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,
             'config_sha256' => $configSha,
+            'access_class' => $rawAccess,
+            'native_udp_state' => $rawNativeState,
+            'route_class' => self::normalizeEnum($raw['route_class'] ?? 'unknown', self::ROUTE_CLASSES),
+            'pricing_class' => self::normalizeEnum($raw['pricing_class'] ?? 'unknown', self::PRICING_CLASSES),
+            'pricing_evidence' => self::cleanText($raw['pricing_evidence'] ?? '', 255) ?: null,
+            'audit_at' => self::normalizeAuditTimestamp($raw['audit_at'] ?? $raw['audited_at'] ?? null),
+            'audit_hash' => $auditHash !== '' ? $auditHash : null,
             'auto_ingress_zone' => self::classifyText($catalogIngress !== '' ? $catalogIngress : $classificationText, $zonesByRole['ingress'] ?? []),
             'auto_destination_zone' => self::classifyText($catalogDestination !== '' ? $catalogDestination : $classificationText, $zonesByRole['destination'] ?? []),
             'last_discovered_at' => $timestamp,
             'is_source_present' => 1,
-            // Operators approved full inventory activation for registered sources.
-            'is_enabled' => 1,
+            'is_enabled' => $rawAccess === 'native_udp' && $rawNativeState === 'verified' ? 1 : 0,
             'sort_order' => $lineId,
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
@@ -166,11 +184,15 @@ final class UltraInventoryService
                 $db->execute(
                     'INSERT INTO ultra_lines
                         (source_id, line_id, source_title, source_family_key, game_id, area_id, line_type,
-                         discovery_ip, catalog_ingress_label, catalog_destination_label, config_sha256, auto_ingress_zone, auto_destination_zone,
+                         discovery_ip, catalog_ingress_label, catalog_destination_label, config_sha256,
+                         access_class, native_udp_state, route_class, pricing_class, pricing_evidence, audit_at, audit_hash,
+                         auto_ingress_zone, auto_destination_zone,
                          last_discovered_at, is_source_present, is_enabled, sort_order, created_at, updated_at)
                      VALUES
                         (:source_id, :line_id, :source_title, :source_family_key, :game_id, :area_id, :line_type,
-                         :discovery_ip, :catalog_ingress_label, :catalog_destination_label, :config_sha256, :auto_ingress_zone, :auto_destination_zone,
+                         :discovery_ip, :catalog_ingress_label, :catalog_destination_label, :config_sha256,
+                         :access_class, :native_udp_state, :route_class, :pricing_class, :pricing_evidence, :audit_at, :audit_hash,
+                         :auto_ingress_zone, :auto_destination_zone,
                          :last_discovered_at, :is_source_present, :is_enabled, :sort_order, :created_at, :updated_at)
                      ON DUPLICATE KEY UPDATE
                         source_title = VALUES(source_title),
@@ -182,6 +204,13 @@ final class UltraInventoryService
                         catalog_ingress_label = VALUES(catalog_ingress_label),
                         catalog_destination_label = VALUES(catalog_destination_label),
                         config_sha256 = VALUES(config_sha256),
+                        access_class = VALUES(access_class),
+                        native_udp_state = VALUES(native_udp_state),
+                        route_class = VALUES(route_class),
+                        pricing_class = VALUES(pricing_class),
+                        pricing_evidence = VALUES(pricing_evidence),
+                        audit_at = VALUES(audit_at),
+                        audit_hash = VALUES(audit_hash),
                         auto_ingress_zone = VALUES(auto_ingress_zone),
                         auto_destination_zone = VALUES(auto_destination_zone),
                         last_discovered_at = VALUES(last_discovered_at),
@@ -278,6 +307,18 @@ final class UltraInventoryService
             if ($value !== '') {
                 $where[] = $column . ' = :' . $key;
                 $params[$key] = $value;
+            }
+        }
+        foreach (['access_class', 'native_udp_state', 'route_class', 'pricing_class'] as $key) {
+            $value = self::cleanText($filters[$key] ?? '', 32);
+            if ($value !== '' && self::normalizeEnum($value, match ($key) {
+                'access_class' => self::ACCESS_CLASSES,
+                'native_udp_state' => self::NATIVE_UDP_STATES,
+                'route_class' => self::ROUTE_CLASSES,
+                default => self::PRICING_CLASSES,
+            }) === $value) {
+                $where[] = 'ul.' . $key . ' = :' . $key;
+                $params[$key] = strtolower($value);
             }
         }
         $materialRequired = self::materialRequiredSql();
@@ -490,6 +531,22 @@ final class UltraInventoryService
             return '';
         }
         return function_exists('mb_substr') ? mb_substr($text, 0, $maxLength, 'UTF-8') : substr($text, 0, $maxLength);
+    }
+
+    private static function normalizeEnum(mixed $value, array $allowed): string
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, $allowed, true) ? $normalized : 'unknown';
+    }
+
+    private static function normalizeAuditTimestamp(mixed $value): ?string
+    {
+        $text = self::cleanText($value, 64);
+        if ($text === '') {
+            return null;
+        }
+        $timestamp = strtotime($text);
+        return $timestamp === false ? null : gmdate('Y-m-d H:i:s', $timestamp);
     }
 
     private static function lower(string $value): string

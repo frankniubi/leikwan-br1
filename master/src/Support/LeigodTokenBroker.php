@@ -243,6 +243,10 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                     'source_id' => $sourceId,
                     'ingress_zone' => $this->zone((string) ($rawLine['ingress_zone'] ?? 'unknown')),
                     'destination_zone' => $this->zone((string) ($rawLine['destination_zone'] ?? 'unknown')),
+                    'access_class' => $this->classification($rawLine['access_class'] ?? 'unknown'),
+                    'native_udp_state' => $this->classification($rawLine['native_udp_state'] ?? 'unknown'),
+                    'pricing_class' => $this->pricingClass($rawLine['pricing_class'] ?? 'unknown'),
+                    'pricing_evidence' => substr(trim((string) ($rawLine['pricing_evidence'] ?? '')), 0, 255),
                 ];
                 if (count($lines) >= 8) {
                     break;
@@ -346,6 +350,20 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         return in_array($policy, ['detected_only', 'detected_then_any', 'any'], true)
             ? $policy
             : 'detected_then_any';
+    }
+
+    private function classification(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['native_udp', 'wireguard_only', 'wireguard', 'dynamic', 'dynamic_ingress', 'relay_unreachable', 'unknown', 'verified', 'failed', 'unverified'], true)
+            ? $normalized
+            : 'unknown';
+    }
+
+    private function pricingClass(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['paid', 'mixed', 'free', 'unknown'], true) ? $normalized : 'unknown';
     }
 
     private function maxTtlSeconds(): int

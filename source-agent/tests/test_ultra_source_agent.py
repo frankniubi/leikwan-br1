@@ -210,7 +210,7 @@ class UltraSourceAgentTests(unittest.TestCase):
         self.assertNotIn("pc_port", encoded)
         self.assertNotIn("credential", encoded)
 
-    def test_inventory_uses_fully_scanned_catalog_as_current_availability_boundary(self):
+    def test_inventory_keeps_local_config_when_catalog_omits_line(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lines = root / "lines"
@@ -244,7 +244,7 @@ class UltraSourceAgentTests(unittest.TestCase):
             inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
 
         self.assertTrue(inventory["complete"])
-        self.assertEqual([453], [line["line_id"] for line in inventory["lines"]])
+        self.assertEqual([453, 460], [line["line_id"] for line in inventory["lines"]])
 
     def test_inventory_keeps_local_configs_until_every_catalog_pair_has_succeeded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -272,6 +272,144 @@ class UltraSourceAgentTests(unittest.TestCase):
             inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
 
         self.assertEqual([453, 455], [line["line_id"] for line in inventory["lines"]])
+
+    def test_inventory_unions_index_and_audit_manifest_without_catalog_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            (lines / "453.toml").write_text(
+                "[acc]\ngame_id = 6262\narea_id = 11796\nline_type = 8\nline_id = 453\n",
+                encoding="utf-8",
+            )
+            index = lines / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "lines": [
+                            {"line_id": 453, "title": "local line", "speed_ip": "203.0.113.1"},
+                            {"line_id": 460, "title": "index-only line", "game_id": 6262, "area_id": 11796},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            audit = root / "line-audit.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "access_class": "paid",
+                            "native_udp_state": "verified",
+                            "route_class": "direct",
+                            "pricing_class": "monthly",
+                            "pricing_evidence": "default-plan",
+                        },
+                        "audit": {
+                            "timestamp": "2026-08-30T00:00:00Z",
+                            "sha256": "b" * 64,
+                        },
+                        "lines": [
+                            {
+                                "line_id": 119,
+                                "game_id": 6262,
+                                "area_id": 11796,
+                                "line_type": 8,
+                                "access_class": "paid",
+                                "native_udp_state": "verified",
+                                "route_class": "direct",
+                                "pricing_class": "monthly",
+                                "pricing_evidence": "plan-119",
+                                "audit_at": "2026-08-31T00:00:00Z",
+                                "audit_hash": "a" * 64,
+                                "account_password": "must-not-survive",
+                            },
+                            {"line_id": 120},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            catalog = root / "catalog-cache.json"
+            catalog.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {"453": {"line_id": 453, "title": "catalog line"}},
+                        "pairs": {"6262:11796": {"last_success_at": 10_000}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(
+                lines,
+                index,
+                catalog_path=catalog,
+                audit_manifest_path=audit,
+                max_lines=256,
+            )
+
+        self.assertEqual([119, 120, 453, 460], [line["line_id"] for line in inventory["lines"]])
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(2, inventory["schema_version"])
+        audit_line = inventory["lines"][0]
+        self.assertEqual("paid", audit_line["access_class"])
+        self.assertEqual("verified", audit_line["native_udp_state"])
+        self.assertEqual("direct", audit_line["route_class"])
+        self.assertEqual("monthly", audit_line["pricing_class"])
+        self.assertEqual("plan-119", audit_line["pricing_evidence"])
+        self.assertEqual("2026-08-31T00:00:00Z", audit_line["audit_at"])
+        self.assertEqual("a" * 64, audit_line["audit_hash"])
+        self.assertNotIn("account_password", json.dumps(inventory).lower())
+        self.assertEqual("paid", inventory["lines"][1]["access_class"])
+        self.assertEqual("2026-08-30T00:00:00Z", inventory["lines"][1]["audit_at"])
+        self.assertEqual("b" * 64, inventory["lines"][1]["audit_hash"])
+        self.assertEqual("unknown", inventory["lines"][2]["access_class"])
+        self.assertEqual("unknown", inventory["lines"][2]["audit_hash"])
+
+        with tempfile.TemporaryDirectory() as single_directory:
+            single = Path(single_directory) / "single-audit.json"
+            single.write_text(
+                json.dumps(
+                    {
+                        "line": {"line_id": 118, "title": "nested line"},
+                        "audit": {"native_udp_state": "verified", "sha256": "c" * 64},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            single_records = MODULE._line_audit_manifest(single)
+        self.assertEqual([118], list(single_records))
+        self.assertEqual("verified", single_records[118]["native_udp_state"])
+        self.assertEqual("c" * 64, single_records[118]["sha256"])
+
+    def test_inventory_119_lines_is_complete_and_has_schema_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lines = Path(directory)
+            for line_id in range(119, 0, -1):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            inventory = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+
+        self.assertEqual(119, len(inventory["lines"]))
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(list(range(1, 120)), [line["line_id"] for line in inventory["lines"]])
+        self.assertEqual(2, inventory["schema_version"])
+        self.assertNotEqual("2026.08.24.3", inventory["agent_version"])
+
+    def test_inventory_fingerprint_covers_lines_beyond_payload_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lines = Path(directory)
+            for line_id in range(1, 258):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            first = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+            (lines / "257.toml").write_text("line_id = 257\nline_type = 9\n", encoding="utf-8")
+            second = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+
+        self.assertFalse(first["complete"])
+        self.assertFalse(second["complete"])
+        self.assertEqual(first["lines"], second["lines"])
+        self.assertNotEqual(first["inventory_fingerprint"], second["inventory_fingerprint"])
 
     def test_inventory_merges_index_and_toml_without_secret_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -442,6 +580,93 @@ class UltraSourceAgentTests(unittest.TestCase):
                 ["/api/ultra/source/inventory", "/api/ultra/source/jobs", "catalog"],
                 events,
             )
+
+    def test_agent_reauthenticates_and_retries_partial_line_acquisition_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for line_id in (1, 2):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            config = root / "agent.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "panel_url": "https://panel.example",
+                        "source_id": "source-a",
+                        "source_secret": "source-secret",
+                        "binary_path": "/runtime/line-client",
+                        "lines_dir": str(lines),
+                        "inventory_path": str(lines / "index.json"),
+                        "state_dir": str(root / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            acquisition_calls = []
+
+            def fake_acquire(line_id, *_args, **_kwargs):
+                acquisition_calls.append(line_id)
+                if line_id == 2 and acquisition_calls.count(2) == 1:
+                    raise RuntimeError("expired session")
+                return {"line_id": line_id, "relays": [{"ip": "203.0.113.20", "port": 5438}]}
+
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}):
+                with mock.patch.object(MODULE, "inventory_due", return_value=False):
+                    with mock.patch.object(
+                        MODULE,
+                        "request_json_with_retries",
+                        return_value={"ok": True, "upload_ticket": "ticket", "line_ids": [1, 2]},
+                    ):
+                        with mock.patch.object(MODULE, "acquire_line", side_effect=fake_acquire):
+                            with mock.patch.object(
+                                MODULE,
+                                "request_json",
+                                return_value={"ok": True, "accepted_line_ids": [1, 2]},
+                            ) as request:
+                                with mock.patch.object(MODULE.SourceAgent, "reauthenticate", return_value=True) as reauth:
+                                    with mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                                        agent = MODULE.SourceAgent(config)
+                                        self.assertEqual(2, agent.run_cycle())
+
+            self.assertEqual([1, 2, 2], acquisition_calls)
+            reauth.assert_called_once_with()
+            self.assertEqual("/api/ultra/source/materials", request.call_args.args[4])
+
+    def test_agent_hardens_existing_session_and_same_path_reauthentication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            session = root / "session.json"
+            session.write_text("session", encoding="utf-8")
+            binary = root / "line-client"
+            binary.write_bytes(b"binary")
+            config = root / "agent.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "panel_url": "https://panel.example",
+                        "source_id": "source-a",
+                        "source_secret": "source-secret",
+                        "binary_path": str(binary),
+                        "lines_dir": str(lines),
+                        "inventory_path": str(lines / "index.json"),
+                        "state_dir": str(root / "state"),
+                        "session_path": str(session),
+                        "login_mobile": "15500000000",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(MODULE.os, "chmod") as chmod:
+                with mock.patch.object(MODULE.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                    agent = MODULE.SourceAgent(config)
+                    self.assertTrue(agent.reauthenticate())
+
+            self.assertGreaterEqual(chmod.call_count, 2)
+            chmod.assert_called_with(session, 0o600)
 
     def test_signed_headers_bind_method_path_nonce_and_body(self):
         headers = MODULE.signed_headers(

@@ -14,13 +14,14 @@ import (
 var errProbeUnavailable = errors.New("udp probe unavailable")
 
 type udpProbeResult struct {
-	Index     int
-	Sent      int
-	Received  int
-	MedianRTT time.Duration
-	P95RTT    time.Duration
-	Jitter    time.Duration
-	Err       error
+	Index         int
+	SelectionTier string
+	Sent          int
+	Received      int
+	MedianRTT     time.Duration
+	P95RTT        time.Duration
+	Jitter        time.Duration
+	Err           error
 }
 
 func (result udpProbeResult) usable() bool {
@@ -53,6 +54,9 @@ func rankUDPProbeResults(results []udpProbeResult) []udpProbeResult {
 		if l.usable() != r.usable() {
 			return l.usable()
 		}
+		if lTier, rTier := selectionTierRank(l.SelectionTier), selectionTierRank(r.SelectionTier); lTier != rTier {
+			return lTier < rTier
+		}
 		llost, lsent := l.lossRatio()
 		rlost, rsent := r.lossRatio()
 		if llost*rsent != rlost*lsent {
@@ -84,7 +88,7 @@ func stringsContainsUDP(transport string) bool {
 }
 
 func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
-	result := udpProbeResult{Sent: 1}
+	result := udpProbeResult{SelectionTier: lease.SelectionTier, Sent: 1}
 	started := time.Now()
 	host, port, err := probeTarget(config)
 	if err != nil {
@@ -110,7 +114,7 @@ func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, poli
 }
 
 func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpProbeResult {
-	result := udpProbeResult{Sent: 0}
+	result := udpProbeResult{SelectionTier: lease.SelectionTier, Sent: 0}
 	targetHost, targetPort, targetErr := probeTarget(config)
 	if targetErr != nil {
 		result.Err = targetErr
@@ -249,15 +253,10 @@ func buildDNSProbePayload(sequence uint16) ([]byte, uint16) {
 }
 
 func probeTarget(config Config) (string, int, error) {
-	target := config.ProbeTarget
-	if target == "" {
-		target = defaultProbeTarget
+	if strings.TrimSpace(config.ProbeTarget) != "" && strings.TrimSpace(config.ProbeTarget) != defaultProbeTarget {
+		return "", 0, errors.New("probe target is fixed to 1.1.1.1:53")
 	}
-	host, port, err := net.SplitHostPort(target)
-	if err != nil || net.ParseIP(host).To4() == nil || port != "53" {
-		return "", 0, errors.New("probe target must be an IPv4 DNS endpoint on port 53")
-	}
-	return host, 53, nil
+	return "1.1.1.1", 53, nil
 }
 
 func summarizeRTTs(rtts []time.Duration) (time.Duration, time.Duration, time.Duration) {
@@ -343,6 +342,10 @@ func selectBestLeaseWithProbe(
 			defer func() { done <- struct{}{} }()
 			for index := range jobs {
 				results[index] = probe(ctx, unique[index], config, policy)
+				// The lease is authoritative for tier metadata. A custom probe
+				// may return quality only, so carry the candidate tier into the
+				// result used by ranking and status reporting.
+				results[index].SelectionTier = unique[index].SelectionTier
 				results[index].Index = index
 			}
 		}()

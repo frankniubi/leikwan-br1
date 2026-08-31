@@ -14,10 +14,14 @@ import (
 )
 
 const (
-	policyProtocol       = "leikwan-ultra-policy-v2"
-	maxPolicyTTL         = 5 * time.Minute
-	maxQuotaBytes  int64 = 107374182400
-	maxRateMbps    int64 = 100000
+	policyProtocol             = "leikwan-ultra-policy-v2"
+	maxPolicyTTL               = 5 * time.Minute
+	maxQuotaBytes        int64 = 107374182400
+	maxRateMbps          int64 = 100000
+	selectionTierPaid          = "paid"
+	selectionTierMixed         = "mixed"
+	selectionTierFree          = "free"
+	selectionTierUnknown       = "unknown"
 )
 
 var (
@@ -86,6 +90,38 @@ func isLowerHex(value string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeSelectionTier(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return selectionTierUnknown, nil
+	}
+	switch normalized {
+	case selectionTierPaid, selectionTierMixed, selectionTierFree, selectionTierUnknown:
+		return normalized, nil
+	default:
+		return "", ErrLeaseInvalid
+	}
+}
+
+func selectionTierRank(value string) int {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case selectionTierPaid:
+		return 0
+	case selectionTierMixed:
+		return 1
+	case selectionTierFree:
+		return 2
+	case selectionTierUnknown:
+		return 3
+	default:
+		// Invalid wire values are rejected during lease validation. Treat a
+		// manually-constructed result as least preferred instead of allowing
+		// it to outrank a known pricing class.
+		return 3
+	}
 }
 
 type PolicyLimiter struct {
@@ -175,6 +211,7 @@ type ProviderLease struct {
 	ExpiresAt        time.Time
 	Transport        string
 	SelectionRef     string
+	SelectionTier    string
 	NonceHash        string
 	IP               string
 	Port             int
@@ -191,6 +228,7 @@ func (l *ProviderLease) wipe() {
 	l.Password = nil
 	l.IP = ""
 	l.SelectionRef = ""
+	l.SelectionTier = ""
 	l.LeaseID = ""
 	l.NonceHash = ""
 	l.userLocked = false
@@ -218,6 +256,9 @@ func (l ProviderLease) Validate(policy Policy, now time.Time) error {
 		return ErrLeaseInvalid
 	}
 	if l.Transport != policy.Transport || len(l.SelectionRef) < 16 || len(l.SelectionRef) > 128 {
+		return ErrLeaseInvalid
+	}
+	if _, err := normalizeSelectionTier(l.SelectionTier); err != nil {
 		return ErrLeaseInvalid
 	}
 	return nil

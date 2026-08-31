@@ -48,6 +48,7 @@ public sealed class UnixUltraLeaseClient
                 quota_remaining_bytes = lease.QuotaRemainingBytes,
                 target_digest = lease.TargetDigest,
                 selection_ref = lease.SelectionRef,
+                selection_tier = lease.SelectionTier,
                 nonce_hash = lease.NonceHash,
                 endpoint = new { ip = lease.ProviderIp, port = lease.ProviderPort },
                 credential = new

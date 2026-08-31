@@ -13,9 +13,8 @@ func TestProbeTargetDefaultsToCloudflareDNS(t *testing.T) {
 	if err != nil || host != "1.1.1.1" || port != 53 {
 		t.Fatalf("target=%q:%d err=%v", host, port, err)
 	}
-	host, port, err = probeTarget(Config{ProbeTarget: "9.9.9.9:53"})
-	if err != nil || host != "9.9.9.9" || port != 53 {
-		t.Fatalf("configured target=%q:%d err=%v", host, port, err)
+	if _, _, err = probeTarget(Config{ProbeTarget: "9.9.9.9:53"}); err == nil {
+		t.Fatal("accepted a non-Cloudflare probe target")
 	}
 }
 

@@ -240,9 +240,9 @@ selectionDone:
 		err = server.store.Replace(policy, selected)
 		if err == nil && server.status != nil && probeResult.Sent > 0 {
 			if stringsContainsUDP(policy.Transport) {
-				server.status.UpdateUDPProbe(selected.SelectionRef, probeResult)
+				server.status.UpdateUDPProbeWithTier(selected.SelectionRef, selected.SelectionTier, probeResult)
 			} else {
-				server.status.UpdateTCP(selected.SelectionRef, probeResult.MedianRTT)
+				server.status.UpdateTCPWithTier(selected.SelectionRef, selected.SelectionTier, probeResult.MedianRTT)
 			}
 		}
 	}

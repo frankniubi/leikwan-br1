@@ -793,9 +793,10 @@ final class ProvisioningService
             }
             $rows = $this->db->fetchAll(
                 'SELECT ul.id, ul.line_id, ul.is_source_present, ul.is_enabled,
+                        ul.access_class, ul.native_udp_state,
                         COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
                         COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone
-                 FROM ultra_lines ul
+             FROM ultra_lines ul
                  WHERE ul.id IN (' . implode(', ', $placeholders) . ')',
                 $params
             );
@@ -806,6 +807,8 @@ final class ProvisioningService
                 if (!isset($requested[$ultraLineId])
                     || (int) ($row['is_source_present'] ?? 0) !== 1
                     || (int) ($row['is_enabled'] ?? 0) !== 1
+                    || (string) ($row['access_class'] ?? 'native_udp') !== 'native_udp'
+                    || (string) ($row['native_udp_state'] ?? 'verified') !== 'verified'
                     || $rowDestination !== $destination
                     || !in_array($ingress, $allowedIngressZones, true)) {
                     continue;
@@ -4164,6 +4167,11 @@ final class ProvisioningService
                     fcul.sort_order,
                     ul.source_id,
                     ul.line_id,
+                    ul.access_class,
+                    ul.native_udp_state,
+                    ul.route_class,
+                    ul.pricing_class,
+                    ul.pricing_evidence,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS destination_zone
              FROM forwards f
@@ -4174,6 +4182,8 @@ final class ProvisioningService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
+                    AND ul.access_class = \'native_udp\'
+                    AND ul.native_udp_state = \'verified\'
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
@@ -4181,7 +4191,9 @@ final class ProvisioningService
                AND fc.backend_mode = :ultra_backend_mode
                AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
                AND ul.last_material_expires_at > UTC_TIMESTAMP()
-             ORDER BY f.id ASC, us.priority ASC, fcul.sort_order ASC, fcul.id ASC',
+             ORDER BY f.id ASC, us.priority ASC,
+                      CASE WHEN ul.pricing_class IN (\'paid\', \'mixed\') THEN 0 WHEN ul.pricing_class = \'unknown\' THEN 1 ELSE 2 END ASC,
+                      fcul.sort_order ASC, fcul.id ASC',
             $params + ['ultra_backend_mode' => UltraMode::BACKEND_MODE]
         );
         $result = [];
@@ -4222,6 +4234,11 @@ final class ProvisioningService
                 'source_id' => $sourceId,
                 'ingress_zone' => strtolower(trim((string) ($row['ingress_zone'] ?? 'unknown'))),
                 'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
+                'access_class' => strtolower(trim((string) ($row['access_class'] ?? 'unknown'))),
+                'native_udp_state' => strtolower(trim((string) ($row['native_udp_state'] ?? 'unknown'))),
+                'route_class' => strtolower(trim((string) ($row['route_class'] ?? 'unknown'))),
+                'pricing_class' => strtolower(trim((string) ($row['pricing_class'] ?? 'unknown'))),
+                'pricing_evidence' => trim((string) ($row['pricing_evidence'] ?? '')),
                 'sort_order' => (int) ($row['sort_order'] ?? 100),
             ];
         }

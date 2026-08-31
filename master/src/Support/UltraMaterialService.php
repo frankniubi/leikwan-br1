@@ -47,9 +47,11 @@ final class UltraMaterialService
              INNER JOIN forward_combination_ultra_lines fcul
                      ON fcul.forward_combination_id = fc.id AND fcul.enabled = 1
              INNER JOIN ultra_lines ul
-                     ON ul.id = fcul.ultra_line_id
-                    AND ul.is_source_present = 1
-                    AND ul.is_enabled = 1
+                    ON ul.id = fcul.ultra_line_id
+                   AND ul.is_source_present = 1
+                   AND ul.is_enabled = 1
+                   AND ul.access_class = \'native_udp\'
+                   AND ul.native_udp_state = \'verified\'
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
@@ -262,6 +264,9 @@ final class UltraMaterialService
         foreach ($scopeLines as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
+            if (!$this->lineAllowsNativeUdp($sourceId, $lineId)) {
+                continue;
+            }
             $material = $this->loadMaterial($sourceId, $lineId, true);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
@@ -355,6 +360,9 @@ final class UltraMaterialService
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
+            if (!$this->lineAllowsNativeUdp($sourceId, $lineId)) {
+                continue;
+            }
             $material = $this->loadMaterial($sourceId, $lineId, true);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
@@ -401,6 +409,7 @@ final class UltraMaterialService
                     'user' => $user,
                     'credential' => $credential,
                     'transport' => (string) ($payload['transport'] ?? 'tcp+udp'),
+                    'selection_tier' => $this->selectionTier($sourceId, $lineId),
                 ];
             }
         }
@@ -587,6 +596,43 @@ final class UltraMaterialService
     {
         $zone = strtolower(trim($value));
         return preg_match('/^[a-z0-9-]{1,32}$/', $zone) === 1 ? $zone : 'unknown';
+    }
+
+    private function lineAllowsNativeUdp(string $sourceId, int $lineId): bool
+    {
+        if ($this->db === null) {
+            return true;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT access_class, native_udp_state, is_source_present, is_enabled
+             FROM ultra_lines
+             WHERE source_id = :source_id AND line_id = :line_id
+             LIMIT 1',
+            ['source_id' => trim($sourceId), 'line_id' => $lineId]
+        );
+        return is_array($row)
+            && (int) ($row['is_source_present'] ?? 0) === 1
+            && (int) ($row['is_enabled'] ?? 0) === 1
+            && (string) ($row['access_class'] ?? '') === 'native_udp'
+            && (string) ($row['native_udp_state'] ?? '') === 'verified';
+    }
+
+    private function selectionTier(string $sourceId, int $lineId): string
+    {
+        if ($this->db === null) {
+            return 'unknown';
+        }
+        $row = $this->db->fetchOne(
+            'SELECT pricing_class FROM ultra_lines
+             WHERE source_id = :source_id AND line_id = :line_id LIMIT 1',
+            ['source_id' => trim($sourceId), 'line_id' => $lineId]
+        );
+        return match ((string) ($row['pricing_class'] ?? '')) {
+            'paid' => 'paid',
+            'mixed' => 'mixed',
+            'free' => 'free',
+            default => 'unknown',
+        };
     }
 
     /** @param array<int, mixed> $values @return array<int, string> */

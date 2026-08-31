@@ -276,6 +276,13 @@ public sealed class MasterApiClient : IDisposable
         var protocol = item.GetProperty("protocol").GetString() ?? "";
         var targetDigest = item.GetProperty("target_digest").GetString() ?? "";
         var transport = item.GetProperty("transport").GetString() ?? "";
+        var selectionTier = UltraLease.SelectionTierUnknown;
+        if (item.TryGetProperty("selection_tier", out var selectionTierElement))
+        {
+            selectionTier = (selectionTierElement.GetString() ?? "").Trim().ToLowerInvariant();
+            if (!UltraLease.IsSelectionTier(selectionTier))
+                return null;
+        }
         if (!string.Equals(protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
             || returnedForward != forward.ForwardId
             || !string.Equals(returnedGeneration, policy.PolicyGeneration, StringComparison.Ordinal)
@@ -298,6 +305,7 @@ public sealed class MasterApiClient : IDisposable
             RateLimitMbps = item.GetProperty("rate_limit_mbps").GetInt64(),
             QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
             SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
+            SelectionTier = selectionTier,
             NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
             ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
             ProviderPort = endpoint.GetProperty("port").GetInt32(),

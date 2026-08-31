@@ -3193,6 +3193,9 @@ final class AdminController extends BaseController
                 'destination' => $request->input('destination_zone', ''),
                 'catalog_ingress' => $request->input('catalog_ingress', ''),
                 'catalog_destination' => $request->input('catalog_destination', ''),
+                'access_class' => $request->input('access_class', ''),
+                'native_udp_state' => $request->input('native_udp_state', ''),
+                'pricing_class' => $request->input('pricing_class', ''),
                 'include_absent' => $request->input('include_absent', ''),
             ], $limit, $offset);
             $ingressZones = $inventory->activeZones('ingress');
@@ -3228,6 +3231,8 @@ final class AdminController extends BaseController
                 }
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($line['access_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['native_udp_state'] ?? 'unknown')) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($line['pricing_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['pricing_evidence'] ?? '')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['catalog_ingress_label'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($line['effective_ingress_zone'] ?? 'unknown')) . '</td>'
                     . '<td>' . $this->escape((string) ($line['catalog_destination_label'] ?? '')) . '</td>'
@@ -3244,17 +3249,23 @@ final class AdminController extends BaseController
                     . '<input name="notes" value="' . $this->escape((string) ($line['notes'] ?? '')) . '" placeholder="Notes"><button class="button" type="submit">Save</button></form></td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="11" class="muted">No discovered Ultra lines.</td></tr>';
+                $rows = '<tr><td colspan="13" class="muted">No discovered Ultra lines.</td></tr>';
             }
             $catalogIngressFilter = $this->escape((string) $request->input('catalog_ingress', ''));
             $catalogDestinationFilter = $this->escape((string) $request->input('catalog_destination', ''));
+            $accessClassFilter = $this->escape((string) $request->input('access_class', ''));
+            $nativeStateFilter = $this->escape((string) $request->input('native_udp_state', ''));
+            $pricingFilter = $this->escape((string) $request->input('pricing_class', ''));
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
                 . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
                 . '<label>Catalog destination <input name="catalog_destination" value="' . $catalogDestinationFilter . '" maxlength="191"></label>'
+                . '<label>Class <input name="access_class" value="' . $accessClassFilter . '" maxlength="32"></label>'
+                . '<label>UDP state <input name="native_udp_state" value="' . $nativeStateFilter . '" maxlength="32"></label>'
+                . '<label>Pricing <input name="pricing_class" value="' . $pricingFilter . '" maxlength="32"></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Class / UDP</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';

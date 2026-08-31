@@ -13,6 +13,7 @@ import os
 import random
 import re
 import secrets
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -26,8 +27,10 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.08.24.3"
+AGENT_VERSION = "2026.08.31.1"
 MAX_INVENTORY_BYTES = 256 * 1024
+INVENTORY_SCHEMA_VERSION = 2
+MAX_INVENTORY_RECORDS = 1024
 CATALOG_SCHEMA_VERSION = 1
 
 LINELIST_SUMMARY_RE = re.compile(
@@ -162,7 +165,26 @@ def _parse_line_config(raw: bytes) -> dict[str, object]:
                 parsed[key] = int(value)
             except ValueError:
                 continue
-        elif key == "speed_ip":
+        elif key in {
+            "speed_ip",
+            "title",
+            "family_key",
+            "family",
+            "access_class",
+            "native_udp_state",
+            "route_class",
+            "pricing_class",
+            "pricing_evidence",
+            "audit_at",
+            "audited_at",
+            "audit_timestamp",
+            "checked_at",
+            "audit_hash",
+            "manifest_hash",
+            "audit_sha256",
+            "manifest_sha256",
+            "sha256",
+        }:
             parsed[key] = value
     return parsed
 
@@ -180,7 +202,7 @@ def _inventory_index(index_path: Path) -> dict[int, dict[str, object]]:
     if not isinstance(raw_lines, list):
         return {}
     records: dict[int, dict[str, object]] = {}
-    for raw in raw_lines[:1024]:
+    for raw in raw_lines[:MAX_INVENTORY_RECORDS]:
         if not isinstance(raw, dict):
             continue
         try:
@@ -189,6 +211,130 @@ def _inventory_index(index_path: Path) -> dict[int, dict[str, object]]:
             continue
         if 0 < line_id <= 45535:
             records[line_id] = raw
+    return records
+
+
+def _line_audit_manifest(manifest_path: Path | None) -> dict[int, dict[str, object]]:
+    if manifest_path is None:
+        return {}
+    try:
+        if manifest_path.stat().st_size > MAX_INVENTORY_BYTES:
+            raise RuntimeError("line audit manifest exceeds size limit")
+        decoded = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("line audit manifest is invalid") from exc
+
+    known_fields = {
+        "access_class",
+        "native_udp_state",
+        "route_class",
+        "pricing_class",
+        "pricing_evidence",
+        "audit_at",
+        "audited_at",
+        "audit_timestamp",
+        "audit_time",
+        "checked_at",
+        "timestamp",
+        "at",
+        "audit_hash",
+        "manifest_hash",
+        "audit_sha256",
+        "manifest_sha256",
+        "sha256",
+        "hash",
+    }
+
+    def known_values(value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            return {}
+        return {str(key).strip().lower(): item for key, item in value.items()
+                if str(key).strip().lower() in known_fields}
+
+    def default_values(value: object) -> dict[str, object]:
+        defaults = known_values(value)
+        if isinstance(value, dict):
+            for key in ("audit", "metadata"):
+                defaults.update(known_values(value.get(key)))
+        return defaults
+
+    def has_line_id(value: object, depth: int = 0) -> bool:
+        if not isinstance(value, dict):
+            return False
+        if value.get("line_id") not in (None, ""):
+            return True
+        if depth >= 3:
+            return False
+        return any(has_line_id(value.get(key), depth + 1) for key in ("line", "audit", "record", "data"))
+
+    def line_id_from(*values: object, _depth: int = 0) -> int:
+        for value in values:
+            if isinstance(value, dict):
+                try:
+                    candidate = int(value.get("line_id", 0) or 0)
+                except (TypeError, ValueError):
+                    candidate = 0
+                if 0 < candidate <= 45535:
+                    return candidate
+                if _depth < 3:
+                    candidate = line_id_from(
+                        *(value.get(key) for key in ("line", "audit", "record", "data")),
+                        _depth=_depth + 1,
+                    )
+                    if candidate:
+                        return candidate
+        return 0
+
+    manifest_defaults: dict[str, object] = {}
+    if isinstance(decoded, dict):
+        # Defaults may be flat or grouped under an audit/defaults object. Keep
+        # this allowlist-only so credentials and opaque provider fields never
+        # enter the inventory record.
+        manifest_defaults.update(default_values(decoded))
+        for key in ("defaults", "default", "audit_defaults", "audit_default"):
+            manifest_defaults.update(default_values(decoded.get(key)))
+        top_audit = decoded.get("audit")
+        if isinstance(top_audit, dict) and not has_line_id(top_audit):
+            manifest_defaults.update(default_values(top_audit))
+
+    if isinstance(decoded, list):
+        raw_lines: object = decoded
+    elif isinstance(decoded, dict):
+        if has_line_id(decoded):
+            raw_lines = [decoded]
+        else:
+            raw_lines = decoded
+            for key in ("lines", "records", "audits", "audit"):
+                if key in decoded:
+                    raw_lines = decoded[key]
+                    break
+    else:
+        return {}
+
+    if isinstance(raw_lines, list):
+        iterable = ((None, raw) for raw in raw_lines[:MAX_INVENTORY_RECORDS])
+    elif isinstance(raw_lines, dict):
+        iterable = list(raw_lines.items())[:MAX_INVENTORY_RECORDS]
+    else:
+        return {}
+
+    records: dict[int, dict[str, object]] = {}
+    for raw_key, raw in iterable:
+        if not isinstance(raw, dict):
+            continue
+        line_id = line_id_from(raw, raw.get("line"), raw.get("audit"), {"line_id": raw_key})
+        if 0 < line_id <= 45535:
+            record = dict(manifest_defaults)
+            nested_line = raw.get("line")
+            nested_audit = raw.get("audit")
+            record.update(default_values(nested_line))
+            if isinstance(nested_audit, dict):
+                record.update(default_values(nested_audit))
+            record.update(known_values(raw))
+            record["line_id"] = line_id
+            records[line_id] = record
     return records
 
 
@@ -224,6 +370,62 @@ def _literal_ip(*values: object) -> str:
 
 def _single_line_text(value: object, limit: int = 255) -> str:
     return _bounded_text(" ".join(str(value or "").split()), limit)
+
+
+def _safe_inventory_text(value: object, limit: int = 255) -> str:
+    if not isinstance(value, (bool, int, float, str)):
+        return ""
+    return _single_line_text(value, limit)
+
+
+def _first_value(*records: dict[str, object], keys: tuple[str, ...]) -> object:
+    for record in records:
+        for key in keys:
+            value = record.get(key)
+            if value is not None and value != "":
+                return value
+    return None
+
+
+def _inventory_classification(value: object) -> str:
+    text = _safe_inventory_text(value, 64).lower()
+    return text or "unknown"
+
+
+def _inventory_evidence(value: object) -> str:
+    return _safe_inventory_text(value, 255) or "unknown"
+
+
+def _inventory_audit_at(value: object) -> str:
+    return _safe_inventory_text(value, 64) or "unknown"
+
+
+def _inventory_audit_hash(*records: dict[str, object]) -> str:
+    for record in records:
+        for key in ("audit_hash", "manifest_hash", "audit_sha256", "manifest_sha256", "sha256", "hash"):
+            text = _safe_inventory_text(record.get(key), 64).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", text):
+                return text
+    return "unknown"
+
+
+def _inventory_config_hash(
+    line_id: int,
+    raw: bytes | None,
+    line: dict[str, object],
+    *records: dict[str, object],
+) -> str:
+    if raw is not None:
+        return hashlib.sha256(raw).hexdigest()
+    for record in records:
+        text = _safe_inventory_text(record.get("config_sha256"), 64).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", text):
+            return text
+    identity = dict(line)
+    identity.pop("config_sha256", None)
+    identity["line_id"] = line_id
+    encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def parse_linelist_output(output: str) -> tuple[bool, dict[int, dict[str, object]]]:
@@ -405,7 +607,7 @@ def _catalog_snapshot(
     cache = _read_catalog_cache(path)
     raw_records = cache.get("records", {})
     records: dict[int, dict[str, object]] = {}
-    for raw_line_id, raw in list(raw_records.items())[:1024] if isinstance(raw_records, dict) else []:
+    for raw_line_id, raw in list(raw_records.items())[:MAX_INVENTORY_RECORDS] if isinstance(raw_records, dict) else []:
         if not isinstance(raw, dict):
             continue
         try:
@@ -429,50 +631,104 @@ def build_inventory(
     index_path: Path,
     *,
     catalog_path: Path | None = None,
+    audit_manifest_path: Path | None = None,
     max_lines: int = 256,
 ) -> dict[str, object]:
     limit = max(1, min(256, int(max_lines)))
     index = _inventory_index(index_path)
-    config_groups = _line_config_groups(lines_dir)
-    catalog, catalog_authoritative = _catalog_snapshot(catalog_path, set(config_groups))
-    candidates: list[tuple[int, Path]] = []
+    audit = _line_audit_manifest(audit_manifest_path)
+    catalog, _catalog_authoritative = _catalog_snapshot(catalog_path, set())
+    local_paths: dict[int, Path] = {}
     for path in lines_dir.glob("*.toml"):
         try:
             line_id = int(path.stem)
         except ValueError:
             continue
-        if (0 < line_id <= 45535
-                and path.is_file()
-                and (not catalog_authoritative or line_id in catalog)):
-            candidates.append((line_id, path))
-    candidates.sort(key=lambda item: item[0])
-    complete = len(candidates) <= limit
-    normalized: list[dict[str, object]] = []
-    for line_id, path in candidates[:limit]:
-        raw = path.read_bytes()
-        metadata = _parse_line_config(raw)
+        if 0 < line_id <= 45535 and path.is_file():
+            local_paths[line_id] = path
+
+    candidate_ids = sorted(set(local_paths) | set(index) | set(audit))
+    all_lines: list[dict[str, object]] = []
+    for line_id in candidate_ids:
+        path = local_paths.get(line_id)
+        raw = path.read_bytes() if path is not None else None
+        metadata = _parse_line_config(raw) if raw is not None else {}
         indexed = index.get(line_id, {})
+        audited = audit.get(line_id, {})
         cataloged = catalog.get(line_id, {})
         line: dict[str, object] = {
             "line_id": line_id,
-            "title": _bounded_text(cataloged.get("title") or indexed.get("title") or indexed.get("name") or indexed.get("label")),
-            "family_key": _bounded_text(indexed.get("family_key") or indexed.get("family")),
-            "game_id": _unsigned_int(metadata.get("game_id"), indexed.get("game_id")),
-            "area_id": _unsigned_int(metadata.get("area_id"), indexed.get("area_id")),
-            "line_type": _unsigned_int(metadata.get("line_type"), indexed.get("line_type")),
-            "catalog_ingress": _single_line_text(cataloged.get("catalog_ingress"), 191),
-            "catalog_destination": _single_line_text(cataloged.get("catalog_destination"), 191),
-            "discovery_ip": _literal_ip(cataloged.get("discovery_ip"), indexed.get("speed_ip"), indexed.get("discovery_ip"), metadata.get("speed_ip")),
-            "config_sha256": hashlib.sha256(raw).hexdigest(),
+            "title": _safe_inventory_text(
+                _first_value(cataloged, audited, indexed, metadata, keys=("title", "name", "label"))
+            ),
+            "family_key": _safe_inventory_text(
+                _first_value(audited, indexed, metadata, keys=("family_key", "family"))
+            ),
+            "game_id": _unsigned_int(
+                metadata.get("game_id"), audited.get("game_id"), indexed.get("game_id")
+            ),
+            "area_id": _unsigned_int(
+                metadata.get("area_id"), audited.get("area_id"), indexed.get("area_id")
+            ),
+            "line_type": _unsigned_int(
+                metadata.get("line_type"), audited.get("line_type"), indexed.get("line_type")
+            ),
+            "catalog_ingress": _safe_inventory_text(
+                _first_value(cataloged, audited, indexed, keys=("catalog_ingress",)), 191
+            ),
+            "catalog_destination": _safe_inventory_text(
+                _first_value(cataloged, audited, indexed, keys=("catalog_destination",)), 191
+            ),
+            "discovery_ip": _literal_ip(
+                cataloged.get("discovery_ip"),
+                audited.get("discovery_ip"),
+                indexed.get("speed_ip"),
+                indexed.get("discovery_ip"),
+                metadata.get("speed_ip"),
+            ),
+            "access_class": _inventory_classification(
+                _first_value(audited, indexed, metadata, keys=("access_class",))
+            ),
+            "native_udp_state": _inventory_classification(
+                _first_value(audited, indexed, metadata, keys=("native_udp_state",))
+            ),
+            "route_class": _inventory_classification(
+                _first_value(audited, indexed, metadata, keys=("route_class",))
+            ),
+            "pricing_class": _inventory_classification(
+                _first_value(audited, indexed, metadata, keys=("pricing_class",))
+            ),
+            "pricing_evidence": _inventory_evidence(
+                _first_value(audited, indexed, metadata, keys=("pricing_evidence",))
+            ),
+            "audit_at": _inventory_audit_at(
+                _first_value(
+                    audited,
+                    indexed,
+                    metadata,
+                    keys=("audit_at", "audited_at", "audit_timestamp", "checked_at", "timestamp"),
+                )
+            ),
+            "audit_hash": _inventory_audit_hash(audited, indexed, metadata),
         }
-        normalized.append(line)
+        line["config_sha256"] = _inventory_config_hash(line_id, raw, line, audited, indexed)
+        all_lines.append(line)
+
+    complete = len(all_lines) <= limit
+    normalized = all_lines[:limit]
     fingerprint_input = json.dumps(
-        {"complete": complete, "lines": normalized},
+        {
+            "schema_version": INVENTORY_SCHEMA_VERSION,
+            "complete": complete,
+            "line_count": len(all_lines),
+            "lines": all_lines,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
     payload: dict[str, object] = {
+        "schema_version": INVENTORY_SCHEMA_VERSION,
         "agent_version": AGENT_VERSION,
         "inventory_fingerprint": hashlib.sha256(fingerprint_input).hexdigest(),
         "complete": complete,
@@ -640,6 +896,12 @@ class SourceAgent:
         self.inventory_refresh = max(300, min(86400, int(self.config.get("inventory_refresh_seconds", 1800))))
         self.max_inventory_lines = max(1, min(256, int(self.config.get("max_inventory_lines", 256))))
         self.inventory_state_path = self.state_dir / "inventory-state.json"
+        configured_audit = ""
+        for key in ("audit_manifest_path", "line_audit_manifest_path"):
+            configured_audit = str(self.config.get(key, "") or "").strip()
+            if configured_audit:
+                break
+        self.audit_manifest_path = Path(configured_audit) if configured_audit else None
         self.catalog_path = Path(self.config.get("catalog_path", str(self.state_dir / "catalog-cache.json")))
         self.catalog_refresh = max(1800, min(604800, int(self.config.get("catalog_refresh_seconds", 21600))))
         self.catalog_retry = max(60, min(3600, int(self.config.get("catalog_retry_seconds", 300))))
@@ -647,6 +909,17 @@ class SourceAgent:
         self.catalog_timeout = max(2.0, min(30.0, float(self.config.get("catalog_query_timeout_seconds", 15))))
         configured_session = str(self.config.get("session_path", "") or "").strip()
         self.session_path = Path(configured_session) if configured_session else None
+        self._harden_session_permissions()
+        self.login_binary_path = Path(self.config.get("login_binary_path", str(self.binary_path)))
+        self.login_mobile = str(self.config.get("login_mobile", "") or "").strip()
+        self.login_country = max(1, min(999, int(self.config.get("login_country", 86))))
+        self.login_region = max(1, min(999, int(self.config.get("login_region", 1))))
+        self.login_config_path = str(self.config.get("login_config_path", "") or "").strip()
+        self.login_password_env = str(self.config.get("login_password_env", "LEIGOD_PASSWORD") or "").strip()
+        self.login_home = Path(str(self.config.get("login_home", "") or "").strip()) if str(self.config.get("login_home", "") or "").strip() else None
+        self.login_timeout = max(15.0, min(180.0, float(self.config.get("login_timeout_seconds", 60))))
+        self.login_retry = max(60.0, min(3600.0, float(self.config.get("login_retry_seconds", 300))))
+        self._last_login_at = 0.0
         self.timeout = max(2.0, min(30.0, float(self.config.get("request_timeout_seconds", 10))))
         self.acquire_timeout = max(5.0, min(60.0, float(self.config.get("acquire_timeout_seconds", 30))))
         self.material_lifetime = max(300, min(3600, int(self.config.get("material_lifetime_seconds", 1800))))
@@ -659,6 +932,7 @@ class SourceAgent:
                 self.lines_dir,
                 self.inventory_path,
                 catalog_path=self.catalog_path,
+                audit_manifest_path=self.audit_manifest_path,
                 max_lines=self.max_inventory_lines,
             )
             now = int(time.time())
@@ -701,22 +975,36 @@ class SourceAgent:
         if not line_ids:
             self.refresh_catalog()
             return 0
-        materials = []
-        for line_id in line_ids:
-            try:
-                materials.append(
-                    acquire_line(
-                        line_id,
-                        self.binary_path,
-                        self.lines_dir,
-                        self.state_dir / f"line-{line_id}.json.tmp",
-                        session_path=self.session_path,
-                        timeout=self.acquire_timeout,
-                        lifetime_seconds=self.material_lifetime,
+        def acquire_requested(requested_ids: list[int] | None = None) -> tuple[list[dict], list[int]]:
+            pending_ids = line_ids if requested_ids is None else requested_ids
+            acquired: list[dict] = []
+            failed: list[int] = []
+            for line_id in pending_ids:
+                try:
+                    acquired.append(
+                        acquire_line(
+                            line_id,
+                            self.binary_path,
+                            self.lines_dir,
+                            self.state_dir / f"line-{line_id}.json.tmp",
+                            session_path=self.session_path,
+                            timeout=self.acquire_timeout,
+                            lifetime_seconds=self.material_lifetime,
+                        )
                     )
-                )
-            except Exception as exc:  # noqa: BLE001
-                logging.warning("line %s acquisition failed: %s", line_id, exc)
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("line %s acquisition failed: %s", line_id, exc)
+                    failed.append(line_id)
+            return acquired, failed
+
+        materials, failed_line_ids = acquire_requested()
+        if failed_line_ids and self.reauthenticate():
+            logging.info(
+                "source session refreshed; retrying %s failed line materials",
+                len(failed_line_ids),
+            )
+            retried, _still_failed = acquire_requested(failed_line_ids)
+            materials.extend(retried)
         if not materials:
             raise RuntimeError("no requested material could be acquired")
         result = request_json(
@@ -731,6 +1019,82 @@ class SourceAgent:
         accepted = len(result.get("accepted_line_ids", [])) if isinstance(result.get("accepted_line_ids"), list) else 0
         self.refresh_catalog()
         return accepted
+
+    def reauthenticate(self) -> bool:
+        """Refresh the LeiGod session without destroying a working session."""
+        if not self.login_mobile or not self.login_password_env or not self.login_binary_path.is_file():
+            return False
+        now = time.time()
+        if now - self._last_login_at < self.login_retry:
+            return False
+        self._last_login_at = now
+        environment = os.environ.copy()
+        if self.login_home is not None:
+            environment["HOME"] = str(self.login_home)
+        command = [
+            str(self.login_binary_path),
+            "login",
+            "--mobile",
+            self.login_mobile,
+            "--password-env",
+            self.login_password_env,
+            "--country",
+            str(self.login_country),
+            "--region",
+            str(self.login_region),
+        ]
+        if self.login_config_path:
+            command.extend(["--config", self.login_config_path])
+        try:
+            completed = subprocess.run(
+                command,
+                env=environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self.login_timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if completed.returncode != 0:
+            return False
+
+        candidates: list[Path] = []
+        if self.login_home is not None:
+            candidates.append(self.login_home / ".leigod" / "session.json")
+        if self.session_path is not None:
+            candidates.append(self.session_path)
+        source = next((path for path in candidates if path.is_file()), None)
+        if source is None or self.session_path is None:
+            return False
+        if source.resolve() == self.session_path.resolve():
+            return self._harden_session_permissions()
+        try:
+            if source.stat().st_size <= 64 * 1024:
+                self.session_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.session_path.with_name(f".{self.session_path.name}.{os.getpid()}.tmp")
+                shutil.copyfile(source, temporary)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, self.session_path)
+                os.chmod(self.session_path, 0o600)
+                return True
+        except OSError:
+            try:
+                temporary.unlink()
+            except (UnboundLocalError, FileNotFoundError):
+                pass
+        return False
+
+    def _harden_session_permissions(self) -> bool:
+        if self.session_path is None:
+            return False
+        try:
+            if not self.session_path.is_file():
+                return False
+            os.chmod(self.session_path, 0o600)
+            return True
+        except OSError:
+            return False
 
     def refresh_catalog(self) -> None:
         try:

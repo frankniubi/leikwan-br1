@@ -136,6 +136,7 @@ final class UltraLeaseService
             'rate_limit_mbps' => max(0, min(100000, (int) ($policy['rate_limit_mbps'] ?? 0))),
             'quota_remaining_bytes' => $quotaBytes,
             'selection_ref' => (string) ($candidate['selection_ref'] ?? ''),
+            'selection_tier' => $this->selectionTier($candidate['selection_tier'] ?? 1),
             'target_digest' => $normalized['target_digest'],
             'nonce_hash' => $nonceHash,
             'endpoint' => [
@@ -236,6 +237,12 @@ final class UltraLeaseService
             && trim((string) ($candidate['credential'] ?? '')) !== ''
             && preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1
             && $this->candidateDirectCidrsAreValid($candidate);
+    }
+
+    private function selectionTier(mixed $value): string
+    {
+        $tier = strtolower(trim((string) $value));
+        return in_array($tier, ['paid', 'mixed', 'free', 'unknown'], true) ? $tier : 'unknown';
     }
 
     /** @param array<string,mixed> $candidate */

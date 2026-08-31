@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	// Candidate association setup (TCP control plus SID negotiation) happens
-	// before the 30-second measurement window. Keep it outside that window so
-	// a slow first handshake cannot truncate or cancel the probe results.
+	// Default candidate association setup (TCP control plus SID negotiation)
+	// happens before the measurement window. Configured association budgets are
+	// resolved through probeAssociationTimeout below.
 	selectionSetupGrace    = datagramAssociationSetupBudget
 	selectionResponseGrace = 5 * time.Second
 )
@@ -54,7 +54,11 @@ func controlDeadlineDuration(config Config) time.Duration {
 	if !config.AutoSelect {
 		return 2 * time.Second
 	}
-	return probeDuration(config) + selectionSetupGrace + selectionResponseGrace
+	// Keep the control deadline at least as long as the association budget used
+	// by probeUDPLease. A configured connect timeout can exceed the default
+	// thirteen-second SID scan budget, and a fixed grace would cancel a valid
+	// probe before its measurement window starts.
+	return probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace
 }
 
 func sameLeaseSelection(left, right ProviderLease) bool {

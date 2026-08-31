@@ -12,6 +12,7 @@ import (
 
 type SelectionStatus struct {
 	SelectionRef  string `json:"selection_ref"`
+	SelectionTier string `json:"selection_tier"`
 	RTTMillis     int64  `json:"rtt_ms"`
 	P95RTTMillis  int64  `json:"p95_rtt_ms,omitempty"`
 	JitterMillis  int64  `json:"jitter_ms,omitempty"`
@@ -93,22 +94,34 @@ func (writer *StatusWriter) AddUsage(bytesIn, bytesOut int) {
 }
 
 func (writer *StatusWriter) UpdateTCP(selectionRef string, rtt time.Duration) {
+	writer.UpdateTCPWithTier(selectionRef, selectionTierUnknown, rtt)
+}
+
+func (writer *StatusWriter) UpdateTCPWithTier(selectionRef, selectionTier string, rtt time.Duration) {
 	writer.update(func(status *RuntimeStatus) {
-		status.LatestTCP = selectionStatus(selectionRef, rtt)
+		status.LatestTCP = selectionStatusWithTier(selectionRef, selectionTier, rtt)
 		status.State = "ready"
 		status.ErrorCode = ""
 	})
 }
 
 func (writer *StatusWriter) UpdateUDP(selectionRef string, rtt time.Duration) {
+	writer.UpdateUDPWithTier(selectionRef, selectionTierUnknown, rtt)
+}
+
+func (writer *StatusWriter) UpdateUDPWithTier(selectionRef, selectionTier string, rtt time.Duration) {
 	writer.update(func(status *RuntimeStatus) {
-		status.ActiveUDP = selectionStatus(selectionRef, rtt)
+		status.ActiveUDP = selectionStatusWithTier(selectionRef, selectionTier, rtt)
 		status.State = "ready"
 		status.ErrorCode = ""
 	})
 }
 
 func (writer *StatusWriter) UpdateUDPProbe(selectionRef string, result udpProbeResult) {
+	writer.UpdateUDPProbeWithTier(selectionRef, result.SelectionTier, result)
+}
+
+func (writer *StatusWriter) UpdateUDPProbeWithTier(selectionRef, selectionTier string, result udpProbeResult) {
 	if result.Sent <= 0 || result.Received <= 0 {
 		return
 	}
@@ -120,6 +133,7 @@ func (writer *StatusWriter) UpdateUDPProbe(selectionRef string, result udpProbeR
 	writer.update(func(status *RuntimeStatus) {
 		status.ActiveUDP = &SelectionStatus{
 			SelectionRef:  boundedStatusText(selectionRef, 128),
+			SelectionTier: normalizedSelectionTier(selectionTier),
 			RTTMillis:     maxInt64(result.MedianRTT.Milliseconds(), 0),
 			P95RTTMillis:  maxInt64(result.P95RTT.Milliseconds(), 0),
 			JitterMillis:  maxInt64(result.Jitter.Milliseconds(), 0),
@@ -261,6 +275,10 @@ func (writer *StatusWriter) writeCountValue() int64 {
 }
 
 func selectionStatus(selectionRef string, rtt time.Duration) *SelectionStatus {
+	return selectionStatusWithTier(selectionRef, selectionTierUnknown, rtt)
+}
+
+func selectionStatusWithTier(selectionRef, selectionTier string, rtt time.Duration) *SelectionStatus {
 	millis := rtt.Milliseconds()
 	if millis < 0 {
 		millis = 0
@@ -269,10 +287,19 @@ func selectionStatus(selectionRef string, rtt time.Duration) *SelectionStatus {
 		millis = 60000
 	}
 	return &SelectionStatus{
-		SelectionRef: boundedStatusText(selectionRef, 128),
-		RTTMillis:    millis,
-		SelectedAt:   time.Now().UTC().Format(time.RFC3339),
+		SelectionRef:  boundedStatusText(selectionRef, 128),
+		SelectionTier: normalizedSelectionTier(selectionTier),
+		RTTMillis:     millis,
+		SelectedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+func normalizedSelectionTier(value string) string {
+	normalized, err := normalizeSelectionTier(value)
+	if err != nil {
+		return selectionTierUnknown
+	}
+	return normalized
 }
 
 func boundedStatusText(value string, limit int) string {
