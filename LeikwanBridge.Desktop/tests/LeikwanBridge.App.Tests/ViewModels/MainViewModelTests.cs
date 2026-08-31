@@ -193,6 +193,27 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task ShutdownForExit_IsIdempotentAndBlocksLateInitialization()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3.leikwanhost.com",
+            ClientId = 1,
+            ActiveClientId = 1,
+            AgentToken = "agent-token",
+        });
+
+        var first = vm.ShutdownForExitAsync();
+        var second = vm.ShutdownForExitAsync();
+
+        Assert.Same(first, second);
+        await first;
+        Assert.True(vm.IsShuttingDown);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => vm.InitializeProxyAsync());
+    }
+
+    [Fact]
     public async Task SaveProxyProfileAfterInitializationKeepsEditorValuesAndAddsLibraryEntry()
     {
         var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-vm-" + Guid.NewGuid().ToString("N"));
