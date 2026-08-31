@@ -108,5 +108,22 @@ namespace {
         }
     }
 
+    $sameEnvPath = tempnam(sys_get_temp_dir(), 'lw-base-controller-same-');
+    if ($sameEnvPath === false) {
+        fail('failed to create same-base temp env');
+    }
+    file_put_contents($sameEnvPath, "AGENT_API_URL=https://panel.example.com\nARTIFACT_BASE_URL=https://panel.example.com\n");
+    $sameController = new BaseControllerProbe(new Config($sameEnvPath), new Database());
+    $sameBaseCommand = $sameController->linuxInstallCommandForClient([
+        'id' => 42,
+        'agent_token' => 'tok-42',
+    ]);
+    if (str_contains($sameBaseCommand, '--artifact-base')) {
+        fail('expected the concise command to omit a redundant artifact base');
+    }
+    if (!str_contains($sameBaseCommand, "--master 'https://panel.example.com' --client-id 42")) {
+        fail('expected the concise command to keep master and client id arguments');
+    }
+
     echo "ok\n";
 }
