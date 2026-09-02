@@ -129,8 +129,40 @@ assertNativeLease(
     'international-to-mainland direction did not expose both scopes'
 );
 assertNativeLease(
-    UltraMode::nativeRouteScopesForDirection('Shanghai to Japan') === ['global'],
-    'non-mainland direction exposed cn_only'
+    UltraMode::nativeRouteScopesForDirection('Shanghai to Japan') === ['intl_only', 'global'],
+    'mainland-to-international city direction did not expose intl_only'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection('Mainland China to International') === ['intl_only', 'global'],
+    'mainland-to-international direction did not expose intl_only and global'
+);
+assertNativeLease(
+    UltraMode::normalizeNativeRouteScope('intl_only', 'CN -> US') === 'intl_only',
+    'mainland-to-international intl_only scope was not accepted'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection("\u{4e2d}\u{56fd}\u{5927}\u{9646} -> \u{5883}\u{5916}") === ['intl_only', 'global'],
+    'Chinese mainland-to-international direction did not expose intl_only'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection('SHA -> TYO') === ['intl_only', 'global'],
+    'airport-code mainland-to-international direction did not expose intl_only'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection('HKG -> SHA') === ['cn_only', 'global'],
+    'airport-code international-to-mainland direction did not expose cn_only'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection('SHA -> CAN') === ['global'],
+    'two mainland airport codes were incorrectly classified as mainland-to-international'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection('SHA -> ZZZ') === ['global'],
+    'unknown destination code was incorrectly classified as international'
+);
+assertNativeLease(
+    UltraMode::nativeRouteScopesForDirection("\u{9999}\u{6e2f} -> \u{4e2d}\u{56fd}\u{5927}\u{9646}") === ['cn_only', 'global'],
+    'Chinese international-to-mainland direction did not expose cn_only'
 );
 
 @unlink($envPath);

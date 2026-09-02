@@ -1322,6 +1322,7 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     access_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     native_udp_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
     native_socks5_state VARCHAR(16) NOT NULL DEFAULT 'unknown',
+    direction_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     route_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     pricing_class VARCHAR(16) NOT NULL DEFAULT 'unknown',
     pricing_evidence VARCHAR(255) NULL,

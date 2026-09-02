@@ -32,10 +32,14 @@ const (
 )
 
 type Config struct {
-	ForwardID                int                 `json:"forward_id"`
-	ListenHost               string              `json:"listen_host"`
-	ListenPort               int                 `json:"listen_port"`
-	Target                   string              `json:"target"`
+	ForwardID  int    `json:"forward_id"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	Target     string `json:"target"`
+	// NativeSocks5 exposes a local standard SOCKS5 facade while retaining the
+	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
+	// forwards leave this disabled and keep their fixed-target behavior.
+	NativeSocks5             bool                `json:"native_socks5"`
 	ProbeTarget              string              `json:"probe_target"`
 	ControlSocket            string              `json:"control_socket"`
 	PolicyGeneration         string              `json:"policy_generation"`
@@ -1870,14 +1874,23 @@ func main() {
 		runtimeErrors := make(chan error, 2)
 		var runtimeWait sync.WaitGroup
 		transport := strings.ToLower(policy.Transport)
-		if transport == "tcp" || transport == "tcp+udp" {
+		if config.NativeSocks5 {
+			// Native mode exposes a local standard SOCKS5 facade and translates
+			// each request to the existing Ultra relay protocol. The policy is
+			// always tcp+udp for a native lease.
+			runtimeWait.Add(1)
+			go func() {
+				defer runtimeWait.Done()
+				runtimeErrors <- serveNativeSocks5(runtimeContext, config, store, status)
+			}()
+		} else if transport == "tcp" || transport == "tcp+udp" {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()
 				runtimeErrors <- serveTCP(runtimeContext, config, store, status)
 			}()
 		}
-		if transport == "udp" || transport == "tcp+udp" {
+		if !config.NativeSocks5 && (transport == "udp" || transport == "tcp+udp") {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()

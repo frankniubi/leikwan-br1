@@ -85,19 +85,32 @@ $allowed = $provisioning->nativeOutboundCapabilityForAssignedForwards([[
     'transport' => 'tcp+udp',
     'forward_combination_direction' => 'Shanghai to Japan',
     'endpoints' => [],
+], [
+    'service_id' => 12,
+    'forward_id' => 161,
+    'backend_mode' => UltraMode::BACKEND_MODE,
+    'service_status' => 'active',
+    'transport' => 'tcp+udp',
+    'forward_combination_direction' => 'Mainland China -> International',
+    'endpoints' => [],
 ]]);
 if (!is_array($allowed) || ($allowed['enabled'] ?? false) !== true) {
     failNativePull('allowed plan did not expose native capability');
 }
-if (($allowed['default_forward_id'] ?? 0) !== 159 || ($allowed['forward_ids'] ?? []) !== [159, 160]) {
+if (($allowed['default_forward_id'] ?? 0) !== 159 || ($allowed['forward_ids'] ?? []) !== [159, 160, 161]) {
     failNativePull('native carrier ordering/default is unstable');
 }
 $first = $allowed['forwards'][0] ?? [];
 $second = $allowed['forwards'][1] ?? [];
+$third = $allowed['forwards'][2] ?? [];
 if (($first['route_scopes'] ?? []) !== ['cn_only', 'global']
     || ($first['default_route_scope'] ?? '') !== 'global'
-    || ($second['route_scopes'] ?? []) !== ['global']) {
+    || ($second['route_scopes'] ?? []) !== ['intl_only', 'global']
+    || ($third['route_scopes'] ?? []) !== ['intl_only', 'global']) {
     failNativePull('native route scopes do not follow carrier direction');
+}
+if (!in_array('intl_only', (array) ($allowed['route_scopes'] ?? []), true)) {
+    failNativePull('top-level native scopes omitted intl_only');
 }
 $expectedDigest = UltraMode::nativeScopeDigest(159, 'Ultra Hong Kong to Mainland China', 'tcp+udp', 'global');
 if (($first['scope_digest'] ?? '') !== $expectedDigest) {

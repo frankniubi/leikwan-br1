@@ -10,6 +10,7 @@ namespace LeikwanBridge.Core.Services;
 public sealed class MasterApiClient : IDisposable
 {
     public const string AgentVersion = "2026.04.09.1";
+    public const string NativeOutboundLeaseProtocol = "leikwan-ultra-native-socks5-v1";
 
     private readonly HttpClient _http;
     private readonly string _masterUrl;
@@ -130,6 +131,123 @@ public sealed class MasterApiClient : IDisposable
         foreach (var lease in leases.Skip(1))
             lease.Dispose();
         return first;
+    }
+
+    /// <summary>
+    /// Resolves the short-lived native SOCKS5 lease for an entitled Ultra
+    /// carrier. The capability is supplied by the pull response and is kept
+    /// out of the serialized forward state; the panel remains the authority
+    /// for the actual endpoint and credentials.
+    /// </summary>
+    public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        ForwardConfig forward,
+        string routeScope,
+        CancellationToken ct = default)
+        => ResolveNativeOutboundLeaseAsync(forward, forward.NativeOutbound, routeScope, ct);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        ForwardConfig forward,
+        NativeOutboundCapability? capability,
+        string routeScope,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(forward);
+        var policy = forward.UltraAccess;
+        var carrier = capability?.FindForward(forward.ForwardId);
+        var normalizedScope = routeScope.Trim().ToLowerInvariant();
+        if (policy is null
+            || capability is null
+            || !capability.Enabled
+            || !string.Equals(capability.Protocol, "socks5", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(capability.LeaseProtocol, NativeOutboundLeaseProtocol, StringComparison.Ordinal)
+            || !string.Equals(capability.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
+            || carrier is null
+            || !carrier.RouteScopes.Contains(normalizedScope, StringComparer.OrdinalIgnoreCase)
+            || !string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(carrier.Direction)
+            || policy.GetValidationFailure(forward, DateTimeOffset.UtcNow) is not null)
+            return null;
+
+        var expectedDigest = NativeOutboundLease.ComputeScopeDigest(
+            forward.ForwardId,
+            carrier.Direction,
+            carrier.Transport,
+            normalizedScope);
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var payload = new
+        {
+            device_id = _deviceId,
+            forwards = new[]
+            {
+                new
+                {
+                    purpose = "native_outbound",
+                    forward_id = forward.ForwardId,
+                    session_ticket = policy.SessionTicket,
+                    policy_generation = policy.PolicyGeneration,
+                    nonce,
+                    target_digest = expectedDigest,
+                    transport = "tcp+udp",
+                    route_scope = normalizedScope,
+                    selection_mode = "single",
+                    max_candidates = 1,
+                },
+            },
+        };
+
+        byte[] requestBytes = [];
+        try
+        {
+            requestBytes = JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions);
+            using var content = new ByteArrayContent(requestBytes);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{_masterUrl}/api/client/ultra/lease")
+            {
+                Content = content,
+            };
+            var response = await SendAsync(request, ct);
+            await EnsureSuccessOrThrowAsync(response, ct);
+            var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
+            try
+            {
+                using var document = JsonDocument.Parse(responseBytes);
+                if (!document.RootElement.TryGetProperty("leases", out var leases)
+                    || leases.ValueKind != JsonValueKind.Array
+                    || leases.GetArrayLength() != 1)
+                    return null;
+                return ParseNativeOutboundLease(leases[0], forward, policy, carrier, normalizedScope, expectedDigest);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(responseBytes);
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(requestBytes);
+        }
     }
 
     /// <summary>
@@ -312,6 +430,90 @@ public sealed class MasterApiClient : IDisposable
             User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
             Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
         };
+    }
+
+    private static NativeOutboundLease? ParseNativeOutboundLease(
+        JsonElement item,
+        ForwardConfig forward,
+        UltraPolicy policy,
+        NativeOutboundForward carrier,
+        string routeScope,
+        string expectedDigest)
+    {
+        var protocol = item.GetProperty("protocol").GetString() ?? "";
+        var purpose = item.GetProperty("purpose").GetString() ?? "";
+        var returnedForward = item.GetProperty("forward_id").GetInt32();
+        var generation = item.GetProperty("policy_generation").GetString() ?? "";
+        var transport = item.GetProperty("transport").GetString() ?? "";
+        var direction = item.GetProperty("direction").GetString() ?? "";
+        var returnedScope = item.GetProperty("route_scope").GetString() ?? "";
+        var scopeDigest = item.GetProperty("scope_digest").GetString() ?? "";
+        if (!string.Equals(protocol, NativeOutboundLeaseProtocol, StringComparison.Ordinal)
+            || !string.Equals(purpose, "native_outbound", StringComparison.Ordinal)
+            || returnedForward != forward.ForwardId
+            || !string.Equals(generation, policy.PolicyGeneration, StringComparison.Ordinal)
+            || !string.Equals(transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(direction, carrier.Direction, StringComparison.Ordinal)
+            || !string.Equals(returnedScope, routeScope, StringComparison.Ordinal)
+            || !string.Equals(scopeDigest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var expiresAt = item.GetProperty("expires_at").GetDateTimeOffset();
+        var now = DateTimeOffset.UtcNow;
+        if (expiresAt <= now || expiresAt > policy.ExpiresAt.AddSeconds(1)
+            || expiresAt > now.AddMinutes(5).AddSeconds(30))
+            return null;
+
+        var endpoint = item.GetProperty("endpoint");
+        var endpointHost = endpoint.GetProperty("ip").GetString() ?? "";
+        var endpointPort = endpoint.GetProperty("port").GetInt32();
+        if (!System.Net.IPAddress.TryParse(endpointHost, out _)
+            || endpointPort is < 1 or > 65535)
+            return null;
+
+        var credential = item.GetProperty("credential");
+        var rateLimit = item.TryGetProperty("rate_limit_mbps", out var rateLimitElement)
+            && rateLimitElement.TryGetInt64(out var parsedRateLimit)
+            ? parsedRateLimit
+            : policy.RateLimitMbps;
+        var quota = item.TryGetProperty("quota_remaining_bytes", out var quotaElement)
+            && quotaElement.TryGetInt64(out var parsedQuota)
+            ? parsedQuota
+            : policy.QuotaRemainingBytes;
+        var selectionRef = item.TryGetProperty("selection_ref", out var selectionElement)
+            ? selectionElement.GetString() ?? ""
+            : "native-" + Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes("native-selection\n" + (item.GetProperty("lease_id").GetString() ?? ""))))
+                .ToLowerInvariant();
+        var selectionTier = item.TryGetProperty("selection_tier", out var tierElement)
+            ? tierElement.GetString() ?? UltraLease.SelectionTierUnknown
+            : UltraLease.SelectionTierUnknown;
+        var user = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? "");
+        var password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? "");
+        var lease = new NativeOutboundLease(
+            returnedForward,
+            item.GetProperty("lease_id").GetString() ?? "",
+            generation,
+            expiresAt,
+            transport,
+            direction,
+            returnedScope,
+            scopeDigest,
+            endpointHost,
+            endpointPort,
+            user,
+            password,
+            rateLimit,
+            quota,
+            selectionRef,
+            selectionTier);
+        if (user.Length is 0 or > 255 || password.Length is 0 or > 255
+            || !lease.IsUsable(now))
+        {
+            lease.Dispose();
+            return null;
+        }
+        return lease;
     }
 
     public async Task<HeartbeatResponse> SendHeartbeatAsync(HeartbeatPayload payload, CancellationToken ct = default)

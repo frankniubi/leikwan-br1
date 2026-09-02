@@ -1,6 +1,9 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 
 namespace LeikwanBridge.Core.Services;
 
@@ -21,12 +24,16 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private readonly int _tunMtu;
     private readonly string _tunStack;
     private readonly string _chinaIpListPath;
+    private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<WindowsProxyProfile> _profiles = [];
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
     private int _activeProfileId;
+    private NativeOutboundLease? _activeNativeLease;
     private bool _stopCompleted;
     private bool _disposed;
+
+    public const string NativeOutboundDisplayName = "原生出口";
 
     public WindowsProxyConnectionService(
         WindowsProxyProfileStore store,
@@ -38,7 +45,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         int proxyPort = WindowsProxyConfigBuilder.DefaultProxyPort,
         int tunMtu = WindowsProxyConfigBuilder.DefaultTunMtu,
         string tunStack = "gvisor",
-        string? chinaIpListPath = null)
+        string? chinaIpListPath = null,
+        INativeOutboundRelayHost? nativeRelayHost = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _singBoxPath = singBoxPath ?? string.Empty;
@@ -57,6 +65,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         _tunMtu = tunMtu;
         _tunStack = tunStack;
         _chinaIpListPath = chinaIpListPath ?? string.Empty;
+        _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
     }
 
     public event Action<WindowsProxySnapshot>? SnapshotChanged;
@@ -71,6 +80,14 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     }
 
     public WindowsProxySnapshot Snapshot => _snapshot;
+
+    public DateTimeOffset? ActiveNativeLeaseExpiresAt => _activeNativeLease?.ExpiresAt;
+
+    public string? ActiveNativeLeasePolicyGeneration => _activeNativeLease?.PolicyGeneration;
+
+    public bool IsNativeOutboundActive
+        => _activeNativeLease is not null
+            && _snapshot.State == WindowsProxyConnectionState.Connected;
 
     /// <summary>
     /// The configured loopback listener used by HTTP and process mode.
@@ -294,6 +311,199 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Starts the same local sing-box lifecycle as a saved profile, but uses a
+    /// short-lived panel-issued native SOCKS5 lease. Ownership of <paramref
+    /// name="lease"/> transfers to this service once startup succeeds; it is
+    /// wiped whenever the connection is stopped or startup fails.
+    /// </summary>
+    public async Task StartNativeAsync(
+        WindowsProxyMode mode,
+        NativeOutboundLease lease,
+        IEnumerable<string>? bypassHosts = null,
+        IEnumerable<WindowsProcessProxyRule>? processRules = null,
+        CancellationToken ct = default,
+        bool bypassChinaMainland = false,
+        WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
+        IEnumerable<string>? customDnsServers = null)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        await _gate.WaitAsync(ct);
+        var previousSnapshot = _snapshot;
+        var connectionStopped = false;
+        var proxyPort = _proxyPort;
+        var leaseTransferred = false;
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!lease.IsUsable(DateTimeOffset.UtcNow))
+                throw new InvalidOperationException("native_lease_invalid");
+            if (mode is not (WindowsProxyMode.Http or WindowsProxyMode.Tun or WindowsProxyMode.Process))
+                throw new InvalidOperationException("proxy_mode_invalid");
+            var normalizedProcessRules = (processRules ?? [])
+                .Where(rule => rule is not null && !string.IsNullOrWhiteSpace(rule.Pattern))
+                .Take(64)
+                .ToList();
+            if (mode == WindowsProxyMode.Process && normalizedProcessRules.Count == 0)
+                throw new InvalidOperationException("process_rule_required");
+            if (!File.Exists(_singBoxPath))
+                throw new FileNotFoundException("sing_box_missing", _singBoxPath);
+            if (mode == WindowsProxyMode.Process && !_processAdapter.IsAvailable)
+                throw new InvalidOperationException(_processAdapter.AvailabilityReason);
+
+            proxyPort = ResolveProxyPort(mode, previousSnapshot);
+            var nativeRelayPort = AllocateLoopbackPort(proxyPort);
+            var compiled = WindowsProxyConfigBuilder.BuildNative(
+                lease,
+                mode,
+                bypassHosts,
+                proxyPort,
+                _tunMtu,
+                _tunStack,
+                bypassChinaMainland,
+                _chinaIpListPath,
+                dnsMode,
+                customDnsServers,
+                nativeProxyHost: "127.0.0.1",
+                nativeProxyPort: nativeRelayPort);
+
+            Publish(new WindowsProxySnapshot(
+                WindowsProxyConnectionState.Starting,
+                mode,
+                NativeOutboundDisplayName,
+                proxyPort,
+                0,
+                false,
+                false,
+                ""));
+            connectionStopped = true;
+            await StopCoreAsync(ct);
+            await _nativeRelayHost.StartAsync(
+                lease.ForwardId,
+                ResolveUltraBinaryPath(),
+                nativeRelayPort,
+                lease,
+                _runtimeDirectory,
+                ct);
+            Directory.CreateDirectory(_runtimeDirectory);
+            var configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
+            try
+            {
+                try
+                {
+                    await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
+                    await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                    if (mode == WindowsProxyMode.Process
+                        && _processHost is WindowsProxyProcessHost concreteHost
+                        && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
+                        throw new InvalidOperationException("proxy_listener_unavailable");
+                }
+                catch
+                {
+                    await StopCoreAsync(CancellationToken.None);
+                    throw;
+                }
+            }
+            finally
+            {
+                SecureDelete(configPath);
+            }
+
+            var systemProxyEnabled = false;
+            var processProxyEnabled = false;
+            try
+            {
+                if (mode == WindowsProxyMode.Http)
+                {
+                    await _systemProxy.EnableAsync(proxyPort, ct);
+                    systemProxyEnabled = true;
+                }
+                else if (mode == WindowsProxyMode.Process)
+                {
+                    await _processAdapter.StartAsync(proxyPort, normalizedProcessRules, ct);
+                    processProxyEnabled = true;
+                }
+            }
+            catch
+            {
+                await StopCoreAsync(CancellationToken.None);
+                throw;
+            }
+
+            _activeProfileId = 0;
+            _activeNativeLease = lease;
+            leaseTransferred = true;
+            _stopCompleted = false;
+            Publish(new WindowsProxySnapshot(
+                WindowsProxyConnectionState.Connected,
+                mode,
+                NativeOutboundDisplayName,
+                compiled.ProxyPort,
+                compiled.BypassIps.Count + compiled.BypassDomains.Count,
+                systemProxyEnabled,
+                processProxyEnabled,
+                ""));
+        }
+        catch (Exception exception)
+        {
+            if (!leaseTransferred)
+                lease.Dispose();
+            if (connectionStopped || previousSnapshot.State != WindowsProxyConnectionState.Connected)
+            {
+                Publish(new WindowsProxySnapshot(
+                    WindowsProxyConnectionState.Error,
+                    mode,
+                    NativeOutboundDisplayName,
+                    proxyPort,
+                    0,
+                    false,
+                    false,
+                    ErrorCode(exception)));
+            }
+            throw;
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Replaces the credentials in the running native relay without restarting
+    /// sing-box or toggling the system proxy. The caller retains ownership of
+    /// <paramref name="lease"/> when this returns false and may fall back to a
+    /// full start.
+    /// </summary>
+    public async Task<bool> TryRefreshNativeAsync(
+        NativeOutboundLease lease,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var current = _activeNativeLease;
+            if (_disposed
+                || current is null
+                || _snapshot.State != WindowsProxyConnectionState.Connected
+                || lease == current
+                || lease.ForwardId != current.ForwardId
+                || !string.Equals(lease.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(lease.Transport, current.Transport, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(lease.ScopeDigest, current.ScopeDigest, StringComparison.OrdinalIgnoreCase)
+                || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+                return false;
+
+            if (!await _nativeRelayHost.RefreshAsync(lease.ForwardId, lease, ct).ConfigureAwait(false))
+                return false;
+
+            _activeNativeLease = lease;
+            current.Dispose();
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task StopAsync(CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
@@ -301,7 +511,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         {
             if (_stopCompleted
                 && _snapshot.State == WindowsProxyConnectionState.Disconnected
-                && _activeProfileId == 0)
+                && _activeProfileId == 0
+                && _activeNativeLease is null)
                 return;
 
             await StopCoreAsync(ct);
@@ -353,6 +564,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         {
             await _processHost.DisposeAsync();
             await _processAdapter.DisposeAsync();
+            await _nativeRelayHost.DisposeAsync();
             _gate.Dispose();
         }
     }
@@ -375,12 +587,19 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         try { await _processAdapter.StopAsync(CancellationToken.None); }
         catch (Exception exception) { failures.Add(exception); }
 
+        try { await _nativeRelayHost.StopAsync(CancellationToken.None); }
+        catch (Exception exception) { failures.Add(exception); }
+
         if (failures.Count == 0)
         {
+            _activeNativeLease?.Dispose();
+            _activeNativeLease = null;
             _stopCompleted = true;
             return;
         }
 
+        _activeNativeLease?.Dispose();
+        _activeNativeLease = null;
         _stopCompleted = false;
         if (failures.Count == 1)
             throw failures[0];
@@ -414,6 +633,39 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 allowFallback: true),
             _ => _proxyPort,
         };
+    }
+
+    private string ResolveUltraBinaryPath()
+    {
+        var configuredDirectory = Path.GetDirectoryName(_singBoxPath);
+        var adjacent = Path.Combine(configuredDirectory ?? AppContext.BaseDirectory, "ultra-client.exe");
+        if (File.Exists(adjacent))
+            return adjacent;
+        var bundled = Path.Combine(AppContext.BaseDirectory, "bin", "ultra-client.exe");
+        return File.Exists(bundled) ? bundled : adjacent;
+    }
+
+    private static int AllocateLoopbackPort(int avoidPort)
+    {
+        TcpListener? listener = null;
+        try
+        {
+            for (var attempt = 0; attempt < 8; attempt++)
+            {
+                listener = new TcpListener(IPAddress.Loopback, 0);
+                listener.Start();
+                var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                listener.Stop();
+                listener = null;
+                if (port != avoidPort)
+                    return port;
+            }
+        }
+        finally
+        {
+            listener?.Stop();
+        }
+        throw new InvalidOperationException("native_relay_port_unavailable");
     }
 
     private int NextId()

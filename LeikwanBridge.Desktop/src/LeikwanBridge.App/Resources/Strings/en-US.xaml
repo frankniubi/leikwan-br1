@@ -117,6 +117,17 @@
     <system:String x:Key="ProxyTitle">Local Proxy</system:String>
     <system:String x:Key="ProxySubtitle">Use one node for HTTP, full-device TUN, or game acceleration.</system:String>
     <system:String x:Key="ProxyElevationHint">TUN and game acceleration require administrator permission.</system:String>
+    <system:String x:Key="ProxyNativeOutboundTitle">Native outbound</system:String>
+    <system:String x:Key="ProxyNativeOutboundBadge">Included in plan</system:String>
+    <system:String x:Key="ProxyNativeOutboundOptional">Optional</system:String>
+    <system:String x:Key="ProxyNativeOutboundHint">Use the plan-provided native SOCKS5 exit without supplying a node. Credentials stay in memory only for the active runtime.</system:String>
+    <system:String x:Key="ProxyNativeOutboundForward">Carrier forward</system:String>
+    <system:String x:Key="ProxyNativeOutboundRouteScope">Traffic scope</system:String>
+    <system:String x:Key="ProxyNativeOutboundMode">Local mode</system:String>
+    <system:String x:Key="ProxyNativeOutboundStart">Start native outbound</system:String>
+    <system:String x:Key="ProxyNativeOutboundCnOnly">Mainland China only</system:String>
+    <system:String x:Key="ProxyNativeOutboundIntlOnly">International only</system:String>
+    <system:String x:Key="ProxyNativeOutboundGlobal">Global</system:String>
     <system:String x:Key="ProxyConvergenceHint">To use Hui聚 service, set its IP to 127.0.0.1.</system:String>
     <system:String x:Key="ProxyProfiles">Profiles</system:String>
     <system:String x:Key="ProxyNew">New profile</system:String>

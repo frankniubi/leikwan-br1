@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.ComponentModel;
+using System.Net.Sockets;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using Xunit;
@@ -33,5 +35,24 @@ public sealed class UltraLeaseClientTests
     {
         Assert.Equal("leikwan-ultra-forward-42", UltraLeaseClient.PipeName(42));
         Assert.Equal(64 * 1024, UltraLeaseClient.MaxFrameBytes);
+    }
+
+    [Fact]
+    public void NativePipeRecoverableErrorsAreClassifiedWithoutSwallowingCancellation()
+    {
+        Exception[] recoverable =
+        [
+            new TimeoutException(),
+            new SocketException((int)SocketError.ConnectionReset),
+            new IOException(),
+            new InvalidDataException(),
+            new JsonException(),
+            new Win32Exception(2),
+        ];
+
+        Assert.All(recoverable, exception =>
+            Assert.True(UltraLeaseClient.IsRecoverableNativePipeException(exception), exception.GetType().Name));
+        Assert.False(UltraLeaseClient.IsRecoverableNativePipeException(new OperationCanceledException()));
+        Assert.False(UltraLeaseClient.IsRecoverableNativePipeException(new UnauthorizedAccessException()));
     }
 }

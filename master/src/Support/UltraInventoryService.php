@@ -13,6 +13,7 @@ final class UltraInventoryService
     public const ACCESS_CLASSES = ['native_udp', 'wireguard_only', 'wireguard', 'dynamic', 'dynamic_ingress', 'relay_unreachable', 'unknown'];
     public const NATIVE_UDP_STATES = ['verified', 'failed', 'unverified', 'unknown'];
     public const NATIVE_SOCKS5_STATES = ['verified', 'failed', 'unknown'];
+    public const DIRECTION_CLASSES = ['intl_to_cn', 'cn_to_intl', 'domestic', 'unknown'];
     public const ROUTE_CLASSES = ['bgp', 'single_telecom', 'wireguard', 'direct', 'relay', 'generic', 'unknown'];
     public const PRICING_CLASSES = ['paid', 'mixed', 'free', 'unknown'];
 
@@ -211,7 +212,20 @@ final class UltraInventoryService
                         config_sha256 = VALUES(config_sha256),
                         access_class = VALUES(access_class),
                         native_udp_state = VALUES(native_udp_state),
-                        native_socks5_state = VALUES(native_socks5_state),
+                        is_enabled = CASE
+                            WHEN VALUES(native_socks5_state) = \'unknown\'
+                             AND ultra_lines.native_socks5_state = \'verified\'
+                             AND ultra_lines.config_sha256 = VALUES(config_sha256)
+                            THEN ultra_lines.is_enabled
+                            ELSE VALUES(is_enabled)
+                        END,
+                        native_socks5_state = CASE
+                            WHEN VALUES(native_socks5_state) = \'unknown\'
+                             AND ultra_lines.native_socks5_state = \'verified\'
+                             AND ultra_lines.config_sha256 = VALUES(config_sha256)
+                            THEN ultra_lines.native_socks5_state
+                            ELSE VALUES(native_socks5_state)
+                        END,
                         route_class = VALUES(route_class),
                         pricing_class = VALUES(pricing_class),
                         pricing_evidence = VALUES(pricing_evidence),
@@ -315,12 +329,13 @@ final class UltraInventoryService
                 $params[$key] = $value;
             }
         }
-        foreach (['access_class', 'native_udp_state', 'native_socks5_state', 'route_class', 'pricing_class'] as $key) {
+        foreach (['access_class', 'native_udp_state', 'native_socks5_state', 'direction_class', 'route_class', 'pricing_class'] as $key) {
             $value = self::cleanText($filters[$key] ?? '', 32);
             if ($value !== '' && self::normalizeEnum($value, match ($key) {
                 'access_class' => self::ACCESS_CLASSES,
                 'native_udp_state' => self::NATIVE_UDP_STATES,
                 'native_socks5_state' => self::NATIVE_SOCKS5_STATES,
+                'direction_class' => self::DIRECTION_CLASSES,
                 'route_class' => self::ROUTE_CLASSES,
                 default => self::PRICING_CLASSES,
             }) === $value) {
@@ -422,12 +437,14 @@ final class UltraInventoryService
     {
         $ingress = $this->validZoneOverride($payload['admin_ingress_zone'] ?? null, 'ingress');
         $destination = $this->validZoneOverride($payload['admin_destination_zone'] ?? null, 'destination');
+        $directionClass = self::normalizeEnum($payload['direction_class'] ?? 'unknown', self::DIRECTION_CLASSES);
         $label = self::cleanText($payload['admin_label'] ?? '', 191);
         $notes = self::cleanText($payload['notes'] ?? '', 2000);
         $this->db->execute(
             'UPDATE ultra_lines
              SET admin_ingress_zone = :admin_ingress_zone,
                  admin_destination_zone = :admin_destination_zone,
+                 direction_class = :direction_class,
                  admin_label = :admin_label,
                  is_enabled = :is_enabled,
                  sort_order = :sort_order,
@@ -438,6 +455,7 @@ final class UltraInventoryService
                 'id' => $id,
                 'admin_ingress_zone' => $ingress,
                 'admin_destination_zone' => $destination,
+                'direction_class' => $directionClass,
                 'admin_label' => $label !== '' ? $label : null,
                 'is_enabled' => $this->truthy($payload['is_enabled'] ?? false) ? 1 : 0,
                 'sort_order' => max(-100000, min(100000, (int) ($payload['sort_order'] ?? 100))),

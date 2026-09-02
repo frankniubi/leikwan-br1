@@ -428,6 +428,10 @@ final class DeviceControlService
     }
 
     /**
+     * @param array<string, mixed> $client
+     * @return array<string, mixed>
+     */
+    /**
      * Enroll a device using only its persistent Android Keystore public key.
      * This is the default Android user path and intentionally does not invoke
      * Google RKP, key attestation, or any external verifier.
@@ -475,8 +479,6 @@ final class DeviceControlService
                 $control = $this->controlFor($clientId, $deviceId);
                 if ($control !== null) {
                     $this->throwIfTemporarilyBlocked($control, $accessPolicyProtocolVersion === 1);
-                    // A permanent ban remains terminal. Legacy kicked rows may
-                    // be recovered by an explicit user enrollment.
                     if ((string) ($control['state'] ?? '') === 'banned') {
                         $this->throwIfTerminal($control);
                     }
@@ -604,10 +606,6 @@ final class DeviceControlService
         });
     }
 
-    /**
-     * @param array<string, mixed> $client
-     * @return array<string, mixed>
-     */
     public function requireActive(array $client, Request $request): array
     {
         $clientId = $this->clientId($client);

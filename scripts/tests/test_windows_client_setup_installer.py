@@ -203,6 +203,11 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             "leikwan-uot-bond.exe",
             "leikwan-mptcp-relay.exe",
             "ultra-client.exe",
+            "sing-box.exe",
+            "Redirector.bin",
+            "netfilter2.sys",
+            "nfapi.dll",
+            "CN.conf",
         ):
             (bin_dir / name).write_bytes(name.encode("utf-8"))
 
@@ -626,7 +631,9 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
                 text=True,
                 errors="replace",
                 env=env,
-                timeout=40,
+                # The self-contained native Windows package is larger than the
+                # legacy test installer; allow extraction on slower disks.
+                timeout=180,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or ""
