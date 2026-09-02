@@ -9,6 +9,7 @@ use Leikwan\Master\Http\Response;
 final class ArtifactController extends BaseController
 {
     private const WSTUNNEL_ARTIFACT_DIR = 'artifacts/wstunnel';
+    private const STREAM_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
     /** @var array<string, mixed>|null */
     private ?array $versions = null;
@@ -523,14 +524,30 @@ final class ArtifactController extends BaseController
                 }
             }
             if ($start !== null && $end !== null && $start <= $end && $start >= 0 && $end < $size) {
+                $length = $end - $start + 1;
+                $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
+                $headers['Content-Length'] = (string) $length;
+                if ($length > self::STREAM_THRESHOLD_BYTES) {
+                    return Response::streamed(
+                        206,
+                        $headers,
+                        static function () use ($path, $start, $length): void {
+                            self::streamFile($path, $start, $length);
+                        },
+                    );
+                }
                 $handle = fopen($path, 'rb');
                 if ($handle !== false) {
-                    fseek($handle, $start);
-                    $body = (string) fread($handle, $end - $start + 1);
-                    fclose($handle);
-                    $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
-                    $headers['Content-Length'] = (string) strlen($body);
-                    return new Response(206, $headers, $body);
+                    try {
+                        if (fseek($handle, $start) === 0) {
+                            $body = (string) fread($handle, $length);
+                            if (strlen($body) === $length) {
+                                return new Response(206, $headers, $body);
+                            }
+                        }
+                    } finally {
+                        fclose($handle);
+                    }
                 }
             }
             $headers['Content-Range'] = 'bytes */' . $size;
@@ -538,7 +555,44 @@ final class ArtifactController extends BaseController
             return new Response(416, $headers, '');
         }
 
+        if ($size > self::STREAM_THRESHOLD_BYTES) {
+            return Response::streamed(
+                200,
+                $headers,
+                static function () use ($path, $size): void {
+                    self::streamFile($path, 0, $size);
+                },
+            );
+        }
+
         return new Response(200, $headers, (string) file_get_contents($path));
+    }
+
+    private static function streamFile(string $path, int $offset, int $length): void
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false || fseek($handle, $offset) !== 0) {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            return;
+        }
+
+        try {
+            set_time_limit(0);
+            $remaining = $length;
+            while ($remaining > 0 && !feof($handle)) {
+                $chunk = fread($handle, min(1024 * 1024, $remaining));
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                echo $chunk;
+                $remaining -= strlen($chunk);
+                flush();
+            }
+        } finally {
+            fclose($handle);
+        }
     }
 
     private function renderForwardSpecificWindowsInstallerWrapper(int $forwardId, string $token): string
