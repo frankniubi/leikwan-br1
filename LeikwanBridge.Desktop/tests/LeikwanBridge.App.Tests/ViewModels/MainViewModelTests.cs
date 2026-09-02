@@ -61,6 +61,24 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void NativeOutboundDrawerStaysHiddenWithoutCarrierRows()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+            },
+        };
+
+        Assert.False(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
     public void MainlandToInternationalCarrierExposesIntlOnlyAndDisablesChinaBypass()
     {
         var vm = new MainViewModel
