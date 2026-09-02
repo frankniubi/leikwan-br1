@@ -44,7 +44,13 @@
     "artifact_streaming_fix": true,
     "streamed_probe_metadata_fix": true,
     "php_fpm_reloaded": "php-fpm-83-source196.service",
-    "public_download_hash_verified": true
+    "public_download_hash_verified": true,
+    "low_memory_stream_probe": {
+      "status": 200,
+      "body_bytes_materialized": 0,
+      "content_length": 135026256,
+      "sha256_verified": true
+    }
   },
   "handoff": "docs/handoffs/2026-09-03-windows-native-cn-only-dns-handoff.md"
 }

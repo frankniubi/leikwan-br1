@@ -57,6 +57,7 @@ Passed:
 - sing-box 1.13.19 `check` passed for generated `cn_only` and `intl_only` TUN configs.
 - Installed/stage hashes match for the app and native runtime binaries.
 - Full public installer GET through the panel completed under the server's low PHP memory limit; downloaded size/hash matched `135026256` / `194653bd1ac0611517b461ada5bed1df7b6be4459f056dc9650840b8119c7528`.
+- Server-side route probe under the low-memory PHP runtime returned HTTP 200 with the same ETag and `Content-Length`, while materializing `0` response-body bytes.
 - Public `/artifacts/versions.json` and `/artifacts/client-manifest.json` returned HTTP 200 and advertised Windows `0.1.20.3`; the Ultra runtime entry advertised `2026.09.03.1`.
 - Local UI smoke: installed client displayed the native outbound card and the Hong Kong -> Mainland China carrier; the user subsequently confirmed that the selected Hong Kong -> Mainland test worked.
 
