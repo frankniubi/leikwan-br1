@@ -84,6 +84,11 @@ final class Response
         return $this->body;
     }
 
+    public function isStreamed(): bool
+    {
+        return $this->streamBody !== null;
+    }
+
     public function send(): void
     {
         http_response_code($this->status);
