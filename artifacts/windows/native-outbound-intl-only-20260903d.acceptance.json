@@ -5,7 +5,12 @@
   "artifact_size_bytes": 135026256,
   "source_branch": "master",
   "source_commit": "32d2d69157455836f177b616b940d29649ab377e",
-  "source_ahead_of_origin_master": 8,
+  "release_commits": [
+    "8c057a2",
+    "f413f93",
+    "bf2862e"
+  ],
+  "source_ahead_of_origin_master": 11,
   "built_with_described_worktree_changes": true,
   "scope": "windows",
   "direction": "Hong Kong to Mainland China",
@@ -31,10 +36,15 @@
     "user_local_hong_kong_to_mainland_smoke": "confirmed usable"
   },
   "deployment": {
-    "server_upload": "pending",
+    "server_upload": true,
     "public_manifest_changed": true,
     "update_push": "not_requested",
-    "rollback_backup": "C:\\ProgramData\\Leikwan\\ClientAgent\\backups\\native-cn-split-dns-20260903-0208"
+    "rollback_backup": "C:\\ProgramData\\Leikwan\\ClientAgent\\backups\\native-cn-split-dns-20260903-0208",
+    "panel_backup": "/root/codex-backups/windows-native-dns-release-20260903-20260902T202034Z",
+    "artifact_streaming_fix": true,
+    "streamed_probe_metadata_fix": true,
+    "php_fpm_reloaded": "php-fpm-83-source196.service",
+    "public_download_hash_verified": true
   },
   "handoff": "docs/handoffs/2026-09-03-windows-native-cn-only-dns-handoff.md"
 }

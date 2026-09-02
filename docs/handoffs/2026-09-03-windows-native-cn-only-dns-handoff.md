@@ -3,7 +3,7 @@
 - Date: 2026-09-03 (Asia/Taipei)
 - Scope: Windows client only. Android/macOS/Linux were not changed or accepted in this pass.
 - Direction under test: Hong Kong -> Mainland China (`forward 174`), route scope `cn_only` (Mainland China only).
-- Publication status: Windows release artifact prepared locally; server deployment follows commit verification.
+- Publication status: Windows release artifact committed and deployed to the panel; public update metadata now points to `0.1.20.3`.
 
 ## What changed
 
@@ -34,6 +34,7 @@ The panel pull and lease contract for the test account returned an enabled nativ
 - Public installer size: `135,026,256` bytes
 - Previous public installer backup: `artifacts/windows/_public_setup_backup-20260903-pre-v0203/leikwan-bridge-setup.exe`
 - Previous test installer: `artifacts/windows/native-outbound-intl-only-20260903d-win.exe` (`0.1.20.2`, retained for comparison)
+- Ultra Windows runtime: version `2026.09.03.1`, SHA-256 `b60d6a101bdb1cc0a753108d8e0f0c5d8506b00e0f31270358a424f1a2d6fb85`, size `6,845,440` bytes
 - Stage and installed apphost SHA-256: `05c16bdea1f37b385528b4c836f2df2940ddcd8265e5346f4c7dcd06f958cfbe`
 - `LeikwanBridge.Core.dll` stage/installed SHA-256: `e93c2e8f1febdf7458c789eb108384f6c511bdde0329b12782f2fbb28a5ad3ba`
 - `LeikwanBridge.App.dll` stage/installed SHA-256: `b884c12d8124e8f79fe6a01896f015d64c90e86463fb4b1520b8c5cafef0b3b9`
@@ -41,7 +42,7 @@ The panel pull and lease contract for the test account returned an enabled nativ
 - `bin\\sing-box.exe` stage/installed SHA-256: `a4476dd768168a77e249050066bb32774addefcc37da123978623e7b2819de28`
 - Install root: `%LOCALAPPDATA%\\Programs\\LeiKwan Bridge`
 
-The source build used `master` at `32d2d69157455836f177b616b940d29649ab377e` plus the Windows working-tree changes described here; the branch was 8 commits ahead of `origin/master` before this release commit. The worktree was already dirty before this change; unrelated edits and artifacts were preserved.
+The source build used `master` at `32d2d69157455836f177b616b940d29649ab377e` plus the Windows working-tree changes described here. Those changes are committed in `8c057a2` (Windows native release), `f413f93` (large-artifact streaming), and `bf2862e` (streamed artifact probe metadata). The branch was 8 commits ahead of `origin/master` before the release commits; unrelated edits and artifacts were preserved.
 
 ## Verification
 
@@ -55,6 +56,8 @@ Passed:
 - PHP native lease/visibility/entitlement/inventory/direction contract tests: all five `ok`.
 - sing-box 1.13.19 `check` passed for generated `cn_only` and `intl_only` TUN configs.
 - Installed/stage hashes match for the app and native runtime binaries.
+- Full public installer GET through the panel completed under the server's low PHP memory limit; downloaded size/hash matched `135026256` / `194653bd1ac0611517b461ada5bed1df7b6be4459f056dc9650840b8119c7528`.
+- Public `/artifacts/versions.json` and `/artifacts/client-manifest.json` returned HTTP 200 and advertised Windows `0.1.20.3`; the Ultra runtime entry advertised `2026.09.03.1`.
 - Local UI smoke: installed client displayed the native outbound card and the Hong Kong -> Mainland China carrier; the user subsequently confirmed that the selected Hong Kong -> Mainland test worked.
 
 Not proven in this workstation pass:
@@ -73,9 +76,15 @@ That backup includes the prior app/runtime files and a `pre-test-state.json` sna
 
 The current local client was left in the user's working state. A pre-existing unrelated `ThroneCore` listener on `127.0.0.1:2080` was not modified.
 
+The panel deployment backup is:
+`/root/codex-backups/windows-native-dns-release-20260903-20260902T202034Z`
+It contains the previous manifest, installer, Ultra runtime, native PHP files, and the pre-streaming `ArtifactController`/`Response` versions. The PHP-FPM service `php-fpm-83-source196.service` was reloaded after replacement and remained active.
+
 ## Operational notes
 
 - Use `cn_only` for the current Hong Kong -> Mainland acceptance; do not infer global behavior from this test.
 - Keep API/control-plane calls on the normal international route. Do not set the system proxy to the native listener while refreshing the lease.
 - If a future build reports `default domain resolver not found`, check the generated config's DNS tags and `route.default_domain_resolver` before changing the relay.
+- Large artifacts must continue to use the streaming path in `ArtifactController::serveRepoFile`; returning `file_get_contents()` for a package larger than the PHP memory limit will recreate the update failure.
+- The internal `LeigodOnlyArtifactRouteProbe` uses the streamed response's ETag and Content-Length for hash/size evidence; it must not call `Response::body()` as the sole source for large files.
 - The PHP CLI on this workstation emits a pre-existing `date.timezone=UTC+8` warning; the contract tests still pass. Normalize it to `Asia/Taipei` in the shell when exact timestamp output matters.
