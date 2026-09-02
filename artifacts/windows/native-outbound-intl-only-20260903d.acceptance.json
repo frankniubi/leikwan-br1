@@ -1,16 +1,17 @@
 {
   "artifact": "leikwan-bridge-setup.exe",
-  "version": "0.1.20.3",
-  "artifact_sha256": "194653bd1ac0611517b461ada5bed1df7b6be4459f056dc9650840b8119c7528",
-  "artifact_size_bytes": 135026256,
+  "version": "0.1.20.4",
+  "artifact_sha256": "81e2413ca28a511287c3f0d78f400c49f9f52225e2adef08030c150f89739c6d",
+  "artifact_size_bytes": 135025146,
   "source_branch": "master",
-  "source_commit": "32d2d69157455836f177b616b940d29649ab377e",
+  "source_commit": "fdb1c96a50c4580f364ebde5a8a6fb65f43aeb9d",
   "release_commits": [
     "8c057a2",
     "f413f93",
-    "bf2862e"
+    "bf2862e",
+    "fdb1c96"
   ],
-  "source_ahead_of_origin_master": 11,
+  "source_ahead_of_origin_master": 14,
   "built_with_described_worktree_changes": true,
   "scope": "windows",
   "direction": "Hong Kong to Mainland China",
@@ -24,7 +25,7 @@
     "destination_resolution": "route.resolve strategy=ipv4_only before SOCKS"
   },
   "checks": {
-    "windows_proxy_config_builder": "26/26",
+    "windows_proxy_config_builder": "27/27",
     "core_tests": "274/274",
     "app_tests": "45/45",
     "mac_regression_tests": "55/55",
@@ -32,6 +33,7 @@
     "go_vet": "passed",
     "php_contract_tests": "5/5",
     "sing_box_config_check": "passed for cn_only and intl_only",
+    "windows_setup_installer_tests": "16/16",
     "installed_stage_hashes": "matched",
     "user_local_hong_kong_to_mainland_smoke": "confirmed usable"
   },
@@ -40,15 +42,17 @@
     "public_manifest_changed": true,
     "update_push": "not_requested",
     "rollback_backup": "C:\\ProgramData\\Leikwan\\ClientAgent\\backups\\native-cn-split-dns-20260903-0208",
-    "panel_backup": "/root/codex-backups/windows-native-dns-release-20260903-20260902T202034Z",
+    "panel_backup": "/root/codex-backups/windows-native-dns-release-v0204-20260902T212507Z",
     "artifact_streaming_fix": true,
     "streamed_probe_metadata_fix": true,
     "php_fpm_reloaded": "php-fpm-83-source196.service",
     "public_download_hash_verified": true,
+    "public_range_request_verified": "206 bytes 0-1048575/135025146",
+    "public_health_http_status": 200,
     "low_memory_stream_probe": {
       "status": 200,
       "body_bytes_materialized": 0,
-      "content_length": 135026256,
+      "content_length": 135025146,
       "sha256_verified": true
     }
   },
