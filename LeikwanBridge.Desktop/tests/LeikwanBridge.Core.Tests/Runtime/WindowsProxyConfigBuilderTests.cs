@@ -615,6 +615,23 @@ public sealed class WindowsProxyConfigBuilderTests
     }
 
     [Fact]
+    public void NativeLocalRelayStillExcludesLeaseEndpointFromTun()
+    {
+        using var lease = CreateNativeLease("cn_only");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            [],
+            nativeProxyHost: "127.0.0.1",
+            nativeProxyPort: 2099).Json);
+
+        Assert.Contains(
+            document.RootElement.GetProperty("inbounds")[0]
+                .GetProperty("route_exclude_address").EnumerateArray(),
+            item => item.GetString() == "203.0.113.20/32");
+    }
+
+    [Fact]
     public void NativeCnOnlyUsesProtectedChinaDnsBeforeGeositeAndGeoipRouting()
     {
         using var lease = CreateNativeLease("cn_only");

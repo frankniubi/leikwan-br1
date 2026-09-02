@@ -89,7 +89,8 @@ public partial class MainViewModel : ObservableObject
     public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
     public bool IsProxyStarting => ProxySnapshot.State == WindowsProxyConnectionState.Starting;
     public bool IsProxyError => ProxySnapshot.State == WindowsProxyConnectionState.Error;
-    public bool IsNativeOutboundVisible => NativeOutboundCapability is { Enabled: true };
+    public bool IsNativeOutboundVisible
+        => NativeOutboundCapability is { Enabled: true } && NativeOutboundForwards.Count > 0;
     public IReadOnlyList<NativeOutboundForward> NativeOutboundForwards
         => NativeOutboundCapability?.Forwards ?? [];
     public IReadOnlyList<string> NativeRouteScopeOptions

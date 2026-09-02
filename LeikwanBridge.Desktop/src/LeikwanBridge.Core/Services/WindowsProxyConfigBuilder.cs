@@ -97,8 +97,10 @@ public static class WindowsProxyConfigBuilder
             : [];
         var bypassIps = new List<string>();
         var bypassDomains = new List<string>();
-        if (string.IsNullOrWhiteSpace(nativeProxyHost))
-            AddHost(lease.EndpointHost, bypassIps, bypassDomains);
+        // The app-private relay still opens the provider connection outside
+        // sing-box. Keep that endpoint on the direct path even when the
+        // generated SOCKS outbound points at the local relay.
+        AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
 
