@@ -9,15 +9,27 @@ final class Response
     /** @var array<string, string> */
     private array $headers;
     private string $body;
+    /** @var (\Closure(): void)|null */
+    private ?\Closure $streamBody;
 
     /**
      * @param array<string, string> $headers
      */
-    public function __construct(int $status, array $headers, string $body)
+    public function __construct(int $status, array $headers, string $body, ?\Closure $streamBody = null)
     {
         $this->status = $status;
         $this->headers = $headers;
         $this->body = $body;
+        $this->streamBody = $streamBody;
+    }
+
+    /**
+     * Creates a response whose payload is emitted in bounded chunks at send
+     * time. The normal body accessors remain string-based for small responses.
+     */
+    public static function streamed(int $status, array $headers, callable $streamer): self
+    {
+        return new self($status, $headers, '', \Closure::fromCallable($streamer));
     }
 
     /**
@@ -48,7 +60,12 @@ final class Response
      */
     public function withHeaders(array $headers): self
     {
-        return new self($this->status, array_merge($this->headers, $headers), $this->body);
+        return new self(
+            $this->status,
+            array_merge($this->headers, $headers),
+            $this->body,
+            $this->streamBody,
+        );
     }
 
     public function status(): int
@@ -72,6 +89,10 @@ final class Response
         http_response_code($this->status);
         foreach ($this->headers as $name => $value) {
             header($name . ': ' . $value);
+        }
+        if ($this->streamBody !== null) {
+            ($this->streamBody)();
+            return;
         }
         echo $this->body;
     }
