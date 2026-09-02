@@ -6,11 +6,13 @@ public interface IDesktopClientController : IAsyncDisposable
 {
     event Action<DesktopClientSnapshot>? SnapshotChanged;
     event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged;
+    event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     event Action<string>? NoticeRaised;
     event Action<string>? LogRaised;
     event Action<string>? UpdateAvailable;
 
     DesktopClientSnapshot Snapshot { get; }
+    NativeOutboundCapability? NativeOutbound { get; }
     Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default);
     Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default);
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
@@ -21,6 +23,10 @@ public interface IDesktopClientController : IAsyncDisposable
     Task StopForwardAsync(int forwardId, CancellationToken ct = default);
     Task StartAllAsync(CancellationToken ct = default);
     Task StopAllAsync(CancellationToken ct = default);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct = default);
     Task SignOutAsync(CancellationToken ct = default);
 }
 
@@ -36,6 +42,7 @@ public sealed class DesktopClientController : IDesktopClientController
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _snapshotLock = new();
     private IDesktopRuntimeSession? _runtimeSession;
+    private NativeOutboundCapability? _nativeOutbound;
     private DesktopClientSnapshot _snapshot;
 
     public DesktopClientController(
@@ -59,6 +66,7 @@ public sealed class DesktopClientController : IDesktopClientController
 
     public event Action<DesktopClientSnapshot>? SnapshotChanged;
     public event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged;
+    public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     public event Action<string>? NoticeRaised;
     public event Action<string>? LogRaised;
     public event Action<string>? UpdateAvailable;
@@ -71,6 +79,8 @@ public sealed class DesktopClientController : IDesktopClientController
                 return _snapshot;
         }
     }
+
+    public NativeOutboundCapability? NativeOutbound => _nativeOutbound;
 
     public IReadOnlyList<ForwardConfig> RuntimeForwards
         => _runtimeSession?.Forwards ?? [];
@@ -201,6 +211,7 @@ public sealed class DesktopClientController : IDesktopClientController
             await DisconnectCoreAsync();
             var session = _runtimeFactory(_config, _identity);
             session.ForwardsChanged += OnRuntimeForwardsChanged;
+            session.NativeOutboundChanged += OnRuntimeNativeOutboundChanged;
             session.ForwardRejected += (_, notice) => NoticeRaised?.Invoke(notice);
             session.LogRaised += message => LogRaised?.Invoke(message);
             _runtimeSession = session;
@@ -211,6 +222,7 @@ public sealed class DesktopClientController : IDesktopClientController
                 IsBusy = false,
                 ConnectionStatus = "connected",
                 LastErrorCode = string.Empty,
+                NativeOutbound = _nativeOutbound,
             });
             LogRaised?.Invoke("connected");
         }
@@ -240,7 +252,10 @@ public sealed class DesktopClientController : IDesktopClientController
                 IsBusy = false,
                 ConnectionStatus = "disconnected",
                 Forwards = [],
+                NativeOutbound = null,
             });
+            _nativeOutbound = null;
+            NativeOutboundChanged?.Invoke(null);
             ForwardsChanged?.Invoke([]);
         }
         finally
@@ -305,6 +320,25 @@ public sealed class DesktopClientController : IDesktopClientController
 
     public Task StopAllAsync(CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StopAllAsync(ct));
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct);
+        try
+        {
+            var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
+            SetBusy(true);
+            return await runtime.ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
+        }
+        finally
+        {
+            SetBusy(false);
+            _lifecycleGate.Release();
+        }
+    }
 
     public async Task SignOutAsync(CancellationToken ct = default)
     {
@@ -392,8 +426,15 @@ public sealed class DesktopClientController : IDesktopClientController
             runtime?.IsForwardRunning(forward.ForwardId) == true,
             runtime?.IsForwardRunning(forward.ForwardId) == true ? "running" : "stopped"))
             .ToList();
-        PublishSnapshot(Snapshot with { Forwards = publicForwards });
+        PublishSnapshot(Snapshot with { Forwards = publicForwards, NativeOutbound = _nativeOutbound });
         ForwardsChanged?.Invoke(publicForwards);
+    }
+
+    private void OnRuntimeNativeOutboundChanged(NativeOutboundCapability? capability)
+    {
+        _nativeOutbound = capability;
+        PublishSnapshot(Snapshot with { NativeOutbound = capability });
+        NativeOutboundChanged?.Invoke(capability);
     }
 
     private async Task DisconnectCoreAsync()
@@ -401,8 +442,10 @@ public sealed class DesktopClientController : IDesktopClientController
         var session = Interlocked.Exchange(ref _runtimeSession, null);
         if (session is null)
             return;
+        session.NativeOutboundChanged -= OnRuntimeNativeOutboundChanged;
         await session.StopAsync();
         await session.DisposeAsync();
+        _nativeOutbound = null;
     }
 
     private void SetBusy(bool busy)
@@ -443,6 +486,7 @@ public sealed class DesktopClientController : IDesktopClientController
             ActiveClientName = config.ActiveClientName,
             ConnectionStatus = "disconnected",
             AvailableClients = config.AvailableClients.ToList(),
+            NativeOutbound = null,
         };
     }
 

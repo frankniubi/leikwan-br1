@@ -49,6 +49,99 @@ public sealed class WindowsProxyConnectionServiceTests
     }
 
     [Fact]
+    public async Task NativeTunStartUsesAnonymousLeaseAndWipesItOnStop()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var systemProxy = new FakeSystemProxy();
+        var adapter = new FakeProcessAdapter();
+        var relay = new FakeNativeRelayHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            systemProxy,
+            adapter,
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        var user = System.Text.Encoding.UTF8.GetBytes("native-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("native-password");
+        using var lease = new NativeOutboundLease(
+            158,
+            "native-lease",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            "Ultra Hong Kong to Mainland China",
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(
+                158,
+                "Ultra Hong Kong to Mainland China",
+                "tcp+udp",
+                "cn_only"),
+            "203.0.113.20",
+            5438,
+            user,
+            password,
+            rateLimitMbps: 1000,
+            quotaRemainingBytes: 1024 * 1024,
+            selectionRef: "selection-native-158",
+            selectionTier: UltraLease.SelectionTierUnknown);
+
+        await service.StartNativeAsync(WindowsProxyMode.Tun, lease);
+
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+        Assert.Equal(WindowsProxyConnectionService.NativeOutboundDisplayName, service.Snapshot.ActiveProfileName);
+        Assert.True(service.IsNativeOutboundActive);
+        Assert.True(process.IsRunning);
+        Assert.False(systemProxy.IsEnabled);
+        Assert.Equal(1, relay.StartCalls);
+        Assert.Equal("127.0.0.1", relay.LastEndpoint?.Host);
+        Assert.Contains("127.0.0.1", process.LastConfigJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("native-password", process.LastConfigJson, StringComparison.Ordinal);
+
+        var replacementUser = System.Text.Encoding.UTF8.GetBytes("replacement-user");
+        var replacementPassword = System.Text.Encoding.UTF8.GetBytes("replacement-password");
+        var replacement = new NativeOutboundLease(
+            158,
+            "native-lease-replacement",
+            new string('b', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            "Ultra Hong Kong to Mainland China",
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(
+                158,
+                "Ultra Hong Kong to Mainland China",
+                "tcp+udp",
+                "cn_only"),
+            "203.0.113.21",
+            5438,
+            replacementUser,
+            replacementPassword,
+            rateLimitMbps: 1000,
+            quotaRemainingBytes: 1024 * 1024,
+            selectionRef: "selection-native-159",
+            selectionTier: UltraLease.SelectionTierUnknown);
+        Assert.True(await service.TryRefreshNativeAsync(replacement));
+        Assert.Equal(1, relay.StartCalls);
+        Assert.Equal(1, relay.RefreshCalls);
+
+        await service.StopAsync();
+
+        Assert.False(service.IsNativeOutboundActive);
+        Assert.Null(service.ActiveNativeLeaseExpiresAt);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+        Assert.All(replacementUser, value => Assert.Equal(0, value));
+        Assert.All(replacementPassword, value => Assert.Equal(0, value));
+        Assert.Equal(WindowsProxyConnectionState.Disconnected, service.Snapshot.State);
+    }
+
+    [Fact]
     public async Task RepeatedStopAfterSuccessfulCleanupDoesNotRepeatNativeShutdown()
     {
         using var temp = new TempStateDirectory();
@@ -330,9 +423,11 @@ public sealed class WindowsProxyConnectionServiceTests
     private sealed class FakeProcessHost : IWindowsProxyProcessHost
     {
         public bool IsRunning { get; private set; }
+        public string LastConfigJson { get; private set; } = string.Empty;
         public Exception? StopException { get; set; }
         public Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
         {
+            LastConfigJson = File.ReadAllText(configPath);
             IsRunning = true;
             return Task.CompletedTask;
         }
@@ -389,5 +484,35 @@ public sealed class WindowsProxyConnectionServiceTests
             return exception is null ? Task.CompletedTask : Task.FromException(exception);
         }
         public ValueTask DisposeAsync() { Started = false; return ValueTask.CompletedTask; }
+    }
+
+    private sealed class FakeNativeRelayHost : LeikwanBridge.Core.Services.Ultra.INativeOutboundRelayHost
+    {
+        public int StartCalls { get; private set; }
+        public int RefreshCalls { get; private set; }
+        public bool RefreshResult { get; set; } = true;
+        public LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint? LastEndpoint { get; private set; }
+
+        public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
+            int forwardId,
+            string ultraBinaryPath,
+            int listenPort,
+            NativeOutboundLease lease,
+            string runtimeDirectory,
+            CancellationToken ct = default)
+        {
+            StartCalls++;
+            LastEndpoint = new LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint("127.0.0.1", listenPort);
+            return Task.FromResult(LastEndpoint);
+        }
+
+        public Task<bool> RefreshAsync(int forwardId, NativeOutboundLease lease, CancellationToken ct = default)
+        {
+            RefreshCalls++;
+            return Task.FromResult(RefreshResult);
+        }
+
+        public Task StopAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

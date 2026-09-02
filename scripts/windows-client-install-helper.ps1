@@ -177,18 +177,22 @@ function Stop-InstalledProcesses {
             $_.ExecutablePath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)
         )
     } | ForEach-Object {
+        $processId = $_.ProcessId
+        $processName = if ($_.PSObject.Properties['Name']) { [string]$_.Name } else { "installed-process" }
         try {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+            Stop-Process -Id $processId -Force -ErrorAction Stop
         } catch {
-            Write-Warning "failed to stop process $($_.Name) [$($_.ProcessId)]: $($_.Exception.Message)"
+            Write-Warning "failed to stop process $processName [$processId]: $($_.Exception.Message)"
         }
     }
 
     Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue | ForEach-Object {
+        $processId = $_.Id
+        $processName = if ($_.PSObject.Properties['ProcessName']) { [string]$_.ProcessName } else { "leikwan-client-win" }
         try {
-            Stop-Process -Id $_.Id -Force -ErrorAction Stop
+            Stop-Process -Id $processId -Force -ErrorAction Stop
         } catch {
-            Write-Warning "failed to stop process $($_.ProcessName) [$($_.Id)]: $($_.Exception.Message)"
+            Write-Warning "failed to stop process $processName [$processId]: $($_.Exception.Message)"
         }
     }
 

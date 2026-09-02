@@ -5,10 +5,12 @@ namespace LeikwanBridge.Core.Services;
 public interface IDesktopRuntimeSession : IAsyncDisposable
 {
     event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+    event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     event Action<int, string>? ForwardRejected;
     event Action<string>? LogRaised;
 
     IReadOnlyList<ForwardConfig> Forwards { get; }
+    NativeOutboundCapability? NativeOutbound { get; }
     bool IsForwardRunning(int forwardId);
     Task StartAsync(CancellationToken ct);
     Task RefreshAsync(CancellationToken ct);
@@ -17,6 +19,10 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     Task StopForwardAsync(int forwardId, CancellationToken ct);
     Task StartAllAsync(CancellationToken ct);
     Task StopAllAsync(CancellationToken ct);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct);
 }
 
 public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
@@ -60,6 +66,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _healthIntervalSeconds = Math.Max(1, healthIntervalSeconds);
         _heartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(30);
         _polling.ForwardsUpdated += OnForwardsUpdated;
+        _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
         _polling.PullStateChanged += state =>
         {
@@ -73,12 +80,32 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     }
 
     public event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+    public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     public event Action<int, string>? ForwardRejected;
     public event Action<string>? LogRaised;
 
     public IReadOnlyList<ForwardConfig> Forwards => _polling.LatestForwards;
 
+    public NativeOutboundCapability? NativeOutbound => _polling.LatestNativeOutbound;
+
     public bool IsForwardRunning(int forwardId) => _runtime.IsForwardRunning(forwardId);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct)
+    {
+        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
+        if (forward is null || NativeOutbound is null)
+            return null;
+        forward.NativeOutbound = NativeOutbound;
+        forward.NativeRouteScope = routeScope.Trim().ToLowerInvariant();
+        return await _api.ResolveNativeOutboundLeaseAsync(
+            forward,
+            NativeOutbound,
+            forward.NativeRouteScope,
+            ct);
+    }
 
     public async Task StartAsync(CancellationToken ct)
     {

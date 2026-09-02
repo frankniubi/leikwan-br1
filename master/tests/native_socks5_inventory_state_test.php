@@ -44,7 +44,9 @@ $source = (string) file_get_contents(__DIR__ . '/../src/Support/UltraInventorySe
 foreach ([
     'NATIVE_SOCKS5_STATES',
     "'native_socks5_state' => \$rawNativeSocks5State",
-    'native_socks5_state = VALUES(native_socks5_state)',
+    "native_socks5_state = CASE",
+    "ultra_lines.config_sha256 = VALUES(config_sha256)",
+    "THEN ultra_lines.native_socks5_state",
     "'native_socks5_state' => self::NATIVE_SOCKS5_STATES",
 ] as $needle) {
     if (!str_contains($source, $needle)) {

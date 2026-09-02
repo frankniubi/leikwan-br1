@@ -235,7 +235,8 @@ final class UltraLeaseService
             || !preg_match('/^[a-f0-9]{64}$/', $targetDigest)
             || !in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)
             || !in_array($purpose, ['ultra', UltraMode::NATIVE_OUTBOUND_PURPOSE], true)
-            || ($purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE && !in_array($routeScope, ['cn_only', 'global'], true))
+            || ($purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE
+                && !in_array($routeScope, ['cn_only', 'intl_only', 'global'], true))
             || $candidateOffset < 0 || $candidateOffset > 7) {
             return null;
         }

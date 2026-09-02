@@ -32,10 +32,11 @@ final class NativeSocks5Probe
     private const VERSION = 5;
     private const CMD_CONNECT = 1;
     private const CMD_UDP_ASSOCIATE = 3;
+    private const CURRENT_GREETING = [5, 5, 0, 1, 2, 0x80, 0x83, 1];
+    private const LEGACY_GREETING = [5, 3, 2, 0x80, 0x83, 1];
     private const AUTH_USERNAME_PASSWORD = 2;
     private const DEFAULT_TIMEOUT_SECONDS = 8;
-    private const UDP_PROBE_HOST = '1.1.1.1';
-    private const UDP_PROBE_PORT = 53;
+    private const UDP_KEEPALIVE = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa\x6a\x5f\x45\xac";
 
     public static function verify(
         string $host,
@@ -54,18 +55,7 @@ final class NativeSocks5Probe
 
         $tcpSucceeded = false;
         try {
-            $stream = self::openTcp($host, $port);
-            try {
-                self::authenticate($stream, $user, $password);
-                self::sendCommand($stream, self::CMD_CONNECT, $targetHost, $targetPort);
-                $reply = self::readReply($stream);
-                if ($reply['code'] !== 0) {
-                    return new NativeSocks5ProbeResult(false, false, false, 'tcp_connect_rejected');
-                }
-                $tcpSucceeded = true;
-            } finally {
-                fclose($stream);
-            }
+            $tcpSucceeded = self::verifyTcp($host, $port, $user, $password, $targetHost, $targetPort);
         } catch (ProbeFailure $failure) {
             return new NativeSocks5ProbeResult(false, false, false, $failure->errorCode);
         } catch (Throwable) {
@@ -74,28 +64,7 @@ final class NativeSocks5Probe
 
         $udpSucceeded = false;
         try {
-            $control = self::openTcp($host, $port);
-            try {
-                self::authenticate($control, $user, $password);
-                self::sendCommand($control, self::CMD_UDP_ASSOCIATE, '0.0.0.0', 0);
-                $reply = self::readReply($control);
-                if ($reply['code'] !== 0 || $reply['port'] < 1 || $reply['port'] > 65535) {
-                    return new NativeSocks5ProbeResult(false, $tcpSucceeded, false, 'udp_associate_rejected');
-                }
-                $relayHost = self::relayHost($reply['host'], $host);
-                $udp = self::openUdp($relayHost, $reply['port']);
-                try {
-                    $query = self::dnsQuery();
-                    self::writeAll($udp, self::udpEnvelope(self::UDP_PROBE_HOST, self::UDP_PROBE_PORT, $query));
-                    $response = self::readDatagram($udp);
-                    self::assertDnsResponse($response, $query);
-                    $udpSucceeded = true;
-                } finally {
-                    fclose($udp);
-                }
-            } finally {
-                fclose($control);
-            }
+            $udpSucceeded = self::verifyUdp($host, $port, $user, $password);
         } catch (ProbeFailure $failure) {
             return new NativeSocks5ProbeResult(false, $tcpSucceeded, false, $failure->errorCode);
         } catch (Throwable) {
@@ -103,6 +72,109 @@ final class NativeSocks5Probe
         }
 
         return new NativeSocks5ProbeResult($tcpSucceeded && $udpSucceeded, $tcpSucceeded, $udpSucceeded, '');
+    }
+
+    private static function verifyTcp(
+        string $host,
+        int $port,
+        string $user,
+        string $password,
+        string $targetHost,
+        int $targetPort,
+    ): bool {
+        $lastError = 'tcp_probe_failed';
+        foreach ([self::CURRENT_GREETING, self::LEGACY_GREETING] as $greeting) {
+            $stream = null;
+            try {
+                $stream = self::openTcp($host, $port);
+                self::writeAll($stream, self::ultraHandshake($user, $password, self::CMD_CONNECT, $targetHost, $targetPort, $greeting));
+                self::readStreamAck($stream);
+                fclose($stream);
+                return true;
+            } catch (ProbeFailure $failure) {
+                $lastError = $failure->errorCode;
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            } catch (Throwable) {
+                $lastError = 'tcp_probe_failed';
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            }
+        }
+        throw new ProbeFailure($lastError);
+    }
+
+    private static function verifyUdp(string $host, int $port, string $user, string $password): bool
+    {
+        $lastError = 'udp_probe_failed';
+        foreach ([self::CURRENT_GREETING, self::LEGACY_GREETING] as $greeting) {
+            $control = null;
+            $udp = null;
+            try {
+                $control = self::openTcp($host, $port);
+                self::writeAll($control, self::ultraHandshake($user, $password, self::CMD_UDP_ASSOCIATE, $host, $port, $greeting));
+                $reply = self::readControlReply($control);
+                $marker = strrpos($reply, "\x04\x01\x01\x00\x01");
+                if ($marker === false || strlen($reply) < $marker + 10) {
+                    throw new ProbeFailure('udp_control_reply_invalid');
+                }
+                $mode = ord($reply[$marker + 5]) ^ 1;
+                $sidPrefix = [ord($reply[$marker + 6]) ^ 1, ord($reply[$marker + 7]) ^ 1];
+                $encodedPort = unpack('n', substr($reply, $marker + 8, 2))[1];
+                $remotePort = $encodedPort ^ 0x0101;
+                if ($remotePort < 1 || $remotePort > 65535) {
+                    throw new ProbeFailure('udp_port_invalid');
+                }
+                $udp = self::openUdp($host, $remotePort);
+                $armed = false;
+                // SID negotiation is intentionally bounded per candidate. A
+                // dead candidate must not consume the full probe timeout and
+                // prevent the remaining relay slots from being checked.
+                stream_set_timeout($udp, 0, 250000);
+                for ($candidate = 0x20; $candidate < 0x40; $candidate++) {
+                    $sid = chr($sidPrefix[0]) . chr($sidPrefix[1]) . chr($candidate);
+                    $packet = "\x01\x00" . chr($mode) . $sid . "\x00\x00\x00\x01" . inet_pton('2.0.0.0') . pack('n', 0) . self::UDP_KEEPALIVE;
+                    self::writeAll($udp, $packet);
+                    try {
+                        $response = self::readDatagram($udp);
+                    } catch (ProbeFailure $failure) {
+                        if ($failure->errorCode === 'probe_timeout') {
+                            continue;
+                        }
+                        throw $failure;
+                    }
+                    if (self::isReservedResponse($response)) {
+                        $armed = true;
+                        break;
+                    }
+                }
+                if (!$armed) {
+                    throw new ProbeFailure('udp_association_rejected');
+                }
+                fclose($udp);
+                fclose($control);
+                return true;
+            } catch (ProbeFailure $failure) {
+                $lastError = $failure->errorCode;
+                if (is_resource($udp)) {
+                    fclose($udp);
+                }
+                if (is_resource($control)) {
+                    fclose($control);
+                }
+            } catch (Throwable) {
+                $lastError = 'udp_probe_failed';
+                if (is_resource($udp)) {
+                    fclose($udp);
+                }
+                if (is_resource($control)) {
+                    fclose($control);
+                }
+            }
+        }
+        throw new ProbeFailure($lastError);
     }
 
     /** @return resource */
@@ -144,62 +216,73 @@ final class NativeSocks5Probe
         return $stream;
     }
 
-    /** @param resource $stream */
-    private static function authenticate($stream, string $user, string $password): void
-    {
-        self::writeAll($stream, chr(self::VERSION) . chr(1) . chr(self::AUTH_USERNAME_PASSWORD));
-        $reply = self::readExact($stream, 2);
-        if (ord($reply[0]) !== self::VERSION || ord($reply[1]) !== self::AUTH_USERNAME_PASSWORD) {
-            throw new ProbeFailure('socks5_auth_method_rejected');
+    private static function ultraHandshake(
+        string $user,
+        string $credential,
+        int $command,
+        string $host,
+        int $port,
+        array $greeting,
+    ): string {
+        if ($user === '' || strlen($user) > 255 || $credential === '' || strlen($credential) > 255) {
+            throw new ProbeFailure('probe_credential_invalid');
         }
-        self::writeAll($stream, chr(1) . chr(strlen($user)) . $user . chr(strlen($password)) . $password);
-        $authReply = self::readExact($stream, 2);
-        if (ord($authReply[0]) !== 1 || ord($authReply[1]) !== 0) {
-            throw new ProbeFailure('socks5_auth_failed');
+        if (!in_array($command, [self::CMD_CONNECT, self::CMD_UDP_ASSOCIATE], true)) {
+            throw new ProbeFailure('probe_command_invalid');
+        }
+        $prefix = '';
+        foreach ($greeting as $byte) {
+            $prefix .= chr($byte);
+        }
+        return $prefix
+            . chr(strlen($user)) . $user
+            . chr(strlen($credential)) . $credential
+            . chr(self::VERSION) . chr($command) . chr(self::credentialChecksum($credential))
+            . self::encodeAddress($host) . pack('n', $port);
+    }
+
+    private static function credentialChecksum(string $credential): int
+    {
+        if (strlen($credential) !== 16) {
+            return 0;
+        }
+        return (0x74 - (ord($credential[6]) - 48) - (ord($credential[10]) - 48)) & 0xff;
+    }
+
+    /** @param resource $stream */
+    private static function readStreamAck($stream): void
+    {
+        $first = self::readExact($stream, 2);
+        if ($first === "\x05\x02") {
+            $tail = self::readExact($stream, 2);
+            if ($tail !== "\x01\x00") {
+                throw new ProbeFailure('tcp_ack_invalid');
+            }
+            return;
+        }
+        $prelude = $first . self::readExact($stream, 12);
+        if (substr($prelude, 0, 8) !== str_repeat("\x00", 8) || ord($prelude[8]) === 0) {
+            throw new ProbeFailure('tcp_ack_invalid');
         }
     }
 
     /** @param resource $stream */
-    private static function sendCommand($stream, int $command, string $host, int $port): void
+    private static function readControlReply($stream): string
     {
-        self::writeAll($stream, chr(self::VERSION) . chr($command) . chr(0) . self::encodeAddress($host) . pack('n', $port));
-    }
-
-    /** @param resource $stream @return array{code:int,host:string,port:int} */
-    private static function readReply($stream): array
-    {
-        $header = self::readExact($stream, 4);
-        if (ord($header[0]) !== self::VERSION || ord($header[2]) !== 0) {
-            throw new ProbeFailure('socks5_reply_invalid');
+        $buffer = '';
+        while (strlen($buffer) < 512) {
+            $chunk = @fread($stream, 128);
+            if (!is_string($chunk) || $chunk === '') {
+                $meta = stream_get_meta_data($stream);
+                throw new ProbeFailure(!empty($meta['timed_out']) ? 'probe_timeout' : 'probe_read_failed');
+            }
+            $buffer .= $chunk;
+            $marker = strrpos($buffer, "\x04\x01\x01\x00\x01");
+            if ($marker !== false && strlen($buffer) >= $marker + 10) {
+                return $buffer;
+            }
         }
-        $host = self::readAddress($stream, ord($header[3]));
-        $portBytes = self::readExact($stream, 2);
-        return [
-            'code' => ord($header[1]),
-            'host' => $host,
-            'port' => unpack('n', $portBytes)[1],
-        ];
-    }
-
-    /** @param resource $stream */
-    private static function readAddress($stream, int $type): string
-    {
-        return match ($type) {
-            1 => inet_ntop(self::readExact($stream, 4)) ?: '',
-            3 => self::readDomain($stream),
-            4 => inet_ntop(self::readExact($stream, 16)) ?: '',
-            default => throw new ProbeFailure('socks5_address_invalid'),
-        };
-    }
-
-    /** @param resource $stream */
-    private static function readDomain($stream): string
-    {
-        $length = ord(self::readExact($stream, 1));
-        if ($length < 1 || $length > 255) {
-            throw new ProbeFailure('socks5_address_invalid');
-        }
-        return self::readExact($stream, $length);
+        throw new ProbeFailure('udp_control_reply_invalid');
     }
 
     private static function encodeAddress(string $host): string
@@ -264,46 +347,10 @@ final class NativeSocks5Probe
         return "\x00\x00\x00" . self::encodeAddress($host) . pack('n', $port) . $payload;
     }
 
-    private static function dnsQuery(): string
+    private static function isReservedResponse(string $packet): bool
     {
-        $id = random_bytes(2);
-        return $id . "\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
-            . "\x07example\x03com\x00\x00\x01\x00\x01";
-    }
-
-    private static function assertDnsResponse(string $packet, string $query): void
-    {
-        if (strlen($packet) < 10 || substr($packet, 0, 3) !== "\x00\x00\x00") {
-            throw new ProbeFailure('udp_reply_invalid');
-        }
-        $offset = 3;
-        $type = ord($packet[$offset++]);
-        if ($type === 1) {
-            $offset += 4;
-        } elseif ($type === 4) {
-            $offset += 16;
-        } elseif ($type === 3 && $offset < strlen($packet)) {
-            $length = ord($packet[$offset]);
-            $offset += 1 + $length;
-        } else {
-            throw new ProbeFailure('udp_reply_invalid');
-        }
-        if ($offset + 2 > strlen($packet)) {
-            throw new ProbeFailure('udp_reply_invalid');
-        }
-        $offset += 2;
-        $dns = substr($packet, $offset);
-        if (strlen($dns) < 2 || !hash_equals(substr($query, 0, 2), substr($dns, 0, 2))) {
-            throw new ProbeFailure('udp_dns_id_mismatch');
-        }
-    }
-
-    private static function relayHost(string $replyHost, string $proxyHost): string
-    {
-        if ($replyHost === '' || $replyHost === '0.0.0.0' || $replyHost === '::') {
-            return $proxyHost;
-        }
-        return $replyHost;
+        return strlen($packet) >= 10
+            && substr($packet, 0, 10) === "\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00";
     }
 
     private static function formatAddress(string $host): string

@@ -147,6 +147,17 @@
     <system:String x:Key="ProxyTitle">本地代理</system:String>
     <system:String x:Key="ProxySubtitle">同一个节点可用于 HTTP、全设备 TUN 或游戏加速。</system:String>
     <system:String x:Key="ProxyElevationHint">TUN 和游戏加速需要管理员权限。</system:String>
+    <system:String x:Key="ProxyNativeOutboundTitle">原生出口</system:String>
+    <system:String x:Key="ProxyNativeOutboundBadge">套餐已启用</system:String>
+    <system:String x:Key="ProxyNativeOutboundOptional">可选</system:String>
+    <system:String x:Key="ProxyNativeOutboundHint">使用套餐分配的原生 SOCKS5 出口，无需自带节点；凭据只在本机运行时短暂使用。</system:String>
+    <system:String x:Key="ProxyNativeOutboundForward">默认载体 Forward</system:String>
+    <system:String x:Key="ProxyNativeOutboundRouteScope">流量范围</system:String>
+    <system:String x:Key="ProxyNativeOutboundMode">本机模式</system:String>
+    <system:String x:Key="ProxyNativeOutboundStart">启动原生出口</system:String>
+    <system:String x:Key="ProxyNativeOutboundCnOnly">仅中国大陆</system:String>
+    <system:String x:Key="ProxyNativeOutboundIntlOnly">仅国际</system:String>
+    <system:String x:Key="ProxyNativeOutboundGlobal">全局</system:String>
     <system:String x:Key="ProxyConvergenceHint">如需使用会聚服务，请将 IP 改为 127.0.0.1。</system:String>
     <system:String x:Key="ProxyProfiles">节点配置</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>

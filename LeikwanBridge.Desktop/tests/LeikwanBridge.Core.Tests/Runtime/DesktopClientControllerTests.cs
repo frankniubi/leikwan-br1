@@ -252,6 +252,7 @@ public sealed class DesktopClientControllerTests
         private List<ForwardConfig> _forwards = [];
 
         public event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+        public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
         public event Action<int, string>? ForwardRejected;
         public event Action<string>? LogRaised { add { } remove { } }
 
@@ -260,6 +261,7 @@ public sealed class DesktopClientControllerTests
         public bool BlockStart { get; init; }
         public bool ThrowOnRefresh { get; init; }
         public IReadOnlyList<ForwardConfig> Forwards => _forwards;
+        public NativeOutboundCapability? NativeOutbound { get; init; }
         public List<int> Started { get; } = [];
         public List<int> Stopped { get; } = [];
         public int StartForwardCalls { get; private set; }
@@ -327,6 +329,12 @@ public sealed class DesktopClientControllerTests
             ForwardsChanged?.Invoke(_forwards);
             return Task.CompletedTask;
         }
+
+        public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+            int forwardId,
+            string routeScope,
+            CancellationToken ct)
+            => Task.FromResult<NativeOutboundLease?>(null);
 
         public ValueTask DisposeAsync()
         {

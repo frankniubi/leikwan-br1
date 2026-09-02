@@ -21,6 +21,94 @@ public sealed class UnixUltraLeaseClient
     public async Task<bool> SendAsync(string socketPath, int forwardId, UltraLease lease, CancellationToken ct = default)
         => await SendAsync(socketPath, forwardId, new[] { lease }, ct);
 
+    public async Task<bool> SendNativeAsync(
+        string socketPath,
+        int forwardId,
+        NativeOutboundLease lease,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(socketPath)
+            || forwardId <= 0
+            || lease is null
+            || lease.ForwardId != forwardId
+            || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+            return false;
+
+        var wire = new
+        {
+            protocol = "leikwan-ultra-native-socks5-v1",
+            purpose = "native_outbound",
+            forward_id = lease.ForwardId,
+            lease_id = lease.LeaseId,
+            policy_generation = lease.PolicyGeneration,
+            expires_at = lease.ExpiresAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            transport = lease.Transport,
+            rate_limit_mbps = lease.RateLimitMbps,
+            quota_remaining_bytes = lease.QuotaRemainingBytes,
+            target_digest = lease.ScopeDigest,
+            selection_ref = lease.SelectionRef,
+            selection_tier = lease.SelectionTier,
+            direction = lease.Direction,
+            route_scope = lease.RouteScope,
+            endpoint = new { ip = lease.EndpointHost, port = lease.EndpointPort },
+            credential = new
+            {
+                user = Encoding.UTF8.GetString(lease.User),
+                password = Encoding.UTF8.GetString(lease.Password),
+            },
+        };
+        byte[] body = [];
+        byte[] frame = [];
+        byte[] header = [];
+        byte[] response = [];
+        try
+        {
+            body = JsonSerializer.SerializeToUtf8Bytes(wire);
+            if (body.Length is < 1 or > MaxFrameBytes)
+                return false;
+            frame = new byte[4 + body.Length];
+            BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)body.Length);
+            body.CopyTo(frame, 4);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(_timeout > TimeSpan.FromSeconds(5) ? _timeout : TimeSpan.FromSeconds(5));
+            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            await stream.WriteAsync(frame, timeout.Token);
+            await stream.FlushAsync(timeout.Token);
+            header = new byte[4];
+            await ReadExactlyAsync(stream, header, timeout.Token);
+            var length = BinaryPrimitives.ReadUInt32BigEndian(header);
+            if (length is < 1 or > MaxFrameBytes)
+                return false;
+            response = new byte[length];
+            await ReadExactlyAsync(stream, response, timeout.Token);
+            using var document = JsonDocument.Parse(response);
+            var root = document.RootElement;
+            return root.TryGetProperty("ok", out var ok)
+                && ok.ValueKind == JsonValueKind.True
+                && root.TryGetProperty("forward_id", out var returnedForward)
+                && returnedForward.GetInt32() == forwardId
+                && root.TryGetProperty("policy_generation", out var returnedGeneration)
+                && string.Equals(returnedGeneration.GetString(), lease.PolicyGeneration, StringComparison.Ordinal);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is SocketException or IOException or JsonException)
+        {
+            return false;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+            CryptographicOperations.ZeroMemory(frame);
+            CryptographicOperations.ZeroMemory(header);
+            CryptographicOperations.ZeroMemory(response);
+        }
+    }
+
     public async Task<bool> SendAsync(string socketPath, int forwardId, IReadOnlyList<UltraLease> leases, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(socketPath)

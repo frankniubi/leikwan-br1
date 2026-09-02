@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
 
@@ -70,12 +71,106 @@ public static class WindowsProxyConfigBuilder
             TunGateway);
     }
 
+    public static WindowsProxyConfigResult BuildNative(
+        NativeOutboundLease lease,
+        WindowsProxyMode mode,
+        IEnumerable<string>? bypassHosts,
+        int proxyPort = DefaultProxyPort,
+        int tunMtu = DefaultTunMtu,
+        string tunStack = "gvisor",
+        bool bypassChinaMainland = false,
+        string? chinaIpListPath = null,
+        WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
+        IEnumerable<string>? customDnsServers = null,
+        string? nativeProxyHost = null,
+        int? nativeProxyPort = null)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        if (!lease.IsUsable(DateTimeOffset.UtcNow))
+            throw new InvalidOperationException("native_lease_invalid");
+        if (mode is not (WindowsProxyMode.Http or WindowsProxyMode.Tun or WindowsProxyMode.Process))
+            throw new InvalidOperationException("proxy_mode_invalid");
+
+        tunStack = NormalizeTunStack(tunStack);
+        var chinaIpCidrs = lease.RouteScope == "global" && bypassChinaMainland
+            ? LoadChinaIpCidrs(chinaIpListPath)
+            : [];
+        var bypassIps = new List<string>();
+        var bypassDomains = new List<string>();
+        if (string.IsNullOrWhiteSpace(nativeProxyHost))
+            AddHost(lease.EndpointHost, bypassIps, bypassDomains);
+        foreach (var host in bypassHosts ?? [])
+            AddHost(host, bypassIps, bypassDomains);
+
+        using var fragment = JsonDocument.Parse(
+            NativeOutboundConfigBuilder.Build(
+                lease,
+                bypassChina: false,
+                localPort: proxyPort,
+                localProxyHost: nativeProxyHost,
+                localProxyPort: nativeProxyPort).Json);
+        var nativeOutbound = JsonNode.Parse(
+            fragment.RootElement.GetProperty("outbound").GetRawText())?.AsObject()
+            ?? throw new InvalidOperationException("native_outbound_config_invalid");
+        var bootstrapProfile = new WindowsProxyProfile
+        {
+            Server = lease.EndpointHost,
+            Port = lease.EndpointPort,
+        };
+        var root = new JsonObject
+        {
+            ["log"] = new JsonObject { ["level"] = "error" },
+            // Restricted native scopes must not carry bootstrap DNS through the
+            // relay. Keep metadata and rule-set bootstrap on the normal path.
+            ["dns"] = BuildDns(
+                bootstrapProfile,
+                bypassDomains,
+                dnsMode,
+                customDnsServers,
+                lease.RouteScope == "cn_only" ? "direct" : "proxy",
+                lease.RouteScope),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps),
+            ["outbounds"] = new JsonArray
+            {
+                nativeOutbound,
+                new JsonObject { ["type"] = "direct", ["tag"] = "direct" },
+                new JsonObject { ["type"] = "block", ["tag"] = "block" },
+            },
+            ["route"] = BuildRoute(
+                mode,
+                bypassIps,
+                bypassDomains,
+                chinaIpCidrs,
+                lease.RouteScope,
+                dnsMode == WindowsProxyDnsMode.Custom && lease.RouteScope == "intl_only"
+                    ? "custom-0"
+                    : null),
+        };
+        AddNativeChinaRuleSets(
+            root["route"]!.AsObject(),
+            lease.RouteScope,
+            chinaIpCidrs.Count > 0,
+            lease.RouteScope == "cn_only" ? "direct" : "proxy");
+
+        return new WindowsProxyConfigResult(
+            root.ToJsonString(),
+            bypassIps,
+            bypassDomains,
+            proxyPort,
+            TunGateway);
+    }
+
     private static JsonObject BuildDns(
         WindowsProxyProfile profile,
         IReadOnlyList<string> bypassDomains,
         WindowsProxyDnsMode dnsMode,
-        IEnumerable<string>? customDnsServers)
+        IEnumerable<string>? customDnsServers,
+        string remoteDetour = "proxy",
+        string? nativeRouteScope = null)
     {
+        remoteDetour = string.Equals(remoteDetour, "direct", StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "proxy";
         var bootstrap = new List<string>();
         if (!IPAddress.TryParse(profile.Server, out _)
             && Uri.CheckHostName(profile.Server) is UriHostNameType.Dns)
@@ -84,29 +179,15 @@ public static class WindowsProxyConfigBuilder
 
         var servers = new JsonArray();
         var finalTag = "remote";
-        if (dnsMode == WindowsProxyDnsMode.Custom)
-        {
-            var custom = WindowsProxyDns.NormalizeServers(customDnsServers);
-            if (custom.Count == 0)
-                throw new InvalidOperationException("proxy_dns_server_required");
-            for (var index = 0; index < custom.Count; index++)
-            {
-                var tag = $"custom-{index}";
-                servers.Add(new JsonObject
-                {
-                    // DNS over TCP keeps TUN resolution working when a node
-                    // has no usable native UDP path (notably SS2022 on some
-                    // servers).  It still traverses the selected proxy.
-                    ["type"] = "tcp",
-                    ["tag"] = tag,
-                    ["server"] = custom[index],
-                    ["server_port"] = 53,
-                    ["detour"] = "proxy",
-                });
-            }
-            finalTag = "custom-0";
-        }
-        else
+        var isChinaOnly = string.Equals(
+            nativeRouteScope,
+            "cn_only",
+            StringComparison.OrdinalIgnoreCase);
+        // cn_only needs two independent resolvers: normal international names
+        // stay on the direct path, while Chinese names use mainland DoH over
+        // the native relay. This also keeps a custom/local resolver from
+        // reintroducing polluted answers for the protected Chinese path.
+        if (isChinaOnly)
         {
             servers.Add(new JsonObject
             {
@@ -120,8 +201,66 @@ public static class WindowsProxyConfigBuilder
                     ["enabled"] = true,
                     ["server_name"] = "cloudflare-dns.com",
                 },
+            });
+            servers.Add(new JsonObject
+            {
+                ["type"] = "https",
+                ["tag"] = "china",
+                ["server"] = "223.5.5.5",
+                ["server_port"] = 443,
+                ["path"] = "/dns-query",
+                ["tls"] = new JsonObject
+                {
+                    ["enabled"] = true,
+                    ["server_name"] = "dns.alidns.com",
+                },
                 ["detour"] = "proxy",
             });
+        }
+        else if (dnsMode == WindowsProxyDnsMode.Custom && remoteDetour != "direct")
+        {
+            var custom = WindowsProxyDns.NormalizeServers(customDnsServers);
+            if (custom.Count == 0)
+                throw new InvalidOperationException("proxy_dns_server_required");
+            for (var index = 0; index < custom.Count; index++)
+            {
+                var tag = $"custom-{index}";
+                var customServer = new JsonObject
+                {
+                    // DNS over TCP keeps TUN resolution working when a node
+                    // has no usable native UDP path (notably SS2022 on some
+                    // servers).  It still traverses the selected proxy.
+                    ["type"] = "tcp",
+                    ["tag"] = tag,
+                    ["server"] = custom[index],
+                    ["server_port"] = 53,
+                };
+                // sing-box treats a direct DNS detour as an empty outbound;
+                // omitting the field is the supported default direct path.
+                if (remoteDetour == "proxy")
+                    customServer["detour"] = "proxy";
+                servers.Add(customServer);
+            }
+            finalTag = "custom-0";
+        }
+        else
+        {
+            var remoteServer = new JsonObject
+            {
+                ["type"] = "https",
+                ["tag"] = "remote",
+                ["server"] = "1.1.1.1",
+                ["server_port"] = 443,
+                ["path"] = "/dns-query",
+                ["tls"] = new JsonObject
+                {
+                    ["enabled"] = true,
+                    ["server_name"] = "cloudflare-dns.com",
+                },
+            };
+            if (remoteDetour == "proxy")
+                remoteServer["detour"] = "proxy";
+            servers.Add(remoteServer);
         }
         servers.Add(new JsonObject { ["type"] = "local", ["tag"] = "local" });
         var dns = new JsonObject
@@ -129,16 +268,37 @@ public static class WindowsProxyConfigBuilder
             ["servers"] = servers,
             ["final"] = finalTag,
         };
+        var dnsRules = new JsonArray();
         var domains = bootstrap.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (domains.Length > 0)
         {
             var values = new JsonArray();
             foreach (var domain in domains)
                 values.Add(domain);
-            dns["rules"] = new JsonArray
-            {
-                new JsonObject { ["domain"] = values, ["server"] = "local" },
-            };
+            dnsRules.Add(
+                new JsonObject { ["domain"] = values, ["server"] = "local" });
+        }
+        if (string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
+        {
+            dnsRules.Add(
+                new JsonObject
+                {
+                    ["rule_set"] = new JsonArray("geosite-cn"),
+                    ["server"] = "local",
+                });
+        }
+        else if (isChinaOnly)
+        {
+            dnsRules.Add(
+                new JsonObject
+                {
+                    ["rule_set"] = new JsonArray("geosite-cn"),
+                    ["server"] = "china",
+                });
+        }
+        if (dnsRules.Count > 0)
+        {
+            dns["rules"] = dnsRules;
         }
         return dns;
     }
@@ -300,7 +460,9 @@ public static class WindowsProxyConfigBuilder
         WindowsProxyMode mode,
         IReadOnlyList<string> bypassIps,
         IReadOnlyList<string> bypassDomains,
-        IReadOnlyList<string> chinaIpCidrs)
+        IReadOnlyList<string> chinaIpCidrs,
+        string? nativeRouteScope = null,
+        string? defaultDomainResolver = null)
     {
         var rules = new JsonArray
         {
@@ -344,7 +506,35 @@ public static class WindowsProxyConfigBuilder
             rules.Add(new JsonObject { ["domain"] = values, ["outbound"] = "direct" });
         }
 
-        if (chinaIpCidrs.Count > 0)
+        if (IsNativeRestrictedScope(nativeRouteScope))
+        {
+            // Resolve before handing the destination to SOCKS. Otherwise its
+            // upstream can perform a second lookup and replace the protected
+            // split-DNS result with a polluted or region-wrong answer.
+            rules.Add(new JsonObject
+            {
+                ["action"] = "resolve",
+                ["strategy"] = "ipv4_only",
+            });
+        }
+
+        if (nativeRouteScope == "cn_only")
+        {
+            rules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["outbound"] = "proxy",
+            });
+        }
+        else if (nativeRouteScope == "intl_only")
+        {
+            rules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["outbound"] = "direct",
+            });
+        }
+        else if (chinaIpCidrs.Count > 0)
         {
             var values = new JsonArray();
             foreach (var cidr in chinaIpCidrs)
@@ -356,11 +546,49 @@ public static class WindowsProxyConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = "local",
+            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope)
+                ? defaultDomainResolver ?? "remote"
+                : "local",
             ["rules"] = rules,
-            ["final"] = "proxy",
+            ["final"] = nativeRouteScope == "cn_only" ? "direct" : "proxy",
         };
     }
+
+    private static void AddNativeChinaRuleSets(
+        JsonObject route,
+        string routeScope,
+        bool includeChinaBypass,
+        string downloadDetour = "proxy")
+    {
+        if (!IsNativeRestrictedScope(routeScope) && !includeChinaBypass)
+            return;
+        downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "proxy";
+        route["rule_set"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["tag"] = "geoip-cn",
+                ["type"] = "remote",
+                ["format"] = "binary",
+                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                ["download_detour"] = downloadDetour,
+            },
+            new JsonObject
+            {
+                ["tag"] = "geosite-cn",
+                ["type"] = "remote",
+                ["format"] = "binary",
+                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                ["download_detour"] = downloadDetour,
+            },
+        };
+    }
+
+    private static bool IsNativeRestrictedScope(string? routeScope)
+        => string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase);
 
     private static IReadOnlyList<string> LoadChinaIpCidrs(string? path)
     {

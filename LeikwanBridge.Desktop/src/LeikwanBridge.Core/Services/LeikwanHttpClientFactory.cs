@@ -65,7 +65,18 @@ public static class LeikwanHttpClientFactory
 
     private static HttpClient CreateNormal()
     {
-        return new HttpClient
+        // Panel/control-plane traffic must stay on the normal international
+        // route even while the local data-plane proxy is enabled. Relying on
+        // the process/default WinINET proxy here can loop API calls back into
+        // the native outbound and make lease refresh appear to hang.
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            UseProxy = false,
+        };
+        return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = TimeSpan.FromSeconds(30),
         };

@@ -10,6 +10,93 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public void NativeRouteScopeSelectorFollowsSelectedCarrier()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["cn_only", "global"],
+                DefaultRouteScope = "global",
+                Forwards =
+                [
+                    new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "global"),
+                    new NativeOutboundForward(160, "China Mainland -> Hong Kong", "b", "tcp+udp", ["global"], "global"),
+                ],
+            },
+        };
+
+        vm.SelectedNativeForwardId = 160;
+        Assert.False(vm.IsNativeRouteScopeSelectable);
+
+        vm.SelectedNativeForwardId = 159;
+        Assert.True(vm.IsNativeRouteScopeSelectable);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerIsCollapsedByDefault()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["cn_only", "global"],
+                Forwards =
+                [
+                    new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "cn_only"),
+                ],
+            },
+        };
+
+        Assert.True(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
+    public void MainlandToInternationalCarrierExposesIntlOnlyAndDisablesChinaBypass()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["intl_only", "global"],
+                DefaultRouteScope = "intl_only",
+                Forwards =
+                [
+                    new NativeOutboundForward(
+                        201,
+                        "Mainland China -> International",
+                        "a",
+                        "tcp+udp",
+                        ["intl_only", "global"],
+                        "intl_only"),
+                ],
+            },
+        };
+
+        vm.SelectedNativeForwardId = 201;
+        vm.SelectedNativeRouteScope = "intl_only";
+        vm.NativeBypassChinaMainland = true;
+
+        Assert.True(vm.IsNativeRouteScopeSelectable);
+        Assert.True(vm.IsNativeRouteIntlOnly);
+        Assert.False(vm.IsNativeBypassChinaEnabled);
+        Assert.False(vm.NativeBypassChinaMainland);
+    }
+
+    [Fact]
     public void ApplyForwardSnapshot_DisplaysForwardIdPortAndDirection()
     {
         var vm = new MainViewModel();

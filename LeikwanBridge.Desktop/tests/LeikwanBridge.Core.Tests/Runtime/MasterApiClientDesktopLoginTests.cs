@@ -262,6 +262,91 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task ResolveNativeOutboundLeaseAsync_UsesCarrierScopeAndScrubsProviderMaterial()
+    {
+        const int forwardId = 158;
+        const string direction = "Ultra Hong Kong to Mainland China";
+        const string routeScope = "cn_only";
+        var generation = new string('a', 64);
+        var target = "198.51.100.10:443";
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = forwardId,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-native",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp+udp",
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = MasterApiClient.NativeOutboundLeaseProtocol,
+            Transport = "tcp+udp",
+            ForwardIds = [forwardId],
+            DefaultForwardId = forwardId,
+            RouteScopes = ["cn_only", "global"],
+            DefaultRouteScope = "global",
+            Forwards =
+            [
+                new NativeOutboundForward(
+                    forwardId,
+                    direction,
+                    NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "global"),
+                    "tcp+udp",
+                    ["cn_only", "global"],
+                    "global"),
+            ],
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = forwardId,
+            BackendMode = "ultra",
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = policy,
+            NativeOutbound = capability,
+        };
+        using var http = new HttpClient(new NativeLeaseHandler(forwardId, direction, generation, routeScope))
+        {
+            Timeout = TimeSpan.FromSeconds(5),
+        };
+        string? requestBody = null;
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-158-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false,
+            onRequestForTest: request =>
+            {
+                if (request.Content is not null)
+                    requestBody = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            });
+
+        using var lease = await api.ResolveNativeOutboundLeaseAsync(forward, routeScope);
+
+        Assert.NotNull(lease);
+        Assert.Equal(forwardId, lease!.ForwardId);
+        Assert.Equal(routeScope, lease.RouteScope);
+        Assert.Equal(direction, lease.Direction);
+        Assert.Equal("203.0.113.20", lease.EndpointHost);
+        Assert.Equal(5438, lease.EndpointPort);
+        Assert.Contains("native_outbound", requestBody, StringComparison.Ordinal);
+        Assert.Contains("cn_only", requestBody, StringComparison.Ordinal);
+        Assert.Contains("ticket-native", requestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("line-password", requestBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("leigod", requestBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ResolveUltraLeasesAsync_DefaultsToSingleLease()
     {
         const string target = "198.51.100.10:443";
@@ -463,6 +548,59 @@ public sealed class MasterApiClientDesktopLoginTests
                           "endpoint": { "ip": "203.0.113.21", "port": 5439 }, "credential": { "user": "line-user", "password": "line-password" }
                         }
                       ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
+            return response;
+        }
+    }
+
+    private sealed class NativeLeaseHandler(
+        int forwardId,
+        string direction,
+        string generation,
+        string routeScope) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("/api/client/ultra/lease", request.RequestUri?.AbsolutePath);
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var requestDocument = System.Text.Json.JsonDocument.Parse(body);
+            var item = requestDocument.RootElement
+                .GetProperty("forwards")[0];
+            Assert.Equal("native_outbound", item.GetProperty("purpose").GetString());
+            Assert.Equal(routeScope, item.GetProperty("route_scope").GetString());
+            Assert.Equal("tcp+udp", item.GetProperty("transport").GetString());
+            var digest = NativeOutboundLease.ComputeScopeDigest(
+                forwardId,
+                direction,
+                "tcp+udp",
+                routeScope);
+            Assert.Equal(digest, item.GetProperty("target_digest").GetString());
+            var expires = DateTimeOffset.UtcNow.AddMinutes(3)
+                .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent($$"""
+                    {
+                      "ok": true,
+                      "leases": [{
+                        "protocol": "leikwan-ultra-native-socks5-v1",
+                        "purpose": "native_outbound",
+                        "forward_id": {{forwardId}},
+                        "lease_id": "native-lease-a",
+                        "policy_generation": "{{generation}}",
+                        "expires_at": "{{expires}}",
+                        "transport": "tcp+udp",
+                        "direction": "{{direction}}",
+                        "route_scope": "{{routeScope}}",
+                        "scope_digest": "{{digest}}",
+                        "endpoint": { "ip": "203.0.113.20", "port": 5438 },
+                        "credential": { "user": "native-user", "password": "native-password" }
+                      }]
                     }
                     """, Encoding.UTF8, "application/json"),
             };

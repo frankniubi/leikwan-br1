@@ -450,11 +450,12 @@ func TestDatagramKeepaliveDetectionRequiresReservedFrame(t *testing.T) {
 }
 
 type testUDPProvider struct {
-	tcp           *net.TCPListener
-	udp           *net.UDPConn
-	firstAccepted chan struct{}
-	acceptedOnce  sync.Once
-	packets       chan []byte
+	tcp             *net.TCPListener
+	udp             *net.UDPConn
+	firstAccepted   chan struct{}
+	acceptedOnce    sync.Once
+	packets         chan []byte
+	echoOuterTarget bool
 }
 
 func newTestUDPProvider(t *testing.T) *testUDPProvider {
@@ -526,6 +527,10 @@ func (provider *testUDPProvider) serveUDP() {
 		// echoing the destination header as application data.
 		responseAddress := []byte{127, 0, 0, 1}
 		responsePort := uint16(53)
+		if provider.echoOuterTarget && len(packet) >= 16 {
+			responseAddress = append([]byte(nil), packet[10:14]...)
+			responsePort = binary.BigEndian.Uint16(packet[14:16])
+		}
 		if info, valid := decodeDatagramAddressFirst(payload); valid {
 			responseAddress = append([]byte(nil), info.address...)
 			responsePort = info.port

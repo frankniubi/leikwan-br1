@@ -372,9 +372,9 @@
  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
  "build": "go1.26.5 windows/amd64, cgo-disabled, stripped",
- "sha256": "654818d3d298a7c74f84e0269bf7bf3f4066afd01546bcb7d83fc5b850dd66a4",
- "size_bytes": 6776832,
- "version": "2026.08.31.8"
+ "sha256": "b60d6a101bdb1cc0a753108d8e0f0c5d8506b00e0f31270358a424f1a2d6fb85",
+ "size_bytes": 6845440,
+ "version": "2026.09.03.1"
  },
  "ultra_client_runtime_macos_x64": {
   "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
@@ -410,11 +410,11 @@
   "version": "2026.05.29.1"
  },
  "windows_client_app": {
-  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
-  "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "640f9f58c657dd621aa7b53a05eb65cb1ad220ad18a2bbac468d903f35e7ab73",
- "size_bytes": 69364218,
- "version": "0.1.20.2"
+ "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+ "path": "artifacts/windows/leikwan-bridge-setup.exe",
+ "sha256": "194653bd1ac0611517b461ada5bed1df7b6be4459f056dc9650840b8119c7528",
+ "size_bytes": 135026256,
+ "version": "0.1.20.3"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",

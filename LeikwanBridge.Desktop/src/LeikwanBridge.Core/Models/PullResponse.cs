@@ -27,4 +27,10 @@ public sealed class PullResponse
 
     [JsonPropertyName("forwards")]
     public List<ForwardConfig> Forwards { get; set; } = [];
+
+    // Capability is intentionally absent when the assigned plan does not allow
+    // native outbound. Keeping the field nullable preserves the invisible-by-
+    // default contract for older servers and clients.
+    [JsonPropertyName("native_outbound")]
+    public NativeOutboundCapability? NativeOutbound { get; set; }
 }
