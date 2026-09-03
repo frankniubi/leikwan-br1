@@ -5883,6 +5883,7 @@ HTML;
             'allow_inbound_proxy' => 'Allow inbound proxy',
             'allow_latency_test' => 'Allow latency test',
             'allow_native_outbound' => 'Native outbound / 原生出口',
+            'allow_native_outbound_unrestricted' => 'Unrestricted native full route / 无审全路由',
         ];
 
         $html = '';

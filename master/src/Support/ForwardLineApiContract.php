@@ -12,13 +12,21 @@ final class ForwardLineApiContract
     /** @param array<string, mixed> $payload */
     public static function normalizeCreate(array $payload): array
     {
-        self::rejectUnknown($payload, ['route_id', 'listen_port', 'transport', 'target']);
-        self::requireKeys($payload, ['route_id', 'listen_port', 'transport', 'target']);
+        self::rejectUnknown($payload, ['route_id', 'listen_port', 'transport', 'target', 'native_outbound']);
+        self::requireKeys($payload, ['route_id', 'listen_port', 'transport']);
 
         $routeId = self::positiveInt($payload['route_id'], 'route_id');
         $listenPort = self::optionalPort($payload['listen_port'], 'listen_port', true);
         $transport = self::transport($payload['transport']);
-        $target = self::normalizeTarget(is_array($payload['target'] ?? null) ? $payload['target'] : null);
+        $native = array_key_exists('native_outbound', $payload)
+            ? self::boolean($payload['native_outbound'], 'native_outbound')
+            : false;
+        $target = $native
+            ? ['source' => 'manual', 'host' => null, 'port' => null, 'service_id' => null]
+            : self::normalizeTarget(is_array($payload['target'] ?? null) ? $payload['target'] : null);
+        if (!$native && !array_key_exists('target', $payload)) {
+            self::invalid(['target' => 'object_required']);
+        }
 
         return [
             'forward_route_id' => $routeId,
@@ -28,13 +36,14 @@ final class ForwardLineApiContract
             'target_host' => $target['host'],
             'target_port' => $target['port'],
             'target_service_id' => $target['service_id'],
+            'native_outbound' => $native,
         ];
     }
 
     /** @param array<string, mixed> $payload */
     public static function normalizePatch(array $payload): array
     {
-        self::rejectUnknown($payload, ['route_id', 'listen_port', 'transport', 'target']);
+        self::rejectUnknown($payload, ['route_id', 'listen_port', 'transport', 'target', 'native_outbound']);
         if ($payload === []) {
             self::invalid(['patch' => 'required']);
         }
@@ -48,6 +57,9 @@ final class ForwardLineApiContract
         }
         if (array_key_exists('transport', $payload)) {
             $changes['transport_mode'] = self::transport($payload['transport']);
+        }
+        if (array_key_exists('native_outbound', $payload)) {
+            $changes['native_outbound'] = self::boolean($payload['native_outbound'], 'native_outbound');
         }
         if (array_key_exists('target', $payload)) {
             if (!is_array($payload['target'])) {
@@ -96,6 +108,34 @@ final class ForwardLineApiContract
     public static function mergePatch(array $current, array $changes): array
     {
         $currentSource = (string) ($current['target_source'] ?? 'manual');
+        $native = array_key_exists('native_outbound', $changes)
+            ? self::boolean($changes['native_outbound'], 'native_outbound')
+            : !empty($current['native_outbound']);
+        if ($native) {
+            if (array_key_exists('target', $changes)
+                || array_key_exists('target_host', $changes)
+                || array_key_exists('target_port', $changes)
+                || array_key_exists('target_source', $changes)
+                || array_key_exists('target_service_id', $changes)) {
+                self::invalid(['target' => 'forbidden_for_native_outbound']);
+            }
+            return [
+                'forward_route_id' => array_key_exists('forward_route_id', $changes)
+                    ? self::positiveInt($changes['forward_route_id'], 'route_id')
+                    : (int) ($current['forward_route_id'] ?? 0),
+                'listen_port' => array_key_exists('listen_port', $changes)
+                    ? (int) $changes['listen_port']
+                    : (int) ($current['listen_port'] ?? 0),
+                'target_host' => '127.0.0.1',
+                'target_port' => max(1, (int) ($current['target_port'] ?? 1)),
+                'target_source' => 'manual',
+                'target_service_id' => 0,
+                'transport_mode' => array_key_exists('transport_mode', $changes)
+                    ? self::transport($changes['transport_mode'])
+                    : self::transport((string) ($current['transport_mode'] ?? 'tcp+udp')),
+                'native_outbound' => true,
+            ];
+        }
         if (!in_array($currentSource, ['manual', 'service_ip'], true)) {
             self::invalid(['target.source' => 'invalid']);
         }
@@ -154,6 +194,7 @@ final class ForwardLineApiContract
             'transport_mode' => array_key_exists('transport_mode', $changes)
                 ? self::transport($changes['transport_mode'])
                 : self::transport((string) ($current['transport_mode'] ?? 'tcp')),
+            'native_outbound' => false,
         ];
     }
 
@@ -164,11 +205,14 @@ final class ForwardLineApiContract
         if (!array_key_exists('forward_route_id', $normalized)) {
             self::invalid(['forward_route_id' => 'required']);
         }
-        if (!array_key_exists('target_port', $normalized)) {
+        if (!array_key_exists('target_port', $normalized) && empty($normalized['native_outbound'])) {
             self::invalid(['target' => 'required']);
         }
         $targetSource = (string) ($normalized['target_source'] ?? 'manual');
-        if ($targetSource === 'manual') {
+        if (!empty($normalized['native_outbound'])) {
+            $normalized['target_source'] = 'manual';
+            unset($normalized['target_host'], $normalized['target_port'], $normalized['target_service_id']);
+        } elseif ($targetSource === 'manual') {
             if (!array_key_exists('target_host', $normalized)) {
                 self::invalid(['target.host' => 'required']);
             }
@@ -253,6 +297,10 @@ final class ForwardLineApiContract
             ],
             'listen_port' => (int) ($forward['listen_port'] ?? 0),
             'transport' => $transport,
+            'native_outbound' => !empty($forward['native_outbound_enabled'] ?? $forward['native_outbound'] ?? false),
+            'native_direction' => isset($forward['native_direction_key'])
+                ? (string) $forward['native_direction_key']
+                : null,
             'target' => [
                 'source' => (string) ($forward['target_source'] ?? 'manual'),
                 'host' => (string) ($forward['target_host'] ?? ''),
@@ -337,7 +385,7 @@ final class ForwardLineApiContract
     {
         self::rejectUnknown($payload, [
             'forward_route_id', 'route_id', 'listen_port', 'target_host', 'target_port',
-            'target_source', 'target_service_id', 'transport_mode',
+            'target_source', 'target_service_id', 'transport_mode', 'native_outbound',
         ]);
         if (array_key_exists('forward_route_id', $payload) && array_key_exists('route_id', $payload)) {
             self::invalid(['route_id' => 'duplicate']);
@@ -352,6 +400,9 @@ final class ForwardLineApiContract
         }
 
         $normalized = [];
+        if (array_key_exists('native_outbound', $payload)) {
+            $normalized['native_outbound'] = self::boolean($payload['native_outbound'], 'native_outbound');
+        }
         if (array_key_exists('forward_route_id', $payload) || array_key_exists('route_id', $payload)) {
             $normalized['forward_route_id'] = self::positiveInt(
                 $payload['forward_route_id'] ?? $payload['route_id'],
@@ -476,6 +527,26 @@ final class ForwardLineApiContract
             self::invalid(['transport' => 'invalid']);
         }
         return $value;
+    }
+
+    private static function boolean(mixed $value, string $field): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) && ($value === 0 || $value === 1)) {
+            return $value === 1;
+        }
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+            if (in_array($normalized, ['1', 'true', 'on'], true)) {
+                return true;
+            }
+            if (in_array($normalized, ['0', 'false', 'off', ''], true)) {
+                return false;
+            }
+        }
+        self::invalid([$field => 'boolean_required']);
     }
 
     /** @param array<string, mixed> $fields */

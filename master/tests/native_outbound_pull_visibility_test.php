@@ -62,6 +62,7 @@ $denied = $provisioning->nativeOutboundCapabilityForAssignedForwards([[
     'backend_mode' => UltraMode::BACKEND_MODE,
     'service_status' => 'active',
     'transport' => 'tcp+udp',
+    'native_outbound_enabled' => 1,
     'forward_combination_direction' => 'Hong Kong to Mainland China',
     'endpoints' => [],
 ]]);
@@ -75,6 +76,7 @@ $allowed = $provisioning->nativeOutboundCapabilityForAssignedForwards([[
     'backend_mode' => UltraMode::BACKEND_MODE,
     'service_status' => 'active',
     'transport' => 'tcp+udp',
+    'native_outbound_enabled' => 1,
     'forward_combination_direction' => 'Leigod Hong Kong to Mainland China',
     'endpoints' => [],
 ], [
@@ -83,6 +85,7 @@ $allowed = $provisioning->nativeOutboundCapabilityForAssignedForwards([[
     'backend_mode' => UltraMode::BACKEND_MODE,
     'service_status' => 'active',
     'transport' => 'tcp+udp',
+    'native_outbound_enabled' => 1,
     'forward_combination_direction' => 'Shanghai to Japan',
     'endpoints' => [],
 ], [
@@ -91,6 +94,7 @@ $allowed = $provisioning->nativeOutboundCapabilityForAssignedForwards([[
     'backend_mode' => UltraMode::BACKEND_MODE,
     'service_status' => 'active',
     'transport' => 'tcp+udp',
+    'native_outbound_enabled' => 1,
     'forward_combination_direction' => 'Mainland China -> International',
     'endpoints' => [],
 ]]);
