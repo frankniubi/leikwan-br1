@@ -260,6 +260,13 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   testing only; native outbound remains blocked by the `BridgeOptions` AAR gate.
 - `artifacts/versions.json` and the formal `android_client_apk` release entry
   were intentionally left unchanged. No production Android update was claimed.
+- Post-deploy read-only inspection shows the server's pre-existing
+  `versions.json` is already older than this checkout: remote SHA-256
+  `88377FD217D9413AE1744F5C51F1817F7A06BB0D4B2927F91D5208778A0D1FA7`, with
+  `android_client_apk` version `0.2.14` / code `16`; the local file is version
+  `0.2.18` / code `20`. This deploy did not reconcile that drift because the
+  only newly published package is a debug QA build and the native AAR gate is
+  still failing.
 - Publication evidence and the byte-for-byte re-download are recorded in
   `artifacts/android/android-qa-20260903-final/remote-publish-evidence-20260904.txt`
   and `remote-download-20260904.apk`.
