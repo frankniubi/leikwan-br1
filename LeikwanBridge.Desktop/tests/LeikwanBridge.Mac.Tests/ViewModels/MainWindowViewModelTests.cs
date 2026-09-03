@@ -9,6 +9,128 @@ namespace LeikwanBridge.Mac.Tests.ViewModels;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void NativeRouteScopeSelectorFollowsSelectedCarrier()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            RouteScopes = ["cn_only", "global"],
+            DefaultRouteScope = "global",
+            Forwards =
+            [
+                new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "global"),
+                new NativeOutboundForward(160, "China Mainland -> Hong Kong", "b", "tcp+udp", ["global"], "global"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        vm.SelectedNativeForwardId = 160;
+        Assert.False(vm.IsNativeRouteScopeSelectable);
+
+        vm.SelectedNativeForwardId = 159;
+        Assert.True(vm.IsNativeRouteScopeSelectable);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerIsCollapsedByDefault()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            RouteScopes = ["cn_only", "global"],
+            Forwards =
+            [
+                new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "cn_only"),
+            ],
+        };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { NativeOutbound = capability }),
+            dispatch: action => action());
+
+        Assert.True(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerStaysHiddenWithoutCarrierRows()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+        };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { NativeOutbound = capability }),
+            dispatch: action => action());
+
+        Assert.False(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerCollapsesWhenCapabilityIsRevoked()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only"], "cn_only"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        vm.IsNativeOutboundExpanded = true;
+        controller.RaiseNativeOutbound(null);
+
+        Assert.False(vm.IsNativeOutboundExpanded);
+        Assert.False(vm.IsNativeOutboundVisible);
+    }
+
+    [Fact]
+    public void NativeIntlOnlyScopeIsPreservedForInternationalCarrier()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            RouteScopes = ["intl_only", "global"],
+            DefaultRouteScope = "intl_only",
+            Forwards =
+            [
+                new NativeOutboundForward(201, "Mainland China -> International", "a", "tcp+udp", ["intl_only", "global"], "intl_only"),
+            ],
+        };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { NativeOutbound = capability }),
+            dispatch: action => action());
+
+        vm.SelectedNativeForwardId = 201;
+        vm.SelectedNativeRouteScope = "intl_only";
+        vm.NativeBypassChinaMainland = true;
+
+        Assert.Equal("intl_only", vm.SelectedNativeRouteScope);
+        Assert.Contains(vm.NativeRouteScopeOptions, option => option.Key == "intl_only");
+        Assert.False(vm.IsNativeBypassChinaEnabled);
+        Assert.False(vm.NativeBypassChinaMainland);
+    }
+
+    [Fact]
     public async Task LoginValidationAndClientSelectionCallOnlyControllerCommands()
     {
         var controller = new FakeController(new DesktopClientSnapshot());
@@ -165,11 +287,13 @@ public sealed class MainWindowViewModelTests
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;
         public event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged;
+        public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
         public event Action<string>? NoticeRaised;
         public event Action<string>? LogRaised;
         public event Action<string>? UpdateAvailable;
 
         public DesktopClientSnapshot Snapshot { get; private set; } = initial;
+        public NativeOutboundCapability? NativeOutbound => Snapshot.NativeOutbound;
         public int LoginCalls { get; private set; }
         public int AgentTokenLoginCalls { get; private set; }
         public int ConnectCalls { get; private set; }
@@ -233,6 +357,8 @@ public sealed class MainWindowViewModelTests
         }
         public Task StartAllAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task StopAllAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(int forwardId, string routeScope, CancellationToken ct = default)
+            => Task.FromResult<NativeOutboundLease?>(null);
         public Task SignOutAsync(CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -243,6 +369,11 @@ public sealed class MainWindowViewModelTests
         }
 
         public void RaiseForwards(IReadOnlyList<DesktopForwardSnapshot> forwards) => ForwardsChanged?.Invoke(forwards);
+        public void RaiseNativeOutbound(NativeOutboundCapability? capability)
+        {
+            Snapshot = Snapshot with { NativeOutbound = capability };
+            NativeOutboundChanged?.Invoke(capability);
+        }
         public void RaiseNotice(string notice) => NoticeRaised?.Invoke(notice);
         public void RaiseUpdate(string version) => UpdateAvailable?.Invoke(version);
         public void RaiseLog(string message) => LogRaised?.Invoke(message);

@@ -34,7 +34,18 @@ public sealed class MacConnectionProfileStore
             try
             {
                 var profiles = JsonSerializer.Deserialize<List<MacConnectionProfile>>(encoded, JsonOptions) ?? [];
-                return Normalize(profiles);
+                var normalized = Normalize(profiles);
+                var rewritten = normalized.Count == 0
+                    ? string.Empty
+                    : JsonSerializer.Serialize(normalized, JsonOptions);
+                if (!string.Equals(encoded, rewritten, StringComparison.Ordinal))
+                {
+                    if (rewritten.Length == 0)
+                        await _secrets.DeleteAsync(SecretAccount, ct).ConfigureAwait(false);
+                    else
+                        await _secrets.SetAsync(SecretAccount, rewritten, ct).ConfigureAwait(false);
+                }
+                return normalized;
             }
             catch (JsonException)
             {
@@ -83,10 +94,6 @@ public sealed class MacConnectionProfileStore
             profile.Protocol = profile.Protocol.Trim().ToLowerInvariant();
             profile.Name = Bound(profile.Name, 120);
             profile.Server = Bound(profile.Server, 255);
-            profile.Host = Bound(profile.Host, 255);
-            profile.Path = Bound(profile.Path, 2048);
-            profile.ServiceName = Bound(profile.ServiceName, 255);
-            profile.ServerName = Bound(profile.ServerName, 255);
             if (profile.Id <= 0 || !ids.Add(profile.Id))
                 profile.Id = NextId(ids);
             if (profile.Port is < 1 or > 65535)

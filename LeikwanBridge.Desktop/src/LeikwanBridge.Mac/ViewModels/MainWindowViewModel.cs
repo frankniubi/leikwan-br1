@@ -22,6 +22,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly Func<CancellationToken, Task>? _checkForUpdates;
     private readonly Func<CancellationToken, Task>? _installUpdate;
     private readonly Action<Action> _dispatch;
+    private int _nativeRefreshInProgress;
+    private MacConnectionMode _nativeActiveMode = MacConnectionMode.Vpn;
+    private int _nativeActiveForwardId;
+    private string _nativeActiveRouteScope = "global";
+    private bool _nativeActiveBypassChina;
 
     public MainWindowViewModel(
         IDesktopClientController controller,
@@ -49,6 +54,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         ApplySnapshot(controller.Snapshot);
         _controller.SnapshotChanged += snapshot => _dispatch(() => ApplySnapshot(snapshot));
         _controller.ForwardsChanged += forwards => _dispatch(() => ApplyForwards(forwards));
+        _controller.NativeOutboundChanged += capability => _dispatch(() => ApplyNativeOutbound(capability));
         _controller.NoticeRaised += notice => _dispatch(() => ShowNotice(notice));
         _controller.LogRaised += message => _dispatch(() => AddLog(message));
         _controller.UpdateAvailable += version => _dispatch(() => ShowUpdate(version));
@@ -103,6 +109,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _localConnectionStatus = "Disconnected";
     [ObservableProperty] private string _localConnectionError = string.Empty;
     [ObservableProperty] private int _bypassAddressCount;
+    [ObservableProperty] private NativeOutboundCapability? _nativeOutboundCapability;
+    [ObservableProperty] private int _selectedNativeForwardId;
+    [ObservableProperty] private NativeOutboundForward? _selectedNativeForward;
+    [ObservableProperty] private string _selectedNativeRouteScope = "global";
+    [ObservableProperty] private NativeRouteScopeOption? _selectedNativeRouteScopeOption;
+    [ObservableProperty] private MacConnectionMode _selectedNativeConnectionMode = MacConnectionMode.Vpn;
+    [ObservableProperty] private bool _nativeBypassChinaMainland;
+    [ObservableProperty] private bool _isNativeOutboundExpanded;
 
     public bool HasForwards => Forwards.Count > 0;
     public bool IsConnected => string.Equals(ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase);
@@ -131,6 +145,34 @@ public sealed partial class MainWindowViewModel : ObservableObject
         : "System proxy";
     public bool IsLocalConnectionActive =>
         LocalConnectionStatus is "Connected" or "Starting";
+    public bool IsNativeOutboundVisible
+        => NativeOutboundCapability is { Enabled: true } && NativeOutboundForwards.Count > 0;
+    public IReadOnlyList<NativeOutboundForward> NativeOutboundForwards
+        => NativeOutboundCapability?.Forwards ?? [];
+    public IReadOnlyList<NativeRouteScopeOption> NativeRouteScopeOptions
+        => (NativeOutboundCapability?.FindForward(SelectedNativeForwardId)?.RouteScopes
+                ?? NativeOutboundCapability?.RouteScopes
+                ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(scope => new NativeRouteScopeOption(
+                scope,
+                string.Equals(scope, "cn_only", StringComparison.OrdinalIgnoreCase)
+                    ? "仅中国大陆"
+                    : string.Equals(scope, "intl_only", StringComparison.OrdinalIgnoreCase)
+                        ? "仅国际"
+                        : "全局"))
+            .ToList();
+    public bool IsNativeRouteScopeSelectable => NativeRouteScopeOptions.Count > 1;
+    public IReadOnlyList<MacConnectionMode> NativeConnectionModes { get; } =
+        [MacConnectionMode.Proxy, MacConnectionMode.Vpn];
+    public bool IsNativeRouteCnOnly
+        => string.Equals(SelectedNativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeRouteIntlOnly
+        => string.Equals(SelectedNativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeRouteGlobal
+        => string.Equals(SelectedNativeRouteScope, "global", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeBypassChinaEnabled
+        => IsNativeRouteGlobal && IsNativeOutboundVisible;
 
     partial void OnConnectionStatusChanged(string value)
     {
@@ -154,6 +196,94 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         NodeEditor.Load(value);
         OnPropertyChanged(nameof(HasSelectedConnectionProfile));
+    }
+
+    partial void OnNativeOutboundCapabilityChanged(NativeOutboundCapability? value)
+    {
+        if (value is not { Enabled: true })
+            IsNativeOutboundExpanded = false;
+        var id = value?.FindForward(SelectedNativeForwardId)?.ForwardId
+            ?? value?.DefaultForwardId
+            ?? value?.Forwards.FirstOrDefault()?.ForwardId
+            ?? 0;
+        if (SelectedNativeForwardId != id)
+            SelectedNativeForwardId = id;
+        var carrier = value?.FindForward(id);
+        var scope = carrier?.RouteScopes.FirstOrDefault(item =>
+                string.Equals(item, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase))
+            ?? carrier?.DefaultRouteScope
+            ?? value?.DefaultRouteScope
+            ?? "global";
+        if (!string.Equals(SelectedNativeRouteScope, scope, StringComparison.OrdinalIgnoreCase))
+            SelectedNativeRouteScope = scope;
+        SelectedNativeForward = carrier;
+        SelectedNativeRouteScopeOption = NativeRouteScopeOptions.FirstOrDefault(item =>
+            string.Equals(item.Key, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase));
+        if (!IsNativeRouteGlobal && NativeBypassChinaMainland)
+            NativeBypassChinaMainland = false;
+        OnPropertyChanged(nameof(IsNativeOutboundVisible));
+        OnPropertyChanged(nameof(NativeOutboundForwards));
+        OnPropertyChanged(nameof(NativeRouteScopeOptions));
+        OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
+        OnPropertyChanged(nameof(IsNativeRouteCnOnly));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeRouteGlobal));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnSelectedNativeForwardIdChanged(int value)
+    {
+        var carrier = NativeOutboundCapability?.FindForward(value);
+        if (SelectedNativeForward?.ForwardId != value)
+            SelectedNativeForward = carrier;
+        if (carrier is not null
+            && !carrier.RouteScopes.Contains(SelectedNativeRouteScope, StringComparer.OrdinalIgnoreCase))
+            SelectedNativeRouteScope = carrier.DefaultRouteScope;
+        SelectedNativeRouteScopeOption = NativeRouteScopeOptions.FirstOrDefault(item =>
+            string.Equals(item.Key, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase));
+        OnPropertyChanged(nameof(NativeRouteScopeOptions));
+        OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnSelectedNativeRouteScopeChanged(string value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant() ?? "global";
+        if (normalized is not ("cn_only" or "intl_only" or "global"))
+            normalized = "global";
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            SelectedNativeRouteScope = normalized;
+            return;
+        }
+        if (normalized != "global" && NativeBypassChinaMainland)
+            NativeBypassChinaMainland = false;
+        SelectedNativeRouteScopeOption = NativeRouteScopeOptions.FirstOrDefault(item =>
+            string.Equals(item.Key, normalized, StringComparison.OrdinalIgnoreCase));
+        OnPropertyChanged(nameof(IsNativeRouteCnOnly));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeRouteGlobal));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnNativeBypassChinaMainlandChanged(bool value)
+    {
+        if (value && !IsNativeRouteGlobal)
+            NativeBypassChinaMainland = false;
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnSelectedNativeForwardChanged(NativeOutboundForward? value)
+    {
+        if (value is not null && SelectedNativeForwardId != value.ForwardId)
+            SelectedNativeForwardId = value.ForwardId;
+    }
+
+    partial void OnSelectedNativeRouteScopeOptionChanged(NativeRouteScopeOption? value)
+    {
+        if (value is not null && !string.Equals(SelectedNativeRouteScope, value.Key, StringComparison.OrdinalIgnoreCase))
+            SelectedNativeRouteScope = value.Key;
     }
 
     [RelayCommand]
@@ -360,11 +490,63 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task StartNativeConnectionAsync()
+    {
+        if (_connections is null)
+            return;
+        if (!IsNativeOutboundVisible || SelectedNativeForwardId <= 0)
+        {
+            LocalConnectionError = "Native outbound is not included in the active plan.";
+            return;
+        }
+        var carrier = NativeOutboundCapability?.FindForward(SelectedNativeForwardId);
+        if (carrier is null
+            || !carrier.RouteScopes.Contains(SelectedNativeRouteScope, StringComparer.OrdinalIgnoreCase))
+        {
+            LocalConnectionError = "Choose a valid native traffic scope.";
+            return;
+        }
+        LocalConnectionError = string.Empty;
+        try
+        {
+            var lease = await _controller.ResolveNativeOutboundLeaseAsync(
+                SelectedNativeForwardId,
+                SelectedNativeRouteScope,
+                CancellationToken.None);
+            if (lease is null)
+            {
+                LocalConnectionError = "The native outbound lease is unavailable.";
+                return;
+            }
+            _nativeActiveMode = SelectedNativeConnectionMode;
+            _nativeActiveForwardId = SelectedNativeForwardId;
+            _nativeActiveRouteScope = SelectedNativeRouteScope;
+            _nativeActiveBypassChina = NativeBypassChinaMainland && IsNativeRouteGlobal;
+            NativeBypassChinaMainland = _nativeActiveBypassChina;
+            await _connections.StartNativeAsync(
+                SelectedNativeConnectionMode,
+                lease,
+                PanelUrl,
+                _forwardsProvider(),
+                _nativeActiveBypassChina,
+                CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            LocalConnectionError = exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
+                ? exception.Message.Replace('_', ' ')
+                : "The native outbound connection could not be started.";
+        }
+    }
+
+    [RelayCommand]
     private async Task StopConnectionAsync()
     {
         if (_connections is null)
             return;
         await _connections.StopAsync();
+        _nativeActiveForwardId = 0;
+        _nativeActiveRouteScope = "global";
     }
 
     [RelayCommand]
@@ -474,6 +656,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsDashboardVisible = !IsLoginVisible && !IsClientPickerVisible;
         if (SelectedSection == "connections")
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
+        ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
     }
 
@@ -526,6 +709,52 @@ public sealed partial class MainWindowViewModel : ObservableObject
             LocalConnectionError = snapshot.ErrorCode.Replace('_', ' ');
         OnPropertyChanged(nameof(LocalConnectionStatus));
         OnPropertyChanged(nameof(IsLocalConnectionActive));
+        ScheduleNativeLeaseRefresh();
+    }
+
+    private void ApplyNativeOutbound(NativeOutboundCapability? capability)
+    {
+        NativeOutboundCapability = capability;
+        if (_connections?.IsNativeOutboundActive == true
+            && !NativeCapabilityCoversActiveSession(capability))
+        {
+            _ = StopRevokedNativeAsync();
+            return;
+        }
+        ScheduleNativeLeaseRefresh();
+    }
+
+    private bool NativeCapabilityCoversActiveSession(NativeOutboundCapability? capability)
+    {
+        if (capability is not { Enabled: true }
+            || !string.Equals(capability.Protocol, "socks5", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(capability.LeaseProtocol, MasterApiClient.NativeOutboundLeaseProtocol, StringComparison.Ordinal)
+            || !string.Equals(capability.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var carrier = capability.FindForward(_nativeActiveForwardId);
+        return carrier is not null
+            && string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
+            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task StopRevokedNativeAsync()
+    {
+        if (_connections is null)
+            return;
+        try
+        {
+            await _connections.StopAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _dispatch(() => AddLog($"native_outbound_stop_failed:{exception.GetType().Name}"));
+        }
+        finally
+        {
+            _nativeActiveForwardId = 0;
+            _nativeActiveRouteScope = "global";
+        }
     }
 
     private void ApplyForwards(IReadOnlyList<DesktopForwardSnapshot> forwards)
@@ -544,6 +773,87 @@ public sealed partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(HasForwards));
         OnPropertyChanged(nameof(ForwardCount));
         OnPropertyChanged(nameof(RunningForwardCount));
+        ScheduleNativeLeaseRefresh();
+    }
+
+    private void ScheduleNativeLeaseRefresh()
+    {
+        if (_connections?.IsNativeOutboundActive != true)
+            return;
+        _ = Task.Run(RefreshNativeLeaseIfNeededAsync);
+    }
+
+    private async Task RefreshNativeLeaseIfNeededAsync()
+    {
+        if (Interlocked.CompareExchange(ref _nativeRefreshInProgress, 1, 0) != 0)
+            return;
+        try
+        {
+            if (_connections?.IsNativeOutboundActive != true)
+                return;
+            var now = DateTimeOffset.UtcNow;
+            var expiresAt = _connections.ActiveNativeLeaseExpiresAt;
+            if (!NativeCapabilityCoversActiveSession(NativeOutboundCapability))
+            {
+                await StopRevokedNativeAsync().ConfigureAwait(false);
+                return;
+            }
+            if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
+                return;
+            var lease = await _controller.ResolveNativeOutboundLeaseAsync(
+                _nativeActiveForwardId,
+                _nativeActiveRouteScope,
+                CancellationToken.None);
+            if (lease is null)
+                return;
+
+            // Refresh the short-lived relay lease in place first. A full
+            // sing-box restart is only needed when the relay/control channel
+            // is no longer usable.
+            if (_connections.IsNativeOutboundActive != true)
+            {
+                lease.Dispose();
+                return;
+            }
+            bool hotRefreshed;
+            try
+            {
+                hotRefreshed = await _connections.TryRefreshNativeAsync(
+                    lease,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                lease.Dispose();
+                throw;
+            }
+            if (!hotRefreshed)
+            {
+                if (_connections.IsNativeOutboundActive)
+                {
+                    await _connections.StartNativeAsync(
+                        _nativeActiveMode,
+                        lease,
+                        PanelUrl,
+                        _forwardsProvider(),
+                        _nativeActiveBypassChina,
+                        CancellationToken.None);
+                }
+                else
+                {
+                    lease.Dispose();
+                    return;
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            AddLog($"native_outbound_refresh_failed:{exception.GetType().Name}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nativeRefreshInProgress, 0);
+        }
     }
 
     private void ShowNotice(string notice)
@@ -591,3 +901,5 @@ public sealed partial class MainWindowViewModel : ObservableObject
             Dispatcher.UIThread.Post(action);
     }
 }
+
+public sealed record NativeRouteScopeOption(string Key, string Label);
