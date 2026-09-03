@@ -260,9 +260,13 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
 
 - A QA-only Android package was published as a new static artifact (no formal
   updater/production manifest change):
-  - URL: `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.apk`
+  - Canonical cache-busting URL:
+    `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904-signed/android-native-cn-to-intl-qa-20260904.apk`
+  - The original URL was also replaced with the signed bytes, but its immutable
+    cache key may still serve the earlier debug package to existing clients:
+    `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.apk`
   - Remote path:
-    `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.apk`
+    `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904-signed/android-native-cn-to-intl-qa-20260904.apk`
   - Local source: `artifacts/android/android-qa-20260903-final/app-qa-unstable-signed-20260904.apk`
   - Source, remote, and HTTP re-download SHA-256:
     `500878B8738EFA888C6EC1A76BD7D685637CFE0D3694BCC62D8788DB0B5E5EAA`
@@ -270,6 +274,8 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   - HTTP verification: `200 OK`, `Content-Length: 102696514`
   - Remote staging file was installed with mode `0644`, then removed; the new
     signed target replaced the debug QA file atomically.
+  - The canonical target is a hard link to the signed target under
+    `native-outbound-test-20260904`; it does not duplicate APK storage.
   - The previous debug QA bytes remain at the remote rollback path:
     `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.debug-original-20260904.apk`
 - This package is a debug QA build with
