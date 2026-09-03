@@ -550,7 +550,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		timeout = 5 * time.Second
 	}
 	started := time.Now()
-	remote, err := dialStream(lease, request.host, request.port, timeout)
+	remote, err := dialNativeStream(lease, request.host, request.port, timeout)
 	if err != nil {
 		if runtime.status != nil {
 			runtime.status.UpdateError("tcp_connect_failed")
