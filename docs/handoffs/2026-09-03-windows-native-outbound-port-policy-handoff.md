@@ -2,25 +2,25 @@
 
 Date: 2026-09-03
 Scope: Windows client, Panel contract, and the shared Ultra relay
-Status: implemented and locally verified; not deployed
+Status: release artifacts prepared and locally verified; deployment pending
 
 ## Source and artifact identity
 
 - Baseline: `master` was used as the source of truth. The worktree contained
   unrelated dirty files; they were preserved and were not included in this
   feature.
-- Feature head: `9dcbe35008047f78487e7e7e434e48b0aa943bd3`
-- Windows GUI version built: `0.1.20.4`
+- Feature head before release commit: `5101cb62a9d36146fb9d898c1e62583ae631b971`
+- Windows GUI version built: `0.1.20.5`
 - Release GUI output: `LeikwanBridge.Desktop/src/LeikwanBridge.App/bin/Release/net8.0-windows/win-x64/`
 - Windows GUI entry point: `LeikwanBridge.Desktop/src/LeikwanBridge.App/bin/Release/net8.0-windows/win-x64/LeikwanBridge.App.exe`
 - GUI `LeikwanBridge.App.exe` SHA-256:
-  `2AFDAC5EFE64033045448DBE8230FE0A7D17088C647D0C63ECE37E340E1B38E7`
+  `C6025364C1DA0E966456331E3828378019BC5DCCBB38BA1827DC01BCB90A36AA`
 - GUI `LeikwanBridge.App.dll` SHA-256:
-  `0D1A1C16E2FE9FD23308C29EE382897569758629C25A2DE3D1F9F1AD6B09EE57`
+  `EC6369B2280D5C90A2C98D07A65DDFFED1BE6289ED4E62144B4D0A4EE8B0A6FA`
 - Run the EXE with the complete containing directory; do not copy only the
   entry point.
-- Windows amd64 relay test artifact:
-  `artifacts/ultra/ultra-client_windows_amd64_native-policy-20260903.exe`
+- Windows amd64 relay release artifact:
+  `artifacts/ultra/ultra-client_windows_amd64.exe`
 - Relay size: `6,867,968` bytes
 - Relay SHA-256:
   `22522C6A91E5441E246AF1C4A7E00887F498F87C1C95B2CF99A90FF378074A98`
@@ -31,8 +31,15 @@ Status: implemented and locally verified; not deployed
   it is stripped and symbol-reduced. A clean build host may run the existing
   garble release process later.
 
+- Windows installer release artifact:
+  `artifacts/windows/leikwan-bridge-setup.exe`
+- Installer version: `0.1.20.5`
+- Installer size: `22,437,349` bytes
+- Installer SHA-256:
+  `65D82369703478D234593A515BFEB360B4D82910268EBDA5548EAF02E0D78096`
+
 No server upload, production deploy, installer replacement, or update-push
-operation was performed in this handoff.
+operation has been performed at this checkpoint.
 
 ## Product contract
 
