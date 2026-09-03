@@ -159,6 +159,7 @@ foreach ($users as $user) {
             $db->execute(
                 'UPDATE forwards
                  SET enabled = 0,
+                     native_direction_key = NULL,
                      balance_suspended_at = :balance_suspended_at,
                      api_revision = GREATEST(1, api_revision) + 1,
                      updated_at = :updated_at
