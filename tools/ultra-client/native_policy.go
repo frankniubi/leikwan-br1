@@ -64,7 +64,7 @@ func nativePortAllowed(config Config, port int) bool {
 		return true
 	}
 	minimum := config.NativePortMin
-	if minimum < 1 || minimum > 65535 {
+	if minimum < nativeDefaultPortMin || minimum > 65535 {
 		minimum = nativeDefaultPortMin
 	}
 	return port >= minimum && port <= 65535

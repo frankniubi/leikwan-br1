@@ -395,7 +395,8 @@ public partial class MainWindow : Window
                 _vm.SelectedNativeForwardId,
                 _vm.SelectedNativeRouteScope,
                 selectedGameId: null,
-                bypassChinaMainland: _vm.NativeBypassChinaMainland);
+                bypassChinaMainland: _vm.NativeBypassChinaMainland,
+                unrestrictedRoute: _vm.NativeUnrestrictedRoute);
             UpdateNativeOutboundUi();
             ApplyProxyVisualState();
         }
@@ -730,6 +731,11 @@ public partial class MainWindow : Window
                 : Visibility.Collapsed;
             NativeBypassChinaCheckBox.IsEnabled = _vm.IsNativeBypassChinaEnabled
                 && _vm.ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
+            NativeUnrestrictedRouteCheckBox.Visibility = _vm.IsNativeUnrestrictedRouteVisible
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            NativeUnrestrictedRouteCheckBox.IsEnabled = _vm.IsNativeUnrestrictedRouteEnabled;
+            NativeUnrestrictedRouteCheckBox.IsChecked = _vm.NativeUnrestrictedRoute;
             NativeOutboundStartButton.IsEnabled = _vm.ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
         }
         finally

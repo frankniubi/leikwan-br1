@@ -79,6 +79,45 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void UnrestrictedNativeRouteIsHiddenUnlessCarrierAllowsIt()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                Forwards =
+                [
+                    new NativeOutboundForward(158, "Mainland China -> International", "a", "tcp+udp", ["intl_only", "global"], "global"),
+                ],
+            },
+            SelectedNativeForwardId = 158,
+        };
+
+        Assert.False(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+
+        vm.NativeOutboundCapability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(158, "Mainland China -> International", "a", "tcp+udp", ["intl_only", "global"], "global", true),
+            ],
+        };
+        Assert.True(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+        vm.NativeUnrestrictedRoute = true;
+        Assert.True(vm.NativeUnrestrictedRoute);
+    }
+
+    [Fact]
     public void MainlandToInternationalCarrierExposesIntlOnlyAndDisablesChinaBypass()
     {
         var vm = new MainViewModel

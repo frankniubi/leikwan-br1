@@ -46,6 +46,7 @@ public partial class MainViewModel : ObservableObject
     private WindowsProxyMode _nativeActiveMode = WindowsProxyMode.Tun;
     private int _nativeActiveForwardId;
     private string _nativeActiveRouteScope = "global";
+    private bool _nativeActiveUnrestricted;
     private string _nativeActiveGameId = "";
     private bool _nativeActiveBypassChina;
     private int _shutdownRequested;
@@ -73,6 +74,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _selectedNativeForwardId;
     [ObservableProperty] private string _selectedNativeRouteScope = "global";
     [ObservableProperty] private bool _nativeBypassChinaMainland;
+    [ObservableProperty] private bool _nativeUnrestrictedRoute;
     [ObservableProperty] private bool _isNativeOutboundExpanded;
     private string _selectedProxyGameDisplayName = "";
 
@@ -106,6 +108,12 @@ public partial class MainViewModel : ObservableObject
         => string.Equals(SelectedNativeRouteScope, "global", StringComparison.OrdinalIgnoreCase);
     public bool IsNativeBypassChinaEnabled
         => IsNativeRouteGlobal && IsNativeOutboundVisible;
+    public bool IsNativeUnrestrictedRouteVisible
+        => NativeOutboundCapability?.FindForward(SelectedNativeForwardId)?.UnrestrictedAllowed == true;
+    public bool IsNativeUnrestrictedRouteEnabled
+        => IsNativeUnrestrictedRouteVisible
+            && IsNativeOutboundVisible
+            && ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
 
     private readonly HashSet<int> _busyForwards = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
@@ -143,6 +151,8 @@ public partial class MainViewModel : ObservableObject
             SelectedNativeRouteScope = preferredScope;
         if (!IsNativeRouteGlobal && NativeBypassChinaMainland)
             NativeBypassChinaMainland = false;
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
 
         OnPropertyChanged(nameof(IsNativeOutboundVisible));
         OnPropertyChanged(nameof(NativeOutboundForwards));
@@ -152,6 +162,8 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
         OnPropertyChanged(nameof(IsNativeRouteGlobal));
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     partial void OnSelectedNativeForwardIdChanged(int value)
@@ -165,6 +177,10 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNativeRouteGlobal));
         OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     partial void OnSelectedNativeRouteScopeChanged(string value)
@@ -188,6 +204,13 @@ public partial class MainViewModel : ObservableObject
         if (value && !IsNativeRouteGlobal)
             NativeBypassChinaMainland = false;
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnNativeUnrestrictedRouteChanged(bool value)
+    {
+        if (value && !IsNativeUnrestrictedRouteVisible)
+            NativeUnrestrictedRoute = false;
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     /// <summary>
@@ -541,6 +564,7 @@ public partial class MainViewModel : ObservableObject
         string routeScope,
         string? selectedGameId = null,
         bool? bypassChinaMainland = null,
+        bool? unrestrictedRoute = null,
         CancellationToken ct = default)
     {
         await EnsureProxyServiceAsync(ct);
@@ -559,6 +583,9 @@ public partial class MainViewModel : ObservableObject
             ?? throw new InvalidOperationException("native_route_scope_invalid");
         if (!carrier.RouteScopes.Contains(normalizedScope, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("native_route_scope_invalid");
+        var useUnrestrictedRoute = unrestrictedRoute ?? NativeUnrestrictedRoute;
+        if (useUnrestrictedRoute && !carrier.UnrestrictedAllowed)
+            throw new InvalidOperationException("native_route_policy_not_allowed");
         forward.NativeOutbound = capability;
         forward.NativeRouteScope = normalizedScope;
 
@@ -578,7 +605,13 @@ public partial class MainViewModel : ObservableObject
             .ToList();
 
         var api = _api ?? throw new InvalidOperationException("master_api_unavailable");
-        var lease = await api.ResolveNativeOutboundLeaseAsync(forward, capability, normalizedScope, ct);
+        var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
+        var lease = await api.ResolveNativeOutboundLeaseAsync(
+            forward,
+            capability,
+            normalizedScope,
+            routePolicy,
+            ct);
         if (lease is null)
             throw new InvalidOperationException("native_lease_unavailable");
 
@@ -587,6 +620,7 @@ public partial class MainViewModel : ObservableObject
         _nativeActiveMode = mode;
         _nativeActiveForwardId = forwardId;
         _nativeActiveRouteScope = normalizedScope;
+        _nativeActiveUnrestricted = useUnrestrictedRoute;
         _nativeActiveGameId = mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
         _nativeActiveBypassChina = effectiveBypassChina;
         NativeBypassChinaMainland = effectiveBypassChina;
@@ -645,6 +679,8 @@ public partial class MainViewModel : ObservableObject
         await _proxyService.StopAsync(ct);
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
+        _nativeActiveUnrestricted = false;
+        NativeUnrestrictedRoute = false;
         _nativeActiveGameId = "";
     }
 
@@ -1015,6 +1051,8 @@ public partial class MainViewModel : ObservableObject
         NativeOutboundCapability = null;
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
+        _nativeActiveUnrestricted = false;
+        NativeUnrestrictedRoute = false;
         ShowClientPicker = false;
         ShowSetupWizard = true;
     }
@@ -1578,7 +1616,8 @@ public partial class MainViewModel : ObservableObject
         var carrier = capability.FindForward(_nativeActiveForwardId);
         return carrier is not null
             && string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
-            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase);
+            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase)
+            && (!_nativeActiveUnrestricted || carrier.UnrestrictedAllowed);
     }
 
     private void ScheduleNativeLeaseRefresh()
@@ -1654,6 +1693,7 @@ public partial class MainViewModel : ObservableObject
                 forward,
                 capability,
                 _nativeActiveRouteScope,
+                _nativeActiveUnrestricted ? "unrestricted" : "restricted",
                 _lifecycleCts.Token).ConfigureAwait(false);
             if (lease is null)
             {
