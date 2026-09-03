@@ -36,6 +36,32 @@ namespace {
         fail('native legacy create must omit caller target');
     }
 
+    $nativeTenantForm = ForwardLineApiContract::normalizeLegacyCreate([
+        'forward_route_id' => 42,
+        'listen_port' => null,
+        'target_host' => '',
+        'target_port' => 0,
+        'target_source' => 'manual',
+        'transport_mode' => 'tcp+udp',
+        'native_outbound' => '1',
+    ]);
+    if (($nativeTenantForm['native_outbound'] ?? false) !== true
+        || array_key_exists('target_host', $nativeTenantForm)
+        || array_key_exists('target_port', $nativeTenantForm)) {
+        fail('native tenant form create must ignore disabled target placeholders');
+    }
+
+    $nativeTenantEdit = ForwardLineApiContract::normalizeLegacyUpdate([
+        'listen_port' => null,
+        'target_port' => 0,
+        'transport_mode' => 'tcp+udp',
+        'native_outbound' => '1',
+    ]);
+    if (($nativeTenantEdit['native_outbound'] ?? false) !== true
+        || array_key_exists('target_port', $nativeTenantEdit)) {
+        fail('native tenant form edit must ignore disabled target placeholders');
+    }
+
     $structured = ForwardLineApiContract::normalizeCreate([
         'route_id' => 42,
         'listen_port' => null,

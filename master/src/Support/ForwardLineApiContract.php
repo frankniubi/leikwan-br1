@@ -394,6 +394,14 @@ final class ForwardLineApiContract
             self::invalid(['patch' => 'non_empty']);
         }
 
+        $nativeOutbound = array_key_exists('native_outbound', $payload)
+            ? self::boolean($payload['native_outbound'], 'native_outbound')
+            : false;
+        if ($nativeOutbound) {
+            unset($payload['target_host'], $payload['target_port'], $payload['target_service_id']);
+            $payload['target_source'] = 'manual';
+        }
+
         $effectiveTargetSource = $payload['target_source'] ?? 'manual';
         if (!is_string($effectiveTargetSource) || !in_array($effectiveTargetSource, ['manual', 'service_ip'], true)) {
             self::invalid(['target.source' => 'invalid']);
@@ -401,7 +409,7 @@ final class ForwardLineApiContract
 
         $normalized = [];
         if (array_key_exists('native_outbound', $payload)) {
-            $normalized['native_outbound'] = self::boolean($payload['native_outbound'], 'native_outbound');
+            $normalized['native_outbound'] = $nativeOutbound;
         }
         if (array_key_exists('forward_route_id', $payload) || array_key_exists('route_id', $payload)) {
             $normalized['forward_route_id'] = self::positiveInt(
