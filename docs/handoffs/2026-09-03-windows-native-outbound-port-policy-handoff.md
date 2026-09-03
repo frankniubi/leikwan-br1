@@ -200,7 +200,8 @@ All commands below were run from the repository root unless noted.
   `android_ultra_policy_v2_contract_test.php`,
   `forward_reactivation_behavior_test.php`, and
   `forward_reactivation_security_regression_test.php`.
-- .NET Core: `277` tests passed.
+- .NET Core: `278` tests passed, including the explicit unrestricted lease
+  request/response and v2 digest contract.
 - .NET GUI: `48` tests passed.
 - sing-box-backed config tests: `29` `WindowsProxyConfigBuilderTests` passed
   with `artifacts/windows/proxy-runtime/sing-box.exe` version `1.13.19`,
