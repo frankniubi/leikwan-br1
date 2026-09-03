@@ -27,9 +27,11 @@ import struct
 import sys
 
 path = pathlib.Path(sys.argv[1])
-cpu = 0x0100000C if sys.argv[2] == "arm64" else 0x01000007
+architecture = sys.argv[2]
+cpu = 0x0100000C if architecture == "arm64" else 0x01000007
+subtype = 0 if architecture == "arm64" else 3
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<I", cpu) + bytes(24))
+path.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<II", cpu, subtype) + bytes(20))
 PY
   chmod 0755 "$path"
 }

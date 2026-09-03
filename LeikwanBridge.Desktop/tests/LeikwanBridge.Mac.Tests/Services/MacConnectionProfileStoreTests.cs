@@ -7,28 +7,58 @@ namespace LeikwanBridge.Mac.Tests.Services;
 public sealed class MacConnectionProfileStoreTests
 {
     [Fact]
-    public async Task ProfilesAreStoredInSecretStoreAndRoundTripWithoutDiskPath()
+    public async Task UnsupportedVlessProfilesAreDroppedWhileSupportedProfilesRoundTrip()
     {
         var secrets = new MemorySecretStore();
         var store = new MacConnectionProfileStore(secrets);
-        var profile = new MacConnectionProfile
+        var vless = new MacConnectionProfile
         {
             Id = 2,
             Name = "Secure node",
-            Protocol = MacConnectionProtocol.Vless,
+            Protocol = "vless",
             Server = "node.example.test",
             Port = 443,
-            Uuid = "uuid-secret",
-            ServerName = "node.example.test",
+        };
+        var shadowsocks = new MacConnectionProfile
+        {
+            Id = 3,
+            Name = "Supported node",
+            Protocol = MacConnectionProtocol.Shadowsocks,
+            Server = "ss.example.test",
+            Port = 443,
+            Method = "aes-256-gcm",
+            Password = "secret",
         };
 
-        await store.SaveAsync([profile], CancellationToken.None);
+        await store.SaveAsync([vless, shadowsocks], CancellationToken.None);
         var loaded = await store.LoadAsync(CancellationToken.None);
 
         Assert.Single(loaded);
-        Assert.Equal("uuid-secret", loaded[0].Uuid);
+        Assert.Equal("Supported node", loaded[0].Name);
+        Assert.Equal(MacConnectionProtocol.Shadowsocks, loaded[0].Protocol);
         Assert.Equal(MacConnectionProfileStore.SecretAccount, secrets.LastAccount);
-        Assert.Contains("uuid-secret", secrets.LastValue, StringComparison.Ordinal);
+        Assert.DoesNotContain("Secure node", secrets.LastValue, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"uuid\"", secrets.LastValue, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"transport\"", secrets.LastValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LoadingLegacyVlessJsonPurgesUnsupportedRecordsFromSecretStore()
+    {
+        var secrets = new MemorySecretStore();
+        var store = new MacConnectionProfileStore(secrets);
+        await secrets.SetAsync(
+            MacConnectionProfileStore.SecretAccount,
+            "[{\"id\":2,\"name\":\"Legacy\",\"protocol\":\"vless\",\"uuid\":\"legacy-secret\"},{\"id\":3,\"name\":\"SS\",\"protocol\":\"shadowsocks\",\"server\":\"ss.example.test\",\"method\":\"aes-256-gcm\",\"password\":\"secret\"}]",
+            CancellationToken.None);
+
+        var loaded = await store.LoadAsync(CancellationToken.None);
+
+        Assert.Single(loaded);
+        Assert.Equal("SS", loaded[0].Name);
+        Assert.DoesNotContain("legacy-secret", secrets.LastValue, StringComparison.Ordinal);
+        Assert.DoesNotContain("vless", secrets.LastValue, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"uuid\"", secrets.LastValue, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class MemorySecretStore : ISecretStore
