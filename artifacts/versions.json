@@ -215,37 +215,57 @@
   "architecture": "arm64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
   "format": "dmg",
+  "hardening": {
+   "managed_symbols": "disabled",
+   "native_helpers": "release-strip",
+   "ultra_client": "garble-v0.17.0-literals-tiny"
+  },
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "sha256": "db1105b480e456bdbe67c26944c54f8e4f90dcbe0d1a4f22c9307a29c97d354e",
-  "size_bytes": 75516938,
-  "version": "1.0.5"
+  "sha256": "75daf4e27bc882ef5da95696ef8d03be3652e5d29e5a8528e981da956ee69dbe",
+  "size_bytes": 77852465,
+  "version": "1.0.6"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
   "format": "dmg",
+  "hardening": {
+   "managed_symbols": "disabled",
+   "native_helpers": "release-strip",
+   "ultra_client": "garble-v0.17.0-literals-tiny"
+  },
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "sha256": "465bc0b915b25a981d24a112520716600911b943317e753503769b5fdf5b43c4",
-  "size_bytes": 79603377,
-  "version": "1.0.5"
+  "sha256": "bd9ca6fc103be8d0f7b4e386647c05a7167b84582cf4acfeb5658595f6b5b61f",
+  "size_bytes": 81470402,
+  "version": "1.0.6"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
   "format": "zip",
+  "hardening": {
+   "managed_symbols": "disabled",
+   "native_helpers": "release-strip",
+   "ultra_client": "garble-v0.17.0-literals-tiny"
+  },
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "sha256": "278625fd9777192e7eb21dc07e1773225e732cf79999f26c5920e37fdc58127e",
-  "size_bytes": 66500674,
-  "version": "1.0.5"
+  "sha256": "f50c461535808d2d4bdabf913b888ffe861ffd0906c62f3171e3a4fac40cae16",
+  "size_bytes": 68515374,
+  "version": "1.0.6"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
   "format": "zip",
+  "hardening": {
+   "managed_symbols": "disabled",
+   "native_helpers": "release-strip",
+   "ultra_client": "garble-v0.17.0-literals-tiny"
+  },
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "sha256": "c476320b46b7124121e64e6b915c467acc9f9ef9f7b9d75ee193865cdc82eeca",
-  "size_bytes": 69928188,
-  "version": "1.0.5"
+  "sha256": "010f7ad75350c0cfdadcb71aafc39e35eef00496abe503fda014d8fc6c841ed1",
+  "size_bytes": 72023639,
+  "version": "1.0.6"
  },
  "mptcp_client_runtime": {
   "artifact_url": "/artifacts/leikwan-mptcp-client.py",
