@@ -192,6 +192,23 @@ public sealed class MacConnectionService : IMacConnectionService
         IEnumerable<ForwardConfig> forwards,
         bool bypassChinaMainland = false,
         CancellationToken ct = default)
+        => await StartNativeAsync(
+            mode,
+            lease,
+            panelUrl,
+            forwards,
+            bypassChinaMainland,
+            "restricted",
+            ct).ConfigureAwait(false);
+
+    public async Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland,
+        string nativeRoutePolicy,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(lease);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -202,6 +219,11 @@ public sealed class MacConnectionService : IMacConnectionService
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (!lease.IsUsable(DateTimeOffset.UtcNow))
                 throw new InvalidOperationException("native_lease_invalid");
+            if (!string.Equals(
+                    NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
+                    lease.RoutePolicy,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("native_route_policy_mismatch");
             if (mode is not (MacConnectionMode.Proxy or MacConnectionMode.Vpn))
                 throw new InvalidOperationException("connection_mode_invalid");
             Publish(new MacConnectionSnapshot(
@@ -297,6 +319,7 @@ public sealed class MacConnectionService : IMacConnectionService
                 || lease == current
                 || lease.ForwardId != current.ForwardId
                 || !string.Equals(lease.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(lease.RoutePolicy, current.RoutePolicy, StringComparison.Ordinal)
                 || !string.Equals(lease.Transport, current.Transport, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(lease.ScopeDigest, current.ScopeDigest, StringComparison.OrdinalIgnoreCase)
                 || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))

@@ -14,6 +14,7 @@ public static class MacConnectionConfigBuilder
     public const string TunAddress = "172.19.0.1/30";
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
+    public const int NativePortMin = 1000;
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -128,7 +129,8 @@ public static class MacConnectionConfigBuilder
                 bypassDomains,
                 lease.RouteScope,
                 bypassChinaMainland,
-                mode),
+                mode,
+                lease.RoutePolicy),
         };
         AddNativeChinaRuleSets(
             root["route"]!.AsObject(),
@@ -338,9 +340,17 @@ public static class MacConnectionConfigBuilder
         IReadOnlyList<string> bypassDomains,
         string? nativeRouteScope = null,
         bool bypassChinaMainland = false,
-        MacConnectionMode? mode = null)
+        MacConnectionMode? mode = null,
+        string? nativeRoutePolicy = null)
     {
         var rules = new JsonArray { new JsonObject { ["action"] = "sniff" } };
+        var nativeMode = !string.IsNullOrWhiteSpace(nativeRouteScope);
+        var restrictedNative = nativeMode
+            && string.Equals(
+                NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
+                "restricted",
+                StringComparison.Ordinal);
+        var nativePortRange = restrictedNative ? $"{NativePortMin}:65535" : "1:65535";
         if (mode == MacConnectionMode.Vpn)
         {
             rules.Add(new JsonObject
@@ -381,22 +391,35 @@ public static class MacConnectionConfigBuilder
                 ["strategy"] = "ipv4_only",
             });
         }
+        if (restrictedNative)
+            rules.Add(new JsonObject
+            {
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = "1:999",
+                ["outbound"] = "direct",
+            });
         if (string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase))
             rules.Add(new JsonObject
             {
                 ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
                 ["outbound"] = "proxy",
             });
         else if (string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
             rules.Add(new JsonObject
             {
                 ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
                 ["outbound"] = "direct",
             });
         else if (string.Equals(nativeRouteScope, "global", StringComparison.OrdinalIgnoreCase) && bypassChinaMainland)
             rules.Add(new JsonObject
             {
                 ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
                 ["outbound"] = "direct",
             });
         rules.Add(new JsonObject

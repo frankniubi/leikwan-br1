@@ -27,6 +27,12 @@ public interface IDesktopClientController : IAsyncDisposable
         int forwardId,
         string routeScope,
         CancellationToken ct = default);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
+        => ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
     Task SignOutAsync(CancellationToken ct = default);
 }
 
@@ -325,13 +331,20 @@ public sealed class DesktopClientController : IDesktopClientController
         int forwardId,
         string routeScope,
         CancellationToken ct = default)
+        => await ResolveNativeOutboundLeaseAsync(forwardId, routeScope, "restricted", ct).ConfigureAwait(false);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
     {
         await _lifecycleGate.WaitAsync(ct);
         try
         {
             var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
             SetBusy(true);
-            return await runtime.ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
+            return await runtime.ResolveNativeOutboundLeaseAsync(forwardId, routeScope, routePolicy, ct);
         }
         finally
         {

@@ -77,6 +77,79 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void NativeUnrestrictedRouteIsEntitlementGatedAndOffByDefault()
+    {
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(159, "Mainland China -> International", "a", "tcp+udp", ["global"], "global", true),
+                new NativeOutboundForward(160, "Other carrier", "b", "tcp+udp", ["global"], "global", false),
+            ],
+        };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { NativeOutbound = capability }),
+            dispatch: action => action());
+
+        vm.SelectedNativeForwardId = 159;
+        Assert.True(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+
+        vm.SelectedNativeForwardId = 160;
+        Assert.False(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+    }
+
+    [Fact]
+    public async Task NativeStartPropagatesExplicitUnrestrictedPolicyToLeaseAndConnection()
+    {
+        const int forwardId = 159;
+        const string direction = "Mainland China -> International";
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(forwardId, direction, "a", "tcp+udp", ["global"], "global", true),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability })
+        {
+            NativeLease = new NativeOutboundLease(
+                forwardId,
+                "native-unrestricted",
+                new string('f', 64),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                "tcp+udp",
+                direction,
+                "global",
+                NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "global", "unrestricted"),
+                "203.0.113.32",
+                5438,
+                System.Text.Encoding.UTF8.GetBytes("user"),
+                System.Text.Encoding.UTF8.GetBytes("password"),
+                routePolicy: "unrestricted"),
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(controller, connections, dispatch: action => action());
+
+        vm.SelectedNativeForwardId = forwardId;
+        vm.NativeUnrestrictedRoute = true;
+
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+
+        Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
+        Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
+    }
+
+    [Fact]
     public void NativeOutboundDrawerCollapsesWhenCapabilityIsRevoked()
     {
         var capability = new NativeOutboundCapability
@@ -301,6 +374,8 @@ public sealed class MainWindowViewModelTests
         public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
         public bool SignInOnAgentToken { get; init; }
         public bool ThrowOnConnect { get; init; }
+        public NativeOutboundLease? NativeLease { get; init; }
+        public string? LastNativeRoutePolicy { get; private set; }
         public List<int> SelectedClients { get; } = [];
         public List<int> StartedForwards { get; } = [];
         public List<int> StoppedForwards { get; } = [];
@@ -359,6 +434,15 @@ public sealed class MainWindowViewModelTests
         public Task StopAllAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(int forwardId, string routeScope, CancellationToken ct = default)
             => Task.FromResult<NativeOutboundLease?>(null);
+        public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+            int forwardId,
+            string routeScope,
+            string routePolicy,
+            CancellationToken ct = default)
+        {
+            LastNativeRoutePolicy = routePolicy;
+            return Task.FromResult(NativeLease);
+        }
         public Task SignOutAsync(CancellationToken ct = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -377,5 +461,77 @@ public sealed class MainWindowViewModelTests
         public void RaiseNotice(string notice) => NoticeRaised?.Invoke(notice);
         public void RaiseUpdate(string version) => UpdateAvailable?.Invoke(version);
         public void RaiseLog(string message) => LogRaised?.Invoke(message);
+    }
+
+    private sealed class CapturingMacConnectionService : LeikwanBridge.Mac.Services.IMacConnectionService
+    {
+        public event Action<LeikwanBridge.Mac.Services.MacConnectionSnapshot>? SnapshotChanged;
+
+        public IReadOnlyList<LeikwanBridge.Mac.Services.MacConnectionProfile> Profiles { get; } = [];
+        public LeikwanBridge.Mac.Services.MacConnectionSnapshot Snapshot { get; private set; } =
+            LeikwanBridge.Mac.Services.MacConnectionSnapshot.Disconnected;
+        public DateTimeOffset? ActiveNativeLeaseExpiresAt { get; private set; }
+        public string? ActiveNativeLeasePolicyGeneration { get; private set; }
+        public bool IsNativeOutboundActive { get; private set; }
+        public string? LastNativeRoutePolicy { get; private set; }
+
+        public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task SaveProfileAsync(LeikwanBridge.Mac.Services.MacConnectionProfile profile, CancellationToken ct = default)
+            => Task.CompletedTask;
+        public Task DeleteProfileAsync(int profileId, CancellationToken ct = default) => Task.CompletedTask;
+        public Task StartAsync(
+            LeikwanBridge.Mac.Services.MacConnectionMode mode,
+            int profileId,
+            string panelUrl,
+            IEnumerable<ForwardConfig> forwards,
+            CancellationToken ct = default)
+            => Task.CompletedTask;
+        public Task StartNativeAsync(
+            LeikwanBridge.Mac.Services.MacConnectionMode mode,
+            NativeOutboundLease lease,
+            string panelUrl,
+            IEnumerable<ForwardConfig> forwards,
+            bool bypassChinaMainland = false,
+            CancellationToken ct = default)
+            => StartNativeAsync(mode, lease, panelUrl, forwards, bypassChinaMainland, "restricted", ct);
+        public Task StartNativeAsync(
+            LeikwanBridge.Mac.Services.MacConnectionMode mode,
+            NativeOutboundLease lease,
+            string panelUrl,
+            IEnumerable<ForwardConfig> forwards,
+            bool bypassChinaMainland,
+            string nativeRoutePolicy,
+            CancellationToken ct = default)
+        {
+            LastNativeRoutePolicy = nativeRoutePolicy;
+            IsNativeOutboundActive = true;
+            ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
+            ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
+            Snapshot = new LeikwanBridge.Mac.Services.MacConnectionSnapshot(
+                LeikwanBridge.Mac.Services.MacConnectionState.Connected,
+                mode,
+                LeikwanBridge.Mac.Services.MacConnectionService.NativeOutboundDisplayName,
+                2080,
+                0,
+                "");
+            SnapshotChanged?.Invoke(Snapshot);
+            return Task.CompletedTask;
+        }
+        public Task<bool> TryRefreshNativeAsync(NativeOutboundLease lease, CancellationToken ct = default)
+        {
+            ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
+            ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
+            return Task.FromResult(true);
+        }
+        public Task StopAsync(CancellationToken ct = default)
+        {
+            IsNativeOutboundActive = false;
+            ActiveNativeLeaseExpiresAt = null;
+            ActiveNativeLeasePolicyGeneration = null;
+            Snapshot = LeikwanBridge.Mac.Services.MacConnectionSnapshot.Disconnected;
+            SnapshotChanged?.Invoke(Snapshot);
+            return Task.CompletedTask;
+        }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }
