@@ -2,8 +2,9 @@
 
 Date: 2026-09-04 (work performed 2026-09-03/04, Asia/Taipei)
 Scope: Android only; current `master` checkout; Mainland China -> international direction.
-Status: PARTIAL. Ordinary Ultra local runtime is fixed, passes an AVD provider round-trip,
-and the controlled-signature QA artifact is published;
+Status: PARTIAL. Ordinary Ultra local runtime now uses the pre-31-August TCP greeting
+compatibility order and passes the packaged AVD provider round-trip; a new local
+controlled-signature QA artifact is prepared but was not deployed in this follow-up;
 native outbound remains blocked by the Java/native AAR gate, and full connected acceptance
 remains unaccepted.
 
@@ -63,6 +64,29 @@ ordinary Ultra call to `proxyOptional = selectedEffective?.mode == ULTRA` and re
 was omitted from the sing-box config. The fix restores the old behavior without changing
 the native outbound path.
 
+## 2026-09-04 ordinary Ultra compatibility closure
+
+The pre-31-August comparison exposed a second, independent regression in
+`2cea605c`: command `1` (ordinary fixed-target TCP) changed from the legacy
+three-method greeting (`05 03 02 80 83 01`) to the five-method greeting first.
+Some existing relays accept that greeting but do not attach the stream to the
+target, so an ACK-only check can look healthy while application traffic stalls.
+
+The scoped fix is:
+
+- `tools/ultra-client/main.go`: ordinary `dialStream` now tries the legacy
+  greeting first and tries the current greeting only after a classified
+  handshake failure; command `3`/datagram keeps the current greeting first.
+- `tools/ultra-client/native_socks5.go`: native SOCKS5 TCP explicitly retains
+  its current-first order through `dialNativeStream`, so this ordinary-mode
+  compatibility change does not silently change native lease behavior.
+- `tools/ultra-client/main_test.go` and `regression_test.go`: assert the
+  ordinary legacy-first order, current fallback, datagram current-first order,
+  and command-specific handshake bytes.
+
+This is a protocol-order compatibility fix only. It does not claim that a live
+panel lease or provider line is healthy.
+
 ## JVM verification
 
 Command:
@@ -115,6 +139,23 @@ they do not prove a live panel lease or production provider line. The older real
 evidence in `docs/handoffs/2026-08-28-android-ultra-data-path-handoff.md` still records
 the provider path stalling after 1,733 bytes, so account-backed traffic remains
 **UNPROVEN** until rerun with a current active lease.
+
+### Latest legacy-first follow-up
+
+Against rebuilt runtime `2026.09.04.2`:
+
+- `go test -count=1 ./...`: **PASS**; `go vet ./...`: **PASS**.
+- Android JVM: **293 tests, 0 failures, 0 errors, 0 skipped** across 64 XML
+  suites. Evidence: `artifacts/android/android-ultra-legacy-first-20260904/android-jvm-20260904.log`
+  and `jvm-count-20260904.txt`.
+- Focused AVD instrumentation: `UltraRuntimeProcessSmokeTest` **2/2 PASS** and
+  `NativeOutboundConfigRuntimeTest` **2/2 PASS** against the newly rebuilt
+  x86_64 runtime. Evidence:
+  `artifacts/android/android-ultra-legacy-first-20260904/instrument-ultra-runtime-20260904.txt`,
+  `instrument-native-config-20260904.txt`, and their logcat captures.
+- Focused logcat contains no `FATAL EXCEPTION`, `SIGABRT`, `BridgeOptions`, or
+  `ClassNotFoundException` markers. The AVD tombstone query returned
+  `Permission denied`; tombstone absence is therefore **not** claimed.
 
 ## QA APK and emulator
 
@@ -192,6 +233,26 @@ Evidence:
 - `artifacts/android/android-ultra-fix-20260904/signed-install-final-20260904.txt`
 - `artifacts/android/android-ultra-fix-20260904/verify-native-signed-final-20260904.txt`
 - `artifacts/android/android-ultra-fix-20260904/verify-ultra-signed-final-20260904.txt`
+
+#### Legacy-first follow-up artifact (not deployed)
+
+- APK: `artifacts/android/android-ultra-legacy-first-20260904/app-debug-qa-20260904-ultra-legacy-first-unstable-signed.apk`
+- Size: `102422082` bytes
+- SHA-256: `575EC21EFBCD5EB4D655B6FEA5EF07559E11D199975A1678BA5D2E41B4878A73`
+- BuildConfig: `debug`, version `0.2.18` / code `20`,
+  `ALLOW_QA_TEST_DEVICE_EXCEPTIONS=true` (QA AVD only).
+- Rebuilt Ultra runtime hashes: arm64-v8a
+  `F9F5BF5E01288E41202AE7C0F89C7B0334D77EFAC137B45A264FA7A9737129C2`,
+  x86_64 `813B315CFEBA9C57FB039E0F21B6F3111B9515AD4D2EE6343F495D2D3D074743`;
+  APK JNI and asset copies match per ABI.
+- `verify-android-native-artifacts.ps1`, `verify-android-ultra-artifact.ps1`,
+  and `apksigner verify` (v2/v3): **PASS**.
+- `verify-android-build-version.ps1`: **EXPECTED FAIL** because this is a
+  debug QA package (`BUILD_TYPE=debug`); no release claim is made.
+
+Evidence directory: `artifacts/android/android-ultra-legacy-first-20260904/`.
+This follow-up did not upload or replace any server artifact and did not deploy
+the production Panel.
 
 The first public QA APK was a debug-signed package (`Android Debug`, SHA-256
 `512D0FEFC40842E7E935F98F273F0DDFB2246127BD0FD9CAE34D25BF800A128A`). It shared
@@ -412,3 +473,19 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   Roll back only that commit if required; do not clean the pre-existing dirty
   checkout or delete the evidence directories. The earlier enrollment test change
   remains in its separate commit `d65a1b43`.
+
+## Current follow-up boundary
+
+- The legacy-first source/runtime follow-up is intentionally local-only until the
+  next native lease compatibility phase. It has no Panel/database/configuration
+  mutation and no production deployment.
+- The follow-up source/runtime commit is `542e4832`
+  (`fix(android): restore legacy ordinary ultra greeting`). The six Android
+  runtime copies in that commit are the hashes recorded in the local artifact
+  evidence above.
+- The full `connectedDebugAndroidTest` harness remains **not accepted**; only the
+  two focused classes above were run after the AAR hard-gate check.
+- `app/libs/libbox.aar` is unchanged at SHA-256
+  `706C139FC1C5F0366494135FCF1D857F899D62965D19734EBC56AF4FF532CCB0`; its
+  `BridgeOptions.class` binding is still absent, so native lease/TUN acceptance
+  remains blocked for the next phase.
