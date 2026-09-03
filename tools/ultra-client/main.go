@@ -40,6 +40,9 @@ type Config struct {
 	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
 	// forwards leave this disabled and keep their fixed-target behavior.
 	NativeSocks5             bool                `json:"native_socks5"`
+	NativeRoutePolicy        string              `json:"native_route_policy"`
+	NativePortMin            int                 `json:"native_port_min"`
+	NativeFilterProfile      string              `json:"native_filter_profile"`
 	ProbeTarget              string              `json:"probe_target"`
 	ControlSocket            string              `json:"control_socket"`
 	PolicyGeneration         string              `json:"policy_generation"`
@@ -1806,6 +1809,19 @@ func main() {
 	}
 	if config.ConnectTimeoutSecs < 1 || config.ConnectTimeoutSecs > 30 {
 		config.ConnectTimeoutSecs = 5
+	}
+	if config.NativeSocks5 {
+		routePolicy, policyErr := ParseNativeRoutePolicy(config.NativeRoutePolicy)
+		if policyErr != nil {
+			log.Fatal("native route policy invalid")
+		}
+		config.NativeRoutePolicy = string(routePolicy)
+		if config.NativePortMin < 1 || config.NativePortMin > 65535 {
+			config.NativePortMin = nativeDefaultPortMin
+		}
+		if config.NativeFilterProfile == "" {
+			config.NativeFilterProfile = routePolicy.FilterProfile()
+		}
 	}
 	if config.LocationCachePath == "" {
 		config.LocationCachePath = "/var/lib/ultra/location.json"

@@ -120,6 +120,7 @@ func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 	config := Config{
 		ForwardID: 174, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
+		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
 	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
@@ -191,6 +192,7 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	config := Config{
 		ForwardID: 175, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
+		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
 	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
@@ -358,6 +360,7 @@ func newNativeTestStore(t *testing.T, config Config, providerPort int) *PolicySt
 		ExpiresAt: now.Add(2 * time.Minute), Transport: "tcp+udp", RateLimitMbps: 100,
 		QuotaRemainingBytes: 1 << 20, TargetDigest: strings.Repeat("b", 64),
 		Direction: "Hong Kong to Mainland China", RouteScope: "global",
+		RoutePolicy: string(nativeRoutePolicyForConfig(config)),
 	}
 	lease := ProviderLease{
 		LeaseID: "native-test-lease-abcdefghijkl", PolicyGeneration: policy.PolicyGeneration,

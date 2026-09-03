@@ -54,6 +54,7 @@ type Policy struct {
 	TargetDigest        string    `json:"target_digest"`
 	Direction           string    `json:"direction,omitempty"`
 	RouteScope          string    `json:"route_scope,omitempty"`
+	RoutePolicy         string    `json:"route_policy,omitempty"`
 }
 
 func (p Policy) Validate(config Config, now time.Time) error {
@@ -66,6 +67,10 @@ func (p Policy) Validate(config Config, now time.Time) error {
 		}
 		if p.Transport != "tcp+udp" || p.Direction == "" ||
 			(p.RouteScope != "cn_only" && p.RouteScope != "intl_only" && p.RouteScope != "global") {
+			return ErrPolicyInvalid
+		}
+		routePolicy, err := ParseNativeRoutePolicy(p.RoutePolicy)
+		if err != nil || routePolicy != nativeRoutePolicyForConfig(config) {
 			return ErrPolicyInvalid
 		}
 	} else if p.Protocol != policyProtocol {

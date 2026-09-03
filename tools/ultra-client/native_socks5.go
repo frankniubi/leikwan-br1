@@ -531,6 +531,13 @@ func (runtime *nativeSocks5Runtime) handleTCP(ctx context.Context, connection ne
 }
 
 func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connection net.Conn, request nativeSocks5Request) {
+	if !nativePortAllowed(runtime.config, request.port) {
+		if runtime.status != nil {
+			runtime.status.UpdateError("native_policy_port_rejected")
+		}
+		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
+		return
+	}
 	snapshot, ok := runtime.store.Snapshot()
 	if !ok {
 		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
@@ -562,9 +569,26 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	if request.reader != nil {
 		local = &bufferedNativeConn{Conn: connection, reader: request.reader}
 	}
+	outboundSource := local
+	inboundSource := net.Conn(remote)
+	if nativeRoutePolicyForConfig(runtime.config).FilterProfile() == "opengfw_tcp" {
+		inspector := newNativeOpenGFWInspector()
+		outboundSource = &nativeInspectingConn{
+			Conn: local, inspector: inspector, status: runtime.status,
+		}
+		inboundSource = &nativeInspectingConn{
+			Conn: remote, inspector: inspector, reverse: true, status: runtime.status,
+		}
+	}
 	done := make(chan struct{}, 2)
-	go func() { _ = copyOutbound(remote, local, runtime.store.Limiter(), runtime.status); done <- struct{}{} }()
-	go func() { _ = copyInbound(local, remote, runtime.store.Limiter(), runtime.status); done <- struct{}{} }()
+	go func() {
+		_ = copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
+		done <- struct{}{}
+	}()
+	go func() {
+		_ = copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
+		done <- struct{}{}
+	}()
 	select {
 	case <-ctx.Done():
 		_ = connection.Close()
@@ -629,6 +653,12 @@ func (runtime *nativeSocks5Runtime) serveUDP(ctx context.Context) error {
 		if err != nil {
 			if runtime.status != nil {
 				runtime.status.UpdateError("udp_packet_invalid")
+			}
+			continue
+		}
+		if !nativePortAllowed(runtime.config, port) {
+			if runtime.status != nil {
+				runtime.status.UpdateError("native_policy_port_rejected")
 			}
 			continue
 		}
