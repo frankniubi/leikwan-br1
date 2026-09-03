@@ -1,0 +1,8 @@
+﻿09-04 07:30:03.522  4545  4566 I TestRunner: started: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.055  4545  4566 I TestRunner: finished: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.060  4545  4566 I TestRunner: started: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.082  4545  4566 I TestRunner: finished: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:43.631  4895  4954 I TestRunner: started: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:43.987  4895  4954 I TestRunner: finished: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:43.991  4895  4954 I TestRunner: started: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:44.020  4895  4954 I TestRunner: finished: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)

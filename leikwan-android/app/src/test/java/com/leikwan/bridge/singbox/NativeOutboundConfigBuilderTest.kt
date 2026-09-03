@@ -86,6 +86,34 @@ class NativeOutboundConfigBuilderTest {
     }
 
     @Test
+    fun `capability with an absent direction stays unavailable instead of guessing an old route`() {
+        val capability = NativeOutboundCapability.from(
+            NativeOutboundCapabilityDto(
+                enabled = true,
+                protocol = "socks5",
+                leaseProtocol = "leikwan-ultra-native-socks5-v1",
+                transport = "tcp+udp",
+                forwardIds = listOf(180L),
+                defaultForwardId = 180L,
+                routeScopes = listOf("global"),
+                defaultRouteScope = "global",
+                forwards = listOf(
+                    NativeOutboundCarrierDto(
+                        forwardId = 180L,
+                        direction = "",
+                        scopeDigest = "a".repeat(64),
+                        transport = "tcp+udp",
+                        routeScopes = listOf("global"),
+                        defaultRouteScope = "global",
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(null, capability)
+    }
+
+    @Test
     fun `mainland to international capability accepts intl only scope and aliases`() {
         val intlDirection = "Mainland China -> International"
         val carrier = NativeOutboundCarrierDto(

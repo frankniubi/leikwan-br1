@@ -20,6 +20,7 @@ import com.leikwan.bridge.runtime.NATIVE_OUTBOUND_PURPOSE
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.nativeDirectionsMatch
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
@@ -540,6 +541,9 @@ class PanelRepository(
         }
         val carrier = capability.carrier(forward.forwardId)
             ?: throw IllegalStateException("native_outbound_not_allowed")
+        if (!nativeDirectionsMatch(forward.direction, carrier.direction)) {
+            throw IllegalStateException("native_forward_direction_mismatch")
+        }
         if (normalizedScope !in carrier.routeScopes
             || carrier.transport != "tcp+udp"
             || capability.transport != "tcp+udp") {

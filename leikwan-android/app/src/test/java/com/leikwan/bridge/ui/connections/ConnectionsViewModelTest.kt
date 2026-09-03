@@ -266,6 +266,65 @@ class ConnectionsViewModelTest {
     }
 
     @Test
+    fun `live CAN to HKG native carrier selects forward 180 and global scope without direction fallback`() {
+        val nativeForwardId = 180L
+        val direction = "CAN -> HKG"
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(
+                        nativeForwardId,
+                        direction,
+                        "tcp+udp",
+                        "global",
+                    ),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = 174L
+        prefs.nativeOutboundRouteScope = "cn_only"
+        prefs.nativeOutboundBypassChina = false
+        var invoked: Triple<Long, String, Boolean>? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            startNativeConnect = { id, scope, bypass, _ -> invoked = Triple(id, scope, bypass) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(nativeForwardId, viewModel.state.value.nativeForwardId)
+        assertEquals(direction, viewModel.state.value.nativeCarrier?.direction)
+        assertEquals("global", viewModel.state.value.nativeRouteScope)
+        assertFalse(viewModel.state.value.nativeBypassChina)
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(Triple(nativeForwardId, "global", false), invoked)
+    }
+
+    @Test
     fun `mainland to international restores intl only preference and keeps bypass disabled`() {
         val direction = "Mainland China -> International"
         val nativeForwardId = 12L
