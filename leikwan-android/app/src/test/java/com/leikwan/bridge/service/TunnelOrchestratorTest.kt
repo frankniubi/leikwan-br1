@@ -798,6 +798,7 @@ class TunnelOrchestratorTest {
               "forward_id":$forwardId,
               "service_name":"Native international service",
               "target":"$target",
+              "forward_combination_direction":"$direction",
               "listen_port":11091,
               "mode":"ultra",
               "backend_mode":"ultra",

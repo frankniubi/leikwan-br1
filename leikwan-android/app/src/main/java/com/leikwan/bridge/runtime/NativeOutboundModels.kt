@@ -115,6 +115,18 @@ data class NativeOutboundCarrier(
         && defaultRouteScope in routeScopes
 }
 
+/**
+ * The direction is an opaque Panel label, but it is still part of the forward
+ * binding.  Normalize only presentation differences; an absent direction is
+ * never replaced with a guessed/default route.
+ */
+internal fun nativeDirectionsMatch(forwardDirection: String, carrierDirection: String): Boolean {
+    fun key(value: String): String = value.trim().replace(Regex("\\s+"), " ").lowercase()
+    val forwardKey = key(forwardDirection)
+    val carrierKey = key(carrierDirection)
+    return forwardKey.isNotEmpty() && forwardKey == carrierKey
+}
+
 data class NativeOutboundCapabilityDto(
     val enabled: Boolean = false,
     val protocol: String = "",

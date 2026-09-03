@@ -186,17 +186,18 @@ class UltraLeaseClientTest {
     @Test
     fun `native client sends adapter lease without exposing a direct sing-box credential config`() {
         val now = Instant.now()
-        val direction = "Hong Kong -> China Mainland"
+        val forwardId = 180L
+        val direction = "CAN -> HKG"
         val scope = "global"
         val lease = NativeOutboundLease(
-            forwardId = 42,
-            leaseId = "native-lease-1234567890",
+            forwardId = forwardId,
+            leaseId = "native-lease-180-1234567890",
             policyGeneration = "a".repeat(64),
             expiresAt = now.plusSeconds(120),
             transport = "tcp+udp",
             direction = direction,
             routeScope = scope,
-            scopeDigest = NativeOutboundLease.scopeDigest(42, direction, "tcp+udp", scope),
+            scopeDigest = NativeOutboundLease.scopeDigest(forwardId, direction, "tcp+udp", scope),
             endpointIp = "203.0.113.20",
             endpointPort = 5438,
             user = "line-user".toByteArray(),
@@ -210,12 +211,14 @@ class UltraLeaseClientTest {
         val socket = UltraControlSocket { _, frame ->
             val size = ByteBuffer.wrap(frame, 0, 4).order(ByteOrder.BIG_ENDIAN).int
             sentPayload = frame.copyOfRange(4, 4 + size).toString(Charsets.UTF_8)
-            """{"ok":true,"forward_id":42,"policy_generation":"${"a".repeat(64)}"}"""
+            """{"ok":true,"forward_id":$forwardId,"policy_generation":"${"a".repeat(64)}"}"""
                 .toByteArray(Charsets.UTF_8)
         }
         val accepted = UltraLeaseClient(socket, sleep = {}).sendNative("/private/native.sock", lease)
         assertTrue(accepted)
         assertTrue(sentPayload.contains("\"purpose\":\"native_outbound\""))
+        assertTrue(sentPayload.contains("\"forward_id\":$forwardId"))
+        assertTrue(sentPayload.contains("\"direction\":\"$direction\""))
         assertTrue(sentPayload.contains("\"route_scope\":\"global\""))
         assertTrue(sentPayload.contains("\"route_policy\":\"restricted\""))
         assertTrue(lease.user.all { it == 0.toByte() })
