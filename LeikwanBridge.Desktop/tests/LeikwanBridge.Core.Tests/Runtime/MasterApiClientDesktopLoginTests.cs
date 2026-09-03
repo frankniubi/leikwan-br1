@@ -347,6 +347,102 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task ResolveNativeOutboundLeaseAsync_UsesV2DigestForExplicitUnrestrictedPolicy()
+    {
+        const int forwardId = 159;
+        const string direction = "Mainland China to International";
+        const string routeScope = "intl_only";
+        const string routePolicy = "unrestricted";
+        var generation = new string('b', 64);
+        var target = "198.51.100.11:443";
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = forwardId,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-native-unrestricted",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp+udp",
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = MasterApiClient.NativeOutboundLeaseProtocol,
+            Transport = "tcp+udp",
+            ForwardIds = [forwardId],
+            DefaultForwardId = forwardId,
+            RouteScopes = ["intl_only", "global"],
+            DefaultRouteScope = "global",
+            UnrestrictedAllowed = true,
+            Forwards =
+            [
+                new NativeOutboundForward(
+                    forwardId,
+                    direction,
+                    NativeOutboundLease.ComputeScopeDigestV2(
+                        forwardId,
+                        direction,
+                        "tcp+udp",
+                        routeScope,
+                        routePolicy),
+                    "tcp+udp",
+                    ["intl_only", "global"],
+                    "global",
+                    UnrestrictedAllowed: true),
+            ],
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = forwardId,
+            BackendMode = "ultra",
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = policy,
+            NativeOutbound = capability,
+        };
+        using var http = new HttpClient(new NativeLeaseHandler(
+            forwardId,
+            direction,
+            generation,
+            routeScope,
+            routePolicy))
+        {
+            Timeout = TimeSpan.FromSeconds(5),
+        };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-159-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        using var lease = await api.ResolveNativeOutboundLeaseAsync(
+            forward,
+            capability,
+            routeScope,
+            routePolicy);
+
+        Assert.NotNull(lease);
+        Assert.Equal(routePolicy, lease!.RoutePolicy);
+        Assert.Equal(routeScope, lease.RouteScope);
+        Assert.Equal(
+            NativeOutboundLease.ComputeScopeDigestV2(
+                forwardId,
+                direction,
+                "tcp+udp",
+                routeScope,
+                routePolicy),
+            lease.ScopeDigest);
+    }
+
+    [Fact]
     public async Task ResolveUltraLeasesAsync_DefaultsToSingleLease()
     {
         const string target = "198.51.100.10:443";
@@ -559,7 +655,8 @@ public sealed class MasterApiClientDesktopLoginTests
         int forwardId,
         string direction,
         string generation,
-        string routeScope) : HttpMessageHandler
+        string routeScope,
+        string routePolicy = "restricted") : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -572,12 +669,20 @@ public sealed class MasterApiClientDesktopLoginTests
                 .GetProperty("forwards")[0];
             Assert.Equal("native_outbound", item.GetProperty("purpose").GetString());
             Assert.Equal(routeScope, item.GetProperty("route_scope").GetString());
+            Assert.Equal(routePolicy, item.GetProperty("route_policy").GetString());
             Assert.Equal("tcp+udp", item.GetProperty("transport").GetString());
-            var digest = NativeOutboundLease.ComputeScopeDigest(
-                forwardId,
-                direction,
-                "tcp+udp",
-                routeScope);
+            var digest = routePolicy == "unrestricted"
+                ? NativeOutboundLease.ComputeScopeDigestV2(
+                    forwardId,
+                    direction,
+                    "tcp+udp",
+                    routeScope,
+                    routePolicy)
+                : NativeOutboundLease.ComputeScopeDigest(
+                    forwardId,
+                    direction,
+                    "tcp+udp",
+                    routeScope);
             Assert.Equal(digest, item.GetProperty("target_digest").GetString());
             var expires = DateTimeOffset.UtcNow.AddMinutes(3)
                 .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
@@ -597,6 +702,7 @@ public sealed class MasterApiClientDesktopLoginTests
                         "transport": "tcp+udp",
                         "direction": "{{direction}}",
                         "route_scope": "{{routeScope}}",
+                        "route_policy": "{{routePolicy}}",
                         "scope_digest": "{{digest}}",
                         "endpoint": { "ip": "203.0.113.20", "port": 5438 },
                         "credential": { "user": "native-user", "password": "native-password" }
