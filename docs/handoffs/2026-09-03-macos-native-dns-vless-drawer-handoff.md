@@ -120,13 +120,13 @@ Final test artifact hashes:
 
 | Artifact | Size | SHA-256 |
 | --- | ---: | --- |
-| arm64 DMG | 75,516,938 | `2536bbb86c2a8228512f449f4a1293dfb2bca3cf778544439ec45b7c3c8e67d8` |
-| arm64 update ZIP | 66,500,674 | `130ca9fd71455509509e809ea1a03d87cb5e95258906fc5303464c7b710a1e0e` |
-| x64 DMG | 79,812,021 | `9414dbb7bc92da4210582f0e0c8f2d461541037bc262526be71c14afbf9ed09f` |
-| x64 update ZIP | 69,928,188 | `c1f30e5c74865f8f4a57c1620320ec0ea925f786f057b8922935da6b7a7a3fc4` |
+| arm64 DMG | 75,516,938 | `db1105b480e456bdbe67c26944c54f8e4f90dcbe0d1a4f22c9307a29c97d354e` |
+| arm64 update ZIP | 66,500,674 | `278625fd9777192e7eb21dc07e1773225e732cf79999f26c5920e37fdc58127e` |
+| x64 DMG | 79,603,377 | `465bc0b915b25a981d24a112520716600911b943317e753503769b5fdf5b43c4` |
+| x64 update ZIP | 69,928,188 | `c476320b46b7124121e64e6b915c467acc9f9ef9f7b9d75ee193865cdc82eeca` |
 
 The package metadata records source commit
-`c9d8c37c81e8cb46308adb176ad5ba95a966e67b` and the exact toolchain/helper
+`6469d425bfb5f2ee68946863075409cf7ee485c9` and the exact toolchain/helper
 hashes. Existing public macOS artifacts and `artifacts/versions.json` remain
 unchanged and must not be described as containing this follow-up.
 
