@@ -21,6 +21,10 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_SCOPE_GLOBAL
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_SCOPE_INTL_ONLY
 import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.runtime.NativeOutboundLease
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
+import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
@@ -99,12 +103,21 @@ class SingboxConfigBuilder(
         nativeProtectedEndpoints: Set<String> = emptySet(),
         nativeRouteScope: String = "global",
         nativeBypassChina: Boolean = false,
+        nativeRoutePolicy: String? = null,
     ): CompiledConfigResult {
         require(nativeOutboundLease == null || nativeLocalProxy == null) { "native_proxy_endpoint_ambiguous" }
         require(nativeOutboundLease == null || nativeOutboundLease.isUsable()) { "native_lease_invalid" }
         val nativeMode = nativeOutboundLease != null || nativeLocalProxy != null
         val normalizedNativeScope = NativeOutboundCapability.normalizeScope(nativeRouteScope)
             ?: if (nativeMode) throw IllegalArgumentException("native_route_scope_invalid") else NATIVE_ROUTE_SCOPE_GLOBAL
+        val requestedNativePolicy = nativeRoutePolicy ?: nativeOutboundLease?.routePolicy ?: NATIVE_ROUTE_POLICY_RESTRICTED
+        if (nativeMode && !isNativeRoutePolicyValue(requestedNativePolicy)) {
+            throw IllegalArgumentException("native_route_policy_invalid")
+        }
+        val normalizedNativePolicy = normalizeNativeRoutePolicy(requestedNativePolicy)
+        if (nativeOutboundLease != null && normalizedNativePolicy != nativeOutboundLease.routePolicy) {
+            throw IllegalArgumentException("native_route_policy_mismatch")
+        }
         val activeProxyNodes = if (!nativeMode) {
             activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
         } else {
@@ -184,6 +197,7 @@ class SingboxConfigBuilder(
                 nativeMode,
                 normalizedNativeScope,
                 nativeBypassChina,
+                normalizedNativePolicy,
                 enableIpv6Tun,
             )
         )
@@ -618,6 +632,7 @@ class SingboxConfigBuilder(
         nativeMode: Boolean = false,
         nativeRouteScope: String = "global",
         nativeBypassChina: Boolean = false,
+        nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
         enableIpv6Tun: Boolean = false,
     ): JsonObject {
         val route = JsonObject()
@@ -691,6 +706,18 @@ class SingboxConfigBuilder(
             NATIVE_ROUTE_SCOPE_CN_ONLY,
             NATIVE_ROUTE_SCOPE_INTL_ONLY,
         )
+        if (nativeMode && nativeRoutePolicy == NATIVE_ROUTE_POLICY_RESTRICTED) {
+            // Native relay traffic is game-oriented. Keep privileged/control
+            // ports on the direct path; only high ports enter the relay.
+            rules.add(JsonObject().apply {
+                add("network", JsonArray().apply {
+                    add("tcp")
+                    add("udp")
+                })
+                addProperty("port_range", "1:999")
+                addProperty("outbound", "direct")
+            })
+        }
         if (nativeRestrictedScope) {
             // Resolve the hostname once using the selected split-DNS server before
             // handing the destination to SOCKS; do not let the upstream resolve it again.
@@ -703,6 +730,14 @@ class SingboxConfigBuilder(
                     add("geoip-cn")
                     add("geosite-cn")
                 })
+                add("network", JsonArray().apply {
+                    add("tcp")
+                    add("udp")
+                })
+                addProperty(
+                    "port_range",
+                    if (nativeRoutePolicy == NATIVE_ROUTE_POLICY_RESTRICTED) "1000:65535" else "1:65535",
+                )
                 addProperty(
                     "outbound",
                     if (nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY) finalProxyTag else "direct",

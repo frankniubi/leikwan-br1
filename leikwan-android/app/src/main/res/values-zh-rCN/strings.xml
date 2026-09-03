@@ -298,6 +298,7 @@
     <string name="connections_native_scope_cn_only">仅中国大陆</string>
     <string name="connections_native_scope_intl_only">仅国际</string>
     <string name="connections_native_scope_global">全局</string>
+    <string name="connections_native_unrestricted">无审全路由</string>
     <string name="connections_native_bypass_china">绕过中国大陆</string>
     <string name="connections_native_no_node">无需自带节点</string>
     <string name="connections_native_unknown">原生线路</string>

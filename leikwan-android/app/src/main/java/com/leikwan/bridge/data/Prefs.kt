@@ -64,6 +64,10 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean("native_outbound_bypass_china", false)
         set(v) = prefs.edit().putBoolean("native_outbound_bypass_china", v).apply()
 
+    var nativeOutboundRoutePolicy: String
+        get() = prefs.getString("native_outbound_route_policy", "restricted") ?: "restricted"
+        set(v) = prefs.edit().putString("native_outbound_route_policy", v).apply()
+
     var selectedProxyId: Long
         get() = prefs.getLong("selected_proxy_id", 0L)
         set(v) = prefs.edit().putLong("selected_proxy_id", v).apply()
@@ -185,6 +189,7 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("native_outbound_forward_id")
             .remove("native_outbound_route_scope")
             .remove("native_outbound_bypass_china")
+            .remove("native_outbound_route_policy")
             .commit()
         check(cleared) { "failed to clear enrollment state" }
         if (clearIdentity) {

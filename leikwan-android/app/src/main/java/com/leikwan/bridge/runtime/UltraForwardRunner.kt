@@ -19,6 +19,7 @@ object UltraForwardRunner {
         runtimeDir: File,
         nativeSocks5: Boolean = false,
         listenPortOverride: Int? = null,
+        nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): UltraRuntimePlan {
         require(forward.forwardId == policy.forwardId) { "ultra_policy_forward_mismatch" }
         val binary = binaries.ultraBinary?.takeIf { it.isNotBlank() }
@@ -36,13 +37,27 @@ object UltraForwardRunner {
         privateFiles.forEach { file -> runCatching { file.delete() } }
         val listenPort = listenPortOverride ?: forward.listenPort
         require(listenPort in 1..65535) { "ultra_listen_port_invalid" }
+        val normalizedNativeRoutePolicy = if (nativeSocks5) {
+            require(isNativeRoutePolicyValue(nativeRoutePolicy)) { "native_route_policy_invalid" }
+            normalizeNativeRoutePolicy(nativeRoutePolicy)
+        } else {
+            NATIVE_ROUTE_POLICY_RESTRICTED
+        }
 
         val config = JsonObject().apply {
             addProperty("forward_id", forward.forwardId)
             addProperty("listen_host", "127.0.0.1")
             addProperty("listen_port", listenPort)
             addProperty("target", forward.target.trim())
-            if (nativeSocks5) addProperty("native_socks5", true)
+            if (nativeSocks5) {
+                addProperty("native_socks5", true)
+                addProperty("native_route_policy", normalizedNativeRoutePolicy)
+                addProperty("native_port_min", 1000)
+                addProperty(
+                    "native_filter_profile",
+                    if (normalizedNativeRoutePolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED) "off" else "opengfw_tcp",
+                )
+            }
             addProperty("control_socket", controlSocketFile.absolutePath)
             addProperty("policy_generation", policy.policyGeneration)
             addProperty("target_digest", policy.targetDigest)

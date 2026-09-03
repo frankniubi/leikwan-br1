@@ -26,6 +26,10 @@ import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.runtime.NativeOutboundLease
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
+import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RouteDirectionRuntimePlan
@@ -85,8 +89,10 @@ private data class ActiveUltraRuntime(
 
 private data class ActiveNativeRuntime(
     val forwardId: Long,
+    val direction: String,
     val routeScope: String,
     val bypassChina: Boolean,
+    val routePolicy: String,
     val expiresAt: Instant,
     val controlSocketPath: String,
     val policyGeneration: String,
@@ -249,12 +255,14 @@ class TunnelOrchestrator internal constructor(
         forwardId: Long,
         routeScope: String = prefs.nativeOutboundRouteScope,
         bypassChina: Boolean = prefs.nativeOutboundBypassChina,
-    ) = startNativeForForward(forwardId, routeScope, bypassChina, preserveControlLoop = false)
+        routePolicy: String = prefs.nativeOutboundRoutePolicy,
+    ) = startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
 
     private suspend fun startNativeForForward(
         forwardId: Long,
         routeScope: String,
         bypassChina: Boolean,
+        routePolicy: String,
         preserveControlLoop: Boolean,
     ) = withContext(Dispatchers.IO) {
         var nativeConfigPublished = false
@@ -279,6 +287,15 @@ class TunnelOrchestrator internal constructor(
             val normalizedScope = NativeOutboundCapability.normalizeScope(routeScope)
                 ?.takeIf { it in (capability.carrier(selectedForwardId)?.routeScopes ?: emptyList()) }
                 ?: throw Exception("Native route scope is unavailable")
+            val carrier = capability.carrier(selectedForwardId)
+                ?: throw Exception("Native outbound carrier is unavailable")
+            if (!isNativeRoutePolicyValue(routePolicy)) {
+                throw Exception("native_route_policy_invalid")
+            }
+            val normalizedRoutePolicy = normalizeNativeRoutePolicy(routePolicy)
+            if (normalizedRoutePolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED && !carrier.unrestrictedAllowed) {
+                throw Exception("native_route_policy_not_allowed")
+            }
             val effectiveBypassChina = bypassChina && normalizedScope == "global"
             val policy = UltraPolicy.from(forward)
                 ?: throw Exception("Native authorization is unavailable")
@@ -287,6 +304,7 @@ class TunnelOrchestrator internal constructor(
                 capability,
                 normalizedScope,
                 maxCandidates = 4,
+                routePolicy = normalizedRoutePolicy,
             )
             val leaseExpiresAt = leases.minOf { it.expiresAt }
             try {
@@ -300,6 +318,7 @@ class TunnelOrchestrator internal constructor(
                     runtimeDir = context.filesDir,
                     nativeSocks5 = true,
                     listenPortOverride = nativeListenPort,
+                    nativeRoutePolicy = normalizedRoutePolicy,
                 )
                 nativeControlSocketPath = planned.controlSocketFile.absolutePath
                 nativePolicyGeneration = policy.policyGeneration
@@ -344,6 +363,7 @@ class TunnelOrchestrator internal constructor(
                         nativeProtectedEndpoints = leases.map { it.endpointIp }.toSet(),
                         nativeRouteScope = normalizedScope,
                         nativeBypassChina = effectiveBypassChina,
+                        nativeRoutePolicy = normalizedRoutePolicy,
                     )
                 recordExplainability(routingSnapshot)
                 LeikwanVpnService.configJson = compiled.configJson
@@ -358,14 +378,17 @@ class TunnelOrchestrator internal constructor(
             prefs.nativeOutboundForwardId = selectedForwardId
             prefs.nativeOutboundRouteScope = normalizedScope
             prefs.nativeOutboundBypassChina = effectiveBypassChina
+            prefs.nativeOutboundRoutePolicy = normalizedRoutePolicy
             vpnServiceStarter(context)
             when (val vpnResult = vpnStartupAwaiter()) {
                 VpnStartupAwaitResult.Running -> {
                     activeUltra = null
                     activeNative = ActiveNativeRuntime(
                         forwardId = selectedForwardId,
+                        direction = carrier.direction,
                         routeScope = normalizedScope,
                         bypassChina = effectiveBypassChina,
+                        routePolicy = normalizedRoutePolicy,
                         expiresAt = leaseExpiresAt,
                         controlSocketPath = nativeControlSocketPath,
                         policyGeneration = nativePolicyGeneration,
@@ -784,9 +807,23 @@ class TunnelOrchestrator internal constructor(
                 ?: throw IllegalStateException("native_outbound_not_allowed")
             val carrier = capability.carrier(active.forwardId)
                 ?: throw IllegalStateException("native_outbound_not_allowed")
+            if (carrier.direction != active.direction) {
+                startNativeForForward(
+                    forwardId = active.forwardId,
+                    routeScope = active.routeScope,
+                    bypassChina = active.bypassChina,
+                    routePolicy = active.routePolicy,
+                    preserveControlLoop = true,
+                )
+                return
+            }
             val normalizedScope = NativeOutboundCapability.normalizeScope(active.routeScope)
                 ?.takeIf { it in carrier.routeScopes }
                 ?: throw IllegalStateException("native_route_scope_invalid")
+            val normalizedRoutePolicy = normalizeNativeRoutePolicy(active.routePolicy)
+            if (normalizedRoutePolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED && !carrier.unrestrictedAllowed) {
+                throw IllegalStateException("native_route_policy_not_allowed")
+            }
             val policy = UltraPolicy.from(forward)
                 ?: throw IllegalStateException("native_policy_unavailable")
 
@@ -798,6 +835,7 @@ class TunnelOrchestrator internal constructor(
                     forwardId = active.forwardId,
                     routeScope = normalizedScope,
                     bypassChina = active.bypassChina,
+                    routePolicy = normalizedRoutePolicy,
                     preserveControlLoop = true,
                 )
                 return
@@ -808,6 +846,7 @@ class TunnelOrchestrator internal constructor(
                 capability = capability,
                 routeScope = normalizedScope,
                 maxCandidates = 4,
+                routePolicy = normalizedRoutePolicy,
             )
             try {
                 val accepted = nativeLeaseBatchSender(active.controlSocketPath, leases)
@@ -826,6 +865,7 @@ class TunnelOrchestrator internal constructor(
                 }
                 activeNative = active.copy(
                     routeScope = normalizedScope,
+                    routePolicy = normalizedRoutePolicy,
                     expiresAt = refreshedExpiry,
                     policyGeneration = policy.policyGeneration,
                 )
@@ -855,6 +895,8 @@ class TunnelOrchestrator internal constructor(
         return code in setOf(
             "native_outbound_not_allowed",
             "native_route_scope_invalid",
+            "native_route_policy_invalid",
+            "native_route_policy_not_allowed",
             "native_policy_invalid",
             "native_transport_invalid",
             "native_policy_unavailable",
