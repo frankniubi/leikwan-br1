@@ -5312,7 +5312,7 @@ final class ProvisioningService
                 }
 
                 $candidates = $this->db->fetchAll(
-                    'SELECT id
+                    'SELECT *
                      FROM forwards
                      WHERE service_id = :service_id
                        AND enabled = 0
@@ -5327,9 +5327,23 @@ final class ProvisioningService
                     if ($forwardId <= 0) {
                         continue;
                     }
+                    // Reclaim the native direction atomically with the
+                    // balance-suspension transition. A conflicting native
+                    // direction remains paused rather than displacing the
+                    // already-active forward.
+                    $nativeDirectionKey = null;
+                    try {
+                        $nativeDirectionKey = $this->reactivatedNativeDirectionKey($candidate);
+                    } catch (ApiException $exception) {
+                        if ($exception->getMessage() === 'native_direction_conflict') {
+                            continue;
+                        }
+                        throw $exception;
+                    }
                     $updated = $this->db->execute(
                         'UPDATE forwards
                           SET enabled = 1,
+                              native_direction_key = :native_direction_key,
                               balance_suspended_at = NULL,
                               api_revision = GREATEST(1, api_revision) + 1,
                              updated_at = :updated_at
@@ -5337,7 +5351,11 @@ final class ProvisioningService
                             AND enabled = 0
                             AND user_deleted_at IS NULL
                             AND balance_suspended_at IS NOT NULL',
-                        ['id' => $forwardId, 'updated_at' => $this->now()]
+                        [
+                            'id' => $forwardId,
+                            'native_direction_key' => $nativeDirectionKey,
+                            'updated_at' => $this->now(),
+                        ]
                     );
                     if ($updated <= 0) {
                         continue;
