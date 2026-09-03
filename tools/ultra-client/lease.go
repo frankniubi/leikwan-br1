@@ -32,8 +32,9 @@ type leaseFrame struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
 	} `json:"credential"`
-	Direction  string `json:"direction"`
-	RouteScope string `json:"route_scope"`
+	Direction   string `json:"direction"`
+	RouteScope  string `json:"route_scope"`
+	RoutePolicy string `json:"route_policy"`
 }
 
 func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease, error) {
@@ -51,6 +52,14 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 		// infer it from the protocol alone when a malformed frame omits it.
 		return Policy{}, ProviderLease{}, ErrLeaseInvalid
 	}
+	routePolicy := strings.ToLower(strings.TrimSpace(f.RoutePolicy))
+	if isNative {
+		normalizedPolicy, policyErr := ParseNativeRoutePolicy(routePolicy)
+		if policyErr != nil {
+			return Policy{}, ProviderLease{}, ErrLeaseInvalid
+		}
+		routePolicy = string(normalizedPolicy)
+	}
 	policy := Policy{
 		Protocol: f.Protocol, Purpose: strings.TrimSpace(f.Purpose), Native: isNative,
 		ForwardID: f.ForwardID, SessionTicket: f.SessionTicket,
@@ -58,6 +67,7 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 		Transport: f.Transport, RateLimitMbps: f.RateLimitMbps,
 		QuotaRemainingBytes: f.QuotaRemainingBytes, TargetDigest: f.TargetDigest,
 		Direction: strings.TrimSpace(f.Direction), RouteScope: strings.ToLower(strings.TrimSpace(f.RouteScope)),
+		RoutePolicy: routePolicy,
 	}
 	nonceHash := strings.ToLower(strings.TrimSpace(f.NonceHash))
 	if isNative && nonceHash == "" && strings.TrimSpace(f.LeaseID) != "" {
@@ -133,7 +143,8 @@ func decodeLeaseBatchFrame(raw []byte, config Config) (Policy, []ProviderLease, 
 			candidatePolicy.QuotaRemainingBytes != policy.QuotaRemainingBytes ||
 			candidatePolicy.TargetDigest != policy.TargetDigest ||
 			candidatePolicy.Direction != policy.Direction ||
-			candidatePolicy.RouteScope != policy.RouteScope {
+			candidatePolicy.RouteScope != policy.RouteScope ||
+			candidatePolicy.RoutePolicy != policy.RoutePolicy {
 			lease.wipe()
 			for candidateIndex := range leases {
 				leases[candidateIndex].wipe()
