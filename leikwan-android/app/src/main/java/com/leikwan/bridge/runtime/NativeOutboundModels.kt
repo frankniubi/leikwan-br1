@@ -10,6 +10,21 @@ internal const val NATIVE_OUTBOUND_PURPOSE = "native_outbound"
 internal const val NATIVE_ROUTE_SCOPE_CN_ONLY = "cn_only"
 internal const val NATIVE_ROUTE_SCOPE_INTL_ONLY = "intl_only"
 internal const val NATIVE_ROUTE_SCOPE_GLOBAL = "global"
+internal const val NATIVE_ROUTE_POLICY_RESTRICTED = "restricted"
+internal const val NATIVE_ROUTE_POLICY_UNRESTRICTED = "unrestricted"
+
+internal fun normalizeNativeRoutePolicy(value: String?): String =
+    if (value?.trim()?.equals(NATIVE_ROUTE_POLICY_UNRESTRICTED, ignoreCase = true) == true) {
+        NATIVE_ROUTE_POLICY_UNRESTRICTED
+    } else {
+        NATIVE_ROUTE_POLICY_RESTRICTED
+    }
+
+internal fun isNativeRoutePolicyValue(value: String?): Boolean =
+    value?.trim()?.lowercase() in setOf(
+        NATIVE_ROUTE_POLICY_RESTRICTED,
+        NATIVE_ROUTE_POLICY_UNRESTRICTED,
+    )
 
 /** Pull-scoped, non-secret entitlement. It is absent when the plan does not allow native exit. */
 data class NativeOutboundCapability(
@@ -21,6 +36,7 @@ data class NativeOutboundCapability(
     val defaultForwardId: Long?,
     val routeScopes: List<String>,
     val defaultRouteScope: String,
+    val unrestrictedAllowed: Boolean = false,
     val forwards: List<NativeOutboundCarrier>,
 ) {
     fun carrier(forwardId: Long): NativeOutboundCarrier? = forwards.firstOrNull { it.forwardId == forwardId }
@@ -46,6 +62,7 @@ data class NativeOutboundCapability(
                     transport = item.transport.trim().lowercase(),
                     routeScopes = itemScopes,
                     defaultRouteScope = normalizeScope(item.defaultRouteScope) ?: itemScopes.first(),
+                    unrestrictedAllowed = item.unrestrictedAllowed,
                 )
             }
             val result = NativeOutboundCapability(
@@ -57,6 +74,7 @@ data class NativeOutboundCapability(
                 defaultForwardId = dto.defaultForwardId?.takeIf { it > 0L },
                 routeScopes = scopes,
                 defaultRouteScope = normalizeScope(dto.defaultRouteScope) ?: "global",
+                unrestrictedAllowed = dto.unrestrictedAllowed,
                 forwards = carriers,
             )
             return result.takeIf { it.isUsable() }
@@ -85,6 +103,7 @@ data class NativeOutboundCarrier(
     val transport: String,
     val routeScopes: List<String>,
     val defaultRouteScope: String,
+    val unrestrictedAllowed: Boolean = false,
 ) {
     fun isUsable(): Boolean = forwardId > 0L
         && direction.isNotBlank()
@@ -105,6 +124,7 @@ data class NativeOutboundCapabilityDto(
     @com.google.gson.annotations.SerializedName("default_forward_id") val defaultForwardId: Long? = null,
     @com.google.gson.annotations.SerializedName("route_scopes") val routeScopes: List<String> = emptyList(),
     @com.google.gson.annotations.SerializedName("default_route_scope") val defaultRouteScope: String = "global",
+    @com.google.gson.annotations.SerializedName("unrestricted_allowed") val unrestrictedAllowed: Boolean = false,
     val forwards: List<NativeOutboundCarrierDto> = emptyList(),
 )
 
@@ -115,6 +135,7 @@ data class NativeOutboundCarrierDto(
     val transport: String = "",
     @com.google.gson.annotations.SerializedName("route_scopes") val routeScopes: List<String> = emptyList(),
     @com.google.gson.annotations.SerializedName("default_route_scope") val defaultRouteScope: String = "global",
+    @com.google.gson.annotations.SerializedName("unrestricted_allowed") val unrestrictedAllowed: Boolean = false,
 )
 
 /** One-shot SOCKS5 credential lease. Never persist this object; call [wipe] after config creation. */
@@ -135,6 +156,7 @@ data class NativeOutboundLease(
     val quotaRemainingBytes: Long = 0L,
     val selectionRef: String = "",
     val selectionTier: String = "unknown",
+    val routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
 ) {
     fun isUsable(now: Instant = Instant.now()): Boolean = forwardId > 0L
         && leaseId.isNotBlank()
@@ -146,6 +168,10 @@ data class NativeOutboundLease(
             NATIVE_ROUTE_SCOPE_CN_ONLY,
             NATIVE_ROUTE_SCOPE_INTL_ONLY,
             NATIVE_ROUTE_SCOPE_GLOBAL,
+        )
+        && routePolicy in setOf(
+            NATIVE_ROUTE_POLICY_RESTRICTED,
+            NATIVE_ROUTE_POLICY_UNRESTRICTED,
         )
         && scopeDigest.matches(Regex("^[a-f0-9]{64}$"))
         && direction.isNotBlank()
@@ -173,6 +199,7 @@ data class NativeOutboundLease(
         addProperty("selection_tier", selectionTier)
         addProperty("direction", direction)
         addProperty("route_scope", routeScope)
+        addProperty("route_policy", routePolicy)
         add("endpoint", JsonObject().apply {
             addProperty("ip", endpointIp)
             addProperty("port", endpointPort)
@@ -204,13 +231,38 @@ data class NativeOutboundLease(
                 .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
         }
 
+        fun scopeDigestV2(
+            forwardId: Long,
+            direction: String,
+            transport: String,
+            routeScope: String,
+            routePolicy: String,
+        ): String {
+            require(isNativeRoutePolicyValue(routePolicy)) { "native_route_policy_invalid" }
+            val canonicalScope = NativeOutboundCapability.normalizeScope(routeScope)
+                ?: routeScope.trim().lowercase()
+            val canonical = listOf(
+                "native-outbound:v2",
+                forwardId.toString(),
+                direction.trim().lowercase(),
+                transport.trim().lowercase(),
+                canonicalScope,
+                normalizeNativeRoutePolicy(routePolicy),
+            ).joinToString("\n")
+            return MessageDigest.getInstance("SHA-256")
+                .digest(canonical.toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        }
+
         fun from(
             raw: JsonObject,
             policy: UltraPolicy,
             carrier: NativeOutboundCarrier,
             routeScope: String,
             now: Instant = Instant.now(),
+            routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
         ): NativeOutboundLease? {
+            if (!isNativeRoutePolicyValue(routePolicy)) return null
             val protocol = raw.stringOrNull("protocol") ?: return null
             val purpose = raw.stringOrNull("purpose") ?: return null
             val forwardId = raw.longOrNull("forward_id") ?: return null
@@ -227,6 +279,11 @@ data class NativeOutboundLease(
             if (requestedScope !in carrier.routeScopes) return null
             val returnedScope = NativeOutboundCapability.normalizeScope(raw.stringOrNull("route_scope")) ?: return null
             val digest = raw.stringOrNull("scope_digest")?.lowercase() ?: return null
+            val requestedPolicy = normalizeNativeRoutePolicy(routePolicy)
+            val rawReturnedPolicy = raw.stringOrNull("route_policy")
+            if (rawReturnedPolicy != null && !isNativeRoutePolicyValue(rawReturnedPolicy)) return null
+            val returnedPolicy = normalizeNativeRoutePolicy(rawReturnedPolicy)
+            if (requestedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED && !carrier.unrestrictedAllowed) return null
             val endpoint = raw.objectOrNull("endpoint") ?: return null
             val endpointIp = endpoint.stringOrNull("ip")?.normalizeIp() ?: return null
             val endpointPort = endpoint.longOrNull("port")?.toInt() ?: return null
@@ -235,7 +292,11 @@ data class NativeOutboundLease(
             val passwordText = credential.stringOrNull("password") ?: return null
             val user = userText.toByteArray(Charsets.UTF_8)
             val password = passwordText.toByteArray(Charsets.UTF_8)
-            val expected = scopeDigest(forwardId, carrier.direction, transport, requestedScope)
+            val expected = if (requestedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED) {
+                scopeDigestV2(forwardId, carrier.direction, transport, requestedScope, requestedPolicy)
+            } else {
+                scopeDigest(forwardId, carrier.direction, transport, requestedScope)
+            }
             val lease = NativeOutboundLease(
                 forwardId = forwardId,
                 leaseId = leaseId,
@@ -253,6 +314,7 @@ data class NativeOutboundLease(
                 quotaRemainingBytes = quota,
                 selectionRef = selectionRef,
                 selectionTier = selectionTier,
+                routePolicy = returnedPolicy,
             )
             val valid = protocol == NATIVE_OUTBOUND_LEASE_PROTOCOL
                 && purpose == NATIVE_OUTBOUND_PURPOSE
@@ -260,8 +322,8 @@ data class NativeOutboundLease(
                 && generation == policy.policyGeneration
                 && direction == carrier.direction
                 && returnedScope == requestedScope
+                && returnedPolicy == requestedPolicy
                 && digest == expected
-                && digest == scopeDigest(forwardId, carrier.direction, carrier.transport, requestedScope)
                 && rateLimit in 0L..policy.rateLimitMbps
                 && quota in 1L..policy.quotaRemainingBytes
                 && selectionRef.matches(Regex("^[A-Za-z0-9_-]{16,128}$"))
@@ -276,6 +338,8 @@ data class NativeOutboundLease(
             }
             return lease
         }
+
+        fun normalizeRoutePolicy(value: String?): String = normalizeNativeRoutePolicy(value)
 
         private fun derivedSelectionRef(leaseId: String): String {
             val digest = MessageDigest.getInstance("SHA-256")

@@ -187,6 +187,7 @@ class NativeOutboundRepositoryTest {
             .getAsJsonArray("forwards")[0].asJsonObject
         assertEquals("native_outbound", item.get("purpose").asString)
         assertEquals("cn_only", item.get("route_scope").asString)
+        assertEquals("restricted", item.get("route_policy").asString)
         assertEquals("auto", item.get("selection_mode").asString)
         assertEquals(4, item.get("max_candidates").asInt)
         assertEquals(digest, item.get("target_digest").asString)
@@ -199,6 +200,121 @@ class NativeOutboundRepositoryTest {
         assertTrue(lease.user.all { it.toInt() == 0 })
         assertTrue(lease.password.all { it.toInt() == 0 })
         leases.drop(1).forEach { it.wipe() }
+    }
+
+    @Test
+    fun `unrestricted native lease uses v2 digest and requires carrier entitlement`() = runBlocking {
+        val unrestrictedDirection = "Mainland China -> International"
+        val unrestrictedDigest = NativeOutboundLease.scopeDigestV2(
+            forwardId,
+            unrestrictedDirection,
+            "tcp+udp",
+            "global",
+            "unrestricted",
+        )
+        server.enqueue(json(200, "{\"ok\":true}"))
+        server.enqueue(
+            json(
+                200,
+                """
+                {
+                  "ok": true,
+                  "client": {"id":17},
+                  "forwards": [{
+                    "forward_id": $forwardId,
+                    "service_name": "Native carrier",
+                    "target": "$target",
+                    "listen_port": 30443,
+                    "mode": "ultra",
+                    "backend_mode": "ultra",
+                    "transport": "tcp+udp",
+                    "service_status": "active",
+                    "endpoint_mode": "manual",
+                    "ultra_access": {
+                      "protocol": "leikwan-ultra-policy-v2",
+                      "forward_id": $forwardId,
+                      "session_ticket": "ticket-redacted",
+                      "policy_generation": "${"a".repeat(64)}",
+                      "issued_at": "2030-01-01T00:00:00Z",
+                      "renew_after": "2030-01-01T00:01:00Z",
+                      "expires_at": "2030-01-01T00:04:00Z",
+                      "service_state": "active",
+                      "transport": "tcp+udp",
+                      "rate_limit_mbps": 100,
+                      "quota_remaining_bytes": 1000000,
+                      "target_digest": "${com.leikwan.bridge.runtime.UltraPolicy.targetDigest(target)}"
+                    }
+                  }],
+                  "native_outbound": {
+                    "enabled": true,
+                    "protocol": "socks5",
+                    "lease_protocol": "leikwan-ultra-native-socks5-v1",
+                    "transport": "tcp+udp",
+                    "forward_ids": [$forwardId],
+                    "default_forward_id": $forwardId,
+                    "route_scopes": ["intl_only", "global"],
+                    "default_route_scope": "global",
+                    "forwards": [{
+                      "forward_id": $forwardId,
+                      "direction": "$unrestrictedDirection",
+                      "scope_digest": "${NativeOutboundLease.scopeDigest(forwardId, unrestrictedDirection, "tcp+udp", "global")}",
+                      "transport": "tcp+udp",
+                      "route_scopes": ["intl_only", "global"],
+                      "default_route_scope": "global",
+                      "unrestricted_allowed": true
+                    }]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(
+            json(
+                200,
+                """
+                {
+                  "ok": true,
+                  "leases": [{
+                    "protocol": "leikwan-ultra-native-socks5-v1",
+                    "purpose": "native_outbound",
+                    "forward_id": $forwardId,
+                    "lease_id": "ul2_native_unrestricted",
+                    "policy_generation": "${"a".repeat(64)}",
+                    "expires_at": "2030-01-01T00:02:00Z",
+                    "transport": "tcp+udp",
+                    "direction": "$unrestrictedDirection",
+                    "route_scope": "global",
+                    "route_policy": "unrestricted",
+                    "scope_digest": "$unrestrictedDigest",
+                    "endpoint": {"ip":"198.51.100.30","port":8443},
+                    "credential": {"user":"short-user","password":"short-password"}
+                  }]
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        val catalog = repository.pullCatalog()
+        val forward = requireNotNull(repository.getCachedContract(forwardId))
+        val capability = requireNotNull(catalog.nativeOutbound)
+        val leases = repository.resolveNativeOutboundLeases(
+            forward = forward,
+            capability = capability,
+            routeScope = "global",
+            maxCandidates = 1,
+            routePolicy = "unrestricted",
+        )
+        val lease = leases.single()
+
+        server.takeRequest()
+        server.takeRequest()
+        val request = server.takeRequest()
+        val item = JsonParser.parseString(request.body.readUtf8()).asJsonObject
+            .getAsJsonArray("forwards")[0].asJsonObject
+        assertEquals("unrestricted", item.get("route_policy").asString)
+        assertEquals(unrestrictedDigest, item.get("target_digest").asString)
+        assertEquals("unrestricted", lease.routePolicy)
+        lease.wipe()
     }
 
     private fun json(status: Int, body: String): MockResponse = MockResponse()

@@ -17,6 +17,10 @@ import com.leikwan.bridge.runtime.ForwardFilter
 import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.runtime.NATIVE_OUTBOUND_PURPOSE
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
+import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.net.AppDns
@@ -475,22 +479,26 @@ class PanelRepository(
     suspend fun resolveNativeOutboundLease(
         forward: ForwardContract,
         routeScope: String,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): NativeOutboundLease = resolveNativeOutboundLeases(
         forward,
         cachedNativeOutbound,
         routeScope,
         maxCandidates = 1,
+        routePolicy = routePolicy,
     ).single()
 
     suspend fun resolveNativeOutboundLease(
         forward: ForwardContract,
         capability: NativeOutboundCapability?,
         routeScope: String,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): NativeOutboundLease = resolveNativeOutboundLeases(
         forward,
         capability,
         routeScope,
         maxCandidates = 1,
+        routePolicy = routePolicy,
     ).single()
 
     /**
@@ -502,11 +510,13 @@ class PanelRepository(
         forward: ForwardContract,
         routeScope: String,
         maxCandidates: Int = 4,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): List<NativeOutboundLease> = resolveNativeOutboundLeases(
         forward,
         cachedNativeOutbound,
         routeScope,
         maxCandidates,
+        routePolicy,
     )
 
     suspend fun resolveNativeOutboundLeases(
@@ -514,12 +524,17 @@ class PanelRepository(
         capability: NativeOutboundCapability?,
         routeScope: String,
         maxCandidates: Int = 4,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): List<NativeOutboundLease> {
         if (maxCandidates !in 1..4) {
             throw IllegalArgumentException("native_candidate_limit_invalid")
         }
         val normalizedScope = NativeOutboundCapability.normalizeScope(routeScope)
             ?: throw IllegalStateException("native_route_scope_invalid")
+        val normalizedPolicy = normalizeNativeRoutePolicy(routePolicy)
+        if (!isNativeRoutePolicyValue(routePolicy)) {
+            throw IllegalStateException("native_route_policy_invalid")
+        }
         if (capability == null || !capability.isUsable()) {
             throw IllegalStateException("native_outbound_not_allowed")
         }
@@ -529,6 +544,9 @@ class PanelRepository(
             || carrier.transport != "tcp+udp"
             || capability.transport != "tcp+udp") {
             throw IllegalStateException("native_route_scope_invalid")
+        }
+        if (normalizedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED && !carrier.unrestrictedAllowed) {
+            throw IllegalStateException("native_route_policy_not_allowed")
         }
         val now = Instant.ofEpochMilli(nowMs())
         val policy = UltraPolicy.from(forward, now)
@@ -540,12 +558,22 @@ class PanelRepository(
         val session = requireActiveSession()
         val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-        val expectedDigest = NativeOutboundLease.scopeDigest(
-            forward.forwardId,
-            carrier.direction,
-            carrier.transport,
-            normalizedScope,
-        )
+        val expectedDigest = if (normalizedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED) {
+            NativeOutboundLease.scopeDigestV2(
+                forward.forwardId,
+                carrier.direction,
+                carrier.transport,
+                normalizedScope,
+                normalizedPolicy,
+            )
+        } else {
+            NativeOutboundLease.scopeDigest(
+                forward.forwardId,
+                carrier.direction,
+                carrier.transport,
+                normalizedScope,
+            )
+        }
         val response = try {
             api.resolveUltraLease(
                 authHeader(),
@@ -561,6 +589,7 @@ class PanelRepository(
                             transport = "tcp+udp",
                             purpose = NATIVE_OUTBOUND_PURPOSE,
                             routeScope = normalizedScope,
+                            routePolicy = normalizedPolicy,
                             selectionMode = if (maxCandidates > 1) "auto" else "single",
                             maxCandidates = maxCandidates,
                         ),
@@ -589,7 +618,14 @@ class PanelRepository(
         val leases = mutableListOf<NativeOutboundLease>()
         try {
             body.leases.forEach { rawLease ->
-                leases += NativeOutboundLease.from(rawLease, policy, carrier, normalizedScope, now)
+                leases += NativeOutboundLease.from(
+                    rawLease,
+                    policy,
+                    carrier,
+                    normalizedScope,
+                    now,
+                    normalizedPolicy,
+                )
                     ?: throw IllegalStateException("native_lease_invalid")
             }
             return leases

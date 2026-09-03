@@ -299,6 +299,7 @@
     <string name="connections_native_scope_cn_only">Mainland China only</string>
     <string name="connections_native_scope_intl_only">International only</string>
     <string name="connections_native_scope_global">Global</string>
+    <string name="connections_native_unrestricted">Unrestricted native route</string>
     <string name="connections_native_bypass_china">Bypass mainland China</string>
     <string name="connections_native_no_node">No personal node is required</string>
     <string name="connections_native_unknown">Native carrier</string>

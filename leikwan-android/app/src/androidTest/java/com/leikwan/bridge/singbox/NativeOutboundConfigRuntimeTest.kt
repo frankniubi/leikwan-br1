@@ -7,7 +7,7 @@ import io.nekohasekai.libbox.SetupOptions
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Verifies the bundled libbox accepts both restricted native DNS profiles. */
+/** Verifies the bundled libbox accepts native restricted and unrestricted profiles. */
 @RunWith(AndroidJUnit4::class)
 class NativeOutboundConfigRuntimeTest {
     @Test
@@ -40,5 +40,14 @@ class NativeOutboundConfigRuntimeTest {
             ).configJson
             Libbox.checkConfig(config)
         }
+        val unrestricted = builder.build(
+            proxyNodes = emptyList(),
+            runtimeContext = null,
+            nativeLocalProxy = NativeOutboundLocalProxy(port = 31245),
+            nativeProtectedEndpoints = setOf("203.0.113.10"),
+            nativeRouteScope = "intl_only",
+            nativeRoutePolicy = "unrestricted",
+        ).configJson
+        Libbox.checkConfig(unrestricted)
     }
 }

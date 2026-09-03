@@ -74,6 +74,7 @@ fun ConnectionsScreen(
         onNativeForward = viewModel::setNativeForward,
         onNativeRouteScope = viewModel::setNativeRouteScope,
         onNativeBypassChina = viewModel::setNativeBypassChina,
+        onNativeRoutePolicy = viewModel::setNativeRoutePolicy,
     )
 
     nodePickerForward?.let { forwardId ->
@@ -114,6 +115,7 @@ internal fun ConnectionsScreenContent(
     onNativeForward: (Long) -> Unit = {},
     onNativeRouteScope: (String) -> Unit = {},
     onNativeBypassChina: (Boolean) -> Unit = {},
+    onNativeRoutePolicy: (String) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         MasterSwitchCard(state = state, onToggle = onToggle)
@@ -126,6 +128,7 @@ internal fun ConnectionsScreenContent(
                 onForward = onNativeForward,
                 onRouteScope = onNativeRouteScope,
                 onBypassChina = onNativeBypassChina,
+                onRoutePolicy = onNativeRoutePolicy,
             )
             Spacer(Modifier.height(16.dp))
         }
@@ -253,6 +256,7 @@ private fun NativeOutboundCard(
     onForward: (Long) -> Unit,
     onRouteScope: (String) -> Unit,
     onBypassChina: (Boolean) -> Unit,
+    onRoutePolicy: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val carrier = state.nativeCarrier
@@ -275,6 +279,23 @@ private fun NativeOutboundCard(
                 Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
             }
             Spacer(Modifier.height(8.dp))
+            if (carrier?.unrestrictedAllowed == true) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(stringResource(R.string.connections_native_unrestricted))
+                    Switch(
+                        checked = state.nativeRoutePolicy == "unrestricted",
+                        onCheckedChange = { enabled ->
+                            onRoutePolicy(if (enabled) "unrestricted" else "restricted")
+                        },
+                        enabled = state.vpnStatus == VpnStatus.DISCONNECTED,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
                 ExposedDropdownMenuBox(
                     expanded = expanded,

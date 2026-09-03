@@ -3,6 +3,8 @@ package com.leikwan.bridge.runtime
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
@@ -52,6 +54,89 @@ class UltraLeaseClientTest {
         assertEquals(
             NativeOutboundLease.scopeDigest(42, "Mainland China -> International", "tcp+udp", "intl_only"),
             NativeOutboundLease.scopeDigest(42, "Mainland China -> International", "tcp+udp", "international_only"),
+        )
+    }
+
+    @Test
+    fun `native v2 digest binds the explicit unrestricted policy`() {
+        val restricted = NativeOutboundLease.scopeDigest(42, "Mainland China -> International", "tcp+udp", "intl_only")
+        val unrestricted = NativeOutboundLease.scopeDigestV2(
+            42,
+            "Mainland China -> International",
+            "tcp+udp",
+            "intl_only",
+            "unrestricted",
+        )
+        assertNotEquals(restricted, unrestricted)
+        assertEquals(
+            unrestricted,
+            NativeOutboundLease.scopeDigestV2(
+                42,
+                "Mainland China -> International",
+                "tcp+udp",
+                "international_only",
+                "UNRESTRICTED",
+            ),
+        )
+    }
+
+    @Test
+    fun `native lease rejects an unknown route policy instead of downgrading`() {
+        val raw = JsonObject().apply {
+            addProperty("protocol", NATIVE_OUTBOUND_LEASE_PROTOCOL)
+            addProperty("purpose", NATIVE_OUTBOUND_PURPOSE)
+            addProperty("forward_id", 42)
+            addProperty("lease_id", "lease-native-42")
+            addProperty("policy_generation", "a".repeat(64))
+            addProperty("expires_at", "2026-08-27T00:02:00Z")
+            addProperty("transport", "tcp+udp")
+            addProperty("direction", "Mainland China -> International")
+            addProperty("route_scope", "global")
+            addProperty("route_policy", "restricted")
+            addProperty(
+                "scope_digest",
+                NativeOutboundLease.scopeDigest(42, "Mainland China -> International", "tcp+udp", "global"),
+            )
+            addProperty("selection_ref", "native-selection-reference")
+            addProperty("selection_tier", "paid")
+            add("endpoint", JsonObject().apply {
+                addProperty("ip", "203.0.113.10")
+                addProperty("port", 8443)
+            })
+            add("credential", JsonObject().apply {
+                addProperty("user", "native-user")
+                addProperty("password", "native-password")
+            })
+        }
+        val carrier = NativeOutboundCarrier(
+            forwardId = 42,
+            direction = "Mainland China -> International",
+            scopeDigest = NativeOutboundLease.scopeDigest(42, "Mainland China -> International", "tcp+udp", "global"),
+            transport = "tcp+udp",
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+        )
+        val policy = UltraPolicy(
+            forwardId = 42,
+            sessionTicket = "ticket",
+            policyGeneration = "a".repeat(64),
+            issuedAt = Instant.parse("2026-08-27T00:00:00Z"),
+            renewAfter = Instant.parse("2026-08-27T00:01:00Z"),
+            expiresAt = Instant.parse("2026-08-27T00:04:00Z"),
+            transport = "tcp+udp",
+            rateLimitMbps = 100,
+            quotaRemainingBytes = 1_000_000,
+            targetDigest = "a".repeat(64),
+        )
+        assertNull(
+            NativeOutboundLease.from(
+                raw,
+                policy,
+                carrier,
+                routeScope = "global",
+                now = Instant.parse("2026-08-27T00:00:30Z"),
+                routePolicy = "invalid",
+            ),
         )
     }
 
@@ -132,6 +217,7 @@ class UltraLeaseClientTest {
         assertTrue(accepted)
         assertTrue(sentPayload.contains("\"purpose\":\"native_outbound\""))
         assertTrue(sentPayload.contains("\"route_scope\":\"global\""))
+        assertTrue(sentPayload.contains("\"route_policy\":\"restricted\""))
         assertTrue(lease.user.all { it == 0.toByte() })
         assertTrue(lease.password.all { it == 0.toByte() })
     }

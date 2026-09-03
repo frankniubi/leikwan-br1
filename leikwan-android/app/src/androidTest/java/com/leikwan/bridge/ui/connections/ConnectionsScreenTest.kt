@@ -209,4 +209,29 @@ class ConnectionsScreenTest {
         composeRule.onNodeWithText("Global").assertExists()
         composeRule.onNodeWithText("Mainland China only").assertDoesNotExist()
     }
+
+    @Test
+    fun unrestrictedControlIsVisibleOnlyForAnEntitledCarrier() {
+        val entitled = capability.copy(
+            forwards = capability.forwards.map { it.copy(unrestrictedAllowed = true) },
+        )
+        composeRule.setContent {
+            LeikwanTheme {
+                ConnectionsScreenContent(
+                    state = ConnectionsUiState(
+                        forwards = listOf(forward),
+                        nativeOutbound = entitled,
+                        nativeForwardId = forward.forwardId,
+                        nativeRouteScope = "global",
+                    ),
+                    onToggle = {},
+                    onSelectForward = {},
+                    onOpenNodePicker = {},
+                    onRefresh = {},
+                    onImportNode = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("Unrestricted native route").assertExists()
+    }
 }

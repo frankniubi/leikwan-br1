@@ -35,6 +35,7 @@ data class UltraLeaseForwardRequest(
     val transport: String,
     @SerializedName("purpose") val purpose: String? = null,
     @SerializedName("route_scope") val routeScope: String? = null,
+    @SerializedName("route_policy") val routePolicy: String? = null,
     @SerializedName("selection_mode") val selectionMode: String? = null,
     @SerializedName("max_candidates") val maxCandidates: Int? = null,
 )

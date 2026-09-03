@@ -19,6 +19,7 @@ class NativeOutboundConfigBuilderTest {
         scope: String,
         leaseDirection: String = direction,
         leaseForwardId: Long = forwardId,
+        routePolicy: String = "restricted",
     ): NativeOutboundLease {
         val now = Instant.now()
         return NativeOutboundLease(
@@ -29,7 +30,11 @@ class NativeOutboundConfigBuilderTest {
             transport = "tcp+udp",
             direction = leaseDirection,
             routeScope = scope,
-            scopeDigest = NativeOutboundLease.scopeDigest(leaseForwardId, leaseDirection, "tcp+udp", scope),
+            scopeDigest = if (routePolicy == "unrestricted") {
+                NativeOutboundLease.scopeDigestV2(leaseForwardId, leaseDirection, "tcp+udp", scope, routePolicy)
+            } else {
+                NativeOutboundLease.scopeDigest(leaseForwardId, leaseDirection, "tcp+udp", scope)
+            },
             endpointIp = "203.0.113.10",
             endpointPort = 8443,
             user = "native-user".toByteArray(),
@@ -38,6 +43,7 @@ class NativeOutboundConfigBuilderTest {
             quotaRemainingBytes = 1_000_000,
             selectionRef = "native-selection-reference",
             selectionTier = "paid",
+            routePolicy = routePolicy,
         )
     }
 
@@ -225,6 +231,51 @@ class NativeOutboundConfigBuilderTest {
         assertTrue("TUN gateway guard is present", gatewayIndex >= 0)
         assertEquals("drop", rules[gatewayIndex].get("method").asString)
         assertTrue("gateway guard precedes scope", gatewayIndex < scopeIndex)
+    }
+
+    @Test
+    fun `restricted native route gates low ports before scoped routing`() {
+        val lease = lease("cn_only")
+        val route = JsonParser.parseString(
+            builder().build(
+                proxyNodes = emptyList(),
+                runtimeContext = null,
+                nativeOutboundLease = lease,
+                nativeRouteScope = "cn_only",
+            ).configJson,
+        ).asJsonObject.getAsJsonObject("route")
+        val rules = route.getAsJsonArray("rules").map { it.asJsonObject }
+        val lowPortIndex = rules.indexOfFirst { rule ->
+            rule.get("network")?.isJsonArray == true
+                && rule.getAsJsonArray("network").map { it.asString } == listOf("tcp", "udp")
+                && rule.get("port_range")?.asString == "1:999"
+                && rule.get("outbound")?.asString == "direct"
+        }
+        val scopedIndex = rules.indexOfFirst { rule ->
+            rule.getAsJsonArray("rule_set")?.any { it.asString == "geoip-cn" } == true
+        }
+        assertTrue("restricted low-port direct rule is present", lowPortIndex >= 0)
+        assertEquals("1:999", rules[lowPortIndex].get("port_range").asString)
+        assertTrue("low-port gate precedes scoped native rule", lowPortIndex < scopedIndex)
+        assertEquals("1000:65535", rules[scopedIndex].get("port_range").asString)
+    }
+
+    @Test
+    fun `unrestricted native route omits low-port gate and uses all ports`() {
+        val lease = lease("intl_only", leaseDirection = "Mainland China -> International", routePolicy = "unrestricted")
+        val route = JsonParser.parseString(
+            builder().build(
+                proxyNodes = emptyList(),
+                runtimeContext = null,
+                nativeOutboundLease = lease,
+                nativeRouteScope = "intl_only",
+                nativeRoutePolicy = "unrestricted",
+            ).configJson,
+        ).asJsonObject.getAsJsonObject("route")
+        val rules = route.getAsJsonArray("rules").map { it.asJsonObject }
+        assertTrue(rules.none { it.get("port_range")?.asString == "1:999" })
+        val scoped = rules.first { it.getAsJsonArray("rule_set")?.any { tag -> tag.asString == "geoip-cn" } == true }
+        assertEquals("1:65535", scoped.get("port_range").asString)
     }
 
     @Test
