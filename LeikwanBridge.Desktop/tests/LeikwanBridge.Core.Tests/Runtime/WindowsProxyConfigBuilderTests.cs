@@ -865,6 +865,57 @@ public sealed class WindowsProxyConfigBuilderTests
             && rule.GetProperty("outbound").GetString() == "direct");
     }
 
+    [Fact]
+    public void NativeRestrictedRoutesLowPortsDirectAndHighPortsThroughScope()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            []).Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var low = rules.Single(rule => rule.TryGetProperty("port_range", out var range) && range.GetString() == "1:999");
+        Assert.Equal("direct", low.GetProperty("outbound").GetString());
+        Assert.Equal(["tcp", "udp"], low.GetProperty("network").EnumerateArray().Select(item => item.GetString()).ToArray());
+        var high = rules.Single(rule => rule.TryGetProperty("port_range", out var range) && range.GetString() == "1000:65535");
+        Assert.Equal("direct", high.GetProperty("outbound").GetString());
+        var lowIndex = rules.IndexOf(low);
+        var highIndex = rules.IndexOf(high);
+        Assert.True(lowIndex >= 0 && lowIndex < highIndex);
+    }
+
+    [Fact]
+    public void NativeUnrestrictedOmitsPortGateAndCarriesPolicyToLeaseConfig()
+    {
+        var direction = "Mainland China -> International";
+        const int forwardId = 158;
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-lease-unrestricted",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "intl_only",
+            NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "intl_only", "unrestricted"),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("native-user"),
+            System.Text.Encoding.UTF8.GetBytes("native-password"),
+            routePolicy: "unrestricted");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            []).Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        Assert.DoesNotContain(rules, rule => rule.TryGetProperty("port_range", out var range)
+            && range.GetString() == "1:999");
+        Assert.DoesNotContain(rules, rule => rule.TryGetProperty("network", out var network)
+            && network.ValueKind == JsonValueKind.String
+            && network.GetString() == "tcp,udp");
+        Assert.Equal("unrestricted", lease.RoutePolicy);
+    }
+
     private static NativeOutboundLease CreateNativeLease(
         string routeScope,
         string direction = "Ultra Hong Kong to Mainland China")

@@ -143,18 +143,27 @@ public sealed class MasterApiClient : IDisposable
         ForwardConfig forward,
         string routeScope,
         CancellationToken ct = default)
-        => ResolveNativeOutboundLeaseAsync(forward, forward.NativeOutbound, routeScope, ct);
+        => ResolveNativeOutboundLeaseAsync(forward, forward.NativeOutbound, routeScope, "restricted", ct);
+
+    public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        ForwardConfig forward,
+        NativeOutboundCapability? capability,
+        string routeScope,
+        CancellationToken ct = default)
+        => ResolveNativeOutboundLeaseAsync(forward, capability, routeScope, "restricted", ct);
 
     public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
         ForwardConfig forward,
         NativeOutboundCapability? capability,
         string routeScope,
+        string routePolicy,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(forward);
         var policy = forward.UltraAccess;
         var carrier = capability?.FindForward(forward.ForwardId);
         var normalizedScope = routeScope.Trim().ToLowerInvariant();
+        var normalizedPolicy = NativeOutboundLease.NormalizeRoutePolicy(routePolicy);
         if (policy is null
             || capability is null
             || !capability.Enabled
@@ -165,14 +174,22 @@ public sealed class MasterApiClient : IDisposable
             || !carrier.RouteScopes.Contains(normalizedScope, StringComparer.OrdinalIgnoreCase)
             || !string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrWhiteSpace(carrier.Direction)
+            || (normalizedPolicy == "unrestricted" && !carrier.UnrestrictedAllowed)
             || policy.GetValidationFailure(forward, DateTimeOffset.UtcNow) is not null)
             return null;
 
-        var expectedDigest = NativeOutboundLease.ComputeScopeDigest(
-            forward.ForwardId,
-            carrier.Direction,
-            carrier.Transport,
-            normalizedScope);
+        var expectedDigest = normalizedPolicy == "unrestricted"
+            ? NativeOutboundLease.ComputeScopeDigestV2(
+                forward.ForwardId,
+                carrier.Direction,
+                carrier.Transport,
+                normalizedScope,
+                normalizedPolicy)
+            : NativeOutboundLease.ComputeScopeDigest(
+                forward.ForwardId,
+                carrier.Direction,
+                carrier.Transport,
+                normalizedScope);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var payload = new
         {
@@ -189,6 +206,7 @@ public sealed class MasterApiClient : IDisposable
                     target_digest = expectedDigest,
                     transport = "tcp+udp",
                     route_scope = normalizedScope,
+                    route_policy = normalizedPolicy,
                     selection_mode = "single",
                     max_candidates = 1,
                 },
@@ -217,7 +235,7 @@ public sealed class MasterApiClient : IDisposable
                     || leases.ValueKind != JsonValueKind.Array
                     || leases.GetArrayLength() != 1)
                     return null;
-                return ParseNativeOutboundLease(leases[0], forward, policy, carrier, normalizedScope, expectedDigest);
+                return ParseNativeOutboundLease(leases[0], forward, policy, carrier, normalizedScope, normalizedPolicy, expectedDigest);
             }
             finally
             {
@@ -438,6 +456,7 @@ public sealed class MasterApiClient : IDisposable
         UltraPolicy policy,
         NativeOutboundForward carrier,
         string routeScope,
+        string routePolicy,
         string expectedDigest)
     {
         var protocol = item.GetProperty("protocol").GetString() ?? "";
@@ -447,6 +466,9 @@ public sealed class MasterApiClient : IDisposable
         var transport = item.GetProperty("transport").GetString() ?? "";
         var direction = item.GetProperty("direction").GetString() ?? "";
         var returnedScope = item.GetProperty("route_scope").GetString() ?? "";
+        var returnedPolicy = item.TryGetProperty("route_policy", out var policyElement)
+            ? NativeOutboundLease.NormalizeRoutePolicy(policyElement.GetString())
+            : "restricted";
         var scopeDigest = item.GetProperty("scope_digest").GetString() ?? "";
         if (!string.Equals(protocol, NativeOutboundLeaseProtocol, StringComparison.Ordinal)
             || !string.Equals(purpose, "native_outbound", StringComparison.Ordinal)
@@ -455,6 +477,7 @@ public sealed class MasterApiClient : IDisposable
             || !string.Equals(transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(direction, carrier.Direction, StringComparison.Ordinal)
             || !string.Equals(returnedScope, routeScope, StringComparison.Ordinal)
+            || !string.Equals(returnedPolicy, routePolicy, StringComparison.Ordinal)
             || !string.Equals(scopeDigest, expectedDigest, StringComparison.OrdinalIgnoreCase))
             return null;
 
@@ -506,7 +529,8 @@ public sealed class MasterApiClient : IDisposable
             rateLimit,
             quota,
             selectionRef,
-            selectionTier);
+            selectionTier,
+            returnedPolicy);
         if (user.Length is 0 or > 255 || password.Length is 0 or > 255
             || !lease.IsUsable(now))
         {

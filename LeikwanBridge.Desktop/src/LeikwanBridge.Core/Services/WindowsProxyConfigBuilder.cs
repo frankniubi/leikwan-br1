@@ -83,13 +83,18 @@ public static class WindowsProxyConfigBuilder
         WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
         IEnumerable<string>? customDnsServers = null,
         string? nativeProxyHost = null,
-        int? nativeProxyPort = null)
+        int? nativeProxyPort = null,
+        string? nativeRoutePolicy = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
             throw new InvalidOperationException("native_lease_invalid");
         if (mode is not (WindowsProxyMode.Http or WindowsProxyMode.Tun or WindowsProxyMode.Process))
             throw new InvalidOperationException("proxy_mode_invalid");
+
+        nativeRoutePolicy = NormalizeNativeRoutePolicy(nativeRoutePolicy ?? lease.RoutePolicy);
+        if (!string.Equals(nativeRoutePolicy, lease.RoutePolicy, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("native_route_policy_mismatch");
 
         tunStack = NormalizeTunStack(tunStack);
         var chinaIpCidrs = lease.RouteScope == "global" && bypassChinaMainland
@@ -144,6 +149,7 @@ public static class WindowsProxyConfigBuilder
                 bypassDomains,
                 chinaIpCidrs,
                 lease.RouteScope,
+                nativeRoutePolicy,
                 dnsMode == WindowsProxyDnsMode.Custom && lease.RouteScope == "intl_only"
                     ? "custom-0"
                     : null),
@@ -464,6 +470,7 @@ public static class WindowsProxyConfigBuilder
         IReadOnlyList<string> bypassDomains,
         IReadOnlyList<string> chinaIpCidrs,
         string? nativeRouteScope = null,
+        string? nativeRoutePolicy = null,
         string? defaultDomainResolver = null)
     {
         var rules = new JsonArray
@@ -508,6 +515,19 @@ public static class WindowsProxyConfigBuilder
             rules.Add(new JsonObject { ["domain"] = values, ["outbound"] = "direct" });
         }
 
+        if (IsNativeRestrictedPolicy(nativeRoutePolicy))
+        {
+            // Native relay is a game-oriented path. Keep privileged and
+            // control-plane ports local; only the high-port range enters the
+            // native SOCKS relay. The rule is shared by HTTP, Process and TUN.
+            rules.Add(new JsonObject
+            {
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = "1:999",
+                ["outbound"] = "direct",
+            });
+        }
+
         if (IsNativeRestrictedScope(nativeRouteScope))
         {
             // Resolve before handing the destination to SOCKS. Otherwise its
@@ -525,6 +545,8 @@ public static class WindowsProxyConfigBuilder
             rules.Add(new JsonObject
             {
                 ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = IsNativeRestrictedPolicy(nativeRoutePolicy) ? "1000:65535" : "1:65535",
                 ["outbound"] = "proxy",
             });
         }
@@ -533,6 +555,8 @@ public static class WindowsProxyConfigBuilder
             rules.Add(new JsonObject
             {
                 ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = IsNativeRestrictedPolicy(nativeRoutePolicy) ? "1000:65535" : "1:65535",
                 ["outbound"] = "direct",
             });
         }
@@ -591,6 +615,15 @@ public static class WindowsProxyConfigBuilder
     private static bool IsNativeRestrictedScope(string? routeScope)
         => string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
             || string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+
+    public static string NormalizeNativeRoutePolicy(string? value)
+        => string.Equals(value?.Trim(), "unrestricted", StringComparison.OrdinalIgnoreCase)
+            ? "unrestricted"
+            : "restricted";
+
+    private static bool IsNativeRestrictedPolicy(string? value)
+        => value is not null
+            && !string.Equals(NormalizeNativeRoutePolicy(value), "unrestricted", StringComparison.OrdinalIgnoreCase);
 
     private static IReadOnlyList<string> LoadChinaIpCidrs(string? path)
     {

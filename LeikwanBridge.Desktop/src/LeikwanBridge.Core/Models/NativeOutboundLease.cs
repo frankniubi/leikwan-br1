@@ -23,7 +23,8 @@ public sealed class NativeOutboundLease : IDisposable
         long rateLimitMbps = 0,
         long quotaRemainingBytes = 0,
         string selectionRef = "",
-        string selectionTier = UltraLease.SelectionTierUnknown)
+        string selectionTier = UltraLease.SelectionTierUnknown,
+        string routePolicy = "restricted")
     {
         ForwardId = forwardId;
         LeaseId = leaseId;
@@ -43,6 +44,7 @@ public sealed class NativeOutboundLease : IDisposable
         SelectionTier = string.IsNullOrWhiteSpace(selectionTier)
             ? UltraLease.SelectionTierUnknown
             : selectionTier.Trim().ToLowerInvariant();
+        RoutePolicy = NormalizeRoutePolicy(routePolicy);
     }
 
     [JsonIgnore] public int ForwardId { get; }
@@ -61,6 +63,7 @@ public sealed class NativeOutboundLease : IDisposable
     [JsonIgnore] public long QuotaRemainingBytes { get; }
     [JsonIgnore] public string SelectionRef { get; }
     [JsonIgnore] public string SelectionTier { get; }
+    [JsonIgnore] public string RoutePolicy { get; }
 
     public bool IsUsable(DateTimeOffset now)
         => ForwardId > 0
@@ -69,6 +72,7 @@ public sealed class NativeOutboundLease : IDisposable
             && ExpiresAt <= now.AddMinutes(5).AddSeconds(30)
             && string.Equals(Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
             && RouteScope is "cn_only" or "intl_only" or "global"
+            && RoutePolicy is "restricted" or "unrestricted"
             && ScopeDigest.Length == 64
             && ScopeDigest.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')
             && !string.IsNullOrWhiteSpace(EndpointHost)
@@ -95,6 +99,31 @@ public sealed class NativeOutboundLease : IDisposable
             routeScope.Trim().ToLowerInvariant(),
         ]);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    public static string ComputeScopeDigestV2(
+        int forwardId,
+        string direction,
+        string transport,
+        string routeScope,
+        string routePolicy)
+    {
+        var normalized = NormalizeRoutePolicy(routePolicy);
+        var canonical = string.Join("\n", [
+            "native-outbound:v2",
+            forwardId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            direction.Trim().ToLowerInvariant(),
+            transport.Trim().ToLowerInvariant(),
+            routeScope.Trim().ToLowerInvariant(),
+            normalized,
+        ]);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    public static string NormalizeRoutePolicy(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "unrestricted" ? "unrestricted" : "restricted";
     }
 
     public void Dispose()
