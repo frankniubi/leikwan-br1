@@ -4135,6 +4135,7 @@ final class ProvisioningService
             if (!is_array($forward)
                 || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
                 || (string) ($forward['service_status'] ?? '') !== 'active'
+                || empty($forward['native_outbound_enabled'] ?? $forward['native_outbound'] ?? false)
                 || strtolower(trim((string) ($forward['transport'] ?? ''))) !== 'tcp+udp') {
                 continue;
             }
@@ -4168,13 +4169,16 @@ final class ProvisioningService
         foreach ($rows as $row) {
             $serviceId = (int) ($row['service_id'] ?? 0);
             if ($serviceId > 0 && $this->planAllowsNativeOutbound($row)) {
-                $allowedServices[$serviceId] = true;
+                $allowedServices[$serviceId] = [
+                    'unrestricted_allowed' => $this->planAllowsNativeUnrestrictedOutbound($row),
+                ];
             }
         }
 
         $carriers = [];
         foreach ($eligible as $forwardId => $forward) {
-            if (!isset($allowedServices[(int) ($forward['service_id'] ?? 0)])) {
+            $servicePolicy = $allowedServices[(int) ($forward['service_id'] ?? 0)] ?? null;
+            if (!is_array($servicePolicy)) {
                 continue;
             }
             $direction = substr(UltraMode::redactProviderText(trim((string) ($forward['forward_combination_direction'] ?? ''))), 0, 191);
@@ -4186,6 +4190,7 @@ final class ProvisioningService
                 'transport' => 'tcp+udp',
                 'route_scopes' => $routeScopes,
                 'default_route_scope' => 'global',
+                'unrestricted_allowed' => !empty($servicePolicy['unrestricted_allowed']),
             ];
         }
         if ($carriers === []) {
@@ -4208,6 +4213,7 @@ final class ProvisioningService
             'default_forward_id' => $forwardIds[0],
             'route_scopes' => array_values(array_keys($routeScopes)),
             'default_route_scope' => 'global',
+            'unrestricted_allowed' => false,
             'forwards' => $carriers,
         ];
     }
@@ -5585,6 +5591,10 @@ final class ProvisioningService
             'service_name' => (string) $forward['service_name'],
             'listen_port' => (int) $forward['listen_port'],
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
+            'native_outbound' => !empty($forward['native_outbound_enabled']),
+            'native_direction' => $forward['native_direction_key'] !== null
+                ? (string) $forward['native_direction_key']
+                : null,
             'bond_sidecar_point_id' => $sidecarRequired && $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
             'bond_sidecar_point_name' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_name'] ?? '') : '',
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
@@ -6293,6 +6303,10 @@ final class ProvisioningService
             }
         }
 
+        $nativeOutboundRequested = array_key_exists('native_outbound', $payload)
+            ? $this->featureFlagValue($payload['native_outbound'])
+            : !empty($existingForward['native_outbound_enabled'] ?? false);
+
         $hasForwardCombinationPayload = array_key_exists('forward_combination_id', $payload);
         $hasForwardRoutePayload = array_key_exists('forward_route_id', $payload);
         $catalogPlacementPayloadProvided = $hasForwardCombinationPayload || $hasForwardRoutePayload;
@@ -6360,7 +6374,7 @@ final class ProvisioningService
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
         }
-        if ($targetSource === 'service_ip') {
+        if (!$nativeOutboundRequested && $targetSource === 'service_ip') {
             $targetServiceId = $targetServiceId > 0 ? $targetServiceId : $serviceId;
             $targetService = $this->db->fetchOne(
                 'SELECT id, user_id, server_public_ip, server_ip_state FROM services WHERE id = :id LIMIT 1',
@@ -6380,12 +6394,17 @@ final class ProvisioningService
             $targetHost = $serviceIp;
         }
 
-        [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
-            $targetHost,
-            $targetPort,
-            $listenPort,
-            true
-        );
+        if (!$nativeOutboundRequested) {
+            [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+                $targetHost,
+                $targetPort,
+                $listenPort,
+                true
+            );
+        } else {
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
 
         if ($forwardRouteId > 0) {
             $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
@@ -6431,6 +6450,58 @@ final class ProvisioningService
             }
         }
         $ultraRuntime = UltraMode::isBackendMode($backendMode);
+
+        $nativeDirectionKey = null;
+        if ($nativeOutboundRequested) {
+            if (!$ultraRuntime || strtolower(trim($transportMode)) !== 'tcp+udp' || $forwardCombinationId <= 0) {
+                throw new ApiException('native_outbound_requires_ultra_tcp_udp', 422);
+            }
+            $plan = $this->db->fetchOne(
+                'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => (int) ($service['plan_id'] ?? 0)]
+            );
+            $service['plan_feature_flags_json'] = is_array($plan)
+                ? (string) ($plan['feature_flags_json'] ?? '')
+                : '';
+            if (!$this->planAllowsNativeOutbound($service)) {
+                throw new ApiException('native_outbound_not_allowed', 403);
+            }
+            $nativeDirection = trim((string) ($combination['line_direction'] ?? ''));
+            if ($nativeDirection === '') {
+                throw new ApiException('native_outbound_direction_missing', 422);
+            }
+            $nativeDirectionKey = $this->nativeDirectionKey($nativeDirection);
+            $conflict = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE service_id = :service_id
+                   AND native_direction_key = :direction_key
+                   AND native_outbound_enabled = 1
+                   AND enabled = 1
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1 FOR UPDATE',
+                [
+                    'service_id' => $serviceId,
+                    'direction_key' => $nativeDirectionKey,
+                    'forward_id' => (int) ($forwardId ?? 0),
+                ]
+            );
+            if (is_array($conflict)) {
+                throw new ApiException('native_direction_conflict', 409, [
+                    'direction' => UltraMode::redactProviderText($nativeDirection),
+                    'forward_id' => (int) ($conflict['id'] ?? 0),
+                ]);
+            }
+            $existingNativeTarget = $existingForward !== null
+                && !empty($existingForward['native_outbound_enabled'])
+                && trim((string) ($existingForward['target_host'] ?? '')) === '127.0.0.1'
+                && (int) ($existingForward['target_port'] ?? 0) > 0;
+            $targetHost = '127.0.0.1';
+            $targetPort = $existingNativeTarget
+                ? (int) $existingForward['target_port']
+                : $this->allocateNativeTargetPort($forwardId);
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
 
         $availableClients = $this->availableClientsForService($serviceId);
         $availableClientGroups = $this->availableClientGroupsForService($serviceId);
@@ -6817,6 +6888,8 @@ final class ProvisioningService
                 'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                 'cdn_host' => $cdnHost,
                 'filter_profile' => $filterProfile,
+                'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
                 'enabled' => 1,
                 'created_at' => $this->now(),
                 'updated_at' => $this->now(),
@@ -6856,6 +6929,8 @@ final class ProvisioningService
                      public_port = :public_port,
                      cdn_host = :cdn_host,
                      filter_profile = :filter_profile,
+                     native_outbound_enabled = :native_outbound_enabled,
+                     native_direction_key = :native_direction_key,
                      enabled = 1,
                      api_revision = :api_revision,
                      updated_at = :updated_at
@@ -6891,8 +6966,10 @@ final class ProvisioningService
                     'endpoint_count' => $endpointCount,
                     'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                     'cdn_host' => $cdnHost,
-                     'filter_profile' => $filterProfile,
-                     'api_revision' => $nextRevision,
+                    'filter_profile' => $filterProfile,
+                    'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                    'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
+                    'api_revision' => $nextRevision,
                      'updated_at' => $this->now(),
                 ]
             );
@@ -10506,6 +10583,39 @@ final class ProvisioningService
         }
 
         return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
+    }
+
+    private function nativeDirectionKey(string $direction): string
+    {
+        $key = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '_', $direction)));
+        $key = trim($key, '_');
+        if ($key === '') {
+            $key = hash('sha256', strtolower(trim($direction)));
+        }
+        return substr($key, 0, 64);
+    }
+
+    private function allocateNativeTargetPort(?int $excludeForwardId = null): int
+    {
+        for ($attempt = 0; $attempt < 64; $attempt++) {
+            $port = random_int(20000, 60000);
+            $row = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE target_host = :host
+                   AND target_port = :port
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1',
+                [
+                    'host' => '127.0.0.1',
+                    'port' => $port,
+                    'forward_id' => (int) ($excludeForwardId ?? 0),
+                ]
+            );
+            if (!is_array($row)) {
+                return $port;
+            }
+        }
+        throw new ApiException('native_target_port_unavailable', 409);
     }
 
     /**

@@ -438,25 +438,51 @@ final class ClientAgentController extends BaseController
                     $direction
                 );
                 $nativeTransport = (string) ($nativeCarrier['transport'] ?? '');
+                $routePolicy = UltraMode::normalizeNativeRoutePolicy($item['route_policy'] ?? 'restricted');
+                if ($routePolicy === null
+                    || ($routePolicy === UltraMode::NATIVE_ROUTE_POLICY_UNRESTRICTED
+                        && empty($nativeCarrier['unrestricted_allowed']))) {
+                    $lastError = 'native_route_policy_not_allowed';
+                    continue;
+                }
                 $requestDigest = strtolower(trim((string) ($item['target_digest'] ?? '')));
-                if ($routeScope === null || $nativeTransport !== 'tcp+udp'
-                    || !hash_equals(
-                        UltraMode::nativeScopeDigest($forwardId, $direction, $nativeTransport, $routeScope),
+                $digestMatches = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? hash_equals(
+                        UltraMode::nativeScopeDigest($forwardId, $direction, $nativeTransport, $routeScope ?? ''),
                         $requestDigest
-                    )) {
+                    ) || hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    )
+                    : hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    );
+                if ($routeScope === null || $nativeTransport !== 'tcp+udp' || !$digestMatches) {
                     $lastError = 'policy_scope_invalid';
                     continue;
                 }
-                $policy['target'] = implode("\n", [
-                    'native-outbound:v1',
-                    $forwardId,
-                    strtolower($direction),
-                    $nativeTransport,
-                    $routeScope,
-                ]);
+                $policy['target'] = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? implode("\n", [
+                        'native-outbound:v1',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                    ])
+                    : implode("\n", [
+                        'native-outbound:v2',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                        $routePolicy,
+                    ]);
                 $policy['transport'] = $nativeTransport;
                 $policy['direction'] = $direction;
                 $policy['route_scope'] = $routeScope;
+                $policy['route_policy'] = $routePolicy;
+                $policy['native_unrestricted_allowed'] = !empty($nativeCarrier['unrestricted_allowed']);
             }
             $selectionMode = strtolower(trim((string) ($item['selection_mode'] ?? '')));
             $maxCandidates = $selectionMode === 'auto'
@@ -733,6 +759,8 @@ final class ClientAgentController extends BaseController
                 'transport' => (string) ($forward['transport'] ?? ''),
                 'service_status' => (string) ($forward['service_status'] ?? ''),
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
+                'native_outbound' => !empty($forward['native_outbound'] ?? $forward['native_outbound_enabled'] ?? false),
+                'native_direction' => (string) ($forward['native_direction'] ?? $forward['native_direction_key'] ?? ''),
             ];
         }
         if ($nativeOutbound === null) {
