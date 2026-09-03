@@ -12,6 +12,7 @@ public sealed class NativeOutboundCapability
     [JsonPropertyName("default_forward_id")] public int? DefaultForwardId { get; init; }
     [JsonPropertyName("route_scopes")] public List<string> RouteScopes { get; init; } = [];
     [JsonPropertyName("default_route_scope")] public string DefaultRouteScope { get; init; } = "global";
+    [JsonPropertyName("unrestricted_allowed")] public bool UnrestrictedAllowed { get; init; }
     [JsonPropertyName("forwards")] public List<NativeOutboundForward> Forwards { get; init; } = [];
 
     public NativeOutboundForward? FindForward(int forwardId)
@@ -24,4 +25,5 @@ public sealed record NativeOutboundForward(
     [property: JsonPropertyName("scope_digest")] string ScopeDigest,
     [property: JsonPropertyName("transport")] string Transport,
     [property: JsonPropertyName("route_scopes")] IReadOnlyList<string> RouteScopes,
-    [property: JsonPropertyName("default_route_scope")] string DefaultRouteScope);
+    [property: JsonPropertyName("default_route_scope")] string DefaultRouteScope,
+    [property: JsonPropertyName("unrestricted_allowed")] bool UnrestrictedAllowed = false);

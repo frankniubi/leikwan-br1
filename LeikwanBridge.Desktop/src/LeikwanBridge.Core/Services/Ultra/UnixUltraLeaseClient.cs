@@ -50,6 +50,7 @@ public sealed class UnixUltraLeaseClient
             selection_tier = lease.SelectionTier,
             direction = lease.Direction,
             route_scope = lease.RouteScope,
+            route_policy = lease.RoutePolicy,
             endpoint = new { ip = lease.EndpointHost, port = lease.EndpointPort },
             credential = new
             {
