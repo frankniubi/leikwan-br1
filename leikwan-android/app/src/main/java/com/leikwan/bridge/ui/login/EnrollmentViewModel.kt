@@ -1,6 +1,7 @@
 package com.leikwan.bridge.ui.login
 
 import android.app.Application
+import android.util.Log
 import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -27,8 +28,7 @@ internal fun enrollmentErrorMessage(
 ): String {
     val causes = generateSequence(exception) { it.cause }.take(4).toList()
     if (causes.any { cause ->
-            cause is ProviderException ||
-                cause.message?.contains("ATTESTATION_KEYS_NOT_PROVISIONED", ignoreCase = true) == true
+            cause is ProviderException || cause.message?.contains("ATTESTATION_KEYS_NOT_PROVISIONED", ignoreCase = true) == true
         }) {
         return hardwareAttestationMessage
     }
@@ -79,6 +79,14 @@ class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
                 SessionGate.markTerminal(terminal)
                 _state.value = _state.value.copy(isLoading = false, error = terminal.code)
             } catch (exception: Exception) {
+                Log.e(
+                    "EnrollmentDebug",
+                    generateSequence<Throwable>(exception) { it.cause }
+                        .take(4)
+                        .joinToString(" <- ") { cause ->
+                            "${cause::class.java.name}:${cause.message.orEmpty().take(160)}"
+                        } + "\n" + Log.getStackTraceString(exception),
+                )
                 val message = enrollmentErrorMessage(
                     exception,
                     generic = s(R.string.login_error_generic),

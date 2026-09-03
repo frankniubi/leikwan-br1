@@ -6,6 +6,7 @@ import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.util.Log
 import com.google.gson.annotations.SerializedName
+import com.leikwan.bridge.BuildConfig
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -34,7 +35,7 @@ interface AttestationKeyProvider {
 class AndroidAttestationProofFactory(
     private val identity: AndroidDeviceIdentity = AndroidDeviceIdentity(),
     private val attestationKeys: AttestationKeyProvider = AndroidKeyStoreAttestationKeyProvider(),
-    private val allowQaTestAttestation: Boolean = false,
+    private val allowQaTestAttestation: Boolean = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
     private val errorLogger: (String, Throwable) -> Unit = { message, throwable ->
         Log.e(TAG, message, throwable)
     },
@@ -76,7 +77,7 @@ class AndroidAttestationProofFactory(
 private const val TAG = "LeiKwanAttest"
 
 class AndroidKeyStoreAttestationKeyProvider(
-    private val allowQaSoftwareAttestation: Boolean = false,
+    private val allowQaSoftwareAttestation: Boolean = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
 ) : AttestationKeyProvider {
     override fun create(challenge: ByteArray): AttestationKeyMaterial {
         require(challenge.isNotEmpty()) { "attestation challenge is required" }

@@ -12,6 +12,7 @@ import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.TunnelOrchestrator
@@ -44,10 +45,20 @@ data class ConnectionsUiState(
     val selectedForwardId: Long = 0L,
     /** forwardId -> nodeId; the user chooses which node each forward rides on. */
     val nodeByForward: Map<Long, Long> = emptyMap(),
+    val nativeOutbound: NativeOutboundCapability? = null,
+    val nativeSelected: Boolean = false,
+    val nativeForwardId: Long = 0L,
+    val nativeRouteScope: String = "global",
+    val nativeBypassChina: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null,
 ) {
     val hasNode: Boolean get() = nodes.isNotEmpty()
+    val nativeVisible: Boolean get() = nativeOutbound?.isUsable() == true
+    val nativeCarrier get() = nativeOutbound?.carrier(nativeForwardId)
+    val nativeScopes: List<String>
+        get() = nativeCarrier?.routeScopes ?: nativeOutbound?.routeScopes.orEmpty()
+    val hasUsablePath: Boolean get() = hasNode || (nativeSelected && nativeVisible && nativeCarrier != null)
 
     val selectedForwardServiceName: String
         get() = forwards.firstOrNull { it.forwardId == selectedForwardId }?.serviceName.orEmpty()
@@ -77,6 +88,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val stopConnect: () -> Unit = {
         TunnelOrchestrator.forApplication(app).stop()
     },
+    private val startNativeConnect: suspend (Long, String, Boolean) -> Unit = { id, scope, bypass ->
+        TunnelOrchestrator.forApplication(app).startNativeForForward(id, scope, bypass)
+    },
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
@@ -85,6 +99,10 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         ConnectionsUiState(
             selectedForwardId = prefs.selectedForwardId,
             vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
+            nativeSelected = prefs.nativeOutboundSelected,
+            nativeForwardId = prefs.nativeOutboundForwardId,
+            nativeRouteScope = prefs.nativeOutboundRouteScope,
+            nativeBypassChina = prefs.nativeOutboundBypassChina,
         )
     )
     val state = _state.asStateFlow()
@@ -121,6 +139,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     fun refreshForwards() {
         viewModelScope.launch {
+            val currentState = _state.value
+            val wasNativeActive = currentState.nativeSelected
+                && currentState.vpnStatus != VpnStatus.DISCONNECTED
+            val activeNativeForwardId = currentState.nativeForwardId
+            val activeNativeRouteScope = currentState.nativeRouteScope
             _state.update { it.copy(isLoading = true, error = null) }
             try {
                 val catalog = catalogFetcher(_state.value.selectedForwardId)
@@ -129,17 +152,65 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                     ?: _state.value.selectedForwardId.takeIf { fid -> forwards.any { it.forwardId == fid } }
                 val selected = desired ?: forwards.firstOrNull()?.forwardId ?: 0L
                 prefs.selectedForwardId = selected
+                val capability = catalog.nativeOutbound?.takeIf { it.isUsable() }
+                val nativeId = capability?.forwards
+                    ?.firstOrNull { it.forwardId == prefs.nativeOutboundForwardId }
+                    ?.forwardId
+                    ?: capability?.defaultForwardId?.takeIf { id -> capability.carrier(id) != null }
+                    ?: capability?.forwards?.firstOrNull()?.forwardId
+                    ?: 0L
+                val nativeCarrier = capability?.carrier(nativeId)
+                val preferredNativeScope = NativeOutboundCapability.normalizeScope(
+                    prefs.nativeOutboundRouteScope,
+                )
+                val nativeScope = nativeCarrier?.routeScopes
+                    ?.firstOrNull { it == preferredNativeScope }
+                    ?: nativeCarrier?.defaultRouteScope
+                    ?: capability?.defaultRouteScope
+                    ?: "global"
+                val nativeSelected = prefs.nativeOutboundSelected && capability != null && nativeCarrier != null
+                val displayedSelected = if (nativeSelected && forwards.any { it.forwardId == nativeId }) {
+                    nativeId
+                } else {
+                    selected
+                }
+                if (nativeSelected) prefs.selectedForwardId = displayedSelected
+                prefs.nativeOutboundForwardId = nativeId
+                prefs.nativeOutboundRouteScope = nativeScope
+                prefs.nativeOutboundBypassChina = if (nativeScope == "global") prefs.nativeOutboundBypassChina else false
+                prefs.nativeOutboundSelected = nativeSelected
                 _state.update { current ->
                     val next = current.copy(
                         forwards = forwards,
-                        selectedForwardId = selected,
+                        selectedForwardId = displayedSelected,
                         nodeByForward = seedNodeByForward(forwards, current.nodes, current.nodeByForward),
+                        nativeOutbound = capability,
+                        nativeSelected = nativeSelected,
+                        nativeForwardId = nativeId,
+                        nativeRouteScope = nativeScope,
+                        nativeBypassChina = prefs.nativeOutboundBypassChina,
                         isLoading = false,
                     )
                     next.selectedForwardId.takeIf { it > 0 }?.let { fid ->
                         next.nodeFor(fid)?.let { prefs.selectedProxyId = it.id }
                     }
                     next
+                }
+                val nativeAuthorizationChanged = wasNativeActive && (
+                    !nativeSelected
+                        || nativeId != activeNativeForwardId
+                        || nativeScope != activeNativeRouteScope
+                )
+                if (nativeAuthorizationChanged) {
+                    runCatching { stopConnect() }
+                        .onFailure { Log.w(TAG, "Error stopping revoked native VPN", it) }
+                    prefs.nativeOutboundSelected = false
+                    _state.update {
+                        it.copy(
+                            vpnStatus = VpnStatus.DISCONNECTED,
+                            nativeSelected = false,
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message, isLoading = false) }
@@ -154,6 +225,55 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         prefs.selectedForwardId = forwardId
         if (nodeId > 0L) prefs.selectedProxyId = nodeId
         _state.update { it.copy(selectedForwardId = forwardId) }
+    }
+
+    fun setNativeSelected(selected: Boolean) {
+        val current = _state.value
+        if (selected && (!current.nativeVisible || current.nativeCarrier == null)) return
+        if (!selected && current.nativeSelected && current.vpnStatus != VpnStatus.DISCONNECTED) {
+            runCatching { stopConnect() }
+                .onFailure { Log.w(TAG, "Error stopping disabled native VPN", it) }
+            _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED) }
+        }
+        prefs.nativeOutboundSelected = selected
+        _state.update { it.copy(nativeSelected = selected) }
+    }
+
+    fun setNativeForward(forwardId: Long) {
+        val current = _state.value
+        val carrier = current.nativeOutbound?.carrier(forwardId) ?: return
+        val scope = carrier.routeScopes.firstOrNull {
+            it.equals(current.nativeRouteScope, ignoreCase = true)
+        } ?: carrier.defaultRouteScope
+        val bypass = current.nativeBypassChina && scope == "global"
+        prefs.nativeOutboundForwardId = forwardId
+        prefs.nativeOutboundRouteScope = scope
+        prefs.nativeOutboundBypassChina = bypass
+        prefs.selectedForwardId = forwardId
+        _state.update {
+            it.copy(
+                selectedForwardId = forwardId,
+                nativeForwardId = forwardId,
+                nativeRouteScope = scope,
+                nativeBypassChina = bypass,
+            )
+        }
+    }
+
+    fun setNativeRouteScope(scope: String) {
+        val current = _state.value
+        val normalized = NativeOutboundCapability.normalizeScope(scope) ?: return
+        if (normalized !in current.nativeScopes) return
+        val bypass = current.nativeBypassChina && normalized == "global"
+        prefs.nativeOutboundRouteScope = normalized
+        prefs.nativeOutboundBypassChina = bypass
+        _state.update { it.copy(nativeRouteScope = normalized, nativeBypassChina = bypass) }
+    }
+
+    fun setNativeBypassChina(enabled: Boolean) {
+        if (_state.value.nativeRouteScope != "global") return
+        prefs.nativeOutboundBypassChina = enabled
+        _state.update { it.copy(nativeBypassChina = enabled) }
     }
 
     fun selectNodeForForward(forwardId: Long, nodeId: Long) {
@@ -174,8 +294,44 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 return@launch
             }
             val forwardId = s.selectedForwardId
-            if (forwardId == 0L || s.forwards.none { it.forwardId == forwardId }) {
+            if (!s.nativeSelected && (forwardId == 0L || s.forwards.none { it.forwardId == forwardId })) {
                 _state.update { it.copy(error = s(R.string.connections_error_select_service)) }
+                return@launch
+            }
+            if (s.nativeSelected) {
+                val nativeId = s.nativeForwardId.takeIf { id -> s.nativeOutbound?.carrier(id) != null }
+                    ?: s.nativeOutbound?.defaultForwardId
+                    ?: 0L
+                val carrier = s.nativeOutbound?.carrier(nativeId)
+                if (!s.nativeVisible || carrier == null) {
+                    _state.update { it.copy(error = s(R.string.connections_error_native_unavailable)) }
+                    return@launch
+                }
+                val scope = carrier.routeScopes.firstOrNull {
+                    it.equals(s.nativeRouteScope, ignoreCase = true)
+                } ?: carrier.defaultRouteScope
+                val bypass = s.nativeBypassChina && scope == "global"
+                prefs.proxyConnectionMode = ProxyConnectionMode.SERVICES
+                prefs.selectedForwardId = nativeId
+                prefs.nativeOutboundForwardId = nativeId
+                prefs.nativeOutboundRouteScope = scope
+                prefs.nativeOutboundBypassChina = bypass
+                _state.update {
+                    it.copy(
+                        selectedForwardId = nativeId,
+                        nativeForwardId = nativeId,
+                        nativeRouteScope = scope,
+                        nativeBypassChina = bypass,
+                        vpnStatus = VpnStatus.CONNECTING,
+                        error = null,
+                    )
+                }
+                try {
+                    startNativeConnect(nativeId, scope, bypass)
+                    _state.update { it.copy(vpnStatus = VpnStatus.CONNECTED) }
+                } catch (e: Exception) {
+                    _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = e.message) }
+                }
                 return@launch
             }
             val node = s.nodeFor(forwardId)

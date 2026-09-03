@@ -12,6 +12,35 @@ import java.time.Instant
 
 class UltraForwardRunnerTest {
     @Test
+    fun `native runner enables bounded automatic candidate selection`() {
+        val runtimeDir = Files.createTempDirectory("leikwan-ultra-native-test").toFile()
+        val forward = sampleForward()
+        val policy = UltraPolicy.from(forward, Instant.parse("2026-08-27T00:00:00Z"))!!
+
+        val plan = UltraForwardRunner.buildPlan(
+            forward = forward,
+            policy = policy,
+            binaries = RuntimeBinaryPaths(
+                wstunnelBinary = "/runtime/wstunnel",
+                ingressBinary = "/runtime/leikwan-ingress",
+                bondBinary = "/runtime/leikwan-bond",
+                ultraBinary = "/runtime/ultra-client",
+            ),
+            runtimeDir = runtimeDir,
+            nativeSocks5 = true,
+        )
+
+        val config = JsonParser.parseString(plan.configFile.readText()).asJsonObject
+        assertTrue(config.get("native_socks5").asBoolean)
+        assertTrue(config.get("auto_select").asBoolean)
+        assertEquals(5, config.get("probe_duration_seconds").asInt)
+        assertEquals(4, config.get("probe_workers").asInt)
+        assertEquals(250, config.get("probe_interval_ms").asInt)
+
+        UltraForwardRunner.cleanup(plan.runtimeContext)
+    }
+
+    @Test
     fun `runner writes private static config without lease credentials or provider endpoint`() {
         val runtimeDir = Files.createTempDirectory("leikwan-ultra-test").toFile()
         val forward = sampleForward()

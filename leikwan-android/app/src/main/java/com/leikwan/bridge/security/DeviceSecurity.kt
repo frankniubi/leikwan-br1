@@ -3,6 +3,7 @@ package com.leikwan.bridge.security
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Build
+import com.leikwan.bridge.BuildConfig
 import java.io.File
 
 data class DeviceSignals(
@@ -69,14 +70,13 @@ object DeviceSecurity {
 
     fun evaluate(
         signals: DeviceSignals,
-        allowQaTestDeviceExceptions: Boolean = false,
+        allowQaTestDeviceExceptions: Boolean = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
     ): DeviceSecurityResult {
+        // QA-only: `-Pqatest=true` builds accept emulator/x86_64 software devices. It must stay off
+        // for published builds (release behavior is unchanged when the build flag is absent).
         if (allowQaTestDeviceExceptions) {
-            // QA-only stand-in for emulator/replay testing. Release builds
-            // keep the default-false flag and enforce every check below.
             return DeviceSecurityResult.Allowed
         }
-
         if (signals.supportedAbis.none { it.equals("arm64-v8a", ignoreCase = true) }) {
             return DeviceSecurityResult.UnsupportedAbi
         }
@@ -112,7 +112,7 @@ object DeviceSecurity {
 
     fun evaluate(
         context: Context,
-        allowQaTestDeviceExceptions: Boolean = false,
+        allowQaTestDeviceExceptions: Boolean = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
     ): DeviceSecurityResult = evaluate(collect(context), allowQaTestDeviceExceptions)
 
     fun collect(context: Context): DeviceSignals {

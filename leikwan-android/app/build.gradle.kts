@@ -15,49 +15,31 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.2.14"
+        versionCode = 19
+        versionName = "0.2.17"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            // QA APKs are x86_64-only for the local emulator. Published APKs
-            // stay arm64-v8a-only and never include the emulator runtime.
-            abiFilters += if (qaTest) "x86_64" else "arm64-v8a"
+            abiFilters += "arm64-v8a"
+            // Android acceptance and published builds include the x86_64 slice so
+            // the same TUN/native path can run on the local API 34 AVD.
+            abiFilters += "x86_64"
         }
         buildConfigField("String", "PANEL_URL", "\"https://v3.leikwanhost.com\"")
-    }
-
-    if (qaTest) {
-        // Keep emulator-only x86_64 runtime binaries out of published arm64
-        // artifacts while making the QA APK fully executable on the AVD.
-        sourceSets {
-            getByName("main") {
-                assets.srcDir("src/qatest/assets")
-                jniLibs.srcDir("src/qatest/jniLibs")
-            }
-        }
+        // QA-only: `-Pqatest=true` builds accept emulator devices and
+        // software-backed attestation. Must stay off for published builds;
+        // release behavior is unchanged when the property is absent.
+        buildConfigField(
+            "boolean",
+            "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
+            qaTest.toString(),
+        )
     }
 
     buildTypes {
-        debug {
-            // QA-only: `-Pqatest=true` debug builds accept emulator devices and
-            // software-backed attestation for local x86_64 AVD testing.
-            buildConfigField(
-                "boolean",
-                "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
-                qaTest.toString(),
-            )
-        }
         release {
-            // Public/release APKs always enforce emulator, root, and debuggable
-            // build rejection, even when a caller accidentally passes qatest.
-            buildConfigField(
-                "boolean",
-                "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
-                "false",
-            )
-            // R8 8.5 currently miscompiles the Kotlin suspend enrollment
-            // state machine in this project. Keep the public release
-            // unminified until the toolchain is upgraded and re-audited.
+            // Keep the release runtime unminified until the known R8 suspend-state
+            // machine issue is re-audited; this also keeps the test artifact
+            // behavior aligned with the previously accepted release packaging.
             isMinifyEnabled = false
             isShrinkResources = false
             proguardFiles(

@@ -23,6 +23,7 @@ class LeikwanVpnServiceTest {
     fun resetState() {
         LeikwanVpnService.startupState = VpnStartupState.IDLE
         LeikwanVpnService.lastStartError = null
+        LeikwanVpnService.configJson = null
     }
 
     @Test
@@ -43,5 +44,17 @@ class LeikwanVpnServiceTest {
             .get()
 
         assertTrue(service.usePlatformAutoDetectInterfaceControl())
+    }
+
+    @Test
+    fun `stopping the vpn drops the ephemeral config`() {
+        val service = Robolectric.buildService(LeikwanVpnService::class.java)
+            .create()
+            .get()
+        LeikwanVpnService.configJson = "{\"password\":\"ephemeral\"}"
+
+        service.stopVpn()
+
+        assertNull(LeikwanVpnService.configJson)
     }
 }

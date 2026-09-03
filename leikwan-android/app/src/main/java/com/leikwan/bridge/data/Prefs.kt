@@ -48,6 +48,22 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getLong("selected_forward_id", 0L)
         set(v) = prefs.edit().putLong("selected_forward_id", v).apply()
 
+    var nativeOutboundSelected: Boolean
+        get() = prefs.getBoolean("native_outbound_selected", false)
+        set(v) = prefs.edit().putBoolean("native_outbound_selected", v).apply()
+
+    var nativeOutboundForwardId: Long
+        get() = prefs.getLong("native_outbound_forward_id", 0L)
+        set(v) = prefs.edit().putLong("native_outbound_forward_id", v).apply()
+
+    var nativeOutboundRouteScope: String
+        get() = prefs.getString("native_outbound_route_scope", "global") ?: "global"
+        set(v) = prefs.edit().putString("native_outbound_route_scope", v).apply()
+
+    var nativeOutboundBypassChina: Boolean
+        get() = prefs.getBoolean("native_outbound_bypass_china", false)
+        set(v) = prefs.edit().putBoolean("native_outbound_bypass_china", v).apply()
+
     var selectedProxyId: Long
         get() = prefs.getLong("selected_proxy_id", 0L)
         set(v) = prefs.edit().putLong("selected_proxy_id", v).apply()
@@ -165,6 +181,10 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("client_id")
             .remove("client_name")
             .remove("selected_forward_id")
+            .remove("native_outbound_selected")
+            .remove("native_outbound_forward_id")
+            .remove("native_outbound_route_scope")
+            .remove("native_outbound_bypass_china")
             .commit()
         check(cleared) { "failed to clear enrollment state" }
         if (clearIdentity) {
