@@ -12,8 +12,13 @@ Status: implemented and locally verified; not deployed
 - Feature head: `9dcbe35008047f78487e7e7e434e48b0aa943bd3`
 - Windows GUI version built: `0.1.20.4`
 - Release GUI output: `LeikwanBridge.Desktop/src/LeikwanBridge.App/bin/Release/net8.0-windows/win-x64/`
+- Windows GUI entry point: `LeikwanBridge.Desktop/src/LeikwanBridge.App/bin/Release/net8.0-windows/win-x64/LeikwanBridge.App.exe`
+- GUI `LeikwanBridge.App.exe` SHA-256:
+  `2AFDAC5EFE64033045448DBE8230FE0A7D17088C647D0C63ECE37E340E1B38E7`
 - GUI `LeikwanBridge.App.dll` SHA-256:
   `0D1A1C16E2FE9FD23308C29EE382897569758629C25A2DE3D1F9F1AD6B09EE57`
+- Run the EXE with the complete containing directory; do not copy only the
+  entry point.
 - Windows amd64 relay test artifact:
   `artifacts/ultra/ultra-client_windows_amd64_native-policy-20260903.exe`
 - Relay size: `6,867,968` bytes
