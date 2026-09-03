@@ -96,7 +96,7 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "real builds require macOS"
-for command in dotnet cargo rustup go git shasum strip; do
+for command in dotnet cargo rustup go git shasum strip base64; do
   command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
 done
 
@@ -113,6 +113,7 @@ fi
 garble_identity="$($garble_path version 2>/dev/null || true)"
 printf '%s\n' "$garble_identity" | grep -Fq "$garble_version" \
   || fail "garble version mismatch: expected $garble_version"
+garble_seed="$(printf 'leikwan-macos-%s-%s' "$version" "$rid" | base64 | tr -d '\n')"
 
 python3 - "$repo_root" "$output_root" <<'PY'
 import pathlib
@@ -156,7 +157,7 @@ cargo build \
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
-    "$garble_path" -literals -tiny -seed="leikwan-macos-$version-$rid" build \
+    "$garble_path" -literals -tiny -seed="$garble_seed" build \
       -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
       -o "$helper_dir/ultra-client" .
 )
