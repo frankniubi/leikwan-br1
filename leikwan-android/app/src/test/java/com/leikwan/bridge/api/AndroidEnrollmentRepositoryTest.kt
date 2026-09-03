@@ -2,6 +2,7 @@ package com.leikwan.bridge.api
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.security.AttestationProof
@@ -45,6 +46,10 @@ class AndroidEnrollmentRepositoryTest {
             routeRuleStore = ClientRouteRuleStore.from(context),
             httpClientOverride = OkHttpClient(),
             deviceIdProvider = { deviceId },
+            // Robolectric does not provide the AndroidKeyStore provider. Keep
+            // the production Keystore default intact and inject a stable
+            // public-key fixture for the HTTP contract tests.
+            identityPublicKeyProvider = { "identity-public-key".toByteArray() },
             attestationProofProvider = { nonce, clientId, requestedDeviceId ->
                 assertEquals("challenge-a", nonce)
                 assertEquals(17L, clientId)
@@ -84,17 +89,17 @@ class AndroidEnrollmentRepositoryTest {
         assertEquals(deviceId, challenge.getHeader("X-Device-Id"))
         assertEquals("Pixel QA", challenge.getHeader("X-Device-Name"))
         assertEquals("android-host", challenge.getHeader("X-Device-Platform"))
-        assertEquals("0.2.1", challenge.getHeader("X-Client-Version"))
+        assertEquals(BuildConfig.VERSION_NAME, challenge.getHeader("X-Client-Version"))
         assertTrue(challenge.getHeader("User-Agent")!!.startsWith("LeiKwan-Host-Android/"))
         assertNull(challenge.getHeader("X-Device-Session"))
         assertFalse(challenge.body.readUtf8().contains("password", ignoreCase = true))
 
         val enroll = server.takeRequest()
-        assertEquals("/api/client/devices/enroll", enroll.path)
+        assertEquals("/api/client/devices/identity/enroll", enroll.path)
         assertEquals("Bearer agent-token", enroll.getHeader("Authorization"))
         val body = enroll.body.readUtf8()
         assertTrue(body.contains("\"client_id\":17"))
-        assertTrue(body.contains("\"attestation_proof\""))
+        assertTrue(body.contains("\"identity_public_key\""))
         assertFalse(body.contains("email", ignoreCase = true))
 
         server.enqueue(json(200, """{"ok":true}"""))
