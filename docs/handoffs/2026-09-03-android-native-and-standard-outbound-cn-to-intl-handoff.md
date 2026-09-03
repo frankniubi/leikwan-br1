@@ -109,6 +109,21 @@ Evidence:
 - `artifacts/android/android-qa-20260903-final/logcat-qa-smoke-20260904.txt`
 - `artifacts/android/android-qa-20260903-final/tombstones-final-20260904.txt`
 
+The first public QA APK was a debug-signed package (`Android Debug`, SHA-256
+`512D0FEFC40842E7E935F98F273F0DDFB2246127BD0FD9CAE34D25BF800A128A`). It shared
+the production `applicationId` but not the production signing certificate, so
+Android correctly rejected an in-place install with `package conflicts with an
+existing package`. A QA derivative was re-aligned and signed with the existing
+controlled `LeiKwan Android Unstable` certificate (v2/v3 verified):
+
+- Local signed package:
+  `artifacts/android/android-qa-20260903-final/app-qa-unstable-signed-20260904.apk`
+- Signed package SHA-256: `500878B8738EFA888C6EC1A76BD7D685637CFE0D3694BCC62D8788DB0B5E5EAA`
+- Signed package size: `102696514` bytes
+- AVD proof: formal release package installed, then signed QA package installed
+  with `adb install -r -d`; both returned `Success`. The public re-download of
+  the signed package also installed with `Success`.
+
 The emulator shell cannot read `/data/tombstones` (`Permission denied`). Therefore
 this is a tombstone-access limitation, not a claim that no tombstone exists.
 
@@ -248,13 +263,15 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   - URL: `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.apk`
   - Remote path:
     `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.apk`
-  - Local source: `artifacts/android/android-qa-20260903-final/app-debug-qa-20260904.apk`
+  - Local source: `artifacts/android/android-qa-20260903-final/app-qa-unstable-signed-20260904.apk`
   - Source, remote, and HTTP re-download SHA-256:
-    `512D0FEFC40842E7E935F98F273F0DDFB2246127BD0FD9CAE34D25BF800A128A`
-  - Source, remote, and HTTP re-download size: `102647220` bytes
-  - HTTP verification: `200 OK`, `Content-Length: 102647220`
+    `500878B8738EFA888C6EC1A76BD7D685637CFE0D3694BCC62D8788DB0B5E5EAA`
+  - Source, remote, and HTTP re-download size: `102696514` bytes
+  - HTTP verification: `200 OK`, `Content-Length: 102696514`
   - Remote staging file was installed with mode `0644`, then removed; the new
-    target did not replace an existing artifact.
+    signed target replaced the debug QA file atomically.
+  - The previous debug QA bytes remain at the remote rollback path:
+    `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904/android-native-cn-to-intl-qa-20260904.debug-original-20260904.apk`
 - This package is a debug QA build with
   `ALLOW_QA_TEST_DEVICE_EXCEPTIONS=true`. It is suitable for disposable AVD
   testing only; native outbound remains blocked by the `BridgeOptions` AAR gate.
@@ -269,7 +286,7 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   still failing.
 - Publication evidence and the byte-for-byte re-download are recorded in
   `artifacts/android/android-qa-20260903-final/remote-publish-evidence-20260904.txt`
-  and `remote-download-20260904.apk`.
+  and `remote-download-signed-20260904.apk`.
 - The tracked `libbox.aar` remains at SHA-256
   `706C139FC1C5F0366494135FCF1D857F899D62965D19734EBC56AF4FF532CCB0`.
 - To roll back the test-only source change, revert only the diff in
