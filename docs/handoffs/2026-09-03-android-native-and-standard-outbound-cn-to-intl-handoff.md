@@ -2,7 +2,10 @@
 
 Date: 2026-09-04 (work performed 2026-09-03/04, Asia/Taipei)
 Scope: Android only; current `master` checkout; Mainland China -> international direction.
-Status: PARTIAL / BLOCKED. JVM and QA smoke are green. Native outbound and connected acceptance are not accepted.
+Status: PARTIAL. Ordinary Ultra local runtime is fixed, passes an AVD provider round-trip,
+and the controlled-signature QA artifact is published;
+native outbound remains blocked by the Java/native AAR gate, and full connected acceptance
+remains unaccepted.
 
 ## Purpose
 
@@ -15,16 +18,21 @@ compatibility boundary without using an old worktree or overwriting unrelated wo
 
 - Workspace: `C:\Users\frankniubi\Downloads\leikwan-br1`
 - Branch: `master`
+- This follow-up started from current HEAD `cf1e043bcce2948303e25eccb1bdd81d5f12a05c`
+  (`fix(android): publish cache-busting signed QA URL`), not an older worktree.
 - Baseline used for Android verification: `565a25ed2fa494454a3facc5a4171e9b9b1d3516`
   (`fix(panel): accept native forward form payload`). The scoped Android test
   change was committed as `d65a1b43b0307326a34dd0bed0ea1aa9a9350403`.
 - The checkout was already dirty. Unrelated changes and artifacts were preserved.
-- No worktree switch, reset, clean, production `DeviceSecurity` weakening, server
-  deployment, or replacement of `app/libs/libbox.aar` was performed.
+- No worktree switch, reset, clean, production `DeviceSecurity` weakening, production
+  manifest update, or replacement of `app/libs/libbox.aar` was performed. A separate
+  static QA artifact was published after local verification; it is not a production
+  Android release.
 
 ## Actual source change
 
-Only this tracked Android test file was changed:
+The earlier enrollment test change remains unchanged. This follow-up also changes the
+ordinary Android Ultra selection path and adds bounded Android runtime evidence:
 
 - `leikwan-android/app/src/test/java/com/leikwan/bridge/api/AndroidEnrollmentRepositoryTest.kt`
   - injects a stable `identityPublicKeyProvider` fixture because Robolectric does
@@ -33,8 +41,27 @@ Only this tracked Android test file was changed:
   - asserts the current `/api/client/devices/identity/enroll` endpoint and
     `identity_public_key` request field.
 
-No Android production source was changed in this pass. The existing QA-only device
-exception and CN -> international scope/UI implementation were compiled as-is.
+- `leikwan-android/app/src/main/java/com/leikwan/bridge/service/ProxySelectionPolicy.kt`
+  restores the pre-31-August `singleNodeForServices` contract. Ordinary Ultra with a
+  selected protocol node now keeps exactly that node; Ultra with no selected node keeps
+  the raw fixed-target bridge path.
+- `leikwan-android/app/src/main/java/com/leikwan/bridge/service/TunnelOrchestrator.kt`
+  passes `proxyOptional = true` only when ordinary Ultra has no selected node and passes
+  `singleNodeForServices = true` for ordinary Ultra.
+- `leikwan-android/app/src/test/java/com/leikwan/bridge/service/ProxySelectionPolicyTest.kt`
+  covers the selected-node regression.
+- `leikwan-android/app/src/androidTest/java/com/leikwan/bridge/singbox/NativeOutboundConfigRuntimeTest.kt`
+  verifies both ordinary Ultra route shapes with the packaged libbox runtime.
+- `leikwan-android/app/src/androidTest/java/com/leikwan/bridge/runtime/UltraRuntimeProcessSmokeTest.kt`
+  starts the packaged x86_64 ordinary Ultra process and performs a local provider
+  handshake/control-lease/TCP payload round-trip; cleanup is bounded and does not use a
+  production lease.
+
+Root cause confirmed against pre-31-August commit `1460bfdf`: `a163c2b5` changed the
+ordinary Ultra call to `proxyOptional = selectedEffective?.mode == ULTRA` and removed
+`singleNodeForServices`. A selected protocol node was therefore treated as optional and
+was omitted from the sing-box config. The fix restores the old behavior without changing
+the native outbound path.
 
 ## JVM verification
 
@@ -47,7 +74,7 @@ cd leikwan-android
 
 Result: **PASS**
 
-- 292 tests
+- 293 tests
 - 0 failures
 - 0 errors
 - 0 skipped
@@ -55,10 +82,39 @@ Result: **PASS**
 
 Evidence:
 
-- `artifacts/android/android-jvm-20260903-final.log`
-- `artifacts/android/android-jvm-20260904-count.log`
-- `artifacts/android/android-qa-20260903-final/jvm-count-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/android-jvm-final-20260904.log`
+- `artifacts/android/android-ultra-fix-20260904/android-jvm-count-final-20260904.txt`
+- `artifacts/android/android-jvm-20260904-ultra-fix.log` (earlier run)
 - `leikwan-android/app/build/test-results/testDebugUnitTest/` (64 XML suites)
+
+Final XML count: `files=64 tests=293 failures=0 errors=0 skipped=0`.
+
+## Ordinary Ultra verification
+
+The final focused checks are separate from the previously aborted 17-test UTP run:
+
+- Go runtime: `go test -count=1 ./...` **PASS** (`2.151s`), evidence
+  `artifacts/android/android-ultra-fix-20260904/go-test-20260904-nocache.log`.
+- AVD config/runtime check: `NativeOutboundConfigRuntimeTest` **2/2 PASS**. It calls
+  `Libbox.checkConfig` for the no-node bridge and selected-node adapter, and asserts
+  `127.0.0.1:30522`, final tag `proxy-7`, and exactly one protocol adapter. Evidence:
+  `artifacts/android/android-ultra-fix-20260904/instrument-native-config-final-20260904.txt`.
+- AVD packaged process/data check: `UltraRuntimeProcessSmokeTest` **2/2 PASS**. The
+  second test injects an ordinary `leikwan-ultra-policy-v2` lease over the real Unix
+  control socket, accepts the current handshake in a local provider fixture, and echoes
+  the payload after the runtime's XOR transform. Evidence:
+  `artifacts/android/android-ultra-fix-20260904/instrument-ultra-runtime-final2-20260904.txt`.
+- AVD: `LeiKwan_QA_API34` / `emulator-5556`, ABI `x86_64,arm64-v8a`, package
+  `com.leikwan.bridge` version `0.2.18` code `20`. No `FATAL EXCEPTION`, `SIGABRT`,
+  `BridgeOptions`, or `ClassNotFoundException` appeared in the focused logcat. Full
+  evidence: `artifacts/android/android-ultra-fix-20260904/logcat-ultra-runtime-final2-20260904.txt`
+  and `signed-launch-logcat-final-20260904.txt`.
+
+These checks prove the packaged ordinary runtime and Android config/selection wiring;
+they do not prove a live panel lease or production provider line. The older real-device
+evidence in `docs/handoffs/2026-08-28-android-ultra-data-path-handoff.md` still records
+the provider path stalling after 1,733 bytes, so account-backed traffic remains
+**UNPROVEN** until rerun with a current active lease.
 
 ## QA APK and emulator
 
@@ -108,6 +164,34 @@ Evidence:
 - `artifacts/android/android-qa-20260903-final/qa-smoke-evidence-20260904.txt`
 - `artifacts/android/android-qa-20260903-final/logcat-qa-smoke-20260904.txt`
 - `artifacts/android/android-qa-20260903-final/tombstones-final-20260904.txt`
+
+### Ordinary Ultra fix artifact
+
+The reproducible QA package was rebuilt after the ordinary Ultra fix:
+
+- Unsigned APK: `artifacts/android/android-ultra-fix-20260904/app-debug-qa-20260904-ultra-fix-unsigned.apk`
+  (102,647,348 bytes, SHA-256 `C46FA1CA67433B5A31EC8E4FE63F767FC5D766EA85ACB94E757863685E5CC193`).
+- Installable controlled-signature APK:
+  `artifacts/android/android-ultra-fix-20260904/app-debug-qa-20260904-ultra-fix-unstable-signed.apk`
+  (102,696,514 bytes, SHA-256 `7BA5465D59BB7D886855753F50412E8669638B773360C7EB6AE9E551FBABC1A6`).
+- Instrumentation APK: `artifacts/android/android-ultra-fix-20260904/app-debug-androidTest-20260904-ultra-fix.apk`
+  (1,084,539 bytes, SHA-256 `F55EAE90EF583B740F6ABF83316B8EC61389DF22FCB467A26A98EE6426A1DF14`).
+- BuildConfig: debug QA, version `0.2.18` / code `20`,
+  `ALLOW_QA_TEST_DEVICE_EXCEPTIONS=true`.
+- Signature: `CN=LeiKwan Android Unstable`; certificate SHA-256
+  `2fde6e1ec7142a2e800ee21880d7b0a163857de6985c2def5ad095aad1a68388`.
+- `apksigner verify` v2/v3 and both Android artifact verifiers: **PASS**. The
+  signed APK was installed on `emulator-5556` after removing the old debug-signed
+  package; `adb install` returned `Success`.
+
+Evidence:
+
+- `artifacts/android/android-ultra-fix-20260904/artifact-manifest-final-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/signed-artifact-evidence-final-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/apksigner-verify-final-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/signed-install-final-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/verify-native-signed-final-20260904.txt`
+- `artifacts/android/android-ultra-fix-20260904/verify-ultra-signed-final-20260904.txt`
 
 The first public QA APK was a debug-signed package (`Android Debug`, SHA-256
 `512D0FEFC40842E7E935F98F273F0DDFB2246127BD0FD9CAE34D25BF800A128A`). It shared
@@ -258,8 +342,36 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
 
 ## Deploy and rollback
 
-- A QA-only Android package was published as a new static artifact (no formal
-  updater/production manifest change):
+- Latest ordinary Ultra fix artifact (published 2026-09-04 after the local AVD
+  verification above):
+  - Cache-busting URL:
+    `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904-ultra-fix-signed/android-ultra-cn-to-intl-qa-20260904.apk`
+  - Remote path:
+    `/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/public/artifacts/native-outbound-test-20260904-ultra-fix-signed/android-ultra-cn-to-intl-qa-20260904.apk`
+  - Local source:
+    `artifacts/android/android-ultra-fix-20260904/app-debug-qa-20260904-ultra-fix-unstable-signed.apk`
+  - Source, remote, and HTTP re-download SHA-256:
+    `7BA5465D59BB7D886855753F50412E8669638B773360C7EB6AE9E551FBABC1A6`
+  - Size: `102696514` bytes; HTTP: `200 OK`; `Content-Length: 102696514`.
+  - Remote install mode is `0644`; publication used a temporary upload and an
+    atomic move. Any pre-existing same-name target was copied to the remote
+    `/root/codex-backups/android-ultra-fix-20260904/` directory first.
+  - Publication evidence and byte-for-byte HTTP re-download:
+    `artifacts/android/android-ultra-fix-20260904/remote-publish-ultra-fix-evidence-20260904.txt`
+    and `remote-download-ultra-fix-20260904.apk`.
+- This package is signed `CN=LeiKwan Android Unstable`, version `0.2.18` /
+    code `20`, and carries `ALLOW_QA_TEST_DEVICE_EXCEPTIONS=true`. It is for a
+    disposable QA AVD/device; it does not update `artifacts/versions.json`.
+  - The HTTP re-download was installed on `emulator-5556` with `adb install -r -d`
+    (`Success`), and the package reported certificate SHA-256
+    `2fde6e1ec7142a2e800ee21880d7b0a163857de6985c2def5ad095aad1a68388`.
+    Evidence: `remote-download-install-20260904.txt`,
+    `remote-download-package-20260904.txt`, and
+    `remote-download-launch-logcat-20260904.txt`.
+
+- Earlier native QA package (historical, retained for rollback/reference):
+  - A QA-only Android package was published as a new static artifact (no formal
+    updater/production manifest change):
   - Canonical cache-busting URL:
     `https://v3.leikwanhost.com/artifacts/files/native-outbound-test-20260904-signed/android-native-cn-to-intl-qa-20260904.apk`
   - The original URL was also replaced with the signed bytes, but its immutable
@@ -295,6 +407,8 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
   and `remote-download-signed-20260904.apk`.
 - The tracked `libbox.aar` remains at SHA-256
   `706C139FC1C5F0366494135FCF1D857F899D62965D19734EBC56AF4FF532CCB0`.
-- To roll back the test-only source change, revert only the diff in
-  `AndroidEnrollmentRepositoryTest.kt`; do not clean the pre-existing dirty
-  checkout or delete the evidence directories.
+- The ordinary Ultra source/test change is committed as
+  `5942677b` (`fix(android): restore ordinary ultra protocol adapter selection`).
+  Roll back only that commit if required; do not clean the pre-existing dirty
+  checkout or delete the evidence directories. The earlier enrollment test change
+  remains in its separate commit `d65a1b43`.

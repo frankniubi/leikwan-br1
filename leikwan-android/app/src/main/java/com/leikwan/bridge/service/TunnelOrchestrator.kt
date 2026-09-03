@@ -483,7 +483,12 @@ class TunnelOrchestrator internal constructor(
             forwardId = selectedForward ?: 0L,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA,
+            // Ordinary Ultra owns the provider hop, but its fixed target may itself be a
+            // protocol endpoint. Preserve the pre-native behavior: with a selected protocol
+            // node, use exactly that one adapter against the local Ultra listener; with no
+            // selected node, keep the raw fixed-target bridge path.
+            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA && prefs.selectedProxyId == 0L,
+            singleNodeForServices = selectedEffective?.mode == ForwardMode.ULTRA,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
