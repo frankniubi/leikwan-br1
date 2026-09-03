@@ -150,10 +150,17 @@ func TestControlDeadlineIncludesProbeWindowAndGrace(t *testing.T) {
 	}
 }
 
-func TestHandshakeGreetingOrderAlwaysStartsWithCurrent(t *testing.T) {
+func TestHandshakeGreetingOrderForOrdinaryStreamStartsWithLegacy(t *testing.T) {
 	order := handshakeGreetingOrder(ProviderLease{IP: "203.0.113.10", Port: 5438})
+	if len(order) != 2 || !bytes.Equal(order[0], legacyHandshakeGreeting) || !bytes.Equal(order[1], currentHandshakeGreeting) {
+		t.Fatalf("greeting order=%x, want legacy then current", order)
+	}
+}
+
+func TestHandshakeGreetingOrderForNativeStreamStartsWithCurrent(t *testing.T) {
+	order := nativeHandshakeGreetingOrder(ProviderLease{IP: "203.0.113.10", Port: 5438})
 	if len(order) != 2 || !bytes.Equal(order[0], currentHandshakeGreeting) || !bytes.Equal(order[1], legacyHandshakeGreeting) {
-		t.Fatalf("greeting order=%x, want current then legacy", order)
+		t.Fatalf("native greeting order=%x, want current then legacy", order)
 	}
 }
 
