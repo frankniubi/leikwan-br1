@@ -14,6 +14,8 @@ final class UltraMode
     public const NATIVE_ROUTE_SCOPE_CN_ONLY = 'cn_only';
     public const NATIVE_ROUTE_SCOPE_INTL_ONLY = 'intl_only';
     public const NATIVE_ROUTE_SCOPE_GLOBAL = 'global';
+    public const NATIVE_ROUTE_POLICY_RESTRICTED = 'restricted';
+    public const NATIVE_ROUTE_POLICY_UNRESTRICTED = 'unrestricted';
     public const LEASE_ENDPOINT = '/api/client/ultra/lease';
     public const MIN_POLICY_TTL_SECONDS = 60;
     public const MAX_POLICY_TTL_SECONDS = 300;
@@ -52,6 +54,44 @@ final class UltraMode
             strtolower(trim($transport)),
             strtolower(trim($routeScope)),
         ]));
+    }
+
+    /**
+     * Versioned digest used by clients that explicitly opt into a route
+     * policy.  The legacy v1 digest above remains valid for restricted leases
+     * so older Android/MacOS clients are not invalidated by a Panel upgrade.
+     */
+    public static function nativeScopeDigestV2(
+        int $forwardId,
+        string $direction,
+        string $transport,
+        string $routeScope,
+        string $routePolicy,
+    ): string {
+        $normalizedPolicy = self::normalizeNativeRoutePolicy($routePolicy);
+        if ($normalizedPolicy === null) {
+            throw new \InvalidArgumentException('invalid native route policy');
+        }
+        return hash('sha256', implode("\n", [
+            'native-outbound:v2',
+            $forwardId,
+            strtolower(trim($direction)),
+            strtolower(trim($transport)),
+            strtolower(trim($routeScope)),
+            $normalizedPolicy,
+        ]));
+    }
+
+    public static function normalizeNativeRoutePolicy(mixed $value): ?string
+    {
+        $normalized = strtolower(trim((string) $value));
+        if ($normalized === '') {
+            return self::NATIVE_ROUTE_POLICY_RESTRICTED;
+        }
+        return in_array($normalized, [
+            self::NATIVE_ROUTE_POLICY_RESTRICTED,
+            self::NATIVE_ROUTE_POLICY_UNRESTRICTED,
+        ], true) ? $normalized : null;
     }
 
     /** @return array<int, string> */

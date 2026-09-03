@@ -12746,6 +12746,7 @@ final class ProvisioningService
             'allow_inbound_proxy' => false,
             'allow_latency_test' => false,
             'allow_native_outbound' => false,
+            'allow_native_outbound_unrestricted' => false,
         ];
     }
 
@@ -12813,6 +12814,20 @@ final class ProvisioningService
     {
         $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
         return is_array($raw) && ($raw['allow_native_outbound'] ?? false) === true;
+    }
+
+    /**
+     * Unrestricted native routing is a separate administrator-controlled plan
+     * capability and never inherits a user feature flag.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeUnrestrictedOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw)
+            && ($raw['allow_native_outbound'] ?? false) === true
+            && ($raw['allow_native_outbound_unrestricted'] ?? false) === true;
     }
 
     /**
