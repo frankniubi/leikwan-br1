@@ -1,8 +1,9 @@
 # macOS native outbound / VLESS / optional drawer follow-up
 
 - Date: 2026-09-03 (Asia/Taipei)
-- Scope: macOS client source and the shared Windows optional native-outbound
-  surface. No production panel mutation or client installation was performed.
+- Scope: macOS client source, the shared Windows optional native-outbound
+  surface, and publication of the macOS 1.0.5 artifacts. No client installation
+  was performed.
 - Reference: `docs/handoffs/2026-09-03-windows-native-cn-only-dns-handoff.md`
 - This follow-up supersedes the protocol and Connections-view claims in
   `docs/handoffs/2026-08-27-macos-client-handoff.md`; that document remains an
@@ -85,6 +86,13 @@ Passed locally:
   module cache, and generated DMG/update ZIP pairs for both RIDs.
 - The arm64 DMG was mounted read-only; the app and all six helpers reported
   arm64 via `lipo`. The real Ultra canary leak scan passed with `ok`.
+- The local public artifact directory and manifest were updated, then deployed
+  to the production panel with an old-file backup. The panel's `php-fpm` unit
+  remained active.
+- Public `versions.json` and `client-manifest.json` returned all four 1.0.5
+  entries. Full GET downloads of both DMGs and both update ZIPs matched the
+  published SHA-256 and `size_bytes`; 1 MiB Range requests returned HTTP 206
+  with matching `Content-Range` totals.
 - Mac AXAML and Windows XAML XML parsing passed; `git diff --check` passed.
 - Static production-source check found no VLESS references under
   `LeikwanBridge.Desktop/src/LeikwanBridge.Mac`.
@@ -94,6 +102,9 @@ Known non-blocking workstation warnings:
 - The Mac restore/build emitted the existing `NU1900` warning because the
   NuGet vulnerability endpoint was unreachable; packages were restored from
   the locked local cache.
+- The production checkout does not contain the local `master/tests` tree, so a
+  post-deploy PHP contract could not be run on-host; the same contract passed
+  locally before deployment and the remote file/hash gate passed.
 - The first all-in-one build attempt could not download Go modules from the
   network; the pinned sing-box source was then compiled successfully with the
   test Mac's existing local module cache (`GOPROXY=off`, `GOSUMDB=off`) before
@@ -106,15 +117,20 @@ Not proven here:
 
 - Real macOS Tahoe Network Extension/TUN behavior, DNS-leak capture, sustained
   TCP/UDP throughput, sleep/wake, and clean-host installation.
-- Signing, notarization, public artifact publication, and a clean-host install.
+- Signing, notarization, and a clean-host install.
 
 ## Artifact and deployment status
 
-The test artifacts were copied to the credential-free local staging directory
-`artifacts/macos-test-20260903/{arm64,x64}/` and were not copied over the
-published `artifacts/macos` files. The isolated remote build directory was
-`/Users/leikwan/leikwan-macos-build-20260903-native-dns`; no panel, public
-manifest, or installed client was mutated.
+The final test artifacts remain in the credential-free local staging directory
+`artifacts/macos-test-20260903/{arm64,x64}/`. The published local files in
+`artifacts/macos/` and `artifacts/versions.json` now point to version 1.0.5.
+The isolated remote build directory was
+`/Users/leikwan/leikwan-macos-build-20260903-native-dns`.
+
+The production panel deployment used the backup
+`/root/codex-backups/macos-native-dns-release-20260903-154930`, which contains
+the previous macOS files, previous `versions.json`, and the incoming release
+copy. No client installation or server application code was changed.
 
 Final test artifact hashes:
 
@@ -127,26 +143,26 @@ Final test artifact hashes:
 
 The package metadata records source commit
 `6469d425bfb5f2ee68946863075409cf7ee485c9` and the exact toolchain/helper
-hashes. Existing public macOS artifacts and `artifacts/versions.json` remain
-unchanged and must not be described as containing this follow-up.
+hashes. The public manifest now advertises these four files and their hashes.
 
 The source worktree was already dirty with unrelated Windows/Android/server
 artifacts; those changes were preserved. No credentials, provider identity, or
 sidecar connection details are included in this handoff.
 
-## Next release actions on a macOS CI/host
+## Remaining release actions
 
-1. Review the staged 1.0.5 artifacts and metadata, then copy them into the
-   release artifact directory only under an explicit publication change.
-2. Update the manifest atomically after the four artifact files are in place,
-   verifying route URLs, sizes, and SHA-256 values.
-3. Run the real Tahoe smoke matrix: Proxy and VPN, `cn_only`, `intl_only`, and
+1. Run the real Tahoe smoke matrix: Proxy and VPN, `cn_only`, `intl_only`, and
    `global`, including DNS-leak and long-running UDP checks.
-4. Publish only after the artifact routes and manifest return matching size and
-   SHA-256 values. Keep the prior macOS packages as rollback artifacts.
+2. Add signing/notarization and a clean-host install gate before calling the
+   package generally distributable.
+3. Keep the server backup until the smoke window closes; restore it if any
+   artifact route, client startup, or native DNS check regresses.
 
 ## Rollback
 
-This change has no server-side or local-install mutation to roll back. After a
-future package is published, restore the previous macOS manifest and the four
-previous artifact files if any Darwin build, smoke, or HTTP canary fails.
+No client was installed. If the published package must be reverted, restore the
+previous files and `versions.json` from
+`/root/codex-backups/macos-native-dns-release-20260903-154930/old/`, verify the
+old hashes, and repeat the public manifest/Range canary before reopening the
+download route. The local pre-deploy copy is
+`artifacts/backups/macos-native-dns-20260903-154010/`.
