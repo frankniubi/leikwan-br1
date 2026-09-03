@@ -1816,7 +1816,7 @@ func main() {
 			log.Fatal("native route policy invalid")
 		}
 		config.NativeRoutePolicy = string(routePolicy)
-		if config.NativePortMin < 1 || config.NativePortMin > 65535 {
+		if config.NativePortMin < nativeDefaultPortMin || config.NativePortMin > 65535 {
 			config.NativePortMin = nativeDefaultPortMin
 		}
 		if config.NativeFilterProfile == "" {

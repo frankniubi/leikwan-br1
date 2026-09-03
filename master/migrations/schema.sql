@@ -443,6 +443,8 @@ CREATE TABLE IF NOT EXISTS forwards (
     public_port INT NOT NULL,
     cdn_host VARCHAR(255) NOT NULL,
     filter_profile VARCHAR(64) NOT NULL DEFAULT 'off',
+    native_outbound_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    native_direction_key VARCHAR(64) NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
@@ -453,6 +455,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
     UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash),
+    UNIQUE KEY uniq_forwards_native_direction (service_id, native_direction_key),
     INDEX idx_forwards_service (service_id),
     INDEX idx_forwards_target_service (target_service_id)
 );

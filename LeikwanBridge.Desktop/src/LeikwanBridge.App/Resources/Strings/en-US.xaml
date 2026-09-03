@@ -128,6 +128,7 @@
     <system:String x:Key="ProxyNativeOutboundCnOnly">Mainland China only</system:String>
     <system:String x:Key="ProxyNativeOutboundIntlOnly">International only</system:String>
     <system:String x:Key="ProxyNativeOutboundGlobal">Global</system:String>
+    <system:String x:Key="ProxyNativeOutboundUnrestricted">Unrestricted full route (all ports, no OpenGFW)</system:String>
     <system:String x:Key="ProxyConvergenceHint">To use Hui聚 service, set its IP to 127.0.0.1.</system:String>
     <system:String x:Key="ProxyProfiles">Profiles</system:String>
     <system:String x:Key="ProxyNew">New profile</system:String>

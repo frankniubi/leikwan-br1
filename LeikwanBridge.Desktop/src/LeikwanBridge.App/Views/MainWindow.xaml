@@ -437,6 +437,11 @@
                                               VerticalAlignment="Bottom" Margin="8,0,0,4"
                                               AutomationProperties.Name="Native outbound bypass mainland China IPs"/>
                                 </Grid>
+                                <CheckBox x:Name="NativeUnrestrictedRouteCheckBox"
+                                          Content="{DynamicResource ProxyNativeOutboundUnrestricted}"
+                                          IsChecked="{Binding NativeUnrestrictedRoute, Mode=TwoWay}"
+                                          Margin="0,0,0,10"
+                                          AutomationProperties.Name="Unrestricted native full route"/>
                                 <WrapPanel HorizontalAlignment="Right">
                                     <Button x:Name="NativeOutboundStartButton" Style="{StaticResource PrimaryButton}"
                                             Content="{DynamicResource ProxyNativeOutboundStart}"
