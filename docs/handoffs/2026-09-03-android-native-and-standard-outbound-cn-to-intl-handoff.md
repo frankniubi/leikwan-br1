@@ -408,7 +408,7 @@ AAR gate failed. Native CN -> international is **BLOCKED, not released**.
 - The tracked `libbox.aar` remains at SHA-256
   `706C139FC1C5F0366494135FCF1D857F899D62965D19734EBC56AF4FF532CCB0`.
 - The ordinary Ultra source/test change is committed as
-  `5942677b` (`fix(android): restore ordinary ultra protocol adapter selection`).
+  `3f21e6a3` (`fix(android): restore ordinary ultra protocol adapter selection`).
   Roll back only that commit if required; do not clean the pre-existing dirty
   checkout or delete the evidence directories. The earlier enrollment test change
   remains in its separate commit `d65a1b43`.
