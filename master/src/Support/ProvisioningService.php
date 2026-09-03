@@ -5108,6 +5108,7 @@ final class ProvisioningService
             $this->db->execute(
                 'UPDATE forwards
                  SET enabled = 0,
+                     native_direction_key = NULL,
                      user_deleted_at = :user_deleted_at,
                      balance_suspended_at = NULL,
                      api_revision = :api_revision,
@@ -5154,14 +5155,21 @@ final class ProvisioningService
             $now = $this->now();
 
             if ($enabled) {
+                $nativeDirectionKey = $this->reactivatedNativeDirectionKey($forward);
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 1,
+                         native_direction_key = :native_direction_key,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
                      WHERE id = :id',
-                    ['id' => $forwardId, 'api_revision' => $nextRevision, 'updated_at' => $now]
+                    [
+                        'id' => $forwardId,
+                        'native_direction_key' => $nativeDirectionKey,
+                        'api_revision' => $nextRevision,
+                        'updated_at' => $now,
+                    ]
                 );
                 $this->audit('forward.started', [
                     'forward_id' => $forwardId,
@@ -5175,6 +5183,7 @@ final class ProvisioningService
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 0,
+                         native_direction_key = NULL,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
@@ -10593,6 +10602,44 @@ final class ProvisioningService
             $key = hash('sha256', strtolower(trim($direction)));
         }
         return substr($key, 0, 64);
+    }
+
+    /** @param array<string,mixed> $forward */
+    private function reactivatedNativeDirectionKey(array $forward): ?string
+    {
+        if (empty($forward['native_outbound_enabled'])) {
+            return null;
+        }
+        $directionRow = $this->db->fetchOne(
+            'SELECT line_direction FROM forward_combinations WHERE id = :id LIMIT 1',
+            ['id' => (int) ($forward['forward_combination_id'] ?? 0)]
+        );
+        $direction = trim((string) ($directionRow['line_direction'] ?? ''));
+        if ($direction === '') {
+            throw new ApiException('native_outbound_direction_missing', 422);
+        }
+        $key = $this->nativeDirectionKey($direction);
+        $conflict = $this->db->fetchOne(
+            'SELECT id FROM forwards
+             WHERE service_id = :service_id
+               AND native_direction_key = :direction_key
+               AND native_outbound_enabled = 1
+               AND enabled = 1
+               AND id <> :forward_id
+             LIMIT 1 FOR UPDATE',
+            [
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'direction_key' => $key,
+                'forward_id' => (int) ($forward['id'] ?? 0),
+            ]
+        );
+        if (is_array($conflict)) {
+            throw new ApiException('native_direction_conflict', 409, [
+                'direction' => UltraMode::redactProviderText($direction),
+                'forward_id' => (int) ($conflict['id'] ?? 0),
+            ]);
+        }
+        return $key;
     }
 
     private function allocateNativeTargetPort(?int $excludeForwardId = null): int
