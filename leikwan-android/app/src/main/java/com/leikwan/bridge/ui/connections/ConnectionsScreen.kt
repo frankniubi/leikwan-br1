@@ -21,10 +21,15 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -65,6 +70,10 @@ fun ConnectionsScreen(
         onOpenNodePicker = { forwardId -> nodePickerForward = forwardId },
         onRefresh = viewModel::refreshForwards,
         onImportNode = onImportNode,
+        onNativeSelected = viewModel::setNativeSelected,
+        onNativeForward = viewModel::setNativeForward,
+        onNativeRouteScope = viewModel::setNativeRouteScope,
+        onNativeBypassChina = viewModel::setNativeBypassChina,
     )
 
     nodePickerForward?.let { forwardId ->
@@ -79,11 +88,7 @@ fun ConnectionsScreen(
     }
 }
 
-/**
- * Turning the master switch ON must first obtain the VpnService permission via the Activity's
- * launcher. `requestVpnPermission` immediately invokes `onGranted` when it is already granted,
- * and otherwise shows the system dialog. Turning OFF does not need the permission.
- */
+/** Ask Android for VPN consent before the first tunnel start. */
 private fun onToggle(
     viewModel: ConnectionsViewModel,
     state: ConnectionsUiState,
@@ -105,17 +110,32 @@ internal fun ConnectionsScreenContent(
     onOpenNodePicker: (Long) -> Unit,
     onRefresh: () -> Unit,
     onImportNode: () -> Unit,
+    onNativeSelected: (Boolean) -> Unit = {},
+    onNativeForward: (Long) -> Unit = {},
+    onNativeRouteScope: (String) -> Unit = {},
+    onNativeBypassChina: (Boolean) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         MasterSwitchCard(state = state, onToggle = onToggle)
         Spacer(Modifier.height(16.dp))
+
+        if (state.nativeVisible) {
+            NativeOutboundCard(
+                state = state,
+                onSelected = onNativeSelected,
+                onForward = onNativeForward,
+                onRouteScope = onNativeRouteScope,
+                onBypassChina = onNativeBypassChina,
+            )
+            Spacer(Modifier.height(16.dp))
+        }
 
         state.error?.let { err ->
             Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
 
-        if (!state.hasNode) {
+        if (!state.hasUsablePath) {
             EmptyNodeState(state = state, onImportNode = onImportNode, onRefresh = onRefresh)
         } else {
             Row(
@@ -153,6 +173,7 @@ internal fun ConnectionsScreenContent(
                             node = state.nodeFor(forward.forwardId),
                             selected = forward.forwardId == state.selectedForwardId,
                             isConnected = state.vpnStatus != VpnStatus.DISCONNECTED,
+                            nativeMode = state.nativeSelected && forward.forwardId == state.nativeForwardId,
                             onSelect = { onSelectForward(forward.forwardId) },
                             onOpenNodePicker = { onOpenNodePicker(forward.forwardId) },
                         )
@@ -185,7 +206,7 @@ private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
     }
     val statusText = when (state.vpnStatus) {
         VpnStatus.CONNECTING -> stringResource(R.string.connections_status_connecting)
-        VpnStatus.DISCONNECTED -> if (state.hasNode) {
+        VpnStatus.DISCONNECTED -> if (state.hasUsablePath) {
             stringResource(R.string.connections_status_disconnected)
         } else {
             stringResource(R.string.connections_status_no_node)
@@ -222,6 +243,111 @@ private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
 private fun ConnectionsUiState.selectedForwardForwardName(): String {
     val forward = forwards.firstOrNull { it.forwardId == selectedForwardId } ?: return ""
     return forward.direction.takeIf { it.isNotBlank() } ?: forward.serviceName
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NativeOutboundCard(
+    state: ConnectionsUiState,
+    onSelected: (Boolean) -> Unit,
+    onForward: (Long) -> Unit,
+    onRouteScope: (String) -> Unit,
+    onBypassChina: (Boolean) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val carrier = state.nativeCarrier
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.connections_native_title), style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        carrier?.direction?.takeIf { it.isNotBlank() }
+                            ?: stringResource(R.string.connections_native_unknown),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
+            }
+            Spacer(Modifier.height(8.dp))
+            if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = carrier?.direction.orEmpty(),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.connections_native_forward)) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                    ) {
+                        state.nativeOutbound?.forwards.orEmpty().forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.direction) },
+                                onClick = {
+                                    expanded = false
+                                    onForward(option.forwardId)
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            val hasRestrictedScope = state.nativeScopes.any {
+                it.equals("cn_only", ignoreCase = true) || it.equals("intl_only", ignoreCase = true)
+            }
+            if (hasRestrictedScope) {
+                Text(stringResource(R.string.connections_native_scope), style = MaterialTheme.typography.labelLarge)
+                state.nativeScopes.forEach { scope ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { onRouteScope(scope) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = state.nativeRouteScope == scope,
+                            onClick = { onRouteScope(scope) },
+                        )
+                        Text(when {
+                            scope.equals("cn_only", ignoreCase = true) ->
+                                stringResource(R.string.connections_native_scope_cn_only)
+                            scope.equals("intl_only", ignoreCase = true) ->
+                                stringResource(R.string.connections_native_scope_intl_only)
+                            else -> stringResource(R.string.connections_native_scope_global)
+                        })
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.connections_native_bypass_china))
+                Switch(
+                    checked = state.nativeBypassChina,
+                    onCheckedChange = onBypassChina,
+                    enabled = state.nativeRouteScope == "global",
+                )
+            }
+            Text(
+                stringResource(R.string.connections_native_no_node),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 @Composable
@@ -319,6 +445,7 @@ private fun PairingCard(
     node: ProxyNode?,
     selected: Boolean,
     isConnected: Boolean,
+    nativeMode: Boolean = false,
     onSelect: () -> Unit,
     onOpenNodePicker: () -> Unit,
 ) {
@@ -362,9 +489,17 @@ private fun PairingCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontFamily = FontFamily.Monospace,
                         )
-                        TextButton(onClick = onOpenNodePicker) {
-                            val nodeLabel = node?.name ?: stringResource(R.string.connections_node_placeholder)
-                            Text(stringResource(R.string.connections_node_format, nodeLabel))
+                        if (nativeMode) {
+                            Text(
+                                stringResource(R.string.connections_native_title),
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        } else {
+                            TextButton(onClick = onOpenNodePicker) {
+                                val nodeLabel = node?.name ?: stringResource(R.string.connections_node_placeholder)
+                                Text(stringResource(R.string.connections_node_format, nodeLabel))
+                            }
                         }
                     }
                 }
@@ -451,4 +586,3 @@ private fun NodePickerDialog(
         },
     )
 }
-

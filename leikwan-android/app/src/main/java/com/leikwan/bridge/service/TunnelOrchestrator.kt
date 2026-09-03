@@ -24,6 +24,8 @@ import com.leikwan.bridge.runtime.BondForwardRunner
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NodeLeg
+import com.leikwan.bridge.runtime.NativeOutboundCapability
+import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RouteDirectionRuntimePlan
@@ -40,13 +42,17 @@ import com.leikwan.bridge.session.ClientControlLoop
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.session.SessionGate
 import com.leikwan.bridge.session.SessionRevocationCoordinator
+import com.leikwan.bridge.singbox.NativeOutboundLocalProxy
 import com.leikwan.bridge.singbox.SingboxConfigBuilder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.util.IdentityHashMap
 
 /** Keeps one runtime owner per Android application process. */
@@ -63,6 +69,7 @@ internal class ApplicationScoped<T> {
 }
 
 private const val TAG = "TunnelOrchestrator"
+private const val NATIVE_REFRESH_MARGIN_SECONDS = 90L
 
 data class NodeLegsResult(
     val legs: Map<Long, NodeLeg>,
@@ -74,6 +81,15 @@ private data class ActiveUltraRuntime(
     val policy: UltraPolicy,
     val controlSocketPath: String,
     val protectedConnectivity: ProtectedConnectivitySet,
+)
+
+private data class ActiveNativeRuntime(
+    val forwardId: Long,
+    val routeScope: String,
+    val bypassChina: Boolean,
+    val expiresAt: Instant,
+    val controlSocketPath: String,
+    val policyGeneration: String,
 )
 
 class TunnelOrchestrator internal constructor(
@@ -94,6 +110,9 @@ class TunnelOrchestrator internal constructor(
     private val ultraLeaseSender: (String, UltraPolicy, UltraLease) -> Boolean = { socketPath, policy, lease ->
         UltraLeaseClient().send(socketPath, policy, lease)
     },
+    private val nativeLeaseSender: (String, NativeOutboundLease) -> Boolean = { socketPath, lease ->
+        UltraLeaseClient().sendNative(socketPath, lease)
+    },
     private val vpnServiceStarter: (Context) -> Unit = { appContext ->
         val intent = Intent(appContext, LeikwanVpnService::class.java)
         appContext.startForegroundService(intent)
@@ -103,6 +122,9 @@ class TunnelOrchestrator internal constructor(
             timeoutMs = 10_000,
             readState = { LeikwanVpnService.startupSnapshot() },
         )
+    },
+    private val nativeLeaseBatchSender: (String, List<NativeOutboundLease>) -> Boolean = { socketPath, leases ->
+        UltraLeaseClient().sendNative(socketPath, leases)
     },
 ) {
     companion object {
@@ -138,6 +160,7 @@ class TunnelOrchestrator internal constructor(
             poll = {
                 panelRepo.heartbeat()
                 refreshUltraIfDue()
+                refreshNativeIfDue()
             },
             onTerminal = ::revokeFromPanel,
             shouldContinue = { LeikwanVpnService.isRunning },
@@ -157,6 +180,7 @@ class TunnelOrchestrator internal constructor(
                 activeRuntime?.let(UltraForwardRunner::cleanup)
                 activeRuntime = null
                 activeUltra = null
+                activeNative = null
             },
             clearEnrollment = { panelRepo.logout() },
             onRevoked = SessionGate::markTerminal,
@@ -166,6 +190,7 @@ class TunnelOrchestrator internal constructor(
     @Volatile private var activeRuntime: RuntimeContext? = null
     private var activeRouteRuleRuntimeKeys: Set<Long> = emptySet()
     @Volatile private var activeUltra: ActiveUltraRuntime? = null
+    @Volatile private var activeNative: ActiveNativeRuntime? = null
 
     /**
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
@@ -219,6 +244,174 @@ class TunnelOrchestrator internal constructor(
 
     suspend fun startForForward(forwardId: Long) = startForForward(forwardId, preserveControlLoop = false)
 
+    /** Starts the plan-authorized native SOCKS5 adapter and points TUN at its loopback facade. */
+    suspend fun startNativeForForward(
+        forwardId: Long,
+        routeScope: String = prefs.nativeOutboundRouteScope,
+        bypassChina: Boolean = prefs.nativeOutboundBypassChina,
+    ) = startNativeForForward(forwardId, routeScope, bypassChina, preserveControlLoop = false)
+
+    private suspend fun startNativeForForward(
+        forwardId: Long,
+        routeScope: String,
+        bypassChina: Boolean,
+        preserveControlLoop: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        var nativeConfigPublished = false
+        var nativeRuntime: RuntimeContext? = null
+        var nativeControlSocketPath = ""
+        var nativePolicyGeneration = ""
+        try {
+            val requestedForwardId = forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId
+            val catalog = panelRepo.pullCatalog(requestedForwardId)
+            val selectedForwardId = requestedForwardId.takeIf { it > 0L }
+                ?: catalog.selectedForwardId
+                ?: catalog.nativeOutbound?.defaultForwardId
+                ?: catalog.nativeOutbound?.forwards?.firstOrNull()?.forwardId
+                ?: throw Exception("Select a service before starting native outbound")
+            if (catalog.visibleForwards.none { it.forwardId == selectedForwardId }) {
+                throw Exception("Selected native forward is unavailable")
+            }
+            val forward = panelRepo.getCachedEffectiveForward(selectedForwardId)?.runtimeContract
+                ?: throw Exception("Forward $selectedForwardId is not supported on Android")
+            val capability = catalog.nativeOutbound ?: panelRepo.getCachedNativeOutbound()
+                ?: throw Exception("Native outbound is not allowed for this plan")
+            val normalizedScope = NativeOutboundCapability.normalizeScope(routeScope)
+                ?.takeIf { it in (capability.carrier(selectedForwardId)?.routeScopes ?: emptyList()) }
+                ?: throw Exception("Native route scope is unavailable")
+            val effectiveBypassChina = bypassChina && normalizedScope == "global"
+            val policy = UltraPolicy.from(forward)
+                ?: throw Exception("Native authorization is unavailable")
+            val leases = panelRepo.resolveNativeOutboundLeases(
+                forward,
+                capability,
+                normalizedScope,
+                maxCandidates = 4,
+            )
+            val leaseExpiresAt = leases.minOf { it.expiresAt }
+            try {
+                stop(keepControlLoop = preserveControlLoop)
+                val binaries = binaryInstaller.prepareBinaryPaths()
+                val nativeListenPort = allocateLoopbackPort()
+                val planned = UltraForwardRunner.buildPlan(
+                    forward = forward,
+                    policy = policy,
+                    binaries = binaries,
+                    runtimeDir = context.filesDir,
+                    nativeSocks5 = true,
+                    listenPortOverride = nativeListenPort,
+                )
+                nativeControlSocketPath = planned.controlSocketFile.absolutePath
+                nativePolicyGeneration = policy.policyGeneration
+                nativeRuntime = planned.runtimeContext
+                // Publish ownership before process start and lease/config work. Any
+                // exception after this point can then use the common cleanup path;
+                // this prevents a partially started native runtime from surviving
+                // a failed startup.
+                activeRuntime = planned.runtimeContext
+                processRunner.start(selectedForwardId, planned.runtimeContext)
+                try {
+                    val accepted = if (leases.size == 1) {
+                        nativeLeaseSender(planned.controlSocketFile.absolutePath, leases.first())
+                    } else {
+                        nativeLeaseBatchSender(planned.controlSocketFile.absolutePath, leases)
+                    }
+                    if (!accepted) {
+                        throw Exception("Native lease was rejected by the local runtime")
+                    }
+                    processRunner.awaitLocalPort(nativeListenPort)
+                } catch (error: Exception) {
+                    processRunner.stopForward(selectedForwardId)
+                    throw error
+                }
+                val routeRuleSnapshot = routeRuleStore.current()
+                val activeRulePackManifest = RulePackManifest.fromSnapshot(rulePackManager.current())
+                val routingSnapshot = buildRoutingSnapshot(
+                    System.currentTimeMillis(),
+                    ignoreProxyNodeTargets = true,
+                )
+                val compiled = SingboxConfigBuilder
+                    .fromPrefs(prefs, activeRulePackManifest)
+                    .build(
+                        proxyNodes = emptyList(),
+                        runtimeContext = null,
+                        routingPolicySnapshot = routingSnapshot,
+                        connectionMode = ProxyConnectionMode.SERVICES,
+                        routeRuleSnapshot = routeRuleSnapshot,
+                        routeRuleRuntimeBindings = emptyList(),
+                        runtimeOnlyProxy = false,
+                        nativeLocalProxy = NativeOutboundLocalProxy(port = nativeListenPort),
+                        nativeProtectedEndpoints = leases.map { it.endpointIp }.toSet(),
+                        nativeRouteScope = normalizedScope,
+                        nativeBypassChina = effectiveBypassChina,
+                    )
+                recordExplainability(routingSnapshot)
+                LeikwanVpnService.configJson = compiled.configJson
+                nativeConfigPublished = true
+                Log.d(TAG, "Generated native sing-box config for forward $selectedForwardId")
+            } finally {
+                leases.forEach(NativeOutboundLease::wipe)
+            }
+
+            prefs.selectedForwardId = selectedForwardId
+            prefs.nativeOutboundSelected = true
+            prefs.nativeOutboundForwardId = selectedForwardId
+            prefs.nativeOutboundRouteScope = normalizedScope
+            prefs.nativeOutboundBypassChina = effectiveBypassChina
+            vpnServiceStarter(context)
+            when (val vpnResult = vpnStartupAwaiter()) {
+                VpnStartupAwaitResult.Running -> {
+                    activeUltra = null
+                    activeNative = ActiveNativeRuntime(
+                        forwardId = selectedForwardId,
+                        routeScope = normalizedScope,
+                        bypassChina = effectiveBypassChina,
+                        expiresAt = leaseExpiresAt,
+                        controlSocketPath = nativeControlSocketPath,
+                        policyGeneration = nativePolicyGeneration,
+                    )
+                    controlLoop.start()
+                }
+                is VpnStartupAwaitResult.Failed -> {
+                    activeNative = null
+                    stopRuntime(nativeRuntime)
+                    throw Exception(vpnResult.errorMessage)
+                }
+                VpnStartupAwaitResult.Timeout -> {
+                    activeNative = null
+                    stopRuntime(nativeRuntime)
+                    throw Exception("VPN service start timed out")
+                }
+            }
+        } catch (terminal: PanelControlException) {
+            clearNativeConfigHandoff(nativeConfigPublished)
+            revokeFromPanel(terminal)
+            throw terminal
+        } catch (error: Exception) {
+            clearNativeConfigHandoff(nativeConfigPublished)
+            throw error
+        }
+    }
+
+    /** Clear a native credential-bearing config when startup aborts before VpnService owns it. */
+    private fun clearNativeConfigHandoff(published: Boolean) {
+        if (published) {
+            runCatching { LeikwanVpnService.instance?.stopVpn() }
+                .onFailure { Log.w(TAG, "Error clearing native VPN handoff", it) }
+        }
+        LeikwanVpnService.configJson = null
+        activeRuntime?.let { runtime ->
+            processRunner.stopForward(runtime.forwardId)
+            UltraForwardRunner.cleanup(runtime)
+        }
+        activeRuntime = null
+        activeNative = null
+    }
+
+    private fun allocateLoopbackPort(): Int = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use {
+        it.localPort
+    }
+
     private suspend fun startForForward(
         forwardId: Long,
         preserveControlLoop: Boolean,
@@ -267,13 +460,7 @@ class TunnelOrchestrator internal constructor(
             forwardId = selectedForward ?: 0L,
             connectionMode = connectionMode,
             proxyNodes = proxyNodes,
-            // Ultra owns the provider hop, but its fixed target may itself be a
-            // protocol endpoint (the production 30522 target is Shadowsocks). When a
-            // node is selected, keep exactly that one protocol adapter and point its
-            // physical server at the local Ultra listener. With no node configured,
-            // retain the raw fixed-target path.
-            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA && prefs.selectedProxyId == 0L,
-            singleNodeForServices = selectedEffective?.mode == ForwardMode.ULTRA,
+            proxyOptional = selectedEffective?.mode == ForwardMode.ULTRA,
         )
         if (selection is ProxySelectionResult.Error) {
             throw Exception(selection.message)
@@ -440,12 +627,16 @@ class TunnelOrchestrator internal constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping VPN service", e)
         }
+        // The service instance may be absent during a failed start or test
+        // replacement. Clear the static handoff in that case as well.
+        LeikwanVpnService.configJson = null
         activeRouteRuleRuntimeKeys.forEach { processRunner.stopForward(it) }
         activeRouteRuleRuntimeKeys = emptySet()
         processRunner.stopAll()
         activeRuntime?.let(UltraForwardRunner::cleanup)
         activeRuntime = null
         activeUltra = null
+        activeNative = null
     }
 
     fun isRunning(): Boolean = LeikwanVpnService.isRunning
@@ -576,6 +767,100 @@ class TunnelOrchestrator internal constructor(
         }
         if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
         activeUltra = active.copy(policy = nextPolicy)
+    }
+
+    /** Test seam for exercising renewal without waiting for the short lease TTL. */
+    internal suspend fun refreshNativeForTest(now: Instant = Instant.now()) = refreshNativeIfDue(now)
+
+    /** Renews native credentials in place; the adapter accepts safe generation rotation. */
+    private suspend fun refreshNativeIfDue(now: Instant = Instant.now()) {
+        val active = activeNative ?: return
+        if (now.isBefore(active.expiresAt.minusSeconds(NATIVE_REFRESH_MARGIN_SECONDS))) return
+        try {
+            panelRepo.pullCatalog(active.forwardId)
+            val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
+                ?: throw IllegalStateException("native_policy_unavailable")
+            val capability = panelRepo.getCachedNativeOutbound()
+                ?: throw IllegalStateException("native_outbound_not_allowed")
+            val carrier = capability.carrier(active.forwardId)
+                ?: throw IllegalStateException("native_outbound_not_allowed")
+            val normalizedScope = NativeOutboundCapability.normalizeScope(active.routeScope)
+                ?.takeIf { it in carrier.routeScopes }
+                ?: throw IllegalStateException("native_route_scope_invalid")
+            val policy = UltraPolicy.from(forward)
+                ?: throw IllegalStateException("native_policy_unavailable")
+
+            if (policy.policyGeneration != active.policyGeneration) {
+                // The Go adapter deliberately keeps one selected endpoint per policy
+                // generation. Rotate the static runtime only after the new policy has
+                // been pulled and validated; same-generation renewals stay in place.
+                startNativeForForward(
+                    forwardId = active.forwardId,
+                    routeScope = normalizedScope,
+                    bypassChina = active.bypassChina,
+                    preserveControlLoop = true,
+                )
+                return
+            }
+
+            val leases = panelRepo.resolveNativeOutboundLeases(
+                forward = forward,
+                capability = capability,
+                routeScope = normalizedScope,
+                maxCandidates = 4,
+            )
+            try {
+                val accepted = nativeLeaseBatchSender(active.controlSocketPath, leases)
+                if (!accepted) {
+                    if (!Instant.now().isBefore(active.expiresAt)) {
+                        stop()
+                        throw IllegalStateException("native_lease_refresh_expired")
+                    }
+                    Log.w(TAG, "Native lease refresh was rejected; retaining the current runtime")
+                    return
+                }
+                val refreshedExpiry = leases.minOf { it.expiresAt }
+                if (!Instant.now().isBefore(refreshedExpiry)) {
+                    stop()
+                    throw IllegalStateException("native_lease_refresh_expired")
+                }
+                activeNative = active.copy(
+                    routeScope = normalizedScope,
+                    expiresAt = refreshedExpiry,
+                    policyGeneration = policy.policyGeneration,
+                )
+            } finally {
+                leases.forEach(NativeOutboundLease::wipe)
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            if (error is PanelControlException || isNativeAuthorizationFailure(error)) {
+                Log.w(TAG, "Native outbound authorization changed; stopping VPN", error)
+                stop()
+                throw error
+            }
+            if (!Instant.now().isBefore(active.expiresAt)) {
+                Log.w(TAG, "Native outbound lease expired before refresh succeeded; stopping VPN", error)
+                stop()
+                throw error
+            }
+            // Keep the existing data plane alive across a transient panel or local
+            // control-socket failure. The next control-loop tick retries before expiry.
+            Log.w(TAG, "Native outbound lease refresh failed; retaining the current runtime", error)
+        }
+    }
+
+    private fun isNativeAuthorizationFailure(error: Throwable): Boolean {
+        val code = error.message?.trim()?.substringBefore(':') ?: return false
+        return code in setOf(
+            "native_outbound_not_allowed",
+            "native_route_scope_invalid",
+            "native_policy_invalid",
+            "native_transport_invalid",
+            "native_policy_unavailable",
+            "forward_inactive",
+            "native_forward_unavailable",
+        )
     }
 
     private fun listenPortForNode(baseListenPort: Int, index: Int): Int =

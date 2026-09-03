@@ -4,12 +4,29 @@ param(
     [string]$OutputPath = "",
     [ValidateSet("arm64-v8a", "x86_64")]
     [string]$Abi = "arm64-v8a",
+    [string]$Architectures = "",
     [switch]$SkipReproducibilityCheck
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
+if (-not [string]::IsNullOrWhiteSpace($Architectures)) {
+    foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) {
+        $mappedAbi = switch ($architecture) {
+            "arm64" { "arm64-v8a" }
+            "arm64-v8a" { "arm64-v8a" }
+            "amd64" { "x86_64" }
+            "x86_64" { "x86_64" }
+            default { throw "unsupported Android architecture: $architecture" }
+        }
+        $childParams = @{ Version = $Version; Abi = $mappedAbi }
+        if ($SkipReproducibilityCheck) { $childParams.SkipReproducibilityCheck = $true }
+        & $PSCommandPath @childParams
+        if ($LASTEXITCODE -ne 0) { throw "Android $mappedAbi build failed" }
+    }
+    return
+}
 $abiConfig = switch ($Abi) {
     "arm64-v8a" {
         [pscustomobject]@{
@@ -34,12 +51,8 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDir = Split-Path -Parent $OutputPath
-$assetPath = Join-Path $repoRoot "leikwan-android\app\src\qatest\assets\runtime\$Abi\ultra-client"
-$jniPath = Join-Path $repoRoot "leikwan-android\app\src\qatest\jniLibs\$Abi\libultra_client.so"
-if ($Abi -eq "arm64-v8a") {
-    $assetPath = Join-Path $repoRoot "leikwan-android\app\src\main\assets\runtime\$Abi\ultra-client"
-    $jniPath = Join-Path $repoRoot "leikwan-android\app\src\main\jniLibs\$Abi\libultra_client.so"
-}
+$assetPath = Join-Path $repoRoot "leikwan-android\app\src\main\assets\runtime\$Abi\ultra-client"
+$jniPath = Join-Path $repoRoot "leikwan-android\app\src\main\jniLibs\$Abi\libultra_client.so"
 $garbleVersion = "v0.17.0"
 $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "leikwan-garble-$garbleVersion"
 $garblePath = Join-Path $toolDir "garble.exe"
@@ -142,6 +155,34 @@ function Assert-AndroidElf([string]$Path) {
     }
 }
 
+function Move-WithRetry([string]$Source, [string]$Destination) {
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            $lastError = $_
+            if ($attempt -lt 10) { Start-Sleep -Seconds 2 }
+        }
+    }
+    throw "unable to replace locked Android runtime after 10 attempts: $Destination`n$lastError"
+}
+
+function Copy-WithRetry([string]$Source, [string]$Destination) {
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            $lastError = $_
+            if ($attempt -lt 10) { Start-Sleep -Seconds 2 }
+        }
+    }
+    throw "unable to copy Android runtime after 10 attempts: $Destination`n$lastError"
+}
+
 try {
     $env:GOOS = "android"
     $env:GOARCH = $abiConfig.GoArch
@@ -168,10 +209,10 @@ try {
         Pop-Location
     }
 
-    Move-Item -LiteralPath $candidatePath -Destination $OutputPath -Force
+    Move-WithRetry $candidatePath $OutputPath
     Assert-AndroidElf $OutputPath
-    Copy-Item -LiteralPath $OutputPath -Destination $assetPath -Force
-    Copy-Item -LiteralPath $OutputPath -Destination $jniPath -Force
+    Copy-WithRetry $OutputPath $assetPath
+    Copy-WithRetry $OutputPath $jniPath
     $artifactHash = (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
     foreach ($path in @($assetPath, $jniPath)) {
         Assert-AndroidElf $path
@@ -182,6 +223,7 @@ try {
     $artifact = Get-Item -LiteralPath $OutputPath
     [pscustomobject]@{
         version = $Version
+        abi = $Abi
         sha256 = $artifactHash
         size_bytes = $artifact.Length
         go_version = (& go version)

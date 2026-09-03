@@ -10,6 +10,7 @@ param(
     )
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ApkPath = [System.IO.Path]::GetFullPath($ApkPath)
 if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) {
@@ -36,72 +37,96 @@ function Invoke-ApkAnalyzer {
     return ($output -join "`n")
 }
 
-function Dex-HexToInt64 {
+function Convert-DexIntLiteral {
     param([string]$Value)
-    return [Convert]::ToInt64($Value.Substring(2), 16)
+
+    if ($Value -match '^0x[0-9a-fA-F]+$') {
+        return [Convert]::ToInt64($Value.Substring(2), 16)
+    }
+    return [Convert]::ToInt64($Value)
 }
 
+function Read-StaticStringField {
+    param([string]$Code, [string]$Name)
+
+    $match = [regex]::Match(
+        $Code,
+        ('(?m)^\.field public static final {0}:Ljava/lang/String; = "([^"]*)"$' -f [regex]::Escape($Name))
+    )
+    if (-not $match.Success) { throw "BuildConfig field is missing: $Name" }
+    return $match.Groups[1].Value
+}
+
+function Read-StaticScalarField {
+    param([string]$Code, [string]$Name, [string]$Type)
+
+    $match = [regex]::Match(
+        $Code,
+        ('(?m)^\.field public static final {0}:{1} = (\S+)$' -f [regex]::Escape($Name), [regex]::Escape($Type))
+    )
+    if (-not $match.Success) { throw "BuildConfig field is missing: $Name" }
+    return $match.Groups[1].Value
+}
+
+$manifestApplicationId = (Invoke-ApkAnalyzer @("manifest", "application-id", $ApkPath)).Trim()
 $manifestVersionName = (Invoke-ApkAnalyzer @("manifest", "version-name", $ApkPath)).Trim()
 $manifestVersionCode = [long](Invoke-ApkAnalyzer @("manifest", "version-code", $ApkPath)).Trim()
+$buildConfigCode = Invoke-ApkAnalyzer @("dex", "code", "--class", "com.leikwan.bridge.BuildConfig", $ApkPath)
 
-$updateStateCode = Invoke-ApkAnalyzer @(
-    "dex", "code", "--class", "com.leikwan.bridge.update.AppUpdateUiState", $ApkPath
-)
-$updateStateConstructor = [regex]::Match(
-    $updateStateCode,
-    '(?s)\.method public synthetic constructor <init>\(Ljava/lang/String;J.*?\.end method'
-).Value
-$uiVersionName = [regex]::Match(
-    $updateStateConstructor,
-    '(?s)\.line 32\s+const-string\s+\S+,\s+"([^"]+)"'
-).Groups[1].Value
-$uiVersionCodeHex = [regex]::Match(
-    $updateStateConstructor,
-    'const-wide(?:/\S+)?\s+\S+,\s+(0x[0-9a-f]+)'
-).Groups[1].Value
-if ($uiVersionName -ne $manifestVersionName -or [string]::IsNullOrWhiteSpace($uiVersionCodeHex)) {
-    throw "Update UI bytecode version does not match APK manifest: manifest=$manifestVersionName/$manifestVersionCode bytecode=$uiVersionName/$uiVersionCodeHex"
+$buildApplicationId = Read-StaticStringField $buildConfigCode "APPLICATION_ID"
+$buildVersionName = Read-StaticStringField $buildConfigCode "VERSION_NAME"
+$buildType = Read-StaticStringField $buildConfigCode "BUILD_TYPE"
+$buildVersionCode = Convert-DexIntLiteral (Read-StaticScalarField $buildConfigCode "VERSION_CODE" "I")
+$debugValue = Read-StaticScalarField $buildConfigCode "DEBUG" "Z"
+$qaExceptionsValue = Read-StaticScalarField $buildConfigCode "ALLOW_QA_TEST_DEVICE_EXCEPTIONS" "Z"
+
+if ($manifestApplicationId -ne "com.leikwan.bridge" -or $buildApplicationId -ne $manifestApplicationId) {
+    throw "application id mismatch: manifest=$manifestApplicationId BuildConfig=$buildApplicationId"
 }
-$uiVersionCode = Dex-HexToInt64 $uiVersionCodeHex
-if ($uiVersionCode -ne $manifestVersionCode) {
-    throw "Update UI bytecode version code does not match APK manifest: manifest=$manifestVersionCode bytecode=$uiVersionCode"
+if ($buildVersionName -ne $manifestVersionName -or $buildVersionCode -ne $manifestVersionCode) {
+    throw "BuildConfig version does not match APK manifest: manifest=$manifestVersionName/$manifestVersionCode BuildConfig=$buildVersionName/$buildVersionCode"
+}
+if ($buildType -ne "release" -or $debugValue -notin @("false", "0x0")) {
+    throw "test artifact must be a non-debug release build: type=$buildType debug=$debugValue"
+}
+if ($qaExceptionsValue -notin @("false", "0x0")) {
+    throw "release artifact enables QA device exceptions"
 }
 
-$updateServiceCode = Invoke-ApkAnalyzer @(
-    "dex", "code", "--class", "com.leikwan.bridge.update.AppUpdateService", $ApkPath
+$dexPackages = Invoke-ApkAnalyzer @("dex", "packages", $ApkPath)
+$requiredClasses = @(
+    "com.leikwan.bridge.api.PanelRepository",
+    "com.leikwan.bridge.runtime.NativeOutboundCapability",
+    "com.leikwan.bridge.runtime.NativeOutboundLease",
+    "com.leikwan.bridge.service.TunnelOrchestrator",
+    "com.leikwan.bridge.ui.connections.ConnectionsScreenKt"
 )
-$updateServiceConstructor = [regex]::Match(
-    $updateServiceCode,
-    '(?s)\.method public synthetic constructor <init>\(Landroid/content/Context;.*?\.end method'
-).Value
-$serviceVersionCodeHex = [regex]::Match(
-    $updateServiceConstructor,
-    '(?s)and-int/lit8\s+\S+,\s+\S+,\s+0x8.*?const-wide(?:/\S+)?\s+\S+,\s+(0x[0-9a-f]+)'
-).Groups[1].Value
-if ([string]::IsNullOrWhiteSpace($serviceVersionCodeHex)) {
-    throw "Unable to read the update service version code from APK bytecode"
-}
-$serviceVersionCode = Dex-HexToInt64 $serviceVersionCodeHex
-if ($serviceVersionCode -ne $manifestVersionCode) {
-    throw "Update service bytecode version code does not match APK manifest: manifest=$manifestVersionCode bytecode=$serviceVersionCode"
+foreach ($className in $requiredClasses) {
+    if ($dexPackages -notmatch ('(?m)^C[^\r\n]*\s+{0}$' -f [regex]::Escape($className))) {
+        throw "required native-outbound class is missing: $className"
+    }
 }
 
-$repositoryCode = Invoke-ApkAnalyzer @(
-    "dex", "code", "--class", "com.leikwan.bridge.api.PanelRepository", $ApkPath
+# The standalone native-outbound test artifact must not accidentally restore
+# the retired in-app updater or its prompt from an older worktree/build cache.
+$forbiddenClassPatterns = @(
+    '(?m)^C[^\r\n]*\s+com\.leikwan\.bridge\.update(?:\.|\$|$)',
+    '(?m)^C[^\r\n]*\s+com\.leikwan\.bridge\.ui\.update(?:\.|\$|$)'
 )
-$panelVersionName = [regex]::Match(
-    $repositoryCode,
-    '(?s)new-instance\s+\S+,\s+Lcom/leikwan/bridge/api/PanelDeviceInterceptor;.*?const-string\s+\S+,\s+"([^"]+)".*?invoke-direct.*?PanelDeviceInterceptor;-><init>'
-).Groups[1].Value
-if ($panelVersionName -ne $manifestVersionName) {
-    throw "Panel client bytecode version does not match APK manifest: manifest=$manifestVersionName bytecode=$panelVersionName"
+foreach ($pattern in $forbiddenClassPatterns) {
+    if ([regex]::IsMatch($dexPackages, $pattern)) {
+        throw "retired Android update component found in test artifact"
+    }
 }
 
 [pscustomobject]@{
     apk = $ApkPath
+    application_id = $manifestApplicationId
     version_name = $manifestVersionName
     version_code = $manifestVersionCode
-    panel_version_name = $panelVersionName
-    update_version_name = $uiVersionName
-    update_version_code = $serviceVersionCode
+    build_type = $buildType
+    qa_device_exceptions = $false
+    required_native_classes = $requiredClasses
+    retired_update_classes = 0
+    status = "ok"
 } | ConvertTo-Json -Compress

@@ -10,20 +10,16 @@ import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "ProcessRunner"
 
-private object ProcessRunnerRegistry {
-    val lock = Any()
-    val pools = ConcurrentHashMap<Long, GuardedProcessPool>()
-    val privateRuntimePaths = ConcurrentHashMap<Long, List<String>>()
-}
-
 open class ProcessRunner {
+    private val pools = ConcurrentHashMap<Long, GuardedProcessPool>()
+    private val privateRuntimePaths = ConcurrentHashMap<Long, List<String>>()
+
     open fun start(
         forwardId: Long,
         runtimeContext: RuntimeContext,
         cleanupStale: Boolean = true,
-    ) = synchronized(ProcessRunnerRegistry.lock) {
-        ProcessRunnerRegistry.pools.remove(forwardId)?.close()
-        cleanupPrivateRuntimePaths(ProcessRunnerRegistry.privateRuntimePaths.remove(forwardId).orEmpty())
+    ) {
+        stopForward(forwardId)
         if (cleanupStale) {
             AndroidRuntimeJanitor.cleanupStaleRuntimeProcesses()
         }
@@ -38,9 +34,9 @@ open class ProcessRunner {
                 plan.readyPort?.let { awaitLocalPort(it) }
                 fatalError.get()?.let { throw it }
             }
-            ProcessRunnerRegistry.pools[forwardId] = pool
+            pools[forwardId] = pool
             if (runtimeContext.privateRuntimePaths.isNotEmpty()) {
-                ProcessRunnerRegistry.privateRuntimePaths[forwardId] = runtimeContext.privateRuntimePaths
+                privateRuntimePaths[forwardId] = runtimeContext.privateRuntimePaths
             }
         } catch (error: Exception) {
             pool.close()
@@ -49,16 +45,13 @@ open class ProcessRunner {
         }
     }
 
-    open fun stopForward(forwardId: Long) = synchronized(ProcessRunnerRegistry.lock) {
-        ProcessRunnerRegistry.pools.remove(forwardId)?.close()
-        cleanupPrivateRuntimePaths(ProcessRunnerRegistry.privateRuntimePaths.remove(forwardId).orEmpty())
+    open fun stopForward(forwardId: Long) {
+        pools.remove(forwardId)?.close()
+        cleanupPrivateRuntimePaths(privateRuntimePaths.remove(forwardId).orEmpty())
     }
 
-    open fun stopAll() = synchronized(ProcessRunnerRegistry.lock) {
-        ProcessRunnerRegistry.pools.keys.toList().forEach { forwardId ->
-            ProcessRunnerRegistry.pools.remove(forwardId)?.close()
-            cleanupPrivateRuntimePaths(ProcessRunnerRegistry.privateRuntimePaths.remove(forwardId).orEmpty())
-        }
+    open fun stopAll() {
+        pools.keys.toList().forEach { stopForward(it) }
     }
 
     open fun awaitLocalPort(port: Int, timeoutMs: Long = 15_000) {

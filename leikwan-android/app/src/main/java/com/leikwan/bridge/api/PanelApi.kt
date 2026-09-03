@@ -15,8 +15,8 @@ import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
-import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest

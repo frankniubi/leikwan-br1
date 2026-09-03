@@ -207,6 +207,49 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `sing-box v1_13 keeps runtime bridge override on route rule`() {
+        val builder = SingboxConfigBuilder(
+            settings = SingboxSettings(
+                panelUrl = "https://panel.example.com",
+                dnsServer = "1.1.1.1",
+                dnsFallback = "8.8.8.8",
+                dnsStrategy = "prefer_ipv4",
+                bypassLan = true,
+                bypassChina = false,
+                customBypassRules = "",
+            ),
+        )
+        val runtimeContext = RuntimeContext(
+            forwardId = 65L,
+            mode = ForwardMode.SINGLE,
+            localListenPort = 11065,
+            localLegPorts = emptyList(),
+            processPlans = emptyList(),
+            bypassHosts = emptySet(),
+        )
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = emptyList(),
+                runtimeContext = runtimeContext,
+                connectionMode = ProxyConnectionMode.SERVICES,
+                runtimeOnlyProxy = true,
+            ).configJson,
+        ).asJsonObject
+        val proxy = config.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .first { it.get("tag").asString == "proxy" }
+        val bridgeRule = config.getAsJsonObject("route").getAsJsonArray("rules")
+            .map { it.asJsonObject }
+            .first { it.get("action")?.asString == "route" && it.get("outbound")?.asString == "proxy" }
+
+        assertFalse(proxy.has("override_address"))
+        assertFalse(proxy.has("override_port"))
+        assertEquals("127.0.0.1", bridgeRule.get("override_address").asString)
+        assertEquals(11065, bridgeRule.get("override_port").asInt)
+    }
+
+    @Test
     fun `builder falls back to direct selector when no nodes match selected forward`() {
         val builder = SingboxConfigBuilder(
             settings = SingboxSettings(
@@ -1096,13 +1139,13 @@ class SingboxConfigBuilderTest {
         assertFalse(udpOutbound.has("override_port"))
 
         val activeTcpIndex = rules.indexOfFirst { rule ->
-            rule.get("network")?.asString == "tcp" &&
+                rule.get("network")?.asString == "tcp" &&
                 rule.get("outbound")?.asString == "route-direction-dir_sh_jp_1-tcp" &&
                 rule.getAsJsonArray("ip_cidr")?.any { it.asString == "93.184.216.34/32" } == true &&
                 rule.getAsJsonArray("port")?.any { it.asInt == 443 } == true
         }
         val activeUdpIndex = rules.indexOfFirst { rule ->
-            rule.get("network")?.asString == "udp" &&
+                rule.get("network")?.asString == "udp" &&
                 rule.get("outbound")?.asString == "route-direction-dir_sh_jp_1-udp" &&
                 rule.getAsJsonArray("ip_cidr")?.any { it.asString == "93.184.216.34/32" } == true &&
                 rule.getAsJsonArray("port")?.any { it.asInt == 443 } == true

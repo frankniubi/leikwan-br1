@@ -2,7 +2,6 @@ package com.leikwan.bridge.api
 
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import com.google.gson.JsonElement
 import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.clientrules.ClientRouteRule
@@ -15,13 +14,15 @@ import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardFilter
+import com.leikwan.bridge.runtime.NativeOutboundCapability
+import com.leikwan.bridge.runtime.NativeOutboundLease
+import com.leikwan.bridge.runtime.NATIVE_OUTBOUND_PURPOSE
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
 import com.leikwan.bridge.security.AndroidDeviceIdentity
-import com.leikwan.bridge.security.AndroidKeyStoreAttestationKeyProvider
 import com.leikwan.bridge.security.AttestationProof
 import com.leikwan.bridge.security.DeviceSecurity
 import com.leikwan.bridge.security.DeviceSecurityResult
@@ -55,22 +56,13 @@ class PanelRepository(
     private val httpClientOverride: OkHttpClient? = null,
     private val deviceIdProvider: (Long) -> String = AndroidDeviceIdentity()::deviceId,
     private val identityPublicKeyProvider: () -> ByteArray = { AndroidDeviceIdentity().publicKeySpki() },
-    private val identitySigner: (ByteArray) -> ByteArray = { AndroidDeviceIdentity().sign(it) },
     private val attestationProofProvider: (String, Long, String) -> AttestationProof =
-        AndroidAttestationProofFactory(
-            attestationKeys = AndroidKeyStoreAttestationKeyProvider(
-                allowQaSoftwareAttestation = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
-            ),
-            allowQaTestAttestation = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
-        )::create,
+        AndroidAttestationProofFactory()::create,
     private val deviceNameProvider: () -> String = {
         listOf(Build.MANUFACTURER, Build.MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
     },
     private val deviceSecurityCheck: () -> DeviceSecurityResult = {
-        DeviceSecurity.evaluate(
-            context.applicationContext,
-            allowQaTestDeviceExceptions = BuildConfig.ALLOW_QA_TEST_DEVICE_EXCEPTIONS,
-        )
+        DeviceSecurity.evaluate(context.applicationContext)
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
@@ -80,6 +72,7 @@ class PanelRepository(
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
+    @Volatile private var cachedNativeOutbound: NativeOutboundCapability? = null
 
     data class TerminalDeviceAcknowledgement internal constructor(
         val deviceId: String,
@@ -135,7 +128,7 @@ class PanelRepository(
         prefs.agentToken = agentToken.trim()
         prefs.enrolledDeviceId = deviceIdProvider(clientId)
         return try {
-            performAgentEnrollment(clientId, agentToken.trim())
+            performIdentityEnrollment(clientId, enrollmentCode = null, suppliedAgentToken = agentToken.trim())
         } catch (throwable: Throwable) {
             prefs.clearEnrollment(clearIdentity = false)
             throw throwable
@@ -151,11 +144,7 @@ class PanelRepository(
         prefs.clientId = clientId
         prefs.enrolledDeviceId = deviceIdProvider(clientId)
         return try {
-            performIdentityEnrollment(
-                clientId = clientId,
-                enrollmentCode = enrollmentCode.trim(),
-                suppliedAgentToken = null,
-            )
+            performIdentityEnrollment(clientId, enrollmentCode = enrollmentCode.trim(), suppliedAgentToken = null)
         } catch (throwable: Throwable) {
             prefs.clearEnrollment(clearIdentity = false)
             throw throwable
@@ -178,7 +167,7 @@ class PanelRepository(
         }
 
         prefs.clearDeviceSession()
-        return performAgentEnrollment(clientId, agentToken)
+        return performIdentityEnrollment(clientId, enrollmentCode = null, suppliedAgentToken = agentToken)
     }
 
     suspend fun acknowledgeDevice(commandVersion: Long): Boolean {
@@ -222,17 +211,8 @@ class PanelRepository(
                 "device_challenge_failed",
             )
         }
-        val proof = try {
-            validateChallenge(challenge, clientId)
-            attestationProofProvider(challenge.nonce, clientId, deviceId)
-        } catch (throwable: Throwable) {
-            Log.e(
-                "LeiKwanAttest",
-                "post-challenge enrollment stage failed: ${throwable::class.qualifiedName} msg=${throwable.message}",
-                throwable,
-            )
-            throw throwable
-        }
+        validateChallenge(challenge, clientId)
+        val proof = attestationProofProvider(challenge.nonce, clientId, deviceId)
         val response = if (enrollmentCode == null) {
             requireSuccessful(
                 api.enrollDevice(
@@ -257,18 +237,7 @@ class PanelRepository(
         return persistEnrollment(response, clientId, deviceId, agentToken)
     }
 
-    private suspend fun performAgentEnrollment(clientId: Long, agentToken: String): EnrollmentResult =
-        performIdentityEnrollment(
-            clientId = clientId,
-            enrollmentCode = null,
-            suppliedAgentToken = agentToken,
-        )
-
-    /**
-     * Enroll with the app's persistent Android Keystore identity only.
-     * This is the default user path; it deliberately does not request a
-     * hardware attestation key or contact Google RKP.
-     */
+    /** Default Android enrollment uses the persistent Keystore identity only. */
     private suspend fun performIdentityEnrollment(
         clientId: Long,
         enrollmentCode: String?,
@@ -288,25 +257,14 @@ class PanelRepository(
         }
         validateChallenge(challenge, clientId)
 
-        // Some OEM Keystore providers can fail even though the stable device
-        // ID is already available. The server-side identity-only contract
-        // deliberately permits an empty key so login never depends on RKP.
-        val identitySpki = try {
-            identityPublicKeyProvider()
-        } catch (_: Exception) {
-            ByteArray(0)
-        }
+        val identitySpki = identityPublicKeyProvider()
         try {
-            val encodedIdentity = if (identitySpki.isEmpty()) "" else Base64.getEncoder().encodeToString(identitySpki)
+            if (identitySpki.isEmpty()) throw IllegalStateException("device_identity_missing")
+            val encodedIdentity = Base64.getEncoder().encodeToString(identitySpki)
             val response = if (enrollmentCode == null) {
                 requireSuccessful(
                     api.enrollDeviceIdentity(
-                        DeviceIdentityEnrollRequest(
-                            clientId = clientId,
-                            deviceId = deviceId,
-                            nonce = challenge.nonce,
-                            identityPublicKey = encodedIdentity,
-                        ),
+                        DeviceIdentityEnrollRequest(clientId, deviceId, challenge.nonce, encodedIdentity),
                     ),
                     "device_enrollment_failed",
                 )
@@ -314,10 +272,10 @@ class PanelRepository(
                 requireSuccessful(
                     api.enrollmentCodeIdentityEnroll(
                         EnrollmentCodeIdentityEnrollRequest(
-                            enrollmentCode = enrollmentCode,
-                            deviceId = deviceId,
-                            nonce = challenge.nonce,
-                            identityPublicKey = encodedIdentity,
+                            enrollmentCode,
+                            deviceId,
+                            challenge.nonce,
+                            encodedIdentity,
                         ),
                     ),
                     "device_enrollment_failed",
@@ -326,84 +284,6 @@ class PanelRepository(
             return persistEnrollment(response, clientId, deviceId, suppliedAgentToken)
         } finally {
             identitySpki.fill(0)
-        }
-    }
-
-    private suspend fun tryRenewal(clientId: Long, agentToken: String): EnrollmentResult? {
-        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
-        val challenge = try {
-            requireSuccessful(
-                api.deviceRenewalChallenge(DeviceChallengeRequest(clientId, deviceId)),
-                "device_renewal_challenge_failed",
-            )
-        } catch (throwable: Throwable) {
-            if (isRenewalFallback(throwable)) return null
-            throw throwable
-        }
-
-        return try {
-            validateChallenge(challenge, clientId)
-            val identitySpki = identityPublicKeyProvider()
-            try {
-                val identityHash = sha256Hex(identitySpki)
-                val binding = "LEIKWAN_ANDROID_SESSION_RENEWAL_V1|${challenge.nonce}|$clientId|$deviceId|$identityHash"
-                    .toByteArray(Charsets.UTF_8)
-                try {
-                    val signature = identitySigner(binding)
-                    try {
-                        val response = requireSuccessful(
-                            api.renewDevice(
-                                DeviceRenewRequest(
-                                    clientId = clientId,
-                                    deviceId = deviceId,
-                                    nonce = challenge.nonce,
-                                    identityPublicKey = Base64.getEncoder().encodeToString(identitySpki),
-                                    bindingSignature = Base64.getEncoder().encodeToString(signature),
-                                ),
-                            ),
-                            "device_renewal_failed",
-                        )
-                        persistEnrollment(response, clientId, deviceId, agentToken)
-                    } finally {
-                        signature.fill(0)
-                    }
-                } finally {
-                    binding.fill(0)
-                }
-            } finally {
-                identitySpki.fill(0)
-            }
-        } catch (throwable: Throwable) {
-            if (shouldTrySimpleRenewal(throwable)) {
-                trySimpleRenewal(clientId, agentToken, challenge.nonce)
-            } else {
-                throw throwable
-            }
-        }
-    }
-
-    private suspend fun trySimpleRenewal(
-        clientId: Long,
-        agentToken: String,
-        nonce: String,
-    ): EnrollmentResult? {
-        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
-        return try {
-            val response = requireSuccessful(
-                api.renewDevice(
-                    DeviceRenewRequest(
-                        clientId = clientId,
-                        deviceId = deviceId,
-                        nonce = nonce,
-                        identityPublicKey = "",
-                        bindingSignature = "",
-                    ),
-                ),
-                "device_renewal_failed",
-            )
-            persistEnrollment(response, clientId, deviceId, agentToken)
-        } catch (throwable: Throwable) {
-            if (isRenewalFallback(throwable)) null else throw throwable
         }
     }
 
@@ -440,40 +320,12 @@ class PanelRepository(
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+        cachedNativeOutbound = null
         return EnrollmentResult(clientId, deviceId, expiresAtMs)
     }
 
     private fun parseExpiry(value: String): Long = runCatching { Instant.parse(value).toEpochMilli() }
         .getOrElse { throw IllegalStateException("device_expiry_invalid") }
-
-    private fun sha256Hex(value: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(value)
-        .joinToString("") { "%02x".format(it) }
-
-    private fun isRenewalFallback(throwable: Throwable): Boolean {
-        val code = when (throwable) {
-            is PanelControlException -> throwable.code
-            else -> throwable.message?.substringBefore(':')?.trim()
-        }
-        return code == "device_renewal_not_available"
-            || code == "device_renewal_invalid"
-            || code == "device_untrusted"
-            || code?.startsWith("HTTP 404") == true
-    }
-
-    private fun shouldTrySimpleRenewal(throwable: Throwable): Boolean {
-        if (throwable is PanelControlException) return throwable.code == "device_untrusted"
-        val code = throwable.message?.substringBefore(':')?.trim()
-        if (code == null || code.startsWith("HTTP 401") || code == "unauthorized") return false
-        if (code in setOf(
-                "device_session_expired",
-                "device_enrollment_invalid",
-                "agent_token_missing",
-                "device_challenge_invalid",
-                "device_challenge_expired",
-            )) return false
-        return isRenewalFallback(throwable) || !code.startsWith("HTTP ")
-    }
 
     private fun <T> requireSuccessful(response: retrofit2.Response<T>, fallback: String): T {
         if (!response.isSuccessful) {
@@ -527,7 +379,6 @@ class PanelRepository(
             // panels must not block the authoritative pull.
         }
         val resp = api.pullConfigs(authHeader())
-        Log.i("LeiKwanPanel", "pull configs ok=${resp.ok} forwards=${resp.forwards.size}")
         if (!resp.ok) throw Exception("Pull configs failed")
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
@@ -539,28 +390,24 @@ class PanelRepository(
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+        cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
                 val contract = ForwardContractParser.parse(raw) ?: continue
                 val effective = AndroidEffectiveForwardBuilder.build(contract) ?: continue
-                Log.i(
-                    "LeiKwanPanel",
-                    "forward accepted id=${effective.forwardId} backend=${effective.runtimeContract.backendMode} mode=${effective.mode} target=${effective.target} listen=${effective.listenPort}",
-                )
                 contracts += contract
                 cachedForwardConfigs[contract.forwardId] = raw
                 cachedForwardContracts[contract.forwardId] = contract
                 cachedEffectiveForwards[effective.forwardId] = effective
-            } catch (error: Exception) {
-                Log.w("LeiKwanPanel", "forward skipped: ${error::class.simpleName} ${error.message}")
+            } catch (_: Exception) {
                 // skip unparseable forwards
             }
         }
         return ForwardFilter.buildCatalog(
             contracts = contracts,
             selectedForwardId = selectedForwardId.takeIf { it > 0L },
-        )
+        ).copy(nativeOutbound = cachedNativeOutbound)
     }
 
     fun getCachedConfig(forwardId: Long): JsonElement? = cachedForwardConfigs[forwardId]
@@ -568,6 +415,8 @@ class PanelRepository(
     fun getCachedContract(forwardId: Long): ForwardContract? = cachedForwardContracts[forwardId]
 
     fun getCachedEffectiveForward(forwardId: Long): AndroidEffectiveForward? = cachedEffectiveForwards[forwardId]
+
+    fun getCachedNativeOutbound(): NativeOutboundCapability? = cachedNativeOutbound
 
     suspend fun heartbeat(): Boolean {
         requireActiveSession()
@@ -620,6 +469,134 @@ class PanelRepository(
             ?: throw IllegalStateException("ultra_lease_invalid")
         return UltraLease.from(rawLease, policy, Instant.ofEpochMilli(nowMs()))
             ?: throw IllegalStateException("ultra_lease_invalid")
+    }
+
+    /** Resolves one short-lived, forward-bound native SOCKS5 lease without exposing its provider. */
+    suspend fun resolveNativeOutboundLease(
+        forward: ForwardContract,
+        routeScope: String,
+    ): NativeOutboundLease = resolveNativeOutboundLeases(
+        forward,
+        cachedNativeOutbound,
+        routeScope,
+        maxCandidates = 1,
+    ).single()
+
+    suspend fun resolveNativeOutboundLease(
+        forward: ForwardContract,
+        capability: NativeOutboundCapability?,
+        routeScope: String,
+    ): NativeOutboundLease = resolveNativeOutboundLeases(
+        forward,
+        capability,
+        routeScope,
+        maxCandidates = 1,
+    ).single()
+
+    /**
+     * Resolves a bounded set of native candidates. The local Ultra adapter probes this batch and
+     * atomically keeps the best usable path, so a single stale provider line does not make startup
+     * fail when another approved line is available.
+     */
+    suspend fun resolveNativeOutboundLeases(
+        forward: ForwardContract,
+        routeScope: String,
+        maxCandidates: Int = 4,
+    ): List<NativeOutboundLease> = resolveNativeOutboundLeases(
+        forward,
+        cachedNativeOutbound,
+        routeScope,
+        maxCandidates,
+    )
+
+    suspend fun resolveNativeOutboundLeases(
+        forward: ForwardContract,
+        capability: NativeOutboundCapability?,
+        routeScope: String,
+        maxCandidates: Int = 4,
+    ): List<NativeOutboundLease> {
+        if (maxCandidates !in 1..4) {
+            throw IllegalArgumentException("native_candidate_limit_invalid")
+        }
+        val normalizedScope = NativeOutboundCapability.normalizeScope(routeScope)
+            ?: throw IllegalStateException("native_route_scope_invalid")
+        if (capability == null || !capability.isUsable()) {
+            throw IllegalStateException("native_outbound_not_allowed")
+        }
+        val carrier = capability.carrier(forward.forwardId)
+            ?: throw IllegalStateException("native_outbound_not_allowed")
+        if (normalizedScope !in carrier.routeScopes
+            || carrier.transport != "tcp+udp"
+            || capability.transport != "tcp+udp") {
+            throw IllegalStateException("native_route_scope_invalid")
+        }
+        val now = Instant.ofEpochMilli(nowMs())
+        val policy = UltraPolicy.from(forward, now)
+            ?: throw IllegalStateException("native_policy_invalid")
+        if (policy.transport != "tcp+udp") {
+            throw IllegalStateException("native_transport_invalid")
+        }
+
+        val session = requireActiveSession()
+        val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val expectedDigest = NativeOutboundLease.scopeDigest(
+            forward.forwardId,
+            carrier.direction,
+            carrier.transport,
+            normalizedScope,
+        )
+        val response = try {
+            api.resolveUltraLease(
+                authHeader(),
+                UltraLeaseRequest(
+                    deviceId = session.deviceId,
+                    forwards = listOf(
+                        UltraLeaseForwardRequest(
+                            forwardId = forward.forwardId,
+                            sessionTicket = policy.sessionTicket,
+                            policyGeneration = policy.policyGeneration,
+                            nonce = nonce,
+                            targetDigest = expectedDigest,
+                            transport = "tcp+udp",
+                            purpose = NATIVE_OUTBOUND_PURPOSE,
+                            routeScope = normalizedScope,
+                            selectionMode = if (maxCandidates > 1) "auto" else "single",
+                            maxCandidates = maxCandidates,
+                        ),
+                    ),
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        }
+        val body = if (response.isSuccessful) response.body() else null
+        if (body?.ok != true) {
+            throw IllegalStateException(
+                body?.error?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(
+                        response.code(),
+                        response.message(),
+                        response.errorBody()?.string(),
+                    ),
+            )
+        }
+        if (body.leases.isEmpty() || body.leases.size > maxCandidates) {
+            throw IllegalStateException("native_lease_invalid")
+        }
+        val leases = mutableListOf<NativeOutboundLease>()
+        try {
+            body.leases.forEach { rawLease ->
+                leases += NativeOutboundLease.from(rawLease, policy, carrier, normalizedScope, now)
+                    ?: throw IllegalStateException("native_lease_invalid")
+            }
+            return leases
+        } catch (error: Exception) {
+            leases.forEach(NativeOutboundLease::wipe)
+            throw error
+        }
     }
 
     suspend fun createClientRule(draft: ClientRuleWriteDraft): ClientRouteRule {
@@ -705,6 +682,7 @@ class PanelRepository(
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+        cachedNativeOutbound = null
     }
 
     private companion object {

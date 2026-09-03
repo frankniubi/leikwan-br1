@@ -3,6 +3,7 @@ package com.leikwan.bridge.api
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
+import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
 
 data class PullConfigsResponse(
     val ok: Boolean,
@@ -13,6 +14,7 @@ data class PullConfigsResponse(
     @SerializedName("client_rules") val clientRules: List<ClientRouteRuleDto>? = null,
     @SerializedName("direction_runtime_bindings") val directionRuntimeBindings: List<DirectionRuntimeBindingDto>? = null,
     @SerializedName("capabilities") val routeRuleCapabilities: RouteRuleCapabilitiesDto? = null,
+    @SerializedName("native_outbound") val nativeOutbound: NativeOutboundCapabilityDto? = null,
 )
 
 data class HeartbeatRequest(
@@ -31,6 +33,10 @@ data class UltraLeaseForwardRequest(
     val nonce: String,
     @SerializedName("target_digest") val targetDigest: String,
     val transport: String,
+    @SerializedName("purpose") val purpose: String? = null,
+    @SerializedName("route_scope") val routeScope: String? = null,
+    @SerializedName("selection_mode") val selectionMode: String? = null,
+    @SerializedName("max_candidates") val maxCandidates: Int? = null,
 )
 
 data class UltraLeaseRequest(
