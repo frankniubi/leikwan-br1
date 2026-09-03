@@ -7,12 +7,15 @@ version="1.0.0"
 output_root=""
 wstunnel_src="${WSTUNNEL_SRC:-}"
 sing_box_src="${SING_BOX_SRC:-}"
+garble_path="${GARBLE_PATH:-}"
 dry_run=0
 package_after_build=1
 wstunnel_commit="9d0ec3f27556e3132536401d1b2e4e1aa30c277c"
 wstunnel_repository="https://github.com/erebe/wstunnel.git"
 sing_box_version="${SING_BOX_VERSION:-v1.13.12}"
 sing_box_repository="https://github.com/SagerNet/sing-box.git"
+garble_version="${GARBLE_VERSION:-v0.17.0}"
+source_commit="${SOURCE_COMMIT:-}"
 
 fail() {
   printf 'build-macos-client: %s\n' "$*" >&2
@@ -26,6 +29,7 @@ Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
   --output-root <path>      Intermediate output directory
   --wstunnel-src <path>     Upstream wstunnel checkout/cache
   --sing-box-src <path>     Upstream sing-box checkout/cache
+  GARBLE_PATH=<path>        Pinned garble binary (default: PATH or temporary go install)
   --no-package              Build publish/helpers only
   --dry-run                 Print the pinned build plan without compiling
 EOF
@@ -71,6 +75,10 @@ publish_dir="$output_root/publish"
 helper_dir="$output_root/helpers"
 helper_hashes="$output_root/helper-hashes.txt"
 
+if [[ -z "$source_commit" ]]; then
+  source_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)"
+fi
+
 if [[ "$dry_run" -eq 1 ]]; then
   printf 'rid=%s\narchitecture=%s\nrust_target=%s\ngo_arch=%s\n' "$rid" "$architecture" "$rust_target" "$go_arch"
   printf 'wstunnel_commit=%s\n' "$wstunnel_commit"
@@ -79,16 +87,32 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
   printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
-  printf 'go build GOOS=darwin GOARCH=%s ./tools/ultra-client\n' "$go_arch"
+  printf 'garble build GOOS=darwin GOARCH=%s -literals -tiny -trimpath ./tools/ultra-client\n' "$go_arch"
+  printf 'ultra_obfuscator=garble-v0.17.0-literals-tiny\n'
+  printf 'source_commit=%s\n' "$source_commit"
   printf 'go build GOOS=darwin GOARCH=%s -tags with_gvisor,with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
   exit 0
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "real builds require macOS"
-for command in dotnet cargo rustup go git shasum; do
+for command in dotnet cargo rustup go git shasum strip; do
   command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
 done
+
+if [[ -z "$garble_path" ]]; then
+  garble_path="$(command -v garble || true)"
+fi
+if [[ -z "$garble_path" ]]; then
+  garble_tool_dir="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-garble.XXXXXX")"
+  trap 'rm -rf "$garble_tool_dir"' EXIT
+  GOBIN="$garble_tool_dir" go install "mvdan.cc/garble@$garble_version"
+  garble_path="$garble_tool_dir/garble"
+fi
+[[ -x "$garble_path" ]] || fail "garble binary missing"
+garble_identity="$($garble_path version 2>/dev/null || true)"
+printf '%s\n' "$garble_identity" | grep -Fq "$garble_version" \
+  || fail "garble version mismatch: expected $garble_version"
 
 python3 - "$repo_root" "$output_root" <<'PY'
 import pathlib
@@ -118,7 +142,9 @@ cargo build \
 if [[ ! -d "$wstunnel_src/.git" ]]; then
   git clone --filter=blob:none "$wstunnel_repository" "$wstunnel_src"
 fi
-git -C "$wstunnel_src" fetch --depth=1 origin "$wstunnel_commit"
+if ! git -C "$wstunnel_src" cat-file -e "$wstunnel_commit^{commit}" 2>/dev/null; then
+  git -C "$wstunnel_src" fetch --depth=1 origin "$wstunnel_commit"
+fi
 git -C "$wstunnel_src" checkout --detach "$wstunnel_commit"
 [[ "$(git -C "$wstunnel_src" rev-parse HEAD)" == "$wstunnel_commit" ]] || fail "wstunnel pin mismatch"
 cargo build \
@@ -130,13 +156,17 @@ cargo build \
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
-    go build -mod=readonly -trimpath -ldflags='-s -w' -o "$helper_dir/ultra-client" .
+    "$garble_path" -literals -tiny -seed="leikwan-macos-$version-$rid" build \
+      -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+      -o "$helper_dir/ultra-client" .
 )
 
 if [[ ! -d "$sing_box_src/.git" ]]; then
   git clone --filter=blob:none --branch "$sing_box_version" "$sing_box_repository" "$sing_box_src"
 fi
-git -C "$sing_box_src" fetch --depth=1 origin "refs/tags/$sing_box_version"
+if ! git -C "$sing_box_src" rev-parse --verify "refs/tags/$sing_box_version" >/dev/null 2>&1; then
+  git -C "$sing_box_src" fetch --depth=1 origin "refs/tags/$sing_box_version"
+fi
 git -C "$sing_box_src" checkout --detach "$sing_box_version"
 [[ "$(git -C "$sing_box_src" describe --tags --exact-match HEAD 2>/dev/null || true)" == "$sing_box_version" ]] \
   || fail "sing-box tag mismatch"
@@ -169,6 +199,12 @@ cp "$wstunnel_src/target/$rust_target/release/wstunnel" "$helper_dir/wstunnel"
 for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
   [[ -f "$helper_dir/$helper" ]] || fail "helper build output missing: $helper"
 done
+# Remove DWARF and local symbol names from native helpers after every build.
+# The Go relay is already link-stripped by garble; this also covers Rust and
+# sing-box Mach-O outputs without changing their exported entry points.
+for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
+  strip -S -x "$helper_dir/$helper"
+done
 chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
 
 (
@@ -184,7 +220,7 @@ if [[ "$package_after_build" -eq 1 ]]; then
     --helper-dir "$helper_dir" \
     --helper-hashes "$helper_hashes" \
     --output-dir "$repo_root/artifacts/macos" \
-    --source-commit "$(git -C "$repo_root" rev-parse HEAD)"
+    --source-commit "$source_commit"
 fi
 
 printf 'build complete: %s\n' "$output_root"

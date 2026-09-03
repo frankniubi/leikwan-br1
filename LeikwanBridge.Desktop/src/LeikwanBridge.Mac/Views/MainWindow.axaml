@@ -336,6 +336,10 @@
                                           IsVisible="{Binding IsNativeRouteGlobal}"
                                           VerticalAlignment="Bottom" />
                           </Grid>
+                          <ToggleSwitch Content="Unrestricted full route (OpenGFW off)"
+                                        IsChecked="{Binding NativeUnrestrictedRoute, Mode=TwoWay}"
+                                        IsEnabled="{Binding IsNativeUnrestrictedRouteEnabled}"
+                                        IsVisible="{Binding IsNativeUnrestrictedRouteVisible}" />
                           <Button Classes="primary" Command="{Binding StartNativeConnectionCommand}"
                                   IsVisible="{Binding !IsLocalConnectionActive}" HorizontalAlignment="Left">
                             <StackPanel Orientation="Horizontal" Spacing="7">

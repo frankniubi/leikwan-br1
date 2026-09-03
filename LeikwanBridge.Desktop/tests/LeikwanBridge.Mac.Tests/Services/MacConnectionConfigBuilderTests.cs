@@ -211,6 +211,87 @@ public sealed class MacConnectionConfigBuilderTests
     }
 
     [Fact]
+    public void NativeRestrictedKeepsLowPortsDirectAndScopesNativeTrafficToHighPorts()
+    {
+        const int forwardId = 158;
+        const string direction = "Ultra Hong Kong to Mainland China";
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-restricted",
+            new string('d', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+            "203.0.113.30",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("user"),
+            System.Text.Encoding.UTF8.GetBytes("password"));
+
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(
+            lease,
+            MacConnectionMode.Vpn,
+            []).Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var lowPortIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("port_range", out var range)
+            && range.GetString() == "1:999"
+            && rule.GetProperty("outbound").GetString() == "direct");
+        var nativeIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geoip-cn")
+            && rule.GetProperty("outbound").GetString() == "proxy");
+
+        Assert.True(lowPortIndex >= 0);
+        Assert.True(nativeIndex > lowPortIndex);
+        Assert.Equal(["tcp", "udp"], rules[lowPortIndex].GetProperty("network").EnumerateArray().Select(item => item.GetString() ?? "").ToArray());
+        Assert.Equal("1000:65535", rules[nativeIndex].GetProperty("port_range").GetString());
+        Assert.Equal(["tcp", "udp"], rules[nativeIndex].GetProperty("network").EnumerateArray().Select(item => item.GetString() ?? "").ToArray());
+    }
+
+    [Fact]
+    public void NativeUnrestrictedUsesAllPortsButKeepsProviderEndpointDirect()
+    {
+        const int forwardId = 159;
+        const string direction = "Mainland China to International";
+        const string endpoint = "203.0.113.31";
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-unrestricted",
+            new string('e', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "intl_only",
+            NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "intl_only", "unrestricted"),
+            endpoint,
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("user"),
+            System.Text.Encoding.UTF8.GetBytes("password"),
+            routePolicy: "unrestricted");
+
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(
+            lease,
+            MacConnectionMode.Proxy,
+            []).Json);
+        var root = document.RootElement;
+        var rules = root.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        Assert.DoesNotContain(rules, rule =>
+            rule.TryGetProperty("port_range", out var range) && range.GetString() == "1:999");
+        var nativeIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geosite-cn")
+            && rule.GetProperty("outbound").GetString() == "direct");
+        Assert.True(nativeIndex >= 0);
+        Assert.Equal("1:65535", rules[nativeIndex].GetProperty("port_range").GetString());
+        Assert.Contains(rules, rule =>
+            rule.TryGetProperty("ip_cidr", out var cidrs)
+            && cidrs.EnumerateArray().Any(item => item.GetString() == endpoint + "/32")
+            && rule.GetProperty("outbound").GetString() == "direct");
+    }
+
+    [Fact]
     public async Task GeneratedProfilesPassTheBundledSingBoxCheckWhenRequested()
     {
         var singBox = Environment.GetEnvironmentVariable("LEIKWAN_SINGBOX_PATH");

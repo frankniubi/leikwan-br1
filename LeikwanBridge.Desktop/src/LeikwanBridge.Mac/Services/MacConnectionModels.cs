@@ -136,6 +136,15 @@ public interface IMacConnectionService : IAsyncDisposable
         IEnumerable<ForwardConfig> forwards,
         bool bypassChinaMainland = false,
         CancellationToken ct = default);
+    Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland,
+        string nativeRoutePolicy,
+        CancellationToken ct = default)
+        => StartNativeAsync(mode, lease, panelUrl, forwards, bypassChinaMainland, ct);
     Task<bool> TryRefreshNativeAsync(
         NativeOutboundLease lease,
         CancellationToken ct = default);

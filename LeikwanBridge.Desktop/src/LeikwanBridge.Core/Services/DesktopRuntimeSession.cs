@@ -23,6 +23,12 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
         int forwardId,
         string routeScope,
         CancellationToken ct);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct)
+        => ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
 }
 
 public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
@@ -94,6 +100,13 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         int forwardId,
         string routeScope,
         CancellationToken ct)
+        => await ResolveNativeOutboundLeaseAsync(forwardId, routeScope, "restricted", ct).ConfigureAwait(false);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct)
     {
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
         if (forward is null || NativeOutbound is null)
@@ -104,6 +117,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             forward,
             NativeOutbound,
             forward.NativeRouteScope,
+            routePolicy,
             ct);
     }
 

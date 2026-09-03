@@ -108,6 +108,53 @@ public sealed class MacConnectionServiceTests
     }
 
     [Fact]
+    public async Task UnrestrictedLeaseCannotUseTheLegacyRestrictedStartEntryPoint()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: new CapturingProcessHost(),
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        const int forwardId = 159;
+        const string direction = "Mainland China -> International";
+        var user = System.Text.Encoding.UTF8.GetBytes("unrestricted-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("unrestricted-password");
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-unrestricted",
+            new string('e', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "global",
+            NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "global", "unrestricted"),
+            "203.0.113.33",
+            5438,
+            user,
+            password,
+            routePolicy: "unrestricted");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartNativeAsync(
+            MacConnectionMode.Vpn,
+            lease,
+            "https://panel.example.test",
+            []));
+
+        Assert.Equal("native_route_policy_mismatch", error.Message);
+        Assert.Equal(0, relay.StartCalls);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
     public async Task NativeStartFailureStopsRelayAndWipesLease()
     {
         using var temp = new TemporaryDirectory();

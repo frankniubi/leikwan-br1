@@ -121,7 +121,7 @@ for key, entry in artifacts.items():
         raise SystemExit(f"invalid artifact architecture: {key}")
     if str(entry.get("format", "")) != expected_format:
         raise SystemExit(f"invalid artifact format: {key}")
-    versions[key] = {
+    merged = {
         "version": str(entry["version"]),
         "path": expected_path,
         "artifact_url": expected_url,
@@ -130,6 +130,16 @@ for key, entry in artifacts.items():
         "architecture": expected_architecture,
         "format": expected_format,
     }
+    hardening = entry.get("hardening")
+    if isinstance(hardening, dict):
+        allowed_hardening = {
+            name: str(hardening[name])
+            for name in ("ultra_client", "native_helpers", "managed_symbols")
+            if name in hardening and str(hardening[name]).strip()
+        }
+        if allowed_hardening:
+            merged["hardening"] = allowed_hardening
+    versions[key] = merged
 
 versions_path.parent.mkdir(parents=True, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=versions_path.name + ".", suffix=".tmp", dir=versions_path.parent)
@@ -345,6 +355,11 @@ payload = {
             "size_bytes": int(dmg_size),
             "architecture": architecture,
             "format": "dmg",
+            "hardening": {
+                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "native_helpers": "release-strip",
+                "managed_symbols": "disabled",
+            },
         },
         update_key: {
             "version": version,
@@ -354,6 +369,11 @@ payload = {
             "size_bytes": int(zip_size),
             "architecture": architecture,
             "format": "zip",
+            "hardening": {
+                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "native_helpers": "release-strip",
+                "managed_symbols": "disabled",
+            },
         },
     },
     "helpers": helpers,

@@ -27,6 +27,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private int _nativeActiveForwardId;
     private string _nativeActiveRouteScope = "global";
     private bool _nativeActiveBypassChina;
+    private bool _nativeActiveUnrestricted;
 
     public MainWindowViewModel(
         IDesktopClientController controller,
@@ -116,6 +117,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private NativeRouteScopeOption? _selectedNativeRouteScopeOption;
     [ObservableProperty] private MacConnectionMode _selectedNativeConnectionMode = MacConnectionMode.Vpn;
     [ObservableProperty] private bool _nativeBypassChinaMainland;
+    [ObservableProperty] private bool _nativeUnrestrictedRoute;
     [ObservableProperty] private bool _isNativeOutboundExpanded;
 
     public bool HasForwards => Forwards.Count > 0;
@@ -173,6 +175,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         => string.Equals(SelectedNativeRouteScope, "global", StringComparison.OrdinalIgnoreCase);
     public bool IsNativeBypassChinaEnabled
         => IsNativeRouteGlobal && IsNativeOutboundVisible;
+    public bool IsNativeUnrestrictedRouteVisible
+        => IsNativeOutboundVisible && SelectedNativeForward?.UnrestrictedAllowed == true;
+    public bool IsNativeUnrestrictedRouteEnabled => IsNativeUnrestrictedRouteVisible;
 
     partial void OnConnectionStatusChanged(string value)
     {
@@ -221,6 +226,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             string.Equals(item.Key, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase));
         if (!IsNativeRouteGlobal && NativeBypassChinaMainland)
             NativeBypassChinaMainland = false;
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
         OnPropertyChanged(nameof(IsNativeOutboundVisible));
         OnPropertyChanged(nameof(NativeOutboundForwards));
         OnPropertyChanged(nameof(NativeRouteScopeOptions));
@@ -229,6 +236,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
         OnPropertyChanged(nameof(IsNativeRouteGlobal));
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     partial void OnSelectedNativeForwardIdChanged(int value)
@@ -241,10 +250,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
             SelectedNativeRouteScope = carrier.DefaultRouteScope;
         SelectedNativeRouteScopeOption = NativeRouteScopeOptions.FirstOrDefault(item =>
             string.Equals(item.Key, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase));
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
         OnPropertyChanged(nameof(NativeRouteScopeOptions));
         OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
         OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     partial void OnSelectedNativeRouteScopeChanged(string value)
@@ -272,6 +285,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (value && !IsNativeRouteGlobal)
             NativeBypassChinaMainland = false;
         OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnNativeUnrestrictedRouteChanged(bool value)
+    {
+        if (value && !IsNativeUnrestrictedRouteVisible)
+            NativeUnrestrictedRoute = false;
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     partial void OnSelectedNativeForwardChanged(NativeOutboundForward? value)
@@ -509,9 +530,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
         LocalConnectionError = string.Empty;
         try
         {
+            var useUnrestrictedRoute = NativeUnrestrictedRoute && carrier.UnrestrictedAllowed;
+            var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 SelectedNativeForwardId,
                 SelectedNativeRouteScope,
+                routePolicy,
                 CancellationToken.None);
             if (lease is null)
             {
@@ -522,6 +546,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             _nativeActiveForwardId = SelectedNativeForwardId;
             _nativeActiveRouteScope = SelectedNativeRouteScope;
             _nativeActiveBypassChina = NativeBypassChinaMainland && IsNativeRouteGlobal;
+            _nativeActiveUnrestricted = useUnrestrictedRoute;
             NativeBypassChinaMainland = _nativeActiveBypassChina;
             await _connections.StartNativeAsync(
                 SelectedNativeConnectionMode,
@@ -529,6 +554,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 PanelUrl,
                 _forwardsProvider(),
                 _nativeActiveBypassChina,
+                routePolicy,
                 CancellationToken.None);
         }
         catch (Exception exception)
@@ -547,6 +573,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         await _connections.StopAsync();
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
+        _nativeActiveUnrestricted = false;
+        NativeUnrestrictedRoute = false;
     }
 
     [RelayCommand]
@@ -735,7 +763,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         var carrier = capability.FindForward(_nativeActiveForwardId);
         return carrier is not null
             && string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
-            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase);
+            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase)
+            && (!_nativeActiveUnrestricted || carrier.UnrestrictedAllowed);
     }
 
     private async Task StopRevokedNativeAsync()
@@ -754,6 +783,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             _nativeActiveForwardId = 0;
             _nativeActiveRouteScope = "global";
+            _nativeActiveUnrestricted = false;
+            NativeUnrestrictedRoute = false;
         }
     }
 
@@ -803,6 +834,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 _nativeActiveForwardId,
                 _nativeActiveRouteScope,
+                _nativeActiveUnrestricted ? "unrestricted" : "restricted",
                 CancellationToken.None);
             if (lease is null)
                 return;
@@ -837,6 +869,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
                         PanelUrl,
                         _forwardsProvider(),
                         _nativeActiveBypassChina,
+                        _nativeActiveUnrestricted ? "unrestricted" : "restricted",
                         CancellationToken.None);
                 }
                 else
