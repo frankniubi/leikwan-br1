@@ -90,6 +90,16 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             && _snapshot.State == WindowsProxyConnectionState.Connected;
 
     /// <summary>
+    /// Reports whether both halves of the native TUN data plane are alive.
+    /// Lease delivery can fail transiently while these processes continue to
+    /// carry traffic; callers must preserve the data plane in that case.
+    /// </summary>
+    public bool IsNativeDataPlaneRunning
+        => IsNativeOutboundActive
+            && _processHost.IsRunning
+            && _nativeRelayHost.IsRunning;
+
+    /// <summary>
     /// The configured loopback listener used by HTTP and process mode.
     /// TUN mode keeps this value in its snapshot for consistent status output,
     /// although TUN traffic is attached to the virtual interface instead.

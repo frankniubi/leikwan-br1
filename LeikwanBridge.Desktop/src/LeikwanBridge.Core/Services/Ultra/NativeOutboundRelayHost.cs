@@ -13,6 +13,13 @@ public sealed record NativeOutboundRelayEndpoint(string Host, int Port);
 
 public interface INativeOutboundRelayHost : IAsyncDisposable
 {
+    /// <summary>
+    /// True while the relay process is still alive.  The control channel is
+    /// validated separately by RefreshAsync; a rejected lease alone must not
+    /// justify tearing down the attached sing-box/TUN data plane.
+    /// </summary>
+    bool IsRunning { get; }
+
     Task<NativeOutboundRelayEndpoint> StartAsync(
         int forwardId,
         string ultraBinaryPath,
@@ -51,6 +58,25 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
     private string? _runtimeRoot;
     private int _activeForwardId;
     private string? _activeControlEndpoint;
+
+    public bool IsRunning
+    {
+        get
+        {
+            var process = _process;
+            if (process is null)
+                return false;
+            try
+            {
+                return !process.HasExited;
+            }
+            catch (Exception exception) when (
+                exception is InvalidOperationException or ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+    }
 
     public NativeOutboundRelayHost(
         bool? windows = null,
@@ -205,8 +231,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             if (forwardId <= 0
                 || lease.ForwardId != forwardId
                 || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow)
-                || _process is null
-                || _process.HasExited
+                || !IsRunning
                 || _activeForwardId != forwardId
                 || string.IsNullOrWhiteSpace(_activeControlEndpoint))
                 return false;
