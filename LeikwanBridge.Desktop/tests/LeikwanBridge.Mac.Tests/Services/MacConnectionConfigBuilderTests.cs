@@ -251,6 +251,54 @@ public sealed class MacConnectionConfigBuilderTests
     }
 
     [Fact]
+    public void NativeGlobalMainlandToInternationalKeepsDirectionBoundLeaseAndRestrictedPortSplit()
+    {
+        const int forwardId = 180;
+        const string direction = "CAN -> HKG";
+        const string endpoint = "203.0.113.180";
+        const string scope = "global";
+        const string transport = "tcp+udp";
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-global",
+            new string('g', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            transport,
+            direction,
+            scope,
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, transport, scope),
+            endpoint,
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("user"),
+            System.Text.Encoding.UTF8.GetBytes("password"));
+
+        Assert.Equal(
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, transport, scope),
+            lease.ScopeDigest);
+
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(
+            lease,
+            MacConnectionMode.Vpn,
+            []).Json);
+        var root = document.RootElement;
+        var rules = root.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var lowPortIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("port_range", out var range)
+            && range.GetString() == "1:999"
+            && rule.GetProperty("outbound").GetString() == "direct");
+
+        Assert.True(lowPortIndex >= 0);
+        Assert.Equal("proxy", root.GetProperty("route").GetProperty("final").GetString());
+        Assert.Equal("local", root.GetProperty("route").GetProperty("default_domain_resolver").GetString());
+        Assert.Contains(rules, rule =>
+            rule.TryGetProperty("ip_cidr", out var cidrs)
+            && cidrs.EnumerateArray().Any(item => item.GetString() == endpoint + "/32")
+            && rule.GetProperty("outbound").GetString() == "direct");
+        Assert.Equal("tcp+udp", lease.Transport);
+        Assert.Equal("CAN -> HKG", lease.Direction);
+    }
+
+    [Fact]
     public void NativeUnrestrictedUsesAllPortsButKeepsProviderEndpointDirect()
     {
         const int forwardId = 159;

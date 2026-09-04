@@ -94,6 +94,23 @@ final class UltraMode
         ], true) ? $normalized : null;
     }
 
+    /** @param array<string,mixed> $candidate */
+    public static function isNativeCandidateApproved(array $candidate): bool
+    {
+        $socks5State = strtolower(trim((string) ($candidate['native_socks5_state'] ?? '')));
+        if ($socks5State === 'verified') {
+            return true;
+        }
+        if ($socks5State !== '' && $socks5State !== 'unknown') {
+            return false;
+        }
+
+        // Older Ultra inventories used the UDP state as the native carrier
+        // proof and predate the dedicated SOCKS5 state column.
+        return strtolower(trim((string) ($candidate['access_class'] ?? ''))) === 'native_udp'
+            && strtolower(trim((string) ($candidate['native_udp_state'] ?? ''))) === 'verified';
+    }
+
     /** @return array<int, string> */
     public static function nativeRouteScopesForDirection(string $direction): array
     {
