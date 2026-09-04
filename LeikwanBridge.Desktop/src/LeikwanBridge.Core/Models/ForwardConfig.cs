@@ -28,6 +28,12 @@ public sealed class ForwardConfig
     [JsonPropertyName("transport")]
     public string Transport { get; set; } = "tcp+udp";
 
+    [JsonPropertyName("native_outbound")]
+    public bool NativeOutboundEnabled { get; set; }
+
+    [JsonPropertyName("native_direction")]
+    public string NativeDirection { get; set; } = "";
+
     [JsonPropertyName("backend_mode")]
     public string BackendMode { get; set; } = "current_mode";
 
@@ -81,4 +87,10 @@ public sealed class ForwardConfig
 
     [JsonIgnore]
     public List<UltraLease> RuntimeLeases { get; set; } = [];
+
+    [JsonIgnore]
+    public NativeOutboundCapability? NativeOutbound { get; set; }
+
+    [JsonIgnore]
+    public string NativeRouteScope { get; set; } = "";
 }

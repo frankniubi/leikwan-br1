@@ -1,12 +1,21 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 
 namespace LeikwanBridge.Mac.Services;
 
 public static class MacConnectionConfigBuilder
 {
     public const int DefaultProxyPort = 2080;
+    public const int DefaultTunMtu = 1280;
+    public const string TunInterfaceName = "LeiKwan Bridge";
+    public const string TunAddress = "172.19.0.1/30";
+    public const string TunGateway = "172.19.0.2";
+    public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
+    public const int NativePortMin = 1000;
+    private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -22,7 +31,6 @@ public static class MacConnectionConfigBuilder
         ArgumentNullException.ThrowIfNull(profile);
         profile = profile.Clone();
         profile.Protocol = profile.Protocol.Trim().ToLowerInvariant();
-        profile.Transport = profile.Transport.Trim().ToLowerInvariant();
         Validate(profile, proxyPort);
         var bypassIps = new List<string>();
         var bypassDomains = new List<string>();
@@ -46,9 +54,9 @@ public static class MacConnectionConfigBuilder
         {
             ["log"] = new JsonObject { ["level"] = "error" },
             ["dns"] = BuildDns(profile, bypassDomains),
-            ["inbounds"] = BuildInbounds(mode, proxyPort),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = outbounds,
-            ["route"] = BuildRoute(bypassIps, bypassDomains),
+            ["route"] = BuildRoute(bypassIps, bypassDomains, mode: mode),
         };
         if (string.Equals(profile.Protocol, MacConnectionProtocol.WireGuard, StringComparison.Ordinal))
             root["endpoints"] = new JsonArray(BuildWireGuardEndpoint(profile));
@@ -60,65 +68,206 @@ public static class MacConnectionConfigBuilder
             proxyPort);
     }
 
-    private static JsonObject BuildDns(MacConnectionProfile profile, IReadOnlyList<string> bypassDomains)
+    public static MacConnectionConfigResult BuildNative(
+        NativeOutboundLease lease,
+        MacConnectionMode mode,
+        IEnumerable<string>? bypassHosts,
+        int proxyPort = DefaultProxyPort,
+        bool bypassChinaMainland = false,
+        string? nativeProxyHost = null,
+        int? nativeProxyPort = null)
     {
+        ArgumentNullException.ThrowIfNull(lease);
+        if (!lease.IsUsable(DateTimeOffset.UtcNow))
+            throw new InvalidOperationException("native_lease_invalid");
+        if (mode is not (MacConnectionMode.Proxy or MacConnectionMode.Vpn))
+            throw new InvalidOperationException("connection_mode_invalid");
+        if (proxyPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(proxyPort));
+
+        var bypassIps = new List<string>();
+        var bypassDomains = new List<string>();
+        // The app-private relay still opens the provider connection outside
+        // sing-box. Keep that endpoint on the direct path even when the
+        // generated SOCKS outbound points at the local relay.
+        AddBypass(lease.EndpointHost, bypassIps, bypassDomains);
+        foreach (var value in bypassHosts ?? [])
+            AddBypass(value, bypassIps, bypassDomains);
+
+        var fragment = JsonNode.Parse(
+            NativeOutboundConfigBuilder.Build(
+                lease,
+                bypassChina: false,
+                localPort: proxyPort,
+                localProxyHost: nativeProxyHost,
+                localProxyPort: nativeProxyPort).Json)?.AsObject()
+            ?? throw new InvalidOperationException("native_outbound_config_invalid");
+        var nativeOutbound = fragment["outbound"]?.DeepClone()
+            ?? throw new InvalidOperationException("native_outbound_config_invalid");
+        var bootstrapProfile = new MacConnectionProfile
+        {
+            Server = lease.EndpointHost,
+            Port = lease.EndpointPort,
+        };
+        var root = new JsonObject
+        {
+            ["log"] = new JsonObject { ["level"] = "error" },
+            ["dns"] = BuildDns(
+                bootstrapProfile,
+                bypassDomains,
+                lease.RouteScope == "cn_only" ? "direct" : "proxy",
+                lease.RouteScope),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
+            ["outbounds"] = new JsonArray
+            {
+                nativeOutbound,
+                new JsonObject { ["type"] = "direct", ["tag"] = "direct" },
+                new JsonObject { ["type"] = "block", ["tag"] = "block" },
+            },
+            ["route"] = BuildRoute(
+                bypassIps,
+                bypassDomains,
+                lease.RouteScope,
+                bypassChinaMainland,
+                mode,
+                lease.RoutePolicy),
+        };
+        AddNativeChinaRuleSets(
+            root["route"]!.AsObject(),
+            lease.RouteScope,
+            bypassChinaMainland,
+            lease.RouteScope == "cn_only" ? "direct" : "proxy");
+        return new MacConnectionConfigResult(
+            root.ToJsonString(JsonOptions),
+            bypassIps,
+            bypassDomains,
+            proxyPort);
+    }
+
+    private static JsonObject BuildDns(
+        MacConnectionProfile profile,
+        IReadOnlyList<string> bypassDomains,
+        string remoteDetour = "proxy",
+        string? nativeRouteScope = null)
+    {
+        remoteDetour = string.Equals(remoteDetour, "direct", StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "proxy";
         var bootstrapDomains = new List<string>();
         if (!IPAddress.TryParse(profile.Server, out _)
             && Uri.CheckHostName(profile.Server) is UriHostNameType.Dns)
             bootstrapDomains.Add(profile.Server.ToLowerInvariant());
         bootstrapDomains.AddRange(bypassDomains);
+        var isChinaOnly = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase);
+        var isInternationalOnly = string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+        var remoteServer = new JsonObject
+        {
+            ["type"] = "https",
+            ["tag"] = "remote",
+            ["server"] = "1.1.1.1",
+            ["server_port"] = 443,
+            ["path"] = "/dns-query",
+            ["tls"] = new JsonObject
+            {
+                ["enabled"] = true,
+                ["server_name"] = "cloudflare-dns.com",
+            },
+        };
+        if (remoteDetour == "proxy")
+            remoteServer["detour"] = "proxy";
+        var servers = new JsonArray { remoteServer };
+        if (isChinaOnly)
+        {
+            servers.Add(new JsonObject
+            {
+                ["type"] = "https",
+                ["tag"] = "china",
+                ["server"] = "223.5.5.5",
+                ["server_port"] = 443,
+                ["path"] = "/dns-query",
+                ["tls"] = new JsonObject
+                {
+                    ["enabled"] = true,
+                    ["server_name"] = "dns.alidns.com",
+                },
+                ["detour"] = "proxy",
+            });
+        }
+        servers.Add(new JsonObject
+        {
+            ["type"] = "local",
+            ["tag"] = "local",
+        });
         var dns = new JsonObject
         {
-            ["servers"] = new JsonArray
-            {
-                new JsonObject
-                {
-                    ["type"] = "https",
-                    ["tag"] = "remote",
-                    ["server"] = "1.1.1.1",
-                    ["path"] = "/dns-query",
-                    ["detour"] = "proxy",
-                },
-                new JsonObject
-                {
-                    ["type"] = "local",
-                    ["tag"] = "local",
-                },
-            },
+            ["servers"] = servers,
             ["final"] = "remote",
         };
+        var dnsRules = new JsonArray();
         if (bootstrapDomains.Count > 0)
         {
-            dns["rules"] = new JsonArray
+            dnsRules.Add(new JsonObject
             {
-                new JsonObject
-                {
-                    ["domain"] = new JsonArray(bootstrapDomains
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Select(item => JsonValue.Create(item))
-                        .ToArray()),
-                    ["server"] = "local",
-                },
-            };
+                ["domain"] = new JsonArray(bootstrapDomains
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(item => JsonValue.Create(item))
+                    .ToArray()),
+                ["server"] = "local",
+            });
         }
+        if (isChinaOnly)
+        {
+            dnsRules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geosite-cn"),
+                ["server"] = "china",
+            });
+        }
+        else if (isInternationalOnly)
+        {
+            dnsRules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geosite-cn"),
+                ["server"] = "local",
+            });
+        }
+        if (dnsRules.Count > 0)
+            dns["rules"] = dnsRules;
         return dns;
     }
 
-    private static JsonArray BuildInbounds(MacConnectionMode mode, int proxyPort)
+    private static JsonArray BuildInbounds(
+        MacConnectionMode mode,
+        int proxyPort,
+        IReadOnlyList<string>? bypassIps = null)
     {
         if (mode == MacConnectionMode.Vpn)
         {
+            var routeExcludes = new List<string>
+            {
+                "127.0.0.0/8",
+                "255.255.255.255/32",
+                "::1/128",
+                "ff00::/8",
+            };
+            routeExcludes.AddRange(bypassIps ?? []);
             return new JsonArray
             {
                 new JsonObject
                 {
                     ["type"] = "tun",
                     ["tag"] = "tun-in",
-                    ["interface_name"] = "LeiKwan Bridge",
-                    ["address"] = new JsonArray("172.19.0.1/30"),
+                    ["interface_name"] = TunInterfaceName,
+                    ["address"] = new JsonArray(TunAddress, TunIpv6Address),
+                    ["mtu"] = DefaultTunMtu,
                     ["auto_route"] = true,
                     ["strict_route"] = true,
                     ["stack"] = "mixed",
+                    ["endpoint_independent_nat"] = true,
+                    ["route_exclude_address"] = new JsonArray(routeExcludes
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Select(item => JsonValue.Create(item))
+                        .ToArray()),
                 },
             };
         }
@@ -141,7 +290,6 @@ public static class MacConnectionConfigBuilder
         return profile.Protocol switch
         {
             MacConnectionProtocol.Shadowsocks => BuildShadowsocks(profile),
-            MacConnectionProtocol.Vless => BuildVless(profile),
             MacConnectionProtocol.WireGuard => throw new InvalidOperationException("wireguard_uses_endpoint"),
             _ => throw new ArgumentException("Unsupported connection protocol.", nameof(profile)),
         };
@@ -187,87 +335,144 @@ public static class MacConnectionConfigBuilder
         return outbound;
     }
 
-    private static JsonObject BuildVless(MacConnectionProfile profile)
+    private static JsonObject BuildRoute(
+        IReadOnlyList<string> bypassIps,
+        IReadOnlyList<string> bypassDomains,
+        string? nativeRouteScope = null,
+        bool bypassChinaMainland = false,
+        MacConnectionMode? mode = null,
+        string? nativeRoutePolicy = null)
     {
-        var outbound = new JsonObject
+        var rules = new JsonArray { new JsonObject { ["action"] = "sniff" } };
+        var nativeMode = !string.IsNullOrWhiteSpace(nativeRouteScope);
+        var restrictedNative = nativeMode
+            && string.Equals(
+                NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
+                "restricted",
+                StringComparison.Ordinal);
+        var nativePortRange = restrictedNative ? $"{NativePortMin}:65535" : "1:65535";
+        if (mode == MacConnectionMode.Vpn)
         {
-            ["type"] = "vless",
-            ["tag"] = "proxy",
-            ["server"] = profile.Server,
-            ["server_port"] = profile.Port,
-            ["uuid"] = profile.Uuid,
-        };
-        if (!string.IsNullOrWhiteSpace(profile.Flow))
-            outbound["flow"] = profile.Flow;
-        if (!string.Equals(profile.Transport, "tcp", StringComparison.OrdinalIgnoreCase))
-        {
-            var transport = new JsonObject { ["type"] = profile.Transport };
-            if (string.Equals(profile.Transport, "ws", StringComparison.OrdinalIgnoreCase))
+            rules.Add(new JsonObject
             {
-                transport["path"] = string.IsNullOrWhiteSpace(profile.Path) ? "/" : profile.Path;
-                if (!string.IsNullOrWhiteSpace(profile.Host))
-                    transport["headers"] = new JsonObject { ["Host"] = profile.Host };
-            }
-            else if (string.Equals(profile.Transport, "grpc", StringComparison.OrdinalIgnoreCase))
+                ["inbound"] = new JsonArray("tun-in"),
+                ["protocol"] = "dns",
+                ["action"] = "hijack-dns",
+            });
+            rules.Add(new JsonObject
             {
-                transport["service_name"] = profile.ServiceName;
-            }
-            outbound["transport"] = transport;
+                ["inbound"] = new JsonArray("tun-in"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["ip_cidr"] = new JsonArray($"{TunGateway}/32", $"{TunIpv6Gateway}/128"),
+                ["action"] = "reject",
+                ["method"] = "drop",
+            });
         }
-        if (profile.Tls || !string.IsNullOrWhiteSpace(profile.RealityPublicKey))
-        {
-            var tls = new JsonObject { ["enabled"] = true };
-            if (!string.IsNullOrWhiteSpace(profile.ServerName))
-                tls["server_name"] = profile.ServerName;
-            if (!string.IsNullOrWhiteSpace(profile.RealityPublicKey))
-            {
-                tls["reality"] = new JsonObject
-                {
-                    ["enabled"] = true,
-                    ["public_key"] = profile.RealityPublicKey,
-                    ["short_id"] = profile.RealityShortId,
-                };
-            }
-            outbound["tls"] = tls;
-        }
-        return outbound;
-    }
-
-    private static JsonObject BuildRoute(IReadOnlyList<string> bypassIps, IReadOnlyList<string> bypassDomains)
-    {
-        var rules = new JsonArray
-        {
-            new JsonObject
-            {
-                ["action"] = "sniff",
-            },
-            new JsonObject
+        if (bypassIps.Count > 0)
+            rules.Add(new JsonObject
             {
                 ["ip_cidr"] = new JsonArray(bypassIps.Select(item => JsonValue.Create(item)).ToArray()),
                 ["outbound"] = "direct",
-            },
-            new JsonObject
+            });
+        if (bypassDomains.Count > 0)
+            rules.Add(new JsonObject
             {
                 ["domain"] = new JsonArray(bypassDomains.Select(item => JsonValue.Create(item)).ToArray()),
                 ["outbound"] = "direct",
-            },
-            new JsonObject
+            });
+        if (string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
+        {
+            // Resolve the destination before the SOCKS handoff so the relay
+            // cannot perform a second lookup on a different DNS path.
+            rules.Add(new JsonObject
             {
-                ["ip_is_private"] = true,
+                ["action"] = "resolve",
+                ["strategy"] = "ipv4_only",
+            });
+        }
+        if (restrictedNative)
+            rules.Add(new JsonObject
+            {
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = "1:999",
                 ["outbound"] = "direct",
-            },
-        };
-        if (bypassIps.Count == 0)
-            rules.RemoveAt(0);
-        if (bypassDomains.Count == 0)
-            rules.RemoveAt(bypassIps.Count == 0 ? 0 : 1);
+            });
+        if (string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase))
+            rules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
+                ["outbound"] = "proxy",
+            });
+        else if (string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
+            rules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
+                ["outbound"] = "direct",
+            });
+        else if (string.Equals(nativeRouteScope, "global", StringComparison.OrdinalIgnoreCase) && bypassChinaMainland)
+            rules.Add(new JsonObject
+            {
+                ["rule_set"] = new JsonArray("geoip-cn", "geosite-cn"),
+                ["network"] = new JsonArray("tcp", "udp"),
+                ["port_range"] = nativePortRange,
+                ["outbound"] = "direct",
+            });
+        rules.Add(new JsonObject
+        {
+            ["ip_is_private"] = true,
+            ["outbound"] = "direct",
+        });
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
+            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope) ? "remote" : "local",
             ["rules"] = rules,
-            ["final"] = "proxy",
+            ["final"] = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase) ? "direct" : "proxy",
         };
     }
+
+    private static void AddNativeChinaRuleSets(
+        JsonObject route,
+        string routeScope,
+        bool bypassChinaMainland,
+        string downloadDetour = "proxy")
+    {
+        if (!string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase)
+            && !(string.Equals(routeScope, "global", StringComparison.OrdinalIgnoreCase) && bypassChinaMainland))
+            return;
+        downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "proxy";
+        route["rule_set"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["tag"] = "geoip-cn",
+                ["type"] = "remote",
+                ["format"] = "binary",
+                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                ["download_detour"] = downloadDetour,
+            },
+            new JsonObject
+            {
+                ["tag"] = "geosite-cn",
+                ["type"] = "remote",
+                ["format"] = "binary",
+                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                ["download_detour"] = downloadDetour,
+            },
+        };
+    }
+
+    private static bool IsNativeRestrictedScope(string? routeScope)
+        => string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase);
 
     private static void AddBypass(string value, ICollection<string> ips, ICollection<string> domains)
     {
@@ -312,8 +517,6 @@ public static class MacConnectionConfigBuilder
             case MacConnectionProtocol.Shadowsocks when string.IsNullOrWhiteSpace(profile.Method)
                 || string.IsNullOrWhiteSpace(profile.Password):
                 throw new ArgumentException("Shadowsocks method and password are required.", nameof(profile));
-            case MacConnectionProtocol.Vless when string.IsNullOrWhiteSpace(profile.Uuid):
-                throw new ArgumentException("VLESS UUID is required.", nameof(profile));
             case MacConnectionProtocol.WireGuard when string.IsNullOrWhiteSpace(profile.PrivateKey)
                 || string.IsNullOrWhiteSpace(profile.PeerPublicKey)
                 || string.IsNullOrWhiteSpace(profile.LocalAddress):

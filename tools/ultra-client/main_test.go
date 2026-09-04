@@ -24,7 +24,7 @@ func TestBuildStreamHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(got, []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1, 9}) {
+	if !bytes.HasPrefix(got, []byte{5, 3, 2, 0x80, 0x83, 1, 9}) {
 		t.Fatalf("unexpected prefix: %s", hex.EncodeToString(got))
 	}
 	if !bytes.Contains(got, []byte{5, 1}) {
@@ -91,7 +91,7 @@ func TestHandshakeFallbackDoesNotRetryProviderConnectTimeout(t *testing.T) {
 	}
 }
 
-func TestDialStreamFallsBackToLegacyGreetingAfterEOF(t *testing.T) {
+func TestDialStreamUsesLegacyGreetingAndFallsBackToCurrentAfterEOF(t *testing.T) {
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -99,19 +99,19 @@ func TestDialStreamFallsBackToLegacyGreetingAfterEOF(t *testing.T) {
 	defer listener.Close()
 
 	user, credential, host := "test-user", "test-credential", "example.com"
-	current, err := buildHandshake(user, credential, 1, host, 443)
+	current, err := buildHandshakeWithGreeting(user, credential, 1, host, 443, currentHandshakeGreeting)
 	if err != nil {
-		t.Fatalf("build current handshake: %v", err)
+		t.Fatalf("build explicit current handshake: %v", err)
 	}
-	legacy, err := buildHandshakeWithGreeting(user, credential, 1, host, 443, legacyHandshakeGreeting)
+	legacy, err := buildHandshake(user, credential, 1, host, 443)
 	if err != nil {
-		t.Fatalf("build legacy handshake: %v", err)
+		t.Fatalf("build default legacy handshake: %v", err)
 	}
 
 	handshakes := make(chan []byte, 2)
 	serverErr := make(chan error, 1)
 	go func() {
-		for index, size := range []int{len(current), len(legacy)} {
+		for index, size := range []int{len(legacy), len(current)} {
 			conn, acceptErr := listener.AcceptTCP()
 			if acceptErr != nil {
 				serverErr <- acceptErr
@@ -152,11 +152,11 @@ func TestDialStreamFallsBackToLegacyGreetingAfterEOF(t *testing.T) {
 
 	first := <-handshakes
 	second := <-handshakes
-	if !bytes.Equal(first, current) {
-		t.Fatalf("first greeting = %x, want current %x", first, current)
+	if !bytes.Equal(first, legacy) {
+		t.Fatalf("first greeting = %x, want legacy %x", first, legacy)
 	}
-	if !bytes.Equal(second, legacy) {
-		t.Fatalf("fallback greeting = %x, want legacy %x", second, legacy)
+	if !bytes.Equal(second, current) {
+		t.Fatalf("fallback greeting = %x, want current %x", second, current)
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatalf("fake server: %v", err)
@@ -450,11 +450,12 @@ func TestDatagramKeepaliveDetectionRequiresReservedFrame(t *testing.T) {
 }
 
 type testUDPProvider struct {
-	tcp           *net.TCPListener
-	udp           *net.UDPConn
-	firstAccepted chan struct{}
-	acceptedOnce  sync.Once
-	packets       chan []byte
+	tcp             *net.TCPListener
+	udp             *net.UDPConn
+	firstAccepted   chan struct{}
+	acceptedOnce    sync.Once
+	packets         chan []byte
+	echoOuterTarget bool
 }
 
 func newTestUDPProvider(t *testing.T) *testUDPProvider {
@@ -526,6 +527,10 @@ func (provider *testUDPProvider) serveUDP() {
 		// echoing the destination header as application data.
 		responseAddress := []byte{127, 0, 0, 1}
 		responsePort := uint16(53)
+		if provider.echoOuterTarget && len(packet) >= 16 {
+			responseAddress = append([]byte(nil), packet[10:14]...)
+			responsePort = binary.BigEndian.Uint16(packet[14:16])
+		}
 		if info, valid := decodeDatagramAddressFirst(payload); valid {
 			responseAddress = append([]byte(nil), info.address...)
 			responsePort = info.port

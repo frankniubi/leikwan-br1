@@ -184,10 +184,10 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
             }
         }
 
-        // aio_free normally stops this service.  If the native call timed out
+        // aio_free normally stops this service. If the native call timed out
         // or an earlier app instance was killed, stop it directly so the
         // kernel filter cannot continue affecting unrelated processes.
-        var serviceStopped = await Task.Run(_stopDriverService);
+        var serviceStopped = await StopDriverServiceAndConfirmAsync();
         if (!serviceStopped)
         {
             var serviceFailure = new InvalidOperationException("process_driver_stop_failed");
@@ -195,17 +195,40 @@ public sealed class WindowsNetchProcessProxyAdapter : IWindowsProcessProxyAdapte
                 ? serviceFailure
                 : new AggregateException(failure, serviceFailure);
         }
-        else if (failure is InvalidOperationException { Message: "process_redirector_free_failed" })
+        else
         {
-            // Some NetFilter2 builds return false after the SCM has already
-            // stopped the driver.  The service state is the authoritative
-            // safety boundary: no running service means no packet filter.
+            // The SCM state is the authoritative safety boundary. Some
+            // Redirector.bin builds leave aio_free blocked even after the
+            // driver is stopped; retaining _freeTask keeps the DLL loaded,
+            // while clearing _initAttempted lets an HTTP/TUN native start
+            // proceed without inheriting a stale process filter.
+            _initAttempted = false;
             failure = null;
         }
         if (serviceStopped)
             _driverServiceOwned = false;
         if (failure is not null)
             throw failure;
+    }
+
+    private async Task<bool> StopDriverServiceAndConfirmAsync()
+    {
+        var stopped = await Task.Run(_stopDriverService).ConfigureAwait(false);
+        if (stopped)
+            return true;
+
+        // A stop request can return before SCM publishes STOPPED, or the
+        // request can report a timeout even though the service has just
+        // finished stopping. Give the state query a short bounded grace
+        // window before treating cleanup as unsafe.
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            if (await Task.Run(_isDriverServiceStopped).ConfigureAwait(false))
+                return true;
+            await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+        }
+
+        return false;
     }
 
     private async Task ConsumeCompletedFreeAsync()

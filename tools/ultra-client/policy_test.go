@@ -55,6 +55,21 @@ func TestPolicyValidationAndRollback(t *testing.T) {
 	}
 }
 
+func TestNativePolicyAcceptsIntlOnlyScope(t *testing.T) {
+	now := time.Now()
+	config := Config{ForwardID: 42, NativeSocks5: true, Target: "1.1.1.1:443"}
+	policy := Policy{
+		Protocol: nativeSocks5Protocol, Purpose: nativeSocks5Purpose, Native: true,
+		ForwardID: 42, PolicyGeneration: strings.Repeat("a", 64), SessionTicket: "ticket",
+		ExpiresAt: now.Add(2 * time.Minute), Transport: "tcp+udp", RateLimitMbps: 20,
+		QuotaRemainingBytes: 1024, TargetDigest: strings.Repeat("b", 64),
+		Direction: "Mainland China -> International", RouteScope: "intl_only",
+	}
+	if err := policy.Validate(config, now); err != nil {
+		t.Fatalf("intl_only native policy rejected: %v", err)
+	}
+}
+
 func TestPolicyLimiterEnforcesQuotaAndRevocation(t *testing.T) {
 	limiter := NewPolicyLimiter()
 	generation := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

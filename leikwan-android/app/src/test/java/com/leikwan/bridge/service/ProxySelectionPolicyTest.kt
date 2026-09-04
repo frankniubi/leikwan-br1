@@ -98,28 +98,40 @@ class ProxySelectionPolicyTest {
     }
 
     @Test
-    fun `policy restricts ultra protocol adapter to selected node`() {
+    fun `policy keeps only the selected node for ordinary ultra services`() {
         val result = ProxySelectionPolicy.validate(
             selectedProxyId = 2L,
-            forwardId = 90L,
+            forwardId = 45L,
             connectionMode = ProxyConnectionMode.SERVICES,
             proxyNodes = listOf(
                 ProxyNode(
                     id = 1,
-                    name = "other",
+                    name = "other-enabled",
                     type = "ss",
-                    originalServer = "other.example.com",
-                    originalPort = 443,
-                    configJson = """{"method":"aes-128-gcm","password":"other"}""",
+                    originalServer = "127.0.0.1",
+                    originalPort = 32215,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
                     enabled = true,
                 ),
                 ProxyNode(
                     id = 2,
                     name = "selected",
                     type = "ss",
-                    originalServer = "relay.example.com",
-                    originalPort = 30522,
-                    configJson = """{"method":"2022-blake3-aes-256-gcm","password":"secret"}""",
+                    originalServer = "127.0.0.2",
+                    originalPort = 32216,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = 45L,
+                    enabled = true,
+                ),
+                ProxyNode(
+                    id = 3,
+                    name = "global-enabled",
+                    type = "ss",
+                    originalServer = "127.0.0.3",
+                    originalPort = 32217,
+                    configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+                    forwardId = null,
                     enabled = true,
                 ),
             ),

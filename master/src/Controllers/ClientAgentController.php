@@ -377,6 +377,20 @@ final class ClientAgentController extends BaseController
                 $grantsById[$grantedId] = $grantedForward[UltraMode::ACCESS_FIELD];
             }
         }
+        $nativeCapability = null;
+        try {
+            $nativeCapability = $this->provisioning->nativeOutboundCapabilityForAssignedForwards(
+                is_array($assigned) ? $assigned : []
+            );
+        } catch (\Throwable) {
+            $nativeCapability = null;
+        }
+        $nativeCarriersById = [];
+        foreach (is_array($nativeCapability['forwards'] ?? null) ? $nativeCapability['forwards'] : [] as $carrier) {
+            if (is_array($carrier)) {
+                $nativeCarriersById[(int) ($carrier['forward_id'] ?? 0)] = $carrier;
+            }
+        }
         $leases = [];
         $lastError = 'lease_scope_invalid';
         foreach ($forwards as $item) {
@@ -386,8 +400,19 @@ final class ClientAgentController extends BaseController
             $forwardId = (int) ($item['forward_id'] ?? 0);
             $forward = $assignedById[$forwardId] ?? null;
             $grant = $grantsById[$forwardId] ?? null;
+            $purpose = strtolower(trim((string) ($item['purpose'] ?? '')));
+            $isNative = $purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE;
             if (!is_array($forward) || !is_array($grant)) {
+                if ($isNative && !isset($nativeCarriersById[$forwardId])) {
+                    $lastError = 'native_outbound_not_allowed';
+                    continue;
+                }
                 $lastError = 'policy_unavailable';
+                continue;
+            }
+            $nativeCarrier = $nativeCarriersById[$forwardId] ?? null;
+            if ($isNative && !is_array($nativeCarrier)) {
+                $lastError = 'native_outbound_not_allowed';
                 continue;
             }
             $ticket = trim((string) ($item['session_ticket'] ?? ''));
@@ -406,6 +431,59 @@ final class ClientAgentController extends BaseController
                 'quota_remaining_bytes' => (int) ($grant['quota_remaining_bytes'] ?? 0),
                 'expires_at' => (string) ($grant['expires_at'] ?? ''),
             ];
+            if ($isNative) {
+                $direction = trim((string) ($nativeCarrier['direction'] ?? ''));
+                $routeScope = UltraMode::normalizeNativeRouteScope(
+                    (string) ($item['route_scope'] ?? 'global'),
+                    $direction
+                );
+                $nativeTransport = (string) ($nativeCarrier['transport'] ?? '');
+                $routePolicy = UltraMode::normalizeNativeRoutePolicy($item['route_policy'] ?? 'restricted');
+                if ($routePolicy === null
+                    || ($routePolicy === UltraMode::NATIVE_ROUTE_POLICY_UNRESTRICTED
+                        && empty($nativeCarrier['unrestricted_allowed']))) {
+                    $lastError = 'native_route_policy_not_allowed';
+                    continue;
+                }
+                $requestDigest = strtolower(trim((string) ($item['target_digest'] ?? '')));
+                $digestMatches = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? hash_equals(
+                        UltraMode::nativeScopeDigest($forwardId, $direction, $nativeTransport, $routeScope ?? ''),
+                        $requestDigest
+                    ) || hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    )
+                    : hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    );
+                if ($routeScope === null || $nativeTransport !== 'tcp+udp' || !$digestMatches) {
+                    $lastError = 'policy_scope_invalid';
+                    continue;
+                }
+                $policy['target'] = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? implode("\n", [
+                        'native-outbound:v1',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                    ])
+                    : implode("\n", [
+                        'native-outbound:v2',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                        $routePolicy,
+                    ]);
+                $policy['transport'] = $nativeTransport;
+                $policy['direction'] = $direction;
+                $policy['route_scope'] = $routeScope;
+                $policy['route_policy'] = $routePolicy;
+                $policy['native_unrestricted_allowed'] = !empty($nativeCarrier['unrestricted_allowed']);
+            }
             $selectionMode = strtolower(trim((string) ($item['selection_mode'] ?? '')));
             $maxCandidates = $selectionMode === 'auto'
                 ? max(1, min(4, (int) ($item['max_candidates'] ?? 4)))
@@ -521,7 +599,7 @@ final class ClientAgentController extends BaseController
             $policyV2 || $this->isAndroidRequest($request)
         );
 
-        $response = $this->json([
+        $responsePayload = [
             'ok' => true,
             'config_revision' => (string) $snapshot['config_revision'],
             'forward_revision' => (string) $snapshot['forward_revision'],
@@ -560,7 +638,11 @@ final class ClientAgentController extends BaseController
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
-        ]);
+        ];
+        if (is_array($snapshot['native_outbound'] ?? null)) {
+            $responsePayload['native_outbound'] = $snapshot['native_outbound'];
+        }
+        $response = $this->json($responsePayload);
         return $response->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
@@ -610,7 +692,17 @@ final class ClientAgentController extends BaseController
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
 
-        $forwardRevision = self::forwardRevision($forwards);
+        $nativeOutbound = null;
+        try {
+            $nativeOutbound = $this->provisioning->nativeOutboundCapabilityForAssignedForwards(
+                is_array($forwards) ? $forwards : []
+            );
+        } catch (\Throwable) {
+            // Capability publication is optional; a lookup failure must keep
+            // the feature invisible and must not break ordinary config pulls.
+            $nativeOutbound = null;
+        }
+        $forwardRevision = self::forwardRevision($forwards, $nativeOutbound);
         $debugCollection = (new DebugCollectionStore($this->db, $this->config))->metadata($client);
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             'client_agent' => $clientAgent,
@@ -625,6 +717,7 @@ final class ClientAgentController extends BaseController
 
         return [
             'forwards' => $forwards,
+            'native_outbound' => $nativeOutbound,
             'agent_config' => $agentConfig,
             'linux_profile_runtime' => $linuxProfileRuntime,
             'client_agent' => $clientAgent,
@@ -648,7 +741,7 @@ final class ClientAgentController extends BaseController
     /**
      * @param array<int, array<string, mixed>> $forwards
      */
-    public static function forwardRevision(array $forwards): string
+    public static function forwardRevision(array $forwards, ?array $nativeOutbound = null): string
     {
         $projection = [];
         foreach ($forwards as $forward) {
@@ -666,9 +759,17 @@ final class ClientAgentController extends BaseController
                 'transport' => (string) ($forward['transport'] ?? ''),
                 'service_status' => (string) ($forward['service_status'] ?? ''),
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
+                'native_outbound' => !empty($forward['native_outbound'] ?? $forward['native_outbound_enabled'] ?? false),
+                'native_direction' => (string) ($forward['native_direction'] ?? $forward['native_direction_key'] ?? ''),
             ];
         }
-        return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
+        if ($nativeOutbound === null) {
+            return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
+        }
+        return hash('sha256', (string) json_encode([
+            'forwards' => $projection,
+            'native_outbound' => $nativeOutbound,
+        ], JSON_UNESCAPED_SLASHES));
     }
 
     /**

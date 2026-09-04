@@ -12,11 +12,27 @@ public sealed class MacConnectionEditorViewModelTests
         var editor = new MacConnectionEditorViewModel();
 
         Assert.Equal(
-            [MacConnectionProtocol.Shadowsocks, MacConnectionProtocol.Vless, MacConnectionProtocol.WireGuard],
+            [MacConnectionProtocol.Shadowsocks, MacConnectionProtocol.WireGuard],
             editor.ProtocolOptions);
-        Assert.Contains("tcp", editor.VlessTransportOptions);
-        Assert.Contains("ws", editor.VlessTransportOptions);
-        Assert.Contains("grpc", editor.VlessTransportOptions);
+        Assert.False(MacConnectionProtocol.IsSupported("vless"));
         Assert.Contains("2022-blake3-aes-256-gcm", editor.ShadowsocksMethodOptions);
+    }
+
+    [Fact]
+    public void VlessProfilesAreNotSupportedByTheMacEditor()
+    {
+        var editor = new MacConnectionEditorViewModel();
+
+        editor.Load(new MacConnectionProfile
+        {
+            Protocol = "vless",
+            Server = "legacy.example.test",
+        });
+
+        Assert.Equal(MacConnectionProtocol.Shadowsocks, editor.Protocol);
+        Assert.Equal("Unsupported", new MacConnectionProfile { Protocol = "vless" }.DisplayProtocol);
+
+        editor.Protocol = "vless";
+        Assert.Equal(MacConnectionProtocol.Shadowsocks, editor.Protocol);
     }
 }

@@ -48,7 +48,7 @@ function Get-EntrySha256([System.IO.Compression.ZipArchiveEntry]$Entry) {
     }
 }
 
-function Assert-Arm64Elf([System.IO.Compression.ZipArchiveEntry]$Entry) {
+function Assert-ElfMachine([System.IO.Compression.ZipArchiveEntry]$Entry, [int]$ExpectedMachine, [string]$Abi) {
     $header = Read-EntryPrefix $Entry 20
     $validElf = $header.Length -ge 20 -and $header[0] -eq 0x7f -and $header[1] -eq [byte][char]'E' -and $header[2] -eq [byte][char]'L' -and $header[3] -eq [byte][char]'F'
     if (-not $validElf) {
@@ -58,8 +58,8 @@ function Assert-Arm64Elf([System.IO.Compression.ZipArchiveEntry]$Entry) {
         Fail "Ultra entry is not ELF64 little-endian: $($Entry.FullName)"
     }
     $machine = [BitConverter]::ToUInt16($header, 18)
-    if ($machine -ne 183) {
-        Fail "Ultra entry is not AArch64: $($Entry.FullName)"
+    if ($machine -ne $ExpectedMachine) {
+        Fail "Ultra entry has e_machine=$machine, expected $ExpectedMachine for ${Abi}: $($Entry.FullName)"
     }
 }
 
@@ -111,22 +111,40 @@ function Assert-NoRawAgentTokenMarker([System.IO.Compression.ZipArchiveEntry]$En
 $archive = [System.IO.Compression.ZipFile]::OpenRead($ApkPath)
 try {
     $entries = @($archive.Entries)
-    $ultraEntries = @($entries | Where-Object { $_.FullName -match '^lib/.+/libultra_client\.so$' })
-    if ($ultraEntries.Count -ne 1 -or $ultraEntries[0].FullName -ne 'lib/arm64-v8a/libultra_client.so') {
-        Fail 'APK must contain exactly one arm64-v8a Ultra runtime entry'
-    }
-    $ultra = $ultraEntries[0]
-    Assert-Arm64Elf $ultra
-
-    $asset = $entries | Where-Object { $_.FullName -eq 'assets/runtime/arm64-v8a/ultra-client' } | Select-Object -First 1
-    if ($null -eq $asset) {
-        Fail 'APK is missing the arm64 Ultra runtime asset'
-    }
-    Assert-Arm64Elf $asset
-    $binaryHash = Get-EntrySha256 $ultra
-    $assetHash = Get-EntrySha256 $asset
-    if ($binaryHash -ne $assetHash) {
-        Fail 'Ultra JNI/runtime asset hashes differ'
+    # Keep the ABI matrix explicit. A release that silently falls back to an
+    # older single-ABI payload can install but fail at runtime on the QA
+    # x86_64 emulator, so both entries are required and hash-paired.
+    $ultraExpectations = @(
+        [pscustomobject]@{ Abi = 'arm64-v8a'; Machine = 183 },
+        [pscustomobject]@{ Abi = 'x86_64'; Machine = 62 }
+    )
+    $ultraRecords = @()
+    foreach ($expectation in $ultraExpectations) {
+        $libName = "lib/$($expectation.Abi)/libultra_client.so"
+        $assetName = "assets/runtime/$($expectation.Abi)/ultra-client"
+        $libs = @($entries | Where-Object { $_.FullName -eq $libName })
+        if ($libs.Count -ne 1) {
+            Fail "APK must contain exactly one Ultra JNI runtime entry for $($expectation.Abi)"
+        }
+        $ultra = $libs[0]
+        Assert-ElfMachine $ultra $expectation.Machine $expectation.Abi
+        $assets = @($entries | Where-Object { $_.FullName -eq $assetName })
+        if ($assets.Count -ne 1) {
+            Fail "APK must contain exactly one Ultra runtime asset for $($expectation.Abi)"
+        }
+        $asset = $assets[0]
+        Assert-ElfMachine $asset $expectation.Machine $expectation.Abi
+        $binaryHash = Get-EntrySha256 $ultra
+        $assetHash = Get-EntrySha256 $asset
+        if ($binaryHash -ne $assetHash) {
+            Fail "Ultra JNI/runtime asset hashes differ for $($expectation.Abi)"
+        }
+        $ultraRecords += [pscustomobject]@{
+            abi = $expectation.Abi
+            lib = $libName
+            asset = $assetName
+            sha256 = $binaryHash
+        }
     }
 
     $textAssets = @($entries | Where-Object {
@@ -143,8 +161,9 @@ try {
 
     [pscustomobject]@{
         apk = $ApkPath
-        ultra_entry = $ultra.FullName
-        ultra_sha256 = $binaryHash
+        ultra_entries = (($ultraRecords | ForEach-Object { $_.lib }) -join ',')
+        ultra_sha256 = (($ultraRecords | Where-Object { $_.abi -eq 'arm64-v8a' } | Select-Object -First 1).sha256)
+        ultra_abi_matrix = $ultraRecords
         static_assets_scanned = $textAssets.Count
         dex_entries_scanned = $dexEntries.Count
         status = 'ok'

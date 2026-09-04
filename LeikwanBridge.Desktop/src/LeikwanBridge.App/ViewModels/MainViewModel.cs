@@ -41,6 +41,14 @@ public partial class MainViewModel : ObservableObject
     private Task? _shutdownTask;
     private Task? _heartbeatTask;
     private Action<ClientMeta>? _clientUpdatedHandler;
+    private int _nativeRefreshInProgress;
+    private int _nativeRefreshPending;
+    private WindowsProxyMode _nativeActiveMode = WindowsProxyMode.Tun;
+    private int _nativeActiveForwardId;
+    private string _nativeActiveRouteScope = "global";
+    private bool _nativeActiveUnrestricted;
+    private string _nativeActiveGameId = "";
+    private bool _nativeActiveBypassChina;
     private int _shutdownRequested;
 
     [ObservableProperty] private bool _isConnected;
@@ -62,6 +70,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private ForwardViewModel? _selectedForward;
     [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
     [ObservableProperty] private string _selectedProxyGameId = "";
+    [ObservableProperty] private NativeOutboundCapability? _nativeOutboundCapability;
+    [ObservableProperty] private int _selectedNativeForwardId;
+    [ObservableProperty] private string _selectedNativeRouteScope = "global";
+    [ObservableProperty] private bool _nativeBypassChinaMainland;
+    [ObservableProperty] private bool _nativeUnrestrictedRoute;
+    [ObservableProperty] private bool _isNativeOutboundExpanded;
     private string _selectedProxyGameDisplayName = "";
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
@@ -77,6 +91,29 @@ public partial class MainViewModel : ObservableObject
     public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
     public bool IsProxyStarting => ProxySnapshot.State == WindowsProxyConnectionState.Starting;
     public bool IsProxyError => ProxySnapshot.State == WindowsProxyConnectionState.Error;
+    public bool IsNativeOutboundVisible
+        => NativeOutboundCapability is { Enabled: true } && NativeOutboundForwards.Count > 0;
+    public IReadOnlyList<NativeOutboundForward> NativeOutboundForwards
+        => NativeOutboundCapability?.Forwards ?? [];
+    public IReadOnlyList<string> NativeRouteScopeOptions
+        => NativeOutboundCapability?.RouteScopes ?? [];
+    public bool IsNativeRouteScopeSelectable
+        => NativeOutboundCapability?.FindForward(SelectedNativeForwardId)?.RouteScopes
+            .Any(IsNativeRestrictedScope) == true;
+    public bool IsNativeRouteCnOnly
+        => string.Equals(SelectedNativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeRouteIntlOnly
+        => string.Equals(SelectedNativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeRouteGlobal
+        => string.Equals(SelectedNativeRouteScope, "global", StringComparison.OrdinalIgnoreCase);
+    public bool IsNativeBypassChinaEnabled
+        => IsNativeRouteGlobal && IsNativeOutboundVisible;
+    public bool IsNativeUnrestrictedRouteVisible
+        => NativeOutboundCapability?.FindForward(SelectedNativeForwardId)?.UnrestrictedAllowed == true;
+    public bool IsNativeUnrestrictedRouteEnabled
+        => IsNativeUnrestrictedRouteVisible
+            && IsNativeOutboundVisible
+            && ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
 
     private readonly HashSet<int> _busyForwards = [];
     public bool ShouldAutoConnectOnStartup => !ShowSetupWizard && !IsConnected;
@@ -91,6 +128,89 @@ public partial class MainViewModel : ObservableObject
     {
         _config.ProxyActiveGameId = value?.Trim() ?? string.Empty;
         UpdateSelectedProxyGameDisplayName();
+    }
+
+    partial void OnNativeOutboundCapabilityChanged(NativeOutboundCapability? value)
+    {
+        if (value is not { Enabled: true })
+            IsNativeOutboundExpanded = false;
+        var preferredId = value?.FindForward(SelectedNativeForwardId)?.ForwardId
+            ?? value?.DefaultForwardId
+            ?? value?.Forwards.FirstOrDefault()?.ForwardId
+            ?? 0;
+        if (SelectedNativeForwardId != preferredId)
+            SelectedNativeForwardId = preferredId;
+
+        var carrier = value?.FindForward(preferredId);
+        var preferredScope = carrier?.RouteScopes
+            .FirstOrDefault(scope => string.Equals(scope, SelectedNativeRouteScope, StringComparison.OrdinalIgnoreCase))
+            ?? carrier?.DefaultRouteScope
+            ?? value?.DefaultRouteScope
+            ?? "global";
+        if (!string.Equals(SelectedNativeRouteScope, preferredScope, StringComparison.OrdinalIgnoreCase))
+            SelectedNativeRouteScope = preferredScope;
+        if (!IsNativeRouteGlobal && NativeBypassChinaMainland)
+            NativeBypassChinaMainland = false;
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
+
+        OnPropertyChanged(nameof(IsNativeOutboundVisible));
+        OnPropertyChanged(nameof(NativeOutboundForwards));
+        OnPropertyChanged(nameof(NativeRouteScopeOptions));
+        OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
+        OnPropertyChanged(nameof(IsNativeRouteCnOnly));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeRouteGlobal));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
+    }
+
+    partial void OnSelectedNativeForwardIdChanged(int value)
+    {
+        var carrier = NativeOutboundCapability?.FindForward(value);
+        if (carrier is not null
+            && !carrier.RouteScopes.Contains(SelectedNativeRouteScope, StringComparer.OrdinalIgnoreCase))
+            SelectedNativeRouteScope = carrier.DefaultRouteScope;
+        OnPropertyChanged(nameof(IsNativeRouteCnOnly));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeRouteGlobal));
+        OnPropertyChanged(nameof(IsNativeRouteScopeSelectable));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+        if (!IsNativeUnrestrictedRouteVisible && NativeUnrestrictedRoute)
+            NativeUnrestrictedRoute = false;
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteVisible));
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
+    }
+
+    partial void OnSelectedNativeRouteScopeChanged(string value)
+    {
+        var normalized = NormalizeNativeScope(value);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            SelectedNativeRouteScope = normalized;
+            return;
+        }
+        if (normalized != "global" && NativeBypassChinaMainland)
+            NativeBypassChinaMainland = false;
+        OnPropertyChanged(nameof(IsNativeRouteCnOnly));
+        OnPropertyChanged(nameof(IsNativeRouteIntlOnly));
+        OnPropertyChanged(nameof(IsNativeRouteGlobal));
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnNativeBypassChinaMainlandChanged(bool value)
+    {
+        if (value && !IsNativeRouteGlobal)
+            NativeBypassChinaMainland = false;
+        OnPropertyChanged(nameof(IsNativeBypassChinaEnabled));
+    }
+
+    partial void OnNativeUnrestrictedRouteChanged(bool value)
+    {
+        if (value && !IsNativeUnrestrictedRouteVisible)
+            NativeUnrestrictedRoute = false;
+        OnPropertyChanged(nameof(IsNativeUnrestrictedRouteEnabled));
     }
 
     /// <summary>
@@ -438,6 +558,87 @@ public partial class MainViewModel : ObservableObject
         SelectedProxyGameId = mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
     }
 
+    public async Task StartNativeOutboundAsync(
+        WindowsProxyMode mode,
+        int forwardId,
+        string routeScope,
+        string? selectedGameId = null,
+        bool? bypassChinaMainland = null,
+        bool? unrestrictedRoute = null,
+        CancellationToken ct = default)
+    {
+        await EnsureProxyServiceAsync(ct);
+        var capability = NativeOutboundCapability;
+        if (capability is not { Enabled: true })
+            throw new InvalidOperationException("native_outbound_not_allowed");
+        var forward = _pollingService?.LatestForwards
+            .FirstOrDefault(item => item.ForwardId == forwardId)
+            ?? Forwards.FirstOrDefault(item => item.ForwardId == forwardId)?.Config;
+        if (forward is null)
+            throw new KeyNotFoundException("native_forward_not_found");
+
+        var carrier = capability.FindForward(forwardId)
+            ?? throw new InvalidOperationException("native_forward_not_allowed");
+        var normalizedScope = TryNormalizeNativeScope(routeScope)
+            ?? throw new InvalidOperationException("native_route_scope_invalid");
+        if (!carrier.RouteScopes.Contains(normalizedScope, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("native_route_scope_invalid");
+        var useUnrestrictedRoute = unrestrictedRoute ?? NativeUnrestrictedRoute;
+        if (useUnrestrictedRoute && !carrier.UnrestrictedAllowed)
+            throw new InvalidOperationException("native_route_policy_not_allowed");
+        forward.NativeOutbound = capability;
+        forward.NativeRouteScope = normalizedScope;
+
+        selectedGameId = string.IsNullOrWhiteSpace(selectedGameId)
+            ? (string.IsNullOrWhiteSpace(SelectedProxyGameId)
+                ? _config.ProxyActiveGameId
+                : SelectedProxyGameId)
+            : selectedGameId;
+        var game = ResolveProxyGame(selectedGameId);
+        if (mode == WindowsProxyMode.Process && game is null)
+            throw new InvalidOperationException("process_game_required");
+        var rules = (game?.ProcessNames ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(64)
+            .Select(name => new WindowsProcessProxyRule(
+                game?.PatternsAreRegex == true ? name : BuildProcessRule(name)))
+            .ToList();
+
+        var api = _api ?? throw new InvalidOperationException("master_api_unavailable");
+        var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
+        var lease = await api.ResolveNativeOutboundLeaseAsync(
+            forward,
+            capability,
+            normalizedScope,
+            routePolicy,
+            ct);
+        if (lease is null)
+            throw new InvalidOperationException("native_lease_unavailable");
+
+        var effectiveBypassChina = normalizedScope == "global"
+            && (bypassChinaMainland ?? NativeBypassChinaMainland);
+        _nativeActiveMode = mode;
+        _nativeActiveForwardId = forwardId;
+        _nativeActiveRouteScope = normalizedScope;
+        _nativeActiveUnrestricted = useUnrestrictedRoute;
+        _nativeActiveGameId = mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
+        _nativeActiveBypassChina = effectiveBypassChina;
+        NativeBypassChinaMainland = effectiveBypassChina;
+        var dnsMode = _config.GetEffectiveProxyDnsMode();
+        await _proxyService!.StartNativeAsync(
+            mode,
+            lease,
+            BuildProxyBypassHosts(),
+            rules,
+            ct,
+            effectiveBypassChina,
+            dnsMode,
+            dnsMode == WindowsProxyDnsMode.Custom
+                ? _config.GetEffectiveProxyDnsServers()
+                : null);
+        AddLog($"Started {WindowsProxyConnectionService.NativeOutboundDisplayName} ({normalizedScope}).");
+    }
+
     private WindowsProxyGameDefinition? ResolveProxyGame(string? selectedGameId)
     {
         var game = WindowsProxyGameCatalog.Find(selectedGameId, _proxyGameProfiles);
@@ -452,11 +653,35 @@ public partial class MainViewModel : ObservableObject
             : WindowsProxyGameCatalog.Find(option.Id, _proxyGameProfiles);
     }
 
+    private static string NormalizeNativeScope(string? value)
+        => TryNormalizeNativeScope(value) ?? "global";
+
+    private static string? TryNormalizeNativeScope(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant() ?? "global";
+        return normalized switch
+        {
+            "international_only" or "overseas_only" => "intl_only",
+            "mainland_only" or "china_only" => "cn_only",
+            "cn_only" or "intl_only" or "global" => normalized,
+            _ => null,
+        };
+    }
+
+    private static bool IsNativeRestrictedScope(string scope)
+        => string.Equals(scope, "cn_only", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(scope, "intl_only", StringComparison.OrdinalIgnoreCase);
+
     public async Task StopProxyAsync(CancellationToken ct = default)
     {
         if (_proxyService is null)
             return;
         await _proxyService.StopAsync(ct);
+        _nativeActiveForwardId = 0;
+        _nativeActiveRouteScope = "global";
+        _nativeActiveUnrestricted = false;
+        NativeUnrestrictedRoute = false;
+        _nativeActiveGameId = "";
     }
 
     public async Task<WindowsSocks5UdpProbeResult> TestProxyUdpAsync(CancellationToken ct = default)
@@ -595,6 +820,7 @@ public partial class MainViewModel : ObservableObject
         if (polling is not null)
         {
             polling.ForwardsUpdated -= OnForwardsUpdated;
+            polling.NativeOutboundUpdated -= OnNativeOutboundUpdated;
             polling.PullStateChanged -= OnPullStateChanged;
             polling.SyncError -= OnSyncError;
             if (_clientUpdatedHandler is not null)
@@ -822,6 +1048,11 @@ public partial class MainViewModel : ObservableObject
         ActiveClientName = string.Empty;
         SelectedForward = null;
         Forwards.Clear();
+        NativeOutboundCapability = null;
+        _nativeActiveForwardId = 0;
+        _nativeActiveRouteScope = "global";
+        _nativeActiveUnrestricted = false;
+        NativeUnrestrictedRoute = false;
         ShowClientPicker = false;
         ShowSetupWizard = true;
     }
@@ -928,6 +1159,7 @@ public partial class MainViewModel : ObservableObject
             ApplyUltraPolicyActions);
 
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
+        _pollingService.NativeOutboundUpdated += OnNativeOutboundUpdated;
         _pollingService.PullStateChanged += OnPullStateChanged;
         _pollingService.SyncError += OnSyncError;
         _clientUpdatedHandler = client =>
@@ -963,6 +1195,9 @@ public partial class MainViewModel : ObservableObject
         _api = null;
         _diagnostics = null;
         IsConnected = false;
+        NativeOutboundCapability = null;
+        _nativeActiveForwardId = 0;
+        _nativeActiveRouteScope = "global";
         ConnectionStatus = GetString("DashDisconnected");
         Forwards.Clear();
         ActiveForwardCount = 0;
@@ -1348,6 +1583,211 @@ public partial class MainViewModel : ObservableObject
         });
         lock (_shutdownGate)
             _heartbeatTask = heartbeatTask;
+
+        ScheduleNativeLeaseRefresh();
+    }
+
+    private void OnNativeOutboundUpdated(NativeOutboundCapability? capability)
+    {
+        if (IsShuttingDown)
+            return;
+        InvokeOnUiThread(() => NativeOutboundCapability = capability);
+        if (_proxyService?.IsNativeOutboundActive == true
+            && !NativeCapabilityCoversActiveSession(capability))
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await StopProxyAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { Log.Warning(exception, "failed to stop native outbound after capability removal"); }
+            });
+            return;
+        }
+        ScheduleNativeLeaseRefresh();
+    }
+
+    private bool NativeCapabilityCoversActiveSession(NativeOutboundCapability? capability)
+    {
+        if (capability is not { Enabled: true }
+            || !string.Equals(capability.Protocol, "socks5", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(capability.LeaseProtocol, MasterApiClient.NativeOutboundLeaseProtocol, StringComparison.Ordinal)
+            || !string.Equals(capability.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var carrier = capability.FindForward(_nativeActiveForwardId);
+        return carrier is not null
+            && string.Equals(carrier.Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
+            && carrier.RouteScopes.Contains(_nativeActiveRouteScope, StringComparer.OrdinalIgnoreCase)
+            && (!_nativeActiveUnrestricted || carrier.UnrestrictedAllowed);
+    }
+
+    private void ScheduleNativeLeaseRefresh()
+    {
+        if (IsShuttingDown
+            || _proxyService?.IsNativeOutboundActive != true
+            || _pollingService is null)
+            return;
+        if (Volatile.Read(ref _nativeRefreshInProgress) != 0)
+        {
+            Interlocked.Exchange(ref _nativeRefreshPending, 1);
+            return;
+        }
+        _ = Task.Run(RefreshNativeLeaseIfNeededAsync);
+    }
+
+    private async Task RefreshNativeLeaseIfNeededAsync()
+    {
+        if (Interlocked.CompareExchange(ref _nativeRefreshInProgress, 1, 0) != 0)
+            return;
+        try
+        {
+            if (IsShuttingDown
+                || _proxyService?.IsNativeOutboundActive != true
+                || _api is null
+                || _pollingService is null)
+                return;
+            var now = DateTimeOffset.UtcNow;
+            var expiresAt = _proxyService.ActiveNativeLeaseExpiresAt;
+            var capability = _pollingService.LatestNativeOutbound;
+            if (!NativeCapabilityCoversActiveSession(capability))
+            {
+                await StopProxyAsync(CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            var forward = _pollingService.LatestForwards
+                .FirstOrDefault(item => item.ForwardId == _nativeActiveForwardId);
+            var policy = forward?.UltraAccess;
+            if (forward is null)
+            {
+                _pollingService.RequestPolicyRefresh();
+                return;
+            }
+
+            // The panel rotates the Ultra session ticket at renew_after even
+            // when the forward revision is unchanged. Pull a fresh policy
+            // first; sending the cached ticket directly produces
+            // lease_scope_invalid and used to trigger a full proxy restart.
+            var policyInvalid = policy is null
+                || policy.GetValidationFailure(forward, now) is not null;
+            var policyRenewalDue = policy is null
+                || (policy.RenewAfter == default
+                    ? policy.ExpiresAt <= now.AddMinutes(2)
+                    : policy.RenewAfter <= now);
+            if (policyInvalid || policyRenewalDue)
+            {
+                _pollingService.RequestPolicyRefresh();
+                return;
+            }
+
+            var policyGenerationChanged = !string.Equals(
+                policy!.PolicyGeneration,
+                _proxyService.ActiveNativeLeasePolicyGeneration,
+                StringComparison.OrdinalIgnoreCase);
+            if (!policyGenerationChanged
+                && expiresAt is DateTimeOffset expiry
+                && expiry > now.AddMinutes(1))
+                return;
+
+            forward.NativeOutbound = capability;
+            forward.NativeRouteScope = _nativeActiveRouteScope;
+            var lease = await _api.ResolveNativeOutboundLeaseAsync(
+                forward,
+                capability,
+                _nativeActiveRouteScope,
+                _nativeActiveUnrestricted ? "unrestricted" : "restricted",
+                _lifecycleCts.Token).ConfigureAwait(false);
+            if (lease is null)
+            {
+                Log.Warning("native outbound lease refresh unavailable for forward {ForwardId}", _nativeActiveForwardId);
+                _pollingService.RequestPolicyRefresh();
+                return;
+            }
+
+            // The user may have pressed Stop while the panel request was in
+            // flight. Do not resurrect a stopped proxy or leak the lease.
+            if (_proxyService?.IsNativeOutboundActive != true)
+            {
+                lease.Dispose();
+                return;
+            }
+            var game = ResolveProxyGame(_nativeActiveGameId);
+            var rules = (game?.ProcessNames ?? [])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(64)
+                .Select(name => new WindowsProcessProxyRule(
+                    game?.PatternsAreRegex == true ? name : BuildProcessRule(name)))
+                .ToList();
+            var dnsMode = _config.GetEffectiveProxyDnsMode();
+            bool hotRefreshed;
+            try
+            {
+                hotRefreshed = await _proxyService.TryRefreshNativeAsync(
+                    lease,
+                    _lifecycleCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                lease.Dispose();
+                throw;
+            }
+            if (!hotRefreshed)
+            {
+                // A dead relay/control pipe is the only case that needs a
+                // lifecycle restart. Keep the fallback explicit and guarded.
+                if (_proxyService.IsNativeOutboundActive)
+                {
+                    await _proxyService.StartNativeAsync(
+                        _nativeActiveMode,
+                        lease,
+                        BuildProxyBypassHosts(),
+                        rules,
+                        _lifecycleCts.Token,
+                        _nativeActiveBypassChina,
+                        dnsMode,
+                        dnsMode == WindowsProxyDnsMode.Custom
+                            ? _config.GetEffectiveProxyDnsServers()
+                            : null).ConfigureAwait(false);
+                }
+                else
+                {
+                    lease.Dispose();
+                    return;
+                }
+            }
+            Log.Information("native outbound lease refreshed for forward {ForwardId}", _nativeActiveForwardId);
+        }
+        catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+        {
+        }
+        catch (MasterApiException exception) when (IsNativeLeaseRefreshError(exception))
+        {
+            _pollingService?.RequestPolicyRefresh();
+            Log.Warning(
+                "native outbound lease refresh deferred for forward {ForwardId} (code={Code})",
+                _nativeActiveForwardId,
+                exception.Message);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "native outbound lease refresh failed");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nativeRefreshInProgress, 0);
+            if (Interlocked.Exchange(ref _nativeRefreshPending, 0) != 0)
+                ScheduleNativeLeaseRefresh();
+        }
+    }
+
+    private static bool IsNativeLeaseRefreshError(MasterApiException exception)
+    {
+        var code = (exception.Message ?? string.Empty).Trim().ToLowerInvariant();
+        return exception.StatusCode == 409
+            && code is "lease_scope_invalid"
+                or "policy_generation_invalid"
+                or "policy_scope_invalid"
+                or "policy_unavailable"
+                or "no_approved_candidate"
+                or "quota_exhausted";
     }
 
     public void ApplyUsageSnapshot(RuntimeUsageSnapshot snapshot)

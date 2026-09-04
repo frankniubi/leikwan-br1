@@ -1,0 +1,4 @@
+﻿ls_exit=1
+ls: /data/tombstones: Permission denied
+find_exit=1
+find: '/data/tombstones': Permission denied

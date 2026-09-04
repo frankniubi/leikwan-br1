@@ -32,10 +32,17 @@ const (
 )
 
 type Config struct {
-	ForwardID                int                 `json:"forward_id"`
-	ListenHost               string              `json:"listen_host"`
-	ListenPort               int                 `json:"listen_port"`
-	Target                   string              `json:"target"`
+	ForwardID  int    `json:"forward_id"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	Target     string `json:"target"`
+	// NativeSocks5 exposes a local standard SOCKS5 facade while retaining the
+	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
+	// forwards leave this disabled and keep their fixed-target behavior.
+	NativeSocks5             bool                `json:"native_socks5"`
+	NativeRoutePolicy        string              `json:"native_route_policy"`
+	NativePortMin            int                 `json:"native_port_min"`
+	NativeFilterProfile      string              `json:"native_filter_profile"`
 	ProbeTarget              string              `json:"probe_target"`
 	ControlSocket            string              `json:"control_socket"`
 	PolicyGeneration         string              `json:"policy_generation"`
@@ -126,9 +133,19 @@ var currentHandshakeGreeting = []byte{5, 5, 0, 1, 2, 0x80, 0x83, 1}
 var legacyHandshakeGreeting = []byte{5, 3, 2, 0x80, 0x83, 1}
 
 func handshakeGreetingOrder(_ ProviderLease) [][]byte {
-	// Always try the current reference greeting first. A remembered legacy
-	// preference can become stale across relay upgrades and was shared by
-	// unrelated forwards that happened to use the same endpoint.
+	// Ordinary Ultra TCP used the three-method LeiGod greeting before the
+	// native-outbound work landed. Keep that wire shape first because some
+	// existing relays accept the five-method greeting but never attach the
+	// resulting stream to the target. The current greeting remains a bounded
+	// fallback for upgraded relays.
+	return [][]byte{legacyHandshakeGreeting, currentHandshakeGreeting}
+}
+
+func nativeHandshakeGreetingOrder(_ ProviderLease) [][]byte {
+	// Native SOCKS5 was introduced with the five-method reference greeting.
+	// Preserve that preference independently from ordinary fixed-target Ultra;
+	// both paths still fall back to the other greeting on a real handshake
+	// failure.
 	return [][]byte{currentHandshakeGreeting, legacyHandshakeGreeting}
 }
 
@@ -159,7 +176,11 @@ func buildHandshakeWithGreeting(user, credential string, command byte, host stri
 }
 
 func buildHandshake(user, credential string, command byte, host string, port int) ([]byte, error) {
-	return buildHandshakeWithGreeting(user, credential, command, host, port, currentHandshakeGreeting)
+	greeting := legacyHandshakeGreeting
+	if command == 3 {
+		greeting = currentHandshakeGreeting
+	}
+	return buildHandshakeWithGreeting(user, credential, command, host, port, greeting)
 }
 
 const streamPreludeSize = 14
@@ -446,12 +467,20 @@ func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetP
 	return &bufferedConn{Conn: conn, reader: reader}, nil
 }
 
-func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+func dialStreamWithGreetingOrder(
+	lease ProviderLease,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	order [][]byte,
+) (net.Conn, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
+	if len(order) < 2 {
+		return nil, errors.New("stream handshake greeting order invalid")
+	}
 	deadline := time.Now().Add(timeout)
-	order := handshakeGreetingOrder(lease)
 	conn, err := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[0])
 	if err == nil {
 		return conn, nil
@@ -461,13 +490,21 @@ func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout 
 	}
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
-		return nil, fmt.Errorf("stream handshake failed after legacy fallback: initial=%v; legacy=%w", err, context.DeadlineExceeded)
+		return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, context.DeadlineExceeded)
 	}
-	legacyConn, legacyErr := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[1])
-	if legacyErr == nil {
-		return legacyConn, nil
+	fallbackConn, fallbackErr := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[1])
+	if fallbackErr == nil {
+		return fallbackConn, nil
 	}
-	return nil, fmt.Errorf("stream handshake failed after legacy fallback: initial=%v; legacy=%w", err, legacyErr)
+	return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, fallbackErr)
+}
+
+func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
+}
+
+func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
 
 func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
@@ -911,7 +948,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 	var lastErr error
 	var firstErr error
 	fallbackTried := false
-	for index, greeting := range handshakeGreetingOrder(lease) {
+	for index, greeting := range nativeHandshakeGreetingOrder(lease) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
@@ -1803,6 +1840,19 @@ func main() {
 	if config.ConnectTimeoutSecs < 1 || config.ConnectTimeoutSecs > 30 {
 		config.ConnectTimeoutSecs = 5
 	}
+	if config.NativeSocks5 {
+		routePolicy, policyErr := ParseNativeRoutePolicy(config.NativeRoutePolicy)
+		if policyErr != nil {
+			log.Fatal("native route policy invalid")
+		}
+		config.NativeRoutePolicy = string(routePolicy)
+		if config.NativePortMin < nativeDefaultPortMin || config.NativePortMin > 65535 {
+			config.NativePortMin = nativeDefaultPortMin
+		}
+		if config.NativeFilterProfile == "" {
+			config.NativeFilterProfile = routePolicy.FilterProfile()
+		}
+	}
 	if config.LocationCachePath == "" {
 		config.LocationCachePath = "/var/lib/ultra/location.json"
 	}
@@ -1870,14 +1920,23 @@ func main() {
 		runtimeErrors := make(chan error, 2)
 		var runtimeWait sync.WaitGroup
 		transport := strings.ToLower(policy.Transport)
-		if transport == "tcp" || transport == "tcp+udp" {
+		if config.NativeSocks5 {
+			// Native mode exposes a local standard SOCKS5 facade and translates
+			// each request to the existing Ultra relay protocol. The policy is
+			// always tcp+udp for a native lease.
+			runtimeWait.Add(1)
+			go func() {
+				defer runtimeWait.Done()
+				runtimeErrors <- serveNativeSocks5(runtimeContext, config, store, status)
+			}()
+		} else if transport == "tcp" || transport == "tcp+udp" {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()
 				runtimeErrors <- serveTCP(runtimeContext, config, store, status)
 			}()
 		}
-		if transport == "udp" || transport == "tcp+udp" {
+		if !config.NativeSocks5 && (transport == "udp" || transport == "tcp+udp") {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()

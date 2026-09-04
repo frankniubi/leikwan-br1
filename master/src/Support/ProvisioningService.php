@@ -4126,6 +4126,98 @@ final class ProvisioningService
         return $mapping;
     }
 
+    /** @param array<int, array<string, mixed>> $forwards @return array<string, mixed>|null */
+    public function nativeOutboundCapabilityForAssignedForwards(array $forwards): ?array
+    {
+        $eligible = [];
+        $serviceIds = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || (string) ($forward['service_status'] ?? '') !== 'active'
+                || empty($forward['native_outbound_enabled'] ?? $forward['native_outbound'] ?? false)
+                || strtolower(trim((string) ($forward['transport'] ?? ''))) !== 'tcp+udp') {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            $serviceId = (int) ($forward['service_id'] ?? 0);
+            if ($forwardId <= 0 || $serviceId <= 0) {
+                continue;
+            }
+            $eligible[$forwardId] = $forward;
+            $serviceIds[$serviceId] = $serviceId;
+        }
+        if ($eligible === [] || $serviceIds === []) {
+            return null;
+        }
+
+        $params = [];
+        $placeholders = [];
+        foreach (array_values($serviceIds) as $index => $serviceId) {
+            $key = 'native_service_' . $index;
+            $params[$key] = $serviceId;
+            $placeholders[] = ':' . $key;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT s.id AS service_id, p.feature_flags_json AS plan_feature_flags_json
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id IN (' . implode(', ', $placeholders) . ')',
+            $params
+        );
+        $allowedServices = [];
+        foreach ($rows as $row) {
+            $serviceId = (int) ($row['service_id'] ?? 0);
+            if ($serviceId > 0 && $this->planAllowsNativeOutbound($row)) {
+                $allowedServices[$serviceId] = [
+                    'unrestricted_allowed' => $this->planAllowsNativeUnrestrictedOutbound($row),
+                ];
+            }
+        }
+
+        $carriers = [];
+        foreach ($eligible as $forwardId => $forward) {
+            $servicePolicy = $allowedServices[(int) ($forward['service_id'] ?? 0)] ?? null;
+            if (!is_array($servicePolicy)) {
+                continue;
+            }
+            $direction = substr(UltraMode::redactProviderText(trim((string) ($forward['forward_combination_direction'] ?? ''))), 0, 191);
+            $routeScopes = UltraMode::nativeRouteScopesForDirection($direction);
+            $carriers[] = [
+                'forward_id' => $forwardId,
+                'direction' => $direction,
+                'scope_digest' => UltraMode::nativeScopeDigest($forwardId, $direction, 'tcp+udp', 'global'),
+                'transport' => 'tcp+udp',
+                'route_scopes' => $routeScopes,
+                'default_route_scope' => 'global',
+                'unrestricted_allowed' => !empty($servicePolicy['unrestricted_allowed']),
+            ];
+        }
+        if ($carriers === []) {
+            return null;
+        }
+        usort($carriers, static fn(array $left, array $right): int => (int) $left['forward_id'] <=> (int) $right['forward_id']);
+        $forwardIds = array_map(static fn(array $carrier): int => (int) $carrier['forward_id'], $carriers);
+        $routeScopes = [];
+        foreach ($carriers as $carrier) {
+            foreach ((array) $carrier['route_scopes'] as $scope) {
+                $routeScopes[(string) $scope] = true;
+            }
+        }
+        return [
+            'enabled' => true,
+            'protocol' => 'socks5',
+            'lease_protocol' => UltraMode::NATIVE_SOCKS5_PROTOCOL,
+            'transport' => 'tcp+udp',
+            'forward_ids' => $forwardIds,
+            'default_forward_id' => $forwardIds[0],
+            'route_scopes' => array_values(array_keys($routeScopes)),
+            'default_route_scope' => 'global',
+            'unrestricted_allowed' => false,
+            'forwards' => $carriers,
+        ];
+    }
+
     /**
      * Build broker-only Ultra metadata without placing line numbers in the
      * authenticated client response.
@@ -4169,6 +4261,7 @@ final class ProvisioningService
                     ul.line_id,
                     ul.access_class,
                     ul.native_udp_state,
+                    ul.native_socks5_state,
                     ul.route_class,
                     ul.pricing_class,
                     ul.pricing_evidence,
@@ -4182,8 +4275,8 @@ final class ProvisioningService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
-                    AND ul.access_class = \'native_udp\'
-                    AND ul.native_udp_state = \'verified\'
+                     AND ((ul.access_class = \'native_udp\' AND ul.native_udp_state = \'verified\')
+                          OR ul.native_socks5_state = \'verified\')
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
@@ -4236,6 +4329,7 @@ final class ProvisioningService
                 'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
                 'access_class' => strtolower(trim((string) ($row['access_class'] ?? 'unknown'))),
                 'native_udp_state' => strtolower(trim((string) ($row['native_udp_state'] ?? 'unknown'))),
+                'native_socks5_state' => strtolower(trim((string) ($row['native_socks5_state'] ?? 'unknown'))),
                 'route_class' => strtolower(trim((string) ($row['route_class'] ?? 'unknown'))),
                 'pricing_class' => strtolower(trim((string) ($row['pricing_class'] ?? 'unknown'))),
                 'pricing_evidence' => trim((string) ($row['pricing_evidence'] ?? '')),
@@ -5014,6 +5108,7 @@ final class ProvisioningService
             $this->db->execute(
                 'UPDATE forwards
                  SET enabled = 0,
+                     native_direction_key = NULL,
                      user_deleted_at = :user_deleted_at,
                      balance_suspended_at = NULL,
                      api_revision = :api_revision,
@@ -5060,14 +5155,21 @@ final class ProvisioningService
             $now = $this->now();
 
             if ($enabled) {
+                $nativeDirectionKey = $this->reactivatedNativeDirectionKey($forward);
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 1,
+                         native_direction_key = :native_direction_key,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
                      WHERE id = :id',
-                    ['id' => $forwardId, 'api_revision' => $nextRevision, 'updated_at' => $now]
+                    [
+                        'id' => $forwardId,
+                        'native_direction_key' => $nativeDirectionKey,
+                        'api_revision' => $nextRevision,
+                        'updated_at' => $now,
+                    ]
                 );
                 $this->audit('forward.started', [
                     'forward_id' => $forwardId,
@@ -5081,6 +5183,7 @@ final class ProvisioningService
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 0,
+                         native_direction_key = NULL,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
@@ -5209,7 +5312,7 @@ final class ProvisioningService
                 }
 
                 $candidates = $this->db->fetchAll(
-                    'SELECT id
+                    'SELECT *
                      FROM forwards
                      WHERE service_id = :service_id
                        AND enabled = 0
@@ -5224,9 +5327,23 @@ final class ProvisioningService
                     if ($forwardId <= 0) {
                         continue;
                     }
+                    // Reclaim the native direction atomically with the
+                    // balance-suspension transition. A conflicting native
+                    // direction remains paused rather than displacing the
+                    // already-active forward.
+                    $nativeDirectionKey = null;
+                    try {
+                        $nativeDirectionKey = $this->reactivatedNativeDirectionKey($candidate);
+                    } catch (ApiException $exception) {
+                        if ($exception->getMessage() === 'native_direction_conflict') {
+                            continue;
+                        }
+                        throw $exception;
+                    }
                     $updated = $this->db->execute(
                         'UPDATE forwards
                           SET enabled = 1,
+                              native_direction_key = :native_direction_key,
                               balance_suspended_at = NULL,
                               api_revision = GREATEST(1, api_revision) + 1,
                              updated_at = :updated_at
@@ -5234,7 +5351,11 @@ final class ProvisioningService
                             AND enabled = 0
                             AND user_deleted_at IS NULL
                             AND balance_suspended_at IS NOT NULL',
-                        ['id' => $forwardId, 'updated_at' => $this->now()]
+                        [
+                            'id' => $forwardId,
+                            'native_direction_key' => $nativeDirectionKey,
+                            'updated_at' => $this->now(),
+                        ]
                     );
                     if ($updated <= 0) {
                         continue;
@@ -5497,6 +5618,10 @@ final class ProvisioningService
             'service_name' => (string) $forward['service_name'],
             'listen_port' => (int) $forward['listen_port'],
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
+            'native_outbound' => !empty($forward['native_outbound_enabled']),
+            'native_direction' => $forward['native_direction_key'] !== null
+                ? (string) $forward['native_direction_key']
+                : null,
             'bond_sidecar_point_id' => $sidecarRequired && $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
             'bond_sidecar_point_name' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_name'] ?? '') : '',
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
@@ -6205,6 +6330,10 @@ final class ProvisioningService
             }
         }
 
+        $nativeOutboundRequested = array_key_exists('native_outbound', $payload)
+            ? $this->featureFlagValue($payload['native_outbound'])
+            : !empty($existingForward['native_outbound_enabled'] ?? false);
+
         $hasForwardCombinationPayload = array_key_exists('forward_combination_id', $payload);
         $hasForwardRoutePayload = array_key_exists('forward_route_id', $payload);
         $catalogPlacementPayloadProvided = $hasForwardCombinationPayload || $hasForwardRoutePayload;
@@ -6272,7 +6401,7 @@ final class ProvisioningService
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
         }
-        if ($targetSource === 'service_ip') {
+        if (!$nativeOutboundRequested && $targetSource === 'service_ip') {
             $targetServiceId = $targetServiceId > 0 ? $targetServiceId : $serviceId;
             $targetService = $this->db->fetchOne(
                 'SELECT id, user_id, server_public_ip, server_ip_state FROM services WHERE id = :id LIMIT 1',
@@ -6292,12 +6421,17 @@ final class ProvisioningService
             $targetHost = $serviceIp;
         }
 
-        [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
-            $targetHost,
-            $targetPort,
-            $listenPort,
-            true
-        );
+        if (!$nativeOutboundRequested) {
+            [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+                $targetHost,
+                $targetPort,
+                $listenPort,
+                true
+            );
+        } else {
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
 
         if ($forwardRouteId > 0) {
             $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
@@ -6343,6 +6477,58 @@ final class ProvisioningService
             }
         }
         $ultraRuntime = UltraMode::isBackendMode($backendMode);
+
+        $nativeDirectionKey = null;
+        if ($nativeOutboundRequested) {
+            if (!$ultraRuntime || strtolower(trim($transportMode)) !== 'tcp+udp' || $forwardCombinationId <= 0) {
+                throw new ApiException('native_outbound_requires_ultra_tcp_udp', 422);
+            }
+            $plan = $this->db->fetchOne(
+                'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => (int) ($service['plan_id'] ?? 0)]
+            );
+            $service['plan_feature_flags_json'] = is_array($plan)
+                ? (string) ($plan['feature_flags_json'] ?? '')
+                : '';
+            if (!$this->planAllowsNativeOutbound($service)) {
+                throw new ApiException('native_outbound_not_allowed', 403);
+            }
+            $nativeDirection = trim((string) ($combination['line_direction'] ?? ''));
+            if ($nativeDirection === '') {
+                throw new ApiException('native_outbound_direction_missing', 422);
+            }
+            $nativeDirectionKey = $this->nativeDirectionKey($nativeDirection);
+            $conflict = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE service_id = :service_id
+                   AND native_direction_key = :direction_key
+                   AND native_outbound_enabled = 1
+                   AND enabled = 1
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1 FOR UPDATE',
+                [
+                    'service_id' => $serviceId,
+                    'direction_key' => $nativeDirectionKey,
+                    'forward_id' => (int) ($forwardId ?? 0),
+                ]
+            );
+            if (is_array($conflict)) {
+                throw new ApiException('native_direction_conflict', 409, [
+                    'direction' => UltraMode::redactProviderText($nativeDirection),
+                    'forward_id' => (int) ($conflict['id'] ?? 0),
+                ]);
+            }
+            $existingNativeTarget = $existingForward !== null
+                && !empty($existingForward['native_outbound_enabled'])
+                && trim((string) ($existingForward['target_host'] ?? '')) === '127.0.0.1'
+                && (int) ($existingForward['target_port'] ?? 0) > 0;
+            $targetHost = '127.0.0.1';
+            $targetPort = $existingNativeTarget
+                ? (int) $existingForward['target_port']
+                : $this->allocateNativeTargetPort($forwardId);
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
 
         $availableClients = $this->availableClientsForService($serviceId);
         $availableClientGroups = $this->availableClientGroupsForService($serviceId);
@@ -6729,6 +6915,8 @@ final class ProvisioningService
                 'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                 'cdn_host' => $cdnHost,
                 'filter_profile' => $filterProfile,
+                'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
                 'enabled' => 1,
                 'created_at' => $this->now(),
                 'updated_at' => $this->now(),
@@ -6768,6 +6956,8 @@ final class ProvisioningService
                      public_port = :public_port,
                      cdn_host = :cdn_host,
                      filter_profile = :filter_profile,
+                     native_outbound_enabled = :native_outbound_enabled,
+                     native_direction_key = :native_direction_key,
                      enabled = 1,
                      api_revision = :api_revision,
                      updated_at = :updated_at
@@ -6803,8 +6993,10 @@ final class ProvisioningService
                     'endpoint_count' => $endpointCount,
                     'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                     'cdn_host' => $cdnHost,
-                     'filter_profile' => $filterProfile,
-                     'api_revision' => $nextRevision,
+                    'filter_profile' => $filterProfile,
+                    'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                    'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
+                    'api_revision' => $nextRevision,
                      'updated_at' => $this->now(),
                 ]
             );
@@ -10420,6 +10612,77 @@ final class ProvisioningService
         return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
     }
 
+    private function nativeDirectionKey(string $direction): string
+    {
+        $key = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '_', $direction)));
+        $key = trim($key, '_');
+        if ($key === '') {
+            $key = hash('sha256', strtolower(trim($direction)));
+        }
+        return substr($key, 0, 64);
+    }
+
+    /** @param array<string,mixed> $forward */
+    private function reactivatedNativeDirectionKey(array $forward): ?string
+    {
+        if (empty($forward['native_outbound_enabled'])) {
+            return null;
+        }
+        $directionRow = $this->db->fetchOne(
+            'SELECT line_direction FROM forward_combinations WHERE id = :id LIMIT 1',
+            ['id' => (int) ($forward['forward_combination_id'] ?? 0)]
+        );
+        $direction = trim((string) ($directionRow['line_direction'] ?? ''));
+        if ($direction === '') {
+            throw new ApiException('native_outbound_direction_missing', 422);
+        }
+        $key = $this->nativeDirectionKey($direction);
+        $conflict = $this->db->fetchOne(
+            'SELECT id FROM forwards
+             WHERE service_id = :service_id
+               AND native_direction_key = :direction_key
+               AND native_outbound_enabled = 1
+               AND enabled = 1
+               AND id <> :forward_id
+             LIMIT 1 FOR UPDATE',
+            [
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'direction_key' => $key,
+                'forward_id' => (int) ($forward['id'] ?? 0),
+            ]
+        );
+        if (is_array($conflict)) {
+            throw new ApiException('native_direction_conflict', 409, [
+                'direction' => UltraMode::redactProviderText($direction),
+                'forward_id' => (int) ($conflict['id'] ?? 0),
+            ]);
+        }
+        return $key;
+    }
+
+    private function allocateNativeTargetPort(?int $excludeForwardId = null): int
+    {
+        for ($attempt = 0; $attempt < 64; $attempt++) {
+            $port = random_int(20000, 60000);
+            $row = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE target_host = :host
+                   AND target_port = :port
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1',
+                [
+                    'host' => '127.0.0.1',
+                    'port' => $port,
+                    'forward_id' => (int) ($excludeForwardId ?? 0),
+                ]
+            );
+            if (!is_array($row)) {
+                return $port;
+            }
+        }
+        throw new ApiException('native_target_port_unavailable', 409);
+    }
+
     /**
      * @param array{user_id?: int, feature?: string}|null $mutationPolicy
      * @return array<string, mixed>
@@ -12657,6 +12920,8 @@ final class ProvisioningService
             'allow_custom_slaves' => false,
             'allow_inbound_proxy' => false,
             'allow_latency_test' => false,
+            'allow_native_outbound' => false,
+            'allow_native_outbound_unrestricted' => false,
         ];
     }
 
@@ -12712,6 +12977,32 @@ final class ProvisioningService
             }
         }
         return $flags;
+    }
+
+    /**
+     * Native outbound is an administrator-controlled plan capability. User
+     * feature flags are deliberately ignored so they cannot elevate a plan.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw) && ($raw['allow_native_outbound'] ?? false) === true;
+    }
+
+    /**
+     * Unrestricted native routing is a separate administrator-controlled plan
+     * capability and never inherits a user feature flag.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeUnrestrictedOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw)
+            && ($raw['allow_native_outbound'] ?? false) === true
+            && ($raw['allow_native_outbound_unrestricted'] ?? false) === true;
     }
 
     /**

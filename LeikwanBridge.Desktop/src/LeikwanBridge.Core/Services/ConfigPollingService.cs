@@ -28,15 +28,18 @@ public sealed class ConfigPollingService
     private int _syncInProgress;
     private volatile bool _pendingResync;
     private ClientMeta? _latestClient;
+    private NativeOutboundCapability? _latestNativeOutbound;
 
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
     public event Action<Exception>? SyncError;
     public event Action<int, string>? ForwardRejected;
     public event Action<ClientMeta>? ClientUpdated;
+    public event Action<NativeOutboundCapability?>? NativeOutboundUpdated;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
     public ClientMeta? LatestClient => _latestClient;
+    public NativeOutboundCapability? LatestNativeOutbound => _latestNativeOutbound;
 
     public ConfigPollingService(
         MasterApiClient api,
@@ -106,7 +109,18 @@ public sealed class ConfigPollingService
     /// <summary>Immediate revision-aware pull for reconnect / window-foreground / user Start.</summary>
     public void TriggerImmediateSync()
     {
-        _ = SyncOnceAsync();
+        _ = SyncOnceAsync(_cts?.Token ?? CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Forces the next pull to carry the full policy payload. Ultra session
+    /// tickets rotate independently of the forward revision, so a native
+    /// lease request must never be made from an expired cached ticket.
+    /// </summary>
+    public void RequestPolicyRefresh()
+    {
+        QueueConfigRefreshSoon();
+        TriggerImmediateSync();
     }
 
     public async Task SyncOnceAsync(CancellationToken ct = default)
@@ -160,6 +174,7 @@ public sealed class ConfigPollingService
             // Re-publish the current snapshot so the GUI reflects liveness changes
             // discovered during lease refresh/reconciliation.
             ForwardsUpdated?.Invoke(_latestForwards);
+            NativeOutboundUpdated?.Invoke(_latestNativeOutbound);
             return;
         }
 
@@ -173,9 +188,17 @@ public sealed class ConfigPollingService
         }
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
+        _latestNativeOutbound = pull.NativeOutbound;
+
         var forwards = new List<ForwardConfig>();
         foreach (var forward in pull.Forwards)
         {
+            // The capability is a pull-scoped, non-secret entitlement. Keep it
+            // available to an explicit native-mode UI action without serializing
+            // it as part of the forward or applying it automatically.
+            forward.NativeOutbound = _latestNativeOutbound;
+            if (forward.NativeOutbound?.FindForward(forward.ForwardId) is { } carrier)
+                forward.NativeRouteScope = carrier.DefaultRouteScope;
             var acceptance = _forwardPolicy.Evaluate(forward);
             if (!acceptance.Accepted)
             {
@@ -223,6 +246,7 @@ public sealed class ConfigPollingService
         if (_latestClient is not null)
             ClientUpdated?.Invoke(_latestClient);
         ForwardsUpdated?.Invoke(forwards);
+        NativeOutboundUpdated?.Invoke(_latestNativeOutbound);
     }
 
     private async Task ReconcileForwardAsync(

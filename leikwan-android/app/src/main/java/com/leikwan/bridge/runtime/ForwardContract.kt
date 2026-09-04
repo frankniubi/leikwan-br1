@@ -146,6 +146,7 @@ data class ForwardListItem(
 data class ForwardCatalog(
     val visibleForwards: List<ForwardListItem>,
     val selectedForwardId: Long?,
+    val nativeOutbound: NativeOutboundCapability? = null,
 )
 
 object ForwardContractParser {

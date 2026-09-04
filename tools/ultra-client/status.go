@@ -235,6 +235,11 @@ func (writer *StatusWriter) Close() {
 	if dirty {
 		writer.writeSnapshot(snapshot)
 	}
+	// A timer callback may have cleared dirty and started an atomic write just
+	// before Close acquired mu. Wait for that write before returning so a
+	// process shutdown cannot leave the caller observing the previous snapshot.
+	writer.writeMu.Lock()
+	writer.writeMu.Unlock()
 }
 
 func (writer *StatusWriter) writeSnapshot(status RuntimeStatus) {

@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private Forms.NotifyIcon? _trayIcon;
     private bool _trayReady;
     private bool _proxyUiReady;
+    private bool _updatingNativeUi;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private Task? _startupTask;
@@ -237,6 +238,7 @@ public partial class MainWindow : Window
             _ => 0,
         };
         UpdateProxyModeVisibility();
+        UpdateNativeOutboundUi();
         ApplyProxyVisualState();
     }
 
@@ -355,6 +357,53 @@ public partial class MainWindow : Window
 
             SetProxyStatusError(ex.Message);
             Log.Warning(ex, "failed to start local proxy");
+        }
+    }
+
+    private void OnNativeForwardSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || _updatingNativeUi)
+            return;
+        if (NativeForwardCombo.SelectedValue is int id && id > 0)
+            _vm.SelectedNativeForwardId = id;
+        UpdateNativeOutboundUi();
+    }
+
+    private void OnNativeRouteScopeSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || _updatingNativeUi)
+            return;
+        if (NativeRouteScopeCombo.SelectedItem is ComboBoxItem item
+            && item.Tag is string scope)
+            _vm.SelectedNativeRouteScope = scope;
+        UpdateNativeOutboundUi();
+    }
+
+    private async void OnNativeOutboundStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.IsNativeOutboundVisible || _vm.SelectedNativeForwardId <= 0)
+            return;
+        var mode = NativeModeCombo.SelectedItem is ComboBoxItem item
+            && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var parsed)
+            ? parsed
+            : WindowsProxyMode.Tun;
+        SetProxyStarting();
+        try
+        {
+            await _vm.StartNativeOutboundAsync(
+                mode,
+                _vm.SelectedNativeForwardId,
+                _vm.SelectedNativeRouteScope,
+                selectedGameId: null,
+                bypassChinaMainland: _vm.NativeBypassChinaMainland,
+                unrestrictedRoute: _vm.NativeUnrestrictedRoute);
+            UpdateNativeOutboundUi();
+            ApplyProxyVisualState();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to start native outbound");
         }
     }
 
@@ -635,6 +684,66 @@ public partial class MainWindow : Window
             : Visibility.Collapsed;
     }
 
+    private void UpdateNativeOutboundUi()
+    {
+        if (NativeOutboundCard is null)
+            return;
+        var visible = _vm.IsNativeOutboundVisible
+            && _vm.NativeOutboundForwards.Count > 0;
+        NativeOutboundCard.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!visible)
+            return;
+
+        _updatingNativeUi = true;
+        try
+        {
+            NativeForwardCombo.SelectedValue = _vm.SelectedNativeForwardId;
+            var carrier = _vm.NativeOutboundCapability?.FindForward(_vm.SelectedNativeForwardId);
+            NativeDirectionText.Text = carrier?.Direction ?? string.Empty;
+            NativeRouteScopePanel.Visibility = _vm.IsNativeRouteScopeSelectable
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+            NativeRouteScopeCombo.Items.Clear();
+            foreach (var scope in carrier?.RouteScopes ?? [])
+            {
+                var label = scope.ToLowerInvariant() switch
+                {
+                    "cn_only" => FindResource("ProxyNativeOutboundCnOnly") as string ?? "Mainland China only",
+                    "intl_only" => FindResource("ProxyNativeOutboundIntlOnly") as string ?? "International only",
+                    _ => FindResource("ProxyNativeOutboundGlobal") as string ?? "Global",
+                };
+                NativeRouteScopeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = scope });
+            }
+            var selectedScope = _vm.SelectedNativeRouteScope;
+            var selectedItem = NativeRouteScopeCombo.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), selectedScope, StringComparison.OrdinalIgnoreCase));
+            if (selectedItem is null && NativeRouteScopeCombo.Items.Count > 0)
+            {
+                selectedItem = NativeRouteScopeCombo.Items[0] as ComboBoxItem;
+                if (selectedItem?.Tag is string fallbackScope)
+                    _vm.SelectedNativeRouteScope = fallbackScope;
+            }
+            NativeRouteScopeCombo.SelectedItem = selectedItem;
+            NativeBypassChinaCheckBox.Visibility = _vm.IsNativeRouteGlobal
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            NativeBypassChinaCheckBox.IsEnabled = _vm.IsNativeBypassChinaEnabled
+                && _vm.ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
+            NativeUnrestrictedRouteCheckBox.Visibility = _vm.IsNativeUnrestrictedRouteVisible
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            NativeUnrestrictedRouteCheckBox.IsEnabled = _vm.IsNativeUnrestrictedRouteEnabled;
+            NativeUnrestrictedRouteCheckBox.IsChecked = _vm.NativeUnrestrictedRoute;
+            NativeOutboundStartButton.IsEnabled = _vm.ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
+        }
+        finally
+        {
+            _updatingNativeUi = false;
+        }
+    }
+
     private WindowsProxyMode GetSelectedProxyMode()
     {
         if (ProxyModeCombo.SelectedItem is ComboBoxItem item
@@ -670,6 +779,13 @@ public partial class MainWindow : Window
             || e.PropertyName == nameof(MainViewModel.SelectedProxyGameDisplayName))
         {
             RestoreProxyGameSelection(_vm.SelectedProxyGameId);
+        }
+        if (e.PropertyName == nameof(MainViewModel.NativeOutboundCapability)
+            || e.PropertyName == nameof(MainViewModel.SelectedNativeForwardId)
+            || e.PropertyName == nameof(MainViewModel.SelectedNativeRouteScope)
+            || e.PropertyName == nameof(MainViewModel.NativeBypassChinaMainland))
+        {
+            UpdateNativeOutboundUi();
         }
     }
 
@@ -761,6 +877,7 @@ public partial class MainWindow : Window
         }) as Brush ?? Brushes.DodgerBlue;
         ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
             && snapshot.Mode != WindowsProxyMode.Tun;
+        UpdateNativeOutboundUi();
     }
 
     private void SetProxyStarting()

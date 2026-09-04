@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
@@ -40,6 +41,7 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
+import java.net.InetAddress
 
 private const val TAG = "LeikwanVpnService"
 private const val CHANNEL_ID = "leikwan_vpn"
@@ -147,6 +149,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.e(TAG, "Error closing TUN", e)
         }
         tunFd = null
+        // The config contains ephemeral native SOCKS credentials. Do not keep it
+        // reachable after the VPN runtime has been stopped.
+        configJson = null
         isRunning = false
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
@@ -159,6 +164,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     override fun onDestroy() {
         instance = null
         isRunning = false
+        configJson = null
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
             lastStartError = null
@@ -185,6 +191,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     .getOrNull()
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() },
+                inet4RouteExcludes = options.inet4RouteExcludeAddress.toRoutePrefixes(),
+                inet6RouteExcludes = options.inet6RouteExcludeAddress.toRoutePrefixes(),
             ),
             ownerPackageName = packageName,
         )
@@ -204,6 +212,19 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         plan.inet6Addresses.forEach { route -> builder.addAddress(route.address, route.prefix) }
         plan.inet4Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
         plan.inet6Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            plan.inet4RouteExcludes.forEach { route ->
+                builder.excludeRoute(IpPrefix(InetAddress.getByName(route.address), route.prefix))
+            }
+            plan.inet6RouteExcludes.forEach { route ->
+                builder.excludeRoute(IpPrefix(InetAddress.getByName(route.address), route.prefix))
+            }
+        } else if (plan.inet4RouteExcludes.isNotEmpty() || plan.inet6RouteExcludes.isNotEmpty()) {
+            // Android added per-route exclusions in API 33. The app UID is already
+            // excluded from its own VPN on older releases, so keep the config usable
+            // while retaining the route-direct guard in sing-box.
+            Log.w(TAG, "TUN route exclusions require API 33 or newer")
+        }
         plan.dnsServers.forEach { dns -> builder.addDnsServer(dns) }
         plan.disallowedPackageNames.forEach { packageName ->
             builder.addDisallowedApplication(packageName)

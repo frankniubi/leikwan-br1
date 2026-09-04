@@ -52,15 +52,246 @@ public sealed class MacConnectionServiceTests
         await service.DisposeAsync();
     }
 
+    [Fact]
+    public async Task NativeVpnStartUsesLeaseAndWipesCredentialsOnStop()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var host = new CapturingProcessHost();
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: host,
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        const int forwardId = 158;
+        const string direction = "Ultra Hong Kong to Mainland China";
+        var user = System.Text.Encoding.UTF8.GetBytes("native-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("native-password");
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-lease",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+            "203.0.113.20",
+            5438,
+            user,
+            password);
+
+        await service.StartNativeAsync(
+            MacConnectionMode.Vpn,
+            lease,
+            "https://panel.example.test",
+            [new ForwardConfig { ForwardId = forwardId, BackendMode = "ultra" }]);
+
+        Assert.Equal(MacConnectionState.Connected, service.Snapshot.State);
+        Assert.Equal(MacConnectionService.NativeOutboundDisplayName, service.Snapshot.ActiveProfileName);
+        Assert.True(service.IsNativeOutboundActive);
+        Assert.Contains("127.0.0.1", host.StartedConfigJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("native-password", host.StartedConfigJson, StringComparison.Ordinal);
+        Assert.Equal(1, relay.StartCalls);
+
+        await service.StopAsync();
+
+        Assert.False(service.IsNativeOutboundActive);
+        Assert.Null(service.ActiveNativeLeaseExpiresAt);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task UnrestrictedLeaseCannotUseTheLegacyRestrictedStartEntryPoint()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: new CapturingProcessHost(),
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        const int forwardId = 159;
+        const string direction = "Mainland China -> International";
+        var user = System.Text.Encoding.UTF8.GetBytes("unrestricted-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("unrestricted-password");
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-unrestricted",
+            new string('e', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "global",
+            NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "global", "unrestricted"),
+            "203.0.113.33",
+            5438,
+            user,
+            password,
+            routePolicy: "unrestricted");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartNativeAsync(
+            MacConnectionMode.Vpn,
+            lease,
+            "https://panel.example.test",
+            []));
+
+        Assert.Equal("native_route_policy_mismatch", error.Message);
+        Assert.Equal(0, relay.StartCalls);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task NativeStartFailureStopsRelayAndWipesLease()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var host = new CapturingProcessHost { FailStart = true };
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: host,
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        var user = System.Text.Encoding.UTF8.GetBytes("failure-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("failure-password");
+        using var lease = new NativeOutboundLease(
+            158,
+            "native-lease",
+            new string('d', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            "Hong Kong -> China Mainland",
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(158, "Hong Kong -> China Mainland", "tcp+udp", "cn_only"),
+            "203.0.113.20",
+            5438,
+            user,
+            password,
+            rateLimitMbps: 100,
+            quotaRemainingBytes: 1000,
+            selectionRef: "selection-failure");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartNativeAsync(
+            MacConnectionMode.Vpn,
+            lease,
+            "https://panel.example.test",
+            []));
+
+        Assert.Equal(1, relay.StopCalls);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task NativeLeaseRefreshUsesTheExistingRelayAndWipesThePreviousLease()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: new CapturingProcessHost(),
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+
+        const int forwardId = 158;
+        const string direction = "Hong Kong -> China Mainland";
+        const string routeScope = "cn_only";
+        var digest = NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", routeScope);
+        var previousUser = System.Text.Encoding.UTF8.GetBytes("previous-user");
+        var previousPassword = System.Text.Encoding.UTF8.GetBytes("previous-password");
+        var previous = new NativeOutboundLease(
+            forwardId,
+            "native-lease-previous",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            routeScope,
+            digest,
+            "203.0.113.20",
+            5438,
+            previousUser,
+            previousPassword,
+            rateLimitMbps: 100,
+            quotaRemainingBytes: 1000,
+            selectionRef: "selection-previous-01");
+
+        await service.StartNativeAsync(
+            MacConnectionMode.Vpn,
+            previous,
+            "https://panel.example.test",
+            []);
+
+        var nextUser = System.Text.Encoding.UTF8.GetBytes("next-user");
+        var nextPassword = System.Text.Encoding.UTF8.GetBytes("next-password");
+        var next = new NativeOutboundLease(
+            forwardId,
+            "native-lease-next",
+            new string('b', 64),
+            DateTimeOffset.UtcNow.AddMinutes(3),
+            "tcp+udp",
+            direction,
+            routeScope,
+            digest,
+            "203.0.113.20",
+            5438,
+            nextUser,
+            nextPassword,
+            rateLimitMbps: 100,
+            quotaRemainingBytes: 1000,
+            selectionRef: "selection-next-01");
+
+        Assert.True(await service.TryRefreshNativeAsync(next));
+        Assert.Equal(1, relay.StartCalls);
+        Assert.Equal(1, relay.RefreshCalls);
+        Assert.Equal(0, relay.StopCalls);
+        Assert.All(previousUser, value => Assert.Equal(0, value));
+        Assert.All(previousPassword, value => Assert.Equal(0, value));
+        Assert.NotEmpty(nextUser);
+        Assert.NotEmpty(nextPassword);
+        Assert.Equal(next.ExpiresAt, service.ActiveNativeLeaseExpiresAt);
+
+        await service.StopAsync();
+        Assert.All(nextUser, value => Assert.Equal(0, value));
+        Assert.All(nextPassword, value => Assert.Equal(0, value));
+        await service.DisposeAsync();
+    }
+
     private sealed class CapturingProcessHost : IMacConnectionProcessHost
     {
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
         public string StartedConfigJson { get; private set; } = string.Empty;
+        public bool FailStart { get; init; }
 
         public async Task StartAsync(string executablePath, string configPath, MacConnectionMode mode, CancellationToken ct)
         {
             StartCalls++;
+            if (FailStart)
+                throw new InvalidOperationException("process_start_failed");
             StartedConfigJson = await File.ReadAllTextAsync(configPath, ct);
         }
 
@@ -91,5 +322,43 @@ public sealed class MacConnectionServiceTests
             _values.Remove(name);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FakeNativeRelayHost : LeikwanBridge.Core.Services.Ultra.INativeOutboundRelayHost
+    {
+        public int StartCalls { get; private set; }
+        public int RefreshCalls { get; private set; }
+        public int StopCalls { get; private set; }
+        private bool _started;
+
+        public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
+            int forwardId,
+            string ultraBinaryPath,
+            int listenPort,
+            NativeOutboundLease lease,
+            string runtimeDirectory,
+            CancellationToken ct = default)
+        {
+            StartCalls++;
+            _started = true;
+            return Task.FromResult(new LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint("127.0.0.1", listenPort));
+        }
+
+        public Task<bool> RefreshAsync(int forwardId, NativeOutboundLease lease, CancellationToken ct = default)
+        {
+            RefreshCalls++;
+            return Task.FromResult(true);
+        }
+
+        public Task StopAsync(CancellationToken ct = default)
+        {
+            if (_started)
+            {
+                StopCalls++;
+                _started = false;
+            }
+            return Task.CompletedTask;
+        }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

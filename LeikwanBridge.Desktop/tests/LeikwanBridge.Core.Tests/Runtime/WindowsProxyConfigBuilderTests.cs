@@ -583,4 +583,356 @@ public sealed class WindowsProxyConfigBuilderTests
             try { File.Delete(configPath); } catch (IOException) { }
         }
     }
+
+    [Fact]
+    public void NativeCnOnlyBuildUsesTunAndDirectFallback()
+    {
+        using var lease = CreateNativeLease("cn_only");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            []).Json);
+        var root = document.RootElement;
+        Assert.Equal("tun", root.GetProperty("inbounds")[0].GetProperty("type").GetString());
+        Assert.Equal("socks", root.GetProperty("outbounds")[0].GetProperty("type").GetString());
+        Assert.Equal("direct", root.GetProperty("route").GetProperty("final").GetString());
+        var rules = root.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var nativeIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geoip-cn")
+            && rule.GetProperty("outbound").GetString() == "proxy");
+        var privateIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("ip_is_private", out var value) && value.GetBoolean());
+        Assert.True(nativeIndex >= 0 && nativeIndex < privateIndex);
+        Assert.Contains(root.GetProperty("route").GetProperty("rule_set").EnumerateArray(), item =>
+            item.GetProperty("tag").GetString() == "geoip-cn");
+        Assert.False(root.GetProperty("dns").GetProperty("servers")[0].TryGetProperty("detour", out _));
+        Assert.All(
+            root.GetProperty("route").GetProperty("rule_set").EnumerateArray(),
+            item => Assert.Equal("direct", item.GetProperty("download_detour").GetString()));
+        Assert.Contains(root.GetProperty("inbounds")[0].GetProperty("route_exclude_address").EnumerateArray(), item =>
+            item.GetString() == "203.0.113.20/32");
+    }
+
+    [Fact]
+    public void NativeLocalRelayStillExcludesLeaseEndpointFromTun()
+    {
+        using var lease = CreateNativeLease("cn_only");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            [],
+            nativeProxyHost: "127.0.0.1",
+            nativeProxyPort: 2099).Json);
+
+        Assert.Contains(
+            document.RootElement.GetProperty("inbounds")[0]
+                .GetProperty("route_exclude_address").EnumerateArray(),
+            item => item.GetString() == "203.0.113.20/32");
+    }
+
+    [Fact]
+    public void NativeCnOnlyUsesProtectedChinaDnsBeforeGeositeAndGeoipRouting()
+    {
+        using var lease = CreateNativeLease("cn_only");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            [],
+            dnsMode: WindowsProxyDnsMode.Custom,
+            customDnsServers: ["8.8.8.8"]).Json);
+        var root = document.RootElement;
+        var dns = root.GetProperty("dns");
+        var routeRules = root.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+
+        Assert.Contains(dns.GetProperty("servers").EnumerateArray(), server =>
+            server.GetProperty("tag").GetString() == "china"
+            && server.GetProperty("type").GetString() == "https"
+            && server.GetProperty("server").GetString() == "223.5.5.5"
+            && server.GetProperty("detour").GetString() == "proxy"
+            && server.GetProperty("tls").GetProperty("server_name").GetString() == "dns.alidns.com");
+        Assert.DoesNotContain(dns.GetProperty("servers").EnumerateArray(), server =>
+            server.GetProperty("tag").GetString()?.StartsWith("custom-", StringComparison.Ordinal) == true);
+        Assert.Equal("remote", dns.GetProperty("final").GetString());
+        Assert.Contains(dns.GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geosite-cn")
+            && rule.GetProperty("server").GetString() == "china");
+
+        var resolveIndex = routeRules.FindIndex(rule =>
+            rule.TryGetProperty("action", out var action)
+            && action.GetString() == "resolve"
+            && rule.GetProperty("strategy").GetString() == "ipv4_only"
+            && !rule.TryGetProperty("server", out _));
+        var chinaRouteIndex = routeRules.FindIndex(rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geosite-cn")
+            && sets.EnumerateArray().Any(item => item.GetString() == "geoip-cn")
+            && rule.GetProperty("outbound").GetString() == "proxy");
+
+        Assert.True(resolveIndex >= 0 && resolveIndex < chinaRouteIndex);
+    }
+
+    [Fact]
+    public void NativeIntlOnlyBuildRoutesChinaDirectAndInternationalThroughProxy()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            []).Json);
+        var root = document.RootElement;
+        Assert.Equal("proxy", root.GetProperty("route").GetProperty("final").GetString());
+        var rules = root.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        Assert.Contains(rules, rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geoip-cn")
+            && rule.GetProperty("outbound").GetString() == "direct");
+        Assert.Contains(rules, rule =>
+            rule.TryGetProperty("ip_is_private", out var value) && value.GetBoolean()
+            && rule.GetProperty("outbound").GetString() == "direct");
+        Assert.Contains(root.GetProperty("route").GetProperty("rule_set").EnumerateArray(), item =>
+            item.GetProperty("tag").GetString() == "geoip-cn");
+        Assert.Equal(
+            "proxy",
+            root.GetProperty("dns").GetProperty("servers")[0].GetProperty("detour").GetString());
+        Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geosite-cn")
+            && rule.GetProperty("server").GetString() == "local");
+        Assert.All(
+            root.GetProperty("route").GetProperty("rule_set").EnumerateArray(),
+            item => Assert.Equal("proxy", item.GetProperty("download_detour").GetString()));
+    }
+
+    [Fact]
+    public void NativeIntlOnlyCustomDnsUsesConfiguredDefaultDomainResolver()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            [],
+            dnsMode: WindowsProxyDnsMode.Custom,
+            customDnsServers: ["8.8.8.8"]).Json);
+        var root = document.RootElement;
+
+        Assert.Equal("custom-0", root.GetProperty("dns").GetProperty("final").GetString());
+        Assert.Equal(
+            "custom-0",
+            root.GetProperty("route").GetProperty("default_domain_resolver").GetString());
+        Assert.Contains(root.GetProperty("dns").GetProperty("servers").EnumerateArray(), server =>
+            server.GetProperty("tag").GetString() == "custom-0");
+    }
+
+    [Fact]
+    public void NativeIntlOnlyResolvesDestinationsBeforeSocksOutbound()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            [],
+            dnsMode: WindowsProxyDnsMode.Custom,
+            customDnsServers: ["8.8.8.8"]).Json);
+        var rules = document.RootElement
+            .GetProperty("route")
+            .GetProperty("rules")
+            .EnumerateArray()
+            .ToList();
+
+        var resolveIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("action", out var action)
+            && action.GetString() == "resolve"
+            && rule.GetProperty("strategy").GetString() == "ipv4_only"
+            && !rule.TryGetProperty("server", out _));
+        var chinaDirectIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("rule_set", out var sets)
+            && sets.EnumerateArray().Any(item => item.GetString() == "geoip-cn")
+            && rule.GetProperty("outbound").GetString() == "direct");
+
+        Assert.True(resolveIndex >= 0 && resolveIndex < chinaDirectIndex);
+    }
+
+    [Fact]
+    public async Task NativeIntlOnlyConfigPassesSingBoxCheckWhenRuntimeProvided()
+    {
+        var singBox = Environment.GetEnvironmentVariable("LEIKWAN_SINGBOX_PATH");
+        if (string.IsNullOrWhiteSpace(singBox) || !File.Exists(singBox))
+            return;
+
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        var configPath = Path.Combine(
+            Path.GetTempPath(),
+            $"leikwan-native-intl-check-{Guid.NewGuid():N}.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                configPath,
+                WindowsProxyConfigBuilder.BuildNative(
+                    lease,
+                    WindowsProxyMode.Tun,
+                    []).Json);
+            var info = new ProcessStartInfo
+            {
+                FileName = singBox,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            info.ArgumentList.Add("check");
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add(configPath);
+            using var process = Process.Start(info)
+                ?? throw new InvalidOperationException("sing_box_check_start_failed");
+            await process.WaitForExitAsync();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            Assert.True(process.ExitCode == 0, $"{output}\n{error}");
+        }
+        finally
+        {
+            try { File.Delete(configPath); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task NativeCnOnlyConfigPassesSingBoxCheckWhenRuntimeProvided()
+    {
+        var singBox = Environment.GetEnvironmentVariable("LEIKWAN_SINGBOX_PATH");
+        if (string.IsNullOrWhiteSpace(singBox) || !File.Exists(singBox))
+            return;
+
+        using var lease = CreateNativeLease("cn_only");
+        var configPath = Path.Combine(
+            Path.GetTempPath(),
+            $"leikwan-native-cn-check-{Guid.NewGuid():N}.json");
+        try
+        {
+            await File.WriteAllTextAsync(
+                configPath,
+                WindowsProxyConfigBuilder.BuildNative(
+                    lease,
+                    WindowsProxyMode.Tun,
+                    []).Json);
+            var info = new ProcessStartInfo
+            {
+                FileName = singBox,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            info.ArgumentList.Add("check");
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add(configPath);
+            using var process = Process.Start(info)
+                ?? throw new InvalidOperationException("sing_box_check_start_failed");
+            await process.WaitForExitAsync();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            Assert.True(process.ExitCode == 0, $"{output}\n{error}");
+        }
+        finally
+        {
+            try { File.Delete(configPath); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void NativeGlobalOnlyAddsChinaDirectRuleWhenBypassIsEnabled()
+    {
+        using var lease = CreateNativeLease("global");
+        var withoutBypass = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            []).Json);
+        Assert.Equal("proxy", withoutBypass.RootElement.GetProperty("route").GetProperty("final").GetString());
+        Assert.DoesNotContain(withoutBypass.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("rule_set", out _));
+
+        using var temp = new TempStateDirectory();
+        var listPath = Path.Combine(temp.Path, "CN.conf");
+        File.WriteAllText(listPath, "route 1.0.1.0/24\n");
+        using var withBypass = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            [],
+            bypassChinaMainland: true,
+            chinaIpListPath: listPath).Json);
+        Assert.Contains(withBypass.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("ip_cidr", out var cidrs)
+            && cidrs.EnumerateArray().Any(item => item.GetString() == "1.0.1.0/24")
+            && rule.GetProperty("outbound").GetString() == "direct");
+    }
+
+    [Fact]
+    public void NativeRestrictedRoutesLowPortsDirectAndHighPortsThroughScope()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            []).Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var low = rules.Single(rule => rule.TryGetProperty("port_range", out var range) && range.GetString() == "1:999");
+        Assert.Equal("direct", low.GetProperty("outbound").GetString());
+        Assert.Equal(["tcp", "udp"], low.GetProperty("network").EnumerateArray().Select(item => item.GetString()).ToArray());
+        var high = rules.Single(rule => rule.TryGetProperty("port_range", out var range) && range.GetString() == "1000:65535");
+        Assert.Equal("direct", high.GetProperty("outbound").GetString());
+        var lowIndex = rules.IndexOf(low);
+        var highIndex = rules.IndexOf(high);
+        Assert.True(lowIndex >= 0 && lowIndex < highIndex);
+    }
+
+    [Fact]
+    public void NativeUnrestrictedOmitsPortGateAndCarriesPolicyToLeaseConfig()
+    {
+        var direction = "Mainland China -> International";
+        const int forwardId = 158;
+        using var lease = new NativeOutboundLease(
+            forwardId,
+            "native-lease-unrestricted",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            "intl_only",
+            NativeOutboundLease.ComputeScopeDigestV2(forwardId, direction, "tcp+udp", "intl_only", "unrestricted"),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("native-user"),
+            System.Text.Encoding.UTF8.GetBytes("native-password"),
+            routePolicy: "unrestricted");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            []).Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        Assert.DoesNotContain(rules, rule => rule.TryGetProperty("port_range", out var range)
+            && range.GetString() == "1:999");
+        Assert.DoesNotContain(rules, rule => rule.TryGetProperty("network", out var network)
+            && network.ValueKind == JsonValueKind.String
+            && network.GetString() == "tcp,udp");
+        Assert.Equal("unrestricted", lease.RoutePolicy);
+    }
+
+    private static NativeOutboundLease CreateNativeLease(
+        string routeScope,
+        string direction = "Ultra Hong Kong to Mainland China")
+    {
+        const int forwardId = 158;
+        return new NativeOutboundLease(
+            forwardId,
+            "native-lease",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            routeScope,
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", routeScope),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("native-user"),
+            System.Text.Encoding.UTF8.GetBytes("native-password"));
+    }
 }

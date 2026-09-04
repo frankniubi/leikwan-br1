@@ -15,6 +15,8 @@ import (
 
 const (
 	policyProtocol             = "leikwan-ultra-policy-v2"
+	nativeSocks5Protocol       = "leikwan-ultra-native-socks5-v1"
+	nativeSocks5Purpose        = "native_outbound"
 	maxPolicyTTL               = 5 * time.Minute
 	maxQuotaBytes        int64 = 107374182400
 	maxRateMbps          int64 = 100000
@@ -40,6 +42,8 @@ var (
 // the runtime memory and is never written back to the static config file.
 type Policy struct {
 	Protocol            string    `json:"protocol"`
+	Purpose             string    `json:"purpose,omitempty"`
+	Native              bool      `json:"native_outbound,omitempty"`
 	ForwardID           int       `json:"forward_id"`
 	PolicyGeneration    string    `json:"policy_generation"`
 	SessionTicket       string    `json:"session_ticket"`
@@ -48,19 +52,39 @@ type Policy struct {
 	RateLimitMbps       int64     `json:"rate_limit_mbps"`
 	QuotaRemainingBytes int64     `json:"quota_remaining_bytes"`
 	TargetDigest        string    `json:"target_digest"`
+	Direction           string    `json:"direction,omitempty"`
+	RouteScope          string    `json:"route_scope,omitempty"`
+	RoutePolicy         string    `json:"route_policy,omitempty"`
 }
 
 func (p Policy) Validate(config Config, now time.Time) error {
-	if p.Protocol != policyProtocol || p.ForwardID <= 0 || p.ForwardID != config.ForwardID {
+	if p.ForwardID <= 0 || p.ForwardID != config.ForwardID {
+		return ErrPolicyInvalid
+	}
+	if p.Native {
+		if !config.NativeSocks5 || p.Protocol != nativeSocks5Protocol || p.Purpose != nativeSocks5Purpose {
+			return ErrPolicyInvalid
+		}
+		if p.Transport != "tcp+udp" || p.Direction == "" ||
+			(p.RouteScope != "cn_only" && p.RouteScope != "intl_only" && p.RouteScope != "global") {
+			return ErrPolicyInvalid
+		}
+		routePolicy, err := ParseNativeRoutePolicy(p.RoutePolicy)
+		if err != nil || routePolicy != nativeRoutePolicyForConfig(config) {
+			return ErrPolicyInvalid
+		}
+	} else if p.Protocol != policyProtocol {
 		return ErrPolicyInvalid
 	}
 	if len(p.PolicyGeneration) != 64 || !isLowerHex(p.PolicyGeneration) || strings.TrimSpace(p.SessionTicket) == "" {
-		return ErrPolicyInvalid
+		if !p.Native || len(p.PolicyGeneration) != 64 || !isLowerHex(p.PolicyGeneration) {
+			return ErrPolicyInvalid
+		}
 	}
 	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+time.Second)) {
 		return ErrPolicyExpired
 	}
-	if p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
+	if !p.Native && p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
 		return ErrPolicyInvalid
 	}
 	if p.RateLimitMbps < 0 || p.RateLimitMbps > maxRateMbps || p.QuotaRemainingBytes < 0 || p.QuotaRemainingBytes > maxQuotaBytes {
@@ -69,7 +93,7 @@ func (p Policy) Validate(config Config, now time.Time) error {
 	if len(p.TargetDigest) != 64 || !isLowerHex(p.TargetDigest) {
 		return ErrPolicyInvalid
 	}
-	if targetDigest(config.Target) != p.TargetDigest {
+	if !p.Native && targetDigest(config.Target) != p.TargetDigest {
 		return ErrPolicyInvalid
 	}
 	return nil

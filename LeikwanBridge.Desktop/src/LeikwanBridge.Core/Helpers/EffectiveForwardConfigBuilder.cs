@@ -31,6 +31,8 @@ public static class EffectiveForwardConfigBuilder
             Mptcp = forward.Mptcp,
             UltraAccess = forward.UltraAccess,
             RuntimeLease = forward.RuntimeLease,
+            NativeOutbound = forward.NativeOutbound,
+            NativeRouteScope = forward.NativeRouteScope,
             Endpoints = forward.Endpoints
                 .Where(endpoint => string.Equals(endpoint.HealthStatus, "active", StringComparison.OrdinalIgnoreCase))
                 .Select(endpoint => endpoint.Clone())

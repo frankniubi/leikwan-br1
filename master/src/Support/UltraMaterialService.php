@@ -50,8 +50,8 @@ final class UltraMaterialService
                     ON ul.id = fcul.ultra_line_id
                    AND ul.is_source_present = 1
                    AND ul.is_enabled = 1
-                   AND ul.access_class = \'native_udp\'
-                   AND ul.native_udp_state = \'verified\'
+                   AND ((ul.access_class = \'native_udp\' AND ul.native_udp_state = \'verified\')
+                        OR ul.native_socks5_state = \'verified\')
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
@@ -340,6 +340,7 @@ final class UltraMaterialService
         int $forwardId,
         string $policyGeneration = '',
         int $candidateOffset = 0,
+        string $purpose = '',
     ): array {
         $payload = str_starts_with($token, 'u2')
             ? $this->open($token)
@@ -355,12 +356,15 @@ final class UltraMaterialService
         }
 
         $candidateOffset = max(0, min(7, $candidateOffset));
+        $nativePurpose = strtolower(trim($purpose)) === UltraMode::NATIVE_OUTBOUND_PURPOSE;
         $validCandidateIndex = 0;
         $seenCandidates = [];
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
             $lineId = (int) $scopeLine['line_id'];
-            if (!$this->lineAllowsNativeUdp($sourceId, $lineId)) {
+            if ($nativePurpose
+                ? !$this->lineAllowsNativeSocks5($sourceId, $lineId)
+                : !$this->lineAllowsNativeUdp($sourceId, $lineId)) {
                 continue;
             }
             $material = $this->loadMaterial($sourceId, $lineId, true);
@@ -401,7 +405,7 @@ final class UltraMaterialService
                 if ($validCandidateIndex++ < $candidateOffset) {
                     continue;
                 }
-                return [
+                $candidate = [
                     'selection_ref' => $selectionRef,
                     'policy_generation' => (string) ($payload['policy_generation'] ?? ''),
                     'ip' => $ip,
@@ -411,6 +415,10 @@ final class UltraMaterialService
                     'transport' => (string) ($payload['transport'] ?? 'tcp+udp'),
                     'selection_tier' => $this->selectionTier($sourceId, $lineId),
                 ];
+                if ($nativePurpose) {
+                    $candidate['native_socks5_state'] = 'verified';
+                }
+                return $candidate;
             }
         }
         return [];
@@ -615,6 +623,25 @@ final class UltraMaterialService
             && (int) ($row['is_enabled'] ?? 0) === 1
             && (string) ($row['access_class'] ?? '') === 'native_udp'
             && (string) ($row['native_udp_state'] ?? '') === 'verified';
+    }
+
+    private function lineAllowsNativeSocks5(string $sourceId, int $lineId): bool
+    {
+        if ($this->db === null) {
+            return true;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT access_class, native_udp_state, native_socks5_state,
+                    is_source_present, is_enabled
+             FROM ultra_lines
+             WHERE source_id = :source_id AND line_id = :line_id
+             LIMIT 1',
+            ['source_id' => trim($sourceId), 'line_id' => $lineId]
+        );
+        return is_array($row)
+            && (int) ($row['is_source_present'] ?? 0) === 1
+            && (int) ($row['is_enabled'] ?? 0) === 1
+            && UltraMode::isNativeCandidateApproved($row);
     }
 
     private function selectionTier(string $sourceId, int $lineId): string

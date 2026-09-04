@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Net;
+using System.Net.Sockets;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
@@ -14,22 +17,28 @@ public sealed class MacConnectionService : IMacConnectionService
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<MacConnectionProfile> _profiles = [];
     private readonly int _proxyPort;
+    private readonly INativeOutboundRelayHost _nativeRelayHost;
     private MacConnectionSnapshot _snapshot = MacConnectionSnapshot.Disconnected;
     private string? _configPath;
+    private NativeOutboundLease? _activeNativeLease;
     private bool _disposed;
+
+    public const string NativeOutboundDisplayName = "原生出口";
 
     public MacConnectionService(
         MacPlatformPaths paths,
         MacConnectionProfileStore store,
         MacBypassResolver? resolver = null,
         IMacConnectionProcessHost? processHost = null,
-        int proxyPort = MacConnectionConfigBuilder.DefaultProxyPort)
+        int proxyPort = MacConnectionConfigBuilder.DefaultProxyPort,
+        INativeOutboundRelayHost? nativeRelayHost = null)
     {
         _paths = paths;
         _store = store;
         _resolver = resolver ?? new MacBypassResolver();
         _processHost = processHost ?? new MacConnectionProcessHost();
         _proxyPort = proxyPort;
+        _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost(windows: false);
     }
 
     public event Action<MacConnectionSnapshot>? SnapshotChanged;
@@ -44,6 +53,14 @@ public sealed class MacConnectionService : IMacConnectionService
     }
 
     public MacConnectionSnapshot Snapshot => _snapshot;
+
+    public DateTimeOffset? ActiveNativeLeaseExpiresAt => _activeNativeLease?.ExpiresAt;
+
+    public string? ActiveNativeLeasePolicyGeneration => _activeNativeLease?.PolicyGeneration;
+
+    public bool IsNativeOutboundActive
+        => _activeNativeLease is not null
+            && _snapshot.State == MacConnectionState.Connected;
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -168,6 +185,159 @@ public sealed class MacConnectionService : IMacConnectionService
         }
     }
 
+    public async Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland = false,
+        CancellationToken ct = default)
+        => await StartNativeAsync(
+            mode,
+            lease,
+            panelUrl,
+            forwards,
+            bypassChinaMainland,
+            "restricted",
+            ct).ConfigureAwait(false);
+
+    public async Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland,
+        string nativeRoutePolicy,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        var transferred = false;
+        var relayStarted = false;
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!lease.IsUsable(DateTimeOffset.UtcNow))
+                throw new InvalidOperationException("native_lease_invalid");
+            if (!string.Equals(
+                    NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
+                    lease.RoutePolicy,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("native_route_policy_mismatch");
+            if (mode is not (MacConnectionMode.Proxy or MacConnectionMode.Vpn))
+                throw new InvalidOperationException("connection_mode_invalid");
+            Publish(new MacConnectionSnapshot(
+                MacConnectionState.Starting,
+                mode,
+                NativeOutboundDisplayName,
+                _proxyPort,
+                0,
+                ""));
+            await StopCoreAsync(ct).ConfigureAwait(false);
+            var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct).ConfigureAwait(false);
+            var nativeRelayPort = AllocateLoopbackPort(_proxyPort);
+            var compiled = MacConnectionConfigBuilder.BuildNative(
+                lease,
+                mode,
+                resolution.All,
+                _proxyPort,
+                bypassChinaMainland,
+                nativeProxyHost: "127.0.0.1",
+                nativeProxyPort: nativeRelayPort);
+            var executable = _paths.BinDirectory.TrimEnd('/', '\\') + "/sing-box";
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("sing-box helper is missing", executable);
+            var ultraExecutable = _paths.BinDirectory.TrimEnd('/', '\\') + "/ultra-client";
+            if (!File.Exists(ultraExecutable))
+                throw new FileNotFoundException("ultra-client helper is missing", ultraExecutable);
+            await _nativeRelayHost.StartAsync(
+                lease.ForwardId,
+                ultraExecutable,
+                nativeRelayPort,
+                lease,
+                _paths.RuntimeDirectory,
+                ct).ConfigureAwait(false);
+            relayStarted = true;
+            var configPath = Path.Combine(
+                _paths.RuntimeDirectory,
+                $"connection-{Guid.NewGuid():N}.json");
+            _configPath = configPath;
+            await WriteEphemeralConfigAsync(configPath, compiled.Json, ct).ConfigureAwait(false);
+            try
+            {
+                await _processHost.StartAsync(executable, configPath, mode, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                SecureDelete(configPath);
+                _configPath = null;
+            }
+            _activeNativeLease = lease;
+            transferred = true;
+            Publish(new MacConnectionSnapshot(
+                MacConnectionState.Connected,
+                mode,
+                NativeOutboundDisplayName,
+                _proxyPort,
+                compiled.BypassIps.Count + compiled.BypassDomains.Count,
+                ""));
+            Log.Information("mac_native_connection_started {Mode}", mode);
+        }
+        catch (Exception exception)
+        {
+            if (relayStarted || _configPath is not null)
+                await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!transferred)
+                lease.Dispose();
+            Publish(new MacConnectionSnapshot(
+                MacConnectionState.Error,
+                mode,
+                NativeOutboundDisplayName,
+                _proxyPort,
+                0,
+                ErrorCode(exception)));
+            throw;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> TryRefreshNativeAsync(
+        NativeOutboundLease lease,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var current = _activeNativeLease;
+            if (_disposed
+                || current is null
+                || _snapshot.State != MacConnectionState.Connected
+                || lease == current
+                || lease.ForwardId != current.ForwardId
+                || !string.Equals(lease.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(lease.RoutePolicy, current.RoutePolicy, StringComparison.Ordinal)
+                || !string.Equals(lease.Transport, current.Transport, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(lease.ScopeDigest, current.ScopeDigest, StringComparison.OrdinalIgnoreCase)
+                || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+                return false;
+
+            if (!await _nativeRelayHost.RefreshAsync(lease.ForwardId, lease, ct).ConfigureAwait(false))
+                return false;
+
+            _activeNativeLease = lease;
+            current.Dispose();
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task StopAsync(CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -189,15 +359,33 @@ public sealed class MacConnectionService : IMacConnectionService
         _disposed = true;
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         await _processHost.DisposeAsync().ConfigureAwait(false);
+        await _nativeRelayHost.DisposeAsync().ConfigureAwait(false);
         _gate.Dispose();
     }
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
         await _processHost.StopAsync(ct).ConfigureAwait(false);
+        await _nativeRelayHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
         if (_configPath is not null)
             SecureDelete(_configPath);
         _configPath = null;
+        _activeNativeLease?.Dispose();
+        _activeNativeLease = null;
+    }
+
+    private static int AllocateLoopbackPort(int avoidPort)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            if (port != avoidPort)
+                return port;
+        }
+        throw new InvalidOperationException("native_relay_port_unavailable");
     }
 
     private static async Task WriteEphemeralConfigAsync(string path, string json, CancellationToken ct)

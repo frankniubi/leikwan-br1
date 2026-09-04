@@ -106,6 +106,26 @@ if (($oversizedHeaders['Content-Range'] ?? '') !== 'bytes 0-' . (strlen($body) -
 if ((int)($oversizedHeaders['Content-Length'] ?? 0) !== strlen($body) || strlen($oversizedSuffix->body()) !== strlen($body)) fail('oversized suffix range body length mismatch');
 if ($oversizedSuffix->body() !== $body) fail('oversized suffix range body bytes mismatch');
 
+$largeRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'lw-artifact-root-' . bin2hex(random_bytes(6));
+$largeDir = $largeRoot . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'windows';
+if (!mkdir($largeDir, 0700, true) && !is_dir($largeDir)) { fail('failed to create large artifact root'); }
+$largeRelative = $largeDir . DIRECTORY_SEPARATOR . 'leikwan-bridge-setup.exe';
+$largeBytes = str_repeat("native-release-stream-check\n", 400000);
+file_put_contents($largeRelative, $largeBytes);
+$largeController = new ArtifactController(new Config($envPath), null, $largeRoot);
+$largeResponse = $largeController->windowsClientApp(new Request('GET', '/artifacts/leikwan-bridge-setup.exe', [], [], [], ''), []);
+if ($largeResponse->status() !== 200 || $largeResponse->body() !== '') {
+    fail('large artifact should be represented as a streamed response');
+}
+ob_start();
+$largeResponse->send();
+$streamedBody = ob_get_clean();
+if ($streamedBody !== $largeBytes) fail('streamed response body mismatch');
+unlink($largeRelative);
+rmdir($largeDir);
+rmdir($largeRoot . DIRECTORY_SEPARATOR . 'artifacts');
+rmdir($largeRoot);
+
 foreach ([
     'start at eof' => 'bytes=' . strlen($body) . '-',
     'start after eof' => 'bytes=' . (strlen($body) + 10) . '-' . (strlen($body) + 20),

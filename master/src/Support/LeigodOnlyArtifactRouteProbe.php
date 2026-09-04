@@ -60,12 +60,20 @@ final class LeigodOnlyArtifactRouteProbe
         $body = (string) $bodyProp->getValue($response);
         /** @var array<string,string> $headers */
         $headers = (array) $headersProp->getValue($response);
+        $declaredEtag = trim((string) ($headers['ETag'] ?? ''), " \t\"");
+        $declaredSize = filter_var($headers['Content-Length'] ?? null, FILTER_VALIDATE_INT);
+        $sha256 = preg_match('/^[a-f0-9]{64}$/i', $declaredEtag) === 1
+            ? strtolower($declaredEtag)
+            : hash('sha256', $body);
+        $sizeBytes = is_int($declaredSize) && $declaredSize >= 0
+            ? $declaredSize
+            : strlen($body);
         return [
             'status' => (int) $statusProp->getValue($response),
             'headers' => $headers,
             'body' => $body,
-            'sha256' => hash('sha256', $body),
-            'size_bytes' => strlen($body),
+            'sha256' => $sha256,
+            'size_bytes' => $sizeBytes,
         ];
     }
 }

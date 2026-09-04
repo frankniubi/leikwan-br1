@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 type leaseFrame struct {
 	Protocol            string `json:"protocol"`
+	Purpose             string `json:"purpose"`
 	ForwardID           int    `json:"forward_id"`
 	SessionTicket       string `json:"session_ticket"`
 	PolicyGeneration    string `json:"policy_generation"`
@@ -29,6 +32,9 @@ type leaseFrame struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
 	} `json:"credential"`
+	Direction   string `json:"direction"`
+	RouteScope  string `json:"route_scope"`
+	RoutePolicy string `json:"route_policy"`
 }
 
 func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease, error) {
@@ -40,15 +46,37 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 	if tierErr != nil {
 		return Policy{}, ProviderLease{}, ErrLeaseInvalid
 	}
+	isNative := strings.TrimSpace(f.Protocol) == nativeSocks5Protocol
+	if isNative && strings.TrimSpace(f.Purpose) == "" {
+		// Native leases have an explicit purpose in the panel response; do not
+		// infer it from the protocol alone when a malformed frame omits it.
+		return Policy{}, ProviderLease{}, ErrLeaseInvalid
+	}
+	routePolicy := strings.ToLower(strings.TrimSpace(f.RoutePolicy))
+	if isNative {
+		normalizedPolicy, policyErr := ParseNativeRoutePolicy(routePolicy)
+		if policyErr != nil {
+			return Policy{}, ProviderLease{}, ErrLeaseInvalid
+		}
+		routePolicy = string(normalizedPolicy)
+	}
 	policy := Policy{
-		Protocol: f.Protocol, ForwardID: f.ForwardID, SessionTicket: f.SessionTicket,
+		Protocol: f.Protocol, Purpose: strings.TrimSpace(f.Purpose), Native: isNative,
+		ForwardID: f.ForwardID, SessionTicket: f.SessionTicket,
 		PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
 		Transport: f.Transport, RateLimitMbps: f.RateLimitMbps,
 		QuotaRemainingBytes: f.QuotaRemainingBytes, TargetDigest: f.TargetDigest,
+		Direction: strings.TrimSpace(f.Direction), RouteScope: strings.ToLower(strings.TrimSpace(f.RouteScope)),
+		RoutePolicy: routePolicy,
+	}
+	nonceHash := strings.ToLower(strings.TrimSpace(f.NonceHash))
+	if isNative && nonceHash == "" && strings.TrimSpace(f.LeaseID) != "" {
+		digest := sha256.Sum256([]byte(strings.TrimSpace(f.LeaseID)))
+		nonceHash = hex.EncodeToString(digest[:])
 	}
 	lease := ProviderLease{
 		LeaseID: f.LeaseID, PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
-		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier, NonceHash: f.NonceHash,
+		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier, NonceHash: nonceHash,
 		IP: net.ParseIP(strings.TrimSpace(f.Endpoint.IP)).String(), Port: f.Endpoint.Port,
 		User: []byte(f.Credential.User), Password: []byte(f.Credential.Password),
 	}
@@ -104,6 +132,8 @@ func decodeLeaseBatchFrame(raw []byte, config Config) (Policy, []ProviderLease, 
 		if index == 0 {
 			policy = candidatePolicy
 		} else if candidatePolicy.Protocol != policy.Protocol ||
+			candidatePolicy.Purpose != policy.Purpose ||
+			candidatePolicy.Native != policy.Native ||
 			candidatePolicy.ForwardID != policy.ForwardID ||
 			candidatePolicy.PolicyGeneration != policy.PolicyGeneration ||
 			candidatePolicy.SessionTicket != policy.SessionTicket ||
@@ -111,7 +141,10 @@ func decodeLeaseBatchFrame(raw []byte, config Config) (Policy, []ProviderLease, 
 			candidatePolicy.Transport != policy.Transport ||
 			candidatePolicy.RateLimitMbps != policy.RateLimitMbps ||
 			candidatePolicy.QuotaRemainingBytes != policy.QuotaRemainingBytes ||
-			candidatePolicy.TargetDigest != policy.TargetDigest {
+			candidatePolicy.TargetDigest != policy.TargetDigest ||
+			candidatePolicy.Direction != policy.Direction ||
+			candidatePolicy.RouteScope != policy.RouteScope ||
+			candidatePolicy.RoutePolicy != policy.RoutePolicy {
 			lease.wipe()
 			for candidateIndex := range leases {
 				leases[candidateIndex].wipe()

@@ -127,6 +127,7 @@ final class ServiceController extends BaseController
         $structural = array_key_exists('forward_route_id', $changes)
             || array_key_exists('target_source', $changes)
             || array_key_exists('target_service_id', $changes)
+            || array_key_exists('native_outbound', $changes)
             || (array_key_exists('transport_mode', $changes)
                 && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
             || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);

@@ -41,7 +41,6 @@ import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
 import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
-import com.leikwan.bridge.update.AppUpdateUiState
 
 enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: ImageVector) {
     Connections("connections", R.string.nav_connections, Icons.Default.Lan),
@@ -52,14 +51,7 @@ enum class Screen(val route: String, @StringRes val labelRes: Int, val icon: Ima
 }
 
 @Composable
-fun MainScreen(
-    onLogout: () -> Unit = {},
-    updateState: AppUpdateUiState = AppUpdateUiState(),
-    onCheckForUpdates: () -> Unit = {},
-    onDownloadUpdate: () -> Unit = {},
-    onInstallUpdate: () -> Unit = {},
-    onAllowUnknownSources: () -> Unit = {},
-) {
+fun MainScreen(onLogout: () -> Unit = {}) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val proxiesViewModel: ProxiesViewModel = viewModel()
@@ -119,16 +111,7 @@ fun MainScreen(
             composable(Screen.Proxies.route) { ProxiesScreen(viewModel = proxiesViewModel) }
             composable(Screen.Routing.route) { RoutingScreen() }
             composable(Screen.ClientRules.route) { ClientRulesScreen() }
-            composable(Screen.Settings.route) {
-                SettingsScreen(
-                    onLogout = onLogout,
-                    updateState = updateState,
-                    onCheckForUpdates = onCheckForUpdates,
-                    onDownloadUpdate = onDownloadUpdate,
-                    onInstallUpdate = onInstallUpdate,
-                    onAllowUnknownSources = onAllowUnknownSources,
-                )
-            }
+            composable(Screen.Settings.route) { SettingsScreen(onLogout = onLogout) }
         }
     }
 }

@@ -3198,6 +3198,8 @@ final class AdminController extends BaseController
                 'catalog_destination' => $request->input('catalog_destination', ''),
                 'access_class' => $request->input('access_class', ''),
                 'native_udp_state' => $request->input('native_udp_state', ''),
+                'native_socks5_state' => $request->input('native_socks5_state', ''),
+                'direction_class' => $request->input('direction_class', ''),
                 'pricing_class' => $request->input('pricing_class', ''),
                 'include_absent' => $request->input('include_absent', ''),
             ], $limit, $offset);
@@ -3232,9 +3234,21 @@ final class AdminController extends BaseController
                     $code = (string) ($zone['zone_code'] ?? '');
                     $destinationOptions .= '<option value="' . $this->escape($code) . '"' . ((string) ($line['admin_destination_zone'] ?? '') === $code ? ' selected' : '') . '>' . $this->escape((string) ($zone['label'] ?? $code)) . '</option>';
                 }
+                $directionLabels = [
+                    'unknown' => 'Unknown',
+                    'intl_to_cn' => 'International -> Mainland China',
+                    'cn_to_intl' => 'Mainland China -> International',
+                    'domestic' => 'Mainland China domestic',
+                ];
+                $directionClass = UltraInventoryService::DIRECTION_CLASSES;
+                $directionOptions = '';
+                foreach ($directionClass as $option) {
+                    $directionOptions .= '<option value="' . $this->escape($option) . '"' . ((string) ($line['direction_class'] ?? 'unknown') === $option ? ' selected' : '') . '>' . $this->escape($directionLabels[$option] ?? $option) . '</option>';
+                }
+                $directionLabel = $directionLabels[(string) ($line['direction_class'] ?? 'unknown')] ?? 'Unknown';
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
-                    . '<td>' . $this->escape((string) ($line['access_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['native_udp_state'] ?? 'unknown')) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($line['access_class'] ?? 'unknown')) . '<br><span class="muted">Direction: ' . $this->escape($directionLabel) . '<br>UDP: ' . $this->escape((string) ($line['native_udp_state'] ?? 'unknown')) . '<br>SOCKS5: ' . $this->escape((string) ($line['native_socks5_state'] ?? 'unknown')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['pricing_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['pricing_evidence'] ?? '')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['catalog_ingress_label'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($line['effective_ingress_zone'] ?? 'unknown')) . '</td>'
@@ -3246,7 +3260,7 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape((string) ($line['last_discovered_at'] ?? '')) . '</td>'
                     . '<td><form method="post" action="/admin/ultra/lines/' . $lineId . '"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
                     . '<input name="admin_label" value="' . $this->escape((string) ($line['admin_label'] ?? '')) . '" placeholder="Label">'
-                    . '<select name="admin_ingress_zone">' . $ingressOptions . '</select><select name="admin_destination_zone">' . $destinationOptions . '</select>'
+                    . '<select name="admin_ingress_zone">' . $ingressOptions . '</select><select name="admin_destination_zone">' . $destinationOptions . '</select><select name="direction_class">' . $directionOptions . '</select>'
                     . '<label><input type="checkbox" name="is_enabled" value="1"' . ((int) ($line['is_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enabled</label>'
                     . '<input type="number" name="sort_order" value="' . (int) ($line['sort_order'] ?? 100) . '" style="width:78px">'
                     . '<input name="notes" value="' . $this->escape((string) ($line['notes'] ?? '')) . '" placeholder="Notes"><button class="button" type="submit">Save</button></form></td></tr>';
@@ -3258,6 +3272,7 @@ final class AdminController extends BaseController
             $catalogDestinationFilter = $this->escape((string) $request->input('catalog_destination', ''));
             $accessClassFilter = $this->escape((string) $request->input('access_class', ''));
             $nativeStateFilter = $this->escape((string) $request->input('native_udp_state', ''));
+            $nativeSocks5StateFilter = $this->escape((string) $request->input('native_socks5_state', ''));
             $pricingFilter = $this->escape((string) $request->input('pricing_class', ''));
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
@@ -3265,10 +3280,12 @@ final class AdminController extends BaseController
                 . '<label>Catalog destination <input name="catalog_destination" value="' . $catalogDestinationFilter . '" maxlength="191"></label>'
                 . '<label>Class <input name="access_class" value="' . $accessClassFilter . '" maxlength="32"></label>'
                 . '<label>UDP state <input name="native_udp_state" value="' . $nativeStateFilter . '" maxlength="32"></label>'
+                . '<label>SOCKS5 state <input name="native_socks5_state" value="' . $nativeSocks5StateFilter . '" maxlength="32"></label>'
+                . '<label>Direction <input name="direction_class" value="' . $this->escape((string) $request->input('direction_class', '')) . '" maxlength="32"></label>'
                 . '<label>Pricing <input name="pricing_class" value="' . $pricingFilter . '" maxlength="32"></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Class / UDP</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';
@@ -5865,6 +5882,8 @@ HTML;
             'allow_custom_slaves' => 'Allow custom slaves',
             'allow_inbound_proxy' => 'Allow inbound proxy',
             'allow_latency_test' => 'Allow latency test',
+            'allow_native_outbound' => 'Native outbound / 原生出口',
+            'allow_native_outbound_unrestricted' => 'Unrestricted native full route / 无审全路由',
         ];
 
         $html = '';

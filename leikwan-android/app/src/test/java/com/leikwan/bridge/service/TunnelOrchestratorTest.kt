@@ -41,6 +41,9 @@ import com.leikwan.bridge.runtime.BondingContract
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardEndpoint
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
+import com.leikwan.bridge.runtime.NativeOutboundCarrierDto
+import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.runtime.NodeLeg
 import com.leikwan.bridge.runtime.ProcessRunner
 import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
@@ -58,6 +61,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -434,12 +438,12 @@ class TunnelOrchestratorTest {
             .map { it.asJsonObject }
             .first { it.get("tag").asString == "proxy" }
         val route = config.getAsJsonObject("route")
-
-        assertFalse(proxy.has("override_address"))
-        assertFalse(proxy.has("override_port"))
         val bridgeRule = route.getAsJsonArray("rules")
             .map { it.asJsonObject }
             .first { it.get("action")?.asString == "route" && it.get("outbound")?.asString == "proxy" }
+
+        assertFalse(proxy.has("override_address"))
+        assertFalse(proxy.has("override_port"))
         assertEquals("127.0.0.1", bridgeRule.get("override_address").asString)
         assertEquals(11065, bridgeRule.get("override_port").asInt)
         assertEquals("proxy", route.get("final").asString)
@@ -583,6 +587,7 @@ class TunnelOrchestratorTest {
 
         assertEquals(listOf(routeProcessKey), processRunner.stopped)
         assertTrue(processRunner.stopAllCalled)
+        assertNull(LeikwanVpnService.configJson)
     }
 
     @Test
@@ -766,6 +771,180 @@ class TunnelOrchestratorTest {
         orchestrator.stop()
     }
 
+    @Test
+    fun `native refresh replaces leases in place without restarting the runtime`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-native-refresh-test-prefs", Context.MODE_PRIVATE))
+        val deviceId = "android-client-native-refresh"
+        prefs.clientId = 91L
+        prefs.agentToken = "test-agent-token"
+        prefs.enrolledDeviceId = deviceId
+        prefs.deviceSessionToken = "test-device-session"
+        prefs.deviceSessionExpiresAtMs = System.currentTimeMillis() + 300_000L
+
+        val now = java.time.Instant.now()
+        val forwardId = 91L
+        val target = "native.example:443"
+        val generation = "c".repeat(64)
+        val direction = "China Mainland -> International"
+        val routeScope = "intl_only"
+        val scopeDigest = NativeOutboundLease.scopeDigest(forwardId, direction, "tcp+udp", routeScope)
+        val forward = JsonParser.parseString(
+            """
+            {
+              "forward_id":$forwardId,
+              "service_name":"Native international service",
+              "target":"$target",
+              "forward_combination_direction":"$direction",
+              "listen_port":11091,
+              "mode":"ultra",
+              "backend_mode":"ultra",
+              "client_mode":"ultra",
+              "transport":"tcp+udp",
+              "service_status":"active",
+              "endpoint_mode":"managed",
+              "endpoints":[],
+              "ultra_access":{
+                "protocol":"leikwan-ultra-policy-v2",
+                "forward_id":$forwardId,
+                "session_ticket":"ticket-native-91",
+                "policy_generation":"$generation",
+                "issued_at":"${now.minusSeconds(1)}",
+                "renew_after":"${now.plusSeconds(120)}",
+                "expires_at":"${now.plusSeconds(270)}",
+                "service_state":"active",
+                "transport":"tcp+udp",
+                "rate_limit_mbps":100,
+                "quota_remaining_bytes":1048576,
+                "target_digest":"${com.leikwan.bridge.runtime.UltraPolicy.targetDigest(target)}"
+              }
+            }
+            """.trimIndent(),
+        )
+        fun leaseResponse(expiresAt: java.time.Instant, suffix: String) = Response.success(
+            com.leikwan.bridge.api.UltraLeaseResponse(
+                ok = true,
+                leases = listOf("20" to "8443", "21" to "8444").mapIndexed { index, (hostSuffix, port) ->
+                    JsonParser.parseString(
+                        """
+                        {
+                          "protocol":"leikwan-ultra-native-socks5-v1",
+                          "purpose":"native_outbound",
+                          "forward_id":$forwardId,
+                          "lease_id":"ul2_native_${suffix}_${index}",
+                          "policy_generation":"$generation",
+                          "expires_at":"$expiresAt",
+                          "transport":"tcp+udp",
+                          "rate_limit_mbps":100,
+                          "quota_remaining_bytes":1048576,
+                          "direction":"$direction",
+                          "route_scope":"$routeScope",
+                          "scope_digest":"$scopeDigest",
+                          "selection_ref":"native-selection-${index}-stable",
+                          "selection_tier":"mixed",
+                          "endpoint":{"ip":"198.51.100.$hostSuffix","port":$port},
+                          "credential":{"user":"user-$suffix-$index","password":"password-$suffix-$index"}
+                        }
+                        """.trimIndent(),
+                    ).asJsonObject
+                },
+            ),
+        )
+        val panelApi = FakePanelApi(
+            forwards = listOf(forward),
+            nativeOutbound = NativeOutboundCapabilityDto(
+                enabled = true,
+                protocol = "socks5",
+                leaseProtocol = "leikwan-ultra-native-socks5-v1",
+                transport = "tcp+udp",
+                forwardIds = listOf(forwardId),
+                defaultForwardId = forwardId,
+                routeScopes = listOf(routeScope, "global"),
+                defaultRouteScope = routeScope,
+                forwards = listOf(
+                    NativeOutboundCarrierDto(
+                        forwardId = forwardId,
+                        direction = direction,
+                        scopeDigest = scopeDigest,
+                        transport = "tcp+udp",
+                        routeScopes = listOf(routeScope, "global"),
+                        defaultRouteScope = routeScope,
+                    )
+                ),
+            ),
+            ultraLeaseResponses = listOf(
+                leaseResponse(now.plusSeconds(120), "initial"),
+                leaseResponse(now.plusSeconds(240), "refresh"),
+            ),
+        )
+        val panelRepo = PanelRepository(
+            context = context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            deviceIdProvider = { deviceId },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+        )
+        val processRunner = RecordingProcessRunner()
+        val deliveredPaths = mutableListOf<String>()
+        val deliveredBatches = mutableListOf<List<NativeOutboundLease>>()
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            panelRepoFactory = { panelRepo },
+            binaryInstallerFactory = {
+                RecordingBinaryInstaller(
+                    context,
+                    RuntimeBinaryPaths(
+                        wstunnelBinary = "/runtime/wstunnel",
+                        ingressBinary = "/runtime/leikwan-ingress",
+                        bondBinary = "/runtime/leikwan-bond",
+                        ultraBinary = "/runtime/ultra-client",
+                    ),
+                )
+            },
+            processRunnerFactory = { processRunner },
+            nativeLeaseBatchSender = { socketPath, leases ->
+                deliveredPaths += socketPath
+                deliveredBatches += leases.toList()
+                true
+            },
+            vpnServiceStarter = { _ -> },
+            vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
+        )
+
+        orchestrator.startNativeForForward(forwardId, routeScope, bypassChina = false)
+        val stopAllCallsAfterStart = processRunner.stopAllCalls
+
+        assertEquals(1, processRunner.started.size)
+        assertEquals(1, deliveredBatches.size)
+        assertTrue(deliveredBatches.flatten().all { lease ->
+            lease.user.all { it.toInt() == 0 } && lease.password.all { it.toInt() == 0 }
+        })
+
+        orchestrator.refreshNativeForTest(now.plusSeconds(61))
+        orchestrator.refreshNativeForTest(now.plusSeconds(100))
+
+        assertEquals(1, processRunner.started.size)
+        assertEquals(stopAllCallsAfterStart, processRunner.stopAllCalls)
+        assertEquals(2, deliveredBatches.size)
+        assertEquals(deliveredPaths.first(), deliveredPaths.last())
+        assertEquals(2, panelApi.resolveUltraLeaseCalls)
+        assertTrue(deliveredBatches.flatten().all { lease ->
+            lease.user.all { it.toInt() == 0 } && lease.password.all { it.toInt() == 0 }
+        })
+
+        orchestrator.stop()
+    }
+
     private class RecordingProcessRunner(
         private val failForProcessKeys: Set<Long> = emptySet(),
     ) : ProcessRunner() {
@@ -779,6 +958,7 @@ class TunnelOrchestratorTest {
         val stopped = mutableListOf<Long>()
         val awaitedPorts = mutableListOf<Int>()
         var stopAllCalled = false
+        var stopAllCalls = 0
 
         override fun start(forwardId: Long, runtimeContext: RuntimeContext, cleanupStale: Boolean) {
             if (forwardId in failForProcessKeys) {
@@ -793,6 +973,7 @@ class TunnelOrchestratorTest {
 
         override fun stopAll() {
             stopAllCalled = true
+            stopAllCalls += 1
         }
 
         override fun awaitLocalPort(port: Int, timeoutMs: Long) {
@@ -821,7 +1002,12 @@ class TunnelOrchestratorTest {
         private val ultraLeaseResponse: Response<com.leikwan.bridge.api.UltraLeaseResponse> = Response.success(
             com.leikwan.bridge.api.UltraLeaseResponse(ok = false),
         ),
+        private val nativeOutbound: NativeOutboundCapabilityDto? = null,
+        private val ultraLeaseResponses: List<Response<com.leikwan.bridge.api.UltraLeaseResponse>> = emptyList(),
     ) : PanelApi {
+        var resolveUltraLeaseCalls = 0
+            private set
+
         override suspend fun deviceChallenge(request: DeviceChallengeRequest): Response<DeviceChallengeResponse> =
             throw UnsupportedOperationException()
 
@@ -853,7 +1039,12 @@ class TunnelOrchestratorTest {
         override suspend fun resolveUltraLease(
             auth: String,
             request: com.leikwan.bridge.api.UltraLeaseRequest,
-        ): Response<com.leikwan.bridge.api.UltraLeaseResponse> = ultraLeaseResponse
+        ): Response<com.leikwan.bridge.api.UltraLeaseResponse> {
+            val index = resolveUltraLeaseCalls++
+            return ultraLeaseResponses.getOrNull(index)
+                ?: ultraLeaseResponses.lastOrNull()
+                ?: ultraLeaseResponse
+        }
         override suspend fun pullConfigs(auth: String): PullConfigsResponse = PullConfigsResponse(
             ok = true,
             client = JsonObject(),
@@ -862,6 +1053,7 @@ class TunnelOrchestratorTest {
             clientRules = clientRules,
             directionRuntimeBindings = bindings,
             routeRuleCapabilities = capabilities,
+            nativeOutbound = nativeOutbound,
         )
         override suspend fun createClientRule(auth: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
         override suspend fun updateClientRule(auth: String, ruleId: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()

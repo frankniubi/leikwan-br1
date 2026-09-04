@@ -44,6 +44,7 @@ final class UltraLeaseService
                 (int) ($request['forward_id'] ?? 0),
                 trim((string) ($request['policy_generation'] ?? '')),
                 (int) ($request['candidate_offset'] ?? 0),
+                trim((string) ($request['purpose'] ?? '')),
             );
         };
         $this->policyResolver = $policyResolver ?? function (int $clientId, string $deviceId, int $forwardId): array {
@@ -66,6 +67,7 @@ final class UltraLeaseService
         if ($normalized === null || $clientId <= 0 || trim($deviceId) === '') {
             return ['ok' => false, 'error' => 'lease_scope_invalid'];
         }
+        $isNative = $normalized['purpose'] === UltraMode::NATIVE_OUTBOUND_PURPOSE;
 
         $forwardId = $normalized['forward_id'];
         $policy = $authoritativeForward ?? ($this->policyResolver)($clientId, trim($deviceId), $forwardId);
@@ -90,13 +92,43 @@ final class UltraLeaseService
         if ($this->isGenerationRevoked($forwardId, $policyGeneration)) {
             return ['ok' => false, 'error' => 'policy_generation_invalid'];
         }
-        $target = trim((string) ($policy['target'] ?? ''));
-        if ($target === '' || !hash_equals(hash('sha256', $target), $normalized['target_digest'])) {
+        $policyTransport = strtolower(trim((string) ($policy['transport'] ?? $normalized['transport'])));
+        if ($policyTransport !== $normalized['transport'] || ($isNative && $policyTransport !== 'tcp+udp')) {
             return ['ok' => false, 'error' => 'policy_scope_invalid'];
         }
-        $policyTransport = strtolower(trim((string) ($policy['transport'] ?? $normalized['transport'])));
-        if ($policyTransport !== $normalized['transport']) {
-            return ['ok' => false, 'error' => 'policy_scope_invalid'];
+        $direction = '';
+        $routeScope = '';
+        $routePolicy = UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED;
+        if ($isNative) {
+            $direction = trim((string) ($policy['direction'] ?? ''));
+            $routeScope = UltraMode::normalizeNativeRouteScope($normalized['route_scope'], $direction) ?? '';
+            $policyRouteScope = UltraMode::normalizeNativeRouteScope((string) ($policy['route_scope'] ?? ''), $direction) ?? '';
+            $routePolicy = UltraMode::normalizeNativeRoutePolicy($normalized['route_policy'])
+                ?? UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED;
+            if ($routePolicy === UltraMode::NATIVE_ROUTE_POLICY_UNRESTRICTED
+                && empty($policy['native_unrestricted_allowed'])) {
+                return ['ok' => false, 'error' => 'native_route_policy_not_allowed'];
+            }
+            $v1Digest = UltraMode::nativeScopeDigest($forwardId, $direction, $policyTransport, $routeScope);
+            $v2Digest = UltraMode::nativeScopeDigestV2(
+                $forwardId,
+                $direction,
+                $policyTransport,
+                $routeScope,
+                $routePolicy
+            );
+            $digestMatches = hash_equals($v2Digest, $normalized['target_digest'])
+                || ($routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    && hash_equals($v1Digest, $normalized['target_digest']));
+            if ($routeScope === '' || $policyRouteScope === '' || $routeScope !== $policyRouteScope
+                || !$digestMatches) {
+                return ['ok' => false, 'error' => 'policy_scope_invalid'];
+            }
+        } else {
+            $target = trim((string) ($policy['target'] ?? ''));
+            if ($target === '' || !hash_equals(hash('sha256', $target), $normalized['target_digest'])) {
+                return ['ok' => false, 'error' => 'policy_scope_invalid'];
+            }
         }
         $expiresAt = $this->parseTimestamp((string) ($policy['expires_at'] ?? ''));
         if ($expiresAt === null || $expiresAt <= $this->now()) {
@@ -108,7 +140,8 @@ final class UltraLeaseService
         }
 
         $candidate = ($this->candidateResolver)($normalized, $clientId, trim($deviceId));
-        if (!is_array($candidate) || !$this->candidateIsValid($candidate)) {
+        if (!is_array($candidate) || !$this->candidateIsValid($candidate)
+            || ($isNative && !UltraMode::isNativeCandidateApproved($candidate))) {
             return ['ok' => false, 'error' => 'no_approved_candidate'];
         }
         if (isset($candidate['policy_generation'])
@@ -126,7 +159,8 @@ final class UltraLeaseService
         $leaseExpiresAt = min($expiresAt, $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS);
         $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt);
         $lease = $this->scrubLease([
-            'protocol' => UltraMode::POLICY_PROTOCOL,
+            'protocol' => $isNative ? UltraMode::NATIVE_SOCKS5_PROTOCOL : UltraMode::POLICY_PROTOCOL,
+            'purpose' => $normalized['purpose'],
             'session_ticket' => $normalized['session_ticket'],
             'forward_id' => $forwardId,
             'lease_id' => $leaseId,
@@ -138,6 +172,9 @@ final class UltraLeaseService
             'selection_ref' => (string) ($candidate['selection_ref'] ?? ''),
             'selection_tier' => $this->selectionTier($candidate['selection_tier'] ?? 1),
             'target_digest' => $normalized['target_digest'],
+            'direction' => $direction,
+            'route_scope' => $routeScope,
+            'route_policy' => $routePolicy,
             'nonce_hash' => $nonceHash,
             'endpoint' => [
                 'ip' => (string) $candidate['ip'],
@@ -206,12 +243,20 @@ final class UltraLeaseService
         $nonce = strtolower(trim((string) ($request['nonce'] ?? '')));
         $targetDigest = strtolower(trim((string) ($request['target_digest'] ?? '')));
         $transport = strtolower(trim((string) ($request['transport'] ?? '')));
+        $purpose = strtolower(trim((string) ($request['purpose'] ?? '')));
+        $purpose = $purpose === '' || $purpose === 'ultra' ? 'ultra' : $purpose;
+        $routeScope = strtolower(trim((string) ($request['route_scope'] ?? '')));
+        $routePolicy = UltraMode::normalizeNativeRoutePolicy($request['route_policy'] ?? 'restricted');
         $candidateOffset = (int) ($request['candidate_offset'] ?? 0);
         if ($forwardId <= 0 || $ticket === ''
             || !preg_match('/^[a-f0-9]{64}$/', $generation)
             || !preg_match('/^[a-f0-9]{16,128}$/', $nonce)
             || !preg_match('/^[a-f0-9]{64}$/', $targetDigest)
             || !in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)
+            || !in_array($purpose, ['ultra', UltraMode::NATIVE_OUTBOUND_PURPOSE], true)
+            || ($purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE
+                && !in_array($routeScope, ['cn_only', 'intl_only', 'global'], true))
+            || ($purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE && $routePolicy === null)
             || $candidateOffset < 0 || $candidateOffset > 7) {
             return null;
         }
@@ -222,6 +267,9 @@ final class UltraLeaseService
             'nonce' => $nonce,
             'target_digest' => $targetDigest,
             'transport' => $transport,
+            'purpose' => $purpose,
+            'route_scope' => $routeScope,
+            'route_policy' => $routePolicy ?? UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED,
             'candidate_offset' => $candidateOffset,
         ];
     }
@@ -391,7 +439,7 @@ final class UltraLeaseService
     /** @param array<string,mixed> $lease @return array<string,mixed> */
     private function scrubLease(array $lease): array
     {
-        return [
+        $common = [
             'protocol' => (string) ($lease['protocol'] ?? UltraMode::POLICY_PROTOCOL),
             'session_ticket' => (string) ($lease['session_ticket'] ?? ''),
             'forward_id' => (int) $lease['forward_id'],
@@ -417,6 +465,29 @@ final class UltraLeaseService
                 static fn(mixed $value): bool => is_string($value) && $value !== ''
             )),
         ];
+        if (($lease['purpose'] ?? '') !== UltraMode::NATIVE_OUTBOUND_PURPOSE) {
+            return $common;
+        }
+        return [
+            'protocol' => UltraMode::NATIVE_SOCKS5_PROTOCOL,
+            'purpose' => UltraMode::NATIVE_OUTBOUND_PURPOSE,
+            'forward_id' => (int) $lease['forward_id'],
+            'lease_id' => (string) $lease['lease_id'],
+            'policy_generation' => (string) $lease['policy_generation'],
+            'expires_at' => (string) $lease['expires_at'],
+            'transport' => (string) $lease['transport'],
+            'rate_limit_mbps' => (int) $lease['rate_limit_mbps'],
+            'quota_remaining_bytes' => (int) $lease['quota_remaining_bytes'],
+            'selection_ref' => (string) $lease['selection_ref'],
+            'direction' => (string) ($lease['direction'] ?? ''),
+            'route_scope' => (string) ($lease['route_scope'] ?? ''),
+            'route_policy' => UltraMode::normalizeNativeRoutePolicy($lease['route_policy'] ?? '')
+                ?? UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED,
+            'scope_digest' => (string) ($lease['target_digest'] ?? ''),
+            'endpoint' => $common['endpoint'],
+            'credential' => $common['credential'],
+            'direct_ip_cidrs' => $common['direct_ip_cidrs'],
+        ];
     }
 
     /** @return array<string,mixed> */
@@ -427,12 +498,15 @@ final class UltraLeaseService
         }
         $row = $this->db->fetchOne(
             'SELECT f.id AS forward_id, f.target_host, f.target_port, f.transport_mode,
-                    f.backend_mode, f.enabled, s.status AS service_status, s.expire_at,
+                    f.backend_mode, f.enabled, f.native_outbound_enabled,
+                    s.status AS service_status, s.expire_at,
                     fc.is_active AS combination_active, fc.ultra_destination_zone,
-                    fc.ultra_allowed_ingress_zones_json
+                    fc.ultra_allowed_ingress_zones_json, fc.line_direction,
+                    p.feature_flags_json AS plan_feature_flags_json
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              LEFT JOIN forward_combinations fc ON fc.id = f.forward_combination_id
+             LEFT JOIN service_plans p ON p.id = s.plan_id
              WHERE f.id = :forward_id AND f.line_client_id = :client_id
              LIMIT 1',
             ['forward_id' => $forwardId, 'client_id' => $clientId]
@@ -450,6 +524,10 @@ final class UltraLeaseService
             'service_state' => $state,
             'target' => $target,
             'transport' => in_array($transport, ['tcp', 'udp', 'tcp+udp'], true) ? $transport : 'tcp+udp',
+            'direction' => trim((string) ($row['line_direction'] ?? '')),
+            'route_scope' => 'global',
+            'route_policy' => UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED,
+            'native_unrestricted_allowed' => $this->planFlagsAllowUnrestricted($row),
             'rate_limit_mbps' => 0,
             'quota_remaining_bytes' => UltraMode::MAX_QUOTA_LEASE_BYTES,
             'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', strtotime((string) ($row['expire_at'] ?? '')) ?: $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS),
@@ -484,5 +562,14 @@ final class UltraLeaseService
     private function now(): int
     {
         return (int) ($this->clock)();
+    }
+
+    /** @param array<string,mixed> $row */
+    private function planFlagsAllowUnrestricted(array $row): bool
+    {
+        $flags = json_decode((string) ($row['plan_feature_flags_json'] ?? ''), true);
+        return is_array($flags)
+            && ($flags['allow_native_outbound'] ?? false) === true
+            && ($flags['allow_native_outbound_unrestricted'] ?? false) === true;
     }
 }

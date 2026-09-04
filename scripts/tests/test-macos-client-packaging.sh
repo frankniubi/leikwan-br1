@@ -27,9 +27,11 @@ import struct
 import sys
 
 path = pathlib.Path(sys.argv[1])
-cpu = 0x0100000C if sys.argv[2] == "arm64" else 0x01000007
+architecture = sys.argv[2]
+cpu = 0x0100000C if architecture == "arm64" else 0x01000007
+subtype = 0 if architecture == "arm64" else 3
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<I", cpu) + bytes(24))
+path.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<II", cpu, subtype) + bytes(20))
 PY
   chmod 0755 "$path"
 }
@@ -79,6 +81,9 @@ printf '%s\n' "$build_plan" | grep -Fqx \
 printf '%s\n' "$build_plan" | grep -Fqx \
   'uot_binary=leikwan-uot-bond' \
   || fail "UOT helper must use the Cargo binary name"
+printf '%s\n' "$build_plan" | grep -Fqx \
+  'ultra_obfuscator=garble-v0.17.0-literals-tiny' \
+  || fail "ultra-client build must use the pinned garble hardening profile"
 
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-macos-package-test.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT
@@ -152,6 +157,11 @@ for key, filename, fmt in (
         "size_bytes": len(data),
         "architecture": "arm64",
         "format": fmt,
+        "hardening": {
+            "ultra_client": "garble-v0.17.0-literals-tiny",
+            "native_helpers": "release-strip",
+            "managed_symbols": "disabled",
+        },
         "unexpected": "must-not-be-merged",
     }
 (root / "metadata.json").write_text(json.dumps({"artifacts": artifacts}), encoding="utf-8")
@@ -169,6 +179,7 @@ data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert "existing" in data
 assert data["macos_client_app_arm64"]["format"] == "dmg"
 assert data["macos_client_update_arm64"]["format"] == "zip"
+assert data["macos_client_app_arm64"]["hardening"]["ultra_client"] == "garble-v0.17.0-literals-tiny"
 assert "unexpected" not in data["macos_client_app_arm64"]
 PY
 cp "$merge_root/artifacts/versions.json" "$merge_root/versions.before"

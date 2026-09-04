@@ -6,10 +6,10 @@ namespace LeikwanBridge.Mac.Services;
 public static class MacConnectionProtocol
 {
     public const string Shadowsocks = "shadowsocks";
-    public const string Vless = "vless";
     public const string WireGuard = "wireguard";
 
-    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, Vless, WireGuard];
+    // Legacy protocol values are intentionally absent from this allowlist.
+    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, WireGuard];
 
     public static bool IsSupported(string? protocol)
         => Supported.Contains(protocol?.Trim().ToLowerInvariant() ?? string.Empty, StringComparer.Ordinal);
@@ -52,36 +52,6 @@ public sealed class MacConnectionProfile
     [JsonPropertyName("password")]
     public string Password { get; set; } = "";
 
-    [JsonPropertyName("uuid")]
-    public string Uuid { get; set; } = "";
-
-    [JsonPropertyName("flow")]
-    public string Flow { get; set; } = "";
-
-    [JsonPropertyName("transport")]
-    public string Transport { get; set; } = "tcp";
-
-    [JsonPropertyName("host")]
-    public string Host { get; set; } = "";
-
-    [JsonPropertyName("path")]
-    public string Path { get; set; } = "";
-
-    [JsonPropertyName("service_name")]
-    public string ServiceName { get; set; } = "";
-
-    [JsonPropertyName("tls")]
-    public bool Tls { get; set; }
-
-    [JsonPropertyName("server_name")]
-    public string ServerName { get; set; } = "";
-
-    [JsonPropertyName("reality_public_key")]
-    public string RealityPublicKey { get; set; } = "";
-
-    [JsonPropertyName("reality_short_id")]
-    public string RealityShortId { get; set; } = "";
-
     [JsonPropertyName("private_key")]
     public string PrivateKey { get; set; } = "";
 
@@ -110,8 +80,8 @@ public sealed class MacConnectionProfile
     public string DisplayProtocol => Protocol.Trim().ToUpperInvariant() switch
     {
         "WIREGUARD" => "WireGuard",
-        "VLESS" => "VLESS",
-        _ => "Shadowsocks",
+        "SHADOWSOCKS" => "Shadowsocks",
+        _ => "Unsupported",
     };
 
     public MacConnectionProfile Clone() => (MacConnectionProfile)MemberwiseClone();
@@ -146,6 +116,9 @@ public interface IMacConnectionService : IAsyncDisposable
 
     IReadOnlyList<MacConnectionProfile> Profiles { get; }
     MacConnectionSnapshot Snapshot { get; }
+    DateTimeOffset? ActiveNativeLeaseExpiresAt { get; }
+    string? ActiveNativeLeasePolicyGeneration { get; }
+    bool IsNativeOutboundActive { get; }
 
     Task InitializeAsync(CancellationToken ct = default);
     Task SaveProfileAsync(MacConnectionProfile profile, CancellationToken ct = default);
@@ -155,6 +128,25 @@ public interface IMacConnectionService : IAsyncDisposable
         int profileId,
         string panelUrl,
         IEnumerable<ForwardConfig> forwards,
+        CancellationToken ct = default);
+    Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland = false,
+        CancellationToken ct = default);
+    Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland,
+        string nativeRoutePolicy,
+        CancellationToken ct = default)
+        => StartNativeAsync(mode, lease, panelUrl, forwards, bypassChinaMainland, ct);
+    Task<bool> TryRefreshNativeAsync(
+        NativeOutboundLease lease,
         CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
 }

@@ -16,10 +16,38 @@ import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.SafePathRegistry
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.runtime.ClientRuleSingboxBinding
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_SCOPE_CN_ONLY
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_SCOPE_GLOBAL
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_SCOPE_INTL_ONLY
+import com.leikwan.bridge.runtime.NativeOutboundCapability
+import com.leikwan.bridge.runtime.NativeOutboundLease
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
+import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
+
+/** Loopback endpoint exposed by the app-private native Ultra adapter. */
+data class NativeOutboundLocalProxy(
+    val host: String = "127.0.0.1",
+    val port: Int,
+) {
+    init {
+        require(host == "127.0.0.1" || host == "::1") { "native_local_proxy_host_invalid" }
+        require(port in 1..65535) { "native_local_proxy_port_invalid" }
+    }
+}
+
+private const val NATIVE_DOH_REMOTE_IP = "1.1.1.1"
+private const val NATIVE_DOH_REMOTE_SNI = "cloudflare-dns.com"
+private const val NATIVE_DOH_CHINA_IP = "223.5.5.5"
+private const val NATIVE_DOH_CHINA_SNI = "dns.alidns.com"
+private const val NATIVE_TUN_GATEWAY_IPV4 = "172.19.0.2/32"
+private const val NATIVE_TUN_GATEWAY_IPV6 = "fdfe:dcba:9876::2/128"
+private val CUSTOM_DNS_HOSTNAME = Regex("^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 
 data class SingboxSettings(
     val panelUrl: String,
@@ -70,11 +98,39 @@ class SingboxConfigBuilder(
         routeRuleSnapshot: ClientRouteRuleSnapshot? = null,
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding> = emptyList(),
         runtimeOnlyProxy: Boolean = false,
+        nativeOutboundLease: NativeOutboundLease? = null,
+        nativeLocalProxy: NativeOutboundLocalProxy? = null,
+        nativeProtectedEndpoints: Set<String> = emptySet(),
+        nativeRouteScope: String = "global",
+        nativeBypassChina: Boolean = false,
+        nativeRoutePolicy: String? = null,
     ): CompiledConfigResult {
-        val activeProxyNodes = activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
+        require(nativeOutboundLease == null || nativeLocalProxy == null) { "native_proxy_endpoint_ambiguous" }
+        require(nativeOutboundLease == null || nativeOutboundLease.isUsable()) { "native_lease_invalid" }
+        val nativeMode = nativeOutboundLease != null || nativeLocalProxy != null
+        val normalizedNativeScope = NativeOutboundCapability.normalizeScope(nativeRouteScope)
+            ?: if (nativeMode) throw IllegalArgumentException("native_route_scope_invalid") else NATIVE_ROUTE_SCOPE_GLOBAL
+        val requestedNativePolicy = nativeRoutePolicy ?: nativeOutboundLease?.routePolicy ?: NATIVE_ROUTE_POLICY_RESTRICTED
+        if (nativeMode && !isNativeRoutePolicyValue(requestedNativePolicy)) {
+            throw IllegalArgumentException("native_route_policy_invalid")
+        }
+        val normalizedNativePolicy = normalizeNativeRoutePolicy(requestedNativePolicy)
+        if (nativeOutboundLease != null && normalizedNativePolicy != nativeOutboundLease.routePolicy) {
+            throw IllegalArgumentException("native_route_policy_mismatch")
+        }
+        val activeProxyNodes = if (!nativeMode) {
+            activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
+        } else {
+            emptyList()
+        }
         val protectedConnectivity = (runtimeContext?.allProtectedConnectivity() ?: ProtectedConnectivitySet.empty())
             .merge(protectedProxyConnectivity(activeProxyNodes))
+            .merge(ProtectedConnectivitySet.fromEndpoints(nativeProtectedEndpoints))
+            .let { set ->
+                nativeOutboundLease?.let { set.merge(ProtectedConnectivitySet.fromEndpoints(listOf(it.endpointIp))) } ?: set
+            }
         val finalProxyTag = when {
+            nativeMode -> "proxy-native"
             activeProxyNodes.isEmpty() -> "proxy"
             activeProxyNodes.size == 1 -> "proxy-${activeProxyNodes.first().id}"
             else -> "proxy"
@@ -83,16 +139,44 @@ class SingboxConfigBuilder(
         root.add("log", JsonObject().apply {
             addProperty("level", "debug")
         })
-        val dnsProxyDetourTag = finalProxyTag.takeIf { activeProxyNodes.isNotEmpty() }
-        val dnsBootstrapDomains = protectedConnectivity.hosts
-        root.add("dns", buildDns(dnsProxyDetourTag, dnsBootstrapDomains, enableIpv6Tun))
-        root.add("inbounds", buildInbounds(enableIpv6Tun))
-        root.add("outbounds", buildOutbounds(proxyNodes, runtimeContext, connectionMode, runtimeOnlyProxy, routeRuleRuntimeBindings))
+        val dnsProxyDetourTag = finalProxyTag.takeIf {
+            nativeMode || activeProxyNodes.isNotEmpty()
+        }
+        val dnsBootstrapDomains = protectedConnectivity.hosts + customBypassDomains()
+        root.add(
+            "dns",
+            buildDns(
+                dnsProxyDetourTag,
+                dnsBootstrapDomains,
+                enableIpv6Tun,
+                nativeMode = nativeMode,
+                nativeRouteScope = normalizedNativeScope,
+                nativeBypassChina = nativeMode && nativeBypassChina,
+            ),
+        )
+        root.add(
+            "inbounds",
+            buildInbounds(
+                enableIpv6Tun = enableIpv6Tun,
+                routeExcludeCidrs = if (nativeMode) protectedConnectivity.ipCidrs else emptySet(),
+            ),
+        )
+        root.add(
+            "outbounds",
+            buildOutbounds(
+                proxyNodes,
+                runtimeContext,
+                connectionMode,
+                runtimeOnlyProxy,
+                routeRuleRuntimeBindings,
+                nativeOutboundLease,
+                nativeLocalProxy,
+            ),
+        )
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
-        // sing-box 1.13 removed `direct` outbound destination-override fields
-        // (override_address/override_port). The runtime-only bridge case is expressed
-        // as a catch-all route rule carrying `route-options`.
-        val bridgeOverride = if (runtimeOnlyProxy &&
+        val bridgeOverride = if (
+            !nativeMode &&
+            runtimeOnlyProxy &&
             connectionMode == ProxyConnectionMode.SERVICES &&
             runtimeContext != null &&
             activeProxyNodes.isEmpty()
@@ -110,35 +194,83 @@ class SingboxConfigBuilder(
                 routeRuleSnapshot,
                 routeRuleRuntimeBindings,
                 bridgeOverride,
+                nativeMode,
+                normalizedNativeScope,
+                nativeBypassChina,
+                normalizedNativePolicy,
+                enableIpv6Tun,
             )
         )
-        return CompiledConfigResult(
-            configJson = gson.toJson(root),
-            finalProxyTag = finalProxyTag,
-            warnings = routingPolicySnapshot?.warnings ?: emptyList(),
-        )
+        return try {
+            CompiledConfigResult(
+                configJson = gson.toJson(root),
+                finalProxyTag = finalProxyTag,
+                warnings = routingPolicySnapshot?.warnings ?: emptyList(),
+            )
+        } finally {
+            nativeOutboundLease?.wipe()
+        }
     }
 
     private fun buildDns(
         proxyDetourTag: String?,
         bootstrapDomains: Set<String>,
         enableIpv6Tun: Boolean,
+        nativeMode: Boolean = false,
+        nativeRouteScope: String = NATIVE_ROUTE_SCOPE_GLOBAL,
+        nativeBypassChina: Boolean = false,
     ): JsonObject {
         val dns = JsonObject()
         val servers = JsonArray()
-        servers.add(JsonObject().apply {
-            addProperty("tag", "remote")
-            addProperty("type", if (proxyDetourTag != null) "tcp" else "udp")
-            addProperty("server", settings.dnsServer)
-            if (proxyDetourTag != null) {
-                addProperty("detour", proxyDetourTag)
-            }
-        })
-        servers.add(JsonObject().apply {
-            addProperty("tag", "direct-dns")
-            addProperty("type", "udp")
-            addProperty("server", settings.dnsFallback)
-        })
+        val restrictedNative = nativeMode && nativeRouteScope in setOf(
+            NATIVE_ROUTE_SCOPE_CN_ONLY,
+            NATIVE_ROUTE_SCOPE_INTL_ONLY,
+        )
+        if (restrictedNative && nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY) {
+            addNativeDohServer(
+                servers,
+                tag = "remote",
+                server = NATIVE_DOH_REMOTE_IP,
+                serverName = NATIVE_DOH_REMOTE_SNI,
+            )
+            addNativeDohServer(
+                servers,
+                tag = "china",
+                server = NATIVE_DOH_CHINA_IP,
+                serverName = NATIVE_DOH_CHINA_SNI,
+                detour = proxyDetourTag ?: "proxy-native",
+            )
+        } else if (restrictedNative && nativeRouteScope == NATIVE_ROUTE_SCOPE_INTL_ONLY) {
+            addNativeDohServer(
+                servers,
+                tag = "remote",
+                server = NATIVE_DOH_REMOTE_IP,
+                serverName = NATIVE_DOH_REMOTE_SNI,
+                detour = proxyDetourTag ?: "proxy-native",
+            )
+        } else {
+            servers.add(JsonObject().apply {
+                addProperty("tag", "remote")
+                addProperty("type", if (proxyDetourTag != null) "tcp" else "udp")
+                addProperty("server", settings.dnsServer)
+                if (proxyDetourTag != null) {
+                    addProperty("detour", proxyDetourTag)
+                }
+            })
+        }
+        val directDnsTag = if (restrictedNative) "local" else "direct-dns"
+        if (restrictedNative) {
+            servers.add(JsonObject().apply {
+                addProperty("tag", "local")
+                addProperty("type", "local")
+            })
+        } else {
+            servers.add(JsonObject().apply {
+                addProperty("tag", "direct-dns")
+                addProperty("type", "udp")
+                addProperty("server", settings.dnsFallback)
+            })
+        }
         dns.add("servers", servers)
 
         val rules = JsonArray()
@@ -146,9 +278,21 @@ class SingboxConfigBuilder(
             add("domain", JsonArray().apply {
                 (panelDirectDomains() + bootstrapDomains).forEach { add(it) }
             })
-            addProperty("server", "direct-dns")
+            addProperty("server", directDnsTag)
         })
-        if (settings.bypassChina) {
+        val nativeChinaDirect = nativeMode && (
+            nativeRouteScope == NATIVE_ROUTE_SCOPE_INTL_ONLY ||
+                (nativeRouteScope == NATIVE_ROUTE_SCOPE_GLOBAL && nativeBypassChina)
+            )
+        if (restrictedNative) {
+            rules.add(JsonObject().apply {
+                add("rule_set", JsonArray().apply { add("geosite-cn") })
+                addProperty(
+                    "server",
+                    if (nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY) "china" else "local",
+                )
+            })
+        } else if ((!nativeMode && settings.bypassChina) || nativeChinaDirect) {
             rules.add(JsonObject().apply {
                 add("rule_set", JsonArray().apply { add("geosite-cn") })
                 addProperty("server", "direct-dns")
@@ -160,7 +304,31 @@ class SingboxConfigBuilder(
         return dns
     }
 
-    private fun buildInbounds(enableIpv6Tun: Boolean): JsonArray {
+    private fun addNativeDohServer(
+        servers: JsonArray,
+        tag: String,
+        server: String,
+        serverName: String,
+        detour: String? = null,
+    ) {
+        servers.add(JsonObject().apply {
+            addProperty("tag", tag)
+            addProperty("type", "https")
+            addProperty("server", server)
+            addProperty("server_port", 443)
+            addProperty("path", "/dns-query")
+            add("tls", JsonObject().apply {
+                addProperty("enabled", true)
+                addProperty("server_name", serverName)
+            })
+            detour?.let { addProperty("detour", it) }
+        })
+    }
+
+    private fun buildInbounds(
+        enableIpv6Tun: Boolean,
+        routeExcludeCidrs: Set<String> = emptySet(),
+    ): JsonArray {
         return JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("type", "tun")
@@ -181,6 +349,12 @@ class SingboxConfigBuilder(
                 addProperty("stack", "gvisor")
                 addProperty("endpoint_independent_nat", true)
                 addProperty("mtu", 9000)
+                val effectiveRouteExcludes = routeExcludeCidrs.filter { enableIpv6Tun || !it.contains(':') }
+                if (effectiveRouteExcludes.isNotEmpty()) {
+                    add("route_exclude_address", JsonArray().apply {
+                        effectiveRouteExcludes.forEach { add(it) }
+                    })
+                }
             })
         }
     }
@@ -191,11 +365,31 @@ class SingboxConfigBuilder(
         connectionMode: ProxyConnectionMode,
         runtimeOnlyProxy: Boolean,
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
+        nativeOutboundLease: NativeOutboundLease?,
+        nativeLocalProxy: NativeOutboundLocalProxy?,
     ): JsonArray {
         val outbounds = JsonArray()
         val proxyTags = mutableListOf<String>()
 
-        activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
+        if (nativeOutboundLease != null || nativeLocalProxy != null) {
+            outbounds.add(JsonObject().apply {
+                addProperty("type", "socks")
+                addProperty("tag", "proxy-native")
+                addProperty("server", nativeLocalProxy?.host ?: nativeOutboundLease!!.endpointIp)
+                addProperty("server_port", nativeLocalProxy?.port ?: nativeOutboundLease!!.endpointPort)
+                addProperty("version", "5")
+                // sing-box accepts only a single value ("tcp" or "udp") here.
+                // Omitting the field explicitly enables both networks, which is
+                // required for the native TCP+UDP SOCKS5 lease.
+                add("udp_over_tcp", JsonObject().apply { addProperty("enabled", false) })
+                nativeOutboundLease?.let { lease ->
+                    addProperty("username", lease.user.toString(Charsets.UTF_8))
+                    addProperty("password", lease.password.toString(Charsets.UTF_8))
+                }
+            })
+        }
+
+        if (nativeOutboundLease == null && nativeLocalProxy == null) activeProxyNodes(proxyNodes, runtimeContext, connectionMode)
             .forEach { node ->
                 if (node.type.equals("wireguard", ignoreCase = true)) {
                     proxyTags += "proxy-${node.id}"
@@ -206,7 +400,9 @@ class SingboxConfigBuilder(
                 proxyTags += "proxy-${node.id}"
             }
 
-        if (proxyTags.size > 1) {
+        if (nativeOutboundLease != null || nativeLocalProxy != null) {
+            // Native mode intentionally has no user-node selector; the lease is the sole proxy path.
+        } else if (proxyTags.size > 1) {
             outbounds.add(JsonObject().apply {
                 addProperty("type", "selector")
                 addProperty("tag", "proxy")
@@ -433,6 +629,11 @@ class SingboxConfigBuilder(
         routeRuleSnapshot: ClientRouteRuleSnapshot?,
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
         bridgeOverride: Pair<String, Int>? = null,
+        nativeMode: Boolean = false,
+        nativeRouteScope: String = "global",
+        nativeBypassChina: Boolean = false,
+        nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+        enableIpv6Tun: Boolean = false,
     ): JsonObject {
         val route = JsonObject()
         val rules = JsonArray()
@@ -445,6 +646,23 @@ class SingboxConfigBuilder(
             addProperty("protocol", "dns")
             addProperty("action", "hijack-dns")
         })
+
+        // Reject packets aimed at the TUN peer before the RFC-1918 direct rule.
+        // Otherwise strict routing can feed gateway discovery back into the VPN.
+        if (nativeMode) {
+            listOf("tcp", "udp").forEach { network ->
+                rules.add(JsonObject().apply {
+                    add("inbound", JsonArray().apply { add("tun-in") })
+                    addProperty("network", network)
+                    add("ip_cidr", JsonArray().apply {
+                        add(NATIVE_TUN_GATEWAY_IPV4)
+                        if (enableIpv6Tun) add(NATIVE_TUN_GATEWAY_IPV6)
+                    })
+                    addProperty("action", "reject")
+                    addProperty("method", "drop")
+                })
+            }
+        }
 
         // (1) System-protected paths (non-overridable), one rule per registry entry, ordered before
         //     user rules. Replaces the legacy panelDirectDomains() route injection so there is a single
@@ -484,6 +702,49 @@ class SingboxConfigBuilder(
         //     protected/runtime reachability and before country/category/default routing.
         addClientRuleRoutes(rules, routeRuleSnapshot, routeRuleRuntimeBindings)
 
+        val nativeRestrictedScope = nativeMode && nativeRouteScope in setOf(
+            NATIVE_ROUTE_SCOPE_CN_ONLY,
+            NATIVE_ROUTE_SCOPE_INTL_ONLY,
+        )
+        if (nativeMode && nativeRoutePolicy == NATIVE_ROUTE_POLICY_RESTRICTED) {
+            // Native relay traffic is game-oriented. Keep privileged/control
+            // ports on the direct path; only high ports enter the relay.
+            rules.add(JsonObject().apply {
+                add("network", JsonArray().apply {
+                    add("tcp")
+                    add("udp")
+                })
+                addProperty("port_range", "1:999")
+                addProperty("outbound", "direct")
+            })
+        }
+        if (nativeRestrictedScope) {
+            // Resolve the hostname once using the selected split-DNS server before
+            // handing the destination to SOCKS; do not let the upstream resolve it again.
+            rules.add(JsonObject().apply {
+                addProperty("action", "resolve")
+                addProperty("strategy", "ipv4_only")
+            })
+            rules.add(JsonObject().apply {
+                add("rule_set", JsonArray().apply {
+                    add("geoip-cn")
+                    add("geosite-cn")
+                })
+                add("network", JsonArray().apply {
+                    add("tcp")
+                    add("udp")
+                })
+                addProperty(
+                    "port_range",
+                    if (nativeRoutePolicy == NATIVE_ROUTE_POLICY_RESTRICTED) "1000:65535" else "1:65535",
+                )
+                addProperty(
+                    "outbound",
+                    if (nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY) finalProxyTag else "direct",
+                )
+            })
+        }
+
         // (4) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
         //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
         if (snapshot != null) {
@@ -491,7 +752,8 @@ class SingboxConfigBuilder(
                 val outbound = when {
                     compiled.outbound == RoutingPolicyEngine.PROXY_OUTBOUND_SENTINEL -> finalProxyTag
                     compiled.outbound.startsWith("<NODE:") ->
-                        "proxy-" + compiled.outbound.removePrefix("<NODE:").removeSuffix(">")
+                        if (nativeMode) finalProxyTag
+                        else "proxy-" + compiled.outbound.removePrefix("<NODE:").removeSuffix(">")
                     else -> compiled.outbound
                 }
                 rules.add(JsonObject().apply {
@@ -502,7 +764,8 @@ class SingboxConfigBuilder(
         }
 
         // (5) bypassChina toggle (also expressible as a CN->DIRECT user rule; kept for back-compat).
-        if (settings.bypassChina) {
+        if ((settings.bypassChina && !nativeMode) ||
+            (nativeMode && nativeRouteScope == NATIVE_ROUTE_SCOPE_GLOBAL && nativeBypassChina)) {
             rules.add(JsonObject().apply {
                 add("rule_set", JsonArray().apply {
                     add("geoip-cn")
@@ -541,9 +804,6 @@ class SingboxConfigBuilder(
             }
         }
 
-        // Runtime-only bridge (ULTRA forward): every packet that no earlier rule captured
-        // is sent to the local forward bridge (127.0.0.1:listenPort). sing-box 1.13 requires this
-        // destination override to live on a route rule (`route-options`), not on a `direct` outbound.
         if (bridgeOverride != null) {
             rules.add(JsonObject().apply {
                 addProperty("action", "route")
@@ -554,22 +814,45 @@ class SingboxConfigBuilder(
         }
 
         route.add("rules", rules)
+        if (nativeRestrictedScope) {
+            route.addProperty("default_domain_resolver", "remote")
+        }
         // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
         val defaultTunnelTag = snapshot?.globalDefaultNodeId?.let { "proxy-$it" } ?: finalProxyTag
         route.addProperty(
             "final",
-            if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) "direct" else defaultTunnelTag,
+            if (nativeMode) {
+                if (nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY) "direct" else finalProxyTag
+            } else if (snapshot?.globalDefaultOutcome == UserTrafficOutcome.DIRECT) {
+                "direct"
+            } else {
+                defaultTunnelTag
+            },
         )
 
         // route.rule_set: China sets (if toggle) + user-rule remote sets, de-duplicated by tag.
         val ruleSetArray = JsonArray()
         val seenTags = linkedSetOf<String>()
-        if (settings.bypassChina) {
+        val nativeRuleSetScope = nativeRouteScope in setOf(
+            NATIVE_ROUTE_SCOPE_CN_ONLY,
+            NATIVE_ROUTE_SCOPE_INTL_ONLY,
+        )
+        val needsNativeChinaSets = nativeMode && (
+            nativeRuleSetScope ||
+                (nativeRouteScope == NATIVE_ROUTE_SCOPE_GLOBAL && nativeBypassChina)
+            )
+        if ((settings.bypassChina && !nativeMode) || needsNativeChinaSets) {
+            val downloadDetour = when {
+                !nativeMode -> null
+                nativeRouteScope == NATIVE_ROUTE_SCOPE_CN_ONLY -> "direct"
+                nativeRouteScope == NATIVE_ROUTE_SCOPE_INTL_ONLY -> finalProxyTag
+                else -> null
+            }
             if (seenTags.add("geoip-cn")) {
-                ruleSetArray.add(remoteRuleSet("geoip-cn", chinaRuleSetUrl("geoip-cn")))
+                ruleSetArray.add(remoteRuleSet("geoip-cn", chinaRuleSetUrl("geoip-cn"), downloadDetour))
             }
             if (seenTags.add("geosite-cn")) {
-                ruleSetArray.add(remoteRuleSet("geosite-cn", chinaRuleSetUrl("geosite-cn")))
+                ruleSetArray.add(remoteRuleSet("geosite-cn", chinaRuleSetUrl("geosite-cn"), downloadDetour))
             }
         }
         if (snapshot != null) {
@@ -607,7 +890,12 @@ class SingboxConfigBuilder(
             }
     }
 
-    private fun routeRuleMatch(rule: ClientRouteRule, network: String, outbound: String, overridePort: Int? = null): JsonObject =
+    private fun routeRuleMatch(
+        rule: ClientRouteRule,
+        network: String,
+        outbound: String,
+        overridePort: Int? = null,
+    ): JsonObject =
         routeRuleBase(rule, network).apply {
             addProperty("outbound", outbound)
             if (overridePort != null) {
@@ -627,11 +915,12 @@ class SingboxConfigBuilder(
         addProperty("network", network)
     }
 
-    private fun remoteRuleSet(tag: String, url: String): JsonObject = JsonObject().apply {
+    private fun remoteRuleSet(tag: String, url: String, downloadDetour: String? = null): JsonObject = JsonObject().apply {
         addProperty("tag", tag)
         addProperty("type", "remote")
         addProperty("format", "binary")
         addProperty("url", url)
+        downloadDetour?.let { addProperty("download_detour", it) }
     }
 
     private fun chinaRuleSetUrl(tag: String): String =
@@ -654,6 +943,14 @@ class SingboxConfigBuilder(
         }
         return domains
     }
+
+    private fun customBypassDomains(): Set<String> = settings.customBypassRules
+        .lineSequence()
+        .map(String::trim)
+        .filter { it.isNotEmpty() && !isIpLike(it) }
+        .map { it.lowercase().removeSuffix(".") }
+        .filter { it.matches(CUSTOM_DNS_HOSTNAME) }
+        .toCollection(linkedSetOf())
 
     private fun activeProxyNodes(
         proxyNodes: List<ProxyNode>,

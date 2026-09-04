@@ -22,4 +22,5 @@ public sealed record DesktopClientSnapshot
     public string LastErrorCode { get; init; } = string.Empty;
     public IReadOnlyList<DesktopClientChoice> AvailableClients { get; init; } = [];
     public IReadOnlyList<DesktopForwardSnapshot> Forwards { get; init; } = [];
+    public NativeOutboundCapability? NativeOutbound { get; init; }
 }

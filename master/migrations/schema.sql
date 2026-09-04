@@ -443,6 +443,8 @@ CREATE TABLE IF NOT EXISTS forwards (
     public_port INT NOT NULL,
     cdn_host VARCHAR(255) NOT NULL,
     filter_profile VARCHAR(64) NOT NULL DEFAULT 'off',
+    native_outbound_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    native_direction_key VARCHAR(64) NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
@@ -453,6 +455,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
     UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash),
+    UNIQUE KEY uniq_forwards_native_direction (service_id, native_direction_key),
     INDEX idx_forwards_service (service_id),
     INDEX idx_forwards_target_service (target_service_id)
 );
@@ -1321,6 +1324,8 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     config_sha256 CHAR(64) NOT NULL,
     access_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     native_udp_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    native_socks5_state VARCHAR(16) NOT NULL DEFAULT 'unknown',
+    direction_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     route_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
     pricing_class VARCHAR(16) NOT NULL DEFAULT 'unknown',
     pricing_evidence VARCHAR(255) NULL,
@@ -1344,7 +1349,7 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     CONSTRAINT fk_ultra_lines_source FOREIGN KEY (source_id) REFERENCES ultra_sources(source_id),
     UNIQUE KEY uniq_ultra_source_line (source_id, line_id),
     INDEX idx_ultra_lines_policy (is_source_present, is_enabled, auto_destination_zone, auto_ingress_zone),
-    INDEX idx_ultra_lines_quality (access_class, native_udp_state, pricing_class, is_source_present, is_enabled),
+    INDEX idx_ultra_lines_quality (access_class, native_udp_state, native_socks5_state, pricing_class, is_source_present, is_enabled),
     INDEX idx_ultra_lines_material_expiry (last_material_expires_at)
 );
 

@@ -363,6 +363,95 @@
                         <TextBlock Text="{DynamicResource ProxyElevationHint}" Foreground="{StaticResource MutedTextBrush}"
                                    TextWrapping="Wrap" Margin="0,0,0,12"/>
 
+                        <Border x:Name="NativeOutboundCard" Style="{StaticResource CardBorder}" Margin="0,0,0,12"
+                                Visibility="Collapsed">
+                            <Expander x:Name="NativeOutboundExpander"
+                                      IsExpanded="{Binding IsNativeOutboundExpanded, Mode=TwoWay}"
+                                      AutomationProperties.Name="Optional native outbound">
+                                <Expander.Header>
+                                    <DockPanel LastChildFill="True" Margin="2,0,2,4">
+                                        <TextBlock Style="{StaticResource SectionHeader}"
+                                                   Text="{DynamicResource ProxyNativeOutboundTitle}"
+                                                   DockPanel.Dock="Left" Margin="0" />
+                                        <Border DockPanel.Dock="Right" Background="#F3F4F6" BorderBrush="#D1D5DB"
+                                                BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="8,0,0,0">
+                                            <TextBlock Text="{DynamicResource ProxyNativeOutboundOptional}"
+                                                       Foreground="{StaticResource MutedTextBrush}"
+                                                       FontSize="11" FontWeight="SemiBold" />
+                                        </Border>
+                                    </DockPanel>
+                                </Expander.Header>
+                                <StackPanel>
+                                <TextBlock Text="{DynamicResource ProxyNativeOutboundHint}" Foreground="{StaticResource MutedTextBrush}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyNativeOutboundForward}"/>
+                                        <ComboBox x:Name="NativeForwardCombo"
+                                                  ItemsSource="{Binding NativeOutboundForwards}"
+                                                  SelectedValuePath="ForwardId"
+                                                  SelectedValue="{Binding SelectedNativeForwardId, Mode=TwoWay}"
+                                                  SelectionChanged="OnNativeForwardSelectionChanged"
+                                                  AutomationProperties.Name="Native outbound forward">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Direction}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding ForwardId, StringFormat=Forward #{0}}"
+                                                                   Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <TextBlock x:Name="NativeDirectionText" Foreground="{StaticResource MutedTextBrush}"
+                                                   FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel x:Name="NativeRouteScopePanel" Grid.Column="1" Margin="8,0,0,0">
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyNativeOutboundRouteScope}"/>
+                                        <ComboBox x:Name="NativeRouteScopeCombo"
+                                                  MinWidth="160"
+                                                  SelectionChanged="OnNativeRouteScopeSelectionChanged"
+                                                  AutomationProperties.Name="Native outbound route scope"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyNativeOutboundMode}"/>
+                                        <ComboBox x:Name="NativeModeCombo" SelectedIndex="1"
+                                                  AutomationProperties.Name="Native outbound mode">
+                                            <ComboBoxItem Content="{DynamicResource ProxyModeHttp}" Tag="Http"/>
+                                            <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <CheckBox x:Name="NativeBypassChinaCheckBox" Grid.Column="1"
+                                              Content="{DynamicResource ProxyBypassChinaMainland}"
+                                              IsChecked="{Binding NativeBypassChinaMainland, Mode=TwoWay}"
+                                              VerticalAlignment="Bottom" Margin="8,0,0,4"
+                                              AutomationProperties.Name="Native outbound bypass mainland China IPs"/>
+                                </Grid>
+                                <CheckBox x:Name="NativeUnrestrictedRouteCheckBox"
+                                          Content="{DynamicResource ProxyNativeOutboundUnrestricted}"
+                                          IsChecked="{Binding NativeUnrestrictedRoute, Mode=TwoWay}"
+                                          Margin="0,0,0,10"
+                                          AutomationProperties.Name="Unrestricted native full route"/>
+                                <WrapPanel HorizontalAlignment="Right">
+                                    <Button x:Name="NativeOutboundStartButton" Style="{StaticResource PrimaryButton}"
+                                            Content="{DynamicResource ProxyNativeOutboundStart}"
+                                            Click="OnNativeOutboundStart_Click"
+                                            AutomationProperties.Name="Start native outbound"/>
+                                </WrapPanel>
+                                </StackPanel>
+                            </Expander>
+                        </Border>
+
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="230"/>

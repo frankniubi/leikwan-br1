@@ -9,6 +9,9 @@ import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.runtime.NativeOutboundCapability
+import com.leikwan.bridge.runtime.NativeOutboundCarrier
+import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.service.ProxyConnectionMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -204,5 +207,444 @@ class ConnectionsViewModelTest {
         dispatcher.scheduler.advanceUntilIdle()
         assertTrue(stopped)
         assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
+    }
+
+    @Test
+    fun `entitled native outbound connects without a personal node`() {
+        val direction = "Hong Kong -> China Mainland"
+        val nativeForwardId = 10L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("cn_only", "global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        prefs.nativeOutboundRouteScope = "cn_only"
+        var invoked: Triple<Long, String, Boolean>? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            startNativeConnect = { id, scope, bypass, _ -> invoked = Triple(id, scope, bypass) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.nativeVisible)
+        assertTrue(state.nativeSelected)
+        assertFalse(state.hasNode)
+        assertTrue(state.hasUsablePath)
+        assertEquals("cn_only", state.nativeRouteScope)
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(Triple(nativeForwardId, "cn_only", false), invoked)
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+    }
+
+    @Test
+    fun `live CAN to HKG native carrier selects forward 180 and global scope without direction fallback`() {
+        val nativeForwardId = 180L
+        val direction = "CAN -> HKG"
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(
+                        nativeForwardId,
+                        direction,
+                        "tcp+udp",
+                        "global",
+                    ),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = 174L
+        prefs.nativeOutboundRouteScope = "cn_only"
+        prefs.nativeOutboundBypassChina = false
+        var invoked: Triple<Long, String, Boolean>? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            startNativeConnect = { id, scope, bypass, _ -> invoked = Triple(id, scope, bypass) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(nativeForwardId, viewModel.state.value.nativeForwardId)
+        assertEquals(direction, viewModel.state.value.nativeCarrier?.direction)
+        assertEquals("global", viewModel.state.value.nativeRouteScope)
+        assertFalse(viewModel.state.value.nativeBypassChina)
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(Triple(nativeForwardId, "global", false), invoked)
+    }
+
+    @Test
+    fun `mainland to international restores intl only preference and keeps bypass disabled`() {
+        val direction = "Mainland China -> International"
+        val nativeForwardId = 12L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("intl_only", "global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("intl_only", "global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        prefs.nativeOutboundRouteScope = "international_only"
+        prefs.nativeOutboundBypassChina = true
+        var invoked: Triple<Long, String, Boolean>? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            startNativeConnect = { id, scope, bypass, _ -> invoked = Triple(id, scope, bypass) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("intl_only", viewModel.state.value.nativeRouteScope)
+        assertFalse(viewModel.state.value.nativeBypassChina)
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(Triple(nativeForwardId, "intl_only", false), invoked)
+    }
+
+    @Test
+    fun `unrestricted native policy is opt in and follows carrier entitlement`() {
+        val direction = "Mainland China -> International"
+        val nativeForwardId = 13L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("intl_only", "global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("intl_only", "global"),
+                    defaultRouteScope = "global",
+                    unrestrictedAllowed = true,
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        var invoked: Triple<Long, String, Boolean>? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            startNativeConnect = { id, scope, bypass, policy ->
+                invoked = Triple(id, scope, bypass)
+                assertEquals("unrestricted", policy)
+            },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("restricted", viewModel.state.value.nativeRoutePolicy)
+        viewModel.setNativeRoutePolicy("unrestricted")
+        assertEquals("unrestricted", viewModel.state.value.nativeRoutePolicy)
+        assertEquals("unrestricted", prefs.nativeOutboundRoutePolicy)
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(Triple(nativeForwardId, "global", false), invoked)
+        assertEquals("unrestricted", prefs.nativeOutboundRoutePolicy)
+    }
+
+    @Test
+    fun `unrestricted native policy cannot be selected without carrier entitlement`() {
+        val direction = "Mainland China -> International"
+        val nativeForwardId = 14L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.setNativeRoutePolicy("unrestricted")
+        assertEquals("restricted", viewModel.state.value.nativeRoutePolicy)
+        assertEquals("restricted", prefs.nativeOutboundRoutePolicy)
+    }
+
+    @Test
+    fun `native entitlement removal stops an active native tunnel`() {
+        val direction = "Hong Kong -> China Mainland"
+        val nativeForwardId = 10L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("cn_only", "global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        var currentCatalog = ForwardCatalog(
+            visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+            selectedForwardId = nativeForwardId,
+            nativeOutbound = capability,
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        var stopCalls = 0
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { currentCatalog },
+            nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stopCalls++ },
+            startNativeConnect = { _, _, _, _ -> },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+
+        currentCatalog = ForwardCatalog(
+            visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+            selectedForwardId = nativeForwardId,
+            nativeOutbound = null,
+        )
+        viewModel.refreshForwards()
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(1, stopCalls)
+        assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
+        assertFalse(viewModel.state.value.nativeSelected)
+    }
+
+    @Test
+    fun `native carrier replacement stops the old active tunnel`() {
+        val direction = "Hong Kong -> China Mainland"
+        val oldForwardId = 10L
+        val newForwardId = 11L
+        fun carrier(id: Long) = NativeOutboundCarrier(
+            forwardId = id,
+            direction = direction,
+            scopeDigest = NativeOutboundLease.scopeDigest(id, direction, "tcp+udp", "global"),
+            transport = "tcp+udp",
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+        )
+        fun capability(ids: List<Long>) = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = ids,
+            defaultForwardId = ids.first(),
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+            forwards = ids.map(::carrier),
+        )
+
+        var currentCatalog = ForwardCatalog(
+            visibleForwards = listOf(forward(oldForwardId, direction = direction)),
+            selectedForwardId = oldForwardId,
+            nativeOutbound = capability(listOf(oldForwardId)),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = oldForwardId
+        var stopCalls = 0
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { currentCatalog },
+            nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stopCalls++ },
+            startNativeConnect = { _, _, _, _ -> },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+
+        currentCatalog = ForwardCatalog(
+            visibleForwards = listOf(
+                forward(oldForwardId, direction = direction),
+                forward(newForwardId, direction = direction),
+            ),
+            selectedForwardId = newForwardId,
+            nativeOutbound = capability(listOf(newForwardId)),
+        )
+        viewModel.refreshForwards()
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(1, stopCalls)
+        assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
+        assertFalse(viewModel.state.value.nativeSelected)
+        assertFalse(prefs.nativeOutboundSelected)
+    }
+
+    @Test
+    fun `turning native selection off stops the active native tunnel`() {
+        val direction = "Hong Kong -> China Mainland"
+        val nativeForwardId = 10L
+        val capability = NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(nativeForwardId),
+            defaultForwardId = nativeForwardId,
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = nativeForwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("cn_only", "global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        var stopCalls = 0
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+                    selectedForwardId = nativeForwardId,
+                    nativeOutbound = capability,
+                )
+            },
+            nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stopCalls++ },
+            startNativeConnect = { _, _, _, _ -> },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.setNativeSelected(false)
+
+        assertEquals(1, stopCalls)
+        assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
+        assertFalse(viewModel.state.value.nativeSelected)
     }
 }
