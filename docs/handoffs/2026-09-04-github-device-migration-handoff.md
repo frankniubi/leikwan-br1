@@ -88,6 +88,8 @@ Never push:
 - Remote baseline before push: `8eb662dcdb2e31effb0ca82ea903e87cf39dc446`.
 - Snapshot commit pushed through `http://127.0.0.1:2080`:
   `672b62a0b5131b068726fcf5d4e5460ed12f9e1f`.
+- Final handoff-document commit pushed to `master`:
+  `97d94d14e9938c53e112a7da5f7d764ae30d6c3c`.
 - The push was a fast-forward from the remote baseline to `master`; no force
   push was used. Proxied `git ls-remote origin refs/heads/master` returned the
   same `672b62a0b5131b068726fcf5d4e5460ed12f9e1f` hash.
@@ -124,7 +126,6 @@ Never push:
 
 ## Current Outcome
 
-The sanitized source snapshot is published. The handoff update itself is
-being committed and pushed as a second fast-forward so a replacement device
-can recover the exact migration evidence from GitHub. No long-running build,
-test, or push process is intentionally left running.
+The sanitized source snapshot and this handoff are published. A replacement
+device can recover the exact migration evidence from GitHub. No long-running
+build, test, or push process is intentionally left running.
