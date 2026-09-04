@@ -34,7 +34,18 @@
 | arm64 Ultra runtime | 13,013,680 | `3f20e9a9524d19c93de1595f9f9bbf6355325ffc43a2b60a1f7d9af562309938` |
 | x86_64 Ultra runtime | 14,499,296 | `33cb7a67b61754de536fb5d0bfab9719b8b25413c778b7d1fc7b1ef6eccb3787` |
 
-The canonical files are under `artifacts/macos/` and `artifacts/ultra/`; the manifest entries are version `1.0.7` and runtime version `2026.09.04.3`. The server has not been switched by this handoff.
+The canonical files are under `artifacts/macos/` and `artifacts/ultra/`; the manifest entries are version `1.0.7` and runtime version `2026.09.04.3`. The coordinated release was deployed after the checks below.
+
+## Coordinated deployment evidence
+
+- Release commit: `6b373af5` (`release: publish native lease compatibility clients`).
+- Preflight baseline: manifest `011a553d37691e61d0b333255aa4fe2e3414c5c7c728440a84467fab2b9a6d70`, php-fpm `active`, health `200`, and 99 GB+ free disk.
+- Deployment backup: `/root/codex-backups/coordinated-native-release-20260904T010049Z`. All ten previous payload hashes match the preflight baseline.
+- Post-deploy live manifest: `03013572c8abcb32a1469b32e40f5d7f9b2601aa2ef9e195e8f06f8464bfd86f`; all nine selected artifact hashes and sizes match the manifest. php-fpm remained `active` and health remained `200`.
+- Live native lease probe: `forward_id=180`, `CAN -> HKG`, `global`, one `leikwan-ultra-native-socks5-v1` lease over `tcp+udp`, HTTP 200, no error.
+- Public cache-busted canary: both manifests and all nine selected artifacts returned HTTP 200; downloaded sizes, SHA-256 values, ETags, and manifest versions matched. Evidence directory: `.tmp/public-canary-20260904T010610Z/` (canary log SHA-256 `049ff0bd7d7d7057a6d2c93f08e38b00e89c0391d15de1d6c164a5c47f4277aa`).
+- Local evidence logs: `.tmp/preflight-coordinated-release-20260904.log`, `.tmp/deploy-coordinated-release-20260904.log`, `.tmp/postflight-coordinated-release-20260904.log`, `.tmp/final-live-audit-20260904.log`, and `.tmp/final-live-native-lease-probe-20260904.log`.
+- The server-side upload staging files were removed by the deployment trap; only the lock/health bookkeeping files remain in `/tmp`.
 
 ## Rollback
 
