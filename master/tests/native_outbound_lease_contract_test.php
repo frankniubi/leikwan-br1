@@ -165,5 +165,44 @@ assertNativeLease(
     'Chinese international-to-mainland direction did not expose cn_only'
 );
 
+$legacyService = new UltraLeaseService(
+    $config,
+    null,
+    null,
+    static function (array $candidateRequest, int $clientId, string $deviceId): array {
+        return [
+            'selection_ref' => str_repeat('l', 43),
+            'ip' => '203.0.113.21',
+            'port' => 5439,
+            'user' => 'legacy-lease-user',
+            'credential' => 'legacy-lease-password',
+            'access_class' => 'native_udp',
+            'native_udp_state' => 'verified',
+        ];
+    },
+    static function () use ($now): int {
+        return $now;
+    },
+    static function (int $clientId, string $deviceId, int $requestedForwardId) use ($forwardId, $generation, $nativeTarget, $direction, $routeScope, $transport, $now): array {
+        return [
+            'forward_id' => $forwardId,
+            'device_hash' => hash('sha256', 'device-native'),
+            'service_state' => 'active',
+            'policy_generation' => $generation,
+            'target' => $nativeTarget,
+            'transport' => $transport,
+            'direction' => $direction,
+            'route_scope' => $routeScope,
+            'rate_limit_mbps' => 20,
+            'quota_remaining_bytes' => 1024 * 1024,
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 300),
+        ];
+    },
+);
+$legacy = $legacyService->issueLease(array_merge($request, [
+    'nonce' => 'abcdef0123456789abcdef01234541',
+]), 7, 'device-native');
+assertNativeLease(($legacy['ok'] ?? false) === true, 'legacy native_udp verified candidate must remain eligible');
+
 @unlink($envPath);
 echo "ok\n";

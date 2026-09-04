@@ -141,7 +141,7 @@ final class UltraLeaseService
 
         $candidate = ($this->candidateResolver)($normalized, $clientId, trim($deviceId));
         if (!is_array($candidate) || !$this->candidateIsValid($candidate)
-            || ($isNative && (string) ($candidate['native_socks5_state'] ?? '') !== 'verified')) {
+            || ($isNative && !UltraMode::isNativeCandidateApproved($candidate))) {
             return ['ok' => false, 'error' => 'no_approved_candidate'];
         }
         if (isset($candidate['policy_generation'])

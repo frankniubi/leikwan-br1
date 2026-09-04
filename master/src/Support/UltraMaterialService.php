@@ -631,7 +631,8 @@ final class UltraMaterialService
             return true;
         }
         $row = $this->db->fetchOne(
-            'SELECT native_socks5_state, is_source_present, is_enabled
+            'SELECT access_class, native_udp_state, native_socks5_state,
+                    is_source_present, is_enabled
              FROM ultra_lines
              WHERE source_id = :source_id AND line_id = :line_id
              LIMIT 1',
@@ -640,7 +641,7 @@ final class UltraMaterialService
         return is_array($row)
             && (int) ($row['is_source_present'] ?? 0) === 1
             && (int) ($row['is_enabled'] ?? 0) === 1
-            && (string) ($row['native_socks5_state'] ?? '') === 'verified';
+            && UltraMode::isNativeCandidateApproved($row);
     }
 
     private function selectionTier(string $sourceId, int $lineId): string
