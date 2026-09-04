@@ -265,6 +265,100 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	}
 }
 
+func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
+	provider := newTestUDPProvider(t)
+	provider.echoOuterTarget = true
+	listenPort := freeNativeTCPPort(t)
+	config := Config{
+		ForwardID: 176, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
+		UDPKeepaliveIntervalSecs: 5, NativeRoutePolicy: nativeRoutePolicyUnrestricted,
+	}
+	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	defer status.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
+	waitNativeTCPPort(t, listenPort)
+
+	control, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	if _, err := control.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(control, methodReply); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(methodReply, []byte{5, 0}) {
+		t.Fatalf("SOCKS method reply = %x", methodReply)
+	}
+	associateRequest := []byte{5, nativeSocks5CommandUDP, 0, 1, 0, 0, 0, 0, 0, 0}
+	if _, err := control.Write(associateRequest); err != nil {
+		t.Fatal(err)
+	}
+	associateReply := make([]byte, 10)
+	if _, err := io.ReadFull(control, associateReply); err != nil {
+		t.Fatal(err)
+	}
+	if associateReply[1] != nativeSocks5ReplySucceeded {
+		t.Fatalf("UDP associate reply = %x", associateReply)
+	}
+	udpClient, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpClient.Close()
+	packet, err := makeNativeSocks5UDPDatagram("1.1.1.1", 53, []byte("native-udp-keepalive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := udpClient.WriteToUDP(packet, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}); err != nil {
+		t.Fatal(err)
+	}
+	if err := udpClient.SetReadDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 2048)
+	count, _, err := udpClient.ReadFromUDP(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, payload, err := parseNativeSocks5UDPDatagram(response[:count])
+	if err != nil || !bytes.Equal(payload, []byte("native-udp-keepalive")) {
+		t.Fatalf("native UDP response payload = %q, err=%v", payload, err)
+	}
+
+	// armDatagram may probe several candidate SIDs with reserved frames. Drain
+	// those setup packets first, then require a later frame from the association
+	// ticker rather than accidentally accepting another handshake probe.
+	quietUntil := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(quietUntil) {
+		select {
+		case <-provider.packets:
+			quietUntil = time.Now().Add(100 * time.Millisecond)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitForProviderPacket(t, provider.packets, 7*time.Second, isReservedKeepPacket)
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("native SOCKS runtime did not stop")
+	}
+}
+
 type nativeStreamProvider struct {
 	tcp *net.TCPListener
 }

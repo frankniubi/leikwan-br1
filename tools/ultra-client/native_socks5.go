@@ -317,16 +317,17 @@ func (reader *byteReader) ReadByte() (byte, error) {
 // nativeSocks5UDPAssociation carries one local UDP client to one custom Ultra
 // datagram session. A single association may address many destinations.
 type nativeSocks5UDPAssociation struct {
-	client       *net.UDPAddr
-	controlKey   string
-	ready        chan struct{}
-	readyOnce    sync.Once
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	pending      []nativeSocks5UDPRequest
-	session      *DatagramSession
-	closed       bool
-	setupStarted bool
+	client          *net.UDPAddr
+	controlKey      string
+	ready           chan struct{}
+	readyOnce       sync.Once
+	mu              sync.Mutex
+	writeMu         sync.Mutex
+	pending         []nativeSocks5UDPRequest
+	session         *DatagramSession
+	keepaliveCancel context.CancelFunc
+	closed          bool
+	setupStarted    bool
 }
 
 type nativeSocks5UDPRequest struct {
@@ -362,11 +363,16 @@ func (association *nativeSocks5UDPAssociation) close() {
 	association.closed = true
 	session := association.session
 	association.session = nil
+	cancel := association.keepaliveCancel
+	association.keepaliveCancel = nil
 	for index := range association.pending {
 		clearBytes(association.pending[index].payload)
 	}
 	association.pending = nil
 	association.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if session != nil {
 		session.Close()
 	}
@@ -684,7 +690,7 @@ func (runtime *nativeSocks5Runtime) serveUDP(ctx context.Context) error {
 		if session != nil {
 			runtime.sendUDPRequest(association, session, request)
 		} else if association.startSetup() {
-			go runtime.setupUDPAssociation(association)
+			go runtime.setupUDPAssociation(ctx, association)
 		}
 	}
 }
@@ -744,7 +750,7 @@ func (runtime *nativeSocks5Runtime) ensureAssociation(key string, client *net.UD
 	return association
 }
 
-func (runtime *nativeSocks5Runtime) setupUDPAssociation(association *nativeSocks5UDPAssociation) {
+func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, association *nativeSocks5UDPAssociation) {
 	snapshot, ok := runtime.store.Snapshot()
 	if !ok {
 		association.close()
@@ -769,10 +775,54 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(association *nativeSocks
 	if !association.markReady(session) {
 		return
 	}
+	runtime.startNativeAssociationKeepalive(ctx, association)
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)
 	}
 	go runtime.readUDPResponses(association, session)
+}
+
+func (runtime *nativeSocks5Runtime) startNativeAssociationKeepalive(ctx context.Context, association *nativeSocks5UDPAssociation) {
+	interval := resolveUDPKeepaliveInterval(runtime.config)
+	if interval <= 0 {
+		return
+	}
+	keepaliveContext, keepaliveCancel := context.WithCancel(ctx)
+	association.mu.Lock()
+	if association.closed || association.session == nil {
+		association.mu.Unlock()
+		keepaliveCancel()
+		return
+	}
+	association.keepaliveCancel = keepaliveCancel
+	association.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepaliveContext.Done():
+				return
+			case <-ticker.C:
+				association.writeMu.Lock()
+				association.mu.Lock()
+				if association.closed || association.session == nil {
+					association.mu.Unlock()
+					association.writeMu.Unlock()
+					return
+				}
+				session := association.session
+				association.mu.Unlock()
+				err := sendDatagramKeepalive(session)
+				association.writeMu.Unlock()
+				if err != nil {
+					association.close()
+					runtime.removeAssociation(association)
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPAssociation, session *DatagramSession, request nativeSocks5UDPRequest) {
