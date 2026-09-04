@@ -96,6 +96,7 @@ public sealed class WindowsProxyConnectionServiceTests
         Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
         Assert.Equal(WindowsProxyConnectionService.NativeOutboundDisplayName, service.Snapshot.ActiveProfileName);
         Assert.True(service.IsNativeOutboundActive);
+        Assert.True(service.IsNativeDataPlaneRunning);
         Assert.True(process.IsRunning);
         Assert.False(systemProxy.IsEnabled);
         Assert.Equal(1, relay.StartCalls);
@@ -126,9 +127,26 @@ public sealed class WindowsProxyConnectionServiceTests
             quotaRemainingBytes: 1024 * 1024,
             selectionRef: "selection-native-159",
             selectionTier: UltraLease.SelectionTierUnknown);
-        Assert.True(await service.TryRefreshNativeAsync(replacement));
+        relay.RefreshResult = false;
+        Assert.False(await service.TryRefreshNativeAsync(replacement));
+        Assert.True(service.IsNativeOutboundActive);
+        Assert.True(service.IsNativeDataPlaneRunning);
+        Assert.True(process.IsRunning);
         Assert.Equal(1, relay.StartCalls);
         Assert.Equal(1, relay.RefreshCalls);
+
+        relay.RefreshResult = true;
+        Assert.True(await service.TryRefreshNativeAsync(replacement));
+        Assert.Equal(1, relay.StartCalls);
+        Assert.Equal(2, relay.RefreshCalls);
+
+        relay.IsRunning = false;
+        Assert.False(service.IsNativeDataPlaneRunning);
+        relay.IsRunning = true;
+        process.SetRunning(false);
+        Assert.False(service.IsNativeDataPlaneRunning);
+        process.SetRunning(true);
+        Assert.True(service.IsNativeDataPlaneRunning);
 
         await service.StopAsync();
 
@@ -436,6 +454,7 @@ public sealed class WindowsProxyConnectionServiceTests
             IsRunning = false;
             return StopException is null ? Task.CompletedTask : Task.FromException(StopException);
         }
+        public void SetRunning(bool value) => IsRunning = value;
         public ValueTask DisposeAsync() { IsRunning = false; return ValueTask.CompletedTask; }
     }
 
@@ -491,6 +510,7 @@ public sealed class WindowsProxyConnectionServiceTests
         public int StartCalls { get; private set; }
         public int RefreshCalls { get; private set; }
         public bool RefreshResult { get; set; } = true;
+        public bool IsRunning { get; set; }
         public LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint? LastEndpoint { get; private set; }
 
         public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
@@ -502,6 +522,7 @@ public sealed class WindowsProxyConnectionServiceTests
             CancellationToken ct = default)
         {
             StartCalls++;
+            IsRunning = true;
             LastEndpoint = new LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint("127.0.0.1", listenPort);
             return Task.FromResult(LastEndpoint);
         }
@@ -512,7 +533,11 @@ public sealed class WindowsProxyConnectionServiceTests
             return Task.FromResult(RefreshResult);
         }
 
-        public Task StopAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct = default)
+        {
+            IsRunning = false;
+            return Task.CompletedTask;
+        }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

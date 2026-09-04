@@ -330,6 +330,7 @@ public sealed class MacConnectionServiceTests
         public int RefreshCalls { get; private set; }
         public int StopCalls { get; private set; }
         private bool _started;
+        public bool IsRunning => _started;
 
         public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
             int forwardId,

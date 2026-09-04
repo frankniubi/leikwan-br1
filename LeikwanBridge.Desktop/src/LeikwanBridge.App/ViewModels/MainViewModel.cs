@@ -1731,9 +1731,11 @@ public partial class MainViewModel : ObservableObject
             }
             if (!hotRefreshed)
             {
-                // A dead relay/control pipe is the only case that needs a
-                // lifecycle restart. Keep the fallback explicit and guarded.
-                if (_proxyService.IsNativeOutboundActive)
+                // A dead relay or sing-box process is the only case that needs
+                // a lifecycle restart. A rejected/transient lease must not
+                // tear down a healthy TUN data plane.
+                if (_proxyService.IsNativeOutboundActive
+                    && !_proxyService.IsNativeDataPlaneRunning)
                 {
                     await _proxyService.StartNativeAsync(
                         _nativeActiveMode,
@@ -1746,6 +1748,15 @@ public partial class MainViewModel : ObservableObject
                         dnsMode == WindowsProxyDnsMode.Custom
                             ? _config.GetEffectiveProxyDnsServers()
                             : null).ConfigureAwait(false);
+                }
+                else if (_proxyService.IsNativeOutboundActive)
+                {
+                    lease.Dispose();
+                    _pollingService.RequestPolicyRefresh();
+                    Log.Warning(
+                        "native outbound lease refresh deferred for forward {ForwardId}; preserving active data plane",
+                        _nativeActiveForwardId);
+                    return;
                 }
                 else
                 {
