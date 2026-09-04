@@ -1,7 +1,7 @@
 # GitHub Device Migration Handoff
 
 Date: 2026-09-04 (Asia/Taipei)
-Status: PAUSED BY USER BEFORE PUSH
+Status: SUCCESS (SANITIZED SNAPSHOT PUSHED)
 
 ## Purpose
 
@@ -80,6 +80,33 @@ Never push:
 - stale root-level audit handoffs and mojibake historical reports unless the
   user explicitly requests archival publication.
 
+## Final Push Result
+
+- A sanitized migration repository was created at
+  `.codex-tmp\\github-snapshot-20260904-run3`; the shared `master` checkout
+  was not reset, rebased, or rewritten.
+- Remote baseline before push: `8eb662dcdb2e31effb0ca82ea903e87cf39dc446`.
+- Snapshot commit pushed through `http://127.0.0.1:2080`:
+  `672b62a0b5131b068726fcf5d4e5460ed12f9e1f`.
+- The push was a fast-forward from the remote baseline to `master`; no force
+  push was used. Proxied `git ls-remote origin refs/heads/master` returned the
+  same `672b62a0b5131b068726fcf5d4e5460ed12f9e1f` hash.
+- Reachable-object verification after the snapshot commit:
+  `reachable_blobs_over_100MB=0` and `reachable_blobs_over_95MB=0`.
+- Final tracked artifact sizes in the pushed tree: Windows installer
+  `22,436,617` bytes; Android APK `88,858,971` bytes. GitHub emitted only its
+  50 MB recommendation warning for the APK; it is below the 100 MB rejection
+  limit.
+- Filename exclusion scan: `forbidden_names=PASS`; scratch exclusion scan:
+  `scratch_exclusion=PASS`; credential-pattern and long-assignment scans:
+  `PASS`. The only private-key marker match was an existing CI denylist test
+  fixture, not a key or credential.
+- The two obsolete approximately 135 MB historical Windows installer blobs
+  were intentionally left unreachable. Credentials, environment files,
+  emulator/build scratch, duplicate binaries, and hardware-only diagnostics
+  were also excluded.
+- No production Panel deployment was performed.
+
 ## Remaining Steps
 
 1. Re-read current `HEAD`, `origin/master`, and worktree status because another
@@ -97,6 +124,7 @@ Never push:
 
 ## Current Outcome
 
-No GitHub push was attempted after the user said to stop because a sanitized
-snapshot was still required and a large push could delay shutdown. No long
-build/test/push process from this task was left running.
+The sanitized source snapshot is published. The handoff update itself is
+being committed and pushed as a second fast-forward so a replacement device
+can recover the exact migration evidence from GitHub. No long-running build,
+test, or push process is intentionally left running.
