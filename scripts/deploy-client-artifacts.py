@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Backup-first, guarded publication of Windows/Android/Linux client artifacts.
+
+Run on the Panel host with an audited JSON plan and a separately uploaded stage.
+Each file is atomically replaced, manifest last. A failed postflight restores only
+files still matching this transaction, never overwriting another writer's change.
+macOS and PHP are deliberately excluded from this release tool's write allowlist.
+"""
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+
+MANIFEST = 'artifacts/versions.json'
+CANONICAL = {
+    'windows_client_app': ('artifacts/windows/leikwan-bridge-setup.exe', '/artifacts/leikwan-bridge-setup.exe'),
+    'android_client_apk': ('artifacts/android/leikwan-android-client.apk', '/artifacts/leikwan-android-client.apk'),
+    'client_agent': ('client-agent/client_agent.py', '/artifacts/client-agent.py'),
+}
+LOCKS = ('/tmp/codex-coordinated-release.lock', '/tmp/leikwan-windows-native-renewal.lock', '/tmp/ordinary-ultra-release.lock')
+
+
+def metadata(path):
+    with path.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else None
+        if digest is None:
+            h = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                h.update(block)
+            digest = h.hexdigest()
+    s = path.stat()
+    return {'sha256': digest, 'size_bytes': s.st_size, 'mode': stat.S_IMODE(s.st_mode), 'uid': s.st_uid, 'gid': s.st_gid}
+
+
+def guarded_path(root, relative):
+    p = Path(relative)
+    if p.is_absolute() or not p.parts or any(part in ('..', '.') for part in p.parts):
+        raise ValueError('unsafe relative path')
+    result = root / p
+    for parent in [result, *result.parents]:
+        if parent == root:
+            break
+        if parent.is_symlink():
+            raise ValueError('symlink target or parent: ' + relative)
+    if root.resolve() not in result.resolve().parents:
+        raise ValueError('path outside release root')
+    return result
+
+
+def verify(path, expected):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('not a regular file: ' + str(path))
+    actual = metadata(path)
+    for key in ('sha256', 'size_bytes', 'mode', 'uid', 'gid'):
+        if key in expected and actual[key] != expected[key]:
+            raise ValueError('guard mismatch: ' + str(path) + ': ' + key)
+    return actual
+
+
+def atomic_copy(source, target, attributes, expected):
+    fd, temp = tempfile.mkstemp(prefix='.leikwan-release-', suffix='.tmp', dir=str(target.parent))
+    try:
+        with os.fdopen(fd, 'wb') as out, source.open('rb') as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fchmod(out.fileno(), attributes['mode'])
+            if hasattr(os, 'fchown'):
+                os.fchown(out.fileno(), attributes['uid'], attributes['gid'])
+            os.fsync(out.fileno())
+        verify(Path(temp), {k:expected[k] for k in ('sha256', 'size_bytes')})
+        os.replace(temp, target)
+        directory = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def validate_plan(root, stage, plan):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,90}', plan['release_id']):
+        raise ValueError('invalid release id')
+    if not re.fullmatch(r'[0-9a-f]{40}', plan['git_commit']):
+        raise ValueError('expected a full source commit')
+    entries = plan['payloads'] + [plan['manifest']]
+    expected_paths = {CANONICAL[key][0] for key in plan['versions']}
+    if 'client_agent' in plan['versions']:
+        expected_paths.add('artifacts/client-agent.py')
+    if len(plan['payloads']) != len(expected_paths) or {e['path'] for e in plan['payloads']} != expected_paths:
+        raise ValueError('payload write set mismatch')
+    if plan['manifest']['path'] != MANIFEST:
+        raise ValueError('manifest target mismatch')
+    for entry in entries:
+        verify(guarded_path(root, entry['path']), entry['before'])
+        verify(guarded_path(stage, entry['upload']), entry['after'])
+    before = json.loads((root / MANIFEST).read_text())
+    after = json.loads(guarded_path(stage, plan['manifest']['upload']).read_text())
+    changed = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
+    if changed != set(plan['versions']):
+        raise ValueError('unexpected manifest keys changed')
+    for key, version in plan['versions'].items():
+        path, route = CANONICAL[key]
+        entry = next(e for e in entries if e['path'] == path)
+        info = after[key]
+        if info['path'] != path or info['artifact_url'] != route or info['version'] != version:
+            raise ValueError('noncanonical artifact contract: ' + key)
+        if tuple(map(int, version.split('.'))) <= tuple(map(int, before[key]['version'].split('.'))):
+            raise ValueError('version must strictly increase: ' + key)
+        for field in ('sha256', 'size_bytes'):
+            if info[field] != entry['after'][field]:
+                raise ValueError('manifest payload mismatch: ' + key + ': ' + field)
+        if key == 'android_client_apk' and info['version_code'] <= before[key]['version_code']:
+            raise ValueError('Android versionCode must increase')
+    if 'client_agent' in plan['versions']:
+        linux = [e['after']['sha256'] for e in entries if e['path'] in ('client-agent/client_agent.py', 'artifacts/client-agent.py')]
+        if len(set(linux)) != 1:
+            raise ValueError('Linux mirror mismatch')
+    for path, expected in plan['preserved'].items():
+        if path in expected_paths or path == MANIFEST:
+            raise ValueError('preserved path overlaps write set')
+        verify(guarded_path(root, path), expected)
+    return entries
+
+
+def publish(root, stage, backup_base, plan, health, min_free=1024**3):
+    root, stage, backup_base = root.resolve(), stage.resolve(), backup_base.resolve()
+    entries = validate_plan(root, stage, plan)
+    needed = sum(e['before']['size_bytes'] + 2 * e['after']['size_bytes'] for e in entries) + min_free
+    for location in (root, stage, backup_base):
+        if shutil.disk_usage(location).free < needed:
+            raise ValueError('insufficient free space: ' + str(location))
+    health()
+    backup = backup_base / plan['release_id']
+    backup.mkdir(mode=0o700, exist_ok=False)
+    (backup / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
+    for entry in entries:
+        destination = guarded_path(backup, entry['path'])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(guarded_path(root, entry['path']), destination)
+        verify(destination, {k:entry['before'][k] for k in ('sha256','size_bytes')})
+        with destination.open('rb') as saved:
+            os.fsync(saved.fileno())
+    installed = []
+    receipt = {'release_id': plan['release_id'], 'git_commit': plan['git_commit'], 'backup': str(backup),
+               'started_utc': datetime.now(timezone.utc).isoformat(), 'before': {e['path']:e['before'] for e in entries}}
+    try:
+        # Recheck after backup: no stale preflight may overwrite another release.
+        validate_plan(root, stage, plan)
+        for entry in entries:
+            target = guarded_path(root, entry['path'])
+            verify(target, entry['before'])
+            installed.append(entry)
+            atomic_copy(guarded_path(stage, entry['upload']), target, entry['before'], entry['after'])
+            verify(target, entry['after'])
+        receipt['after'] = {e['path']:verify(guarded_path(root, e['path']), e['after']) for e in entries}
+        receipt['preserved'] = {p:verify(guarded_path(root, p), v) for p,v in plan['preserved'].items()}
+        receipt['health'] = health()
+        receipt['status'] = 'committed'
+    except BaseException as error:
+        conflicts = []
+        # Payloads first, manifest last on rollback as well.
+        for entry in installed:
+            target = guarded_path(root, entry['path'])
+            try:
+                current = metadata(target)
+                if current['sha256'] != entry['before']['sha256']:
+                    if current['sha256'] != entry['after']['sha256']:
+                        raise RuntimeError('concurrent modification; not overwriting')
+                    atomic_copy(guarded_path(backup, entry['path']), target, entry['before'], entry['before'])
+                verify(target, entry['before'])
+            except BaseException as rollback_error:
+                conflicts.append({'path':entry['path'], 'error':str(rollback_error)})
+        receipt.update(status='rollback_conflict' if conflicts else 'rolled_back', error=str(error), conflicts=conflicts)
+        (backup / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        print(json.dumps(receipt), flush=True)
+        raise
+    receipt['completed_utc'] = datetime.now(timezone.utc).isoformat()
+    (backup / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    print(json.dumps(receipt), flush=True)
+    return receipt
+
+
+def live_health():
+    active = subprocess.check_output(['systemctl', 'is-active', 'php-fpm-83-source196.service'], text=True).strip()
+    if active != 'active':
+        raise RuntimeError('php-fpm inactive')
+    reply = subprocess.check_output(['curl', '--noproxy', '*', '--fail', '--silent', '--show-error',
+                                    '--connect-timeout','10','--max-time','20',
+                                    'https://v3.leikwanhost.com/api/health'], text=True)
+    body = json.loads(reply)
+    if body.get('ok') is not True and body.get('status') != 'ok':
+        raise RuntimeError('health response not ok')
+    return {'php_fpm':active, 'body':body}
+
+
+def main():
+    import fcntl
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--stage', type=Path, required=True)
+    parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('--backup-base', type=Path, default=Path('/root/codex-backups'))
+    parser.add_argument('--validate-only', action='store_true')
+    args = parser.parse_args()
+    def interrupted(signum, _frame):
+        raise RuntimeError('release interrupted by signal ' + str(signum))
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    with contextlib.ExitStack() as locks:
+        for name in LOCKS:
+            handle = locks.enter_context(open(name, 'a'))
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        plan = json.loads(args.plan.read_text())
+        if args.validate_only:
+            validate_plan(args.root.resolve(), args.stage.resolve(), plan)
+            print('STAGED_RELEASE_VALIDATED')
+        else:
+            publish(args.root, args.stage, args.backup_base, plan, live_health)
+
+
+if __name__ == '__main__':
+    main()

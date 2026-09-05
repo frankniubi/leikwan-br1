@@ -15,6 +15,91 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UltraRenewalScheduleTests(unittest.TestCase):
+    def make_renewal_agent(self):
+        agent = object.__new__(MODULE.ClientAgent)
+        agent.config = {"agent_token": "synthetic-token"}
+        agent.state_dir = Path("/tmp/ultra-test")
+        agent.running_kernel_supports_mptcp = lambda: False
+        agent.ultra_selection_mode = lambda: "auto"
+        agent.systemd_is_active = lambda _name: True
+        agent.send_ultra_leases = mock.Mock(return_value=True)
+        agent.latest_forwards = [{
+            "forward_id": 42, "backend_mode": "ultra", "service_status": "active",
+            "target": "203.0.113.10:443", "transport": "tcp+udp",
+            "ultra_access": {"renew_after": MODULE.format_rfc3339(1893456000.0)},
+        }]
+        import threading
+        agent._forward_lock = lambda _id: threading.Lock()
+        return agent
+
+    def test_independent_renewal_delivers_without_calling_sync_or_restarting(self):
+        agent = self.make_renewal_agent()
+        forward = dict(agent.latest_forwards[0])
+        lease = {"lease_id": "test-lease", "credential": {"user": "u", "pass": "p"}}
+        resolved = {**forward, "_ultra_lease": lease, "_ultra_leases": [lease]}
+        agent.sync_once = mock.Mock(side_effect=AssertionError("must not wait for config/diagnostics"))
+        with mock.patch.object(MODULE.time, "time", return_value=1893456000.0), \
+             mock.patch.object(MODULE, "pull_client_configs", return_value=({"forwards": [forward], "client": {"current_device_id": "d"}}, {}, "https://panel.test")), \
+             mock.patch.object(MODULE, "resolve_ultra_leases", return_value=[resolved]):
+            agent.renew_ultra_leases_once()
+        agent.sync_once.assert_not_called()
+        agent.send_ultra_leases.assert_called_once()
+        self.assertEqual(42, agent.send_ultra_leases.call_args.args[0])
+        self.assertGreater(agent._ultra_renew_schedule[42], 1893456000.0)
+
+    def test_independent_renewal_does_not_revive_a_concurrently_disabled_forward(self):
+        agent = self.make_renewal_agent()
+        forward = dict(agent.latest_forwards[0])
+        lease = {"lease_id": "test-lease", "credential": {"user": "u", "pass": "p"}}
+        def resolve(*_args, **_kwargs):
+            agent.latest_forwards = [{**forward, "service_status": "inactive"}]
+            return [{**forward, "_ultra_lease": lease, "_ultra_leases": [lease]}]
+        with mock.patch.object(MODULE.time, "time", return_value=1893456000.0), \
+             mock.patch.object(MODULE, "pull_client_configs", return_value=({"forwards": [forward]}, {}, "https://panel.test")), \
+             mock.patch.object(MODULE, "resolve_ultra_leases", side_effect=resolve):
+            agent.renew_ultra_leases_once()
+        agent.send_ultra_leases.assert_not_called()
+
+    def test_independent_renewal_skips_static_target_changes(self):
+        agent = self.make_renewal_agent()
+        changed = {**agent.latest_forwards[0], "target": "203.0.113.11:443"}
+        with mock.patch.object(MODULE.time, "time", return_value=1893456000.0), \
+             mock.patch.object(MODULE, "pull_client_configs", return_value=({"forwards": [changed]}, {}, "https://panel.test")), \
+             mock.patch.object(MODULE, "resolve_ultra_leases") as resolve:
+            agent.renew_ultra_leases_once()
+        resolve.assert_not_called()
+        agent.send_ultra_leases.assert_not_called()
+
+    def test_batch_delivery_has_total_deadline_not_three_seventy_second_waits(self):
+        agent = object.__new__(MODULE.ClientAgent)
+        clock = [100.0]
+        waits = []
+        class DelayedSocket:
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def settimeout(self, value): self.timeout = value
+            def connect(self, _path): pass
+            def sendall(self, _data): pass
+            def recv(self, _count):
+                waits.append(self.timeout)
+                clock[0] += self.timeout
+                raise TimeoutError("adapter timeout")
+        lease = {
+            "policy_generation": "a" * 64, "lease_id": "test",
+            "expires_at": MODULE.format_rfc3339(190),
+            "endpoint": {"ip": "192.0.2.1", "port": 5438},
+            "credential": {"user": "synthetic", "password": "synthetic"},
+        }
+        with mock.patch.object(MODULE.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(MODULE.time, "time", side_effect=lambda: clock[0]), \
+             mock.patch.object(MODULE.time, "sleep", side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+             mock.patch.object(MODULE.pathlib.Path, "exists", return_value=True), \
+             mock.patch.object(MODULE.socket, "AF_UNIX", 1, create=True), \
+             mock.patch.object(MODULE.socket, "socket", side_effect=lambda *_: DelayedSocket()):
+            self.assertFalse(agent.send_ultra_leases(42, [lease, lease]))
+        self.assertLessEqual(clock[0] - 100, 70.01)
+        self.assertEqual(1, len(waits), "a full adapter deadline must not be repeated three times")
+
     def test_control_plane_mirrors_are_https_bounded_and_primary_first(self):
         self.assertEqual(
             ["https://primary.example", "https://mirror-a.example", "https://mirror-b.example"],

@@ -129,6 +129,7 @@ public sealed class HealthCheckService : IDisposable
         {
             if (forward.ServiceStatus != "active") continue;
             var fid = forward.ForwardId;
+            if (_runtimeManager.IsForwardStarting(fid)) continue;
             var applied = _stateManager.LoadApplied();
             if (applied.TryGetValue(fid.ToString(), out var appliedState) && appliedState.UserStopped)
                 continue;

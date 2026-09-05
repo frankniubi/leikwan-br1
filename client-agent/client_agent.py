@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.31.1"
+AGENT_VERSION = "2026.09.06.1"
 UPDATE_RETRY_SECONDS = 300
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
@@ -1955,46 +1955,116 @@ class ClientAgent:
 
         return True
 
-    def run(self) -> None:
-        next_sync = 0.0
-        next_health = 0.0
-        while True:
-            now = time.time()
-            if now >= next_sync:
-                try:
-                    self.sync_once()
-                except Exception as exc:  # noqa: BLE001
-                    self.save_pull_state(
-                        {
-                            "status": "error",
-                            "last_attempt_at": now,
-                            "last_error": str(exc),
-                            "agent_version": AGENT_VERSION,
-                        }
-                    )
-                    logging.exception("sync failed: %s", exc)
-                base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
-                stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
-                next_sync = now + ultra_config_poll_delay(
-                    self.latest_forwards,
-                    now=now,
-                    base_delay=base_delay,
-                    stable_key=stable_key,
-                )
-
-            if now >= next_health:
-                try:
-                    self.ensure_runtime_health(self.latest_forwards)
-                except Exception as exc:  # noqa: BLE001
-                    logging.exception("health check failed: %s", exc)
-                next_health = now + int(self.config.get("health_check_interval_seconds", 20))
-
+    def renew_ultra_leases_once(self) -> None:
+        """Refresh compatible active Ultra runtimes independently of config/diagnostic work."""
+        snapshot = list(self.latest_forwards)
+        now = time.time()
+        schedule = getattr(self, "_ultra_renew_schedule", None)
+        if schedule is None:
+            schedule = self._ultra_renew_schedule = {}
+        due = []
+        for forward in snapshot:
+            if str(forward.get("backend_mode", "")).lower() != "ultra":
+                continue
+            fid = int(forward.get("forward_id", 0) or 0)
+            access = forward.get("ultra_access") or {}
+            renewal = parse_rfc3339(access.get("renew_after")) or now
+            if fid > 0 and str(forward.get("service_status", "active")) == "active" and now >= schedule.get(fid, renewal - 30):
+                due.append(forward)
+        if not due:
+            return
+        # Failure retries are bounded; never launch overlapping maintenance cycles.
+        for forward in due:
+            schedule[int(forward["forward_id"])] = now + 10
+        payload, _headers, master = pull_client_configs(self.config, self.config["agent_token"])
+        fresh = {int(f.get("forward_id", 0) or 0): f for f in payload.get("forwards", []) if isinstance(f, dict)}
+        compatible = []
+        for old in due:
+            fid = int(old["forward_id"])
+            new = fresh.get(fid)
+            if not new or str(new.get("service_status", "active")) != "active" or str(new.get("backend_mode", "")).lower() != "ultra":
+                continue  # Normal authoritative reconciliation handles removal/revocation.
+            if self.forward_contract_signature(old) != self.forward_contract_signature(new):
+                continue  # Never hot-apply a changed target/transport/static contract.
+            compatible.append(new)
+        if not compatible:
+            return
+        client = payload.get("client") or {}
+        resolved = resolve_ultra_leases(master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible, selection_mode=self.ultra_selection_mode())
+        for forward in resolved:
+            fid = int(forward["forward_id"])
+            lock = self._forward_lock(fid)
+            if not lock.acquire(blocking=False):
+                continue
             try:
-                self.run_cfwg_latency_watchdog(self.latest_forwards)
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("cfwg latency watchdog failed: %s", exc)
+                # A concurrent authoritative sync may have removed/changed this forward.
+                current = next((f for f in self.latest_forwards if int(f.get("forward_id", 0) or 0) == fid), None)
+                if current is None or self.forward_contract_signature(current) != self.forward_contract_signature(forward):
+                    continue
+                if not self.systemd_is_active(forward_runtime_service_name(forward)):
+                    continue
+                leases = ultra_lease_candidates(forward)
+                if leases and self.send_ultra_leases(fid, leases):
+                    renewal = parse_rfc3339((forward.get("ultra_access") or {}).get("renew_after")) or time.time() + 40
+                    schedule[fid] = max(time.time() + 10, renewal - 30)
+                    logging.info("forward %s independent Ultra lease renewal delivered", fid)
+            finally:
+                lock.release()
 
-            time.sleep(5)
+    def _ultra_renewal_loop(self, stop: threading.Event, interval_seconds: float = 5.0) -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                self.renew_ultra_leases_once()
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("independent Ultra renewal failed (%s); retrying", type(exc).__name__)
+
+    def run(self) -> None:
+        stop = threading.Event()
+        renewal = threading.Thread(target=self._ultra_renewal_loop, args=(stop,), name="ultra-renewal", daemon=True)
+        renewal.start()
+        try:
+            next_sync = 0.0
+            next_health = 0.0
+            while True:
+                now = time.time()
+                if now >= next_sync:
+                    try:
+                        self.sync_once()
+                    except Exception as exc:  # noqa: BLE001
+                        self.save_pull_state(
+                            {
+                                "status": "error",
+                                "last_attempt_at": now,
+                                "last_error": str(exc),
+                                "agent_version": AGENT_VERSION,
+                            }
+                        )
+                        logging.exception("sync failed: %s", exc)
+                    base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
+                    stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
+                    next_sync = now + ultra_config_poll_delay(
+                        self.latest_forwards,
+                        now=now,
+                        base_delay=base_delay,
+                        stable_key=stable_key,
+                    )
+
+                if now >= next_health:
+                    try:
+                        self.ensure_runtime_health(self.latest_forwards)
+                    except Exception as exc:  # noqa: BLE001
+                        logging.exception("health check failed: %s", exc)
+                    next_health = now + int(self.config.get("health_check_interval_seconds", 20))
+
+                try:
+                    self.run_cfwg_latency_watchdog(self.latest_forwards)
+                except Exception as exc:  # noqa: BLE001
+                    logging.exception("cfwg latency watchdog failed: %s", exc)
+
+                time.sleep(5)
+        finally:
+            stop.set()
+            renewal.join(timeout=1.0)
 
     def run_cfwg_latency_watchdog(self, forwards: list[dict]) -> None:
         watchdog_config = self.config.get("cfwg_latency_watchdog", {})
@@ -2937,17 +3007,32 @@ class ClientAgent:
             # Candidate batches allow association setup, a 30-second UDP
             # window, and response margin; single-lease delivery stays short.
             timeout = 70.0 if len(wire_leases) > 1 else 3.0
+            expiries = [parse_rfc3339(lease.get("expires_at")) for lease in wire_leases]
+            remaining = [expiry - time.time() - 5.0 for expiry in expiries if expiry is not None]
+            budget = min([timeout, *remaining]) if remaining else timeout
+            if budget <= 0:
+                return False
+            total_deadline = time.monotonic() + budget
+            def remaining_timeout() -> float:
+                left = total_deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("Ultra lease delivery total deadline exceeded")
+                return left
             for attempt in range(3):
+                if time.monotonic() >= total_deadline:
+                    break
                 try:
-                    deadline = time.monotonic() + min(3.0, timeout)
+                    deadline = min(total_deadline, time.monotonic() + 3.0)
                     while not socket_path.exists() and time.monotonic() < deadline:
                         time.sleep(0.1)
                     if not socket_path.exists():
                         raise OSError("control socket missing")
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                        connection.settimeout(timeout)
+                        connection.settimeout(remaining_timeout())
                         connection.connect(str(socket_path))
+                        connection.settimeout(remaining_timeout())
                         connection.sendall(frame)
+                        connection.settimeout(remaining_timeout())
                         header = connection.recv(4)
                         if len(header) != 4:
                             raise OSError("control response header incomplete")
@@ -2956,6 +3041,7 @@ class ClientAgent:
                             raise OSError("control response size invalid")
                         response = b""
                         while len(response) < size:
+                            connection.settimeout(remaining_timeout())
                             chunk = connection.recv(size - len(response))
                             if not chunk:
                                 raise OSError("control response incomplete")
@@ -2965,10 +3051,10 @@ class ClientAgent:
                             raise OSError(str(decoded.get("error", "lease rejected")) if isinstance(decoded, dict) else "lease rejected")
                         return True
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
-                    if attempt == 2:
+                    if attempt == 2 or time.monotonic() >= total_deadline:
                         logging.warning("Ultra lease delivery failed for forward %s: %s", forward_id, exc)
-                    else:
-                        time.sleep((0.1, 0.3, 0.9)[attempt])
+                        break
+                    time.sleep(min((0.1, 0.3, 0.9)[attempt], max(0.0, total_deadline - time.monotonic())))
         finally:
             for payload, endpoint, credential in sensitive:
                 payload.clear()
