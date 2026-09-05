@@ -23,6 +23,13 @@ public class ForwardRuntimeManager : IDisposable
     private readonly Func<int, bool> _portListeningProbe;
     private readonly IUltraRuntimeHost _ultraRuntimeHost;
     private readonly ConcurrentDictionary<int, object> _forwardLocks = new();
+    private readonly ConcurrentDictionary<int, byte> _startingForwards = new();
+
+    public event Action<int, string>? UltraRecoveryRequested;
+    public bool IsForwardStarting(int forwardId) => _startingForwards.ContainsKey(forwardId);
+    public bool IsForwardReady(ForwardConfig forward) => !IsForwardStarting(forward.ForwardId)
+        && IsForwardRunning(forward.ForwardId)
+        && (forward.ListenPort <= 0 || _portListeningProbe(forward.ListenPort));
 
     public ForwardRuntimeManager(
         AgentConfig config,
@@ -63,7 +70,9 @@ public class ForwardRuntimeManager : IDisposable
         {
             var applied = _stateManager.LoadApplied();
             applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
-            ApplyForwardCore(forward, previousState, contractSignature, applyReason);
+            _startingForwards[forward.ForwardId] = 0;
+            try { ApplyForwardCore(forward, previousState, contractSignature, applyReason); }
+            finally { _startingForwards.TryRemove(forward.ForwardId, out _); }
         }
     }
 
@@ -274,8 +283,37 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void RestartForward(ForwardConfig forward, bool force, string reason)
     {
+        var ultra = string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+        // Health recovery must never wait behind a slow lease delivery and then
+        // destroy the now-ready runtime using a credential-free catalog snapshot.
+        if (ultra && IsForwardStarting(forward.ForwardId))
+            return;
+        var manual = string.Equals(reason, "manual_apply", StringComparison.Ordinal);
         lock (LockFor(forward.ForwardId))
         {
+            if (ultra)
+            {
+                var state = _stateManager.LoadApplied().GetValueOrDefault(forward.ForwardId.ToString());
+                if (!manual && (state?.UserStopped == true || IsForwardReady(forward)))
+                    return;
+                if (manual && state?.UserStopped == true)
+                {
+                    state.UserStopped = false;
+                    _stateManager.UpdateApplied(current => current[forward.ForwardId.ToString()] = state);
+                }
+                var leases = forward.RuntimeLeases.Count > 0
+                    ? forward.RuntimeLeases
+                    : forward.RuntimeLease is null ? [] : new List<UltraLease> { forward.RuntimeLease };
+                var hasFreshLease = forward.UltraAccess is { } policy
+                    && leases.Any(lease => lease.IsUsable(policy, forward, DateTimeOffset.UtcNow));
+                // Catalog/UI snapshots deliberately have no retained credentials.
+                // A manual Start from such a snapshot also needs lease-aware recovery.
+                if (!manual || !hasFreshLease)
+                {
+                    UltraRecoveryRequested?.Invoke(forward.ForwardId, reason);
+                    return;
+                }
+            }
             var applied = _stateManager.LoadApplied();
             applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
 
@@ -286,7 +324,12 @@ public class ForwardRuntimeManager : IDisposable
             if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
                 return;
 
-            ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
+            _startingForwards[forward.ForwardId] = 0;
+            try
+            {
+                ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
+            }
+            finally { _startingForwards.TryRemove(forward.ForwardId, out _); }
         }
     }
 

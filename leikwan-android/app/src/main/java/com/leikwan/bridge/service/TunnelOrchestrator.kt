@@ -776,7 +776,11 @@ class TunnelOrchestrator internal constructor(
         val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
             ?: throw IllegalStateException("ultra_policy_unavailable")
         val nextPolicy = UltraPolicy.from(forward) ?: throw IllegalStateException("ultra_policy_unavailable")
-        if (nextPolicy.policyGeneration != active.policy.policyGeneration) {
+        // Generation and ticket rotate with provider material/quota. The adapter
+        // can replace them in place; only static forwarding bindings need a restart.
+        if (nextPolicy.forwardId != active.policy.forwardId
+            || nextPolicy.targetDigest != active.policy.targetDigest
+            || nextPolicy.transport != active.policy.transport) {
             startForForward(active.forwardId, preserveControlLoop = true)
             return
         }

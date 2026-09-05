@@ -44,7 +44,17 @@ class AndroidEnrollmentRepositoryTest {
             context = context,
             prefsOverride = prefs,
             routeRuleStore = ClientRouteRuleStore.from(context),
-            httpClientOverride = OkHttpClient(),
+            // Release Prefs intentionally ignores panelUrl overrides. Rewrite every
+            // test request to MockWebServer so fixtures never contact the live Panel.
+            httpClientOverride = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                val localUrl = request.url.newBuilder()
+                    .scheme("http")
+                    .host(server.hostName)
+                    .port(server.port)
+                    .build()
+                chain.proceed(request.newBuilder().url(localUrl).build())
+            }.build(),
             deviceIdProvider = { deviceId },
             // Robolectric does not provide the AndroidKeyStore provider. Keep
             // the production Keystore default intact and inject a stable

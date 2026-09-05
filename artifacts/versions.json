@@ -2,10 +2,10 @@
  "android_client_apk": {
   "artifact_url": "/artifacts/leikwan-android-client.apk",
   "path": "artifacts/android/leikwan-android-client.apk",
-  "version_code": 21,
-  "sha256": "77b6f6ef5524a366247a50a0a4e5209420eaadea094c8d7dbeccc55265aaa78e",
+  "version_code": 22,
+  "sha256": "d7655f76dd04a7656c934efac1c705c357bcbbb5eaa0cd46539696fb2763f76d",
   "size_bytes": 88858971,
-  "version": "0.2.19"
+  "version": "0.2.20"
  },
  "bond_sidecar_installer": {
   "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -43,10 +43,10 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "4eba48e2d3974b0c26e58b75f7130a567ed8d08d29caf99f1fb88c4e12daf497",
-     "size": 293742,
-     "size_bytes": 293742,
-  "version": "2026.08.31.1"
+    "sha256": "cd022fa1380ae5ff5b6b784a4b33e99feb16f6a2059143202ce6d6f3c1a78344",
+     "size": 298785,
+     "size_bytes": 298785,
+  "version": "2026.09.06.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
@@ -432,9 +432,9 @@
  "windows_client_app": {
  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
  "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "2451ed0906423584a9205452bcebe6c578e2f72cd23d6f4b205c5a21889c5a0c",
- "size_bytes": 69427776,
- "version": "0.1.20.10"
+ "sha256": "8e7449c684ad1867f8b13bc48ce3816d1d321ea1c2ffb770afc6f097a6af24d5",
+ "size_bytes": 69433859,
+ "version": "0.1.20.11"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
