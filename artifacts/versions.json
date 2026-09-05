@@ -2,10 +2,10 @@
  "android_client_apk": {
   "artifact_url": "/artifacts/leikwan-android-client.apk",
   "path": "artifacts/android/leikwan-android-client.apk",
-  "version_code": 22,
-  "sha256": "d7655f76dd04a7656c934efac1c705c357bcbbb5eaa0cd46539696fb2763f76d",
-  "size_bytes": 88858971,
-  "version": "0.2.20"
+  "version_code": 23,
+  "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+  "size_bytes": 88863067,
+  "version": "0.2.21"
  },
  "bond_sidecar_installer": {
   "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -221,9 +221,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "sha256": "0b73922f0806d3118f20cd68b3900d39743d812ab4438a584c92344be9276e81",
-  "size_bytes": 77854694,
-  "version": "1.0.7"
+  "sha256": "b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170",
+  "size_bytes": 68581998,
+  "version": "1.0.8"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
@@ -235,9 +235,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "sha256": "15da3bbbb67575a29e7c915c5e2a4caa08b9310d0391841cfafca81c846256fb",
-  "size_bytes": 81356219,
-  "version": "1.0.7"
+  "sha256": "b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72",
+  "size_bytes": 72559524,
+  "version": "1.0.8"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
@@ -249,9 +249,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "sha256": "2d94fd0f895df8a501f1475f8c107de4083171e3a7de3733ed10175b77acc24d",
-  "size_bytes": 68500842,
-  "version": "1.0.7"
+  "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+  "size_bytes": 68539931,
+  "version": "1.0.8"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
@@ -263,9 +263,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "sha256": "9a01e6956e147fd452f8af39663e372993b986da326e7af513f5d0fad3b48bc2",
-  "size_bytes": 72005046,
-  "version": "1.0.7"
+  "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+  "size_bytes": 72554338,
+  "version": "1.0.8"
  },
  "mptcp_client_runtime": {
   "artifact_url": "/artifacts/leikwan-mptcp-client.py",

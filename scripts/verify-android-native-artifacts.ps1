@@ -19,6 +19,9 @@ $aarPath = if ([string]::IsNullOrWhiteSpace($Aar)) {
 if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw "APK not found: $apkPath" }
 if (-not (Test-Path -LiteralPath $aarPath -PathType Leaf)) { throw "AAR not found: $aarPath" }
 
+& python (Join-Path $PSScriptRoot "verify_android_libbox.py") --aar $aarPath --apk $apkPath
+if ($LASTEXITCODE -ne 0) { throw "libbox Java/native packaging gate failed" }
+
 function Get-ZipBytes([string]$Path, [string]$Name) {
     $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
     try {

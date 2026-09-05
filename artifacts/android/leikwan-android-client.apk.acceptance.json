@@ -1,22 +1,18 @@
 {
   "status": "ok",
   "artifact": "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\artifacts\\android\\leikwan-android-client.apk",
-  "sha256": "d7655f76dd04a7656c934efac1c705c357bcbbb5eaa0cd46539696fb2763f76d",
-  "size_bytes": 88858971,
+  "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+  "size_bytes": 88863067,
   "signature_v2_v3": true,
   "abi_matrix": [
     "arm64-v8a",
     "x86_64"
   ],
   "runtime_version": "2026.09.04.3",
-  "version_name": "0.2.20",
-  "version_code": 22,
+  "version_name": "0.2.21",
+  "version_code": 23,
   "release_contract_checked": true,
   "retired_update_classes": 0,
-  "runtime_provenance": "unchanged JNI and asset hashes from verified 0.2.19 release",
-  "full_native_tun_acceptance": "BLOCKED_missing_BridgeOptions",
-  "update_manifest_unchanged_during_packaging": true,
-  "update_push_touched_during_packaging": false,
-  "publication_manifest_sha256": "05ea6e569ca0cd4d31fa69f6897b2c60e3bd89793b0d8ad50c877333c42ebe6b",
-  "public_download_sha256_verified": true
+  "update_manifest_unchanged": true,
+  "update_push_touched": false
 }
