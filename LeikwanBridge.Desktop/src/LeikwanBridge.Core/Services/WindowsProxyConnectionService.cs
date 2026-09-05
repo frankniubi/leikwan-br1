@@ -91,13 +91,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             && _snapshot.State == WindowsProxyConnectionState.Connected;
 
     /// <summary>
-    /// Reports whether both halves of the native TUN data plane are alive.
+    /// Reports whether both halves of the native data plane are alive and, in
+    /// TUN mode, the interface is actually ready to carry traffic.
     /// Lease delivery can fail transiently while these processes continue to
     /// carry traffic; callers must preserve the data plane in that case.
     /// </summary>
     public bool IsNativeDataPlaneRunning
         => IsNativeOutboundActive
             && _processHost.IsRunning
+            && (_snapshot.Mode != WindowsProxyMode.Tun || _processHost.IsTunReady)
             && _nativeRelayHost.IsRunning;
 
     /// <summary>
@@ -243,7 +245,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 try
                 {
                     await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
-                    await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                    await StartProxyProcessAsync(configPath, mode, ct);
                     if (mode == WindowsProxyMode.Process
                         && _processHost is WindowsProxyProcessHost concreteHost
                         && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
@@ -425,7 +427,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 try
                 {
                     await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
-                    await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                    await StartProxyProcessAsync(configPath, mode, ct);
                     if (mode == WindowsProxyMode.Process
                         && _processHost is WindowsProxyProcessHost concreteHost
                         && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
@@ -656,6 +658,36 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             throw failures[0];
         if (failures.Count > 1)
             throw new AggregateException("proxy_stop_failed", failures);
+    }
+
+    private async Task StartProxyProcessAsync(
+        string configPath,
+        WindowsProxyMode mode,
+        CancellationToken ct)
+    {
+        var attempts = mode == WindowsProxyMode.Tun ? 2 : 1;
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                if (mode != WindowsProxyMode.Tun
+                    || await _processHost.WaitForTunReadyAsync(ct))
+                    return;
+                lastFailure = new InvalidOperationException("proxy_tun_unavailable");
+            }
+            catch (WindowsProxyProcessExitException exception) when (attempt < attempts)
+            {
+                lastFailure = exception;
+            }
+
+            await _processHost.StopAsync(CancellationToken.None);
+            if (attempt < attempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        }
+
+        throw lastFailure ?? new InvalidOperationException("proxy_tun_unavailable");
     }
 
     private void DisposeActiveNativeLeases()
