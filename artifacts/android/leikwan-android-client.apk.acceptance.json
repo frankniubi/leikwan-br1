@@ -13,8 +13,10 @@
   "version_code": 22,
   "release_contract_checked": true,
   "retired_update_classes": 0,
-  "update_manifest_unchanged": true,
-  "update_push_touched": false,
   "runtime_provenance": "unchanged JNI and asset hashes from verified 0.2.19 release",
-  "full_native_tun_acceptance": "BLOCKED_missing_BridgeOptions"
+  "full_native_tun_acceptance": "BLOCKED_missing_BridgeOptions",
+  "update_manifest_unchanged_during_packaging": true,
+  "update_push_touched_during_packaging": false,
+  "publication_manifest_sha256": "05ea6e569ca0cd4d31fa69f6897b2c60e3bd89793b0d8ad50c877333c42ebe6b",
+  "public_download_sha256_verified": true
 }

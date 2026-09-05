@@ -4,7 +4,7 @@
 
 User approved commit, artifacts and server publication. The user subsequently authorized skipping macOS if a local formal build is unavailable. **macOS is NOT published in this release**; all official Mac manifest entries and DMG/ZIP/runtime payloads remain 1.0.7 / previously published runtimes. The abandoned Mac version bump was removed from the source project; shared Core fixes are retained.
 
-Initial publication status: validated locally and staged; see the final deployment addendum below for the actual production result. This document does not imply customer end-to-end connectivity acceptance.
+Publication completed at 2026-09-06 02:05:31 Asia/Taipei (2026-09-05 18:05:31 UTC); see the final deployment addendum for evidence. This document does not imply customer end-to-end connectivity acceptance.
 
 ## Customer evidence and diagnosis
 
@@ -76,4 +76,16 @@ After publication, require public cache-busted manifest and full artifact downlo
 
 ## Final deployment addendum
 
-Pending guarded deployment and public canary at the time of this source commit. A subsequent evidence commit will replace this section with observed results.
+- Source/release commit: `98d600028e23c1d40bef430d0dedf4ab2b9f88c1`.
+- Production transaction: **committed** from `2026-09-05T18:05:27.898438+00:00` to `2026-09-05T18:05:31.458107+00:00`. No PHP reload was needed for artifact-only publication; php-fpm stayed active.
+- Backup: `/root/codex-backups/ordinary-ultra-release-20260906-final`. All five backed-up files (Windows, APK, Linux source, Linux mirror, manifest) match preflight hashes; all five live files match intended hashes. Four Mac app payloads and three PHP compatibility files match their preflight hashes. Additional postflight verified both unchanged Mac Ultra runtimes, for six Mac artifacts total.
+- Disk postflight: 98,491,072 KiB available. Health returned `status=ok` before and after. No production service restart was performed.
+- Public **full downloads**: two manifests and three selected payloads HTTP 200. All payload sizes, SHA-256 and ETags match. Public versions response is dynamically generated: SHA `d8fba22f4807fcb2f54abd39524234e8aef798065837565a6ead0b1542face90`, 19880 bytes, so it is not expected to equal the static on-disk manifest bytes. Selected fields agree.
+- Client-manifest artifact URLs are absolute; Windows includes the version/hash query. The first local canary incorrectly compared absolute URLs against relative manifest routes and stopped without mutation. The corrected probe validates HTTPS host, canonical path, version/hash query (if present), and follows the **advertised** URL with only a cache-busting canary added. Final result is `PUBLIC_CANARY_OK` at `2026-09-05T18:08:45Z`.
+- Public APK v2/v3 signature verified with the existing certificate SHA-256 `2fde6e1ec7142a2e800ee21880d7b0a163857de6985c2def5ad095aad1a68388`; both runtime ABIs and asset/JNI hashes verified.
+- Three HA rounds passed health, selected/Mac manifest contracts and live native lease issuance. Before and all after probes: forward 180, CAN -> HKG, global, one lease, `leikwan-ultra-native-socks5-v1`, `tcp+udp`. This still does not claim actual customer UDP/TUN traffic acceptance.
+- Read-only final postflight: `postflight.json` / `postflight.log`; complete public records: `public-canary/result.json`; local transaction: `deploy-receipt.json`; HA log: `ha-canary.log`; before/after lease logs and install hashes remain in the same local evidence directory.
+- Committed sanitized summary: `docs/handoffs/evidence/2026-09-06-ordinary-ultra-release.json`.
+- Source snapshot excluding binaries, credentials, raw customer logs and unrelated dirty work was uploaded to `/root/codex-backups/ordinary-ultra-release-20260906-final/source-98d60002.tar.gz`; SHA-256 `283ca59f3767b78705d0b6888cff2e25ef8b6b1f263ce1df4d259ea0e4c5934b`.
+- GitHub `origin/master` is a separate sanitized history (`c8867758`), not an ancestor of this checkout. **No force push, history merge or GitHub update** was attempted. The local commit and production source/artifact synchronization are complete; GitHub synchronization requires the established curated-snapshot workflow rather than pushing legacy history.
+- **Remaining:** Mac release explicitly skipped; no physical Android installation or online Linux-client convergence proved; Android full native TUN gate remains blocked; no fresh CS2/Twilio/customer long-duration traffic claim. Original dirty checkout hashes remain unchanged.
