@@ -29,6 +29,23 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Starts a relay with a bounded candidate batch. Implementations that do
+    /// not support local probing retain the legacy first-candidate behavior.
+    /// </summary>
+    Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        IReadOnlyList<NativeOutboundLease> leases,
+        string runtimeDirectory,
+        CancellationToken ct = default)
+    {
+        if (leases is null || leases.Count == 0)
+            throw new ArgumentException("native relay lease batch is empty", nameof(leases));
+        return StartAsync(forwardId, ultraBinaryPath, listenPort, leases[0], runtimeDirectory, ct);
+    }
+
+    /// <summary>
     /// Delivers a replacement lease to the already-running relay.  Returning
     /// false means the relay/control channel is no longer usable; callers may
     /// then perform a full restart.
@@ -37,6 +54,16 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
         int forwardId,
         NativeOutboundLease lease,
         CancellationToken ct = default);
+
+    Task<bool> RefreshCandidatesAsync(
+        int forwardId,
+        IReadOnlyList<NativeOutboundLease> leases,
+        CancellationToken ct = default)
+    {
+        if (leases is null || leases.Count == 0)
+            return Task.FromResult(false);
+        return RefreshAsync(forwardId, leases[0], ct);
+    }
 
     Task StopAsync(CancellationToken ct = default);
 }
@@ -51,7 +78,9 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
     private readonly bool _windows;
     private readonly Func<ProcessStartInfo, Process> _processStarter;
     private readonly Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>> _windowsSender;
+    private readonly Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>> _windowsBatchSender;
     private readonly Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>> _unixSender;
+    private readonly Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>> _unixBatchSender;
     private readonly Func<NativeOutboundRelayEndpoint, CancellationToken, Task<bool>> _portProbe;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
@@ -84,7 +113,9 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
         Func<int, NativeOutboundLease, CancellationToken, Task<bool>>? windowsSender = null,
         Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>>? unixSender = null,
         Func<NativeOutboundRelayEndpoint, CancellationToken, Task<bool>>? portProbe = null,
-        Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>>? windowsPipeSender = null)
+        Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>>? windowsPipeSender = null,
+        Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>>? windowsBatchSender = null,
+        Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>>? unixBatchSender = null)
     {
         _windows = windows ?? OperatingSystem.IsWindows();
         _processStarter = processStarter ?? StartProcess;
@@ -92,20 +123,39 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             ?? (windowsSender is not null
                 ? ((_, forwardId, lease, ct) => windowsSender(forwardId, lease, ct))
                 : UltraLeaseClient.SendNativeAsync);
+        _windowsBatchSender = windowsBatchSender ?? UltraLeaseClient.SendNativeAsync;
         var unixClient = new UnixUltraLeaseClient(timeout: TimeSpan.FromSeconds(5));
         _unixSender = unixSender ?? unixClient.SendNativeAsync;
+        _unixBatchSender = unixBatchSender ?? unixClient.SendNativeAsync;
         _portProbe = portProbe ?? ProbePortAsync;
     }
 
-    public async Task<NativeOutboundRelayEndpoint> StartAsync(
+    public Task<NativeOutboundRelayEndpoint> StartAsync(
         int forwardId,
         string ultraBinaryPath,
         int listenPort,
         NativeOutboundLease lease,
         string runtimeDirectory,
         CancellationToken ct = default)
+        => StartCandidatesAsync(
+            forwardId,
+            ultraBinaryPath,
+            listenPort,
+            new[] { lease },
+            runtimeDirectory,
+            ct);
+
+    public async Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        IReadOnlyList<NativeOutboundLease> leases,
+        string runtimeDirectory,
+        CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(lease);
+        if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
+            throw new ArgumentException("native relay lease batch is invalid", nameof(leases));
+        var lease = leases[0];
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         var leaseTransferred = false;
         try
@@ -147,6 +197,12 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                 ["udp_queue_packets"] = 128,
                 ["udp_max_associations"] = 1024,
                 ["connect_timeout_seconds"] = 5,
+                ["auto_select"] = leases.Count > 1,
+                ["probe_duration_seconds"] = 5,
+                ["probe_timeout_ms"] = 800,
+                ["probe_workers"] = Math.Min(4, leases.Count),
+                ["probe_samples"] = 5,
+                ["probe_interval_ms"] = 1000,
                 ["status_path"] = statusPath,
                 ["location_cache_path"] = Path.Combine(root, "location.json"),
                 ["location_lock_path"] = Path.Combine(root, "location.lock"),
@@ -186,9 +242,13 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             {
                 if (!_windows && !await WaitForPathAsync(controlPath, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
                     throw new InvalidOperationException("native_relay_control_unavailable");
-                var delivered = _windows
-                    ? await _windowsSender(controlPipeName, forwardId, lease, ct).ConfigureAwait(false)
-                    : await _unixSender(controlPath, forwardId, lease, ct).ConfigureAwait(false);
+                var delivered = leases.Count > 1
+                    ? (_windows
+                        ? await _windowsBatchSender(controlPipeName, forwardId, leases, ct).ConfigureAwait(false)
+                        : await _unixBatchSender(controlPath, forwardId, leases, ct).ConfigureAwait(false))
+                    : (_windows
+                        ? await _windowsSender(controlPipeName, forwardId, lease, ct).ConfigureAwait(false)
+                        : await _unixSender(controlPath, forwardId, lease, ct).ConfigureAwait(false));
                 if (!delivered)
                     throw new InvalidOperationException("native_relay_lease_rejected");
                 if (!await _portProbe(endpoint, ct).ConfigureAwait(false))
@@ -214,7 +274,10 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             // successful return the service takes ownership and disposes the
             // lease during its normal stop path.
             if (!leaseTransferred)
-                lease.Dispose();
+            {
+                foreach (var candidate in leases)
+                    candidate.Dispose();
+            }
             _gate.Release();
         }
     }
@@ -241,6 +304,50 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                 return _windows
                     ? await _windowsSender(_activeControlEndpoint!, forwardId, lease, ct).ConfigureAwait(false)
                     : await _unixSender(_activeControlEndpoint!, forwardId, lease, ct).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or SocketException
+                    or TimeoutException
+                    or InvalidOperationException
+                    or System.ComponentModel.Win32Exception)
+            {
+                return false;
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> RefreshCandidatesAsync(
+        int forwardId,
+        IReadOnlyList<NativeOutboundLease> leases,
+        CancellationToken ct = default)
+    {
+        if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
+            return false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (forwardId <= 0
+                || leases.Any(lease => lease.ForwardId != forwardId
+                    || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+                || !IsRunning
+                || _activeForwardId != forwardId
+                || string.IsNullOrWhiteSpace(_activeControlEndpoint))
+                return false;
+
+            try
+            {
+                return leases.Count > 1
+                    ? (_windows
+                        ? await _windowsBatchSender(_activeControlEndpoint!, forwardId, leases, ct).ConfigureAwait(false)
+                        : await _unixBatchSender(_activeControlEndpoint!, forwardId, leases, ct).ConfigureAwait(false))
+                    : (_windows
+                        ? await _windowsSender(_activeControlEndpoint!, forwardId, leases[0], ct).ConfigureAwait(false)
+                        : await _unixSender(_activeControlEndpoint!, forwardId, leases[0], ct).ConfigureAwait(false));
             }
             catch (Exception exception) when (
                 exception is IOException

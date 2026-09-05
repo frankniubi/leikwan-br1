@@ -606,13 +606,12 @@ public partial class MainViewModel : ObservableObject
 
         var api = _api ?? throw new InvalidOperationException("master_api_unavailable");
         var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
-        var lease = await api.ResolveNativeOutboundLeaseAsync(
-            forward,
-            capability,
+        var leases = await api.ResolveFreshNativeOutboundLeasesAsync(
+            forward.ForwardId,
             normalizedScope,
             routePolicy,
             ct);
-        if (lease is null)
+        if (leases.Count == 0)
             throw new InvalidOperationException("native_lease_unavailable");
 
         var effectiveBypassChina = normalizedScope == "global"
@@ -627,7 +626,7 @@ public partial class MainViewModel : ObservableObject
         var dnsMode = _config.GetEffectiveProxyDnsMode();
         await _proxyService!.StartNativeAsync(
             mode,
-            lease,
+            leases,
             BuildProxyBypassHosts(),
             rules,
             ct,
@@ -671,6 +670,12 @@ public partial class MainViewModel : ObservableObject
     private static bool IsNativeRestrictedScope(string scope)
         => string.Equals(scope, "cn_only", StringComparison.OrdinalIgnoreCase)
             || string.Equals(scope, "intl_only", StringComparison.OrdinalIgnoreCase);
+
+    private static void DisposeNativeLeases(IEnumerable<NativeOutboundLease> leases)
+    {
+        foreach (var lease in leases)
+            lease.Dispose();
+    }
 
     public async Task StopProxyAsync(CancellationToken ct = default)
     {
@@ -1689,13 +1694,12 @@ public partial class MainViewModel : ObservableObject
 
             forward.NativeOutbound = capability;
             forward.NativeRouteScope = _nativeActiveRouteScope;
-            var lease = await _api.ResolveNativeOutboundLeaseAsync(
-                forward,
-                capability,
+            var leases = await _api.ResolveFreshNativeOutboundLeasesAsync(
+                forward.ForwardId,
                 _nativeActiveRouteScope,
                 _nativeActiveUnrestricted ? "unrestricted" : "restricted",
                 _lifecycleCts.Token).ConfigureAwait(false);
-            if (lease is null)
+            if (leases.Count == 0)
             {
                 Log.Warning("native outbound lease refresh unavailable for forward {ForwardId}", _nativeActiveForwardId);
                 _pollingService.RequestPolicyRefresh();
@@ -1706,7 +1710,7 @@ public partial class MainViewModel : ObservableObject
             // flight. Do not resurrect a stopped proxy or leak the lease.
             if (_proxyService?.IsNativeOutboundActive != true)
             {
-                lease.Dispose();
+                DisposeNativeLeases(leases);
                 return;
             }
             var game = ResolveProxyGame(_nativeActiveGameId);
@@ -1721,12 +1725,12 @@ public partial class MainViewModel : ObservableObject
             try
             {
                 hotRefreshed = await _proxyService.TryRefreshNativeAsync(
-                    lease,
+                    leases,
                     _lifecycleCts.Token).ConfigureAwait(false);
             }
             catch
             {
-                lease.Dispose();
+                DisposeNativeLeases(leases);
                 throw;
             }
             if (!hotRefreshed)
@@ -1739,7 +1743,7 @@ public partial class MainViewModel : ObservableObject
                 {
                     await _proxyService.StartNativeAsync(
                         _nativeActiveMode,
-                        lease,
+                        leases,
                         BuildProxyBypassHosts(),
                         rules,
                         _lifecycleCts.Token,
@@ -1751,7 +1755,7 @@ public partial class MainViewModel : ObservableObject
                 }
                 else if (_proxyService.IsNativeOutboundActive)
                 {
-                    lease.Dispose();
+                    DisposeNativeLeases(leases);
                     _pollingService.RequestPolicyRefresh();
                     Log.Warning(
                         "native outbound lease refresh deferred for forward {ForwardId}; preserving active data plane",
@@ -1760,7 +1764,7 @@ public partial class MainViewModel : ObservableObject
                 }
                 else
                 {
-                    lease.Dispose();
+                    DisposeNativeLeases(leases);
                     return;
                 }
             }

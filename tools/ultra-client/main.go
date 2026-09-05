@@ -1948,6 +1948,9 @@ func main() {
 		case <-rootContext.Done():
 		case <-runtimeContext.Done():
 		case err := <-runtimeErrors:
+			if err != nil {
+				log.Printf("runtime stopped: %v", err)
+			}
 			if err != nil && rootContext.Err() == nil {
 				status.UpdateError("runtime_stopped")
 			}

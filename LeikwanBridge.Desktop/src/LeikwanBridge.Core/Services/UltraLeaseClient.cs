@@ -63,13 +63,34 @@ public sealed class UltraLeaseClient
         NativeOutboundLease lease,
         CancellationToken ct = default)
     {
+        if (lease is null)
+            return false;
+        return await SendNativeAsync(pipeName, forwardId, new[] { lease }, ct).ConfigureAwait(false);
+    }
+
+    public static async Task<bool> SendNativeAsync(
+        int forwardId,
+        IReadOnlyList<NativeOutboundLease> leases,
+        CancellationToken ct = default)
+        => await SendNativeAsync(PipeName(forwardId), forwardId, leases, ct).ConfigureAwait(false);
+
+    public static async Task<bool> SendNativeAsync(
+        string pipeName,
+        int forwardId,
+        IReadOnlyList<NativeOutboundLease> leases,
+        CancellationToken ct = default)
+    {
         if (string.IsNullOrWhiteSpace(pipeName)
             || pipeName.IndexOfAny(['\\', '/']) >= 0
-            || forwardId <= 0 || lease is null || lease.ForwardId != forwardId
-            || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+            || forwardId <= 0
+            || leases is null
+            || leases.Count is < 1 or > 4
+            || leases.Any(lease => lease is null
+                || lease.ForwardId != forwardId
+                || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow)))
             return false;
 
-        var wire = new
+        static object Wire(NativeOutboundLease lease) => new
         {
             protocol = "leikwan-ultra-native-socks5-v1",
             purpose = "native_outbound",
@@ -93,6 +114,9 @@ public sealed class UltraLeaseClient
                 password = Encoding.UTF8.GetString(lease.Password),
             },
         };
+        object wire = leases.Count == 1
+            ? Wire(leases[0])
+            : new { leases = leases.Select(Wire).ToArray() };
         byte[] body = [];
         try
         {
@@ -103,7 +127,7 @@ public sealed class UltraLeaseClient
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)body.Length);
             body.CopyTo(frame, 4);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            timeout.CancelAfter(leases.Count > 1 ? BatchTimeout : TimeSpan.FromSeconds(5));
             await using var pipe = new NamedPipeClientStream(
                 ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(timeout.Token);
@@ -123,7 +147,7 @@ public sealed class UltraLeaseClient
                 && root.TryGetProperty("forward_id", out var returnedForward)
                 && returnedForward.GetInt32() == forwardId
                 && root.TryGetProperty("policy_generation", out var returnedGeneration)
-                && string.Equals(returnedGeneration.GetString(), lease.PolicyGeneration, StringComparison.Ordinal);
+                && string.Equals(returnedGeneration.GetString(), leases[0].PolicyGeneration, StringComparison.Ordinal);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

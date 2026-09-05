@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"strings"
@@ -358,6 +359,12 @@ func selectBestLeaseWithProbe(
 		<-done
 	}
 	ranked := rankUDPProbeResults(results)
+	for index, result := range results {
+		if result.Err != nil {
+			lease := unique[index]
+			log.Printf("ultra UDP candidate probe failed endpoint=%s:%d selection_ref=%s error=%v", lease.IP, lease.Port, lease.SelectionRef, result.Err)
+		}
+	}
 	if len(ranked) == 0 || !ranked[0].usable() {
 		return ProviderLease{}, ranked[0], fmt.Errorf("%w: all candidates failed", errProbeUnavailable)
 	}
