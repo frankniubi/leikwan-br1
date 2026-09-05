@@ -1,0 +1,592 @@
+{
+  "release_commit": "30cfc72723527238eaf2877c11734402b808d9e2",
+  "artifacts": [
+    {
+      "entry": "android_client_apk",
+      "path": "artifacts/android/leikwan-android-client.apk",
+      "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+      "size_bytes": 88863067,
+      "version": "0.2.21"
+    },
+    {
+      "entry": "macos_client_app_arm64",
+      "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
+      "sha256": "b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170",
+      "size_bytes": 68581998,
+      "version": "1.0.8"
+    },
+    {
+      "entry": "macos_client_update_arm64",
+      "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
+      "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+      "size_bytes": 68539931,
+      "version": "1.0.8"
+    },
+    {
+      "entry": "macos_client_app_x64",
+      "path": "artifacts/macos/leikwan-bridge-x64.dmg",
+      "sha256": "b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72",
+      "size_bytes": 72559524,
+      "version": "1.0.8"
+    },
+    {
+      "entry": "macos_client_update_x64",
+      "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
+      "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+      "size_bytes": 72554338,
+      "version": "1.0.8"
+    }
+  ],
+  "deployment": {
+    "release_id": "mac-android-network-release-20260906",
+    "git_commit": "30cfc72723527238eaf2877c11734402b808d9e2",
+    "backup": "/root/codex-backups/mac-android-network-release-20260906",
+    "started_utc": "2026-09-05T19:54:30.020866+00:00",
+    "before": {
+      "artifacts/android/leikwan-android-client.apk": {
+        "sha256": "d7655f76dd04a7656c934efac1c705c357bcbbb5eaa0cd46539696fb2763f76d",
+        "size_bytes": 88858971,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      },
+      "artifacts/macos/leikwan-bridge-arm64.dmg": {
+        "sha256": "0b73922f0806d3118f20cd68b3900d39743d812ab4438a584c92344be9276e81",
+        "size_bytes": 77854694,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      },
+      "artifacts/macos/leikwan-bridge-update-arm64.zip": {
+        "sha256": "2d94fd0f895df8a501f1475f8c107de4083171e3a7de3733ed10175b77acc24d",
+        "size_bytes": 68500842,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      },
+      "artifacts/macos/leikwan-bridge-x64.dmg": {
+        "sha256": "15da3bbbb67575a29e7c915c5e2a4caa08b9310d0391841cfafca81c846256fb",
+        "size_bytes": 81356219,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      },
+      "artifacts/macos/leikwan-bridge-update-x64.zip": {
+        "sha256": "9a01e6956e147fd452f8af39663e372993b986da326e7af513f5d0fad3b48bc2",
+        "size_bytes": 72005046,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      },
+      "artifacts/versions.json": {
+        "sha256": "05ea6e569ca0cd4d31fa69f6897b2c60e3bd89793b0d8ad50c877333c42ebe6b",
+        "size_bytes": 16958,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "is_symlink": false
+      }
+    },
+    "after": {
+      "artifacts/android/leikwan-android-client.apk": {
+        "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+        "size_bytes": 88863067,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/macos/leikwan-bridge-arm64.dmg": {
+        "sha256": "b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170",
+        "size_bytes": 68581998,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/macos/leikwan-bridge-update-arm64.zip": {
+        "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+        "size_bytes": 68539931,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/macos/leikwan-bridge-x64.dmg": {
+        "sha256": "b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72",
+        "size_bytes": 72559524,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/macos/leikwan-bridge-update-x64.zip": {
+        "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+        "size_bytes": 72554338,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/versions.json": {
+        "sha256": "8374f63ca32ad7b50d9d600c7903f6cda9e9c53f632b99277f443ed8c08da70f",
+        "size_bytes": 16958,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      }
+    },
+    "preserved": {
+      "artifacts/windows/leikwan-bridge-setup.exe": {
+        "sha256": "8e7449c684ad1867f8b13bc48ce3816d1d321ea1c2ffb770afc6f097a6af24d5",
+        "size_bytes": 69433859,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "client-agent/client_agent.py": {
+        "sha256": "cd022fa1380ae5ff5b6b784a4b33e99feb16f6a2059143202ce6d6f3c1a78344",
+        "size_bytes": 298785,
+        "mode": 436,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/client-agent.py": {
+        "sha256": "cd022fa1380ae5ff5b6b784a4b33e99feb16f6a2059143202ce6d6f3c1a78344",
+        "size_bytes": 298785,
+        "mode": 436,
+        "uid": 0,
+        "gid": 0
+      },
+      "master/src/Support/UltraMode.php": {
+        "sha256": "68205f69056f0066c2171a78ebc94460522adbae1bb05ee1d36b48e4ef47ac60",
+        "size_bytes": 10091,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "master/src/Support/UltraMaterialService.php": {
+        "sha256": "9ffd95f3dc05f47e6172a590b0294d8ad33b5afede92a5e2ae38c283f82cada5",
+        "size_bytes": 44586,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "master/src/Support/UltraLeaseService.php": {
+        "sha256": "e43cbf140bc88d72d4eaf4d380a6d747b48f671afa892822abd9bc112a7643a7",
+        "size_bytes": 26319,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/ultra/ultra-client_linux_amd64": {
+        "sha256": "5f116918d756dacbb650e521c5f0e6358ff7f4f3bc5c63ea90957fd1da7cb7b8",
+        "size_bytes": 15769866,
+        "mode": 436,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/ultra/ultra-client_windows_amd64.exe": {
+        "sha256": "62174c051552d4b127c7a5d7fd692512f5ab9afa59520b6463e28c3da5454f4b",
+        "size_bytes": 6887424,
+        "mode": 420,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/ultra/ultra-client_macos_amd64": {
+        "sha256": "33cb7a67b61754de536fb5d0bfab9719b8b25413c778b7d1fc7b1ef6eccb3787",
+        "size_bytes": 14499296,
+        "mode": 493,
+        "uid": 0,
+        "gid": 0
+      },
+      "artifacts/ultra/ultra-client_macos_arm64": {
+        "sha256": "3f20e9a9524d19c93de1595f9f9bbf6355325ffc43a2b60a1f7d9af562309938",
+        "size_bytes": 13013680,
+        "mode": 493,
+        "uid": 0,
+        "gid": 0
+      }
+    },
+    "health": {
+      "php_fpm": "active",
+      "body": {
+        "status": "ok",
+        "service": "LeiKwan Host Shuttle",
+        "time": "2026-09-05T19:54:35+00:00"
+      }
+    },
+    "status": "committed",
+    "completed_utc": "2026-09-05T19:54:35.568005+00:00"
+  },
+  "backup_verified": {
+    "backup": "/root/codex-backups/mac-android-network-release-20260906",
+    "ok": true,
+    "files": {
+      "artifacts/android/leikwan-android-client.apk": {
+        "sha256": "d7655f76dd04a7656c934efac1c705c357bcbbb5eaa0cd46539696fb2763f76d",
+        "size_bytes": 88858971
+      },
+      "artifacts/macos/leikwan-bridge-arm64.dmg": {
+        "sha256": "0b73922f0806d3118f20cd68b3900d39743d812ab4438a584c92344be9276e81",
+        "size_bytes": 77854694
+      },
+      "artifacts/macos/leikwan-bridge-update-arm64.zip": {
+        "sha256": "2d94fd0f895df8a501f1475f8c107de4083171e3a7de3733ed10175b77acc24d",
+        "size_bytes": 68500842
+      },
+      "artifacts/macos/leikwan-bridge-x64.dmg": {
+        "sha256": "15da3bbbb67575a29e7c915c5e2a4caa08b9310d0391841cfafca81c846256fb",
+        "size_bytes": 81356219
+      },
+      "artifacts/macos/leikwan-bridge-update-x64.zip": {
+        "sha256": "9a01e6956e147fd452f8af39663e372993b986da326e7af513f5d0fad3b48bc2",
+        "size_bytes": 72005046
+      },
+      "artifacts/versions.json": {
+        "sha256": "05ea6e569ca0cd4d31fa69f6897b2c60e3bd89793b0d8ad50c877333c42ebe6b",
+        "size_bytes": 16958
+      }
+    }
+  },
+  "public_canary": {
+    "ok": true,
+    "utc": "2026-09-05T19:57:53Z",
+    "records": [
+      {
+        "url": "https://v3.leikwanhost.com/api/health?canary=1788638084329648700",
+        "file": "health.json",
+        "status": 200,
+        "sha256": "87b27c2a9fc2056a149ac3bf5e7a8d12e3b85777020f940774133fc598973fb7",
+        "size_bytes": 102,
+        "etag": null,
+        "cache_control": "no-store, no-cache, must-revalidate",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/versions.json?canary=1788638084329648700",
+        "file": "versions.json",
+        "status": 200,
+        "sha256": "549e6029734971a1c6118882ef329d3aa33ffa5f532aac53dac88987142c07ab",
+        "size_bytes": 19880,
+        "etag": null,
+        "cache_control": "public, max-age=60",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/client-manifest.json?canary=1788638084329648700",
+        "file": "client-manifest.json",
+        "status": 200,
+        "sha256": "1a30702c9b13d8337953c9c7cbd69d0a67a3c43c606e7a8b5d6a34513aa9da2a",
+        "size_bytes": 16502,
+        "etag": null,
+        "cache_control": "no-store, no-cache, must-revalidate",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/leikwan-android-client.apk?canary=1788638084329648700",
+        "file": "leikwan-android-client.apk",
+        "status": 200,
+        "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+        "size_bytes": 88863067,
+        "etag": "\"2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-arm64.dmg?v=1.0.8&sha256=b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170&canary=1788638084329648700",
+        "file": "leikwan-bridge-arm64.dmg",
+        "status": 200,
+        "sha256": "b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170",
+        "size_bytes": 68581998,
+        "etag": "\"b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-update-arm64.zip?v=1.0.8&sha256=9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc&canary=1788638084329648700",
+        "file": "leikwan-bridge-update-arm64.zip",
+        "status": 200,
+        "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+        "size_bytes": 68539931,
+        "etag": "\"9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-x64.dmg?v=1.0.8&sha256=b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72&canary=1788638084329648700",
+        "file": "leikwan-bridge-x64.dmg",
+        "status": 200,
+        "sha256": "b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72",
+        "size_bytes": 72559524,
+        "etag": "\"b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-update-x64.zip?v=1.0.8&sha256=eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1&canary=1788638084329648700",
+        "file": "leikwan-bridge-update-x64.zip",
+        "status": 200,
+        "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+        "size_bytes": 72554338,
+        "etag": "\"eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-update-arm64.zip?v=1.0.8&sha256=9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+        "file": "exact-leikwan-bridge-update-arm64.zip",
+        "status": 200,
+        "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+        "size_bytes": 68539931,
+        "etag": "\"9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/macos/leikwan-bridge-update-x64.zip?v=1.0.8&sha256=eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+        "file": "exact-leikwan-bridge-update-x64.zip",
+        "status": 200,
+        "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+        "size_bytes": 72554338,
+        "etag": "\"eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      },
+      {
+        "url": "https://v3.leikwanhost.com/artifacts/leikwan-android-client.apk",
+        "file": "exact-leikwan-android-client.apk",
+        "status": 200,
+        "sha256": "2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42",
+        "size_bytes": 88863067,
+        "etag": "\"2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42\"",
+        "cache_control": "public, max-age=31536000, immutable",
+        "age": null
+      }
+    ]
+  },
+  "ha_canary": {
+    "ok": true,
+    "rounds": [
+      {
+        "round": 1,
+        "utc": "2026-09-05T19:54:54Z",
+        "health": {
+          "status": "ok",
+          "service": "LeiKwan Host Shuttle",
+          "time": "2026-09-05T19:54:53+00:00"
+        },
+        "manifest_ok": true,
+        "native_lease": {
+          "ok": true,
+          "pull_status": 200,
+          "forward_id": 180,
+          "direction": "CAN -> HKG",
+          "route_scope": "global",
+          "lease_status": 200,
+          "lease_count": 1,
+          "lease_protocol": "leikwan-ultra-native-socks5-v1",
+          "lease_transport": "tcp+udp",
+          "error": ""
+        }
+      },
+      {
+        "round": 2,
+        "utc": "2026-09-05T19:55:15Z",
+        "health": {
+          "status": "ok",
+          "service": "LeiKwan Host Shuttle",
+          "time": "2026-09-05T19:55:14+00:00"
+        },
+        "manifest_ok": true,
+        "native_lease": {
+          "ok": true,
+          "pull_status": 200,
+          "forward_id": 180,
+          "direction": "CAN -> HKG",
+          "route_scope": "global",
+          "lease_status": 200,
+          "lease_count": 1,
+          "lease_protocol": "leikwan-ultra-native-socks5-v1",
+          "lease_transport": "tcp+udp",
+          "error": ""
+        }
+      },
+      {
+        "round": 3,
+        "utc": "2026-09-05T19:55:37Z",
+        "health": {
+          "status": "ok",
+          "service": "LeiKwan Host Shuttle",
+          "time": "2026-09-05T19:55:36+00:00"
+        },
+        "manifest_ok": true,
+        "native_lease": {
+          "ok": true,
+          "pull_status": 200,
+          "forward_id": 180,
+          "direction": "CAN -> HKG",
+          "route_scope": "global",
+          "lease_status": 200,
+          "lease_count": 1,
+          "lease_protocol": "leikwan-ultra-native-socks5-v1",
+          "lease_transport": "tcp+udp",
+          "error": ""
+        }
+      }
+    ]
+  },
+  "android_jvm": {
+    "testDebugUnitTest": {
+      "tests": 299,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "files": 66
+    },
+    "testReleaseUnitTest": {
+      "tests": 299,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "files": 66
+    }
+  },
+  "android_canonical_release_tun": {
+    "instrument_exit": 0,
+    "passed": true,
+    "proxy_counts": {
+      "tcp_echo": 3,
+      "udp_echo": 3,
+      "socks_tcp": 3,
+      "socks_udp": 3,
+      "auth": 75
+    }
+  },
+  "focused_instrumentation_tests": 6,
+  "local_validation": {
+    "binding-tests": 0,
+    "deployment-tests": 0,
+    "mac-tests": 0
+  },
+  "mac_artifact_audit": {
+    "artifacts": [
+      {
+        "architecture": "arm64",
+        "format": "dmg",
+        "version": "1.0.8",
+        "path": ".tmp\\mac-android-release-20260906\\leikwan-bridge-arm64-1.0.8-final.dmg",
+        "size_bytes": 68581998,
+        "sha256": "b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170",
+        "files_roundtrip_verified": 231
+      },
+      {
+        "architecture": "arm64",
+        "format": "zip",
+        "version": "1.0.8",
+        "path": ".tmp\\mac-android-release-20260906\\leikwan-bridge-update-arm64-1.0.8-final.zip",
+        "size_bytes": 68539931,
+        "sha256": "9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc",
+        "files_roundtrip_verified": 231
+      },
+      {
+        "architecture": "x64",
+        "format": "dmg",
+        "version": "1.0.8",
+        "path": ".tmp\\mac-android-release-20260906\\leikwan-bridge-x64-1.0.8-final.dmg",
+        "size_bytes": 72559524,
+        "sha256": "b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72",
+        "files_roundtrip_verified": 231
+      },
+      {
+        "architecture": "x64",
+        "format": "zip",
+        "version": "1.0.8",
+        "path": ".tmp\\mac-android-release-20260906\\leikwan-bridge-update-x64-1.0.8-final.zip",
+        "size_bytes": 72554338,
+        "sha256": "eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1",
+        "files_roundtrip_verified": 231
+      }
+    ],
+    "signature": "ad-hoc, not Developer ID or notarized",
+    "real_mac_runtime_tested": false,
+    "apple_codesign_verified": false
+  },
+  "mac_embedded_code_digests": [
+    {
+      "arch": "arm64",
+      "mach_o_files": 24,
+      "code_directories_verified": 29
+    },
+    {
+      "arch": "x64",
+      "mach_o_files": 24,
+      "code_directories_verified": 29
+    }
+  ],
+  "source_archive": {
+    "commit": "30cfc72723527238eaf2877c11734402b808d9e2",
+    "base_commit": "115a9a4e48e4c325db87e3a7a04f5e25fa222079",
+    "scope": "changed release sources plus manifest; excludes binary APK and credentials",
+    "path": "source-30cfc727.tar.gz",
+    "sha256": "222863580bae7c290e34b622db76f6ac133a342c65aac34807b76a180fb099d2",
+    "size_bytes": 32006,
+    "files": [
+      "LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj",
+      "artifacts/android/leikwan-android-client.apk.acceptance.json",
+      "artifacts/versions.json",
+      "docs/handoffs/2026-09-06-macos-android-network-release-handoff.md",
+      "leikwan-android/app/build.gradle.kts",
+      "leikwan-android/app/src/androidTest/java/com/leikwan/bridge/singbox/LibboxServiceRuntimeTest.kt",
+      "leikwan-android/app/src/androidTest/java/com/leikwan/bridge/singbox/LibboxTunRuntimeTest.kt",
+      "leikwan-android/app/src/main/java/com/leikwan/bridge/service/AndroidNetworkMonitor.kt",
+      "leikwan-android/app/src/main/java/com/leikwan/bridge/service/LeikwanVpnService.kt",
+      "leikwan-android/app/src/test/java/com/leikwan/bridge/service/AndroidNetworkMonitorTest.kt",
+      "scripts/build-nekobox-libcore.ps1",
+      "scripts/deploy-client-artifacts.py",
+      "scripts/tests/android_tun_probe.c",
+      "scripts/tests/test_deploy_client_artifacts.py",
+      "scripts/tests/test_verify_android_libbox.py",
+      "scripts/verify-android-native-artifacts.ps1",
+      "scripts/verify_android_libbox.py"
+    ]
+  },
+  "unrelated_dirty_preserved": [
+    {
+      "path": "LeikwanBridge.Desktop/src/LeikwanBridge.Core/packages.lock.json",
+      "sha256": "177a04d023441ff4344654733c839db1740adb40a1df827a857f7e2942ef7990"
+    },
+    {
+      "path": "install/install-shadowsocks-none.sh",
+      "sha256": "498accf9d510a83d49587f08056a7381292dae95d8b7ebeffa44478f6be2e366"
+    },
+    {
+      "path": "install/tests/test_shadowsocks_none_installer.sh",
+      "sha256": "00e01fe4f2e5719ead4407055b012802440b2b8a2657ba830548c34f80c0a2c2"
+    },
+    {
+      "path": "master/tests/android_client_artifact_manifest_test.php",
+      "sha256": "014c44e27e6011bb166ecc5aba44217409643aa29997195226245a60cc33e751"
+    },
+    {
+      "path": "master/tests/artifact_route_controller_response_guard_test.php",
+      "sha256": "8a3b9319a63e845d50163a0bdc9fe86487960ae27654632f06e5509369657225"
+    },
+    {
+      "path": "source-agent/tests/test_ultra_source_agent.py",
+      "sha256": "d69f4eea44fcd9885756f33893b546cc86a2e6d1f8ff0ddf671cc1e9383311ec"
+    },
+    {
+      "path": "source-agent/ultra_source_agent.py",
+      "sha256": "f1787c375f990aa5c4cbba56411d1989596a3cd6ad39229fe22ce12b13db3b87"
+    }
+  ],
+  "limits": [
+    "Mac not Developer ID signed or notarized; no Apple Gatekeeper or real macOS runtime test",
+    "No physical Android or live lease data-plane, Twilio or CS2 acceptance claimed",
+    "AVD tombstone access denied",
+    "Existing unrelated global manifest drift not changed",
+    "GitHub sanitized history remains divergent; no force push",
+    "gstack browse unavailable: installed binary lacks server.ts; HTTP canaries performed instead"
+  ]
+}

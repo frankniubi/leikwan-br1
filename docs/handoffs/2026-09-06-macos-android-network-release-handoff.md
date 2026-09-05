@@ -60,4 +60,28 @@ For other distributions, implement equivalent physical-interface/default-route r
 
 ## Deployment Addendum
 
-Pending final commit, artifact upload, guarded publication and public verification. Do not treat this paragraph as a successful deployment receipt.
+- Source/release commit: `30cfc72723527238eaf2877c11734402b808d9e2`.
+- Production publication committed at `2026-09-05T19:54:35.568005+00:00` (`2026-09-06 03:54:35` Asia/Taipei).
+- Backup: `/root/codex-backups/mac-android-network-release-20260906`. Five old payloads plus the old manifest were saved and hash-verified before writes. Each payload uses same-directory atomic replacement, followed by rehash; the manifest is last. Locks, disk preflight, old-hash guards and conflict-aware rollback are enforced.
+- Static manifest before: `05ea6e569ca0cd4d31fa69f6897b2c60e3bd89793b0d8ad50c877333c42ebe6b`; after: `8374f63ca32ad7b50d9d600c7903f6cda9e9c53f632b99277f443ed8c08da70f`; both 16,958 bytes. Public manifests are dynamically generated; compare selected contracts rather than assuming their whole-response hashes equal the static file.
+- Windows, Linux source/mirror, three PHP compatibility files and four standalone Ultra runtimes were guarded and remain unchanged. No production reload/restart was performed.
+- Slow full uploads were stopped in the temporary area only. Android rsync transferred 2,897,339 literal bytes. Mac exact-byte reconstruction used a 4,835,010-byte bundle (SHA `4825f1ed6a038b9aac445fa548320074bd018c1ff63390e41aef88a2819aabd8`), pinned `bsdiff4` 1.2.6 and static tools. Rebuilding was limited by systemd to `CPUQuota=50%`, `MemoryMax=1536M`, `TasksMax=64`; observed memory was approximately 570 MB. Compressed DMG data was verified before restoring the original audited UDIF metadata. Both regenerated ZIPs and both DMGs matched the original local hashes exactly before deployment. No application source compilation ran on production.
+- Android canonical release (not the QA build) was installed only on disposable `emulator-5556`; the 6 focused tests and actual kernel-TUN test passed again. The AVD was shut down afterward. No physical Android device was modified.
+- Three post-deploy rounds passed health, manifest consistency and native lease issuance: forward 180, `CAN -> HKG`, `global`, one lease, `leikwan-ultra-native-socks5-v1`, `tcp+udp`. The same lease probe passed before deployment.
+- GitHub was not force-pushed or merged across the divergent sanitized history. The commit is local; source/evidence synchronization to the server is recorded separately. Mac ignored DMG/ZIP files are external release payloads, not Git objects.
+
+| Artifact | Version | Bytes | SHA-256 |
+|---|---|---:|---|
+| Android APK | 0.2.21 / 23 | 88863067 | `2afcb4c7b59b5cbaa307a4ce4fc85451b194e1f0d7a8c67262c56517cc293e42` |
+| Mac arm64 DMG | 1.0.8 | 68581998 | `b29826dbaec2ecb6a6b6ddcb45282793803d2c14ff06b05a2249abbd39cc9170` |
+| Mac x64 DMG | 1.0.8 | 72559524 | `b552dd623680812228e3a49400c36ce35dc6c97389dfbbac6e272d6cd16fdd72` |
+| Mac arm64 ZIP | 1.0.8 | 68539931 | `9702370f4f138cf97112b763deadb1a65fddff9645898708c537ee9e99a1f7fc` |
+| Mac x64 ZIP | 1.0.8 | 72554338 | `eeb315339b068b6ced48b0702f2be895c44dc479b87342b78f65ee4447e470d1` |
+
+- Public canary completed: two manifests, five full artifact downloads, and three additional full downloads using the exact non-canary updater URLs all passed. HTTP 200, sizes, SHA-256 and payload ETags agree. The raw public Android URL also returned the new APK; Mac updater URLs carry `v` and `sha256`. Evidence: `.tmp/mac-android-release-20260906/public-canary/result.json`.
+- Read-only postflight rechecked installed payloads, static manifest and preserved Windows/Linux/PHP/standalone runtime hashes. Independent backup verification passed for all six old files. PHP-FPM remains active; free disk space was 97,085,212 KiB. Temporary reconstruction completed before publication.
+- Browser automation was unavailable because the installed gstack browse binary lacks `server.ts`. No browser screenshot/GUI canary is claimed; real HTTP requests/full payload downloads are the public acceptance evidence.
+- Committed evidence summary: `docs/handoffs/evidence/2026-09-06-macos-android-network-release.json`. Server evidence/source destination is the backup directory above; local upload receipt: `.tmp/mac-android-release-20260906/evidence-upload-receipt.json`.
+- Source delta archive: `source-30cfc727.tar.gz`, SHA `222863580bae7c290e34b622db76f6ac133a342c65aac34807b76a180fb099d2`, 32,006 bytes, based on `115a9a4e`. It contains committed release changes, not unrelated dirty files or credentials. The final handoff/evidence are uploaded separately.
+
+Unrelated global manifest drift remains out of scope; this release does not claim all manifest entries are consistent. The seven pre-existing dirty files remain unchanged.
