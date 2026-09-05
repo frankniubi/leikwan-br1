@@ -14,6 +14,7 @@ public static class WindowsProxyConfigBuilder
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
+    private const string NativeRuleSetDownloadHost = "raw.githubusercontent.com";
 
     public static string NormalizeTunStack(string? value)
     {
@@ -108,6 +109,8 @@ public static class WindowsProxyConfigBuilder
         AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
+        if (IsNativeRestrictedScope(lease.RouteScope))
+            AddHost(NativeRuleSetDownloadHost, bypassIps, bypassDomains);
 
         using var fragment = JsonDocument.Parse(
             NativeOutboundConfigBuilder.Build(
@@ -600,7 +603,7 @@ public static class WindowsProxyConfigBuilder
                 ["tag"] = "geoip-cn",
                 ["type"] = "remote",
                 ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
                 ["download_detour"] = downloadDetour,
             },
             new JsonObject
@@ -608,7 +611,7 @@ public static class WindowsProxyConfigBuilder
                 ["tag"] = "geosite-cn",
                 ["type"] = "remote",
                 ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
                 ["download_detour"] = downloadDetour,
             },
         };

@@ -706,6 +706,26 @@ public sealed class WindowsProxyConfigBuilderTests
     }
 
     [Fact]
+    public void NativeIntlOnlyRuleSetBootstrapUsesLocalDnsAndDirectRoute()
+    {
+        using var lease = CreateNativeLease("intl_only", "Mainland China -> International");
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            []).Json);
+        var root = document.RootElement;
+
+        Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("domain", out var domains)
+            && domains.EnumerateArray().Any(item => item.GetString() == "raw.githubusercontent.com")
+            && rule.GetProperty("server").GetString() == "local");
+        Assert.Contains(root.GetProperty("route").GetProperty("rules").EnumerateArray(), rule =>
+            rule.TryGetProperty("domain", out var domains)
+            && domains.EnumerateArray().Any(item => item.GetString() == "raw.githubusercontent.com")
+            && rule.GetProperty("outbound").GetString() == "direct");
+    }
+
+    [Fact]
     public void NativeIntlOnlyCustomDnsUsesConfiguredDefaultDomainResolver()
     {
         using var lease = CreateNativeLease("intl_only", "Mainland China -> International");

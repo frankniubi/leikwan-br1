@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using LeikwanBridge.Core.Models;
@@ -9,7 +10,9 @@ namespace LeikwanBridge.Core.Services;
 public interface IWindowsProxyProcessHost : IAsyncDisposable
 {
     bool IsRunning { get; }
+    bool IsTunReady { get; }
     Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default);
+    Task<bool> WaitForTunReadyAsync(CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
 }
 
@@ -36,6 +39,8 @@ public sealed class WindowsProxyProcessExitException : InvalidOperationException
 
 public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
 {
+    private static readonly IPAddress TunAddress = IPAddress.Parse(
+        WindowsProxyConfigBuilder.TunAddress.Split('/')[0]);
     private readonly Action<string>? _onOutput;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
@@ -46,6 +51,41 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     }
 
     public bool IsRunning => _process is { HasExited: false };
+
+    public bool IsTunReady
+    {
+        get
+        {
+            if (!IsRunning)
+                return false;
+            try
+            {
+                return NetworkInterface.GetAllNetworkInterfaces().Any(network =>
+                    string.Equals(network.Name, WindowsProxyConfigBuilder.TunInterfaceName, StringComparison.OrdinalIgnoreCase)
+                    && network.OperationalStatus == OperationalStatus.Up
+                    && network.GetIPProperties().UnicastAddresses.Any(address => address.Address.Equals(TunAddress)));
+            }
+            catch (NetworkInformationException)
+            {
+                return false;
+            }
+        }
+    }
+
+    public async Task<bool> WaitForTunReadyAsync(CancellationToken ct = default)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!IsRunning)
+                return false;
+            if (IsTunReady)
+                return true;
+            await Task.Delay(TimeSpan.FromMilliseconds(100), ct);
+        }
+        return IsTunReady;
+    }
 
     public async Task<bool> WaitForListenerAsync(
         int port,

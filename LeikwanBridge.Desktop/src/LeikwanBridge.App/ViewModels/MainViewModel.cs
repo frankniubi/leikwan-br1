@@ -38,8 +38,11 @@ public partial class MainViewModel : ObservableObject
     private readonly RuntimeUsageReader _usageReader = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly object _shutdownGate = new();
+    private readonly NativeLeaseRenewalLoop _nativeLeaseRenewalLoop = new();
     private Task? _shutdownTask;
     private Task? _heartbeatTask;
+    private CancellationTokenSource? _nativeLeaseRenewalCts;
+    private Task? _nativeLeaseRenewalTask;
     private Action<ClientMeta>? _clientUpdatedHandler;
     private int _nativeRefreshInProgress;
     private int _nativeRefreshPending;
@@ -635,6 +638,7 @@ public partial class MainViewModel : ObservableObject
             dnsMode == WindowsProxyDnsMode.Custom
                 ? _config.GetEffectiveProxyDnsServers()
                 : null);
+        StartNativeLeaseRenewalLoop();
         AddLog($"Started {WindowsProxyConnectionService.NativeOutboundDisplayName} ({normalizedScope}).");
     }
 
@@ -677,16 +681,26 @@ public partial class MainViewModel : ObservableObject
             lease.Dispose();
     }
 
-    public async Task StopProxyAsync(CancellationToken ct = default)
+    public Task StopProxyAsync(CancellationToken ct = default)
+        => StopProxyAsync("user_request", ct);
+
+    private async Task StopProxyAsync(string reason, CancellationToken ct)
     {
+        _ = CancelNativeLeaseRenewalLoop();
         if (_proxyService is null)
             return;
+        Log.Information(
+            "stopping Windows proxy (reason={Reason}, native={Native}, forward={ForwardId})",
+            reason,
+            _proxyService.IsNativeOutboundActive,
+            _nativeActiveForwardId);
         await _proxyService.StopAsync(ct);
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
         _nativeActiveUnrestricted = false;
         NativeUnrestrictedRoute = false;
         _nativeActiveGameId = "";
+        _nativeActiveBypassChina = false;
     }
 
     public async Task<WindowsSocks5UdpProbeResult> TestProxyUdpAsync(CancellationToken ct = default)
@@ -706,7 +720,7 @@ public partial class MainViewModel : ObservableObject
             // path includes native/SCM awaits; run the async cleanup on the
             // thread pool so its continuations cannot wait on a blocked UI
             // thread.
-            Task.Run(() => StopProxyAsync(CancellationToken.None))
+            Task.Run(() => StopProxyAsync("application_disconnect_or_shutdown", CancellationToken.None))
                 .GetAwaiter()
                 .GetResult();
         }
@@ -747,6 +761,8 @@ public partial class MainViewModel : ObservableObject
     private async Task ShutdownCoreAsync()
     {
         StopUsageRefreshSafely();
+        var nativeLeaseRenewalTask = CancelNativeLeaseRenewalLoop();
+        await WaitForTaskAsync(nativeLeaseRenewalTask, "native lease renewal").ConfigureAwait(false);
 
         // ConnectAsync can still be in its panel handshake when the user
         // closes the window. Wait briefly for its cancellation to settle so
@@ -1596,13 +1612,21 @@ public partial class MainViewModel : ObservableObject
     {
         if (IsShuttingDown)
             return;
+        Log.Debug(
+            "native outbound capability updated (present={Present}, enabled={Enabled}, forwards={ForwardCount})",
+            capability is not null,
+            capability?.Enabled == true,
+            capability?.Forwards.Count ?? 0);
         InvokeOnUiThread(() => NativeOutboundCapability = capability);
         if (_proxyService?.IsNativeOutboundActive == true
             && !NativeCapabilityCoversActiveSession(capability))
         {
+            Log.Warning(
+                "native outbound capability no longer covers active session; stopping forward {ForwardId}",
+                _nativeActiveForwardId);
             _ = Task.Run(async () =>
             {
-                try { await StopProxyAsync(CancellationToken.None).ConfigureAwait(false); }
+                try { await StopProxyAsync("capability_removed", CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception exception) { Log.Warning(exception, "failed to stop native outbound after capability removal"); }
             });
             return;
@@ -1628,18 +1652,73 @@ public partial class MainViewModel : ObservableObject
     private void ScheduleNativeLeaseRefresh()
     {
         if (IsShuttingDown
-            || _proxyService?.IsNativeOutboundActive != true
-            || _pollingService is null)
+            || _proxyService?.IsNativeOutboundActive != true)
             return;
         if (Volatile.Read(ref _nativeRefreshInProgress) != 0)
         {
             Interlocked.Exchange(ref _nativeRefreshPending, 1);
             return;
         }
-        _ = Task.Run(RefreshNativeLeaseIfNeededAsync);
+        _ = Task.Run(() => RefreshNativeLeaseIfNeededAsync(_lifecycleCts.Token));
     }
 
-    private async Task RefreshNativeLeaseIfNeededAsync()
+    private void StartNativeLeaseRenewalLoop()
+    {
+        CancelNativeLeaseRenewalLoop();
+        if (IsShuttingDown || _proxyService?.IsNativeOutboundActive != true)
+            return;
+
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifecycleCts.Token);
+        Task task;
+        lock (_shutdownGate)
+        {
+            task = Task.Run(() => _nativeLeaseRenewalLoop.RunAsync(
+                isActive: () => !IsShuttingDown && _proxyService?.IsNativeOutboundActive == true,
+                isDataPlaneRunning: () => _proxyService?.IsNativeDataPlaneRunning == true,
+                leaseExpiresAt: () => _proxyService?.ActiveNativeLeaseExpiresAt,
+                refresh: RefreshNativeLeaseIfNeededAsync,
+                onError: exception => Log.Warning(exception, "native outbound lease renewal loop failed"),
+                cancellation.Token));
+            _nativeLeaseRenewalCts = cancellation;
+            _nativeLeaseRenewalTask = task;
+        }
+        Log.Information(
+            "native outbound lease renewal loop started for forward {ForwardId} (expires={ExpiresAt:O})",
+            _nativeActiveForwardId,
+            _proxyService.ActiveNativeLeaseExpiresAt);
+    }
+
+    private Task? CancelNativeLeaseRenewalLoop()
+    {
+        CancellationTokenSource? cancellation;
+        Task? task;
+        lock (_shutdownGate)
+        {
+            cancellation = _nativeLeaseRenewalCts;
+            task = _nativeLeaseRenewalTask;
+            _nativeLeaseRenewalCts = null;
+            _nativeLeaseRenewalTask = null;
+        }
+        if (cancellation is null)
+            return task;
+        try { cancellation.Cancel(); }
+        catch (ObjectDisposedException) { }
+        if (task is null || task.IsCompleted)
+        {
+            cancellation.Dispose();
+        }
+        else
+        {
+            _ = task.ContinueWith(
+                _ => cancellation.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        return task;
+    }
+
+    private async Task RefreshNativeLeaseIfNeededAsync(CancellationToken ct)
     {
         if (Interlocked.CompareExchange(ref _nativeRefreshInProgress, 1, 0) != 0)
             return;
@@ -1647,73 +1726,46 @@ public partial class MainViewModel : ObservableObject
         {
             if (IsShuttingDown
                 || _proxyService?.IsNativeOutboundActive != true
-                || _api is null
-                || _pollingService is null)
+                || _api is null)
                 return;
+            var proxyService = _proxyService;
             var now = DateTimeOffset.UtcNow;
-            var expiresAt = _proxyService.ActiveNativeLeaseExpiresAt;
-            var capability = _pollingService.LatestNativeOutbound;
-            if (!NativeCapabilityCoversActiveSession(capability))
-            {
-                await StopProxyAsync(CancellationToken.None).ConfigureAwait(false);
-                return;
-            }
-            var forward = _pollingService.LatestForwards
-                .FirstOrDefault(item => item.ForwardId == _nativeActiveForwardId);
-            var policy = forward?.UltraAccess;
-            if (forward is null)
-            {
-                _pollingService.RequestPolicyRefresh();
-                return;
-            }
-
-            // The panel rotates the Ultra session ticket at renew_after even
-            // when the forward revision is unchanged. Pull a fresh policy
-            // first; sending the cached ticket directly produces
-            // lease_scope_invalid and used to trigger a full proxy restart.
-            var policyInvalid = policy is null
-                || policy.GetValidationFailure(forward, now) is not null;
-            var policyRenewalDue = policy is null
-                || (policy.RenewAfter == default
-                    ? policy.ExpiresAt <= now.AddMinutes(2)
-                    : policy.RenewAfter <= now);
-            if (policyInvalid || policyRenewalDue)
-            {
-                _pollingService.RequestPolicyRefresh();
-                return;
-            }
-
-            var policyGenerationChanged = !string.Equals(
-                policy!.PolicyGeneration,
-                _proxyService.ActiveNativeLeasePolicyGeneration,
-                StringComparison.OrdinalIgnoreCase);
-            if (!policyGenerationChanged
-                && expiresAt is DateTimeOffset expiry
-                && expiry > now.AddMinutes(1))
+            var expiresAt = proxyService.ActiveNativeLeaseExpiresAt;
+            var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
+            if (dataPlaneRunning
+                && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 
-            forward.NativeOutbound = capability;
-            forward.NativeRouteScope = _nativeActiveRouteScope;
+            var forwardId = _nativeActiveForwardId;
+            var routeScope = _nativeActiveRouteScope;
+            var unrestricted = _nativeActiveUnrestricted;
+            var mode = _nativeActiveMode;
+            var gameId = _nativeActiveGameId;
+            var bypassChina = _nativeActiveBypassChina;
             var leases = await _api.ResolveFreshNativeOutboundLeasesAsync(
-                forward.ForwardId,
-                _nativeActiveRouteScope,
-                _nativeActiveUnrestricted ? "unrestricted" : "restricted",
-                _lifecycleCts.Token).ConfigureAwait(false);
+                forwardId,
+                routeScope,
+                unrestricted ? "unrestricted" : "restricted",
+                ct).ConfigureAwait(false);
             if (leases.Count == 0)
             {
-                Log.Warning("native outbound lease refresh unavailable for forward {ForwardId}", _nativeActiveForwardId);
-                _pollingService.RequestPolicyRefresh();
+                Log.Warning("native outbound lease refresh unavailable for forward {ForwardId}", forwardId);
+                _pollingService?.RequestPolicyRefresh();
                 return;
             }
 
             // The user may have pressed Stop while the panel request was in
             // flight. Do not resurrect a stopped proxy or leak the lease.
-            if (_proxyService?.IsNativeOutboundActive != true)
+            if (!ReferenceEquals(_proxyService, proxyService)
+                || !proxyService.IsNativeOutboundActive
+                || _nativeActiveForwardId != forwardId
+                || !string.Equals(_nativeActiveRouteScope, routeScope, StringComparison.OrdinalIgnoreCase)
+                || _nativeActiveUnrestricted != unrestricted)
             {
                 DisposeNativeLeases(leases);
                 return;
             }
-            var game = ResolveProxyGame(_nativeActiveGameId);
+            var game = ResolveProxyGame(gameId);
             var rules = (game?.ProcessNames ?? [])
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(64)
@@ -1724,9 +1776,10 @@ public partial class MainViewModel : ObservableObject
             bool hotRefreshed;
             try
             {
-                hotRefreshed = await _proxyService.TryRefreshNativeAsync(
-                    leases,
-                    _lifecycleCts.Token).ConfigureAwait(false);
+                hotRefreshed = dataPlaneRunning
+                    && await _proxyService.TryRefreshNativeAsync(
+                        leases,
+                        ct).ConfigureAwait(false);
             }
             catch
             {
@@ -1742,12 +1795,12 @@ public partial class MainViewModel : ObservableObject
                     && !_proxyService.IsNativeDataPlaneRunning)
                 {
                     await _proxyService.StartNativeAsync(
-                        _nativeActiveMode,
+                        mode,
                         leases,
                         BuildProxyBypassHosts(),
                         rules,
-                        _lifecycleCts.Token,
-                        _nativeActiveBypassChina,
+                        ct,
+                        bypassChina,
                         dnsMode,
                         dnsMode == WindowsProxyDnsMode.Custom
                             ? _config.GetEffectiveProxyDnsServers()
@@ -1756,7 +1809,7 @@ public partial class MainViewModel : ObservableObject
                 else if (_proxyService.IsNativeOutboundActive)
                 {
                     DisposeNativeLeases(leases);
-                    _pollingService.RequestPolicyRefresh();
+                    _pollingService?.RequestPolicyRefresh();
                     Log.Warning(
                         "native outbound lease refresh deferred for forward {ForwardId}; preserving active data plane",
                         _nativeActiveForwardId);
@@ -1768,9 +1821,12 @@ public partial class MainViewModel : ObservableObject
                     return;
                 }
             }
-            Log.Information("native outbound lease refreshed for forward {ForwardId}", _nativeActiveForwardId);
+            Log.Information(
+                "native outbound lease refreshed for forward {ForwardId} (expires={ExpiresAt:O})",
+                forwardId,
+                proxyService.ActiveNativeLeaseExpiresAt);
         }
-        catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
         catch (MasterApiException exception) when (IsNativeLeaseRefreshError(exception))
@@ -1788,7 +1844,8 @@ public partial class MainViewModel : ObservableObject
         finally
         {
             Interlocked.Exchange(ref _nativeRefreshInProgress, 0);
-            if (Interlocked.Exchange(ref _nativeRefreshPending, 0) != 0)
+            var refreshPending = Interlocked.Exchange(ref _nativeRefreshPending, 0) != 0;
+            if (!ct.IsCancellationRequested && refreshPending)
                 ScheduleNativeLeaseRefresh();
         }
     }

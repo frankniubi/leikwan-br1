@@ -160,6 +160,74 @@ public sealed class WindowsProxyConnectionServiceTests
     }
 
     [Fact]
+    public async Task NativeTunStartRetriesBeforePublishingConnectedWhenTunIsInitiallyUnavailable()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        process.TunReadinessResults.Enqueue(false);
+        process.TunReadinessResults.Enqueue(true);
+        var relay = new FakeNativeRelayHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        var user = System.Text.Encoding.UTF8.GetBytes("native-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("native-password");
+        using var lease = CreateNativeLease(user, password);
+
+        await service.StartNativeAsync(WindowsProxyMode.Tun, lease);
+
+        Assert.Equal(2, process.StartCalls);
+        Assert.Equal(2, process.TunReadinessCalls);
+        Assert.Equal(1, relay.StartCalls);
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+        Assert.True(service.IsNativeDataPlaneRunning);
+    }
+
+    [Fact]
+    public async Task NativeTunStartFailsClosedAndWipesLeaseWhenTunNeverBecomesReady()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        process.TunReadinessResults.Enqueue(false);
+        process.TunReadinessResults.Enqueue(false);
+        var relay = new FakeNativeRelayHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            nativeRelayHost: relay);
+        await service.InitializeAsync();
+        var user = System.Text.Encoding.UTF8.GetBytes("native-user");
+        var password = System.Text.Encoding.UTF8.GetBytes("native-password");
+        using var lease = CreateNativeLease(user, password);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartNativeAsync(WindowsProxyMode.Tun, lease));
+
+        Assert.Equal("proxy_tun_unavailable", exception.Message);
+        Assert.Equal(2, process.StartCalls);
+        Assert.Equal(2, process.TunReadinessCalls);
+        Assert.False(process.IsRunning);
+        Assert.False(relay.IsRunning);
+        Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
+        Assert.All(user, value => Assert.Equal(0, value));
+        Assert.All(password, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
     public async Task RepeatedStopAfterSuccessfulCleanupDoesNotRepeatNativeShutdown()
     {
         using var temp = new TempStateDirectory();
@@ -441,13 +509,24 @@ public sealed class WindowsProxyConnectionServiceTests
     private sealed class FakeProcessHost : IWindowsProxyProcessHost
     {
         public bool IsRunning { get; private set; }
+        public bool IsTunReady { get; private set; } = true;
         public string LastConfigJson { get; private set; } = string.Empty;
         public Exception? StopException { get; set; }
+        public int StartCalls { get; private set; }
+        public int TunReadinessCalls { get; private set; }
+        public Queue<bool> TunReadinessResults { get; } = new();
         public Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
         {
+            StartCalls++;
             LastConfigJson = File.ReadAllText(configPath);
             IsRunning = true;
             return Task.CompletedTask;
+        }
+        public Task<bool> WaitForTunReadyAsync(CancellationToken ct = default)
+        {
+            TunReadinessCalls++;
+            IsTunReady = TunReadinessResults.TryDequeue(out var result) ? result : true;
+            return Task.FromResult(IsTunReady);
         }
         public Task StopAsync(CancellationToken ct = default)
         {
@@ -456,6 +535,26 @@ public sealed class WindowsProxyConnectionServiceTests
         }
         public void SetRunning(bool value) => IsRunning = value;
         public ValueTask DisposeAsync() { IsRunning = false; return ValueTask.CompletedTask; }
+    }
+
+    private static NativeOutboundLease CreateNativeLease(byte[] user, byte[] password)
+    {
+        const int forwardId = 180;
+        const string direction = "CAN -> HKG";
+        const string routeScope = "intl_only";
+        return new NativeOutboundLease(
+            forwardId,
+            "native-lease-readiness",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            routeScope,
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", routeScope),
+            "203.0.113.20",
+            5438,
+            user,
+            password);
     }
 
     private sealed class FakeSystemProxy : IWindowsSystemProxyManager
