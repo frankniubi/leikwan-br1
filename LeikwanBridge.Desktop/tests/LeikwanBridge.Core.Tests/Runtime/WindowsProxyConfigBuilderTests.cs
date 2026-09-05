@@ -702,7 +702,7 @@ public sealed class WindowsProxyConfigBuilderTests
             && rule.GetProperty("server").GetString() == "local");
         Assert.All(
             root.GetProperty("route").GetProperty("rule_set").EnumerateArray(),
-            item => Assert.Equal("proxy", item.GetProperty("download_detour").GetString()));
+            item => Assert.Equal("direct", item.GetProperty("download_detour").GetString()));
     }
 
     [Fact]
@@ -721,8 +721,10 @@ public sealed class WindowsProxyConfigBuilderTests
         Assert.Equal(
             "custom-0",
             root.GetProperty("route").GetProperty("default_domain_resolver").GetString());
+        Assert.Equal("ipv4_only", root.GetProperty("dns").GetProperty("strategy").GetString());
         Assert.Contains(root.GetProperty("dns").GetProperty("servers").EnumerateArray(), server =>
-            server.GetProperty("tag").GetString() == "custom-0");
+            server.GetProperty("tag").GetString() == "custom-0"
+            && server.GetProperty("type").GetString() == "udp");
     }
 
     [Fact]

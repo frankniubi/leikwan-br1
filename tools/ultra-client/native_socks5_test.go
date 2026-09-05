@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -185,6 +186,164 @@ func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
+	providerListener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen provider: %v", err)
+	}
+	defer providerListener.Close()
+	providerDone := make(chan error, 1)
+	go func() {
+		connection, acceptErr := providerListener.AcceptTCP()
+		if acceptErr != nil {
+			providerDone <- acceptErr
+			return
+		}
+		defer connection.Close()
+		reader := bufio.NewReader(connection)
+		greeting := make([]byte, len(currentHandshakeGreeting))
+		if _, err := io.ReadFull(reader, greeting); err != nil {
+			providerDone <- err
+			return
+		}
+		userLength, err := reader.ReadByte()
+		if err != nil {
+			providerDone <- err
+			return
+		}
+		if _, err := io.CopyN(io.Discard, reader, int64(userLength)); err != nil {
+			providerDone <- err
+			return
+		}
+		passwordLength, err := reader.ReadByte()
+		if err != nil {
+			providerDone <- err
+			return
+		}
+		if _, err := io.CopyN(io.Discard, reader, int64(passwordLength)); err != nil {
+			providerDone <- err
+			return
+		}
+		command := make([]byte, 3)
+		if _, err := io.ReadFull(reader, command); err != nil {
+			providerDone <- err
+			return
+		}
+		if command[0] != 5 || command[1] != nativeSocks5CommandConnect {
+			providerDone <- fmt.Errorf("unexpected command %x", command)
+			return
+		}
+		addressType, err := reader.ReadByte()
+		if err != nil {
+			providerDone <- err
+			return
+		}
+		if _, err := readNativeSocks5Address(reader, addressType); err != nil {
+			providerDone <- err
+			return
+		}
+		var port [2]byte
+		if _, err := io.ReadFull(reader, port[:]); err != nil {
+			providerDone <- err
+			return
+		}
+		if _, err := connection.Write([]byte{5, 2, 1, 0}); err != nil {
+			providerDone <- err
+			return
+		}
+		buffer := make([]byte, 1024)
+		for {
+			_, readErr := reader.Read(buffer)
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					_, writeErr := connection.Write([]byte("half-close-response"))
+					providerDone <- writeErr
+					return
+				}
+				providerDone <- readErr
+				return
+			}
+		}
+	}()
+
+	listenPort := freeNativeTCPPort(t)
+	config := Config{
+		ForwardID: 178, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
+		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
+	}
+	store := newNativeTestStore(t, config, providerListener.Addr().(*net.TCPAddr).Port)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	defer status.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
+	waitNativeTCPPort(t, listenPort)
+
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(connection, methodReply); err != nil {
+		t.Fatal(err)
+	}
+	request := []byte{5, nativeSocks5CommandConnect, 0, 1, 1, 1, 1, 1, 1, 0xbb}
+	if _, err := connection.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(connection, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[0] != nativeSocks5Version || reply[1] != nativeSocks5ReplySucceeded {
+		t.Fatalf("SOCKS connect reply = %x", reply)
+	}
+	if _, err := connection.Write([]byte("half-close-request")); err != nil {
+		t.Fatal(err)
+	}
+	tcpConnection, ok := connection.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("local connection type = %T, want *net.TCPConn", connection)
+	}
+	if err := tcpConnection.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, len("half-close-response"))
+	if _, err := io.ReadFull(connection, response); err != nil {
+		t.Fatalf("read delayed half-close response: %v", err)
+	}
+	if string(response) != "half-close-response" {
+		t.Fatalf("half-close response = %q", response)
+	}
+	select {
+	case err := <-providerDone:
+		if err != nil {
+			t.Fatalf("provider: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not observe half-close")
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("native SOCKS runtime did not stop")
+	}
+}
+
 func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget = true
@@ -347,6 +506,124 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 		}
 	}
 	waitForProviderPacket(t, provider.packets, 7*time.Second, isReservedKeepPacket)
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("native SOCKS runtime did not stop")
+	}
+}
+
+func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
+	provider := newTestUDPProvider(t)
+	provider.echoOuterTarget = true
+	listenPort := freeNativeTCPPort(t)
+	config := Config{
+		ForwardID: 177, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
+		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
+		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
+	}
+	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	defer status.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
+	waitNativeTCPPort(t, listenPort)
+
+	openControl := func() net.Conn {
+		testControl, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testControl.Write([]byte{5, 1, 0}); err != nil {
+			t.Fatal(err)
+		}
+		methodReply := make([]byte, 2)
+		if _, err := io.ReadFull(testControl, methodReply); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(methodReply, []byte{5, 0}) {
+			t.Fatalf("SOCKS method reply = %x", methodReply)
+		}
+		associateRequest := []byte{5, nativeSocks5CommandUDP, 0, 1, 0, 0, 0, 0, 0, 0}
+		if _, err := testControl.Write(associateRequest); err != nil {
+			t.Fatal(err)
+		}
+		associateReply := make([]byte, 10)
+		if _, err := io.ReadFull(testControl, associateReply); err != nil {
+			t.Fatal(err)
+		}
+		if associateReply[1] != nativeSocks5ReplySucceeded {
+			t.Fatalf("UDP associate reply = %x", associateReply)
+		}
+		return testControl
+	}
+	controlA := openControl()
+	defer controlA.Close()
+	controlB := openControl()
+	defer controlB.Close()
+
+	clientA, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientA.Close()
+	clientB, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientB.Close()
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listenPort}
+	packetA, err := makeNativeSocks5UDPDatagram("1.1.1.1", 53, []byte("socket-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetB, err := makeNativeSocks5UDPDatagram("1.1.1.1", 53, []byte("socket-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientA.WriteToUDP(packetA, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientB.WriteToUDP(packetB, destination); err != nil {
+		t.Fatal(err)
+	}
+	readPayload := func(client *net.UDPConn, want []byte) {
+		if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		response := make([]byte, 2048)
+		count, _, err := client.ReadFromUDP(response)
+		if err != nil {
+			t.Fatalf("UDP response for %q: %v", want, err)
+		}
+		_, _, payload, err := parseNativeSocks5UDPDatagram(response[:count])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(payload, want) {
+			t.Fatalf("UDP response payload = %q, want %q", payload, want)
+		}
+	}
+	readPayload(clientA, []byte("socket-a"))
+	readPayload(clientB, []byte("socket-b"))
+	if err := controlA.Close(); err != nil {
+		t.Fatal(err)
+	}
+	packetB2, err := makeNativeSocks5UDPDatagram("1.1.1.1", 53, []byte("socket-b-after-a-close"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientB.WriteToUDP(packetB2, destination); err != nil {
+		t.Fatal(err)
+	}
+	readPayload(clientB, []byte("socket-b-after-a-close"))
 
 	cancel()
 	select {

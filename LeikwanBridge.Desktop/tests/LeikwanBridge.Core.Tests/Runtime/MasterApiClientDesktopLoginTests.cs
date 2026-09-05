@@ -443,6 +443,47 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task ResolveFreshNativeOutboundLeasesAsync_PullsCurrentGrantBeforeBatchRequest()
+    {
+        const int forwardId = 180;
+        const string direction = "CAN -> HKG";
+        const string routeScope = "intl_only";
+        const string routePolicy = "unrestricted";
+        var handler = new FreshNativeLeaseHandler(forwardId, direction, routeScope, routePolicy);
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-180-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        var leases = await api.ResolveFreshNativeOutboundLeasesAsync(
+            forwardId,
+            routeScope,
+            routePolicy);
+
+        try
+        {
+            Assert.Equal(2, leases.Count);
+            Assert.Equal(["/api/client/configs/pull", "/api/client/ultra/lease"], handler.Paths);
+            Assert.Equal("fresh-ticket", handler.RequestTicket);
+            Assert.Equal("auto", handler.SelectionMode);
+            Assert.Equal(4, handler.MaxCandidates);
+            Assert.All(leases, lease =>
+            {
+                Assert.Equal(routeScope, lease.RouteScope);
+                Assert.Equal(routePolicy, lease.RoutePolicy);
+            });
+        }
+        finally
+        {
+            foreach (var lease in leases)
+                lease.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task ResolveUltraLeasesAsync_DefaultsToSingleLease()
     {
         const string target = "198.51.100.10:443";
@@ -711,6 +752,120 @@ public sealed class MasterApiClientDesktopLoginTests
                     """, Encoding.UTF8, "application/json"),
             };
             return response;
+        }
+    }
+
+    private sealed class FreshNativeLeaseHandler(
+        int forwardId,
+        string direction,
+        string routeScope,
+        string routePolicy) : HttpMessageHandler
+    {
+        private readonly string _generation = new('e', 64);
+        private readonly string _target = "198.51.100.180:443";
+
+        public List<string> Paths { get; } = [];
+        public string RequestTicket { get; private set; } = "";
+        public string SelectionMode { get; private set; } = "";
+        public int MaxCandidates { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            Paths.Add(path);
+            var now = DateTimeOffset.UtcNow;
+            var expires = now.AddMinutes(4).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var issued = now.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var renew = now.AddMinutes(3).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var scopeDigest = NativeOutboundLease.ComputeScopeDigestV2(
+                forwardId,
+                direction,
+                "tcp+udp",
+                routeScope,
+                routePolicy);
+
+            if (path == "/api/client/configs/pull")
+            {
+                var targetDigest = UltraPolicy.ComputeTargetDigest(_target);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent($$"""
+                        {
+                          "ok": true,
+                          "config_revision": "fresh-revision",
+                          "forwards": [{
+                            "forward_id": {{forwardId}}, "service_status": "active", "backend_mode": "ultra",
+                            "target": "{{_target}}", "transport": "tcp+udp",
+                            "ultra_access": {
+                              "protocol": "leikwan-ultra-policy-v2", "forward_id": {{forwardId}},
+                              "policy_generation": "{{_generation}}", "session_ticket": "fresh-ticket",
+                              "issued_at": "{{issued}}", "renew_after": "{{renew}}", "expires_at": "{{expires}}",
+                              "service_state": "active", "transport": "tcp+udp", "rate_limit_mbps": 20,
+                              "quota_remaining_bytes": 1048576, "target_digest": "{{targetDigest}}"
+                            }
+                          }],
+                          "native_outbound": {
+                            "enabled": true, "protocol": "socks5",
+                            "lease_protocol": "leikwan-ultra-native-socks5-v1", "transport": "tcp+udp",
+                            "forward_ids": [{{forwardId}}], "default_forward_id": {{forwardId}},
+                            "route_scopes": ["intl_only", "global"], "default_route_scope": "global",
+                            "unrestricted_allowed": true,
+                            "forwards": [{
+                              "forward_id": {{forwardId}}, "direction": "{{direction}}",
+                              "scope_digest": "{{scopeDigest}}", "transport": "tcp+udp",
+                              "route_scopes": ["intl_only", "global"], "default_route_scope": "global",
+                              "unrestricted_allowed": true
+                            }]
+                          }
+                        }
+                        """, Encoding.UTF8, "application/json"),
+                };
+            }
+
+            Assert.Equal("/api/client/ultra/lease", path);
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            var item = document.RootElement.GetProperty("forwards")[0];
+            RequestTicket = item.GetProperty("session_ticket").GetString() ?? "";
+            SelectionMode = item.GetProperty("selection_mode").GetString() ?? "";
+            MaxCandidates = item.GetProperty("max_candidates").GetInt32();
+            Assert.Equal(_generation, item.GetProperty("policy_generation").GetString());
+            Assert.Equal(scopeDigest, item.GetProperty("target_digest").GetString());
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent($$"""
+                    {
+                      "ok": true,
+                      "leases": [
+                        {
+                          "protocol": "leikwan-ultra-native-socks5-v1", "purpose": "native_outbound",
+                          "forward_id": {{forwardId}}, "lease_id": "fresh-native-a",
+                          "policy_generation": "{{_generation}}", "expires_at": "{{expires}}",
+                          "transport": "tcp+udp", "rate_limit_mbps": 20, "quota_remaining_bytes": 1048576,
+                          "selection_ref": "fresh-selection-reference-a", "selection_tier": "paid",
+                          "direction": "{{direction}}", "route_scope": "{{routeScope}}", "route_policy": "{{routePolicy}}",
+                          "scope_digest": "{{scopeDigest}}", "endpoint": { "ip": "203.0.113.20", "port": 5438 },
+                          "credential": { "user": "native-user-a", "password": "native-password-a" }
+                        },
+                        {
+                          "protocol": "leikwan-ultra-native-socks5-v1", "purpose": "native_outbound",
+                          "forward_id": {{forwardId}}, "lease_id": "fresh-native-b",
+                          "policy_generation": "{{_generation}}", "expires_at": "{{expires}}",
+                          "transport": "tcp+udp", "rate_limit_mbps": 20, "quota_remaining_bytes": 1048576,
+                          "selection_ref": "fresh-selection-reference-b", "selection_tier": "paid",
+                          "direction": "{{direction}}", "route_scope": "{{routeScope}}", "route_policy": "{{routePolicy}}",
+                          "scope_digest": "{{scopeDigest}}", "endpoint": { "ip": "203.0.113.21", "port": 5439 },
+                          "credential": { "user": "native-user-b", "password": "native-password-b" }
+                        }
+                      ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
         }
     }
 
