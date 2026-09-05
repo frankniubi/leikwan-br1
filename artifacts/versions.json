@@ -432,9 +432,9 @@
  "windows_client_app": {
  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
  "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "52808cd3145085f5aec37706b4ee36dba66be41c1b78e547294c5191e7a5c5e7",
- "size_bytes": 69437952,
- "version": "0.1.20.9"
+ "sha256": "2451ed0906423584a9205452bcebe6c578e2f72cd23d6f4b205c5a21889c5a0c",
+ "size_bytes": 69427776,
+ "version": "0.1.20.10"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
