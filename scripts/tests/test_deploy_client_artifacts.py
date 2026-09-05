@@ -78,6 +78,45 @@ class GuardedDeployTests(unittest.TestCase):
         self.plan['manifest']['after']=deploy.metadata(p)
         with self.assertRaisesRegex(ValueError,'noncanonical'):self.run_release()
 
+    def add_mac_matrix(self):
+        live_manifest = json.loads((self.root/deploy.MANIFEST).read_text())
+        new_manifest = json.loads((self.stage/'versions.json').read_text())
+        for key, (path, route) in deploy.CANONICAL.items():
+            if not key.startswith('macos_client_'): continue
+            live = self.root/path; live.parent.mkdir(parents=True, exist_ok=True); live.write_bytes(b'old mac '+key.encode())
+            upload = self.stage/Path(path).name; upload.write_bytes(b'new mac '+key.encode())
+            architecture = 'arm64' if key.endswith('arm64') else 'x86_64'
+            artifact_format = 'zip' if '_update_' in key else 'dmg'
+            item = {'path':path,'artifact_url':route,'architecture':architecture,'format':artifact_format}
+            live_manifest[key] = dict(item, version='1.0.7', **{k:deploy.metadata(live)[k] for k in ('sha256','size_bytes')})
+            new_manifest[key] = dict(item, version='1.0.8', **{k:deploy.metadata(upload)[k] for k in ('sha256','size_bytes')})
+            self.plan['versions'][key] = '1.0.8'
+            self.plan['payloads'].append({'path':path,'upload':upload.name,'before':deploy.metadata(live),'after':deploy.metadata(upload)})
+        (self.root/deploy.MANIFEST).write_text(json.dumps(live_manifest))
+        (self.stage/'versions.json').write_text(json.dumps(new_manifest))
+        self.plan['manifest']['before'] = deploy.metadata(self.root/deploy.MANIFEST)
+        self.plan['manifest']['after'] = deploy.metadata(self.stage/'versions.json')
+
+    def test_mac_full_matrix_commits(self):
+        self.add_mac_matrix()
+        self.assertEqual('committed',self.run_release()['status'])
+
+    def test_partial_mac_matrix_is_rejected(self):
+        self.add_mac_matrix()
+        del self.plan['versions']['macos_client_update_x64']
+        with self.assertRaises(ValueError): self.run_release()
+
+    def test_mac_architecture_mismatch_is_rejected(self):
+        self.add_mac_matrix()
+        p=self.stage/'versions.json';m=json.loads(p.read_text());m['macos_client_app_arm64']['architecture']='x86_64';p.write_text(json.dumps(m))
+        self.plan['manifest']['after']=deploy.metadata(p)
+        with self.assertRaisesRegex(ValueError,'architecture/format'):self.run_release()
+
+    def test_mac_split_versions_are_rejected(self):
+        self.add_mac_matrix()
+        self.plan['versions']['macos_client_update_x64']='1.0.9'
+        with self.assertRaisesRegex(ValueError,'one version'):self.run_release()
+
     def test_symlink_upload_rejected(self):
         p=self.stage/'setup.exe';p.unlink();p.symlink_to(self.root/self.path)
         with self.assertRaisesRegex(ValueError,'symlink'):self.run_release()

@@ -64,38 +64,10 @@ if ($wantsX86) {
     Assert-SoMachine $armEntry 183 "jni/arm64-v8a/libbox.so"
     $x86Entry = Get-AarEntryBytes $aarPath "jni/x86_64/libbox.so"
     if ($null -eq $x86Entry) {
-        $fallback = Join-Path $repoRoot "leikwan-android\app\src\qatest\jniLibs\x86_64\libbox.so"
-        $fallbackBytes = $null
-        if (Test-Path -LiteralPath $fallback -PathType Leaf) {
-            $fallbackBytes = [System.IO.File]::ReadAllBytes($fallback)
-        } else {
-            $fallbackTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("leikwan-libbox-x86-{0}.so" -f $PID)
-            try {
-                $repo = $repoRoot.Replace('\', '/')
-                $relative = "leikwan-android/app/src/qatest/jniLibs/x86_64/libbox.so"
-                & cmd.exe /d /c "cd /d `"$repoRoot`" && git show master:$relative > `"$fallbackTemp`""
-                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $fallbackTemp)) {
-                    $fallbackBytes = [System.IO.File]::ReadAllBytes($fallbackTemp)
-                }
-            } finally {
-                Remove-Item -LiteralPath $fallbackTemp -Force -ErrorAction SilentlyContinue
-            }
-        }
-        Assert-SoMachine $fallbackBytes 62 "x86_64 libbox fallback"
-        $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("leikwan-libbox-aar-{0}" -f $PID)
-        New-Item -ItemType Directory -Path "$stage\jni\x86_64" -Force | Out-Null
-        try {
-            [System.IO.File]::WriteAllBytes((Join-Path $stage "jni\x86_64\libbox.so"), $fallbackBytes)
-            $stagedAar = Join-Path $stage "libbox.aar"
-            Copy-Item -LiteralPath $aarPath -Destination $stagedAar -Force
-            Push-Location $stage
-            try { & jar uf $stagedAar "jni/x86_64/libbox.so" } finally { Pop-Location }
-            Move-Item -LiteralPath $stagedAar -Destination $aarPath -Force
-        } finally {
-            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        $x86Entry = Get-AarEntryBytes $aarPath "jni/x86_64/libbox.so"
+        throw "Missing x86_64 libbox: rebuild classes.jar and BOTH native slices with one pinned gomobile bind. Splicing a fallback .so is unsafe and is no longer supported."
     }
+    & python (Join-Path $PSScriptRoot "verify_android_libbox.py") --aar $aarPath
+    if ($LASTEXITCODE -ne 0) { throw "libbox Java/native binding verification failed" }
     Assert-SoMachine $x86Entry 62 "jni/x86_64/libbox.so"
     [pscustomobject]@{
         output = $aarPath

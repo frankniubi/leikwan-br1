@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Backup-first, guarded publication of Windows/Android/Linux client artifacts.
+"""Backup-first, guarded publication of selected desktop/mobile client artifacts.
 
 Run on the Panel host with an audited JSON plan and a separately uploaded stage.
 Each file is atomically replaced, manifest last. A failed postflight restores only
 files still matching this transaction, never overwriting another writer's change.
-macOS and PHP are deliberately excluded from this release tool's write allowlist.
+PHP is deliberately excluded from this release tool's write allowlist.
 """
 import argparse
 import contextlib
@@ -25,6 +25,10 @@ CANONICAL = {
     'windows_client_app': ('artifacts/windows/leikwan-bridge-setup.exe', '/artifacts/leikwan-bridge-setup.exe'),
     'android_client_apk': ('artifacts/android/leikwan-android-client.apk', '/artifacts/leikwan-android-client.apk'),
     'client_agent': ('client-agent/client_agent.py', '/artifacts/client-agent.py'),
+    'macos_client_app_arm64': ('artifacts/macos/leikwan-bridge-arm64.dmg', '/artifacts/macos/leikwan-bridge-arm64.dmg'),
+    'macos_client_app_x64': ('artifacts/macos/leikwan-bridge-x64.dmg', '/artifacts/macos/leikwan-bridge-x64.dmg'),
+    'macos_client_update_arm64': ('artifacts/macos/leikwan-bridge-update-arm64.zip', '/artifacts/macos/leikwan-bridge-update-arm64.zip'),
+    'macos_client_update_x64': ('artifacts/macos/leikwan-bridge-update-x64.zip', '/artifacts/macos/leikwan-bridge-update-x64.zip'),
 }
 LOCKS = ('/tmp/codex-coordinated-release.lock', '/tmp/leikwan-windows-native-renewal.lock', '/tmp/ordinary-ultra-release.lock')
 
@@ -109,6 +113,16 @@ def validate_plan(root, stage, plan):
     changed = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
     if changed != set(plan['versions']):
         raise ValueError('unexpected manifest keys changed')
+    mac_keys = {key for key in CANONICAL if key.startswith('macos_client_')}
+    selected_mac = mac_keys & set(plan['versions'])
+    if selected_mac:
+        if selected_mac != mac_keys or len({plan['versions'][key] for key in mac_keys}) != 1:
+            raise ValueError('macOS DMG/ZIP matrix must use one version and both architectures')
+        for key in mac_keys:
+            architecture = 'arm64' if key.endswith('_arm64') else 'x86_64'
+            artifact_format = 'zip' if '_update_' in key else 'dmg'
+            if after[key].get('architecture') != architecture or after[key].get('format') != artifact_format:
+                raise ValueError('macOS architecture/format mismatch: ' + key)
     for key, version in plan['versions'].items():
         path, route = CANONICAL[key]
         entry = next(e for e in entries if e['path'] == path)
