@@ -82,9 +82,11 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
     private readonly Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>> _unixSender;
     private readonly Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>> _unixBatchSender;
     private readonly Func<NativeOutboundRelayEndpoint, CancellationToken, Task<bool>> _portProbe;
+    private readonly string? _unixSocketRoot;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
     private string? _runtimeRoot;
+    private string? _controlRoot;
     private int _activeForwardId;
     private string? _activeControlEndpoint;
 
@@ -115,7 +117,8 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
         Func<NativeOutboundRelayEndpoint, CancellationToken, Task<bool>>? portProbe = null,
         Func<string, int, NativeOutboundLease, CancellationToken, Task<bool>>? windowsPipeSender = null,
         Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>>? windowsBatchSender = null,
-        Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>>? unixBatchSender = null)
+        Func<string, int, IReadOnlyList<NativeOutboundLease>, CancellationToken, Task<bool>>? unixBatchSender = null,
+        string? unixSocketRoot = null)
     {
         _windows = windows ?? OperatingSystem.IsWindows();
         _processStarter = processStarter ?? StartProcess;
@@ -128,6 +131,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
         _unixSender = unixSender ?? unixClient.SendNativeAsync;
         _unixBatchSender = unixBatchSender ?? unixClient.SendNativeAsync;
         _portProbe = portProbe ?? ProbePortAsync;
+        _unixSocketRoot = unixSocketRoot;
     }
 
     public Task<NativeOutboundRelayEndpoint> StartAsync(
@@ -173,12 +177,32 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                 $"native-{forwardId}-{instanceId}"));
             Directory.CreateDirectory(root);
             SetPrivateDirectoryMode(root);
+            _runtimeRoot = root;
             var configPath = Path.Combine(root, "runtime.json");
             var statusPath = Path.Combine(root, "status.json");
             var controlPipeName = UltraLeaseClient.NativePipeName(forwardId, instanceId);
-            var controlPath = _windows
-                ? $"\\\\.\\pipe\\{controlPipeName}"
-                : Path.Combine(root, "control.sock");
+            string controlPath;
+            if (_windows)
+            {
+                controlPath = $"\\\\.\\pipe\\{controlPipeName}";
+            }
+            else
+            {
+                // macOS limits sockaddr_un.sun_path to roughly 104 bytes. The
+                // Application Support runtime path plus GUID exceeded that
+                // limit and made the helper exit before creating control.sock.
+                var socketRoot = _unixSocketRoot ?? "/tmp";
+                var controlRoot = Path.Combine(socketRoot, $"lk-n-{instanceId}");
+                Directory.CreateDirectory(controlRoot);
+                SetPrivateDirectoryMode(controlRoot);
+                controlPath = Path.Combine(controlRoot, "control.sock");
+                if (Encoding.UTF8.GetByteCount(controlPath) >= 100)
+                {
+                    try { Directory.Delete(controlRoot, recursive: true); } catch (IOException) { }
+                    throw new InvalidOperationException("native_relay_control_path_too_long");
+                }
+                _controlRoot = controlRoot;
+            }
             var config = new Dictionary<string, object?>
             {
                 ["forward_id"] = forwardId,
@@ -231,7 +255,6 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             startInfo.ArgumentList.Add(configPath);
             var process = _processStarter(startInfo);
             _process = process;
-            _runtimeRoot = root;
             process.OutputDataReceived += (_, _) => { };
             process.ErrorDataReceived += (_, _) => { };
             process.BeginOutputReadLine();
@@ -413,6 +436,22 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
         _runtimeRoot = null;
         if (!string.IsNullOrWhiteSpace(root))
             SecureDeleteDirectory(root);
+        var controlRoot = _controlRoot;
+        _controlRoot = null;
+        if (!string.IsNullOrWhiteSpace(controlRoot))
+        {
+            try
+            {
+                if (Directory.Exists(controlRoot))
+                    Directory.Delete(controlRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     private static Process StartProcess(ProcessStartInfo startInfo)
