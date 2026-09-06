@@ -9,6 +9,7 @@ panel wrapper was not bypassed; all writes were made by the backup-first
 helpers described below.
 
 Source commit: `806e934789c7f9d92a99954d23bad6361b7c276d`.
+Deployment plan commit: `cfcb6aaba4e057949c25087cdfa88aa922119c89`.
 
 ## Root cause and fix
 
@@ -111,6 +112,7 @@ Evidence is retained in:
 - `.tmp/native-usage-audit-20260906/remote-artifact-receipt-20260907.json`
 - `.tmp/native-usage-audit-20260906/remote-php-receipt-20260907.json`
 - `.tmp/native-usage-audit-20260906/public-canary-native-usage-20260907/result.json`
+- `.tmp/native-usage-audit-20260906/public-ha-canary-native-usage-20260907.log`
 - `.tmp/native-usage-audit-20260906/live-native-lease-probe-20260907/`
 
 The remote staging directory is mode `0700` and retained temporarily for
