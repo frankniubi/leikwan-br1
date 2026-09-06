@@ -52,7 +52,7 @@ public static class MacConnectionConfigBuilder
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error" },
-            ["dns"] = BuildDns(profile, bypassDomains),
+            ["dns"] = BuildDns(profile, bypassDomains, systemTun: mode == MacConnectionMode.Vpn),
             ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = outbounds,
             ["route"] = BuildRoute(bypassIps, bypassDomains, mode: mode),
@@ -117,7 +117,8 @@ public static class MacConnectionConfigBuilder
                 bypassDomains,
                 lease.RouteScope == "cn_only" ? "direct" : "proxy",
                 lease.RouteScope,
-                lease.RoutePolicy),
+                lease.RoutePolicy,
+                systemTun: mode == MacConnectionMode.Vpn),
             ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = new JsonArray
             {
@@ -151,7 +152,8 @@ public static class MacConnectionConfigBuilder
         IReadOnlyList<string> bypassDomains,
         string remoteDetour = "proxy",
         string? nativeRouteScope = null,
-        string? nativeRoutePolicy = null)
+        string? nativeRoutePolicy = null,
+        bool systemTun = false)
     {
         remoteDetour = string.Equals(remoteDetour, "direct", StringComparison.OrdinalIgnoreCase)
             ? "direct"
@@ -201,7 +203,12 @@ public static class MacConnectionConfigBuilder
             if (!restricted) chinaServer["detour"] = "proxy";
             servers.Add(chinaServer);
         }
-        servers.Add(new JsonObject
+        // The system resolver points at our TUN while connected. A "local"
+        // transport here would recursively query the same DNS listener.
+        servers.Add(systemTun ? new JsonObject
+        {
+            ["type"] = "udp", ["tag"] = "local", ["server"] = "223.5.5.5", ["server_port"] = 53,
+        } : new JsonObject
         {
             ["type"] = "local",
             ["tag"] = "local",
@@ -211,6 +218,7 @@ public static class MacConnectionConfigBuilder
             ["servers"] = servers,
             ["final"] = "remote",
         };
+        if (!string.IsNullOrWhiteSpace(nativeRouteScope)) dns["strategy"] = "ipv4_only";
         var dnsRules = new JsonArray();
         if (bootstrapDomains.Count > 0)
         {
@@ -359,6 +367,7 @@ public static class MacConnectionConfigBuilder
                 NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
                 "restricted",
                 StringComparison.Ordinal);
+        var resolveNativeDomains = nativeMode && (!restrictedNative || nativeRouteScope != "global");
         var nativePortRange = restrictedNative ? $"{NativePortMin}:65535" : "1:65535";
         if (mode == MacConnectionMode.Vpn)
         {
@@ -389,8 +398,7 @@ public static class MacConnectionConfigBuilder
                 ["domain"] = new JsonArray(bypassDomains.Select(item => JsonValue.Create(item)).ToArray()),
                 ["outbound"] = "direct",
             });
-        if (string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
+        if (resolveNativeDomains)
         {
             // Resolve the destination before the SOCKS handoff so the relay
             // cannot perform a second lookup on a different DNS path.
@@ -439,7 +447,7 @@ public static class MacConnectionConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope) ? "remote" : "local",
+            ["default_domain_resolver"] = resolveNativeDomains ? "remote" : "local",
             ["rules"] = rules,
             ["final"] = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase) ? "direct" : "proxy",
         };
@@ -496,10 +504,6 @@ public static class MacConnectionConfigBuilder
             },
         };
     }
-
-    private static bool IsNativeRestrictedScope(string? routeScope)
-        => string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase);
 
     private static void AddBypass(string value, ICollection<string> ips, ICollection<string> domains)
     {

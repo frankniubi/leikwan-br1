@@ -483,6 +483,38 @@ public sealed class MasterApiClientDesktopLoginTests
         }
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task DesktopRuntimeNativeRestartPullsFreshPolicyWithoutRestartingForwards(int scopeFailures)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "native-session-policy-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        try
+        {
+            var handler = new FreshNativeLeaseHandler(180, "CAN -> HKG", "intl_only", "unrestricted") { ScopeFailuresRemaining = scopeFailures };
+            using var http = new HttpClient(handler);
+            using var api = new MasterApiClient("https://panel.example.test", "agent-token", "device",
+                httpClientFactory: () => http, ownsHttpClient: false);
+            using var supervisor = new ProcessSupervisor();
+            var state = new StateManager(path);
+            var config = new AgentConfig();
+            using var runtime = new ForwardRuntimeManager(config, supervisor, state);
+            var polling = new ConfigPollingService(api, runtime, state);
+            using var health = new HealthCheckService(supervisor, runtime, state);
+            await using var session = new DesktopRuntimeSession(api, polling, new HeartbeatService(api, state), health, runtime);
+            using var lease = await session.ResolveNativeOutboundLeaseAsync(180, "intl_only", "unrestricted", CancellationToken.None);
+            Assert.NotNull(lease);
+            Assert.Equal(Enumerable.Range(0, scopeFailures + 1).SelectMany(_ =>
+                new[] { "/api/client/configs/pull", "/api/client/ultra/lease" }), handler.Paths);
+            Assert.Equal("fresh-ticket", handler.RequestTicket);
+            Assert.Equal("single", handler.SelectionMode);
+            Assert.Equal(1, handler.MaxCandidates);
+            Assert.Empty(supervisor.RunningProcesses);
+        }
+        finally { Directory.Delete(path, recursive: true); }
+    }
+
     [Fact]
     public async Task ResolveUltraLeasesAsync_DefaultsToSingleLease()
     {
@@ -768,6 +800,7 @@ public sealed class MasterApiClientDesktopLoginTests
         public string RequestTicket { get; private set; } = "";
         public string SelectionMode { get; private set; } = "";
         public int MaxCandidates { get; private set; }
+        public int ScopeFailuresRemaining { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -826,6 +859,12 @@ public sealed class MasterApiClientDesktopLoginTests
             }
 
             Assert.Equal("/api/client/ultra/lease", path);
+            if (ScopeFailuresRemaining-- > 0)
+                return new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"error\":\"lease_scope_invalid\"}", Encoding.UTF8, "application/json"),
+                };
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             using var document = System.Text.Json.JsonDocument.Parse(body);
             var item = document.RootElement.GetProperty("forwards")[0];

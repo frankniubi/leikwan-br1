@@ -8,6 +8,33 @@ namespace LeikwanBridge.Mac.Tests.Services;
 
 public sealed class MacConnectionConfigBuilderTests
 {
+    [Theory]
+    [InlineData(MacConnectionMode.Proxy)]
+    [InlineData(MacConnectionMode.Vpn)]
+    public void UnrestrictedGlobalResolvesWithRemoteDnsBeforeSocksHandoff(MacConnectionMode mode)
+    {
+        const string direction = "CAN -> HKG";
+        using var lease = new NativeOutboundLease(180, "global-test", new string('a', 64), DateTimeOffset.UtcNow.AddMinutes(3),
+            "tcp+udp", direction, "global", NativeOutboundLease.ComputeScopeDigestV2(180, direction, "tcp+udp", "global", "unrestricted"),
+            "203.0.113.10", 5438, [1], [2], routePolicy: "unrestricted");
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(lease, mode, []).Json);
+        var route = document.RootElement.GetProperty("route");
+        Assert.Equal("remote", route.GetProperty("default_domain_resolver").GetString());
+        Assert.Contains(route.GetProperty("rules").EnumerateArray(), item =>
+            item.TryGetProperty("action", out var action) && action.GetString() == "resolve"
+            && item.GetProperty("strategy").GetString() == "ipv4_only");
+        Assert.Equal("proxy", document.RootElement.GetProperty("dns").GetProperty("servers")[0].GetProperty("detour").GetString());
+        Assert.Equal("ipv4_only", document.RootElement.GetProperty("dns").GetProperty("strategy").GetString());
+        if (mode == MacConnectionMode.Vpn)
+        {
+            var local = document.RootElement.GetProperty("dns").GetProperty("servers").EnumerateArray()
+                .Single(server => server.GetProperty("tag").GetString() == "local");
+            Assert.Equal("udp", local.GetProperty("type").GetString());
+            Assert.Equal("223.5.5.5", local.GetProperty("server").GetString());
+            Assert.False(local.TryGetProperty("detour", out _));
+        }
+    }
+
     [Fact]
     public void VpnLetsRuntimeAllocateDarwinUtunInsteadOfDisplayName()
     {

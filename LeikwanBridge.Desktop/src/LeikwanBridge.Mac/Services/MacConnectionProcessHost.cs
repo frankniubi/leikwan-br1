@@ -68,18 +68,20 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
             var privileged = mode == MacConnectionMode.Vpn && OperatingSystem.IsMacOS();
             var lifetime = privileged ? configPath + ".keep" : null;
             var errorPath = privileged ? configPath + ".stderr" : null;
+            var dnsPath = privileged ? configPath + ".dns" : null;
             try
             {
                 if (privileged)
                 {
                     CreatePrivateFile(lifetime!);
                     CreatePrivateFile(errorPath!);
+                    CreatePrivateFile(dnsPath!);
                 }
                 var info = privileged
-                    ? BuildPrivilegedStartInfo(executablePath, configPath, lifetime!, errorPath!)
+                    ? BuildPrivilegedStartInfo(executablePath, configPath, lifetime!, errorPath!, dnsPath!)
                     : BuildDirectStartInfo(executablePath, configPath);
                 var process = _processStarter(info);
-                var run = new Run(process, configPath, mode, lifetime, errorPath, managesSystemProxy ? port : 0);
+                var run = new Run(process, configPath, mode, lifetime, errorPath, managesSystemProxy ? port : 0, dnsPath);
                 _run = run;
                 process.OutputDataReceived += (_, _) => { };
                 process.ErrorDataReceived += (_, args) => run.AppendError(args.Data);
@@ -103,7 +105,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                             ? await _readinessProbe(configPath, mode, timeout.Token).ConfigureAwait(false)
                             : mode == MacConnectionMode.Proxy
                                 ? await ProbePortAsync(port, timeout.Token).ConfigureAwait(false)
-                                : GetTunInterfaces().Except(previousInterfaces).Any();
+                                : GetTunInterfaces().Except(previousInterfaces).Any() && run.DnsReady;
                         if (ready && IsAlive(process)) break;
                         await Task.Delay(100, timeout.Token).ConfigureAwait(false);
                     }
@@ -120,6 +122,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                 await StopCoreAsync().ConfigureAwait(false);
                 DeleteFile(lifetime);
                 DeleteFile(errorPath);
+                DeleteFile(dnsPath);
                 throw;
             }
         }
@@ -180,6 +183,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         {
             run.Process.Dispose();
             DeleteFile(run.ErrorPath);
+            DeleteFile(run.DnsPath);
             if (OperatingSystem.IsMacOS() && run.ManagedProxyPort > 0)
             {
                 try { await ClearOwnedSystemProxyAsync(run.ManagedProxyPort, new MacCommandRunner()).ConfigureAwait(false); }
@@ -251,6 +255,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         if (text.Contains("address already in use", StringComparison.OrdinalIgnoreCase)) return "connection_port_in_use";
         if (text.Contains("decode config", StringComparison.OrdinalIgnoreCase)) return "connection_config_invalid";
         if (text.Contains("rule-set", StringComparison.OrdinalIgnoreCase)) return "connection_rule_set_unavailable";
+        if (text.Contains("vpn_dns_unavailable", StringComparison.Ordinal)) return "vpn_dns_unavailable";
         return mode == MacConnectionMode.Vpn ? "vpn_process_exited" : "connection_process_exited";
     }
 
@@ -263,13 +268,19 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         return info;
     }
 
-    private static ProcessStartInfo BuildPrivilegedStartInfo(string executablePath, string configPath, string lifetime, string errorPath)
+    private static ProcessStartInfo BuildPrivilegedStartInfo(string executablePath, string configPath, string lifetime, string errorPath, string dnsPath)
     {
+        var dnsCommands = MacTunDnsSession.BuildCommands(Guid.NewGuid().ToString("N"));
         var command = $"umask 077; if [ ! -f {ShellQuote(lifetime)} ]; then exit 1; fi; "
             + $"{ShellQuote(executablePath)} run -c {ShellQuote(configPath)} >/dev/null 2>>{ShellQuote(errorPath)} & child=$!; "
+            + "dns_pid=''; "
             + $"while kill -0 \"$child\" 2>/dev/null; do if [ ! -f {ShellQuote(lifetime)} ] || ! kill -0 {Environment.ProcessId} 2>/dev/null; then "
             + "kill -TERM \"$child\" 2>/dev/null; n=0; while kill -0 \"$child\" 2>/dev/null && [ \"$n\" -lt 30 ]; do sleep 0.1; n=$((n+1)); done; "
-            + "kill -KILL \"$child\" 2>/dev/null; break; fi; sleep 0.1; done; wait \"$child\"";
+            + "kill -KILL \"$child\" 2>/dev/null; break; fi; "
+            + $"if [ -z \"$dns_pid\" ] && /sbin/ifconfig -a | /usr/bin/grep -q 'inet {MacConnectionConfigBuilder.TunAddress.Split('/')[0]} '; then "
+            + $"( {{ printf '%s' {ShellQuote(dnsCommands)}; while [ -f {ShellQuote(lifetime)} ] && kill -0 \"$child\" 2>/dev/null && kill -0 {Environment.ProcessId} 2>/dev/null; do sleep 0.2; done; printf 'quit\\n'; }} | /usr/sbin/scutil >{ShellQuote(dnsPath)} 2>>{ShellQuote(errorPath)} ) & dns_pid=$!; /usr/bin/dscacheutil -flushcache >/dev/null 2>&1; fi; "
+            + $"if [ -n \"$dns_pid\" ] && ! kill -0 \"$dns_pid\" 2>/dev/null; then printf 'vpn_dns_unavailable\\n' >>{ShellQuote(errorPath)}; kill -TERM \"$child\" 2>/dev/null; fi; "
+            + "sleep 0.1; done; wait \"$child\"; rc=$?; if [ -n \"$dns_pid\" ]; then wait \"$dns_pid\"; /usr/bin/dscacheutil -flushcache >/dev/null 2>&1; fi; exit \"$rc\"";
         var info = NewStartInfo("/usr/bin/osascript");
         info.ArgumentList.Add("-e");
         info.ArgumentList.Add($"do shell script {AppleScriptQuote(command)} with administrator privileges");
@@ -309,7 +320,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
     [DllImport("libSystem.B.dylib", SetLastError = true)]
     private static extern int kill(int pid, int signal);
 
-    private sealed class Run(Process process, string configPath, MacConnectionMode mode, string? lifetime, string? errorPath, int managedProxyPort)
+    private sealed class Run(Process process, string configPath, MacConnectionMode mode, string? lifetime, string? errorPath, int managedProxyPort, string? dnsPath)
     {
         private readonly StringBuilder _error = new();
         public Process Process { get; } = process;
@@ -317,6 +328,16 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         public MacConnectionMode Mode { get; } = mode;
         public string? Lifetime { get; } = lifetime;
         public string? ErrorPath { get; } = errorPath;
+        public string? DnsPath { get; } = dnsPath;
+        public bool DnsReady
+        {
+            get
+            {
+                try { return DnsPath is not null && MacTunDnsSession.IsReady(File.ReadAllText(DnsPath)); }
+                catch (IOException) { return false; }
+                catch (UnauthorizedAccessException) { return false; }
+            }
+        }
         public int ManagedProxyPort { get; } = managedProxyPort;
         public Task Monitor { get; set; } = Task.CompletedTask;
         public string ErrorCode { get { lock (_error) return ClassifyError(_error.ToString(), Mode); } }
