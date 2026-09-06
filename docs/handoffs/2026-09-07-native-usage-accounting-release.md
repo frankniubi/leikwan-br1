@@ -7,7 +7,7 @@ are ready locally. Production publication is **blocked** because the panel
 origin is unavailable. No upload or remote mutation was performed in this
 run.
 
-Source commit: `ef310e591eff23692ed937c0f1e8593b5a044d5b`.
+Source commit: `806e934789c7f9d92a99954d23bad6361b7c276d`.
 
 ## Root cause and fix
 
