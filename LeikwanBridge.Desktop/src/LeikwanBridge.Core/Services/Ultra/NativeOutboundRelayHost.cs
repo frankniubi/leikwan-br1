@@ -180,7 +180,15 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             SetPrivateDirectoryMode(root);
             _runtimeRoot = root;
             var configPath = Path.Combine(root, "runtime.json");
-            var statusPath = Path.Combine(root, "status.json");
+            // Keep the non-secret usage snapshot outside the private runtime
+            // directory. StopCoreAsync removes that directory, while the
+            // heartbeat must still collect the final counters after a stop.
+            var usageRoot = Path.Combine(Path.GetFullPath(runtimeDirectory), "native-usage");
+            var usageInstanceRoot = Path.Combine(usageRoot, $"native-{forwardId}-{instanceId}");
+            Directory.CreateDirectory(usageInstanceRoot);
+            SetPrivateDirectoryMode(usageRoot);
+            SetPrivateDirectoryMode(usageInstanceRoot);
+            var statusPath = Path.Combine(usageInstanceRoot, "status.json");
             var controlPipeName = UltraLeaseClient.NativePipeName(forwardId, instanceId);
             string controlPath;
             if (_windows)
@@ -422,7 +430,33 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             try
             {
                 if (!process.HasExited)
-                    process.Kill(entireProcessTree: true);
+                {
+                    if (!OperatingSystem.IsWindows())
+                    {
+                        try
+                        {
+                            using var signal = Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "/bin/kill",
+                                ArgumentList = { "-TERM", process.Id.ToString() },
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                            });
+                            signal?.WaitForExit(1000);
+                            if (!process.WaitForExit(4000) && !process.HasExited)
+                                process.Kill(entireProcessTree: true);
+                        }
+                        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or System.IO.IOException)
+                        {
+                            if (!process.HasExited)
+                                process.Kill(entireProcessTree: true);
+                        }
+                    }
+                    else
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
                 await process.WaitForExitAsync().ConfigureAwait(false);
             }
             catch (InvalidOperationException)

@@ -41,6 +41,8 @@ public sealed class UltraUsageSnapshot
 public sealed class HeartbeatResponse
 {
     [JsonPropertyName("ok")] public bool Ok { get; set; }
+    [JsonPropertyName("ultra_usage_acknowledged")]
+    public bool? UltraUsageAcknowledged { get; set; }
     [JsonPropertyName("ultra_actions")] public List<UltraPolicyAction> UltraActions { get; set; } = [];
 }
 
