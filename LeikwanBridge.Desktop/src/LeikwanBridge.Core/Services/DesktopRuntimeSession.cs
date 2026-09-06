@@ -74,6 +74,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _polling.ForwardsUpdated += OnForwardsUpdated;
         _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
+        _polling.PreparationProgress += (done, total) => LogRaised?.Invoke($"preparing_routes:{done}/{total}");
         _polling.PullStateChanged += state =>
         {
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
@@ -126,7 +127,9 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         if (_cts is not null)
             return;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        await _polling.SyncOnceAsync(_cts.Token);
+        LogRaised?.Invoke("preparing_config");
+        await _polling.SyncOnceAsync(_cts.Token).ConfigureAwait(false);
+        _cts.Token.ThrowIfCancellationRequested();
         _polling.Start(_pollIntervalSeconds);
         _heartbeatLoop = RunHeartbeatLoopAsync(_cts.Token);
     }
@@ -175,9 +178,11 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         ct.ThrowIfCancellationRequested();
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
             ?? throw new KeyNotFoundException("forward_not_found");
-        _runtime.RestartForward(forward, force: true, reason: "manual_apply");
-        PublishCurrentForwards();
-        return Task.CompletedTask;
+        return Task.Run(() =>
+        {
+            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+            PublishCurrentForwards();
+        }, ct);
     }
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct)
@@ -360,9 +365,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             await gate.WaitAsync(ct);
             try
             {
-                await Task.Yield();
-                ct.ThrowIfCancellationRequested();
-                await action(item);
+                await Task.Run(() => action(item), ct).ConfigureAwait(false);
             }
             finally
             {

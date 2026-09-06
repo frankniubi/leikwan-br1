@@ -38,6 +38,7 @@ public sealed class ConfigPollingService
     public event Action<int, string>? ForwardRejected;
     public event Action<ClientMeta>? ClientUpdated;
     public event Action<NativeOutboundCapability?>? NativeOutboundUpdated;
+    public event Action<int, int>? PreparationProgress;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
     public ClientMeta? LatestClient => _latestClient;
@@ -262,10 +263,16 @@ public sealed class ConfigPollingService
         // Resolve and apply independent forwards concurrently, but keep a
         // bounded worker count so a large client cannot exhaust local threads
         // or sockets. Each task owns its own lease/error boundary.
+        var prepared = 0;
+        PreparationProgress?.Invoke(0, forwards.Count);
         await RunBoundedAsync(
             forwards,
             MaxConcurrentForwardOperations,
-            forward => ReconcileForwardAsync(forward, applied, ct),
+            async forward =>
+            {
+                await ReconcileForwardAsync(forward, applied, ct).ConfigureAwait(false);
+                PreparationProgress?.Invoke(Interlocked.Increment(ref prepared), forwards.Count);
+            },
             ct);
 
         if (_latestClient is not null)
@@ -366,12 +373,9 @@ public sealed class ConfigPollingService
             await gate.WaitAsync(ct);
             try
             {
-                // Yield before invoking potentially synchronous runtime work;
-                // otherwise the first non-async forward would monopolize the
-                // caller while the task list is being enumerated.
-                await Task.Yield();
-                ct.ThrowIfCancellationRequested();
-                await action(item);
+                // Runtime hosts are synchronous. Task.Yield retains a UI
+                // context and can deadlock lease IPC during the initial pull.
+                await Task.Run(() => action(item), ct).ConfigureAwait(false);
             }
             finally
             {

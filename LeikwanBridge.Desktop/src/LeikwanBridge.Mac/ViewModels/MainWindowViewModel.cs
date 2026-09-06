@@ -28,6 +28,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private string _nativeActiveRouteScope = "global";
     private bool _nativeActiveBypassChina;
     private bool _nativeActiveUnrestricted;
+    private string _preparationProgress = string.Empty;
 
     public MainWindowViewModel(
         IDesktopClientController controller,
@@ -57,7 +58,22 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _controller.ForwardsChanged += forwards => _dispatch(() => ApplyForwards(forwards));
         _controller.NativeOutboundChanged += capability => _dispatch(() => ApplyNativeOutbound(capability));
         _controller.NoticeRaised += notice => _dispatch(() => ShowNotice(notice));
-        _controller.LogRaised += message => _dispatch(() => AddLog(message));
+        _controller.LogRaised += message => _dispatch(() =>
+        {
+            if (message.StartsWith("preparing_routes:", StringComparison.Ordinal)
+                && System.Text.RegularExpressions.Regex.IsMatch(message, @"^preparing_routes:\d{1,5}/\d{1,5}$"))
+            {
+                _preparationProgress = message["preparing_routes:".Length..];
+                OnPropertyChanged(nameof(BusyMessage));
+            }
+            else if (message is "preparing_config" or "connected" or "connection_failed")
+            {
+                if (message is "preparing_config")
+                    _preparationProgress = string.Empty;
+                OnPropertyChanged(nameof(BusyMessage));
+            }
+            AddLog(message);
+        });
         _controller.UpdateAvailable += version => _dispatch(() => ShowUpdate(version));
         if (_connections is not null)
         {
@@ -686,7 +702,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
         ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
+        if (!snapshot.IsBusy)
+            _preparationProgress = string.Empty;
+        OnPropertyChanged(nameof(BusyMessage));
     }
+
+    public string BusyMessage => IsLoginVisible ? "Signing in"
+        : ConnectionStatus == "refreshing" ? "Refreshing routes"
+        : "Starting routes" + (_preparationProgress.Length == 0 ? string.Empty : " " + _preparationProgress);
 
     private async Task LoadConnectionsAsync()
     {

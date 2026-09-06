@@ -550,7 +550,7 @@
           <Border Background="#B3FFFFFF" IsVisible="{Binding IsBusy}">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12">
               <ProgressBar Width="180" IsIndeterminate="True" />
-              <TextBlock Text="Working" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding BusyMessage}" FontWeight="SemiBold" />
             </StackPanel>
           </Border>
         </Grid>

@@ -19,7 +19,7 @@ public sealed class UnixUltraLeaseClient
     }
 
     public async Task<bool> SendAsync(string socketPath, int forwardId, UltraLease lease, CancellationToken ct = default)
-        => await SendAsync(socketPath, forwardId, new[] { lease }, ct);
+        => await SendAsync(socketPath, forwardId, new[] { lease }, ct).ConfigureAwait(false);
 
     public async Task<bool> SendNativeAsync(
         string socketPath,
@@ -91,17 +91,17 @@ public sealed class UnixUltraLeaseClient
                 ? BatchTimeout
                 : (_timeout > TimeSpan.FromSeconds(5) ? _timeout : TimeSpan.FromSeconds(5)));
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token).ConfigureAwait(false);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            await stream.WriteAsync(frame, timeout.Token);
-            await stream.FlushAsync(timeout.Token);
+            await stream.WriteAsync(frame, timeout.Token).ConfigureAwait(false);
+            await stream.FlushAsync(timeout.Token).ConfigureAwait(false);
             header = new byte[4];
-            await ReadExactlyAsync(stream, header, timeout.Token);
+            await ReadExactlyAsync(stream, header, timeout.Token).ConfigureAwait(false);
             var length = BinaryPrimitives.ReadUInt32BigEndian(header);
             if (length is < 1 or > MaxFrameBytes)
                 return false;
             response = new byte[length];
-            await ReadExactlyAsync(stream, response, timeout.Token);
+            await ReadExactlyAsync(stream, response, timeout.Token).ConfigureAwait(false);
             using var document = JsonDocument.Parse(response);
             var root = document.RootElement;
             return root.TryGetProperty("ok", out var ok)
@@ -178,18 +178,18 @@ public sealed class UnixUltraLeaseClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(leases.Count == 1 ? _timeout : BatchTimeout);
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token).ConfigureAwait(false);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            await stream.WriteAsync(frame, timeout.Token);
-            await stream.FlushAsync(timeout.Token);
+            await stream.WriteAsync(frame, timeout.Token).ConfigureAwait(false);
+            await stream.FlushAsync(timeout.Token).ConfigureAwait(false);
 
             header = new byte[4];
-            await ReadExactlyAsync(stream, header, timeout.Token);
+            await ReadExactlyAsync(stream, header, timeout.Token).ConfigureAwait(false);
             var responseLength = BinaryPrimitives.ReadUInt32BigEndian(header);
             if (responseLength is < 1 or > MaxFrameBytes)
                 return false;
             response = new byte[responseLength];
-            await ReadExactlyAsync(stream, response, timeout.Token);
+            await ReadExactlyAsync(stream, response, timeout.Token).ConfigureAwait(false);
             using var document = JsonDocument.Parse(response);
             var root = document.RootElement;
             return root.TryGetProperty("ok", out var ok)
@@ -229,7 +229,7 @@ public sealed class UnixUltraLeaseClient
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var count = await stream.ReadAsync(buffer.AsMemory(offset), ct);
+            var count = await stream.ReadAsync(buffer.AsMemory(offset), ct).ConfigureAwait(false);
             if (count <= 0)
                 throw new EndOfStreamException();
             offset += count;
