@@ -30,4 +30,4 @@ The Windows named-pipe path is unchanged. Lease framing, route policy, candidate
 
 This is a Mac-only candidate fix. Production remains Mac `1.0.8`; Android, Windows, Linux and PHP artifacts are untouched. Publish only after the interactive test host confirms the native-outbound control socket and local proxy traffic. Do not infer this fix from the ordinary Ultra listener logs alone.
 
-Implementation commit: pending in the current checkout.
+Implementation commit: `91269714` (`fix(mac): use short Unix path for native relay control`).
