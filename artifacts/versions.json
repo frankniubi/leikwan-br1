@@ -29,8 +29,8 @@
  "client_agent_update": {
   "artifact_url": "/artifacts/client-agent-update.sh",
   "path": "install/client-agent-update.sh",
-    "sha256": "0e4db6d745b120aa13d85b23af7deb072752cfece83676630fcf7502a794200b",
-    "size_bytes": 17255,
+  "sha256": "0e4db6d745b120aa13d85b23af7deb072752cfece83676630fcf7502a794200b",
+  "size_bytes": 17255,
   "version": "2026.08.29.1"
  },
  "client_rate_limit": {
@@ -43,9 +43,9 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "4eba48e2d3974b0c26e58b75f7130a567ed8d08d29caf99f1fb88c4e12daf497",
-     "size": 293742,
-     "size_bytes": 293742,
+  "sha256": "4eba48e2d3974b0c26e58b75f7130a567ed8d08d29caf99f1fb88c4e12daf497",
+  "size": 293742,
+  "size_bytes": 293742,
   "version": "2026.08.31.1"
  },
  "client_agent_installer": {
@@ -53,16 +53,16 @@
   "install_url": "/artifacts/install-client-agent.sh",
   "path": "install/install-client-agent.sh",
   "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "78387c65c7de7356a0362902b6afd9d4d2d37b603fd47a2bd0fea8fb425fbb54",
-    "size_bytes": 31671,
+  "sha256": "78387c65c7de7356a0362902b6afd9d4d2d37b603fd47a2bd0fea8fb425fbb54",
+  "size_bytes": 31671,
   "version": "2026.08.29.3"
  },
  "client_installer": {
   "install_url": "/artifacts/install-client.sh",
   "path": "install/install-client.sh",
   "remote_install_url": "/artifacts/remote-install-client.sh",
-    "sha256": "399bcbe34bce16d8307dc7f14d17e5f641f7cecc67665144090c809729ec8485",
-    "size_bytes": 16827,
+  "sha256": "399bcbe34bce16d8307dc7f14d17e5f641f7cecc67665144090c809729ec8485",
+  "size_bytes": 16827,
   "version": "2026.08.29.1"
  },
  "client_installer_windows": {
@@ -91,14 +91,14 @@
   "size_bytes": 9673064,
   "version": "3.2.6"
  },
-  "install_forward_runtime": {
+ "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
   "path": "client-agent/install_forward_runtime.py",
-     "sha256": "dca7be32de466358b40ba80f7496802f8364aa9e75935541938db6392c17628d",
-     "size": 95476,
-     "size_bytes": 95476,
-    "version": "2026.08.31.3"
-  },
+  "sha256": "dca7be32de466358b40ba80f7496802f8364aa9e75935541938db6392c17628d",
+  "size": 95476,
+  "size_bytes": 95476,
+  "version": "2026.08.31.3"
+ },
  "leigod_forward_relay": {
   "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
   "path": "slave-agent/leigod_forward_relay.py",
@@ -221,9 +221,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "sha256": "0b73922f0806d3118f20cd68b3900d39743d812ab4438a584c92344be9276e81",
-  "size_bytes": 77854694,
-  "version": "1.0.7"
+  "sha256": "90ff44c9df58ebe7b4ade6c1929239cd3270beda7d8a41e74a8d50d38408fd34",
+  "size_bytes": 76752149,
+  "version": "1.0.15"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
@@ -235,9 +235,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "sha256": "15da3bbbb67575a29e7c915c5e2a4caa08b9310d0391841cfafca81c846256fb",
-  "size_bytes": 81356219,
-  "version": "1.0.7"
+  "sha256": "2678a1a8ffcba538bb783f004a12c871744f0dc18aa19acaf93f89d39bd2257e",
+  "size_bytes": 81434373,
+  "version": "1.0.15"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
@@ -249,9 +249,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "sha256": "2d94fd0f895df8a501f1475f8c107de4083171e3a7de3733ed10175b77acc24d",
-  "size_bytes": 68500842,
-  "version": "1.0.7"
+  "sha256": "9226cd30c03d9d618f7144ff4b466671a19aade3c986d6b3ea016b048e51e4ca",
+  "size_bytes": 68381756,
+  "version": "1.0.15"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
@@ -263,9 +263,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "sha256": "9a01e6956e147fd452f8af39663e372993b986da326e7af513f5d0fad3b48bc2",
-  "size_bytes": 72005046,
-  "version": "1.0.7"
+  "sha256": "e937d5cdffd6e72f124df635737ce24870eb2cb7dd63a38e5999a3300bab6c31",
+  "size_bytes": 72658346,
+  "version": "1.0.15"
  },
  "mptcp_client_runtime": {
   "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -389,12 +389,12 @@
   "version": "2026.08.31.8"
  },
  "ultra_client_runtime_windows": {
- "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
- "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
- "build": "go1.26.5 windows/amd64, cgo-disabled, stripped, legacy-first-native-greeting",
- "sha256": "9221a9ba268ce290f684ebf859aba834ccb235fe5c27eb123732595101b44f1e",
- "size_bytes": 6869504,
- "version": "2026.09.04.2"
+  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+  "build": "go1.26.5 windows/amd64, cgo-disabled, stripped, legacy-first-native-greeting",
+  "sha256": "9221a9ba268ce290f684ebf859aba834ccb235fe5c27eb123732595101b44f1e",
+  "size_bytes": 6869504,
+  "version": "2026.09.04.2"
  },
  "ultra_client_runtime_macos_x64": {
   "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
@@ -430,11 +430,11 @@
   "version": "2026.05.29.1"
  },
  "windows_client_app": {
- "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
- "path": "artifacts/windows/leikwan-bridge-setup.exe",
- "sha256": "70e38659330b85df42574c8de2572a90bab8a0b3ccb0dcae6254a0623cc16513",
- "size_bytes": 22436617,
- "version": "0.1.20.7"
+  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+  "path": "artifacts/windows/leikwan-bridge-setup.exe",
+  "sha256": "70e38659330b85df42574c8de2572a90bab8a0b3ccb0dcae6254a0623cc16513",
+  "size_bytes": 22436617,
+  "version": "0.1.20.7"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",

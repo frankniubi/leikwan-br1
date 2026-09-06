@@ -38,6 +38,7 @@ public interface IDesktopClientController : IAsyncDisposable
 
 public sealed class DesktopClientController : IDesktopClientController
 {
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(45);
     private readonly AgentConfig _config;
     private readonly ClientPlatformIdentity _identity;
     private readonly Func<AgentConfig, CancellationToken, Task> _saveConfig;
@@ -221,7 +222,10 @@ public sealed class DesktopClientController : IDesktopClientController
             session.ForwardRejected += (_, notice) => NoticeRaised?.Invoke(notice);
             session.LogRaised += message => LogRaised?.Invoke(message);
             _runtimeSession = session;
-            await session.StartAsync(ct);
+            PublishSnapshot(Snapshot with { ConnectionStatus = "starting_routes" });
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectCts.CancelAfter(ConnectTimeout);
+            await session.StartAsync(connectCts.Token).ConfigureAwait(false);
             PublishSnapshot(Snapshot with
             {
                 IsConnected = true,

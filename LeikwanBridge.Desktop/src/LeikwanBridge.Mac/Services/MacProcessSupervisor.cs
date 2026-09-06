@@ -12,7 +12,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
     public const int SigKill = 9;
     public const int SigTerm = 15;
 
-    private sealed record ManagedProcess(int ForwardId, string Role, string Label, Process Process, DateTime StartedAt);
+    private sealed record ManagedProcess(int ForwardId, string Role, string Label, Process Process, DateTime StartedAt, bool OwnsProcessGroup);
 
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
     private readonly Action<int, string, string>? _onOutput;
@@ -70,7 +70,8 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             Log.Information("macOS process spawned for forward {ForwardId} [{Role}] pid={ProcessId}",
                 forwardId, role, process.Id);
             process.EnableRaisingEvents = true;
-            if (_setProcessGroup(process.Id, process.Id) != 0)
+            var ownsProcessGroup = _setProcessGroup(process.Id, process.Id) == 0;
+            if (!ownsProcessGroup)
                 Log.Warning("process_group_create_failed for forward {ForwardId} [{Role}]", forwardId, role);
 
             process.OutputDataReceived += (_, eventArgs) =>
@@ -109,7 +110,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow);
+            var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow, ownsProcessGroup);
             _processes.AddOrUpdate(
                 forwardId,
                 _ => [managed],
@@ -157,7 +158,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         {
             var processId = TryGetProcessId(item.Process);
             if (processId > 0)
-                _signalProcessGroup(-processId, SigTerm);
+                _signalProcessGroup(item.OwnsProcessGroup ? -processId : processId, SigTerm);
         }
 
         var deadline = DateTime.UtcNow + _stopTimeout;
@@ -179,7 +180,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         {
             var processId = TryGetProcessId(item.Process);
             if (processId > 0)
-                _signalProcessGroup(-processId, SigKill);
+                _signalProcessGroup(item.OwnsProcessGroup ? -processId : processId, SigKill);
         }
         foreach (var item in snapshot)
         {

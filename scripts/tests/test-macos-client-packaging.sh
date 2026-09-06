@@ -69,6 +69,15 @@ run_dry() {
 
 [[ -f "$build_script" ]] || fail "build script missing"
 [[ -f "$package_script" ]] || fail "package script missing"
+python3 - "$repo_root" <<'PY'
+import pathlib
+import xml.etree.ElementTree as ET
+import sys
+root=pathlib.Path(sys.argv[1])
+project=ET.parse(root/'LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj').getroot()
+target=next(t for t in project.findall('Target') if t.get('Name')=='CreateMacBundleAppHost')
+assert target.find('CreateAppHost').get('AppBinaryName')=='../Resources/dotnet/$(AssemblyName)$(TargetExt)'
+PY
 bash -n "$build_script"
 bash -n "$package_script"
 build_plan="$(bash "$build_script" --rid osx-arm64 --dry-run)"
@@ -95,6 +104,15 @@ run_dry "$good" >/dev/null
 good_x64="$temp_root/good-x64"
 make_fixture "$good_x64" x86_64
 run_dry "$good_x64" osx-x64 >/dev/null
+
+crlf="$temp_root/crlf"
+make_fixture "$crlf" arm64
+python3 - "$crlf/helper-hashes.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+PY
+run_dry "$crlf" >/dev/null
 
 missing="$temp_root/missing"
 make_fixture "$missing" arm64

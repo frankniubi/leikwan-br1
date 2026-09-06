@@ -14,6 +14,7 @@ public static class WindowsProxyConfigBuilder
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
+    private const string NativeRuleSetDownloadHost = "raw.githubusercontent.com";
 
     public static string NormalizeTunStack(string? value)
     {
@@ -108,6 +109,8 @@ public static class WindowsProxyConfigBuilder
         AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
+        if (IsNativeRestrictedScope(lease.RouteScope))
+            AddHost(NativeRuleSetDownloadHost, bypassIps, bypassDomains);
 
         using var fragment = JsonDocument.Parse(
             NativeOutboundConfigBuilder.Build(
@@ -158,7 +161,7 @@ public static class WindowsProxyConfigBuilder
             root["route"]!.AsObject(),
             lease.RouteScope,
             chinaIpCidrs.Count > 0,
-            lease.RouteScope == "cn_only" ? "direct" : "proxy");
+            lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
 
         return new WindowsProxyConfigResult(
             root.ToJsonString(),
@@ -235,10 +238,10 @@ public static class WindowsProxyConfigBuilder
                 var tag = $"custom-{index}";
                 var customServer = new JsonObject
                 {
-                    // DNS over TCP keeps TUN resolution working when a node
-                    // has no usable native UDP path (notably SS2022 on some
-                    // servers).  It still traverses the selected proxy.
-                    ["type"] = "tcp",
+                    // Native SOCKS5 carries DNS as real UDP. TCP DNS through
+                    // the provider can be accepted at the SOCKS layer while
+                    // the upstream resolver closes the stream before replying.
+                    ["type"] = IsNativeRestrictedScope(nativeRouteScope) ? "udp" : "tcp",
                     ["tag"] = tag,
                     ["server"] = custom[index],
                     ["server_port"] = 53,
@@ -276,6 +279,8 @@ public static class WindowsProxyConfigBuilder
             ["servers"] = servers,
             ["final"] = finalTag,
         };
+        if (IsNativeRestrictedScope(nativeRouteScope))
+            dns["strategy"] = "ipv4_only";
         var dnsRules = new JsonArray();
         var domains = bootstrap.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (domains.Length > 0)
@@ -598,7 +603,7 @@ public static class WindowsProxyConfigBuilder
                 ["tag"] = "geoip-cn",
                 ["type"] = "remote",
                 ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
                 ["download_detour"] = downloadDetour,
             },
             new JsonObject
@@ -606,7 +611,7 @@ public static class WindowsProxyConfigBuilder
                 ["tag"] = "geosite-cn",
                 ["type"] = "remote",
                 ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
                 ["download_detour"] = downloadDetour,
             },
         };

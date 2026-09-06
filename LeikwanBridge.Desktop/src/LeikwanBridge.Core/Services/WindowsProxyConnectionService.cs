@@ -30,6 +30,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
     private int _activeProfileId;
     private NativeOutboundLease? _activeNativeLease;
+    private List<NativeOutboundLease> _activeNativeLeases = [];
     private bool _stopCompleted;
     private bool _disposed;
 
@@ -88,6 +89,18 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     public bool IsNativeOutboundActive
         => _activeNativeLease is not null
             && _snapshot.State == WindowsProxyConnectionState.Connected;
+
+    /// <summary>
+    /// Reports whether both halves of the native data plane are alive and, in
+    /// TUN mode, the interface is actually ready to carry traffic.
+    /// Lease delivery can fail transiently while these processes continue to
+    /// carry traffic; callers must preserve the data plane in that case.
+    /// </summary>
+    public bool IsNativeDataPlaneRunning
+        => IsNativeOutboundActive
+            && _processHost.IsRunning
+            && (_snapshot.Mode != WindowsProxyMode.Tun || _processHost.IsTunReady)
+            && _nativeRelayHost.IsRunning;
 
     /// <summary>
     /// The configured loopback listener used by HTTP and process mode.
@@ -232,7 +245,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 try
                 {
                     await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
-                    await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                    await StartProxyProcessAsync(configPath, mode, ct);
                     if (mode == WindowsProxyMode.Process
                         && _processHost is WindowsProxyProcessHost concreteHost
                         && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
@@ -317,7 +330,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     /// name="lease"/> transfers to this service once startup succeeds; it is
     /// wiped whenever the connection is stopped or startup fails.
     /// </summary>
-    public async Task StartNativeAsync(
+    public Task StartNativeAsync(
         WindowsProxyMode mode,
         NativeOutboundLease lease,
         IEnumerable<string>? bypassHosts = null,
@@ -326,8 +339,29 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         bool bypassChinaMainland = false,
         WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
         IEnumerable<string>? customDnsServers = null)
+        => StartNativeAsync(
+            mode,
+            new[] { lease },
+            bypassHosts,
+            processRules,
+            ct,
+            bypassChinaMainland,
+            dnsMode,
+            customDnsServers);
+
+    public async Task StartNativeAsync(
+        WindowsProxyMode mode,
+        IReadOnlyList<NativeOutboundLease> leases,
+        IEnumerable<string>? bypassHosts = null,
+        IEnumerable<WindowsProcessProxyRule>? processRules = null,
+        CancellationToken ct = default,
+        bool bypassChinaMainland = false,
+        WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
+        IEnumerable<string>? customDnsServers = null)
     {
-        ArgumentNullException.ThrowIfNull(lease);
+        if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
+            throw new ArgumentException("native lease batch is invalid", nameof(leases));
+        var lease = leases[0];
         await _gate.WaitAsync(ct);
         var previousSnapshot = _snapshot;
         var connectionStopped = false;
@@ -336,7 +370,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!lease.IsUsable(DateTimeOffset.UtcNow))
+            if (leases.Any(candidate => candidate.ForwardId != lease.ForwardId
+                || !candidate.IsUsable(DateTimeOffset.UtcNow)))
                 throw new InvalidOperationException("native_lease_invalid");
             if (mode is not (WindowsProxyMode.Http or WindowsProxyMode.Tun or WindowsProxyMode.Process))
                 throw new InvalidOperationException("proxy_mode_invalid");
@@ -378,11 +413,11 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 ""));
             connectionStopped = true;
             await StopCoreAsync(ct);
-            await _nativeRelayHost.StartAsync(
+            await _nativeRelayHost.StartCandidatesAsync(
                 lease.ForwardId,
                 ResolveUltraBinaryPath(),
                 nativeRelayPort,
-                lease,
+                leases,
                 _runtimeDirectory,
                 ct);
             Directory.CreateDirectory(_runtimeDirectory);
@@ -392,7 +427,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 try
                 {
                     await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
-                    await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                    await StartProxyProcessAsync(configPath, mode, ct);
                     if (mode == WindowsProxyMode.Process
                         && _processHost is WindowsProxyProcessHost concreteHost
                         && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
@@ -432,6 +467,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
             _activeProfileId = 0;
             _activeNativeLease = lease;
+            _activeNativeLeases = leases.ToList();
             leaseTransferred = true;
             _stopCompleted = false;
             Publish(new WindowsProxySnapshot(
@@ -447,7 +483,10 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         catch (Exception exception)
         {
             if (!leaseTransferred)
-                lease.Dispose();
+            {
+                foreach (var candidate in leases)
+                    candidate.Dispose();
+            }
             if (connectionStopped || previousSnapshot.State != WindowsProxyConnectionState.Connected)
             {
                 Publish(new WindowsProxySnapshot(
@@ -471,11 +510,18 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     /// <paramref name="lease"/> when this returns false and may fall back to a
     /// full start.
     /// </summary>
-    public async Task<bool> TryRefreshNativeAsync(
+    public Task<bool> TryRefreshNativeAsync(
         NativeOutboundLease lease,
         CancellationToken ct = default)
+        => TryRefreshNativeAsync(new[] { lease }, ct);
+
+    public async Task<bool> TryRefreshNativeAsync(
+        IReadOnlyList<NativeOutboundLease> leases,
+        CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(lease);
+        if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
+            return false;
+        var lease = leases[0];
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -485,17 +531,24 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 || _snapshot.State != WindowsProxyConnectionState.Connected
                 || lease == current
                 || lease.ForwardId != current.ForwardId
-                || !string.Equals(lease.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(lease.Transport, current.Transport, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(lease.ScopeDigest, current.ScopeDigest, StringComparison.OrdinalIgnoreCase)
-                || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
+                || leases.Any(candidate => candidate.ForwardId != current.ForwardId
+                    || !string.Equals(candidate.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(candidate.Transport, current.Transport, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(candidate.ScopeDigest, current.ScopeDigest, StringComparison.OrdinalIgnoreCase)
+                    || !candidate.IsRuntimeUsable(DateTimeOffset.UtcNow)))
                 return false;
 
-            if (!await _nativeRelayHost.RefreshAsync(lease.ForwardId, lease, ct).ConfigureAwait(false))
+            if (!await _nativeRelayHost.RefreshCandidatesAsync(lease.ForwardId, leases, ct).ConfigureAwait(false))
                 return false;
 
+            var previousLeases = _activeNativeLeases;
             _activeNativeLease = lease;
-            current.Dispose();
+            _activeNativeLeases = leases.ToList();
+            foreach (var previous in previousLeases)
+            {
+                if (!leases.Any(candidate => ReferenceEquals(candidate, previous)))
+                    previous.Dispose();
+            }
             return true;
         }
         finally
@@ -592,19 +645,59 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
         if (failures.Count == 0)
         {
-            _activeNativeLease?.Dispose();
+            DisposeActiveNativeLeases();
             _activeNativeLease = null;
             _stopCompleted = true;
             return;
         }
 
-        _activeNativeLease?.Dispose();
+        DisposeActiveNativeLeases();
         _activeNativeLease = null;
         _stopCompleted = false;
         if (failures.Count == 1)
             throw failures[0];
         if (failures.Count > 1)
             throw new AggregateException("proxy_stop_failed", failures);
+    }
+
+    private async Task StartProxyProcessAsync(
+        string configPath,
+        WindowsProxyMode mode,
+        CancellationToken ct)
+    {
+        var attempts = mode == WindowsProxyMode.Tun ? 2 : 1;
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                await _processHost.StartAsync(_singBoxPath, configPath, mode, ct);
+                if (mode != WindowsProxyMode.Tun
+                    || await _processHost.WaitForTunReadyAsync(ct))
+                    return;
+                lastFailure = new InvalidOperationException("proxy_tun_unavailable");
+            }
+            catch (WindowsProxyProcessExitException exception) when (attempt < attempts)
+            {
+                lastFailure = exception;
+            }
+
+            await _processHost.StopAsync(CancellationToken.None);
+            if (attempt < attempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        }
+
+        throw lastFailure ?? new InvalidOperationException("proxy_tun_unavailable");
+    }
+
+    private void DisposeActiveNativeLeases()
+    {
+        var leases = _activeNativeLeases;
+        _activeNativeLeases = [];
+        foreach (var lease in leases)
+            lease.Dispose();
+        if (_activeNativeLease is not null && !leases.Any(lease => ReferenceEquals(lease, _activeNativeLease)))
+            _activeNativeLease.Dispose();
     }
 
     private int ResolveProxyPort(

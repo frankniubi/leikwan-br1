@@ -26,7 +26,9 @@ public sealed class ConfigPollingService
     private string _lastConfigRevision = "";
     private int _nextPollAfterMs;
     private int _syncInProgress;
+    private int _forceFullPull;
     private volatile bool _pendingResync;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _ultraRecoveries = new();
     private ClientMeta? _latestClient;
     private NativeOutboundCapability? _latestNativeOutbound;
 
@@ -36,6 +38,7 @@ public sealed class ConfigPollingService
     public event Action<int, string>? ForwardRejected;
     public event Action<ClientMeta>? ClientUpdated;
     public event Action<NativeOutboundCapability?>? NativeOutboundUpdated;
+    public event Action<int, int>? PreparationProgress;
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
     public ClientMeta? LatestClient => _latestClient;
@@ -51,6 +54,7 @@ public sealed class ConfigPollingService
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
         _forwardPolicy = forwardPolicy ?? WindowsForwardAcceptancePolicy.Instance;
+        _runtimeManager.UltraRecoveryRequested += RequestUltraRecovery;
     }
 
     public void Start(int intervalSeconds = 30)
@@ -66,7 +70,7 @@ public sealed class ConfigPollingService
                 {
                     await SyncOnceAsync(ct);
                 }
-                catch (OperationCanceledException) { break; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "config sync failed");
@@ -109,7 +113,19 @@ public sealed class ConfigPollingService
     /// <summary>Immediate revision-aware pull for reconnect / window-foreground / user Start.</summary>
     public void TriggerImmediateSync()
     {
-        _ = SyncOnceAsync(_cts?.Token ?? CancellationToken.None);
+        var ct = _cts?.Token ?? CancellationToken.None;
+        if (ct.IsCancellationRequested) return;
+        _ = Task.Run(async () =>
+        {
+            try { await SyncOnceAsync(ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "immediate config sync failed");
+                SyncError?.Invoke(ex);
+                SavePullError(ex);
+            }
+        }, ct);
     }
 
     /// <summary>
@@ -121,6 +137,14 @@ public sealed class ConfigPollingService
     {
         QueueConfigRefreshSoon();
         TriggerImmediateSync();
+    }
+
+    private void RequestUltraRecovery(int forwardId, string reason)
+    {
+        if (_cts?.IsCancellationRequested == true) return;
+        _ultraRecoveries[forwardId] = 0;
+        Log.Warning("Ultra recovery queued for fresh policy and lease (forward={ForwardId}, reason={Reason})", forwardId, reason);
+        RequestPolicyRefresh();
     }
 
     public async Task SyncOnceAsync(CancellationToken ct = default)
@@ -148,6 +172,8 @@ public sealed class ConfigPollingService
 
     private async Task SyncOnceCoreAsync(CancellationToken ct)
     {
+        if (Interlocked.Exchange(ref _forceFullPull, 0) != 0)
+            _lastConfigRevision = "";
         var sinceRevision = string.IsNullOrWhiteSpace(_lastConfigRevision) ? null : _lastConfigRevision;
         var pull = await _api.PullConfigsAsync(sinceRevision, LongPollWaitSeconds, ct);
         if (!pull.Ok)
@@ -237,10 +263,16 @@ public sealed class ConfigPollingService
         // Resolve and apply independent forwards concurrently, but keep a
         // bounded worker count so a large client cannot exhaust local threads
         // or sockets. Each task owns its own lease/error boundary.
+        var prepared = 0;
+        PreparationProgress?.Invoke(0, forwards.Count);
         await RunBoundedAsync(
             forwards,
             MaxConcurrentForwardOperations,
-            forward => ReconcileForwardAsync(forward, applied, ct),
+            async forward =>
+            {
+                await ReconcileForwardAsync(forward, applied, ct).ConfigureAwait(false);
+                PreparationProgress?.Invoke(Interlocked.Increment(ref prepared), forwards.Count);
+            },
             ct);
 
         if (_latestClient is not null)
@@ -305,7 +337,7 @@ public sealed class ConfigPollingService
         var signatureMatches = hasAppliedState
             && string.Equals(appliedState!.ContractSignature, contractSignature, StringComparison.Ordinal);
 
-        if (hasAppliedState && isRunning && signatureMatches)
+        if (hasAppliedState && isRunning && signatureMatches && !RecoveryNeedsRestart(effectiveForward))
         {
             if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
                 && !_runtimeManager.RefreshUltraLease(effectiveForward)
@@ -317,6 +349,7 @@ public sealed class ConfigPollingService
         try
         {
             _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            _ultraRecoveries.TryRemove(forward.ForwardId, out _);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -340,12 +373,9 @@ public sealed class ConfigPollingService
             await gate.WaitAsync(ct);
             try
             {
-                // Yield before invoking potentially synchronous runtime work;
-                // otherwise the first non-async forward would monopolize the
-                // caller while the task list is being enumerated.
-                await Task.Yield();
-                ct.ThrowIfCancellationRequested();
-                await action(item);
+                // Runtime hosts are synchronous. Task.Yield retains a UI
+                // context and can deadlock lease IPC during the initial pull.
+                await Task.Run(() => action(item), ct).ConfigureAwait(false);
             }
             finally
             {
@@ -421,7 +451,7 @@ public sealed class ConfigPollingService
         var signatureMatches = appliedState != null
             && string.Equals(appliedState.ContractSignature, contractSignature, StringComparison.Ordinal);
 
-        if (appliedState != null && isRunning && signatureMatches)
+        if (appliedState != null && isRunning && signatureMatches && !RecoveryNeedsRestart(effectiveForward))
         {
             if (!_runtimeManager.RefreshUltraLease(effectiveForward)
                 && !TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
@@ -432,6 +462,7 @@ public sealed class ConfigPollingService
         try
         {
             _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            _ultraRecoveries.TryRemove(forward.ForwardId, out _);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -441,6 +472,14 @@ public sealed class ConfigPollingService
         {
             Log.Error(ex, "failed applying forward {ForwardId} after lease refresh", forward.ForwardId);
         }
+    }
+
+    private bool RecoveryNeedsRestart(ForwardConfig forward)
+    {
+        if (!_ultraRecoveries.ContainsKey(forward.ForwardId)) return false;
+        if (!_runtimeManager.IsForwardReady(forward)) return true;
+        _ultraRecoveries.TryRemove(forward.ForwardId, out _);
+        return false;
     }
 
     private bool NeedsUltraPolicyRefresh()
@@ -491,6 +530,7 @@ public sealed class ConfigPollingService
 
     private void QueueConfigRefreshSoon()
     {
+        Interlocked.Exchange(ref _forceFullPull, 1);
         _lastConfigRevision = "";
         _nextPollAfterMs = _nextPollAfterMs > 0
             ? Math.Min(_nextPollAfterMs, ReArmDelayMs)

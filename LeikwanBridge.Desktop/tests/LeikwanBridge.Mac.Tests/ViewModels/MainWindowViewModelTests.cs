@@ -147,6 +147,12 @@ public sealed class MainWindowViewModelTests
 
         Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
         Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+        Assert.True(vm.NativeUnrestrictedRoute);
+        vm.SelectedNativeConnectionMode = LeikwanBridge.Mac.Services.MacConnectionMode.Proxy;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
+        Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
     }
 
     [Fact]
@@ -288,6 +294,21 @@ public sealed class MainWindowViewModelTests
         Assert.True(vm.CloseToTray);
         await vm.InstallUpdateCommand.ExecuteAsync(null);
         Assert.Equal(1, installCalls);
+    }
+
+    [Fact]
+    public void BusyStateDisplaysActualConnectionPhase()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = true, IsBusy = true, ConnectionStatus = "connecting" });
+        Assert.Contains("Starting", vm.BusyMessage);
+        controller.RaiseLog("preparing_config");
+        Assert.Equal("Starting routes", vm.BusyMessage);
+        controller.RaiseLog("preparing_routes:2/5");
+        Assert.Equal("Starting routes 2/5", vm.BusyMessage);
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = false, IsBusy = true });
+        Assert.Equal("Signing in", vm.BusyMessage);
     }
 
     [Fact]

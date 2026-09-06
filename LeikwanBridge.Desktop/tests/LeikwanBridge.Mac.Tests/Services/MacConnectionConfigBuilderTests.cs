@@ -8,6 +8,46 @@ namespace LeikwanBridge.Mac.Tests.Services;
 
 public sealed class MacConnectionConfigBuilderTests
 {
+    [Theory]
+    [InlineData(MacConnectionMode.Proxy)]
+    [InlineData(MacConnectionMode.Vpn)]
+    public void UnrestrictedGlobalResolvesWithRemoteDnsBeforeSocksHandoff(MacConnectionMode mode)
+    {
+        const string direction = "CAN -> HKG";
+        using var lease = new NativeOutboundLease(180, "global-test", new string('a', 64), DateTimeOffset.UtcNow.AddMinutes(3),
+            "tcp+udp", direction, "global", NativeOutboundLease.ComputeScopeDigestV2(180, direction, "tcp+udp", "global", "unrestricted"),
+            "203.0.113.10", 5438, [1], [2], routePolicy: "unrestricted");
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(lease, mode, []).Json);
+        var route = document.RootElement.GetProperty("route");
+        Assert.Equal("remote", route.GetProperty("default_domain_resolver").GetString());
+        Assert.Contains(route.GetProperty("rules").EnumerateArray(), item =>
+            item.TryGetProperty("action", out var action) && action.GetString() == "resolve"
+            && item.GetProperty("strategy").GetString() == "ipv4_only");
+        Assert.Equal("proxy", document.RootElement.GetProperty("dns").GetProperty("servers")[0].GetProperty("detour").GetString());
+        Assert.Equal("ipv4_only", document.RootElement.GetProperty("dns").GetProperty("strategy").GetString());
+        if (mode == MacConnectionMode.Vpn)
+        {
+            var local = document.RootElement.GetProperty("dns").GetProperty("servers").EnumerateArray()
+                .Single(server => server.GetProperty("tag").GetString() == "local");
+            Assert.Equal("udp", local.GetProperty("type").GetString());
+            Assert.Equal("223.5.5.5", local.GetProperty("server").GetString());
+            Assert.False(local.TryGetProperty("detour", out _));
+        }
+    }
+
+    [Fact]
+    public void VpnLetsRuntimeAllocateDarwinUtunInsteadOfDisplayName()
+    {
+        var profile = new MacConnectionProfile
+        {
+            Protocol = MacConnectionProtocol.Shadowsocks,
+            Server = "198.51.100.7", Port = 443,
+            Method = "aes-256-gcm", Password = "test-secret",
+        };
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Vpn, []).Json);
+        Assert.False(document.RootElement.GetProperty("inbounds")[0].TryGetProperty("interface_name", out _));
+    }
+
     [Fact]
     public void ShadowsocksProfileUsesStructuredOutboundAndDirectBypassRules()
     {
@@ -138,7 +178,7 @@ public sealed class MacConnectionConfigBuilderTests
             server.GetProperty("tag").GetString() == "china"
             && server.GetProperty("server").GetString() == "223.5.5.5"
             && server.GetProperty("tls").GetProperty("server_name").GetString() == "dns.alidns.com"
-            && server.GetProperty("detour").GetString() == "proxy");
+            && !server.TryGetProperty("detour", out _));
         Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
             rule.GetProperty("server").GetString() == "china"
             && rule.GetProperty("rule_set").EnumerateArray().Any(item => item.GetString() == "geosite-cn"));
@@ -191,7 +231,8 @@ public sealed class MacConnectionConfigBuilderTests
         Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
             rule.GetProperty("server").GetString() == "local"
             && rule.GetProperty("rule_set").EnumerateArray().Any(item => item.GetString() == "geosite-cn"));
-        Assert.Equal("proxy", root.GetProperty("dns").GetProperty("servers")[0].GetProperty("detour").GetString());
+        Assert.False(root.GetProperty("dns").GetProperty("servers")[0].TryGetProperty("detour", out _));
+        Assert.Equal("223.5.5.5", root.GetProperty("dns").GetProperty("servers")[0].GetProperty("server").GetString());
         Assert.All(
             root.GetProperty("route").GetProperty("rule_set").EnumerateArray(),
             item => Assert.Equal("proxy", item.GetProperty("download_detour").GetString()));

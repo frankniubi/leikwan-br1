@@ -54,6 +54,13 @@ public sealed class MacConnectionServiceTests
 
     [Fact]
     public async Task NativeVpnStartUsesLeaseAndWipesCredentialsOnStop()
+        => await VerifyNativeLeaseCleanupAsync(false);
+
+    [Fact]
+    public async Task NativeProcessExitClearsConnectedStateAndStopsRelay()
+        => await VerifyNativeLeaseCleanupAsync(true);
+
+    private static async Task VerifyNativeLeaseCleanupAsync(bool unexpectedExit)
     {
         using var temp = new TemporaryDirectory();
         var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
@@ -97,8 +104,23 @@ public sealed class MacConnectionServiceTests
         Assert.True(service.IsNativeOutboundActive);
         Assert.Contains("127.0.0.1", host.StartedConfigJson, StringComparison.Ordinal);
         Assert.DoesNotContain("native-password", host.StartedConfigJson, StringComparison.Ordinal);
+        using var compiled = System.Text.Json.JsonDocument.Parse(host.StartedConfigJson);
+        Assert.All(compiled.RootElement.GetProperty("route").GetProperty("rule_set").EnumerateArray(), item =>
+        {
+            Assert.Equal("local", item.GetProperty("type").GetString());
+            Assert.True(File.Exists(item.GetProperty("path").GetString()));
+        });
         Assert.Equal(1, relay.StartCalls);
 
+        if (unexpectedExit)
+        {
+            host.ExitUnexpectedly();
+            for (var attempt = 0; attempt < 50 && service.Snapshot.State != MacConnectionState.Error; attempt++)
+                await Task.Delay(20);
+            Assert.Equal(MacConnectionState.Error, service.Snapshot.State);
+            Assert.Equal("vpn_process_exited", service.Snapshot.ErrorCode);
+            Assert.False(relay.IsRunning);
+        }
         await service.StopAsync();
 
         Assert.False(service.IsNativeOutboundActive);
@@ -282,6 +304,9 @@ public sealed class MacConnectionServiceTests
 
     private sealed class CapturingProcessHost : IMacConnectionProcessHost
     {
+        public bool IsRunning { get; private set; }
+        public event Action<MacConnectionProcessExit>? UnexpectedExit;
+        public string StartedConfigPath { get; private set; } = string.Empty;
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
         public string StartedConfigJson { get; private set; } = string.Empty;
@@ -293,12 +318,21 @@ public sealed class MacConnectionServiceTests
             if (FailStart)
                 throw new InvalidOperationException("process_start_failed");
             StartedConfigJson = await File.ReadAllTextAsync(configPath, ct);
+            StartedConfigPath = configPath;
+            IsRunning = true;
         }
 
         public Task StopAsync(CancellationToken ct)
         {
             StopCalls++;
+            IsRunning = false;
             return Task.CompletedTask;
+        }
+
+        public void ExitUnexpectedly()
+        {
+            IsRunning = false;
+            UnexpectedExit?.Invoke(new MacConnectionProcessExit(StartedConfigPath, "vpn_process_exited"));
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -330,6 +364,7 @@ public sealed class MacConnectionServiceTests
         public int RefreshCalls { get; private set; }
         public int StopCalls { get; private set; }
         private bool _started;
+        public bool IsRunning => _started;
 
         public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
             int forwardId,

@@ -6,6 +6,7 @@ using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
 using LeikwanBridge.Mac.Services;
+using Serilog;
 
 namespace LeikwanBridge.Mac.ViewModels;
 
@@ -28,6 +29,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private string _nativeActiveRouteScope = "global";
     private bool _nativeActiveBypassChina;
     private bool _nativeActiveUnrestricted;
+    private string _preparationProgress = string.Empty;
 
     public MainWindowViewModel(
         IDesktopClientController controller,
@@ -57,7 +59,22 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _controller.ForwardsChanged += forwards => _dispatch(() => ApplyForwards(forwards));
         _controller.NativeOutboundChanged += capability => _dispatch(() => ApplyNativeOutbound(capability));
         _controller.NoticeRaised += notice => _dispatch(() => ShowNotice(notice));
-        _controller.LogRaised += message => _dispatch(() => AddLog(message));
+        _controller.LogRaised += message => _dispatch(() =>
+        {
+            if (message.StartsWith("preparing_routes:", StringComparison.Ordinal)
+                && System.Text.RegularExpressions.Regex.IsMatch(message, @"^preparing_routes:\d{1,5}/\d{1,5}$"))
+            {
+                _preparationProgress = message["preparing_routes:".Length..];
+                OnPropertyChanged(nameof(BusyMessage));
+            }
+            else if (message is "preparing_config" or "connected" or "connection_failed")
+            {
+                if (message is "preparing_config")
+                    _preparationProgress = string.Empty;
+                OnPropertyChanged(nameof(BusyMessage));
+            }
+            AddLog(message);
+        });
         _controller.UpdateAvailable += version => _dispatch(() => ShowUpdate(version));
         if (_connections is not null)
         {
@@ -532,6 +549,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             var useUnrestrictedRoute = NativeUnrestrictedRoute && carrier.UnrestrictedAllowed;
             var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
+            Log.Information("mac native lease request mode={Mode} forward={ForwardId} scope={Scope} policy={Policy}",
+                SelectedNativeConnectionMode, SelectedNativeForwardId, SelectedNativeRouteScope, routePolicy);
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 SelectedNativeForwardId,
                 SelectedNativeRouteScope,
@@ -559,7 +578,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            LocalConnectionError = exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
+            var apiCode = exception is MasterApiException apiError
+                ? $"native_lease_http_{apiError.StatusCode}" : null;
+            Log.Warning("mac native start failed type={ErrorType} code={ErrorCode}", exception.GetType().Name, apiCode ?? "native_start_failed");
+            LocalConnectionError = _connections.Snapshot.State == MacConnectionState.Error
+                && !string.IsNullOrEmpty(_connections.Snapshot.ErrorCode)
+                ? _connections.Snapshot.ErrorCode.Replace('_', ' ')
+                : apiCode is not null ? apiCode.Replace('_', ' ')
+                : exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
                 ? exception.Message.Replace('_', ' ')
                 : "The native outbound connection could not be started.";
         }
@@ -574,7 +600,6 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
         _nativeActiveUnrestricted = false;
-        NativeUnrestrictedRoute = false;
     }
 
     [RelayCommand]
@@ -686,7 +711,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
         ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
+        if (!snapshot.IsBusy)
+            _preparationProgress = string.Empty;
+        OnPropertyChanged(nameof(BusyMessage));
     }
+
+    public string BusyMessage => IsLoginVisible ? "Signing in"
+        : ConnectionStatus == "refreshing" ? "Refreshing routes"
+        : "Starting routes" + (_preparationProgress.Length == 0 ? string.Empty : " " + _preparationProgress);
 
     private async Task LoadConnectionsAsync()
     {
