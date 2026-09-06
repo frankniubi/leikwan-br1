@@ -3,9 +3,10 @@
 ## Status
 
 The native lease usage accounting fix and the selected Windows/macOS artifacts
-are ready locally. Production publication is **blocked** because the panel
-origin is unavailable. No upload or remote mutation was performed in this
-run.
+are published in production. Direct SSH was intermittent, so the guarded
+deployment used the existing `client -> sh36 -> panel` jump path. The direct
+panel wrapper was not bypassed; all writes were made by the backup-first
+helpers described below.
 
 Source commit: `806e934789c7f9d92a99954d23bad6361b7c276d`.
 
@@ -72,15 +73,27 @@ left untouched by this release.
   error `-6661`; this is a headless test limitation. It is not evidence of a
   successful GUI launch on a normal desktop.
 
-## Production connectivity and deployment gate
+## Production deployment and evidence
 
-The guarded panel preflight was retried on 2026-09-07:
+Fresh remote preflight and validate-only checks passed before mutation. The
+deployment completed on 2026-09-06 20:28 UTC (local date 2026-09-07):
 
-- SSH to the configured panel origin timed out on port 22.
-- `https://v3.leikwanhost.com/api/health` returned Cloudflare HTTP `530`, error
-  `1033` (origin unavailable).
-- Because the origin could not be read, no preflight hash comparison, PHP
-  upload, artifact upload, manifest switch, reload, or public canary was run.
+- PHP controller backup: `/root/codex-backups/native-usage-20260907-cfcb6aab-php`.
+- Artifact/manifest backup: `/root/codex-backups/native-usage-20260907-cfcb6aab`.
+- PHP receipt and artifact receipt both report `status=committed` and contain
+  the complete before/after hashes.
+- The artifact tool wrote the five payloads first and switched
+  `artifacts/versions.json` last. Android remained protected by its before hash.
+- Postflight found php-fpm `active`, health `status=ok`, all selected hashes
+  equal to the target manifest, and about 93 GB free on the root filesystem.
+- The public canary downloaded the dynamic manifest, client manifest, Windows
+  setup, Android APK, and all four Mac DMG/ZIP files. Every response was HTTP
+  200 and every downloaded size/SHA-256/ETag matched the target. Desktop
+  downloads use `v`/`sha256` cache-busting; Android retains its existing bare
+  canonical URL.
+- Three consecutive live native lease probes passed for `forward_id=180`,
+  `CAN -> HKG`, `global`, one lease, protocol
+  `leikwan-ultra-native-socks5-v1`, transport `tcp+udp`.
 
 Evidence is retained in:
 
@@ -89,12 +102,20 @@ Evidence is retained in:
 - `.tmp/native-usage-audit-20260906/origin-direct-health-20260907.log`
 - `.tmp/native-usage-audit-20260906/panel-port-recheck-20260907.log`
 - `.tmp/native-usage-audit-20260906/panel-tcp-recheck-20260907.log`
+- `.tmp/native-usage-audit-20260906/panel-preflight-jump-20260907.log`
+- `.tmp/native-usage-audit-20260906/remote-release-preflight-20260907.json`
+- `.tmp/native-usage-audit-20260906/remote-validate-release-20260907.log`
+- `.tmp/native-usage-audit-20260906/remote-deploy-php-20260907.log`
+- `.tmp/native-usage-audit-20260906/remote-deploy-artifacts-20260907.log`
+- `.tmp/native-usage-audit-20260906/remote-postflight-native-usage-20260907.log`
+- `.tmp/native-usage-audit-20260906/remote-artifact-receipt-20260907.json`
+- `.tmp/native-usage-audit-20260906/remote-php-receipt-20260907.json`
+- `.tmp/native-usage-audit-20260906/public-canary-native-usage-20260907/result.json`
+- `.tmp/native-usage-audit-20260906/live-native-lease-probe-20260907/`
 
-When the origin is reachable, run `scripts/deploy-client-artifacts.py` with a
-fresh full commit SHA and selected Windows/macOS keys, then deploy the two PHP
-controller files with the backup-first atomic helper. Verify post-install
-hashes, `/api/health`, the dynamic manifest, cache-busted artifact downloads,
-and a live native lease probe before announcing publication.
+The remote staging directory is mode `0700` and retained temporarily for
+rollback/audit. Remove it only after the release retention window; keep both
+backup directories immutable for rollback.
 
 ## Scope cautions
 
