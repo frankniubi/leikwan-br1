@@ -74,7 +74,8 @@ public static class MacConnectionConfigBuilder
         int proxyPort = DefaultProxyPort,
         bool bypassChinaMainland = false,
         string? nativeProxyHost = null,
-        int? nativeProxyPort = null)
+        int? nativeProxyPort = null,
+        MacNativeRuleSetPaths? ruleSetPaths = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -115,7 +116,8 @@ public static class MacConnectionConfigBuilder
                 bootstrapProfile,
                 bypassDomains,
                 lease.RouteScope == "cn_only" ? "direct" : "proxy",
-                lease.RouteScope),
+                lease.RouteScope,
+                lease.RoutePolicy),
             ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = new JsonArray
             {
@@ -135,7 +137,8 @@ public static class MacConnectionConfigBuilder
             root["route"]!.AsObject(),
             lease.RouteScope,
             bypassChinaMainland,
-            lease.RouteScope == "cn_only" ? "direct" : "proxy");
+            lease.RouteScope == "cn_only" ? "direct" : "proxy",
+            ruleSetPaths);
         return new MacConnectionConfigResult(
             root.ToJsonString(JsonOptions),
             bypassIps,
@@ -147,7 +150,8 @@ public static class MacConnectionConfigBuilder
         MacConnectionProfile profile,
         IReadOnlyList<string> bypassDomains,
         string remoteDetour = "proxy",
-        string? nativeRouteScope = null)
+        string? nativeRouteScope = null,
+        string? nativeRoutePolicy = null)
     {
         remoteDetour = string.Equals(remoteDetour, "direct", StringComparison.OrdinalIgnoreCase)
             ? "direct"
@@ -159,25 +163,29 @@ public static class MacConnectionConfigBuilder
         bootstrapDomains.AddRange(bypassDomains);
         var isChinaOnly = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase);
         var isInternationalOnly = string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+        // Restricted native leases reject every port below 1000, including
+        // DoH's 443. DNS must follow the same direct low-port policy.
+        var restricted = !string.IsNullOrWhiteSpace(nativeRouteScope)
+            && NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy) == "restricted";
         var remoteServer = new JsonObject
         {
             ["type"] = "https",
             ["tag"] = "remote",
-            ["server"] = "1.1.1.1",
+            ["server"] = restricted && !isChinaOnly ? "223.5.5.5" : "1.1.1.1",
             ["server_port"] = 443,
             ["path"] = "/dns-query",
             ["tls"] = new JsonObject
             {
                 ["enabled"] = true,
-                ["server_name"] = "cloudflare-dns.com",
+                ["server_name"] = restricted && !isChinaOnly ? "dns.alidns.com" : "cloudflare-dns.com",
             },
         };
-        if (remoteDetour == "proxy")
+        if (remoteDetour == "proxy" && !restricted)
             remoteServer["detour"] = "proxy";
         var servers = new JsonArray { remoteServer };
         if (isChinaOnly)
         {
-            servers.Add(new JsonObject
+            var chinaServer = new JsonObject
             {
                 ["type"] = "https",
                 ["tag"] = "china",
@@ -189,8 +197,9 @@ public static class MacConnectionConfigBuilder
                     ["enabled"] = true,
                     ["server_name"] = "dns.alidns.com",
                 },
-                ["detour"] = "proxy",
-            });
+            };
+            if (!restricted) chinaServer["detour"] = "proxy";
+            servers.Add(chinaServer);
         }
         servers.Add(new JsonObject
         {
@@ -440,12 +449,30 @@ public static class MacConnectionConfigBuilder
         JsonObject route,
         string routeScope,
         bool bypassChinaMainland,
-        string downloadDetour = "proxy")
+        string downloadDetour = "proxy",
+        MacNativeRuleSetPaths? ruleSetPaths = null)
     {
         if (!string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase)
             && !(string.Equals(routeScope, "global", StringComparison.OrdinalIgnoreCase) && bypassChinaMainland))
             return;
+        if (ruleSetPaths is not null)
+        {
+            route["rule_set"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["tag"] = "geoip-cn", ["type"] = "local", ["format"] = "binary",
+                    ["path"] = ruleSetPaths.GeoIpPath,
+                },
+                new JsonObject
+                {
+                    ["tag"] = "geosite-cn", ["type"] = "local", ["format"] = "binary",
+                    ["path"] = ruleSetPaths.GeoSitePath,
+                },
+            };
+            return;
+        }
         downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
             ? "direct"
             : "proxy";
