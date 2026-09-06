@@ -575,7 +575,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            LocalConnectionError = exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
+            LocalConnectionError = _connections.Snapshot.State == MacConnectionState.Error
+                && !string.IsNullOrEmpty(_connections.Snapshot.ErrorCode)
+                ? _connections.Snapshot.ErrorCode.Replace('_', ' ')
+                : exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
                 ? exception.Message.Replace('_', ' ')
                 : "The native outbound connection could not be started.";
         }

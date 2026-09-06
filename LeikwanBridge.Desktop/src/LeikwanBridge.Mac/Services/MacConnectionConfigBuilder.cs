@@ -10,7 +10,6 @@ public static class MacConnectionConfigBuilder
 {
     public const int DefaultProxyPort = 2080;
     public const int DefaultTunMtu = 1280;
-    public const string TunInterfaceName = "LeiKwan Bridge";
     public const string TunAddress = "172.19.0.1/30";
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
@@ -257,7 +256,8 @@ public static class MacConnectionConfigBuilder
                 {
                     ["type"] = "tun",
                     ["tag"] = "tun-in",
-                    ["interface_name"] = TunInterfaceName,
+                    // Let sing-box allocate a free utunN; an app display name
+                    // or the bare prefix "utun" is not a valid Darwin name.
                     ["address"] = new JsonArray(TunAddress, TunIpv6Address),
                     ["mtu"] = DefaultTunMtu,
                     ["auto_route"] = true,

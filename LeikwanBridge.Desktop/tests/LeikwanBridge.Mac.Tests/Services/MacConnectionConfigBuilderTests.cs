@@ -9,6 +9,19 @@ namespace LeikwanBridge.Mac.Tests.Services;
 public sealed class MacConnectionConfigBuilderTests
 {
     [Fact]
+    public void VpnLetsRuntimeAllocateDarwinUtunInsteadOfDisplayName()
+    {
+        var profile = new MacConnectionProfile
+        {
+            Protocol = MacConnectionProtocol.Shadowsocks,
+            Server = "198.51.100.7", Port = 443,
+            Method = "aes-256-gcm", Password = "test-secret",
+        };
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Vpn, []).Json);
+        Assert.False(document.RootElement.GetProperty("inbounds")[0].TryGetProperty("interface_name", out _));
+    }
+
+    [Fact]
     public void ShadowsocksProfileUsesStructuredOutboundAndDirectBypassRules()
     {
         var profile = new MacConnectionProfile
