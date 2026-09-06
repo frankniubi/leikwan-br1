@@ -283,30 +283,69 @@ abstract class BaseController
 
     protected function androidClientApkUrl(): string
     {
-        $url = $this->artifactBaseUrl() . '/artifacts/leikwan-android-client.apk';
-        $metadata = $this->artifactMetadata('android_client_apk');
-        $version = rawurlencode((string) ($metadata['version'] ?? ''));
-        $sha256 = rawurlencode((string) ($metadata['sha256'] ?? ''));
-        if ($version === '' && $sha256 === '') {
-            return $url;
-        }
-
-        return $url . '?v=' . $version . '&sha256=' . $sha256;
+        return $this->clientAppArtifactUrl('android_client_apk', '/artifacts/leikwan-android-client.apk');
     }
 
     protected function windowsClientAppUrl(): string
     {
-        return $this->artifactBaseUrl() . '/artifacts/leikwan-bridge-setup.exe';
+        return $this->clientAppArtifactUrl('windows_client_app', '/artifacts/leikwan-bridge-setup.exe');
     }
 
     protected function macosClientArm64AppUrl(): string
     {
-        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-arm64.dmg';
+        return $this->clientAppArtifactUrl('macos_client_app_arm64', '/artifacts/macos/leikwan-bridge-arm64.dmg');
     }
 
     protected function macosClientX64AppUrl(): string
     {
-        return $this->artifactBaseUrl() . '/artifacts/macos/leikwan-bridge-x64.dmg';
+        return $this->clientAppArtifactUrl('macos_client_app_x64', '/artifacts/macos/leikwan-bridge-x64.dmg');
+    }
+
+    private function clientAppArtifactUrl(string $artifactKey, string $fallbackPath): string
+    {
+        $metadata = $this->artifactMetadata($artifactKey);
+        $configuredPath = trim((string) ($metadata['artifact_url'] ?? ''));
+        $url = $configuredPath !== ''
+            ? (preg_match('#^https?://#i', $configuredPath) === 1
+                ? $configuredPath
+                : $this->artifactBaseUrl() . '/' . ltrim($configuredPath, '/'))
+            : $this->artifactBaseUrl() . $fallbackPath;
+        $fragment = '';
+        if (str_contains($url, '#')) {
+            [$url, $fragmentValue] = explode('#', $url, 2);
+            $fragment = '#' . $fragmentValue;
+        }
+        $base = $url;
+        $existingQuery = '';
+        if (str_contains($url, '?')) {
+            [$base, $existingQuery] = explode('?', $url, 2);
+        }
+        $pairs = [];
+        foreach (explode('&', $existingQuery) as $pair) {
+            if ($pair === '') {
+                continue;
+            }
+            $queryKey = strtolower(rawurldecode(explode('=', $pair, 2)[0]));
+            if (!in_array($queryKey, ['v', 'sha256'], true)) {
+                $pairs[] = $pair;
+            }
+        }
+        foreach ([
+            'v' => trim((string) ($metadata['version'] ?? '')),
+            'sha256' => strtolower(trim((string) ($metadata['sha256'] ?? ''))),
+        ] as $key => $value) {
+            if ($value !== '') {
+                $pairs[] = rawurlencode($key) . '=' . rawurlencode($value);
+            }
+        }
+
+        return $base . ($pairs === [] ? '' : '?' . implode('&', $pairs)) . $fragment;
+    }
+
+    private function clientAppReleaseLabel(string $label, string $artifactKey): string
+    {
+        $version = trim((string) ($this->artifactMetadata($artifactKey)['version'] ?? ''));
+        return $version === '' ? $label : $label . ' ' . $version;
     }
 
     protected function macosClientArtifactsAvailable(): bool
@@ -536,7 +575,7 @@ abstract class BaseController
             . '<h3>App Download</h3>'
             . '<p class="muted">Windows, Android, and macOS use the app install flow. Linux remains a local/manual install command for the host that runs the client-agent. Ultra UDP forwards keep a protocol-level association alive while running; requested debug logs are private, redacted, and expire automatically.</p>'
             . $this->renderCommandPanel(
-                'Windows App',
+                $this->clientAppReleaseLabel('Windows App', 'windows_client_app'),
                 $windowsAppUrl,
                 [
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
@@ -546,7 +585,7 @@ abstract class BaseController
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
-                'Android App',
+                $this->clientAppReleaseLabel('Android App', 'android_client_apk'),
                 $androidApkUrl,
                 [
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
@@ -599,7 +638,7 @@ abstract class BaseController
             . '<h4 style="margin:0 0 8px;">App Download</h4>'
             . '<div class="muted command-lead">Windows, Android, and macOS use the app install flow. Linux remains available as a local/manual install command for this client. Ultra UDP keepalive starts with the forward and remains active for its lifetime.</div>'
             . $this->renderCommandPanel(
-                'Windows App',
+                $this->clientAppReleaseLabel('Windows App', 'windows_client_app'),
                 $windowsAppUrl,
                 [
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
@@ -609,7 +648,7 @@ abstract class BaseController
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
-                'Android App',
+                $this->clientAppReleaseLabel('Android App', 'android_client_apk'),
                 $androidApkUrl,
                 [
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
@@ -654,7 +693,7 @@ abstract class BaseController
         $x64Url = $this->macosClientX64AppUrl();
 
         return $this->renderCommandPanel(
-            'macOS App — Apple Silicon',
+            $this->clientAppReleaseLabel('macOS App - Apple Silicon', 'macos_client_app_arm64'),
             $arm64Url,
             [
                 $this->renderCommandLink('Download Apple Silicon', $arm64Url),
@@ -663,7 +702,7 @@ abstract class BaseController
             $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。'
         )
         . $this->renderCommandPanel(
-            'macOS App — Intel',
+            $this->clientAppReleaseLabel('macOS App - Intel', 'macos_client_app_x64'),
             $x64Url,
             [
                 $this->renderCommandLink('Download Intel', $x64Url),

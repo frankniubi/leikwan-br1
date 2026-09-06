@@ -47,6 +47,9 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            // Logging may not be configured when Avalonia fails before the app
+            // bootstrap. Preserve a local diagnostic for launchd and support.
+            Console.Error.WriteLine($"mac_app_start_failed:{exception}");
             Log.Error("mac_app_start_failed:{ErrorType}", exception.GetType().Name);
             return 1;
         }

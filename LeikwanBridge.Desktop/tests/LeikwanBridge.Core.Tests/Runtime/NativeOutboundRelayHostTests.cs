@@ -18,6 +18,7 @@ public sealed class NativeOutboundRelayHostTests
         var binary = Path.Combine(temp.Path, "ultra-client");
         File.WriteAllText(binary, "fixture");
         string? controlPath = null;
+        string? statusPath = null;
         Process? process = null;
         var processId = 0;
         var host = new NativeOutboundRelayHost(
@@ -28,6 +29,7 @@ public sealed class NativeOutboundRelayHostTests
                 var configPath = info.ArgumentList[1];
                 using var document = JsonDocument.Parse(File.ReadAllBytes(configPath));
                 controlPath = document.RootElement.GetProperty("control_socket").GetString();
+                statusPath = document.RootElement.GetProperty("status_path").GetString();
                 File.WriteAllText(controlPath!, "socket-fixture");
                 process = Process.Start(new ProcessStartInfo
                 {
@@ -52,6 +54,9 @@ public sealed class NativeOutboundRelayHostTests
             Assert.True(Encoding.UTF8.GetByteCount(controlPath!) < 100, controlPath);
             Assert.StartsWith(socketRoot, controlPath, StringComparison.Ordinal);
             Assert.True(File.Exists(controlPath));
+            Assert.NotNull(statusPath);
+            Assert.Contains("native-usage", statusPath!, StringComparison.Ordinal);
+            Assert.Contains($"{Path.DirectorySeparatorChar}native-usage{Path.DirectorySeparatorChar}", statusPath!, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -59,6 +64,7 @@ public sealed class NativeOutboundRelayHostTests
             Assert.True(processId > 0);
             Assert.ThrowsAny<Exception>(() => Process.GetProcessById(processId));
             Assert.False(controlPath is not null && File.Exists(controlPath));
+            Assert.True(statusPath is not null && Directory.Exists(Path.GetDirectoryName(statusPath!)));
             await host.DisposeAsync();
         }
     }

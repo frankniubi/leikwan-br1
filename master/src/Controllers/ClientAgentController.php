@@ -1007,6 +1007,7 @@ final class ClientAgentController extends BaseController
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
         $ultraUsage = $request->input('ultra_usage', []);
         $ultraActions = [];
+        $ultraUsageAcknowledged = true;
         if (is_array($ultraUsage)) {
             foreach (array_slice($ultraUsage, 0, 32) as $usage) {
                 if (!is_array($usage)) {
@@ -1027,6 +1028,7 @@ final class ClientAgentController extends BaseController
                 } catch (\Throwable) {
                     // Usage accounting is retried by the client and must not
                     // interrupt the ordinary heartbeat response.
+                    $ultraUsageAcknowledged = false;
                 }
             }
         }
@@ -1034,7 +1036,11 @@ final class ClientAgentController extends BaseController
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
         }
 
-        return $this->json(['ok' => true, 'ultra_actions' => array_values($ultraActions)]);
+        return $this->json([
+            'ok' => true,
+            'ultra_usage_acknowledged' => $ultraUsageAcknowledged,
+            'ultra_actions' => array_values($ultraActions),
+        ]);
     }
 
     public function diagnosticsResult(Request $request, array $params): Response

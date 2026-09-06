@@ -1177,7 +1177,8 @@ public partial class MainViewModel : ObservableObject
             _wgManager.PublicKey,
             _config.GetEffectiveWireguardListenPort(),
             _config.GetEffectiveWireguardFallbackTcpPort(),
-            ApplyUltraPolicyActions);
+            ApplyUltraPolicyActions,
+            additionalRuntimeDirectories: [Path.Combine(_config.GetEffectiveStateDir(), "proxy-runtime")]);
 
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.NativeOutboundUpdated += OnNativeOutboundUpdated;
