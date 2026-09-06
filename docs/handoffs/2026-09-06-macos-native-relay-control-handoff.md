@@ -31,3 +31,9 @@ The Windows named-pipe path is unchanged. Lease framing, route policy, candidate
 This is a Mac-only candidate fix. Production remains Mac `1.0.8`; Android, Windows, Linux and PHP artifacts are untouched. Publish only after the interactive test host confirms the native-outbound control socket and local proxy traffic. Do not infer this fix from the ordinary Ultra listener logs alone.
 
 Implementation commit: `91269714` (`fix(mac): use short Unix path for native relay control`).
+
+The follow-up candidate `1.0.12` also logs phase-safe markers (`native relay control ready`, lease delivery result, and bounded startup error code) without recording endpoints or credentials. This is needed because the previous UI catch collapsed non-native exception text into a generic “connection cannot be established” message. It is installed on the test Mac and awaits one interactive native-outbound retry.
+
+The controlled socket probe remains conclusive: 136-byte Application Support path -> `bind: invalid argument`; 31-byte `/tmp/lk-n-*` path -> socket ready in ~38ms. The new native host implementation uses the latter.
+
+The Mac test host's ordinary Ultra path already recorded five listeners ready in roughly 7-12 seconds with the short probe settings; that path is separate from the manual native relay button.

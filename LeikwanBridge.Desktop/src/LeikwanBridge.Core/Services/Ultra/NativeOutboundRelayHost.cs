@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using Serilog;
 
 namespace LeikwanBridge.Core.Services.Ultra;
 
@@ -265,6 +266,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             {
                 if (!_windows && !await WaitForPathAsync(controlPath, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
                     throw new InvalidOperationException("native_relay_control_unavailable");
+                Log.Information("native relay control ready for forward {ForwardId}", forwardId);
                 var delivered = leases.Count > 1
                     ? (_windows
                         ? await _windowsBatchSender(controlPipeName, forwardId, leases, ct).ConfigureAwait(false)
@@ -272,6 +274,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                     : (_windows
                         ? await _windowsSender(controlPipeName, forwardId, lease, ct).ConfigureAwait(false)
                         : await _unixSender(controlPath, forwardId, lease, ct).ConfigureAwait(false));
+                Log.Information("native relay lease delivery result={Delivered} for forward {ForwardId}", delivered, forwardId);
                 if (!delivered)
                     throw new InvalidOperationException("native_relay_lease_rejected");
                 if (!await _portProbe(endpoint, ct).ConfigureAwait(false))
@@ -287,6 +290,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
             }
             catch
             {
+                Log.Warning("native relay startup failed for forward {ForwardId}", forwardId);
                 await StopCoreAsync().ConfigureAwait(false);
                 throw;
             }

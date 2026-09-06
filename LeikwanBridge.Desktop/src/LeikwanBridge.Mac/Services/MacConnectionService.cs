@@ -285,6 +285,7 @@ public sealed class MacConnectionService : IMacConnectionService
         }
         catch (Exception exception)
         {
+            Log.Warning("mac native connection failed error={ErrorCode}", ErrorCode(exception));
             if (relayStarted || _configPath is not null)
                 await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
             if (!transferred)
