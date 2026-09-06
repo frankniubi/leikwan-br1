@@ -1,6 +1,6 @@
 # macOS installation regression investigation
 
-Status: 1.0.9 native packages and installation acceptance completed; publication pending the deployment receipt below.
+Status: 1.0.9 native packages and installation acceptance completed. Canonical production publication is withheld because default Gatekeeper still rejects the unnotarized app. Production remains 1.0.8; do not claim a warning-free release.
 
 ## Evidence
 
@@ -21,9 +21,9 @@ Status: 1.0.9 native packages and installation acceptance completed; publication
 
 ## Next Steps
 
-1. Publish the native-generated 1.0.9 Mac-only artifact matrix with backup-first guards; do not modify other platforms/PHP.
-2. Re-download the public final bytes and verify mounted DMG layout, Apple signature integrity, and updater-style ZIP extraction.
-3. Developer ID/notarization remains blocked by the absence of an Apple identity. `security find-identity -v -p codesigning` found 0 identities. Default Gatekeeper remains rejected (exit 3); ad-hoc is not a trust identity.
+1. Configure a Developer ID Application identity and notarization credentials, or obtain an explicit decision to publish with a documented per-app Open Anyway requirement. `security find-identity -v -p codesigning` found 0 identities; default Gatekeeper remains rejected (exit 3).
+2. Re-sign/notarize as applicable, then publish the native-generated 1.0.9 Mac-only artifact matrix with backup-first guards; do not modify other platforms/PHP.
+3. Re-download the public final bytes and verify mounted DMG layout, Apple signature integrity, and updater-style ZIP extraction.
 
 Apple's documented per-app manual exception is System Settings > Privacy & Security > Open Anyway after attempting to open the app: https://support.apple.com/102445. This is a temporary user action, not a substitute for signing/notarization or a reason to disable system-wide protection.
 
@@ -36,6 +36,7 @@ Apple's documented per-app manual exception is System Settings > Privacy & Secur
 - Installed at `/Applications/LeiKwan Bridge.app` on the test Mac, `open` returned 0, and WindowServer reported a visible 1180x668 app window. The installation was backed up before replacement. Intel execution is untested because Rosetta is absent; Intel packaging, architecture and signature checks passed.
 - Native test JSON: `.tmp/macos-install-repair-20260906/native-acceptance.json`; build/launch/audit logs reside alongside it and on the Mac under `/Users/leikwan/leikwan-native-package-1.0.9/acceptance`.
 - Mac unit tests: 71/71. Layout tests: 9/9. Metadata/signature-order tests: 3/3. Existing packaging tests plus the new CRLF helper-manifest fixture pass.
+- Implementation commit: `56d7726a`; previous layout gate: `27579f83`. Exact source diff and artifact manifests are retained with local native evidence. The packaging metadata's `27579f83` field denotes the base checkout; the final source includes the recorded repair commit.
 - A separate Avalonia 11.3.20 display-sleep startup error (`RenderTimer`, native code `-6661`) was reproduced on the virtual Mac when it had no awake display. Waking the display allowed normal launch. This matches upstream issue https://github.com/AvaloniaUI/Avalonia/issues/18895 and is not claimed fixed by packaging. No dependency-wide graphics upgrade was included.
 - Screenshots failed due to screen-capture permission/display access; no screenshot-based visual acceptance is claimed. WindowServer visibility/bounds and successful installed startup are the actual evidence.
 
