@@ -125,10 +125,11 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (autoSelect)
             {
                 bootstrapConfig["probe_target"] = "1.1.1.1:53";
-                bootstrapConfig["probe_duration_seconds"] = 30;
+                bootstrapConfig["probe_duration_seconds"] = 3;
                 bootstrapConfig["probe_timeout_ms"] = 800;
-                bootstrapConfig["probe_samples"] = 30;
-                bootstrapConfig["probe_interval_ms"] = 1000;
+                bootstrapConfig["probe_samples"] = 6;
+                bootstrapConfig["probe_interval_ms"] = 500;
+                bootstrapConfig["probe_workers"] = 4;
             }
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
@@ -146,10 +147,11 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
+            using var deliveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var leaseDelivered = (leases.Count == 1
-                ? _leaseSender(socketPath, forward.ForwardId, leases[0], CancellationToken.None)
-                : _leaseBatchSender(socketPath, forward.ForwardId, leases, CancellationToken.None))
-                .WaitAsync(UnixUltraLeaseClient.BatchTimeout + TimeSpan.FromSeconds(5))
+                ? _leaseSender(socketPath, forward.ForwardId, leases[0], deliveryTimeout.Token)
+                : _leaseBatchSender(socketPath, forward.ForwardId, leases, deliveryTimeout.Token))
+                .WaitAsync(deliveryTimeout.Token)
                 .GetAwaiter()
                 .GetResult();
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);

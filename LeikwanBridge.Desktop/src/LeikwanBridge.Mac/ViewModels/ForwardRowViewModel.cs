@@ -59,8 +59,9 @@ public sealed partial class ForwardRowViewModel : ObservableObject
         try
         {
             await _controller.StartForwardAsync(ForwardId);
-            IsRunning = true;
-            Status = "running";
+            var current = _controller.Snapshot.Forwards.FirstOrDefault(item => item.ForwardId == ForwardId);
+            IsRunning = current?.IsRunning == true;
+            Status = current?.Status ?? "stopped";
         }
         finally
         {

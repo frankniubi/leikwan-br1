@@ -13,6 +13,41 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class ConfigPollingServiceTests
 {
     [Fact]
+    public async Task SyncOnceAsync_NeverAppliesRuntimeOnCallerUiContext()
+    {
+        using var temp = new TempStateDirectory();
+        using var server = new PullApiServer(BuildTwoForwardPullResponseJson());
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = temp.Path };
+        var state = new StateManager(temp.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        var seen = new ConcurrentBag<bool>();
+        runtime.OnApply = _ => seen.Add(SynchronizationContext.Current is UiContext);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtime, state);
+        var previous = SynchronizationContext.Current;
+        Task pending;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(new UiContext());
+            pending = service.SyncOnceAsync();
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, seen.Count);
+        Assert.Equal(2, seen.Count);
+    }
+
+    private sealed class UiContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback callback, object? state) => ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var previous = Current;
+            try { SetSynchronizationContext(this); callback(state); }
+            finally { SetSynchronizationContext(previous); }
+        });
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_ActivatesIndependentForwardsConcurrentlyAndIsolatesFailure()
     {
         using var tempDir = new TempStateDirectory();

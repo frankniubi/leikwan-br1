@@ -291,6 +291,21 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void BusyStateDisplaysActualConnectionPhase()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = true, IsBusy = true, ConnectionStatus = "connecting" });
+        Assert.Contains("Starting", vm.BusyMessage);
+        controller.RaiseLog("preparing_config");
+        Assert.Equal("Starting routes", vm.BusyMessage);
+        controller.RaiseLog("preparing_routes:2/5");
+        Assert.Equal("Starting routes 2/5", vm.BusyMessage);
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = false, IsBusy = true });
+        Assert.Equal("Signing in", vm.BusyMessage);
+    }
+
+    [Fact]
     public async Task ClientIdTokenLoginUsesTheSelectedAuthenticationMode()
     {
         var controller = new FakeController(new DesktopClientSnapshot());
