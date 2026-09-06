@@ -186,8 +186,7 @@ unexpected_app="$(find "$publish_dir" -type d -name '*.app' -print -quit)"
 check_architecture() {
   local path="$1"
   local detected=""
-  if command -v lipo >/dev/null 2>&1; then
-    detected="$(lipo -archs "$path" 2>/dev/null || true)"
+  if command -v lipo >/dev/null 2>&1 && detected="$(lipo -archs "$path" 2>/dev/null)"; then
     [[ "$detected" == "$architecture" ]] || fail "wrong architecture for $(basename "$path"): $detected"
     return
   fi
@@ -202,7 +201,7 @@ check_architecture "$publish_dir/LeikwanBridge.Mac"
 for helper in $helpers; do
   path="$helper_dir/$helper"
   [[ -f "$path" ]] || fail "required helper missing: $helper"
-  expected="$(awk -v name="$helper" '$2 == name || $2 == "*" name { print tolower($1) }' "$helper_hashes")"
+  expected="$(awk -v name="$helper" '{ sub(/\r$/, "") } $2 == name || $2 == "*" name { print tolower($1) }' "$helper_hashes")"
   [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || fail "helper hash entry missing or duplicated: $helper"
   actual="$(sha256_file "$path")"
   [[ "$actual" == "$expected" ]] || fail "helper hash mismatch: $helper"
@@ -218,7 +217,7 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "DMG packaging requires macOS"
-for command in hdiutil ditto sips iconutil plutil python3 shasum lipo; do
+for command in hdiutil ditto sips iconutil plutil python3 shasum file codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
 done
 
@@ -240,8 +239,10 @@ app="$work_dir/LeiKwan Bridge.app"
 macos_dir="$app/Contents/MacOS"
 resources_dir="$app/Contents/Resources"
 bundle_helpers="$resources_dir/bin"
-mkdir -p "$macos_dir" "$bundle_helpers"
-cp -R "$publish_dir"/. "$macos_dir"/
+managed_dir="$resources_dir/dotnet"
+mkdir -p "$macos_dir" "$bundle_helpers" "$managed_dir"
+cp -R "$publish_dir"/. "$managed_dir"/
+mv "$managed_dir/LeikwanBridge.Mac" "$macos_dir/LeikwanBridge.Mac"
 for helper in $helpers; do
   cp "$helper_dir/$helper" "$bundle_helpers/$helper"
 done
@@ -303,6 +304,7 @@ forbidden_bundle="$(find "$app" -type f \( \
   -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -iname '*credential*' -o -iname '*secret*' \
 \) -print -quit)"
 [[ -z "$forbidden_bundle" ]] || fail "forbidden material entered app bundle"
+python3 "$repo_root/scripts/prepare-macos-bundle.py" "$app"
 
 dmg="$output_dir/leikwan-bridge-$suffix.dmg"
 update_zip="$output_dir/leikwan-bridge-update-$suffix.zip"
@@ -319,6 +321,7 @@ mkdir -p "$mount_point"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg" >/dev/null
 python3 "$repo_root/scripts/verify-macos-dmg-layout.py" "$mount_point" \
   --version "$version" --architecture "$architecture"
+codesign --verify --deep --strict --verbose=2 "$mount_point/LeiKwan Bridge.app"
 hdiutil detach "$mount_point" >/dev/null
 mount_point=""
 ditto -c -k --sequesterRsrc --keepParent "$app" "$update_zip"

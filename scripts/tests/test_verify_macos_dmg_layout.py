@@ -66,6 +66,12 @@ class DmgLayoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'executable'):
             layout.validate(self.volume, '1.0.9', 'arm64')
 
+    def test_managed_file_in_native_code_directory_is_rejected(self):
+        (self.volume / 'Applications').symlink_to('/Applications', target_is_directory=True)
+        (self.app / 'Contents/MacOS/System.dll').write_bytes(b'managed')
+        with self.assertRaisesRegex(ValueError, 'managed files belong in Resources'):
+            layout.validate(self.volume, '1.0.9', 'arm64')
+
 
 if __name__ == '__main__':
     unittest.main()

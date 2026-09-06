@@ -27,6 +27,8 @@ def validate(volume, version, architecture):
     if not isinstance(name, str) or not name or Path(name).name != name or name in ('.', '..'):
         raise ValueError('invalid executable name')
     executable = contents / 'MacOS' / name
+    if any(p != executable for p in executable.parent.iterdir()):
+        raise ValueError('MacOS directory must contain only the native apphost; managed files belong in Resources')
     if executable.is_symlink() or not executable.is_file() or not executable.stat().st_mode & 0o111:
         raise ValueError('apphost missing or not executable')
     with executable.open('rb') as stream:
