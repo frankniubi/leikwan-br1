@@ -109,17 +109,25 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         string routePolicy,
         CancellationToken ct)
     {
-        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
-        if (forward is null || NativeOutbound is null)
-            return null;
-        forward.NativeOutbound = NativeOutbound;
-        forward.NativeRouteScope = routeScope.Trim().ToLowerInvariant();
-        return await _api.ResolveNativeOutboundLeaseAsync(
-            forward,
-            NativeOutbound,
-            forward.NativeRouteScope,
-            routePolicy,
-            ct);
+        // Native reconnects need fresh rotating tickets, not a revision-cached
+        // forward. Pull only the policy; do not restart ordinary forwards.
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var pull = await _api.PullConfigsAsync(ct: ct).ConfigureAwait(false);
+            var forward = pull.Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
+            if (!pull.Ok || pull.NotModified || forward is null || pull.NativeOutbound is null)
+                return null;
+            try
+            {
+                return await _api.ResolveNativeOutboundLeaseAsync(
+                    forward, pull.NativeOutbound, routeScope.Trim().ToLowerInvariant(), routePolicy, ct).ConfigureAwait(false);
+            }
+            catch (MasterApiException error) when (attempt == 0 && error.StatusCode == 409 && error.Message == "lease_scope_invalid")
+            {
+                LogRaised?.Invoke("native_lease_policy_refresh");
+            }
+        }
+        return null;
     }
 
     public async Task StartAsync(CancellationToken ct)

@@ -147,6 +147,12 @@ public sealed class MainWindowViewModelTests
 
         Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
         Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+        Assert.True(vm.NativeUnrestrictedRoute);
+        vm.SelectedNativeConnectionMode = LeikwanBridge.Mac.Services.MacConnectionMode.Proxy;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
+        Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
     }
 
     [Fact]

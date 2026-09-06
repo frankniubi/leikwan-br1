@@ -6,6 +6,7 @@ using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
 using LeikwanBridge.Mac.Services;
+using Serilog;
 
 namespace LeikwanBridge.Mac.ViewModels;
 
@@ -548,6 +549,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             var useUnrestrictedRoute = NativeUnrestrictedRoute && carrier.UnrestrictedAllowed;
             var routePolicy = useUnrestrictedRoute ? "unrestricted" : "restricted";
+            Log.Information("mac native lease request mode={Mode} forward={ForwardId} scope={Scope} policy={Policy}",
+                SelectedNativeConnectionMode, SelectedNativeForwardId, SelectedNativeRouteScope, routePolicy);
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 SelectedNativeForwardId,
                 SelectedNativeRouteScope,
@@ -575,9 +578,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch (Exception exception)
         {
+            var apiCode = exception is MasterApiException apiError
+                ? $"native_lease_http_{apiError.StatusCode}" : null;
+            Log.Warning("mac native start failed type={ErrorType} code={ErrorCode}", exception.GetType().Name, apiCode ?? "native_start_failed");
             LocalConnectionError = _connections.Snapshot.State == MacConnectionState.Error
                 && !string.IsNullOrEmpty(_connections.Snapshot.ErrorCode)
                 ? _connections.Snapshot.ErrorCode.Replace('_', ' ')
+                : apiCode is not null ? apiCode.Replace('_', ' ')
                 : exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
                 ? exception.Message.Replace('_', ' ')
                 : "The native outbound connection could not be started.";
@@ -593,7 +600,6 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
         _nativeActiveUnrestricted = false;
-        NativeUnrestrictedRoute = false;
     }
 
     [RelayCommand]
