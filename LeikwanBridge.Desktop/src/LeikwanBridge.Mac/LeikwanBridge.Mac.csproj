@@ -8,7 +8,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
-    <Version>1.0.13</Version>
+    <Version>1.0.14</Version>
   </PropertyGroup>
 
   <Target Name="CreateMacBundleAppHost" AfterTargets="_CreateAppHost"
@@ -37,6 +37,10 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
+    <EmbeddedResource Include="Resources\RuleSets\*.srs" LogicalName="LeikwanBridge.Mac.RuleSets.%(Filename)%(Extension)" />
+    <Content Include="Resources\RuleSets\NOTICE.txt" Link="SAGERNET-RULESETS-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\RuleSets\LICENSE.txt" Link="SAGERNET-RULESETS-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\RuleSets\COPYING.txt" Link="COPYING.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

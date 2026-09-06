@@ -240,6 +240,8 @@ public sealed class MacConnectionService : IMacConnectionService
             await StopCoreAsync(ct).ConfigureAwait(false);
             var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct).ConfigureAwait(false);
             var nativeRelayPort = AllocateLoopbackPort(_proxyPort);
+            var ruleSets = await MacNativeRuleSetStore.EnsureAsync(
+                Path.Combine(_paths.StateDirectory, "native-rule-sets"), ct).ConfigureAwait(false);
             var compiled = MacConnectionConfigBuilder.BuildNative(
                 lease,
                 mode,
@@ -247,7 +249,8 @@ public sealed class MacConnectionService : IMacConnectionService
                 _proxyPort,
                 bypassChinaMainland,
                 nativeProxyHost: "127.0.0.1",
-                nativeProxyPort: nativeRelayPort);
+                nativeProxyPort: nativeRelayPort,
+                ruleSetPaths: ruleSets);
             var executable = _paths.BinDirectory.TrimEnd('/', '\\') + "/sing-box";
             if (!File.Exists(executable))
                 throw new FileNotFoundException("sing-box helper is missing", executable);

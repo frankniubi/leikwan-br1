@@ -151,7 +151,7 @@ public sealed class MacConnectionConfigBuilderTests
             server.GetProperty("tag").GetString() == "china"
             && server.GetProperty("server").GetString() == "223.5.5.5"
             && server.GetProperty("tls").GetProperty("server_name").GetString() == "dns.alidns.com"
-            && server.GetProperty("detour").GetString() == "proxy");
+            && !server.TryGetProperty("detour", out _));
         Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
             rule.GetProperty("server").GetString() == "china"
             && rule.GetProperty("rule_set").EnumerateArray().Any(item => item.GetString() == "geosite-cn"));
@@ -204,7 +204,8 @@ public sealed class MacConnectionConfigBuilderTests
         Assert.Contains(root.GetProperty("dns").GetProperty("rules").EnumerateArray(), rule =>
             rule.GetProperty("server").GetString() == "local"
             && rule.GetProperty("rule_set").EnumerateArray().Any(item => item.GetString() == "geosite-cn"));
-        Assert.Equal("proxy", root.GetProperty("dns").GetProperty("servers")[0].GetProperty("detour").GetString());
+        Assert.False(root.GetProperty("dns").GetProperty("servers")[0].TryGetProperty("detour", out _));
+        Assert.Equal("223.5.5.5", root.GetProperty("dns").GetProperty("servers")[0].GetProperty("server").GetString());
         Assert.All(
             root.GetProperty("route").GetProperty("rule_set").EnumerateArray(),
             item => Assert.Equal("proxy", item.GetProperty("download_detour").GetString()));

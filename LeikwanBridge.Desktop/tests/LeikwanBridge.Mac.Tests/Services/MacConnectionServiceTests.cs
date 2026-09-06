@@ -104,6 +104,12 @@ public sealed class MacConnectionServiceTests
         Assert.True(service.IsNativeOutboundActive);
         Assert.Contains("127.0.0.1", host.StartedConfigJson, StringComparison.Ordinal);
         Assert.DoesNotContain("native-password", host.StartedConfigJson, StringComparison.Ordinal);
+        using var compiled = System.Text.Json.JsonDocument.Parse(host.StartedConfigJson);
+        Assert.All(compiled.RootElement.GetProperty("route").GetProperty("rule_set").EnumerateArray(), item =>
+        {
+            Assert.Equal("local", item.GetProperty("type").GetString());
+            Assert.True(File.Exists(item.GetProperty("path").GetString()));
+        });
         Assert.Equal(1, relay.StartCalls);
 
         if (unexpectedExit)
