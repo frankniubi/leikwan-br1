@@ -227,7 +227,15 @@ icon_png="$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Assets/app-icon
 [[ -f "$template" && -f "$icon_png" ]] || fail "bundle template or icon missing"
 mkdir -p "$output_dir"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-macos-package.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
+mount_point=""
+cleanup_package() {
+  if [[ -n "$mount_point" ]] && ! hdiutil detach "$mount_point" >/dev/null 2>&1; then
+    printf 'package-macos-client: retaining mounted verification directory: %s\n' "$work_dir" >&2
+    return
+  fi
+  rm -rf "$work_dir"
+}
+trap cleanup_package EXIT
 app="$work_dir/LeiKwan Bridge.app"
 macos_dir="$app/Contents/MacOS"
 resources_dir="$app/Contents/Resources"
@@ -305,6 +313,14 @@ ditto "$app" "$dmg_root/LeiKwan Bridge.app"
 ln -s /Applications "$dmg_root/Applications"
 rm -f "$dmg" "$update_zip" "$metadata"
 hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+hdiutil verify "$dmg" >/dev/null
+mount_point="$work_dir/verify-mount"
+mkdir -p "$mount_point"
+hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg" >/dev/null
+python3 "$repo_root/scripts/verify-macos-dmg-layout.py" "$mount_point" \
+  --version "$version" --architecture "$architecture"
+hdiutil detach "$mount_point" >/dev/null
+mount_point=""
 ditto -c -k --sequesterRsrc --keepParent "$app" "$update_zip"
 
 dmg_sha="$(sha256_file "$dmg")"
