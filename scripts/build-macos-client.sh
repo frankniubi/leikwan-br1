@@ -16,6 +16,7 @@ sing_box_version="${SING_BOX_VERSION:-v1.13.12}"
 sing_box_repository="https://github.com/SagerNet/sing-box.git"
 garble_version="${GARBLE_VERSION:-v0.17.0}"
 source_commit="${SOURCE_COMMIT:-}"
+managed_load_receipt="${MANAGED_LOAD_RECEIPT:-}"
 
 fail() {
   printf 'build-macos-client: %s\n' "$*" >&2
@@ -29,6 +30,8 @@ Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
   --output-root <path>      Intermediate output directory
   --wstunnel-src <path>     Upstream wstunnel checkout/cache
   --sing-box-src <path>     Upstream sing-box checkout/cache
+  --managed-load-receipt <path>
+                            Hash-bound probe receipt for cross-architecture packaging
   GARBLE_PATH=<path>        Pinned garble binary (default: PATH or temporary go install)
   --no-package              Build publish/helpers only
   --dry-run                 Print the pinned build plan without compiling
@@ -42,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --output-root) output_root="${2:-}"; shift 2 ;;
     --wstunnel-src) wstunnel_src="${2:-}"; shift 2 ;;
     --sing-box-src) sing_box_src="${2:-}"; shift 2 ;;
+    --managed-load-receipt) managed_load_receipt="${2:-}"; shift 2 ;;
     --no-package) package_after_build=0; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -181,7 +185,8 @@ git -C "$sing_box_src" checkout --detach "$sing_box_version"
 
 dotnet restore \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
-  --locked-mode
+  --locked-mode \
+  -p:Version="$version"
 dotnet publish \
   "$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj" \
   -c Release \
@@ -214,7 +219,7 @@ chmod 0755 "$helper_dir"/* "$publish_dir/LeikwanBridge.Mac"
 )
 
 if [[ "$package_after_build" -eq 1 ]]; then
-  bash "$repo_root/scripts/package-macos-client.sh" \
+  package_args=(
     --rid "$rid" \
     --version "$version" \
     --publish-dir "$publish_dir" \
@@ -222,6 +227,11 @@ if [[ "$package_after_build" -eq 1 ]]; then
     --helper-hashes "$helper_hashes" \
     --output-dir "$repo_root/artifacts/macos" \
     --source-commit "$source_commit"
+  )
+  if [[ -n "$managed_load_receipt" ]]; then
+    package_args+=(--managed-load-receipt "$managed_load_receipt")
+  fi
+  bash "$repo_root/scripts/package-macos-client.sh" "${package_args[@]}"
 fi
 
 printf 'build complete: %s\n' "$output_root"
