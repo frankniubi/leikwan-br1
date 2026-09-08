@@ -17,6 +17,13 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
+    Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        => ProxyForwardLease.AcquireAsync(
+            Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+                ?? throw new InvalidOperationException("proxy_forward_unavailable"),
+            () => IsForwardRunning(forwardId),
+            token => StartForwardAsync(forwardId, token),
+            token => StopForwardAsync(forwardId, token), ct);
     Task StartAllAsync(CancellationToken ct);
     Task StopAllAsync(CancellationToken ct);
     Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
@@ -191,6 +198,32 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             _runtime.RestartForward(forward, force: true, reason: "manual_apply");
             PublishCurrentForwards();
         }, ct);
+    }
+
+    public async Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+            ?? throw new InvalidOperationException("proxy_forward_unavailable");
+        ProxyForwardLease? lease = null;
+        try
+        {
+            lease = await _runtime.AcquireProxyForwardAsync(forward, ct).ConfigureAwait(false);
+            PublishCurrentForwards();
+            return lease.OwnsForward
+                ? new ProxyForwardLease(lease.Forward, true, async _ =>
+                {
+                    try { await lease.DisposeAsync().ConfigureAwait(false); }
+                    finally { PublishCurrentForwards(); }
+                })
+                : lease;
+        }
+        catch
+        {
+            if (lease is not null)
+                await lease.DisposeAsync().ConfigureAwait(false);
+            PublishCurrentForwards();
+            throw;
+        }
     }
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct)

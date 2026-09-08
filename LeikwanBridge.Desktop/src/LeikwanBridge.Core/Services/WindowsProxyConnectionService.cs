@@ -102,6 +102,12 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             && (_snapshot.Mode != WindowsProxyMode.Tun || _processHost.IsTunReady)
             && _nativeRelayHost.IsRunning;
 
+    public bool IsSavedDataPlaneRunning
+        => _activeProfileId > 0 && _activeNativeLease is null
+            && _snapshot.State == WindowsProxyConnectionState.Connected
+            && _processHost.IsRunning
+            && (_snapshot.Mode != WindowsProxyMode.Tun || _processHost.IsTunReady);
+
     /// <summary>
     /// The configured loopback listener used by HTTP and process mode.
     /// TUN mode keeps this value in its snapshot for consistent status output,
@@ -136,7 +142,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(profile);
         // Build in proxy mode validates the profile without starting a process.
-        WindowsProxyConfigBuilder.Build(profile, WindowsProxyMode.Http, [], _proxyPort, _tunMtu, _tunStack);
+        if (profile.IsExternal)
+        {
+            if (!IPAddress.TryParse(profile.Server, out _) || profile.Port is < 1 or > 65535)
+                throw new InvalidOperationException("proxy_external_endpoint_invalid");
+        }
+        else
+        {
+            WindowsProxyConfigBuilder.Build(profile, WindowsProxyMode.Http, [], _proxyPort, _tunMtu, _tunStack);
+        }
         await _gate.WaitAsync(ct);
         try
         {
@@ -184,7 +198,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         CancellationToken ct = default,
         bool bypassChinaMainland = false,
         WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
-        IEnumerable<string>? customDnsServers = null)
+        IEnumerable<string>? customDnsServers = null,
+        int? forwardListenPort = null)
     {
         await _gate.WaitAsync(ct);
         var profileName = "";
@@ -198,6 +213,19 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 throw new InvalidOperationException("proxy_mode_invalid");
             var profile = _profiles.FirstOrDefault(item => item.Id == profileId)
                 ?? throw new KeyNotFoundException("proxy_profile_not_found");
+            if (profile.IsExternal)
+                throw new InvalidOperationException("proxy_external_requires_forward");
+            if (forwardListenPort.HasValue)
+            {
+                if (forwardListenPort.Value is < 1 or > 65535)
+                    throw new InvalidOperationException("proxy_forward_listener_invalid");
+                profile = profile.Clone();
+                // Preserve implicit TLS identity before replacing only the dial endpoint.
+                if (profile.Tls && string.IsNullOrWhiteSpace(profile.ServerName))
+                    profile.ServerName = profile.Server;
+                profile.Server = "127.0.0.1";
+                profile.Port = forwardListenPort.Value;
+            }
             profileName = profile.Name;
             var normalizedProcessRules = (processRules ?? [])
                 .Where(rule => rule is not null && !string.IsNullOrWhiteSpace(rule.Pattern))
@@ -246,9 +274,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 {
                     await WriteEphemeralConfigAsync(configPath, compiled.Json, ct);
                     await StartProxyProcessAsync(configPath, mode, ct);
-                    if (mode == WindowsProxyMode.Process
-                        && _processHost is WindowsProxyProcessHost concreteHost
-                        && !await concreteHost.WaitForListenerAsync(proxyPort, ct))
+                    if (mode is WindowsProxyMode.Http or WindowsProxyMode.Process
+                        && !await _processHost.WaitForListenerAsync(proxyPort, ct))
                     {
                         throw new InvalidOperationException("proxy_listener_unavailable");
                     }

@@ -13,6 +13,7 @@ public interface IWindowsProxyProcessHost : IAsyncDisposable
     bool IsTunReady { get; }
     Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default);
     Task<bool> WaitForTunReadyAsync(CancellationToken ct = default);
+    Task<bool> WaitForListenerAsync(int port, CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
 }
 

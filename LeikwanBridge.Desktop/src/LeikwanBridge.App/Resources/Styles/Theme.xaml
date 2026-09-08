@@ -2,18 +2,18 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- Colors -->
-    <Color x:Key="PrimaryColor">#2563EB</Color>
-    <Color x:Key="PrimaryDarkColor">#1D4ED8</Color>
-    <Color x:Key="SuccessColor">#16A34A</Color>
-    <Color x:Key="DangerColor">#DC2626</Color>
-    <Color x:Key="WarningColor">#D97706</Color>
-    <Color x:Key="BgColor">#F8FAFC</Color>
+    <Color x:Key="PrimaryColor">#087F72</Color>
+    <Color x:Key="PrimaryDarkColor">#06695F</Color>
+    <Color x:Key="SuccessColor">#147D64</Color>
+    <Color x:Key="DangerColor">#B42318</Color>
+    <Color x:Key="WarningColor">#A16207</Color>
+    <Color x:Key="BgColor">#F4F6F5</Color>
     <Color x:Key="CardBgColor">#FFFFFF</Color>
-    <Color x:Key="SidebarBgColor">#1E293B</Color>
-    <Color x:Key="SidebarTextColor">#CBD5E1</Color>
-    <Color x:Key="TextColor">#0F172A</Color>
-    <Color x:Key="MutedTextColor">#64748B</Color>
-    <Color x:Key="BorderColor">#E2E8F0</Color>
+    <Color x:Key="SidebarBgColor">#183B37</Color>
+    <Color x:Key="SidebarTextColor">#B9CBC7</Color>
+    <Color x:Key="TextColor">#18211F</Color>
+    <Color x:Key="MutedTextColor">#64706D</Color>
+    <Color x:Key="BorderColor">#D9E0DE</Color>
 
     <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
     <SolidColorBrush x:Key="PrimaryDarkBrush" Color="{StaticResource PrimaryDarkColor}"/>

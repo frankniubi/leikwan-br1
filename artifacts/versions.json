@@ -221,9 +221,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "sha256": "dc135378e443d393e03e7c1d4d53c4955d5112f4b30d5db67f86d0ae19560a03",
-  "size_bytes": 76930033,
-  "version": "1.0.19"
+  "sha256": "9b01cde1606d0a6a3e35f940d837473b59651e936618b051f819bebb5d510fc0",
+  "size_bytes": 76958033,
+  "version": "1.0.21"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
@@ -235,9 +235,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "sha256": "d283261c32edd979833ec6ba8b859c006ab925c1e136099a0408f55127e85074",
-  "size_bytes": 81392700,
-  "version": "1.0.19"
+  "sha256": "2667314000935593bd9dcd90e3ab528571568c052bcb62d6f1600ba73c9b95f1",
+  "size_bytes": 81446780,
+  "version": "1.0.21"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
@@ -249,9 +249,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "sha256": "fc5d31794cdf4f7a6b2b5d815645a8f8e86b56ebcf63feddd577cc1019ccb020",
-  "size_bytes": 68385744,
-  "version": "1.0.19"
+  "sha256": "3872b424daec4026f418226219a081aa98941435bc7f2f4ef2c622c7feb1b3b7",
+  "size_bytes": 68409954,
+  "version": "1.0.21"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
@@ -263,9 +263,9 @@
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "sha256": "fdf4c3ae6b5f26aaa3354c3fc8e8e87b113713afc1794b3742bddbe4ef5d8e50",
-  "size_bytes": 72662337,
-  "version": "1.0.19"
+  "sha256": "16f627554a397a73312f58d15d5ac23f94378a8e0711fe5a382407bd53dc3d52",
+  "size_bytes": 72686523,
+  "version": "1.0.21"
  },
  "mptcp_client_runtime": {
   "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -432,9 +432,9 @@
  "windows_client_app": {
  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
  "path": "artifacts/windows/leikwan-bridge-setup.exe",
-   "sha256": "d0649fbcbe2693beeb8d4bc3ec7599a833993cdf6fc00d242a7395d29bb5b756",
-   "size_bytes": 22451749,
-   "version": "0.1.20.14"
+   "sha256": "71f49c8ae8b9690d549bbaa2a98625fa2aaf6d1e5fbc905acb7103775b874171",
+   "size_bytes": 69460661,
+   "version": "0.1.20.24"
  },
  "wstunnel_linux_amd64": {
   "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",

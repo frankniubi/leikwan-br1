@@ -31,6 +31,7 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
 
     public bool IsShadowsocks => string.Equals(Protocol, MacConnectionProtocol.Shadowsocks, StringComparison.Ordinal);
     public bool IsWireGuard => string.Equals(Protocol, MacConnectionProtocol.WireGuard, StringComparison.Ordinal);
+    public bool IsExternal => string.Equals(Protocol, MacConnectionProtocol.External, StringComparison.Ordinal);
 
     partial void OnProtocolChanged(string value)
     {
@@ -43,6 +44,7 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
         }
         OnPropertyChanged(nameof(IsShadowsocks));
         OnPropertyChanged(nameof(IsWireGuard));
+        OnPropertyChanged(nameof(IsExternal));
     }
 
     public void Load(MacConnectionProfile? profile)
@@ -74,7 +76,8 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
             Name = Name.Trim(),
             Protocol = Protocol.Trim().ToLowerInvariant(),
             Server = Server.Trim(),
-            Port = ParseNumber(PortText, 443),
+            Port = int.TryParse(PortText.Trim(), out var port) && port is >= 1 and <= 65535
+                ? port : throw new ArgumentException("connection_port_invalid"),
             Method = Method.Trim(),
             Password = Password,
             PrivateKey = PrivateKey.Trim(),
@@ -85,6 +88,16 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
             Mtu = ParseNumber(MtuText, 1420),
             PersistentKeepalive = ParseNumber(KeepaliveText, 25),
         };
+    }
+
+    public bool TryImport(string? uri, out string error)
+    {
+        if (MacConnectionUriParser.TryParse(uri, out var profile, out error))
+        {
+            Load(profile);
+            return true;
+        }
+        return false;
     }
 
     private static int ParseNumber(string value, int fallback)

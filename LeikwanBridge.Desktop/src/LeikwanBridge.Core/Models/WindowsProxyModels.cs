@@ -13,9 +13,10 @@ public static class WindowsProxyProtocol
     public const string Shadowsocks = "ss";
     public const string Shadowsocks2022 = "ss2022";
     public const string Vless = "vless";
+    public const string External = "external";
 
     public static IReadOnlyList<string> Supported { get; } =
-        [Shadowsocks, Shadowsocks2022, Vless];
+        [Shadowsocks, Shadowsocks2022, Vless, External];
 
     public static IReadOnlyList<string> ShadowsocksMethodOptions { get; } =
     [
@@ -201,6 +202,9 @@ public sealed class WindowsProxyProfile
     public bool IsShadowsocks => WindowsProxyProtocol.IsShadowsocks(Protocol);
 
     [JsonIgnore]
+    public bool IsExternal => WindowsProxyProtocol.Normalize(Protocol) == WindowsProxyProtocol.External;
+
+    [JsonIgnore]
     public bool IsShadowsocks2022 => string.Equals(
         WindowsProxyProtocol.Normalize(Protocol),
         WindowsProxyProtocol.Shadowsocks2022,
@@ -217,6 +221,7 @@ public sealed class WindowsProxyProfile
     {
         WindowsProxyProtocol.Shadowsocks2022 => "SS2022",
         WindowsProxyProtocol.Vless => "VLESS",
+        WindowsProxyProtocol.External => "External",
         _ => "Shadowsocks",
     };
 

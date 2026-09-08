@@ -58,6 +58,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _connectionStatus = "Disconnected";
     [ObservableProperty] private string _lastSyncTime = "Never";
     [ObservableProperty] private int _activeForwardCount;
+    [ObservableProperty] private bool _isLoadingForwards = true;
     [ObservableProperty] private string _totalBytesIn = "0 B";
     [ObservableProperty] private string _totalBytesOut = "0 B";
     [ObservableProperty] private string _currentView = "Dashboard";
@@ -79,9 +80,24 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _nativeBypassChinaMainland;
     [ObservableProperty] private bool _nativeUnrestrictedRoute;
     [ObservableProperty] private bool _isNativeOutboundExpanded;
+    [ObservableProperty] private bool _isProxyModeSelected;
     private string _selectedProxyGameDisplayName = "";
+    private bool _refreshingProxyRows;
 
     public ObservableCollection<ForwardViewModel> Forwards { get; } = [];
+    public ObservableCollection<ProxyForwardRowViewModel> ProxyForwardRows { get; } = [];
+    public IReadOnlyList<ProxyForwardRowViewModel> PairedProxyForwardRows
+        => ProxyForwardRows.Where(row => !row.IsUnbound).ToList();
+    public ProxyForwardRowViewModel? SelectedPairedProxyForward
+        => PairedProxyForwardRows.FirstOrDefault(row => row.ForwardId == SelectedProxyForwardId);
+    public string SelectedProxyPairedForwardEndpoint
+        => SelectedPairedProxyForward?.ListenerEndpoint ?? string.Empty;
+    public string SelectedProxyPairedForwardNode
+        => SelectedPairedProxyForward?.SelectedProfileName ?? UnboundProxyProfileText;
+    public bool IsProxyReadyForSelectedPairedForward
+        => IsProxyModeSelected && SelectedPairedProxyForward?.CanConnect == true;
+    public bool IsProxyConnectedForSelectedPairedForward
+        => SelectedPairedProxyForward?.IsActive == true;
     public ObservableCollection<ConnectionQualityForwardViewModel> ConnectionQualityForwards { get; } = [];
     public ObservableCollection<DesktopClientChoice> AvailableClientChoices { get; } = [];
     public ObservableCollection<string> LogEntries { get; } = [];
@@ -90,6 +106,22 @@ public partial class MainViewModel : ObservableObject
     public WindowsProxyEditorViewModel ProxyEditor { get; } = new();
 
     public string SelectedProxyGameDisplayName => _selectedProxyGameDisplayName;
+    public bool IsForwardPairingView => string.Equals(CurrentView, "Forwards", StringComparison.OrdinalIgnoreCase);
+
+    partial void OnCurrentViewChanged(string value)
+        => OnPropertyChanged(nameof(IsForwardPairingView));
+
+    partial void OnIsProxyModeSelectedChanged(bool value)
+        => NotifySelectedProxyPairingStateChanged();
+
+    private void NotifySelectedProxyPairingStateChanged()
+    {
+        OnPropertyChanged(nameof(SelectedPairedProxyForward));
+        OnPropertyChanged(nameof(SelectedProxyPairedForwardEndpoint));
+        OnPropertyChanged(nameof(SelectedProxyPairedForwardNode));
+        OnPropertyChanged(nameof(IsProxyReadyForSelectedPairedForward));
+        OnPropertyChanged(nameof(IsProxyConnectedForSelectedPairedForward));
+    }
 
     public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
     public bool IsProxyStarting => ProxySnapshot.State == WindowsProxyConnectionState.Starting;
@@ -281,9 +313,94 @@ public partial class MainViewModel : ObservableObject
                 ProxyProfiles.Add(profile);
         }
 
-        var selected = ProxyProfiles.FirstOrDefault(profile => profile.Id == _config.ProxyActiveProfileId)
-            ?? ProxyProfiles.FirstOrDefault();
-        ProxyEditor.Load(selected);
+        RestoreSavedProxySelection();
+        if (!_refreshingProxyRows)
+            RefreshProxyForwardRows();
+        OnPropertyChanged(nameof(PairedProxyForwardOptions));
+    }
+
+    public string UnboundProxyProfileText =>
+        System.Globalization.CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+            ? "未选择已保存节点" : "No saved node selected";
+
+    public int GetProxyProfileIdForForward(int forwardId)
+        => _config.ProxyProfileIdsByForwardId.TryGetValue(forwardId, out var profileId)
+            && ProxyProfiles.Any(profile => profile.Id == profileId)
+            ? profileId : 0;
+
+    public void SetProxyProfileForForward(int forwardId, int profileId)
+    {
+        if (forwardId <= 0)
+            return;
+        if (profileId > 0 && ProxyProfiles.Any(profile => profile.Id == profileId))
+            _config.ProxyProfileIdsByForwardId[forwardId] = profileId;
+        else
+            _config.ProxyProfileIdsByForwardId.Remove(forwardId);
+
+        if (SelectedProxyForwardId == forwardId)
+            SelectedProxyProfileId = profileId;
+        OnPropertyChanged(nameof(PairedProxyForwardRows));
+        OnPropertyChanged(nameof(PairedProxyForwardOptions));
+        NotifySelectedProxyPairingStateChanged();
+        if (!_refreshingProxyRows)
+            RefreshProxyForwardRows();
+    }
+
+    public bool IsProxySessionForForward(int forwardId)
+        => _proxyForwardLease?.Forward.ForwardId == forwardId
+            || (_proxyPendingForward?.ForwardId == forwardId && IsProxyStarting);
+
+    public async Task StartProxyForForwardAsync(int forwardId, int profileId, CancellationToken ct = default)
+    {
+        if (!ProxyForwardOptions.Any(item => item.ForwardId == forwardId))
+            throw new InvalidOperationException("proxy_forward_required");
+        SelectedProxyForwardId = forwardId;
+        SetProxyProfileForForward(forwardId, profileId);
+        await StartProxyAsync(WindowsProxyMode.Http, profileId, ct: ct);
+        RefreshProxyForwardRows();
+    }
+
+    public async Task StopProxyForForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        if (!IsProxySessionForForward(forwardId))
+            return;
+        await StopProxyAsync(ct);
+        RefreshProxyForwardRows();
+    }
+
+    private void RefreshProxyForwardRows()
+    {
+        if (_refreshingProxyRows)
+            return;
+        _refreshingProxyRows = true;
+        try
+        {
+            var forwards = ProxyForwardOptions.GroupBy(item => item.ForwardId).Select(group => group.First()).ToList();
+            for (var index = ProxyForwardRows.Count - 1; index >= 0; index--)
+                if (!forwards.Any(forward => forward.ForwardId == ProxyForwardRows[index].ForwardId))
+                    ProxyForwardRows.RemoveAt(index);
+            for (var index = 0; index < forwards.Count; index++)
+            {
+                var forward = forwards[index];
+                var row = ProxyForwardRows.FirstOrDefault(item => item.ForwardId == forward.ForwardId);
+                if (row is null)
+                {
+                    row = new ProxyForwardRowViewModel(this, forward);
+                    ProxyForwardRows.Insert(index, row);
+                }
+                else
+                {
+                    var oldIndex = ProxyForwardRows.IndexOf(row);
+                    if (oldIndex != index)
+                        ProxyForwardRows.Move(oldIndex, index);
+                    row.UpdateForward(forward);
+                    row.Refresh();
+                }
+            }
+        }
+        finally { _refreshingProxyRows = false; }
+        OnPropertyChanged(nameof(PairedProxyForwardRows));
+        NotifySelectedProxyPairingStateChanged();
     }
 
     public void RefreshProxyGameOptions()
@@ -506,6 +623,8 @@ public partial class MainViewModel : ObservableObject
             profile.Name = $"{profile.Server}:{profile.Port}";
         await _proxyService!.SaveProfileAsync(profile, ct);
         _config.ProxyActiveProfileId = profile.Id;
+        if (SelectedProxyForwardId > 0)
+            _config.ProxyProfileIdsByForwardId[SelectedProxyForwardId] = profile.Id;
         RefreshProxyProfiles();
         ProxyEditor.Load(ProxyProfiles.FirstOrDefault(item => item.Id == profile.Id) ?? profile);
         AddLog($"Saved proxy profile {profile.Name}.");
@@ -516,7 +635,12 @@ public partial class MainViewModel : ObservableObject
         if (profileId <= 0)
             return;
         await EnsureProxyServiceAsync(ct);
+        if (_proxyForwardProfileId == profileId)
+            await StopProxyAsync(ct);
         await _proxyService!.DeleteProfileAsync(profileId, ct);
+        foreach (var forwardId in _config.ProxyProfileIdsByForwardId
+            .Where(pair => pair.Value == profileId).Select(pair => pair.Key).ToList())
+            _config.ProxyProfileIdsByForwardId.Remove(forwardId);
         if (_config.ProxyActiveProfileId == profileId)
             _config.ProxyActiveProfileId = 0;
         RefreshProxyProfiles();
@@ -528,14 +652,25 @@ public partial class MainViewModel : ObservableObject
         string? selectedGameId = null,
         CancellationToken ct = default)
     {
+        if (profileId <= 0)
+            throw new InvalidOperationException("proxy_saved_profile_required");
         await EnsureProxyServiceAsync(ct);
+        var profile = _proxyService!.Profiles.FirstOrDefault(item => item.Id == profileId)
+            ?? throw new InvalidOperationException("proxy_saved_profile_required");
+        var forward = ProxyForwardOptions.FirstOrDefault(item => item.ForwardId == SelectedProxyForwardId)?.Config
+            ?? throw new InvalidOperationException("proxy_forward_required");
+        var transport = forward.Transport.Trim().ToLowerInvariant();
+        if (transport is not ("tcp" or "udp" or "tcp+udp"))
+            throw new InvalidOperationException("proxy_forward_transport_invalid");
+        if (!profile.IsExternal && transport == "udp")
+            throw new InvalidOperationException("proxy_forward_tcp_required");
         selectedGameId = string.IsNullOrWhiteSpace(selectedGameId)
             ? (string.IsNullOrWhiteSpace(SelectedProxyGameId)
                 ? _config.ProxyActiveGameId
                 : SelectedProxyGameId)
             : selectedGameId;
         var game = ResolveProxyGame(selectedGameId);
-        if (mode == WindowsProxyMode.Process && game is null)
+        if (!profile.IsExternal && mode == WindowsProxyMode.Process && game is null)
             throw new InvalidOperationException("process_game_required");
 
         var rules = (game?.ProcessNames ?? [])
@@ -545,20 +680,21 @@ public partial class MainViewModel : ObservableObject
                 game?.PatternsAreRegex == true ? name : BuildProcessRule(name)))
             .ToList();
         var dnsMode = _config.GetEffectiveProxyDnsMode();
-        await _proxyService!.StartAsync(
+        await RunProxyThroughForwardAsync(mode, profile, forward, (listenPort, startupToken) => _proxyService!.StartAsync(
             mode,
             profileId,
             BuildProxyBypassHosts(),
             rules,
-            ct,
+            startupToken,
             _config.ProxyBypassChinaMainland,
             dnsMode,
             dnsMode == WindowsProxyDnsMode.Custom
                 ? _config.GetEffectiveProxyDnsServers()
-                : null);
+                : null,
+            forwardListenPort: listenPort), ct);
         _config.ProxyActiveProfileId = profileId;
         _config.ProxyActiveMode = mode.ToString();
-        SelectedProxyGameId = mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
+        SelectedProxyGameId = !profile.IsExternal && mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
     }
 
     public async Task StartNativeOutboundAsync(
@@ -600,6 +736,8 @@ public partial class MainViewModel : ObservableObject
         var game = ResolveProxyGame(selectedGameId);
         if (mode == WindowsProxyMode.Process && game is null)
             throw new InvalidOperationException("process_game_required");
+        if (_proxyForwardLease is not null || _proxyForwardStartCts is not null)
+            await StopProxyAsync(ct);
         var rules = (game?.ProcessNames ?? [])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(64)
@@ -686,21 +824,32 @@ public partial class MainViewModel : ObservableObject
 
     private async Task StopProxyAsync(string reason, CancellationToken ct)
     {
-        _ = CancelNativeLeaseRenewalLoop();
-        if (_proxyService is null)
-            return;
-        Log.Information(
-            "stopping Windows proxy (reason={Reason}, native={Native}, forward={ForwardId})",
-            reason,
-            _proxyService.IsNativeOutboundActive,
-            _nativeActiveForwardId);
-        await _proxyService.StopAsync(ct);
-        _nativeActiveForwardId = 0;
-        _nativeActiveRouteScope = "global";
-        _nativeActiveUnrestricted = false;
-        NativeUnrestrictedRoute = false;
-        _nativeActiveGameId = "";
-        _nativeActiveBypassChina = false;
+        CancelProxyForwardStart();
+        await _proxyForwardGate.WaitAsync(ct);
+        try
+        {
+            _ = CancelNativeLeaseRenewalLoop();
+            if (_proxyService is null)
+            {
+                await ReleaseProxyForwardAsync();
+                return;
+            }
+            Log.Information(
+                "stopping Windows proxy (reason={Reason}, native={Native}, forward={ForwardId})",
+                reason,
+                _proxyService.IsNativeOutboundActive,
+                _nativeActiveForwardId);
+            try { await _proxyService.StopAsync(ct); }
+            finally { await ReleaseProxyForwardAsync(); }
+            HandleProxySnapshotChanged(WindowsProxySnapshot.Disconnected);
+            _nativeActiveForwardId = 0;
+            _nativeActiveRouteScope = "global";
+            _nativeActiveUnrestricted = false;
+            NativeUnrestrictedRoute = false;
+            _nativeActiveGameId = "";
+            _nativeActiveBypassChina = false;
+        }
+        finally { _proxyForwardGate.Release(); }
     }
 
     public async Task<WindowsSocks5UdpProbeResult> TestProxyUdpAsync(CancellationToken ct = default)
@@ -761,6 +910,8 @@ public partial class MainViewModel : ObservableObject
     private async Task ShutdownCoreAsync()
     {
         StopUsageRefreshSafely();
+        try { await StopProxyAsync("application_shutdown", CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception exception) { Log.Warning(exception, "failed to stop Windows proxy before runtime shutdown"); }
         var nativeLeaseRenewalTask = CancelNativeLeaseRenewalLoop();
         await WaitForTaskAsync(nativeLeaseRenewalTask, "native lease renewal").ConfigureAwait(false);
 
@@ -917,8 +1068,12 @@ public partial class MainViewModel : ObservableObject
         {
             Task.Run(async () =>
             {
-                if (_proxyService is not null)
-                    await _proxyService.DisposeAsync().ConfigureAwait(false);
+                try { await StopProxyAsync("application_dispose", CancellationToken.None).ConfigureAwait(false); }
+                finally
+                {
+                    if (_proxyService is not null)
+                        await _proxyService.DisposeAsync().ConfigureAwait(false);
+                }
             }).GetAwaiter().GetResult();
         }
         catch (Exception exception) { Log.Warning(exception, "failed to dispose Windows proxy service"); }
@@ -936,12 +1091,16 @@ public partial class MainViewModel : ObservableObject
 
     private void HandleProxySnapshotChanged(WindowsProxySnapshot snapshot)
     {
+        if (_proxyPendingForward is not null && snapshot.State == WindowsProxyConnectionState.Connected)
+            return;
         InvokeOnUiThread(() =>
         {
             ProxySnapshot = snapshot;
+            RefreshProxyForwardRows();
             OnPropertyChanged(nameof(IsProxyConnected));
             OnPropertyChanged(nameof(IsProxyStarting));
             OnPropertyChanged(nameof(IsProxyError));
+            NotifySelectedProxyPairingStateChanged();
             if (snapshot.State == WindowsProxyConnectionState.Error)
                 AddLog($"Proxy error: {snapshot.ErrorCode}");
         });
@@ -991,6 +1150,8 @@ public partial class MainViewModel : ObservableObject
         _config = config;
         _config.MasterUrl = AppDefaults.NormalizeMasterUrl(_config.MasterUrl);
         SelectedProxyGameId = _config.ProxyActiveGameId ?? string.Empty;
+        _config.ProxyProfileIdsByForwardId ??= [];
+        _proxyForwardsAvailable = new(TaskCreationOptions.RunContinuationsAsynchronously);
         if (config.ClientId <= 0 && config.ActiveClientId > 0)
             config.ClientId = config.ActiveClientId;
         if (config.ActiveClientId <= 0 && config.ClientId > 0)
@@ -1201,6 +1362,7 @@ public partial class MainViewModel : ObservableObject
         ct.ThrowIfCancellationRequested();
         ThrowIfShuttingDown();
         _pollingService.Start(_config.PollIntervalSeconds);
+        IsLoadingForwards = true;
 
         AddLog("Connected to master panel.");
     }
@@ -1222,6 +1384,7 @@ public partial class MainViewModel : ObservableObject
         _nativeActiveRouteScope = "global";
         ConnectionStatus = GetString("DashDisconnected");
         Forwards.Clear();
+        IsLoadingForwards = true;
         ActiveForwardCount = 0;
         AddLog("Disconnected.");
     }
@@ -1335,6 +1498,7 @@ public partial class MainViewModel : ObservableObject
 
     public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning, StateManager? stateManager = null)
     {
+        IsLoadingForwards = false;
         var snapshot = forwards.ToList();
         var qualityStateManager = stateManager ?? _stateManager;
         var applied = qualityStateManager?.LoadApplied() ?? new Dictionary<string, AppliedForwardState>();
@@ -1353,6 +1517,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         SelectedForward = Forwards.FirstOrDefault();
+        RefreshProxyForwardOptions();
         ActiveForwardCount = Forwards.Count;
     }
 
@@ -1384,11 +1549,10 @@ public partial class MainViewModel : ObservableObject
 
     private static string BuildForwardDisplayName(ForwardConfig forward)
     {
-        var port = forward.ListenPort > 0 ? forward.ListenPort.ToString() : "-";
         var direction = string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
             ? "-"
             : forward.ForwardCombinationDirection.Trim();
-        return $"Forward #{forward.ForwardId} | Port {port} | Direction {direction}";
+        return $"Forward #{forward.ForwardId} · {direction}";
     }
 
     private void SetLifecycle(int forwardId, ForwardLifecycleState lifecycle)
@@ -1890,9 +2054,11 @@ public partial class MainViewModel : ObservableObject
         _usageTimer = null;
     }
 
-    private void OnUsageTimerTick(object? sender, EventArgs e)
+    private async void OnUsageTimerTick(object? sender, EventArgs e)
     {
         ApplyUsageSnapshot(_usageReader.Read(_stateManager?.EffectiveStateDir ?? ""));
+        try { await CheckProxyForwardHealthAsync(); }
+        catch (Exception exception) { Log.Warning(exception, "ordinary proxy health cleanup failed"); }
     }
 
     private static string FormatBytes(long bytes)
@@ -1949,6 +2115,7 @@ public partial class MainViewModel : ObservableObject
     {
         InvokeOnUiThread(() =>
         {
+            IsLoadingForwards = false;
             ConnectionStatus = $"Error: {ex.Message}";
             AddLog($"Sync error: {ex.Message}");
         });

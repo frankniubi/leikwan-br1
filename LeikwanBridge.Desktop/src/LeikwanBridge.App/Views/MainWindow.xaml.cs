@@ -32,12 +32,28 @@ public partial class MainWindow : Window
     private Task? _startupTask;
     private bool _shutdownCloseRequested;
     private bool _shutdownCloseFinalizing;
+    private bool _saveLoginInfo;
 
     public MainWindow()
     {
         InitializeComponent();
         _vm = (MainViewModel)DataContext;
+        if (!App.Config.RememberLoginInfo)
+        {
+            App.Config.AgentToken = string.Empty;
+            App.Config.ClientId = 0;
+            App.Config.ActiveClientId = 0;
+            App.Config.ActiveClientName = string.Empty;
+            App.Config.DesktopSessionToken = string.Empty;
+            App.Config.SignedInUserId = 0;
+            App.Config.SignedInUsername = string.Empty;
+            App.Config.SignedInEmail = string.Empty;
+            App.Config.AvailableClients = [];
+        }
         _vm.Initialize(App.Config);
+        _saveLoginInfo = App.Config.RememberLoginInfo;
+        if (!_saveLoginInfo)
+            new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
 
         // Auto-scroll log
@@ -50,9 +66,12 @@ public partial class MainWindow : Window
         // Populate settings fields
         PopulateSettings();
         UpdateVisiblePanel();
+        SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
         TxtMasterUrl.Text = string.IsNullOrWhiteSpace(App.Config.MasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
+        SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
+        RestoreSetupLoginInfo();
 
         Loaded += (_, _) =>
         {
@@ -89,9 +108,9 @@ public partial class MainWindow : Window
             }
 
             ct.ThrowIfCancellationRequested();
-            await TryStartRequestedProxyAsync(ct);
-            ct.ThrowIfCancellationRequested();
             await TryAutoConnectAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            await TryStartRequestedProxyAsync(ct);
             ct.ThrowIfCancellationRequested();
             if (WindowsAppUpdateService.ShouldCheckForUpdatesOnStartup(App.Config))
                 await CheckForUpdatesAsync(ct);
@@ -107,6 +126,7 @@ public partial class MainWindow : Window
 
     private async void OnConnect_Click(object sender, RoutedEventArgs e)
     {
+        TxtMasterUrl.Text = ResolveEndpointUrl(SetupEndpointCombo);
         var masterUrl = AppDefaults.NormalizeMasterUrl(TxtMasterUrl.Text);
         TxtMasterUrl.Text = masterUrl;
         var clientIdText = TxtClientId.Text.Trim();
@@ -150,11 +170,15 @@ public partial class MainWindow : Window
             _vm.Config.ActiveClientName = string.Empty;
             _vm.Config.AvailableClients = [];
             _vm.Initialize(_vm.Config);
+            _saveLoginInfo = SetupSaveInfoCheckBox.IsChecked == true;
 
             var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-            stateManager.SaveConfig(App.ConfigPath, _vm.Config);
+            _vm.Config.RememberLoginInfo = _saveLoginInfo;
+            stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
             SetupStatus.Text = FindResource("SetupSuccess") as string ?? "Connection successful!";
             await _vm.ConnectCommand.ExecuteAsync(null);
+            if (!_saveLoginInfo)
+                ClearSetupLoginInfo();
         }
         catch (Exception ex)
         {
@@ -173,6 +197,7 @@ public partial class MainWindow : Window
 
     private void OnSaveSettings_Click(object sender, RoutedEventArgs e)
     {
+        SettMasterUrl.Text = ResolveEndpointUrl(SettEndpointCombo);
         App.Config.MasterUrl = AppDefaults.NormalizeMasterUrl(SettMasterUrl.Text);
         SettMasterUrl.Text = App.Config.MasterUrl;
         if (int.TryParse(SettClientId.Text.Trim(), out var clientId) && clientId > 0)
@@ -182,6 +207,7 @@ public partial class MainWindow : Window
         }
         if (!string.IsNullOrWhiteSpace(SettAgentToken.Password))
             App.Config.AgentToken = SettAgentToken.Password.Trim();
+        _saveLoginInfo = SettSaveInfoCheckBox.IsChecked == true;
         if (int.TryParse(SettPollInterval.Text.Trim(), out int poll) && poll > 0)
             App.Config.PollIntervalSeconds = poll;
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
@@ -197,13 +223,88 @@ public partial class MainWindow : Window
             ApplyProxyVisualState();
         }
 
+        App.Config.RememberLoginInfo = _saveLoginInfo;
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, App.Config);
+        stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
 
         // Handle auto-start
         SetAutoStart(App.Config.AutoStart);
 
         SettingsStatus.Text = FindResource("SettingsSaved") as string ?? "Settings saved.";
+        if (!_saveLoginInfo)
+            ClearSettingsLoginInfo();
+    }
+
+    private void OnEndpointSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ComboBox combo)
+            return;
+
+        var url = ResolveEndpointUrl(combo);
+        if (ReferenceEquals(combo, SetupEndpointCombo) && TxtMasterUrl is not null)
+            TxtMasterUrl.Text = url;
+        else if (ReferenceEquals(combo, SettEndpointCombo) && SettMasterUrl is not null)
+            SettMasterUrl.Text = url;
+    }
+
+    private static string ResolveEndpointUrl(System.Windows.Controls.ComboBox combo)
+    {
+        var key = (combo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return AppDefaults.ResolveConnectionEndpoint(key);
+    }
+
+    private static void SelectEndpoint(System.Windows.Controls.ComboBox combo, string? url)
+    {
+        var key = AppDefaults.GetConnectionEndpointKey(url);
+        var selected = combo.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), key, StringComparison.OrdinalIgnoreCase));
+        if (selected is not null)
+            combo.SelectedItem = selected;
+    }
+
+    private void RestoreSetupLoginInfo()
+    {
+        if (!_saveLoginInfo)
+        {
+            ClearSetupLoginInfo();
+            return;
+        }
+
+        TxtClientId.Text = (App.Config.ClientId > 0 ? App.Config.ClientId : App.Config.ActiveClientId)
+            .ToString(CultureInfo.InvariantCulture);
+        TxtAgentToken.Password = App.Config.AgentToken;
+    }
+
+    private void ClearSetupLoginInfo()
+    {
+        TxtClientId.Text = string.Empty;
+        TxtAgentToken.Password = string.Empty;
+    }
+
+    private void ClearSettingsLoginInfo()
+    {
+        SettClientId.Text = string.Empty;
+        SettAgentToken.Password = string.Empty;
+    }
+
+    private AgentConfig BuildPersistedLoginConfig()
+    {
+        var persisted = _vm.Config.Clone();
+        persisted.RememberLoginInfo = _saveLoginInfo;
+        if (!_saveLoginInfo)
+        {
+            persisted.AgentToken = string.Empty;
+            persisted.ClientId = 0;
+            persisted.ActiveClientId = 0;
+            persisted.ActiveClientName = string.Empty;
+            persisted.DesktopSessionToken = string.Empty;
+            persisted.SignedInUserId = 0;
+            persisted.SignedInUsername = string.Empty;
+            persisted.SignedInEmail = string.Empty;
+            persisted.AvailableClients = [];
+        }
+        return persisted;
     }
 
     private void PopulateProxyUi()
@@ -213,11 +314,12 @@ public partial class MainWindow : Window
             _proxyUiReady = true;
         }
 
-        var selected = _vm.ProxyProfiles.FirstOrDefault(profile => profile.Id == App.Config.ProxyActiveProfileId)
-            ?? _vm.ProxyProfiles.FirstOrDefault();
+        var selected = _vm.ProxyProfiles.FirstOrDefault(profile => profile.Id == _vm.SelectedProxyProfileId);
         ProxyProfileList.SelectedItem = selected;
+        ForwardPairingProfileList.SelectedItem = selected;
         _vm.ProxyEditor.Load(selected);
         ProxyPassword.Password = _vm.ProxyEditor.Password;
+        PairingProxyPassword.Password = _vm.ProxyEditor.Password;
         ProxyBypassChinaCheckBox.IsChecked = App.Config.ProxyBypassChinaMainland;
         ProxyDnsModeCombo.SelectedIndex = App.Config.GetEffectiveProxyDnsMode() == WindowsProxyDnsMode.Custom ? 1 : 0;
         ProxyDnsServersText.Text = string.IsNullOrWhiteSpace(App.Config.ProxyDnsServers)
@@ -229,14 +331,15 @@ public partial class MainWindow : Window
         UpdateProxyDnsVisibility();
 
         var mode = Enum.TryParse<WindowsProxyMode>(App.Config.ProxyActiveMode, ignoreCase: true, out var parsed)
-            ? parsed
-            : WindowsProxyMode.Http;
-        ProxyModeCombo.SelectedIndex = mode switch
+            ? parsed : (WindowsProxyMode?)null;
+        ProxyModeCombo.SelectedIndex = !App.Config.ProxyModeChosen ? 0 : mode switch
         {
-            WindowsProxyMode.Tun => 1,
-            WindowsProxyMode.Process => 2,
+            WindowsProxyMode.Http => 1,
+            WindowsProxyMode.Tun => 2,
+            WindowsProxyMode.Process => 3,
             _ => 0,
         };
+        _vm.IsProxyModeSelected = App.Config.ProxyModeChosen && mode is not null;
         UpdateProxyModeVisibility();
         UpdateNativeOutboundUi();
         ApplyProxyVisualState();
@@ -248,7 +351,187 @@ public partial class MainWindow : Window
             return;
         _vm.ProxyEditor.Load(profile);
         ProxyPassword.Password = profile.Password;
-        App.Config.ProxyActiveProfileId = profile.Id;
+    }
+
+    private void OnProxyForwardSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyForwardCombo.SelectedValue is not int forwardId || forwardId <= 0)
+            return;
+        _vm.SelectedProxyForwardId = forwardId;
+        ProxyProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+        ProxyPassword.Password = _vm.ProxyEditor.Password;
+        SaveCurrentConfig();
+    }
+
+    private void OnProxyPairedForwardSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ProxyPairedForwardCombo.SelectedValue is not int forwardId || forwardId <= 0)
+            return;
+        _vm.SelectedProxyForwardId = forwardId;
+        _vm.SelectedProxyProfileId = _vm.GetProxyProfileIdForForward(forwardId);
+        SaveCurrentConfig();
+    }
+
+    private void OnProxyPanelSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ProxySidebarColumn is not null)
+            ProxySidebarColumn.Width = new GridLength(0);
+    }
+
+    private void OnProxyRowProfileSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || e.AddedItems.Count == 0)
+            return;
+        if (sender is System.Windows.Controls.ComboBox { DataContext: ProxyForwardRowViewModel row }
+            && row.SelectedProfileId >= 0)
+            SaveCurrentConfig();
+    }
+
+    private void OnPairingProfileSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_proxyUiReady || ForwardPairingProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        _vm.ProxyEditor.Load(profile);
+        PairingProxyPassword.Password = profile.Password;
+    }
+
+    private void OnPairingNew_Click(object sender, RoutedEventArgs e)
+    {
+        ForwardPairingProfileList.SelectedItem = null;
+        _vm.ProxyEditor.Load(null);
+        PairingProxyPassword.Password = string.Empty;
+        ForwardPairingNodeEditorExpander.IsExpanded = true;
+        ForwardPairingNodeEditorExpander.BringIntoView();
+    }
+
+    private void OnPairingEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (ForwardPairingProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        _vm.ProxyEditor.Load(profile);
+        PairingProxyPassword.Password = profile.Password;
+        ForwardPairingNodeEditorExpander.IsExpanded = true;
+        ForwardPairingNodeEditorExpander.BringIntoView();
+    }
+
+    private async void OnPairingImport_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _vm.ImportProxyProfileAsync(PairingImportUri.Text);
+            SaveCurrentConfig();
+            PopulateProxyUi();
+            PairingImportUri.Clear();
+            ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+            ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+        }
+        catch (Exception exception)
+        {
+            SetProxyStatusError(exception.Message);
+        }
+    }
+
+    private async void OnPairingSave_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.ProxyEditor.Password = PairingProxyPassword.Password;
+        try
+        {
+            await _vm.SaveProxyProfileAsync();
+            SaveCurrentConfig();
+            PopulateProxyUi();
+            ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+            ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to save pairing node");
+        }
+    }
+
+    private async void OnPairingDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (ForwardPairingProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        try
+        {
+            await _vm.DeleteProxyProfileAsync(profile.Id);
+            SaveCurrentConfig();
+            PopulateProxyUi();
+            ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node list updated";
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to delete pairing node");
+        }
+    }
+
+    private void OnSaveForwardPairings_Click(object sender, RoutedEventArgs e)
+    {
+        SaveCurrentConfig();
+        ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Pairings saved";
+    }
+
+    private async void OnProxyRowConnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ProxyForwardRowViewModel row })
+            return;
+        if (!row.CanConnect)
+            return;
+        _vm.SelectedProxyForwardId = row.ForwardId;
+        _vm.SelectedProxyProfileId = row.SelectedProfileId;
+        await StartSelectedProxyAsync();
+    }
+
+    private async void OnProxyRowDisconnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ProxyForwardRowViewModel row })
+            return;
+        try
+        {
+            await row.DisconnectAsync();
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to stop local proxy for forward row");
+        }
+    }
+
+    private async void OnProxySelectedConnect_Click(object sender, RoutedEventArgs e)
+    {
+        var row = _vm.PairedProxyForwardRows.FirstOrDefault(item => item.ForwardId == _vm.SelectedProxyForwardId);
+        if (row is null || !row.CanConnect)
+            return;
+        try
+        {
+            await row.ConnectAsync();
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to start local proxy for selected paired forward");
+        }
+    }
+
+    private async void OnProxySelectedDisconnect_Click(object sender, RoutedEventArgs e)
+    {
+        var row = _vm.PairedProxyForwardRows.FirstOrDefault(item => item.ForwardId == _vm.SelectedProxyForwardId);
+        if (row is null)
+            return;
+        try
+        {
+            await row.DisconnectAsync();
+            SaveCurrentConfig();
+        }
+        catch (Exception ex)
+        {
+            SetProxyStatusError(ex.Message);
+            Log.Warning(ex, "failed to stop local proxy for selected paired forward");
+        }
     }
 
     private void OnProxyNew_Click(object sender, RoutedEventArgs e)
@@ -256,34 +539,49 @@ public partial class MainWindow : Window
         ProxyProfileList.SelectedItem = null;
         _vm.ProxyEditor.Load(null);
         ProxyPassword.Password = string.Empty;
+        ProxyNodeEditorExpander.IsExpanded = true;
+        ProxyNodeEditorExpander.BringIntoView();
         SetProxyReady();
     }
 
-    private void OnProxyImport_Click(object sender, RoutedEventArgs e)
+    private void OnProxyEdit_Click(object sender, RoutedEventArgs e)
     {
-        if (_vm.ProxyEditor.TryImport(ProxyImportUri.Text, out var error))
+        if (ProxyProfileList.SelectedItem is not WindowsProxyProfile profile)
+            return;
+        _vm.ProxyEditor.Load(profile);
+        ProxyPassword.Password = profile.Password;
+        ProxyNodeEditorExpander.IsExpanded = true;
+        ProxyNodeEditorExpander.BringIntoView();
+    }
+
+    private async void OnProxyImport_Click(object sender, RoutedEventArgs e)
+    {
+        try
         {
-            ProxyPassword.Password = _vm.ProxyEditor.Password;
-            ProxyProfileList.SelectedItem = null;
+            await _vm.ImportProxyProfileAsync(ProxyImportUri.Text);
+            SaveCurrentConfig();
+            PopulateProxyUi();
+            ProxyImportUri.Clear();
+            ProxyNodeEditorExpander.IsExpanded = false;
+            ProxyPairedForwardCombo.BringIntoView();
             SetProxyReady();
         }
-        else
+        catch (Exception exception)
         {
-            SetProxyStatusError(error);
+            SetProxyStatusError(exception.Message);
         }
     }
 
     private async void OnProxySave_Click(object sender, RoutedEventArgs e)
     {
         _vm.ProxyEditor.Password = ProxyPassword.Password;
-        if (!CaptureProxyLocalListenPort())
-            return;
-        CaptureProxyDnsSettings();
         try
         {
             await _vm.SaveProxyProfileAsync();
             SaveCurrentConfig();
             PopulateProxyUi();
+            ProxyNodeEditorExpander.IsExpanded = false;
+            ProxyPairedForwardCombo.BringIntoView();
             SetProxyReady();
         }
         catch (Exception ex)
@@ -310,13 +608,21 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnProxyStart_Click(object sender, RoutedEventArgs e)
+    private async Task StartSelectedProxyAsync()
     {
-        _vm.ProxyEditor.Password = ProxyPassword.Password;
-        if (!CaptureProxyLocalListenPort())
+        if (!_vm.IsProxyModeSelected)
+        {
+            SetProxyStatusError("proxy_mode_required");
             return;
-        // Capture the game before saving the profile. Saving refreshes the
-        // profile list and can transiently clear a ComboBox selection.
+        }
+        var profileId = _vm.SelectedProxyProfileId;
+        if (profileId <= 0)
+        {
+            SetProxyStatusError("proxy_saved_profile_required");
+            return;
+        }
+        if (!_vm.IsExternalProxySelected && !CaptureProxyLocalListenPort())
+            return;
         var gameId = GetSelectedProxyGameId();
         if (!string.IsNullOrWhiteSpace(gameId))
         {
@@ -325,18 +631,9 @@ public partial class MainWindow : Window
         }
         CaptureProxyDnsSettings();
         var mode = GetSelectedProxyMode();
-        var profileId = 0;
         SetProxyStarting();
         try
         {
-            // Persist the current editor values before starting so a mode
-            // switch never runs an older password/cipher by accident.
-            await _vm.SaveProxyProfileAsync();
-            PopulateProxyUi();
-
-            profileId = _vm.ProxyEditor.Id;
-            if (profileId <= 0)
-                throw new InvalidOperationException("proxy_profile_required");
             await _vm.StartProxyAsync(mode, profileId, gameId);
             RestoreProxyGameSelection(mode == WindowsProxyMode.Process ? _vm.SelectedProxyGameId : gameId);
             SaveCurrentConfig();
@@ -427,6 +724,7 @@ public partial class MainWindow : Window
         SetProxyStarting();
         try
         {
+            await _vm.WaitForProxyForwardSelectionAsync(ct);
             await _vm.StartProxyAsync(request.Mode, request.ProfileId, request.GameId, ct);
             SaveCurrentConfig();
         }
@@ -671,7 +969,17 @@ public partial class MainWindow : Window
     {
         if (!_proxyUiReady || ProxyModeCombo.SelectedItem is not ComboBoxItem item)
             return;
-        App.Config.ProxyActiveMode = item.Tag?.ToString() ?? nameof(WindowsProxyMode.Http);
+        var tag = item.Tag?.ToString() ?? string.Empty;
+        _vm.IsProxyModeSelected = Enum.TryParse<WindowsProxyMode>(tag, true, out var selectedMode);
+        if (!_vm.IsProxyModeSelected)
+        {
+            App.Config.ProxyActiveMode = string.Empty;
+            App.Config.ProxyModeChosen = false;
+            UpdateProxyModeVisibility();
+            return;
+        }
+        App.Config.ProxyActiveMode = selectedMode.ToString();
+        App.Config.ProxyModeChosen = true;
         UpdateProxyModeVisibility();
     }
 
@@ -688,7 +996,8 @@ public partial class MainWindow : Window
     {
         if (NativeOutboundCard is null)
             return;
-        var visible = _vm.IsNativeOutboundVisible
+        var visible = _vm.CurrentView == "Proxy"
+            && _vm.IsNativeOutboundVisible
             && _vm.NativeOutboundForwards.Count > 0;
         NativeOutboundCard.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (!visible)
@@ -737,6 +1046,8 @@ public partial class MainWindow : Window
             NativeUnrestrictedRouteCheckBox.IsEnabled = _vm.IsNativeUnrestrictedRouteEnabled;
             NativeUnrestrictedRouteCheckBox.IsChecked = _vm.NativeUnrestrictedRoute;
             NativeOutboundStartButton.IsEnabled = _vm.ProxySnapshot.State is not (WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting);
+            NativeOutboundStopButton.Visibility = _vm.ProxySnapshot.State is WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting
+                && !_vm.ProxyForwardRows.Any(row => row.IsActive) ? Visibility.Visible : Visibility.Collapsed;
         }
         finally
         {
@@ -749,7 +1060,7 @@ public partial class MainWindow : Window
         if (ProxyModeCombo.SelectedItem is ComboBoxItem item
             && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var mode))
             return mode;
-        return WindowsProxyMode.Http;
+        throw new InvalidOperationException("proxy_mode_required");
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -775,6 +1086,11 @@ public partial class MainWindow : Window
         }
         if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
             ApplyProxyVisualState();
+        if (e.PropertyName == nameof(MainViewModel.SelectedProxyProfileId))
+        {
+            ProxyProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+            ProxyPassword.Password = _vm.ProxyEditor.Password;
+        }
         if (e.PropertyName == nameof(MainViewModel.SelectedProxyGameId)
             || e.PropertyName == nameof(MainViewModel.SelectedProxyGameDisplayName))
         {
@@ -804,7 +1120,7 @@ public partial class MainWindow : Window
 
     private void ApplyProxyVisualState()
     {
-        if (ProxyStatusBanner is null || ProxyStartButton is null || ProxyStopButton is null
+        if (ProxyStatusBanner is null || ProxyStatusText is null
             || ProxyLocalListenPortCombo is null)
             return;
 
@@ -820,7 +1136,9 @@ public partial class MainWindow : Window
         ProxyStatusText.Text = snapshot.State switch
         {
             WindowsProxyConnectionState.Connected =>
-                $"{snapshot.Mode}  |  {snapshot.ActiveProfileName}  |  127.0.0.1:{snapshot.ProxyPort}",
+                _vm.IsExternalProxyActive
+                    ? $"{snapshot.ActiveProfileName}  |  {FindResource("ProxyRouteListenPort")}: 127.0.0.1:{snapshot.ProxyPort}"
+                    : $"{snapshot.ActiveProfileName}  |  {FindResource("ProxyLocalListenPort")}: 127.0.0.1:{snapshot.ProxyPort}",
             WindowsProxyConnectionState.Starting =>
                 FindResource("ProxyStarting") as string ?? "Starting proxy",
             WindowsProxyConnectionState.Error =>
@@ -857,26 +1175,13 @@ public partial class MainWindow : Window
             _ => Color.FromRgb(239, 246, 255),
         });
 
-        ProxyStartButton.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
-            and not WindowsProxyConnectionState.Starting;
-        ProxyStopButton.IsEnabled = snapshot.State is WindowsProxyConnectionState.Connected
-            or WindowsProxyConnectionState.Starting;
         ProxyLocalListenPortCombo.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
             and not WindowsProxyConnectionState.Starting;
-        ProxyStartButton.Content = FindResource(snapshot.State switch
-        {
-            WindowsProxyConnectionState.Connected => "ProxyRunning",
-            WindowsProxyConnectionState.Starting => "ProxyStarting",
-            _ => "ProxyStart",
-        }) as string ?? "Start proxy";
-        ProxyStartButton.Background = FindResource(snapshot.State switch
-        {
-            WindowsProxyConnectionState.Connected => "SuccessBrush",
-            WindowsProxyConnectionState.Starting => "WarningBrush",
-            _ => "PrimaryBrush",
-        }) as Brush ?? Brushes.DodgerBlue;
+        ProxyForwardCombo.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
+        ProxyPairedForwardCombo.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
+        ProxyProfileList.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
         ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
-            && snapshot.Mode != WindowsProxyMode.Tun;
+            && snapshot.Mode != WindowsProxyMode.Tun && !_vm.IsExternalProxyActive;
         UpdateNativeOutboundUi();
     }
 
@@ -888,9 +1193,10 @@ public partial class MainWindow : Window
         ProxyStatusText.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
         ProxyStatusBanner.BorderBrush = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
         ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(255, 251, 235));
-        ProxyStartButton.IsEnabled = false;
-        ProxyStopButton.IsEnabled = true;
         ProxyLocalListenPortCombo.IsEnabled = false;
+        ProxyForwardCombo.IsEnabled = false;
+        ProxyPairedForwardCombo.IsEnabled = false;
+        ProxyProfileList.IsEnabled = false;
     }
 
     private void SetProxyReady()
@@ -902,15 +1208,28 @@ public partial class MainWindow : Window
 
     private void SetProxyStatusError(string message)
     {
+        message = message switch
+        {
+            "proxy_import_shadowsocks_only" => FindResource("ProxyImportSupported") as string ?? message,
+            "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
+            "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
+            "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? message,
+            "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? message,
+            "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
+            "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,
+            "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? message,
+            _ => message,
+        };
         ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
         ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;
         ProxyStatusTitle.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
         ProxyStatusText.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
         ProxyStatusBanner.BorderBrush = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
         ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(254, 242, 242));
-        ProxyStartButton.IsEnabled = true;
-        ProxyStopButton.IsEnabled = false;
         ProxyLocalListenPortCombo.IsEnabled = true;
+        ProxyForwardCombo.IsEnabled = true;
+        ProxyPairedForwardCombo.IsEnabled = true;
+        ProxyProfileList.IsEnabled = true;
     }
 
     private void SetProxyTransientStatus(string message, bool error, bool preserveTitle)
@@ -942,14 +1261,20 @@ public partial class MainWindow : Window
 
     private void UpdateVisiblePanel()
     {
+        var pairing = _vm.CurrentView == "Forwards";
         DashboardPanel.Visibility = _vm.CurrentView == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        ForwardPairingPanel.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
         ProxyPanel.Visibility = _vm.CurrentView == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
         LogPanel.Visibility = _vm.CurrentView == "Log" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = _vm.CurrentView == "Settings" ? Visibility.Visible : Visibility.Collapsed;
-
-        // Forwards view uses the same dashboard panel (forwards section)
-        if (_vm.CurrentView == "Forwards")
-            DashboardPanel.Visibility = Visibility.Visible;
+        SidebarStartAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
+        SidebarStopAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
+        ProxyPageTitle.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
+        ForwardPairingPageTitle.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
+        ProxySavedNodesSidebar.Visibility = Visibility.Collapsed;
+        if (ProxySidebarColumn is not null)
+            ProxySidebarColumn.Width = new GridLength(0);
+        UpdateNativeOutboundUi();
     }
 
     private void PopulateSettings()
@@ -958,8 +1283,13 @@ public partial class MainWindow : Window
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(normalizedMasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : normalizedMasterUrl;
+        SelectEndpoint(SettEndpointCombo, SettMasterUrl.Text);
+        _saveLoginInfo = App.Config.RememberLoginInfo;
         SettClientId.Text = (App.Config.ClientId > 0 ? App.Config.ClientId : App.Config.ActiveClientId).ToString();
         SettAgentToken.Password = App.Config.AgentToken;
+        SettSaveInfoCheckBox.IsChecked = _saveLoginInfo;
+        if (!_saveLoginInfo)
+            ClearSettingsLoginInfo();
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
         SettAutoStart.IsChecked = App.Config.AutoStart;
@@ -982,9 +1312,11 @@ public partial class MainWindow : Window
         _vm.DisconnectCommand.Execute(null);
         _vm.SignOutForTests();
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, _vm.Config);
+        stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
         TxtAgentToken.Password = string.Empty;
         TxtClientId.Text = string.Empty;
+        SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
+        SettSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         SetupStatus.Text = string.Empty;
         PopulateSettings();
     }
@@ -1371,6 +1703,8 @@ public partial class MainWindow : Window
             stateManager.SaveConfig(App.ConfigPath, App.Config);
             TxtMasterUrl.Text = App.Config.MasterUrl;
             SettMasterUrl.Text = App.Config.MasterUrl;
+            SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
+            SelectEndpoint(SettEndpointCombo, App.Config.MasterUrl);
         }
 
         if (!_vm.ShouldAutoConnectOnStartup)
