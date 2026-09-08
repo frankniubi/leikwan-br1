@@ -35,6 +35,8 @@ public static class WindowsProxyConfigBuilder
         IEnumerable<string>? customDnsServers = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        if (profile.IsExternal)
+            throw new InvalidOperationException("proxy_external_requires_forward");
         tunStack = NormalizeTunStack(tunStack);
         var copy = profile.Clone();
         copy.Protocol = WindowsProxyProtocol.Normalize(copy.Protocol);

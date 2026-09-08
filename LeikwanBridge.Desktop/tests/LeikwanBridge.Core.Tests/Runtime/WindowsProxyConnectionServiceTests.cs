@@ -9,6 +9,137 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class WindowsProxyConnectionServiceTests
 {
     [Fact]
+    public async Task ExternalProfileCannotBecomeAnAccidentalSingBoxOutbound()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var host = new FakeProcessHost();
+        var store = new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json"));
+        await using var service = new WindowsProxyConnectionService(store, executable, temp.Path,
+            host, new FakeSystemProxy(), new FakeProcessAdapter());
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile
+        {
+            Protocol = "external", Server = "198.51.100.7", Port = 51820,
+            Uuid = "b03f79e5-61df-4451-b75b-b52a5e19c61a",
+        });
+        var saved = Assert.Single(await store.LoadAsync());
+        Assert.Equal("external", saved.Protocol);
+        Assert.Equal(51820, saved.Port);
+        var buildError = Assert.Throws<InvalidOperationException>(() =>
+            WindowsProxyConfigBuilder.Build(saved, WindowsProxyMode.Http, []));
+        Assert.Equal("proxy_external_requires_forward", buildError.Message);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartAsync(WindowsProxyMode.Http, saved.Id, forwardListenPort: 11059));
+
+        Assert.Equal("proxy_external_requires_forward", error.Message);
+        Assert.False(host.IsRunning);
+        Assert.Empty(host.LastConfigJson);
+    }
+
+    [Theory]
+    [InlineData(WindowsProxyMode.Http)]
+    [InlineData(WindowsProxyMode.Process)]
+    public async Task ForwardProxyDoesNotPublishConnectedUntilLocalListenerIsReady(WindowsProxyMode mode)
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost { ListenerReady = false };
+        var system = new FakeSystemProxy();
+        var adapter = new FakeProcessAdapter();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")), executable, temp.Path,
+            process, system, adapter);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile { Name = "saved", Server = "node.example.test", Password = "secret" });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartAsync(
+            mode, 1, processRules: [new WindowsProcessProxyRule("game.exe")], forwardListenPort: 11059));
+
+        Assert.Equal("proxy_listener_unavailable", error.Message);
+        Assert.False(process.IsRunning);
+        Assert.False(system.IsEnabled);
+        Assert.False(adapter.Started);
+        Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
+    }
+
+    [Theory]
+    [InlineData("ss", "aes-256-gcm")]
+    [InlineData("ss2022", "2022-blake3-aes-256-gcm")]
+    [InlineData("vless", "aes-256-gcm")]
+    public async Task ForwardStartUsesLoopbackCloneAndPreservesSavedEndpointAndSecrets(string protocol, string method)
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var store = new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json"));
+        await using var service = new WindowsProxyConnectionService(
+            store, executable, temp.Path, process, new FakeSystemProxy(), new FakeProcessAdapter());
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile
+        {
+            Name = "saved node", Protocol = protocol, Server = "node.example.test", Port = 30526,
+            Method = method, Password = "saved-secret", Uuid = "b03f79e5-61df-4451-b75b-b52a5e19c61a",
+            Tls = true, ServerName = "tls.example.test", Host = "ws.example.test", Transport = "ws",
+        });
+
+        await service.StartAsync(WindowsProxyMode.Http, 1, forwardListenPort: 11059);
+
+        using var json = System.Text.Json.JsonDocument.Parse(process.LastConfigJson);
+        var outbound = json.RootElement.GetProperty("outbounds")[0];
+        Assert.Equal("127.0.0.1", outbound.GetProperty("server").GetString());
+        Assert.Equal(11059, outbound.GetProperty("server_port").GetInt32());
+        if (protocol == "vless")
+        {
+            Assert.Equal("tls.example.test", outbound.GetProperty("tls").GetProperty("server_name").GetString());
+            Assert.Equal("b03f79e5-61df-4451-b75b-b52a5e19c61a", outbound.GetProperty("uuid").GetString());
+            Assert.Equal("ws.example.test", outbound.GetProperty("transport").GetProperty("headers").GetProperty("Host").GetString());
+        }
+        else
+        {
+            Assert.Equal("saved-secret", outbound.GetProperty("password").GetString());
+            Assert.Equal(method, outbound.GetProperty("method").GetString());
+        }
+        foreach (var saved in new[] { Assert.Single(service.Profiles), Assert.Single(await store.LoadAsync()) })
+        {
+            Assert.Equal("node.example.test", saved.Server);
+            Assert.Equal(30526, saved.Port);
+            Assert.Equal("saved-secret", saved.Password);
+            Assert.Equal("tls.example.test", saved.ServerName);
+        }
+        Assert.Empty(Directory.GetFiles(temp.Path, "proxy-*.json"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public async Task InvalidForwardListenerDoesNotFallBackToOriginalNode(int port)
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")), executable, temp.Path,
+            process, new FakeSystemProxy(), new FakeProcessAdapter());
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile { Name = "saved", Server = "node.example.test", Password = "secret" });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartAsync(WindowsProxyMode.Http, 1, forwardListenPort: port));
+
+        Assert.Equal("proxy_forward_listener_invalid", error.Message);
+        Assert.False(process.IsRunning);
+        Assert.Empty(process.LastConfigJson);
+        Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
+    }
+
+    [Fact]
     public async Task HttpStartEnablesSystemProxyAndStopRestoresIt()
     {
         using var temp = new TempStateDirectory();
@@ -514,6 +645,7 @@ public sealed class WindowsProxyConnectionServiceTests
         public Exception? StopException { get; set; }
         public int StartCalls { get; private set; }
         public int TunReadinessCalls { get; private set; }
+        public bool ListenerReady { get; set; } = true;
         public Queue<bool> TunReadinessResults { get; } = new();
         public Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
         {
@@ -528,6 +660,7 @@ public sealed class WindowsProxyConnectionServiceTests
             IsTunReady = TunReadinessResults.TryDequeue(out var result) ? result : true;
             return Task.FromResult(IsTunReady);
         }
+        public Task<bool> WaitForListenerAsync(int port, CancellationToken ct = default) => Task.FromResult(ListenerReady);
         public Task StopAsync(CancellationToken ct = default)
         {
             IsRunning = false;

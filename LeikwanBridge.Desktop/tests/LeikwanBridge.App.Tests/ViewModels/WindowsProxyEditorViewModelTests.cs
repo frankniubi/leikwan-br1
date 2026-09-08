@@ -7,11 +7,11 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class WindowsProxyEditorViewModelTests
 {
     [Fact]
-    public void ExposesOnlyFirstReleaseProtocolAndSelectorOptions()
+    public void ExposesSavedProtocolAndExternalNodeSelectorOptions()
     {
         var editor = new WindowsProxyEditorViewModel();
 
-        Assert.Equal(["ss", "ss2022", "vless"], editor.ProtocolOptions);
+        Assert.Equal(["ss", "ss2022", "vless", "external"], editor.ProtocolOptions);
         Assert.Contains("none", editor.ShadowsocksMethodOptions);
         Assert.Contains("aes-128-ctr", editor.ShadowsocksMethodOptions);
         Assert.Contains("2022-blake3-aes-256-gcm", editor.ShadowsocksMethodOptions);

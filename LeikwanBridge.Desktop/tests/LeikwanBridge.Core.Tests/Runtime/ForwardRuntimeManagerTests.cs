@@ -9,6 +9,27 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class ForwardRuntimeManagerTests
 {
     [Fact]
+    public void LateConfigApplyCannotRestartExplicitlyStoppedProxyForward()
+    {
+        using var temp = new TempStateDirectory();
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var host = new RecordingUltraRuntimeHost();
+        var manager = new ForwardRuntimeManager(CreateConfig(), supervisor, state,
+            binaryExists: _ => true, portListeningProbe: _ => true, ultraRuntimeHost: host);
+        var forward = CreateUltraForward();
+        var lease = forward.RuntimeLease!;
+        manager.StopForward(forward.ForwardId);
+
+        manager.ApplyForward(forward, "contract-a", "config_sync");
+
+        Assert.Empty(host.Starts);
+        Assert.True(state.LoadApplied()[forward.ForwardId.ToString()].UserStopped);
+        Assert.Empty(lease.LeaseId);
+        Assert.Null(forward.RuntimeLease);
+    }
+
+    [Fact]
     public void UltraLifecycle_DelegatesToInjectedRuntimeHost()
     {
         using var tempDir = new TempStateDirectory();

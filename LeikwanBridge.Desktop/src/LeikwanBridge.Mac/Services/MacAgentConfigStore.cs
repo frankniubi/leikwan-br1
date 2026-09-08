@@ -54,11 +54,26 @@ public sealed class MacAgentConfigStore
                 }
             }
             ApplyMacPaths(config);
-            config.DesktopSessionToken = await _secrets.GetAsync("desktop-session", ct).ConfigureAwait(false) ?? string.Empty;
-            var clientId = EffectiveClientId(config);
-            config.AgentToken = clientId > 0
-                ? await _secrets.GetAsync($"client-agent-{clientId}", ct).ConfigureAwait(false) ?? string.Empty
-                : string.Empty;
+            if (config.RememberLoginInfo)
+            {
+                config.DesktopSessionToken = await _secrets.GetAsync("desktop-session", ct).ConfigureAwait(false) ?? string.Empty;
+                var clientId = EffectiveClientId(config);
+                config.AgentToken = clientId > 0
+                    ? await _secrets.GetAsync($"client-agent-{clientId}", ct).ConfigureAwait(false) ?? string.Empty
+                    : string.Empty;
+            }
+            else
+            {
+                var legacyClientId = EffectiveClientId(config);
+                await _secrets.DeleteAsync("desktop-session", ct).ConfigureAwait(false);
+                if (legacyClientId > 0)
+                    await _secrets.DeleteAsync($"client-agent-{legacyClientId}", ct).ConfigureAwait(false);
+                config.DesktopSessionToken = string.Empty;
+                config.AgentToken = string.Empty;
+                config.ClientId = 0;
+                config.ActiveClientId = 0;
+                config.ActiveClientName = string.Empty;
+            }
             return config;
         }
         finally
@@ -73,11 +88,15 @@ public sealed class MacAgentConfigStore
         try
         {
             var clientId = EffectiveClientId(config);
-            if (string.IsNullOrEmpty(config.DesktopSessionToken))
+            if (!config.RememberLoginInfo || string.IsNullOrEmpty(config.DesktopSessionToken))
                 await _secrets.DeleteAsync("desktop-session", ct).ConfigureAwait(false);
             else
                 await _secrets.SetAsync("desktop-session", config.DesktopSessionToken, ct).ConfigureAwait(false);
-            if (clientId > 0)
+            if (clientId > 0 && !config.RememberLoginInfo)
+            {
+                await _secrets.DeleteAsync($"client-agent-{clientId}", ct).ConfigureAwait(false);
+            }
+            else if (clientId > 0)
             {
                 var account = $"client-agent-{clientId}";
                 if (string.IsNullOrEmpty(config.AgentToken))
@@ -90,6 +109,16 @@ public sealed class MacAgentConfigStore
                 ?? throw new InvalidOperationException("config_serialization_failed");
             node["agent_token"] = string.Empty;
             node["desktop_session_token"] = string.Empty;
+            if (!config.RememberLoginInfo)
+            {
+                node["client_id"] = 0;
+                node["active_client_id"] = 0;
+                node["active_client_name"] = string.Empty;
+                node["signed_in_user_id"] = 0;
+                node["signed_in_username"] = string.Empty;
+                node["signed_in_email"] = string.Empty;
+                node["available_clients"] = new JsonArray();
+            }
             node["state_dir"] = _paths.StateDirectory;
             node["bond_bin"] = BinaryPath("leikwan-bond");
             node["bond_ingress_bin"] = BinaryPath("leikwan-ingress");

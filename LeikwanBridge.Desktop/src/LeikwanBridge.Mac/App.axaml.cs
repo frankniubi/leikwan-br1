@@ -117,7 +117,11 @@ public sealed partial class App : Application
                 await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
             },
             ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
-            ct => InstallUpdateAsync(desktop, ct));
+            ct => InstallUpdateAsync(desktop, ct),
+            rememberLoginInfo: config.RememberLoginInfo,
+            savedClientId: config.ActiveClientId > 0 ? config.ActiveClientId : config.ClientId,
+            savedAgentToken: config.AgentToken,
+            rememberLoginInfoChanged: value => config.RememberLoginInfo = value);
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;

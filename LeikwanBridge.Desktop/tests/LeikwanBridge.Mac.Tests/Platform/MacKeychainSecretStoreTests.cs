@@ -33,6 +33,62 @@ public sealed class MacKeychainSecretStoreTests
         Assert.Equal("[]", await store.GetAsync(MacConnectionProfileStore.SecretAccount, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConnectionServiceStartsWithKeychainBackedProfileStore(bool keychainAvailable)
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var secrets = new MacKeychainSecretStore(
+            new FakeKeychainNative { Available = keychainAvailable },
+            Path.Combine(temp.Path, "fallback-secrets.json"));
+        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(secrets));
+
+        await service.InitializeAsync();
+
+        Assert.Empty(service.Profiles);
+        Assert.Equal(0, service.Selection.ForwardId);
+        Assert.Empty(service.Selection.ForwardProfiles);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RouteSelectionRoundTripsThroughTheRealSecretStore(bool keychainAvailable)
+    {
+        using var temp = new TemporaryDirectory();
+        var fallbackPath = Path.Combine(temp.Path, "fallback-secrets.json");
+        var native = new FakeKeychainNative { Available = keychainAvailable };
+        var store = new MacConnectionProfileStore(new MacKeychainSecretStore(native, fallbackPath));
+
+        await store.SaveSelectionAsync(new MacConnectionSelection(59, 4, new Dictionary<int, int>
+        {
+            [59] = 4,
+            [60] = 5,
+        }), CancellationToken.None);
+        var reloadedStore = new MacConnectionProfileStore(new MacKeychainSecretStore(native, fallbackPath));
+        var selection = await reloadedStore.LoadSelectionAsync(CancellationToken.None);
+
+        Assert.Equal(59, selection.ForwardId);
+        Assert.Equal(4, selection.ProfileId);
+        Assert.Equal(4, selection.ForwardProfiles[59]);
+        Assert.Equal(5, selection.ForwardProfiles[60]);
+    }
+
+    [Fact]
+    public async Task UnknownConnectionAccountsRemainRejected()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new MacKeychainSecretStore(
+            new FakeKeychainNative(),
+            Path.Combine(temp.Path, "fallback-secrets.json"));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.GetAsync("connection-unknown", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.SetAsync("connection-unknown", "{}", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.DeleteAsync("connection-unknown", CancellationToken.None));
+    }
+
     [Fact]
     public async Task UnavailableKeychainUsesOnlyThePrivateFallbackFile()
     {

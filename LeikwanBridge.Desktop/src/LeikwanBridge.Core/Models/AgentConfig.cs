@@ -11,6 +11,9 @@ public sealed class AgentConfig
     [JsonPropertyName("agent_token")]
     public string AgentToken { get; set; } = "";
 
+    [JsonPropertyName("remember_login_info")]
+    public bool RememberLoginInfo { get; set; } = true;
+
     [JsonPropertyName("client_id")]
     public int ClientId { get; set; }
 
@@ -110,8 +113,17 @@ public sealed class AgentConfig
     [JsonPropertyName("proxy_active_profile_id")]
     public int ProxyActiveProfileId { get; set; }
 
+    [JsonPropertyName("proxy_selected_forward_id")]
+    public int ProxySelectedForwardId { get; set; }
+
+    [JsonPropertyName("proxy_profile_ids_by_forward_id")]
+    public Dictionary<int, int> ProxyProfileIdsByForwardId { get; set; } = [];
+
     [JsonPropertyName("proxy_active_mode")]
-    public string ProxyActiveMode { get; set; } = "Http";
+    public string ProxyActiveMode { get; set; } = string.Empty;
+
+    [JsonPropertyName("proxy_mode_chosen")]
+    public bool ProxyModeChosen { get; set; }
 
     [JsonPropertyName("proxy_active_game_id")]
     public string ProxyActiveGameId { get; set; } = "";
@@ -290,6 +302,12 @@ public sealed class AgentConfig
         return servers.Count > 0
             ? servers
             : [WindowsProxyDns.DefaultCustomServer];
+    }
+
+    public AgentConfig Clone()
+    {
+        var json = JsonSerializer.Serialize(this);
+        return JsonSerializer.Deserialize<AgentConfig>(json) ?? new AgentConfig();
     }
 
     public int GetEffectiveWireguardListenPort()

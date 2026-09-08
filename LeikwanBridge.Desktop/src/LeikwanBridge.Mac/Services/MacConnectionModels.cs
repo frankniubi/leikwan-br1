@@ -7,9 +7,10 @@ public static class MacConnectionProtocol
 {
     public const string Shadowsocks = "shadowsocks";
     public const string WireGuard = "wireguard";
+    public const string External = "external";
 
     // Legacy protocol values are intentionally absent from this allowlist.
-    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, WireGuard];
+    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, WireGuard, External];
 
     public static bool IsSupported(string? protocol)
         => Supported.Contains(protocol?.Trim().ToLowerInvariant() ?? string.Empty, StringComparer.Ordinal);
@@ -81,6 +82,7 @@ public sealed class MacConnectionProfile
     {
         "WIREGUARD" => "WireGuard",
         "SHADOWSOCKS" => "Shadowsocks",
+        "EXTERNAL" => "External IP + port",
         _ => "Unsupported",
     };
 
@@ -110,6 +112,14 @@ public sealed record MacConnectionConfigResult(
     IReadOnlyList<string> BypassDomains,
     int ProxyPort);
 
+public sealed record MacConnectionSelection(
+    int ForwardId,
+    int ProfileId,
+    IReadOnlyDictionary<int, int> ForwardProfiles)
+{
+    public static MacConnectionSelection Empty { get; } = new(0, 0, new Dictionary<int, int>());
+}
+
 public interface IMacConnectionService : IAsyncDisposable
 {
     event Action<MacConnectionSnapshot>? SnapshotChanged;
@@ -119,10 +129,21 @@ public interface IMacConnectionService : IAsyncDisposable
     DateTimeOffset? ActiveNativeLeaseExpiresAt { get; }
     string? ActiveNativeLeasePolicyGeneration { get; }
     bool IsNativeOutboundActive { get; }
+    MacConnectionSelection Selection => MacConnectionSelection.Empty;
 
     Task InitializeAsync(CancellationToken ct = default);
     Task SaveProfileAsync(MacConnectionProfile profile, CancellationToken ct = default);
     Task DeleteProfileAsync(int profileId, CancellationToken ct = default);
+    Task SaveSelectionAsync(int forwardId, int profileId, CancellationToken ct = default)
+        => Task.CompletedTask;
+    Task StartRoutedAsync(
+        MacConnectionMode mode,
+        int profileId,
+        int forwardListenPort,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        CancellationToken ct = default)
+        => Task.FromException(new NotSupportedException("routed_connection_unavailable"));
     Task StartAsync(
         MacConnectionMode mode,
         int profileId,
