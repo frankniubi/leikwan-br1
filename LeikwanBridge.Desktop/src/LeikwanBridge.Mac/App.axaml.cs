@@ -8,6 +8,7 @@ using LeikwanBridge.Mac.Services;
 using LeikwanBridge.Mac.ViewModels;
 using LeikwanBridge.Mac.Views;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using Serilog;
 
 namespace LeikwanBridge.Mac;
@@ -19,6 +20,7 @@ public sealed partial class App : Application
     private TrayIcon? _trayIcon;
     private bool _quitStarted;
     private ClientAppArtifact? _availableUpdate;
+    private ConnectionRecoverySupervisor? _connectionRecovery;
 
     public static MacPlatformPaths PlatformPaths { get; set; } = null!;
     public static string UiFixtureState { get; set; } = string.Empty;
@@ -81,9 +83,18 @@ public sealed partial class App : Application
                 {
                     await services.Controller.ConnectAsync().ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Log.Warning("startup_connect_failed");
+                    Log.Warning(
+                        "startup_connect_failed type={ErrorType} code={ErrorCode}",
+                        exception.GetType().Name,
+                        BoundErrorCode(exception));
+                    if (!_quitStarted)
+                    {
+                        _connectionRecovery = new ConnectionRecoverySupervisor(
+                            _ => services.Controller.ConnectAsync());
+                        _ = _connectionRecovery.StartAsync();
+                    }
                 }
             }
             if (!config.DisableAutoUpdates && !string.IsNullOrWhiteSpace(config.MasterUrl))
@@ -216,6 +227,14 @@ public sealed partial class App : Application
         }
     }
 
+    private static string BoundErrorCode(Exception exception)
+    {
+        var message = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (message.Length > 120)
+            message = message[..120];
+        return string.IsNullOrWhiteSpace(message) ? "unknown" : message;
+    }
+
     private async Task InstallUpdateAsync(
         IClassicDesktopStyleApplicationLifetime desktop,
         CancellationToken ct)
@@ -252,6 +271,8 @@ public sealed partial class App : Application
         _trayIcon = null;
         if (_services is not null)
         {
+            if (_connectionRecovery is not null)
+                await _connectionRecovery.StopAsync();
             await _services.Connections.DisposeAsync();
             await _services.Controller.DisposeAsync();
             _services.Updater.Dispose();
