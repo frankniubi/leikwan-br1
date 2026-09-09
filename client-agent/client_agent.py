@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.06.2"
+AGENT_VERSION = "2026.09.10.1"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -1008,31 +1008,61 @@ def resolve_ultra_leases(
         if normalized and normalized not in configured:
             configured.append(normalized)
     last_error: Exception | None = None
-    response: dict | None = None
-    selected_master = str(master).rstrip("/")
-    for endpoint in selector.ordered(configured):
-        try:
-            response = http_json(
-                "POST",
-                f"{endpoint}/api/client/ultra/lease",
-                agent_token,
-                {"device_id": device_id, "forwards": requests},
-            )
-            selected_master = endpoint
-            selector.success(endpoint)
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            selector.failure(endpoint, exc)
-            # Once the server returns an HTTP response, do not duplicate the POST
-            # against another CDN. The next polling cycle will switch endpoints.
-            if getattr(exc, "response_received", False) or re.search(r"\bhttp\s+\d{3}\b", str(exc), flags=re.IGNORECASE):
-                raise
-            continue
-    if response is None:
+    lease_items: list[dict] = []
+    failed_forward_ids: set[int] = set()
+    completed_batches = 0
+    batches = [requests[index : index + 4] for index in range(0, len(requests), 4)]
+    for batch in batches:
+        batch_completed = False
+        batch_forward_ids = {int(item["forward_id"]) for item in batch}
+        for endpoint in selector.ordered(configured):
+            try:
+                # The panel caps requests at four forwards. Retry only this
+                # batch, with fresh nonces, never previously successful batches.
+                batch_requests = []
+                for item in batch:
+                    request = dict(item)
+                    request["nonce"] = secrets.token_hex(16)
+                    batch_requests.append(request)
+                batch_response = http_json(
+                    "POST",
+                    f"{endpoint}/api/client/ultra/lease",
+                    agent_token,
+                    {"device_id": device_id, "forwards": batch_requests},
+                )
+                if not isinstance(batch_response, dict) or batch_response.get("ok") is not True:
+                    raise ControlPlaneResponseError("invalid ultra lease response")
+                raw_leases = batch_response.get("leases")
+                if not isinstance(raw_leases, list):
+                    raise ControlPlaneResponseError("invalid ultra lease list")
+                valid_leases = [item for item in raw_leases if isinstance(item, dict)]
+                lease_items.extend(valid_leases)
+                returned_forward_ids = {int(item.get("forward_id", 0) or 0) for item in valid_leases}
+                failed_forward_ids.update(batch_forward_ids - returned_forward_ids)
+                completed_batches += 1
+                batch_completed = True
+                selector.success(endpoint)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                selector.failure(endpoint, exc)
+                # An HTTP response must not replay this POST through another CDN.
+                if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
+                    if _is_control_plane_business_error(exc):
+                        failed_forward_ids.update(batch_forward_ids)
+                        completed_batches += 1
+                        batch_completed = True
+                    break
+        if not batch_completed:
+            failed_forward_ids.update(item["forward_id"] for item in batch)
+    if completed_batches == 0:
+        if last_error is not None and (getattr(last_error, "response_received", False) or _has_control_plane_http_response(last_error)):
+            raise last_error
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
+    if failed_forward_ids:
+        logging.warning("Ultra lease batches failed for forwards %s; retaining successful batches", sorted(failed_forward_ids))
     leases_by_forward: dict[int, list[dict]] = {}
-    for item in response.get("leases", []):
+    for item in lease_items:
         if not isinstance(item, dict):
             continue
         forward_id = int(item.get("forward_id", 0) or 0)
@@ -1049,6 +1079,9 @@ def resolve_ultra_leases(
         if not isinstance(forward, dict):
             continue
         enriched = dict(forward)
+        enriched.pop("_ultra_lease_resolution_failed", None)
+        if int(enriched.get("forward_id", 0) or 0) in failed_forward_ids:
+            enriched["_ultra_lease_resolution_failed"] = True
         leases = leases_by_forward.get(int(enriched.get("forward_id", 0) or 0), [])
         if leases:
             enriched["_ultra_lease"] = leases[0]
@@ -1675,22 +1708,33 @@ class ClientAgent:
         for unit in units:
             if not isinstance(unit, dict):
                 continue
+            service_name = str(unit.get("service_name", "") or "")
             normalized_files = []
             for file_entry in unit.get("files", []):
                 if not isinstance(file_entry, dict):
                     continue
                 if file_entry.get("restart_on_change") is False:
                     continue
+                content = str(file_entry.get("content", "") or "")
+                if service_name.startswith("ultra-forward-"):
+                    try:
+                        decoded = json.loads(content)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        decoded = None
+                    if isinstance(decoded, dict) and "policy_generation" in decoded:
+                        decoded = dict(decoded)
+                        decoded.pop("policy_generation", None)
+                        content = json.dumps(decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 normalized_files.append(
                     {
                         "path": str(file_entry.get("path", "") or ""),
-                        "content": str(file_entry.get("content", "") or ""),
+                        "content": content,
                         "mode": file_entry.get("mode"),
                     }
                 )
             normalized_units.append(
                 {
-                    "service_name": str(unit.get("service_name", "") or ""),
+                    "service_name": service_name,
                     "service_path": str(unit.get("service_path", "") or ""),
                     "service_unit": str(unit.get("service_unit", "") or ""),
                     "start_script_path": str(unit.get("start_script_path", "") or ""),
@@ -1727,6 +1771,39 @@ class ClientAgent:
                 if extra_path != "":
                     paths.add(extra_path)
         return paths
+
+    @classmethod
+    def ultra_static_runtime_matches_disk(
+        cls, rendered: dict, previous: dict, mode: str, transport: str, listen_port: int
+    ) -> bool:
+        # Older agents hashed policy_generation. Verify the actual static files
+        # before migrating that signature without interrupting a live runtime.
+        raw_previous_paths = previous.get("managed_paths", []) if isinstance(previous, dict) else []
+        previous_paths = {str(path).strip() for path in raw_previous_paths if str(path).strip() != ""} if isinstance(raw_previous_paths, list) else set()
+        if cls.rendered_managed_paths(rendered) != previous_paths:
+            return False
+        disk = json.loads(json.dumps(rendered))
+        units = [disk] + [item for item in disk.get("extra_units", []) if isinstance(item, dict)]
+        if {unit.get("service_name") for unit in units} != {
+            unit.get("service_name") for unit in previous.get("units", []) if isinstance(unit, dict)
+        }:
+            return False
+        try:
+            for unit in units:
+                unit["service_unit"] = pathlib.Path(unit["service_path"]).read_text(encoding="utf-8")
+                if unit.get("start_script_path"):
+                    unit["start_script"] = pathlib.Path(unit["start_script_path"]).read_text(encoding="utf-8")
+                for file_entry in unit.get("files", []):
+                    file_path = pathlib.Path(file_entry["path"])
+                    expected_mode = file_entry.get("mode")
+                    if os.name == "posix" and expected_mode is not None and (file_path.stat().st_mode & 0o777) != int(expected_mode):
+                        return False
+                    file_entry["content"] = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, KeyError, TypeError):
+            return False
+        return cls.rendered_runtime_signature(disk, mode, transport, listen_port) == cls.rendered_runtime_signature(
+            rendered, mode, transport, listen_port
+        )
 
     def apply_reload_only_files(self, rendered: dict) -> bool:
         changed_any = False
@@ -1819,6 +1896,22 @@ class ClientAgent:
             if not self.private_wg_interface_present(interface_name):
                 return False
         return True
+
+    @staticmethod
+    def applied_forward_definition_is_present(previous: dict, forward_id: int | None = None) -> bool:
+        if not isinstance(previous, dict):
+            return False
+        raw_units = previous.get("units", [])
+        units = [item for item in raw_units if isinstance(item, dict)] if isinstance(raw_units, list) else []
+        if not units or any(str(item.get("service_name", "") or "").strip() == "" for item in units):
+            return False
+        if forward_id is not None and forward_id > 0:
+            expected_service = f"ultra-forward-{forward_id}"
+            if not any(str(item.get("service_name", "") or "").strip() == expected_service for item in units):
+                return False
+        raw_paths = previous.get("managed_paths", [])
+        paths = [str(item).strip() for item in raw_paths if str(item).strip() != ""] if isinstance(raw_paths, list) else []
+        return bool(paths) and all(pathlib.Path(path).exists() for path in paths)
 
     def persist_forward_apply_signatures(
         self,
@@ -2414,7 +2507,8 @@ class ClientAgent:
                 continue
             if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not ultra_lease_candidates(runtime_forward):
                 previous = self.load_applied().get(str(forward_id), {})
-                if lease_resolution_failed and isinstance(previous, dict) and self.applied_forward_runtime_is_present(previous):
+                refresh_failed = lease_resolution_failed or runtime_forward.get("_ultra_lease_resolution_failed") is True
+                if refresh_failed and self.applied_forward_definition_is_present(previous, forward_id) and self.applied_forward_runtime_is_present(previous):
                     logging.warning("forward %s Ultra lease refresh failed; preserving current runtime", forward_id)
                     desired_ids.add(forward_id)
                     continue
@@ -3053,6 +3147,12 @@ class ClientAgent:
         cleanup_for_runtime_transition = previous_runtime_mode == "mptcp" and mode != "mptcp"
         cleanup_for_stale_non_mptcp_runtime = mode != "mptcp" and live_mptcp_runtime_interfaces != []
         rendered_unchanged = isinstance(previous, dict) and str(previous.get("rendered_signature", "") or "") == rendered_signature
+        ultra_generation_only_refresh = (
+            str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+            and previous_runtime_present
+            and not rendered_unchanged
+            and self.ultra_static_runtime_matches_disk(rendered, previous, mode, transport, listen_port)
+        )
         if cleanup_for_runtime_transition or cleanup_for_stale_non_mptcp_runtime:
             if cleanup_for_stale_non_mptcp_runtime and not cleanup_for_runtime_transition:
                 logging.info(
@@ -3063,13 +3163,18 @@ class ClientAgent:
                 )
             self.cleanup_mptcp_forward_runtime(forward_id)
             previous_runtime_present = False
-        if rendered_unchanged and previous_runtime_present:
+        ultra_forced_restart = force_runtime_restart and str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+        if (rendered_unchanged or ultra_generation_only_refresh) and previous_runtime_present and not ultra_forced_restart:
             if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
                 leases = ultra_lease_candidates(render_forward)
                 if not leases or not self.send_ultra_leases(forward_id, leases):
                     raise RuntimeError("ultra lease delivery failed")
                 self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
-                logging.debug("forward %s static runtime unchanged; delivered fresh Ultra lease", forward_id)
+                logging.debug(
+                    "forward %s static runtime unchanged%s; delivered fresh Ultra lease",
+                    forward_id,
+                    " (legacy signature migrated)" if ultra_generation_only_refresh and not rendered_unchanged else "",
+                )
                 return
             self.apply_reload_only_files(rendered)
             if force_runtime_restart:
@@ -3415,6 +3520,14 @@ class ClientAgent:
             forward_id = int(forward.get("forward_id", 0) or 0)
             if forward_id <= 0:
                 continue
+
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                applied = self.load_applied().get(str(forward_id), {})
+                if not self.applied_forward_definition_is_present(applied, forward_id):
+                    # An active panel forward may be intentionally absent locally
+                    # after a failed/partial reconciliation. Do not create a
+                    # restart loop for a unit that this agent does not own.
+                    continue
 
             service_name = forward_runtime_service_name(forward)
             if not self.systemd_is_active(service_name):

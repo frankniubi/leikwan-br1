@@ -185,6 +185,139 @@ class UltraClientLeaseTests(unittest.TestCase):
         self.assertEqual("ul2_test", resolved[0]["_ultra_lease"]["lease_id"])
         self.assertNotIn("_ultra_lease", resolved[1])
 
+    def test_resolve_batches_more_than_four_forwards_without_dropping_the_tail(self):
+        forwards = []
+        responses = []
+        for forward_id in range(42, 47):
+            forwards.append(
+                {
+                    "forward_id": forward_id,
+                    "backend_mode": "ultra",
+                    "target": f"203.0.113.{forward_id}:443",
+                    "transport": "tcp+udp",
+                    "ultra_access": {
+                        "protocol": "leikwan-ultra-policy-v2",
+                        "session_ticket": f"opaque-{forward_id}",
+                        "policy_generation": "a" * 64,
+                        "target_digest": "b" * 64,
+                        "transport": "tcp+udp",
+                    },
+                }
+            )
+        responses = [
+            {
+                "ok": True,
+                "leases": [
+                    {"forward_id": forward_id, "lease_id": f"ul2-{forward_id}"}
+                    for forward_id in range(42, 46)
+                ],
+            },
+            {"ok": True, "leases": [{"forward_id": 46, "lease_id": "ul2-46"}]},
+        ]
+
+        with mock.patch.object(MODULE, "http_json", side_effect=responses) as request:
+            resolved = MODULE.resolve_ultra_leases(
+                "https://panel.example.test",
+                "client-agent-token",
+                "device-a",
+                forwards,
+            )
+
+        self.assertEqual(2, request.call_count)
+        self.assertEqual([42, 43, 44, 45], [item["forward_id"] for item in request.call_args_list[0].args[3]["forwards"]])
+        self.assertEqual([46], [item["forward_id"] for item in request.call_args_list[1].args[3]["forwards"]])
+        self.assertEqual(
+            [42, 43, 44, 45, 46],
+            [item["_ultra_lease"]["forward_id"] for item in resolved],
+        )
+
+    def test_resolve_keeps_successful_batches_when_tail_is_policy_rejected(self):
+        forwards = []
+        for forward_id in range(42, 47):
+            forwards.append(
+                {
+                    "forward_id": forward_id,
+                    "backend_mode": "ultra",
+                    "target": f"203.0.113.{forward_id}:443",
+                    "transport": "tcp+udp",
+                    "ultra_access": {
+                        "session_ticket": f"opaque-{forward_id}",
+                        "policy_generation": "a" * 64,
+                    },
+                }
+            )
+
+        with mock.patch.object(
+            MODULE,
+            "http_json",
+            side_effect=[
+                {"ok": True, "leases": [{"forward_id": forward_id, "lease_id": f"ul2-{forward_id}"} for forward_id in range(42, 46)]},
+                RuntimeError("http 409 https://panel.example.test/api/client/ultra/lease: lease_scope_invalid"),
+            ],
+        ):
+            resolved = MODULE.resolve_ultra_leases("https://panel.example.test", "token", "device", forwards)
+
+        self.assertEqual(1, sum(1 for item in resolved if "_ultra_lease" not in item))
+        self.assertEqual("ul2-42", resolved[0]["_ultra_lease"]["lease_id"])
+        self.assertNotIn("_ultra_lease", resolved[-1])
+
+    def test_resolve_continues_after_an_invalid_first_batch(self):
+        forwards = []
+        for forward_id in range(42, 47):
+            forwards.append(
+                {
+                    "forward_id": forward_id,
+                    "backend_mode": "ultra",
+                    "target": f"203.0.113.{forward_id}:443",
+                    "ultra_access": {"session_ticket": f"opaque-{forward_id}", "policy_generation": "a" * 64},
+                }
+            )
+
+        with mock.patch.object(
+            MODULE,
+            "http_json",
+            side_effect=[
+                RuntimeError("http 409 https://panel.example.test/api/client/ultra/lease: lease_scope_invalid"),
+                {"ok": True, "leases": [{"forward_id": 46, "lease_id": "ul2-46"}]},
+            ],
+        ):
+            resolved = MODULE.resolve_ultra_leases("https://panel.example.test", "token", "device", forwards)
+
+        self.assertNotIn("_ultra_lease", resolved[0])
+        self.assertEqual("ul2-46", resolved[-1]["_ultra_lease"]["lease_id"])
+
+    def test_ultra_rendered_signature_ignores_policy_generation_rotation(self):
+        def rendered(generation: str, target_digest: str = "b" * 64):
+            return {
+                "service_name": "ultra-forward-42",
+                "service_path": "/etc/systemd/system/ultra-forward-42.service",
+                "service_unit": "unit\n",
+                "files": [
+                    {
+                        "path": "/etc/ultra/forward-42.json",
+                        "content": json.dumps(
+                            {
+                                "forward_id": 42,
+                                "listen_port": 32469,
+                                "target": "203.0.113.10:443",
+                                "policy_generation": generation,
+                                "target_digest": target_digest,
+                            },
+                            sort_keys=True,
+                        ),
+                    }
+                ],
+            }
+
+        first = MODULE.ClientAgent.rendered_runtime_signature(rendered("a" * 64), "single", "tcp+udp", 32469)
+        rotated = MODULE.ClientAgent.rendered_runtime_signature(rendered("c" * 64), "single", "tcp+udp", 32469)
+        changed_target = MODULE.ClientAgent.rendered_runtime_signature(
+            rendered("c" * 64, "d" * 64), "single", "tcp+udp", 32469
+        )
+
+        self.assertEqual(first, rotated)
+        self.assertNotEqual(first, changed_target)
+
     def test_resolve_uses_mirror_only_when_primary_post_has_no_response(self):
         forward = {"forward_id": 42, "backend_mode": "ultra", "target": "203.0.113.10:443", "ultra_access": {"session_ticket": "opaque", "policy_generation": "a" * 64}}
         response = {"ok": True, "leases": [{"forward_id": 42, "lease_id": "mirror-lease"}]}
