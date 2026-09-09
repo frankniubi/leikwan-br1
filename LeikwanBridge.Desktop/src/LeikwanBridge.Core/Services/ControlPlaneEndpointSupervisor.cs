@@ -99,7 +99,10 @@ public sealed class ControlPlaneEndpointSupervisor
                     response.StatusCode);
                 if (method != HttpMethod.Get && method != HttpMethod.Head)
                 {
-                    RecordSuccess(endpoint);
+                    // The response has already been received, so a POST must
+                    // not be replayed. Still quarantine this endpoint so the
+                    // next independent request can use the mirror.
+                    RecordTransportFailure(endpoint);
                     return await responseReader(response, ct).ConfigureAwait(false);
                 }
                 response.Dispose();
