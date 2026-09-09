@@ -10,6 +10,24 @@ namespace LeikwanBridge.Mac.Tests.ViewModels;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void PairingNavigationDoesNotEnterProxyOrStartConnections()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot { IsSignedIn = true });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        vm.ShowPairingCommand.Execute(null);
+
+        Assert.Equal("pairing", vm.SelectedSection);
+        Assert.False(vm.IsConnectionsVisible);
+        Assert.False(vm.IsDashboardVisible);
+        Assert.Empty(controller.AcquiredForwards);
+
+        vm.ShowConnectionsCommand.Execute(null);
+        Assert.Equal("connections", vm.SelectedSection);
+        Assert.True(vm.IsConnectionsVisible);
+    }
+
+    [Fact]
     public async Task UnpairedRouteNeverBorrowsThePreviouslySelectedSavedNode()
     {
         var connections = new CapturingMacConnectionService();

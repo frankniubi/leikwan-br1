@@ -21,7 +21,7 @@ public sealed class MainWindowLayoutTests
     }
 
     [Fact]
-    public void ConnectionsShowOnlyPairedRoutesInOneSelectorAndKeepNodeManagementInSecondaryOverlays()
+    public void PairingAndProxyControlsAreVisibleInSeparateSections()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
@@ -29,7 +29,7 @@ public sealed class MainWindowLayoutTests
         Assert.NotNull(root);
         var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
         var connections = Assert.Single(view.Descendants(), element =>
-            (string?)element.Attribute("IsVisible") == "{Binding IsConnectionsVisible}");
+            (string?)element.Attribute("IsVisible") == "{Binding IsConnectionWorkspaceVisible}");
         var routeSelector = Assert.Single(connections.Descendants(), element =>
             element.Name.LocalName == "ComboBox" && (string?)element.Attribute("ItemsSource") == "{Binding PairedConnectionRoutes}");
         Assert.Equal("{Binding SelectedConnectionForward, Mode=TwoWay}", (string?)routeSelector.Attribute("SelectedItem"));
@@ -41,10 +41,15 @@ public sealed class MainWindowLayoutTests
         Assert.Equal("请选择连接模式", (string?)modeSelector.Attribute("PlaceholderText"));
         Assert.Contains(connections.Descendants(), element => (string?)element.Attribute("Command") == "{Binding StartConnectionCommand}");
         Assert.Contains(connections.Descendants(), element => (string?)element.Attribute("Command") == "{Binding StopConnectionCommand}");
-        Assert.DoesNotContain(connections.Descendants(), element =>
+        Assert.Contains(routeSelector.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsConnectionsVisible}");
+        var pairing = Assert.Single(connections.Descendants(), element =>
             element.Name.LocalName == "ItemsControl"
-            && (string?)element.Attribute("ItemsSource") == "{Binding ConnectionRoutes}"
-            && (string?)element.Attribute("IsVisible") != "False");
+            && (string?)element.Attribute("ItemsSource") == "{Binding ConnectionRoutes}");
+        Assert.Equal("{Binding IsPairingVisible}", (string?)pairing.Attribute("IsVisible"));
+        Assert.DoesNotContain(pairing.Descendants(), element => element.Name.LocalName == "Button");
+        Assert.Contains(pairing.Descendants(), element =>
+            (string?)element.Attribute("ItemsSource") == "{Binding NodeOptions}");
         Assert.DoesNotContain(connections.Descendants(), element => element.Name.LocalName == "ComboBox"
             && (string?)element.Attribute("ItemsSource") == "{Binding Forwards}");
         var library = Assert.Single(connections.Descendants(), element =>
@@ -52,6 +57,12 @@ public sealed class MainWindowLayoutTests
         Assert.Equal("0", (string?)routeSelector.Ancestors().First(element => element.Name.LocalName == "ScrollViewer").Attribute("Grid.Column"));
         Assert.Equal("1", (string?)library.Ancestors().First(element => element.Attribute("Grid.Column") is not null).Attribute("Grid.Column"));
         Assert.Contains(library.Ancestors(), element => element.Name.LocalName == "Border");
+        Assert.Contains(library.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsPairingVisible}");
+        var editor = Assert.Single(connections.Descendants(), element =>
+            (string?)element.Attribute("Command") == "{Binding SaveConnectionProfileCommand}");
+        Assert.Contains(editor.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsPairingVisible}");
     }
 
     [Fact]
