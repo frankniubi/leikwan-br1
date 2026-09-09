@@ -805,6 +805,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 payload = {
     "master_url": os.environ["MASTER_URL"],
+    "panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"],
     "artifact_base_url": os.environ["ARTIFACT_BASE"],
     "client_id": int(os.environ["CLIENT_ID"]),
     "agent_token": os.environ["AGENT_TOKEN"],
@@ -840,6 +841,8 @@ EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5
+WatchdogSec=90
+NotifyAccess=main
 
 [Install]
 WantedBy=multi-user.target
