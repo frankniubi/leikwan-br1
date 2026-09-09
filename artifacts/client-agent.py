@@ -36,6 +36,12 @@ import urllib.request
 
 AGENT_VERSION = "2026.09.06.1"
 UPDATE_RETRY_SECONDS = 300
+
+
+class ControlPlaneResponseError(RuntimeError):
+    """The server answered, but its response could not be decoded safely."""
+
+    response_received = True
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
 UPDATE_STALE_SECONDS = 900
@@ -698,7 +704,10 @@ def http_json(method: str, url: str, token: str, payload: dict | None = None) ->
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
         with _urlopen_for_request(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            try:
+                return json.loads(resp.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ControlPlaneResponseError(f"invalid JSON response from {url}") from exc
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
@@ -735,7 +744,10 @@ def http_json_with_headers(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
-    return json.loads(content), response_headers
+    try:
+        return json.loads(content), response_headers
+    except json.JSONDecodeError as exc:
+        raise ControlPlaneResponseError(f"invalid JSON response from {url}") from exc
 
 
 DEFAULT_PANEL_MIRROR_URLS = ["https://api-leikwanbridge.nbwly.com"]
@@ -748,6 +760,7 @@ class ControlPlaneEndpointState:
         self.path = pathlib.Path(path) if path is not None else None
         self.current_endpoint = ""
         self.failures: dict[str, dict] = {}
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -773,34 +786,35 @@ class ControlPlaneEndpointState:
         os.replace(temporary, self.path)
 
     def ordered(self, endpoints: list[str]) -> list[str]:
-        normalized = [str(item).rstrip("/") for item in endpoints if str(item).strip()]
-        if not normalized:
-            return []
-        primary = normalized[0]
-        # Keep the last known-good endpoint sticky during an outage, but probe the
-        # primary again after exponential backoff so recovery is transparent.
-        if self.current_endpoint in normalized and self.current_endpoint != primary:
-            failure = self.failures.get(primary, {})
-            count = int(failure.get("count", 0) or 0)
-            last_failure = float(failure.get("last_failure_at", 0) or 0)
-            retry_after = min(300.0, 15.0 * (2 ** max(0, count - 1)))
-            if count > 0 and time.time() >= last_failure + retry_after:
-                return normalized
-            return [self.current_endpoint] + [item for item in normalized if item != self.current_endpoint]
-        return normalized
+        with self._lock:
+            normalized = [str(item).rstrip("/") for item in endpoints if str(item).strip()]
+            if not normalized:
+                return []
+            primary = normalized[0]
+            if self.current_endpoint in normalized and self.current_endpoint != primary:
+                failure = self.failures.get(primary, {})
+                count = int(failure.get("count", 0) or 0)
+                last_failure = float(failure.get("last_failure_at", 0) or 0)
+                retry_after = min(300.0, 15.0 * (2 ** max(0, count - 1)))
+                if count > 0 and time.time() >= last_failure + retry_after:
+                    return normalized
+                return [self.current_endpoint] + [item for item in normalized if item != self.current_endpoint]
+            return normalized
 
     def success(self, endpoint: str) -> None:
-        self.current_endpoint = str(endpoint).rstrip("/")
-        self.failures.pop(self.current_endpoint, None)
-        self._save()
+        with self._lock:
+            self.current_endpoint = str(endpoint).rstrip("/")
+            self.failures.pop(self.current_endpoint, None)
+            self._save()
 
     def failure(self, endpoint: str, error: Exception) -> None:
-        key = str(endpoint).rstrip("/")
-        entry = self.failures.setdefault(key, {})
-        entry["count"] = int(entry.get("count", 0) or 0) + 1
-        entry["last_error"] = str(error)[:512]
-        entry["last_failure_at"] = time.time()
-        self._save()
+        with self._lock:
+            key = str(endpoint).rstrip("/")
+            entry = self.failures.setdefault(key, {})
+            entry["count"] = int(entry.get("count", 0) or 0) + 1
+            entry["last_error"] = str(error)[:512]
+            entry["last_failure_at"] = time.time()
+            self._save()
 
 
 def _is_control_plane_business_error(error: Exception) -> bool:
@@ -808,6 +822,10 @@ def _is_control_plane_business_error(error: Exception) -> bool:
     if not match:
         return False
     return int(match.group(1)) in {400, 401, 403, 404, 409, 422}
+
+
+def _has_control_plane_http_response(error: Exception) -> bool:
+    return re.search(r"\bhttp\s+\d{3}\b", str(error), flags=re.IGNORECASE) is not None
 
 
 def control_plane_endpoints(config: dict) -> list[str]:
@@ -828,9 +846,10 @@ def pull_client_configs(
     token: str,
     *,
     state_path: pathlib.Path | None = None,
+    selector: ControlPlaneEndpointState | None = None,
 ) -> tuple[dict, dict[str, str], str]:
     endpoints = control_plane_endpoints(config)
-    selector = ControlPlaneEndpointState(state_path)
+    selector = selector or ControlPlaneEndpointState(state_path)
     errors: list[str] = []
     for base_url in selector.ordered(endpoints):
         try:
@@ -950,6 +969,7 @@ def resolve_ultra_leases(
     selection_mode: str = "auto",
     fallback_endpoints: list[str] | None = None,
     state_path: pathlib.Path | None = None,
+    selector: ControlPlaneEndpointState | None = None,
 ) -> list[dict]:
     normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
     max_candidates = 4 if normalized_selection_mode == "auto" else 1
@@ -981,7 +1001,7 @@ def resolve_ultra_leases(
         )
     if not requests:
         return forwards
-    selector = ControlPlaneEndpointState(state_path)
+    selector = selector or ControlPlaneEndpointState(state_path)
     configured = [str(master).rstrip("/")]
     for endpoint in fallback_endpoints or []:
         normalized = str(endpoint or "").rstrip("/")
@@ -1006,8 +1026,8 @@ def resolve_ultra_leases(
             selector.failure(endpoint, exc)
             # Once the server returns an HTTP response, do not duplicate the POST
             # against another CDN. The next polling cycle will switch endpoints.
-            if re.search(r"\bhttp\s+\d{3}\b", str(exc), flags=re.IGNORECASE):
-                raise RuntimeError(f"ultra material resolution failed: {exc}") from exc
+            if getattr(exc, "response_received", False) or re.search(r"\bhttp\s+\d{3}\b", str(exc), flags=re.IGNORECASE):
+                raise
             continue
     if response is None:
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
@@ -1082,6 +1102,7 @@ class ClientAgent:
         self.pull_state_path = self.state_dir / "config_pull_state.json"
         self.usage_state_path = self.state_dir / "usage_state.json"
         self.endpoint_state_path = self.state_dir / "control-plane-endpoint.json"
+        self.endpoint_selector = ControlPlaneEndpointState(self.endpoint_state_path)
         self.active_control_plane_endpoint = str(self.config.get("master_url", "") or "").rstrip("/")
         self.latest_forwards: list[dict] = []
         self.health_restart_after: dict[int, float] = {}
@@ -1101,10 +1122,54 @@ class ClientAgent:
 
     def pull_client_configs(self, token: str) -> tuple[dict, dict[str, str], str]:
         payload, headers, endpoint = pull_client_configs(
-            self.config, token, state_path=getattr(self, "endpoint_state_path", None)
+            self.config,
+            token,
+            state_path=getattr(self, "endpoint_state_path", None),
+            selector=getattr(self, "endpoint_selector", None),
         )
         self.active_control_plane_endpoint = endpoint
         return payload, headers, endpoint
+
+    def control_plane_request(
+        self,
+        method: str,
+        path: str,
+        token: str,
+        payload: dict | None = None,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict:
+        selector = getattr(self, "endpoint_selector", None) or ControlPlaneEndpointState(
+            getattr(self, "endpoint_state_path", None)
+        )
+        endpoints = selector.ordered(control_plane_endpoints(self.config))
+        errors: list[str] = []
+        for endpoint in endpoints:
+            try:
+                if extra_headers:
+                    result = http_json_with_headers(
+                        method,
+                        f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
+                        token,
+                        payload,
+                        extra_headers=extra_headers,
+                    )[0]
+                else:
+                    result = http_json(
+                        method,
+                        f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
+                        token,
+                        payload,
+                    )
+                selector.success(endpoint)
+                self.active_control_plane_endpoint = endpoint
+                return result
+            except Exception as exc:  # noqa: BLE001
+                selector.failure(endpoint, exc)
+                errors.append(f"{endpoint}: {exc}")
+                if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
+                    raise
+        raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
     def _systemd_watchdog_notify(self) -> None:
         notify_socket = os.environ.get("NOTIFY_SOCKET", "").strip()
@@ -1161,7 +1226,23 @@ class ClientAgent:
 
     def _run_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
         try:
-            result = upload_debug_collection(master, token, client_meta, self.state_dir, self.config)
+            result = upload_debug_collection(
+                master,
+                token,
+                client_meta,
+                self.state_dir,
+                self.config,
+                post=lambda payload: self.control_plane_request(
+                    "POST",
+                    "/api/client/debug/log",
+                    token,
+                    payload,
+                    extra_headers={
+                        "x-device-platform": "linux",
+                        "x-device-id": str(client_meta.get("current_device_id", "") or ""),
+                    },
+                ),
+            )
             if result.get("status") not in {"not_requested", "inactive", "expired", "complete"}:
                 logging.info("debug log upload status=%s chunks=%s bytes=%s", result.get("status"), result.get("chunks"), result.get("bytes"))
         except Exception as exc:  # noqa: BLE001
@@ -2016,12 +2097,7 @@ class ClientAgent:
         }
 
     def bridge_lite_fetch_linux_profile_runtime(self, master: str, token: str) -> dict:
-        payload = http_json_with_headers(
-            "GET",
-            f"{master.rstrip('/')}/api/client/configs/pull",
-            token,
-            extra_headers={"x-device-platform": "linux"},
-        )[0]
+        payload, _headers, _endpoint = self.pull_client_configs(token)
         return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
 
     def bond_leg_snapshot_dir(self) -> pathlib.Path:
@@ -2120,6 +2196,7 @@ class ClientAgent:
             selection_mode=self.ultra_selection_mode(),
             fallback_endpoints=control_plane_endpoints(self.config),
             state_path=getattr(self, "endpoint_state_path", None),
+            selector=getattr(self, "endpoint_selector", None),
         )
         for forward in resolved:
             fid = int(forward["forward_id"])
@@ -2291,6 +2368,7 @@ class ClientAgent:
                 selection_mode=self.ultra_selection_mode(),
                 fallback_endpoints=control_plane_endpoints(self.config),
                 state_path=getattr(self, "endpoint_state_path", None),
+                selector=getattr(self, "endpoint_selector", None),
             )
         except Exception as exc:  # noqa: BLE001
             # Keep an already-running Ultra process on its last in-memory lease
@@ -2467,9 +2545,10 @@ class ClientAgent:
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
         cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
-        heartbeat_response = http_json(
+        # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
+        heartbeat_response = self.control_plane_request(
             "POST",
-            f"{master}/api/client/heartbeat",
+            "/api/client/heartbeat",
             token,
             {
                 "agent_version": AGENT_VERSION,
@@ -2792,6 +2871,7 @@ class ClientAgent:
             self.pull_state_path = new_state_dir / "config_pull_state.json"
             self.usage_state_path = new_state_dir / "usage_state.json"
             self.endpoint_state_path = new_state_dir / "control-plane-endpoint.json"
+            self.endpoint_selector = ControlPlaneEndpointState(self.endpoint_state_path)
 
         logging.info("applied client config patch keys=%s", ",".join(sorted(set(patch.keys()) & allowed_keys)))
 
@@ -5788,9 +5868,9 @@ class ClientAgent:
         except Exception as exc:  # noqa: BLE001
             error_message = str(exc)
 
-        http_json(
+        self.control_plane_request(
             "POST",
-            f"{master}/api/client/diagnostics/result",
+            "/api/client/diagnostics/result",
             token,
             {
                 "request_token": request_token,

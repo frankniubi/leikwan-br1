@@ -39,6 +39,8 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
     def test_installer_defaults_cloudflare_primary_with_aliyun_mirror_and_watchdog(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
         self.assertIn('"panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"]', source)
+        self.assertIn('MASTER_URL="https://v3.leikwanhost.com"', source)
+        self.assertIn('REQUESTED_MASTER_URL="$MASTER_URL"', source)
         self.assertIn("WatchdogSec=90", source)
         self.assertIn("NotifyAccess=main", source)
 

@@ -80,6 +80,25 @@ class ControlPlaneFailoverTests(unittest.TestCase):
             self.assertIn("v3.leikwanhost.com", calls[0])
             self.assertEqual("https://v3.leikwanhost.com", json.loads(state.read_text())["current_endpoint"])
 
+    def test_client_agent_reuses_one_selector_instance_for_pull_and_post(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "config.json"
+            state = Path(td) / "state"
+            config.write_text(json.dumps({"master_url": "https://v3.leikwanhost.com", "panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"], "state_dir": str(state), "agent_token": "token"}))
+            agent = MODULE.ClientAgent(config)
+            self.assertIs(agent.endpoint_selector, agent.endpoint_selector)
+            self.assertEqual(agent.endpoint_state_path, state / "control-plane-endpoint.json")
+
+    def test_control_plane_post_does_not_failover_after_json_parse_response(self):
+        with tempfile.TemporaryDirectory() as td:
+            config_path = Path(td) / "config.json"
+            config_path.write_text(json.dumps({"master_url": "https://v3.leikwanhost.com", "panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"], "state_dir": td, "agent_token": "token"}))
+            agent = MODULE.ClientAgent(config_path)
+            with mock.patch.object(MODULE, "http_json", side_effect=MODULE.ControlPlaneResponseError("invalid JSON response")) as request:
+                with self.assertRaises(MODULE.ControlPlaneResponseError):
+                    agent.control_plane_request("POST", "/api/client/heartbeat", "token", {})
+            request.assert_called_once()
+
     def test_dual_outage_raises_without_mutating_runtime(self):
         with tempfile.TemporaryDirectory() as td:
             state = Path(td) / "endpoint.json"
