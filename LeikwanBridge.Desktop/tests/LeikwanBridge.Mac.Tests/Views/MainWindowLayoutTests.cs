@@ -6,6 +6,21 @@ namespace LeikwanBridge.Mac.Tests.Views;
 public sealed class MainWindowLayoutTests
 {
     [Fact]
+    public void SidebarExposesForwardPairingGuide()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var pairingButton = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button"
+            && (string?)element.Attribute("Command") == "{Binding ShowPairingCommand}");
+        Assert.Contains(pairingButton.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" && (string?)element.Attribute("Text") == "线路配对");
+    }
+
+    [Fact]
     public void ConnectionsShowOnlyPairedRoutesInOneSelectorAndKeepNodeManagementInSecondaryOverlays()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);

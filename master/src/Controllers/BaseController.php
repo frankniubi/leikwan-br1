@@ -14,6 +14,9 @@ use Leikwan\Master\Support\PrecisionGridUi;
 
 abstract class BaseController
 {
+    /** @var array<string, array<string, mixed>> */
+    private array $normalizedArtifactMetadataCache = [];
+
     public function __construct(
         protected Config $config,
         protected Database $db,
@@ -1088,12 +1091,16 @@ abstract class BaseController
             }
         }
 
-        $entry = $cache[$key] ?? null;
-        if (!is_array($entry)) {
-            return [];
+        if (array_key_exists($key, $this->normalizedArtifactMetadataCache)) {
+            return $this->normalizedArtifactMetadataCache[$key];
         }
 
-        return $this->normalizeArtifactMetadataEntry($entry);
+        $entry = $cache[$key] ?? null;
+        if (!is_array($entry)) {
+            return $this->normalizedArtifactMetadataCache[$key] = [];
+        }
+
+        return $this->normalizedArtifactMetadataCache[$key] = $this->normalizeArtifactMetadataEntry($entry);
     }
 
     /**

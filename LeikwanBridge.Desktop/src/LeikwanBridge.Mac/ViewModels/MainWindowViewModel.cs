@@ -659,6 +659,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void ShowPairing() => ShowConnections();
+
+    [RelayCommand]
     private void NewConnectionProfile()
     {
         SelectedConnectionProfile = null;

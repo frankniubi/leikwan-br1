@@ -41,6 +41,12 @@
               <TextBlock Text="Connections" />
             </StackPanel>
           </Button>
+          <Button Classes="nav" Command="{Binding ShowPairingCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:LucideIcon Kind="GitBranch" Size="18" />
+              <TextBlock Text="线路配对" />
+            </StackPanel>
+          </Button>
           <Button Classes="nav" Command="{Binding ShowLogsCommand}">
             <StackPanel Orientation="Horizontal" Spacing="10">
               <lucide:LucideIcon Kind="ScrollText" Size="18" />
