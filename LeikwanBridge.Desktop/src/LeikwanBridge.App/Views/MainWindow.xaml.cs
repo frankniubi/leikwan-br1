@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private bool _updatingNativeUi;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
+    private readonly ConnectionRecoverySupervisor _connectionRecovery;
     private Task? _startupTask;
     private bool _shutdownCloseRequested;
     private bool _shutdownCloseFinalizing;
@@ -38,6 +39,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _vm = (MainViewModel)DataContext;
+        _connectionRecovery = new ConnectionRecoverySupervisor(
+            _ => _vm.ConnectCommand.ExecuteAsync(null));
         if (!App.Config.RememberLoginInfo)
         {
             App.Config.AgentToken = string.Empty;
@@ -1583,6 +1586,7 @@ public partial class MainWindow : Window
         _trayLifecycle.MarkClosing();
         try { _lifecycleCts.Cancel(); }
         catch (ObjectDisposedException) { }
+        _ = _connectionRecovery.StopAsync();
         _vm.RequestShutdown();
         DisposeTrayIcon();
         Hide();
@@ -1599,6 +1603,7 @@ public partial class MainWindow : Window
             // machine observe cancellation in parallel. Waiting for startup
             // first can add a full network timeout to every user exit.
             shutdownTask = _vm.ShutdownForExitAsync();
+            await _connectionRecovery.StopAsync().ConfigureAwait(true);
             try
             {
                 await WaitForTaskAsync(_startupTask, TimeSpan.FromSeconds(8)).ConfigureAwait(true);
@@ -1720,6 +1725,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log.Warning(ex, "automatic connection failed");
+            _ = _connectionRecovery.StartAsync(ct);
         }
     }
 
