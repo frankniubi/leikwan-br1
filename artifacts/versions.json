@@ -43,9 +43,9 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-    "sha256": "8ad28faf13988928e581d0a180679c13e8eddc6371474ad41804bc292afde080",
-     "size": 298785,
-     "size_bytes": 306392,
+    "sha256": "faed2e7768b1c5d9461b2835af5e5bf180101c72a59803d48a993a0558194256",
+     "size": 309700,
+     "size_bytes": 309700,
   "version": "2026.09.06.1"
  },
  "client_agent_installer": {
@@ -53,8 +53,8 @@
   "install_url": "/artifacts/install-client-agent.sh",
   "path": "install/install-client-agent.sh",
   "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "9f126c60997e172e10e414e33019641a150e424b6febb538f9ab9a9ee28f2741",
-    "size_bytes": 32664,
+    "sha256": "d19844d29d324b972f820814915d7615480032f7830f38b00cbe22a72251e21c",
+    "size_bytes": 32904,
   "version": "2026.08.29.3"
  },
  "client_installer": {
