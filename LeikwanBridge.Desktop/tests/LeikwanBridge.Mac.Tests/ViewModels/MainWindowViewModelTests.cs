@@ -283,6 +283,22 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task StopAllTreatsAnAlreadyDisconnectedRuntimeAsStopped()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot())
+        {
+            StopAllException = new InvalidOperationException("client_not_connected"),
+        };
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        await vm.StopAllCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, controller.StopAllCalls);
+        Assert.True(vm.IsNoticeVisible);
+        Assert.Contains("already stopped", vm.NoticeText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task StopDuringForwardPreparationCancelsWithoutLaunchingProxy()
     {
         var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -787,6 +803,8 @@ public sealed class MainWindowViewModelTests
         public List<int> AcquiredForwards { get; } = [];
         public List<int> ReleasedForwards { get; } = [];
         public bool ThrowOnAcquire { get; init; }
+        public Exception? StopAllException { get; init; }
+        public int StopAllCalls { get; private set; }
         public string ForwardTransport { get; init; } = "tcp+udp";
         public IReadOnlyList<ForwardConfig> ForwardConfigs => Snapshot.Forwards.Select(forward => new ForwardConfig
         {
@@ -861,7 +879,13 @@ public sealed class MainWindowViewModelTests
             return Task.CompletedTask;
         }
         public Task StartAllAsync(CancellationToken ct = default) => Task.CompletedTask;
-        public Task StopAllAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task StopAllAsync(CancellationToken ct = default)
+        {
+            StopAllCalls++;
+            return StopAllException is null
+                ? Task.CompletedTask
+                : Task.FromException(StopAllException);
+        }
         public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(int forwardId, string routeScope, CancellationToken ct = default)
             => Task.FromResult<NativeOutboundLease?>(null);
         public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
