@@ -1718,6 +1718,14 @@ public partial class MainWindow : Window
         try
         {
             await _vm.ConnectCommand.ExecuteAsync(null);
+            if (!_vm.IsConnected)
+            {
+                if (!ct.IsCancellationRequested && !_vm.IsShuttingDown)
+                {
+                    Log.Warning("automatic connection returned disconnected; scheduling background recovery");
+                    _ = _connectionRecovery.StartAsync(ct);
+                }
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested || _vm.IsShuttingDown)
         {
