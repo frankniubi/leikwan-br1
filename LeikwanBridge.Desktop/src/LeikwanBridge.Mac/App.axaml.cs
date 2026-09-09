@@ -92,7 +92,7 @@ public sealed partial class App : Application
                     if (!_quitStarted)
                     {
                         _connectionRecovery = new ConnectionRecoverySupervisor(
-                            _ => services.Controller.ConnectAsync());
+                            ct => services.Controller.ConnectAsync(ct));
                         _ = _connectionRecovery.StartAsync();
                     }
                 }
