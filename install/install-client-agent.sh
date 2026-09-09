@@ -273,8 +273,12 @@ if [[ -z "$MASTER_URL" || -z "$CLIENT_ID" || -z "$AGENT_TOKEN" ]]; then
   exit 1
 fi
 
+# The control plane is intentionally pinned to Cloudflare. The user-supplied
+# address may still be used as the artifact source when --artifact-base is omitted.
+REQUESTED_MASTER_URL="$MASTER_URL"
+MASTER_URL="https://v3.leikwanhost.com"
 if [[ -z "$ARTIFACT_BASE" ]]; then
-  ARTIFACT_BASE="$MASTER_URL"
+  ARTIFACT_BASE="$REQUESTED_MASTER_URL"
 fi
 
 validate_install_arguments
