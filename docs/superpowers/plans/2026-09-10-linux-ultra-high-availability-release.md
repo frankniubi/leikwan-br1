@@ -39,7 +39,7 @@
 
 - [x] Add a failing regression proving a changed Ultra lease generation does not cause a systemd restart when the static runtime contract is unchanged.
 - [x] Run the regression and observe the expected failure.
-- [x] Keep lease generation and target digest in the control-plane lease path while excluding them from the static rendered-runtime comparison; deliver the fresh lease through the control socket before any restart decision.
+- [x] Exclude only policy generation from the static comparison; keep target digest, port and transport restart-sensitive. Deliver fresh leases through the control socket. Honor explicit forced restarts.
 - [x] Run focused Python tests and verify no restart is issued for generation-only rotation.
 
 ### Task 3: Release verification and deployment
@@ -50,6 +50,6 @@
 
 - [x] Run Python focused tests, PHP contract tests, and artifact consistency checks. Go tests are blocked by the pre-existing missing `opengfw` replacement directory in this checkout.
 - [x] Hash the Linux agent artifact and update the release manifest.
-- [ ] Commit only the scoped fix and release metadata, preserving unrelated dirty files.
-- [ ] Back up the Linux test client, deploy the artifact, verify service state/listeners, and confirm 180 is applied.
-- [ ] Run a live canary across at least one lease-generation rotation window before claiming high availability.
+- [x] Commit only the scoped fix and release metadata, preserving unrelated dirty files.
+- [x] Back up the Linux test client, deploy the artifact, verify service state/listeners, and confirm 180 is applied.
+- [x] Run a live canary across at least one lease-generation rotation window before claiming high availability. 308.1 seconds, 11 samples, five ready forwards, ten listeners, stable PIDs; panel generations changed during observation.
