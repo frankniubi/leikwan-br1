@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.06.1"
+AGENT_VERSION = "2026.09.06.2"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -6405,7 +6405,10 @@ class ClientAgent:
                     int(forward.get("forward_id", 0) or 0)
                     for forward in forwards
                     if (
-                        self.normalize_mode(forward.get("mode", "single")) != "mptcp"
+                        forward_requires_panel_endpoints(
+                            forward,
+                            self.normalize_mode(forward.get("mode", "single")),
+                        )
                         and self.usable_endpoints(forward) == []
                     )
                 ]
