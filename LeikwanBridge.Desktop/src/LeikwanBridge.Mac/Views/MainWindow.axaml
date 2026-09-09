@@ -38,7 +38,7 @@
           <Button Classes="nav" Command="{Binding ShowConnectionsCommand}">
             <StackPanel Orientation="Horizontal" Spacing="10">
               <lucide:LucideIcon Kind="Route" Size="18" />
-              <TextBlock Text="Connections" />
+              <TextBlock Text="代理" />
             </StackPanel>
           </Button>
           <Button Classes="nav" Command="{Binding ShowPairingCommand}">
@@ -243,12 +243,12 @@
             </Grid>
           </Grid>
 
-          <Grid IsVisible="{Binding IsConnectionsVisible}" RowDefinitions="Auto,*" Margin="28">
+          <Grid IsVisible="{Binding IsConnectionWorkspaceVisible}" RowDefinitions="Auto,*" Margin="28">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,18">
               <StackPanel Spacing="3">
-                <TextBlock Classes="heading" Text="Connections" />
+                <TextBlock Classes="heading" Text="{Binding ConnectionWorkspaceTitle}" />
               </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsConnectionsVisible}">
                 <Border Classes="status-pill">
                   <StackPanel Orientation="Horizontal" Spacing="8">
                     <Border Width="8" Height="8" CornerRadius="4" Classes="status-dot" Classes.running="{Binding IsLocalConnectionActive}" />
@@ -271,8 +271,9 @@
               </StackPanel>
             </Grid>
 
-            <Grid Grid.Row="1" ColumnDefinitions="*,260" ColumnSpacing="18">
-              <Border Grid.Column="1" Classes="surface" Padding="14">
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
+              <Border Grid.Column="1" Classes="surface" Padding="14" Width="260" Margin="18,0,0,0"
+                      IsVisible="{Binding IsPairingVisible}">
                 <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
                   <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
                     <TextBlock Text="Saved nodes" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -296,9 +297,10 @@
               </Border>
 
               <ScrollViewer Grid.Column="0">
-                 <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="16">
-                   <Border Grid.Row="2" Padding="0" IsVisible="{Binding IsNativeOutboundVisible}">
+                 <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="16">
+                   <Border Grid.Row="3" Padding="0" IsVisible="{Binding IsConnectionsVisible}">
                     <Expander IsExpanded="{Binding IsNativeOutboundExpanded, Mode=TwoWay}"
+                              IsVisible="{Binding IsNativeOutboundVisible}"
                               AutomationProperties.Name="Optional native outbound">
                       <Expander.Header>
                         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="16,12">
@@ -369,7 +371,7 @@
                     </Expander>
                   </Border>
 
-                   <Border Grid.Row="1" Padding="0">
+                   <Border Grid.Row="1" Padding="0" IsVisible="{Binding IsPairingVisible}">
                      <Expander IsExpanded="{Binding IsProxyEditorExpanded, Mode=TwoWay}"
                                AutomationProperties.Name="Standard connection node editor">
                        <Expander.Header>
@@ -488,7 +490,32 @@
                      </Expander>
                    </Border>
 
-                   <Border Grid.Row="0" Padding="16">
+                   <StackPanel Grid.Row="0" Spacing="12" IsVisible="{Binding IsPairingVisible}">
+                     <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
+                                Text="该功能非必须, 您可于其他代理软件将服务器地址改为 127.0.0.1 后使用" />
+                     <ItemsControl ItemsSource="{Binding ConnectionRoutes}" IsVisible="{Binding IsPairingVisible}">
+                       <ItemsControl.ItemTemplate>
+                         <DataTemplate x:DataType="vm:ForwardRowViewModel">
+                           <Border BorderBrush="#E5E7EB" BorderThickness="0,0,0,1" Padding="0,12">
+                             <StackPanel Spacing="6">
+                               <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                               <TextBlock Text="{Binding PortText}" Classes="muted" FontSize="11" />
+                               <ComboBox ItemsSource="{Binding NodeOptions}" SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
+                                         PlaceholderText="未选择已保存节点" HorizontalAlignment="Stretch">
+                                 <ComboBox.ItemTemplate>
+                                   <DataTemplate>
+                                     <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                   </DataTemplate>
+                                 </ComboBox.ItemTemplate>
+                               </ComboBox>
+                             </StackPanel>
+                           </Border>
+                         </DataTemplate>
+                       </ItemsControl.ItemTemplate>
+                     </ItemsControl>
+                   </StackPanel>
+
+                   <Border Grid.Row="2" Padding="16" IsVisible="{Binding IsConnectionsVisible}">
                     <StackPanel Spacing="8">
                       <TextBlock Classes="label" Text="线路" />
                       <ComboBox ItemsSource="{Binding PairedConnectionRoutes}"
@@ -509,42 +536,6 @@
                                 PlaceholderText="请选择连接模式" MinHeight="40" />
                       <TextBlock Text="{Binding SelectedConnectionEndpoint}" Classes="muted" FontSize="11" />
                       <TextBlock Text="{Binding BypassAddressCount, StringFormat='Direct bypass entries: {0}'}" Classes="muted" FontSize="11" />
-                      <ItemsControl IsVisible="False" ItemsSource="{Binding ConnectionRoutes}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="vm:ForwardRowViewModel">
-                            <Border Classes="surface" Padding="12" Margin="0,0,0,8">
-                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                                <StackPanel Spacing="2">
-                                  <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
-                                  <ComboBox ItemsSource="{Binding NodeOptions}" SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
-                                            PlaceholderText="未选择已保存节点" FontSize="11" MinWidth="170">
-                                    <ComboBox.ItemTemplate>
-                                      <DataTemplate>
-                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                      </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                  </ComboBox>
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                  <Button Classes="primary icon" Command="{Binding StartConnectionCommand}" ToolTip.Tip="连接此线路">
-                                    <lucide:LucideIcon Kind="Play" Size="15" />
-                                  </Button>
-                                  <Button Classes="danger icon" Command="{Binding StopConnectionCommand}" ToolTip.Tip="停止此线路">
-                                    <lucide:LucideIcon Kind="Square" Size="14" />
-                                  </Button>
-                                </StackPanel>
-                              </Grid>
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    <Grid IsVisible="False" ColumnDefinitions="*,180" ColumnSpacing="18">
-                      <StackPanel Spacing="5" IsVisible="{Binding IsStandardConnectionModeVisible}">
-                        <TextBlock Classes="label" Text="MODE" />
-                        <ComboBox ItemsSource="{Binding ConnectionModes}" SelectedItem="{Binding SelectedConnectionMode, Mode=TwoWay}" />
-                        <TextBlock Text="{Binding BypassAddressCount, StringFormat='Direct bypass entries: {0}'}" Classes="muted" FontSize="11" />
-                      </StackPanel>
-                    </Grid>
                     <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
                                Text="您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。" />
                     <TextBlock Text="{Binding LocalConnectionError}" Foreground="{DynamicResource DangerBrush}"

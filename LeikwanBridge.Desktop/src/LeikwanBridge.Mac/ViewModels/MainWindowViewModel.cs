@@ -138,7 +138,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private bool _isDashboardVisible;
     [ObservableProperty] private bool _isLogsVisible;
     [ObservableProperty] private bool _isSettingsVisible;
-    [ObservableProperty] private bool _isConnectionsVisible;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsConnectionWorkspaceVisible))]
+    private bool _isConnectionsVisible;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsConnectionWorkspaceVisible), nameof(ConnectionWorkspaceTitle))]
+    private bool _isPairingVisible;
     [ObservableProperty] private bool _isNoticeVisible;
     [ObservableProperty] private string _noticeText = string.Empty;
     [ObservableProperty] private bool _isUpdateVisible;
@@ -170,6 +173,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _proxyImportError = string.Empty;
 
     public bool HasForwards => Forwards.Count > 0;
+    public bool IsConnectionWorkspaceVisible => IsConnectionsVisible || IsPairingVisible;
+    public string ConnectionWorkspaceTitle => IsPairingVisible ? "线路配对" : "代理";
     public IReadOnlyList<ForwardRowViewModel> ConnectionRoutes => Forwards;
     public IReadOnlyList<ForwardRowViewModel> PairedConnectionRoutes
         => Forwards.Where(route => route.IsPaired).ToList();
@@ -652,6 +657,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private void ShowConnections()
     {
         SelectedSection = "connections";
+        IsPairingVisible = false;
         IsDashboardVisible = false;
         IsLogsVisible = false;
         IsSettingsVisible = false;
@@ -659,7 +665,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ShowPairing() => ShowConnections();
+    private void ShowPairing()
+    {
+        SelectedSection = "pairing";
+        IsDashboardVisible = false;
+        IsLogsVisible = false;
+        IsSettingsVisible = false;
+        IsConnectionsVisible = false;
+        IsPairingVisible = !IsLoginVisible && !IsClientPickerVisible;
+    }
 
     [RelayCommand]
     private void NewConnectionProfile()
@@ -1014,6 +1028,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private void ShowDashboard()
     {
         SelectedSection = "dashboard";
+        IsPairingVisible = false;
         IsDashboardVisible = !IsLoginVisible && !IsClientPickerVisible;
         IsLogsVisible = false;
         IsSettingsVisible = false;
@@ -1024,6 +1039,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private void ShowLogs()
     {
         SelectedSection = "logs";
+        IsPairingVisible = false;
         IsDashboardVisible = false;
         IsLogsVisible = true;
         IsSettingsVisible = false;
@@ -1034,6 +1050,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private void ShowSettings()
     {
         SelectedSection = "settings";
+        IsPairingVisible = false;
         IsDashboardVisible = false;
         IsLogsVisible = false;
         IsSettingsVisible = true;
@@ -1057,6 +1074,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsDashboardVisible = !IsLoginVisible && !IsClientPickerVisible;
         if (SelectedSection == "connections")
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
+        if (SelectedSection == "pairing")
+            IsPairingVisible = !IsLoginVisible && !IsClientPickerVisible;
         ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
         if (!snapshot.IsBusy)
