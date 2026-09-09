@@ -87,4 +87,41 @@ public sealed class ControlPlaneEndpointSupervisorTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response);
         Assert.Equal(["primary.example"], calls);
     }
+
+    [Fact]
+    public async Task TransientPostResponseMarksEndpointFailedWithoutResubmittingPost()
+    {
+        var requests = new List<string>();
+        var supervisor = new ControlPlaneEndpointSupervisor(
+            "https://primary.example",
+            ["https://fallback.example"],
+            (request, _) =>
+            {
+                requests.Add(request.Method.Method + " " + request.RequestUri!.Host);
+                return Task.FromResult(new HttpResponseMessage(
+                    requests.Count == 1 ? (HttpStatusCode)503 : HttpStatusCode.OK)
+                { RequestMessage = request });
+            });
+
+        var post = await supervisor.ExecuteAsync(
+            HttpMethod.Post,
+            "/api/client/heartbeat",
+            endpoint => new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint, "/api/client/heartbeat")),
+            (response, _) => Task.FromResult(response.StatusCode),
+            CancellationToken.None);
+
+        Assert.Equal((HttpStatusCode)503, post);
+        Assert.Equal("fallback.example", supervisor.CurrentEndpoint.Host);
+
+        var get = await supervisor.ExecuteAsync(
+            HttpMethod.Get,
+            "/api/client/configs/pull",
+            endpoint => new HttpRequestMessage(HttpMethod.Get, new Uri(endpoint, "/api/client/configs/pull")),
+            (response, _) => Task.FromResult(response.RequestMessage!.RequestUri!.Host),
+            CancellationToken.None);
+
+        Assert.Equal("fallback.example", get);
+        Assert.Equal(["POST primary.example", "GET fallback.example"], requests);
+    }
+
 }
