@@ -18,8 +18,10 @@ public sealed class MasterApiClient : IDisposable
     private readonly string _deviceId;
     private readonly bool _ownsHttpClient;
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
+    private readonly ControlPlaneEndpointSupervisor _endpointSupervisor;
 
     public string LastErrorMessage { get; private set; } = "";
+    public Uri CurrentControlPlaneEndpoint => _endpointSupervisor.CurrentEndpoint;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -36,7 +38,8 @@ public sealed class MasterApiClient : IDisposable
         Func<HttpClient>? httpClientFactory = null,
         bool ownsHttpClient = true,
         Action<HttpRequestMessage>? onRequestForTest = null,
-        ClientPlatformIdentity? platformIdentity = null)
+        ClientPlatformIdentity? platformIdentity = null,
+        IReadOnlyList<string>? fallbackEndpoints = null)
     {
         if (platformIdentity is not null)
         {
@@ -50,6 +53,10 @@ public sealed class MasterApiClient : IDisposable
         _http = httpClientFactory?.Invoke() ?? LeikwanHttpClientFactory.CreateFor(new Uri(_masterUrl));
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
+        _endpointSupervisor = new ControlPlaneEndpointSupervisor(
+            _masterUrl,
+            fallbackEndpoints ?? DefaultFallbackEndpoints(_masterUrl),
+            (request, ct) => _http.SendAsync(request, ct));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _agentToken);
         var userAgentProduct = platformIdentity?.UserAgentProduct ?? "Leikwan-Windows-GUI";
         var appVersion = platformIdentity?.AppVersion ?? AgentVersion;
@@ -728,10 +735,52 @@ public sealed class MasterApiClient : IDisposable
             _http.DefaultRequestHeaders.TryAddWithoutValidation(name, value.Trim());
     }
 
-    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        _onRequestForTest?.Invoke(request);
-        return _http.SendAsync(request, ct);
+        var requestUri = request.RequestUri
+            ?? throw new InvalidOperationException("master_api_request_uri_missing");
+        var relativePath = requestUri.PathAndQuery;
+        var body = request.Content is null
+            ? null
+            : await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var contentHeaders = request.Content?.Headers
+            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var requestHeaders = request.Headers
+            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+        return await _endpointSupervisor.ExecuteAsync(
+            request.Method,
+            relativePath,
+            endpoint =>
+            {
+                var next = new HttpRequestMessage(request.Method, new Uri(endpoint, relativePath));
+                foreach (var header in requestHeaders)
+                    next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                if (body is not null)
+                {
+                    var content = new ByteArrayContent(body);
+                    foreach (var header in contentHeaders)
+                        content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    next.Content = content;
+                }
+                _onRequestForTest?.Invoke(next);
+                return next;
+            },
+            static (response, _) => Task.FromResult(response),
+            ct).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<string> DefaultFallbackEndpoints(string masterUrl)
+    {
+        if (Uri.TryCreate(masterUrl, UriKind.Absolute, out var endpoint))
+        {
+            if (string.Equals(endpoint.Host, "v3.leikwanhost.com", StringComparison.OrdinalIgnoreCase))
+                return ["https://api-leikwanbridge.nbwly.com"];
+            if (string.Equals(endpoint.Host, "api-leikwanbridge.nbwly.com", StringComparison.OrdinalIgnoreCase))
+                return ["https://v3.leikwanhost.com"];
+        }
+        return [];
     }
 
     private static async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, CancellationToken ct)
