@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Collections.Concurrent;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
@@ -12,6 +13,37 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ConfigPollingServiceTests
 {
+    [Fact]
+    public async Task RequestControlPlaneRecoveryTriggersAnImmediateFullPullAfterTransientFailure()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson()) { PullFailuresRemaining = 1 };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtime, state);
+        var firstFailure = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.SyncError += _ => firstFailure.TrySetResult(null);
+        service.ForwardsUpdated += _ => recovered.TrySetResult(null);
+
+        service.Start(intervalSeconds: 60);
+        await firstFailure.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        service.RequestControlPlaneRecovery();
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await service.StopAsync();
+
+        Assert.True(server.PullRequestCount >= 2);
+        Assert.NotEmpty(service.LatestForwards);
+    }
+
     [Fact]
     public async Task SyncOnceAsync_NeverAppliesRuntimeOnCallerUiContext()
     {
@@ -783,6 +815,60 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal([42], runtimeManager.RefreshedForwardIds);
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_TargetedGrantRefreshDoesNotProbeUnrelatedRunningUltraForwards()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payloadNode = JsonNode.Parse(BuildTwoUltraPullResponseJson())!.AsObject();
+        payloadNode["config_revision"] = "rev-ultra-two";
+        var payload = payloadNode.ToJsonString();
+        using var server = new PullApiServer(payload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            NotModifiedRevision = "rev-ultra-two",
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new AlwaysRunningProcessSupervisor();
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(service.LatestForwards.ToDictionary(
+            forward => forward.ForwardId.ToString(),
+            forward => new AppliedForwardState
+            {
+                ForwardId = forward.ForwardId,
+                Mode = "ultra",
+                ListenPort = forward.ListenPort,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(forward),
+            }));
+
+        server.FailingUltraForwardIds.Add(42);
+        await service.SyncOnceAsync();
+        server.FailingUltraForwardIds.Clear();
+
+        var requestsBeforeTargetedPull = server.UltraLeaseRequestForwardIds.Count;
+        var refreshesBeforeTargetedPull = runtimeManager.RefreshedForwardIds.Count;
+        await service.SyncOnceAsync();
+
+        var targetedRequestIds = server.UltraLeaseRequestForwardIds
+            .Skip(requestsBeforeTargetedPull)
+            .OrderBy(id => id)
+            .ToArray();
+        Assert.Equal([42], targetedRequestIds);
+        Assert.Equal(refreshesBeforeTargetedPull + 1, runtimeManager.RefreshedForwardIds.Count);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds.Skip(refreshesBeforeTargetedPull));
+    }
+
     private static string BuildPullResponseJson()
     {
         return """
@@ -926,6 +1012,18 @@ public sealed class ConfigPollingServiceTests
         """;
     }
 
+    private static string BuildTwoUltraPullResponseJson()
+    {
+        var root = JsonNode.Parse(BuildUltraPullResponseJson())!.AsObject();
+        var forwards = root["forwards"]!.AsArray();
+        var second = forwards[0]!.DeepClone()!.AsObject();
+        second["forward_id"] = 43;
+        second["listen_port"] = 12043;
+        second["ultra_access"]!["forward_id"] = 43;
+        forwards.Add(second);
+        return root.ToJsonString();
+    }
+
     private static ForwardConfig BuildForwardFromPullResponse()
     {
         return new ForwardConfig
@@ -1066,7 +1164,15 @@ public sealed class ConfigPollingServiceTests
 
         public int UltraLeaseStatus { get; set; }
 
+        public int PullFailuresRemaining { get; set; }
+
+        public int PullRequestCount { get; private set; }
+
         public int SuccessfulUltraLeaseExpiryMinutes { get; set; } = 3;
+
+        public HashSet<int> FailingUltraForwardIds { get; } = [];
+
+        public ConcurrentQueue<int> UltraLeaseRequestForwardIds { get; } = new();
 
         public void SetPayload(string payload) => _payload = payload;
 
@@ -1090,11 +1196,17 @@ public sealed class ConfigPollingServiceTests
 
                 if (context.Request.Url?.AbsolutePath == "/api/client/ultra/lease")
                 {
-                    var body = SuccessfulUltraLease
-                        ? BuildSuccessfulUltraLease(context.Request, SuccessfulUltraLeaseExpiryMinutes, SuccessfulUltraLeaseCount)
-                        : "{\"ok\":false,\"error\":\"quota_exhausted\"}";
+                    using var document = JsonDocument.Parse(context.Request.InputStream);
+                    var forwardId = document.RootElement.GetProperty("forwards")[0].GetProperty("forward_id").GetInt32();
+                    UltraLeaseRequestForwardIds.Enqueue(forwardId);
+                    var failing = FailingUltraForwardIds.Contains(forwardId);
+                    var body = failing
+                        ? "{\"ok\":false,\"error\":\"lease_scope_invalid\"}"
+                        : SuccessfulUltraLease
+                            ? BuildSuccessfulUltraLease(document, SuccessfulUltraLeaseExpiryMinutes, SuccessfulUltraLeaseCount)
+                            : "{\"ok\":false,\"error\":\"quota_exhausted\"}";
                     var bytes = Encoding.UTF8.GetBytes(body);
-                    context.Response.StatusCode = UltraLeaseStatus;
+                    context.Response.StatusCode = failing ? 409 : UltraLeaseStatus;
                     context.Response.ContentType = "application/json";
                     context.Response.OutputStream.Write(bytes, 0, bytes.Length);
                     context.Response.OutputStream.Close();
@@ -1103,6 +1215,14 @@ public sealed class ConfigPollingServiceTests
 
                 if (context.Request.Url?.AbsolutePath == "/api/client/configs/pull")
                 {
+                    PullRequestCount++;
+                    if (PullFailuresRemaining > 0)
+                    {
+                        PullFailuresRemaining--;
+                        context.Response.StatusCode = 503;
+                        context.Response.OutputStream.Close();
+                        continue;
+                    }
                     if (NotModifiedRevision != ""
                         && (context.Request.Url.Query ?? "").Contains($"since_revision={Uri.EscapeDataString(NotModifiedRevision)}"))
                     {
@@ -1123,9 +1243,8 @@ public sealed class ConfigPollingServiceTests
             }
         }
 
-        private static string BuildSuccessfulUltraLease(HttpListenerRequest request, int expiryMinutes, int leaseCount)
+        private static string BuildSuccessfulUltraLease(JsonDocument document, int expiryMinutes, int leaseCount)
         {
-            using var document = JsonDocument.Parse(request.InputStream);
             var item = document.RootElement.GetProperty("forwards")[0];
             var forwardId = item.GetProperty("forward_id").GetInt32();
             var ticket = item.GetProperty("session_ticket").GetString() ?? "";

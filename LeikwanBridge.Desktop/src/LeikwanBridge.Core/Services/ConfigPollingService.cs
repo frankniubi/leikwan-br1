@@ -29,8 +29,12 @@ public sealed class ConfigPollingService
     private int _forceFullPull;
     private volatile bool _pendingResync;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _ultraRecoveries = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _targetedUltraRefreshes = new();
+    private readonly object _recoveryGate = new();
     private ClientMeta? _latestClient;
     private NativeOutboundCapability? _latestNativeOutbound;
+    private DateTimeOffset _lastRecoveryTriggerAtUtc = DateTimeOffset.MinValue;
+    private static readonly TimeSpan RecoveryTriggerThrottle = TimeSpan.FromSeconds(10);
 
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
@@ -139,12 +143,36 @@ public sealed class ConfigPollingService
         TriggerImmediateSync();
     }
 
+    /// <summary>
+    /// Requests a full policy pull after a transient control-plane failure.
+    /// Keep the request throttled so a dual-CDN outage cannot create a tight
+    /// retry loop; the normal polling loop remains responsible for subsequent
+    /// retries. No API path or payload is changed by this operation.
+    /// </summary>
+    public void RequestControlPlaneRecovery()
+    {
+        QueueConfigRefreshSoon();
+        if (_cts is null || _cts.IsCancellationRequested)
+            return;
+
+        lock (_recoveryGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastRecoveryTriggerAtUtc < RecoveryTriggerThrottle)
+                return;
+            _lastRecoveryTriggerAtUtc = now;
+        }
+
+        TriggerImmediateSync();
+    }
+
     private void RequestUltraRecovery(int forwardId, string reason)
     {
         if (_cts?.IsCancellationRequested == true) return;
         _ultraRecoveries[forwardId] = 0;
         Log.Warning("Ultra recovery queued for fresh policy and lease (forward={ForwardId}, reason={Reason})", forwardId, reason);
-        RequestPolicyRefresh();
+        QueueConfigRefreshSoon(forwardId);
+        TriggerImmediateSync();
     }
 
     public async Task SyncOnceAsync(CancellationToken ct = default)
@@ -172,8 +200,12 @@ public sealed class ConfigPollingService
 
     private async Task SyncOnceCoreAsync(CancellationToken ct)
     {
-        if (Interlocked.Exchange(ref _forceFullPull, 0) != 0)
+        var forcedFullPull = Interlocked.Exchange(ref _forceFullPull, 0) != 0;
+        if (forcedFullPull)
             _lastConfigRevision = "";
+        var targetedUltraRefreshes = forcedFullPull
+            ? SnapshotTargetedUltraRefreshes()
+            : new HashSet<int>();
         var sinceRevision = string.IsNullOrWhiteSpace(_lastConfigRevision) ? null : _lastConfigRevision;
         var pull = await _api.PullConfigsAsync(sinceRevision, LongPollWaitSeconds, ct);
         if (!pull.Ok)
@@ -236,6 +268,12 @@ public sealed class ConfigPollingService
         }
         _latestForwards = forwards;
 
+        // The fresh policy payload has now been received. A failed pull keeps
+        // the targeted marker for the next retry; once the payload is known,
+        // this reconciliation pass owns the marker and may queue it again if
+        // the affected forward still needs recovery.
+        AcknowledgeTargetedUltraRefreshes(targetedUltraRefreshes);
+
         SavePullState("ok", forwards.Count);
 
         // Determine which forwards to apply/remove
@@ -270,7 +308,7 @@ public sealed class ConfigPollingService
             MaxConcurrentForwardOperations,
             async forward =>
             {
-                await ReconcileForwardAsync(forward, applied, ct).ConfigureAwait(false);
+                await ReconcileForwardAsync(forward, applied, targetedUltraRefreshes, ct).ConfigureAwait(false);
                 PreparationProgress?.Invoke(Interlocked.Increment(ref prepared), forwards.Count);
             },
             ct);
@@ -284,6 +322,7 @@ public sealed class ConfigPollingService
     private async Task ReconcileForwardAsync(
         ForwardConfig forward,
         IReadOnlyDictionary<string, AppliedForwardState> applied,
+        IReadOnlySet<int> targetedUltraRefreshes,
         CancellationToken ct)
     {
         var key = forward.ForwardId.ToString();
@@ -295,6 +334,22 @@ public sealed class ConfigPollingService
         var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
         if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
         {
+            // A grant-scope failure only invalidates the affected forward. A
+            // forced full pull is still required to obtain a fresh policy
+            // ticket, but re-probing every already-running Ultra forward can
+            // stall control-plane liveness for up to the batch probe timeout.
+            // Keep an unchanged, healthy sibling on its current runtime.
+            if (targetedUltraRefreshes.Count > 0
+                && !targetedUltraRefreshes.Contains(forward.ForwardId)
+                && hasAppliedState
+                && isRunning)
+            {
+                var currentSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
+                if (string.Equals(appliedState!.ContractSignature, currentSignature, StringComparison.Ordinal)
+                    && !RecoveryNeedsRestart(effectiveForward))
+                    return;
+            }
+
             IReadOnlyList<UltraLease> leases;
             try
             {
@@ -312,7 +367,12 @@ public sealed class ConfigPollingService
                     ex.GetType().Name,
                     ex is MasterApiException apiException ? apiException.StatusCode : 0,
                     BoundErrorCode(ex.Message));
-                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease refresh exception"))
+                if (TryPreserveRunningUltra(
+                        forward.ForwardId,
+                        hasAppliedState,
+                        isRunning,
+                        "lease refresh exception",
+                        IsGrantRefreshError(ex) ? forward.ForwardId : null))
                 {
                     if (IsGrantRefreshError(ex))
                         Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
@@ -430,7 +490,7 @@ public sealed class ConfigPollingService
                 BoundErrorCode(ex.Message));
             if (IsGrantRefreshError(ex))
             {
-                QueueConfigRefreshSoon();
+                QueueConfigRefreshSoon(forward.ForwardId);
                 Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
             }
             return;
@@ -528,8 +588,10 @@ public sealed class ConfigPollingService
             or "quota_exhausted";
     }
 
-    private void QueueConfigRefreshSoon()
+    private void QueueConfigRefreshSoon(int? targetedForwardId = null)
     {
+        if (targetedForwardId is > 0)
+            _targetedUltraRefreshes[targetedForwardId.Value] = 0;
         Interlocked.Exchange(ref _forceFullPull, 1);
         _lastConfigRevision = "";
         _nextPollAfterMs = _nextPollAfterMs > 0
@@ -537,17 +599,36 @@ public sealed class ConfigPollingService
             : ReArmDelayMs;
     }
 
-    private bool TryPreserveRunningUltra(int forwardId, bool hasAppliedState, bool isRunning, string reason)
+    private bool TryPreserveRunningUltra(
+        int forwardId,
+        bool hasAppliedState,
+        bool isRunning,
+        string reason,
+        int? targetedForwardId = null)
     {
         if (!hasAppliedState || !isRunning)
             return false;
 
-        QueueConfigRefreshSoon();
+        QueueConfigRefreshSoon(targetedForwardId);
         Log.Warning(
             "Ultra lease unavailable for forward {ForwardId}; preserving current runtime and retrying config sync (reason={Reason})",
             forwardId,
             reason);
         return true;
+    }
+
+    private IReadOnlySet<int> SnapshotTargetedUltraRefreshes()
+    {
+        var result = new HashSet<int>();
+        foreach (var forwardId in _targetedUltraRefreshes.Keys)
+            result.Add(forwardId);
+        return result;
+    }
+
+    private void AcknowledgeTargetedUltraRefreshes(IReadOnlySet<int> targetedForwardIds)
+    {
+        foreach (var forwardId in targetedForwardIds)
+            _targetedUltraRefreshes.TryRemove(forwardId, out _);
     }
 
     private void SavePullState(string status, int forwardsTotal)

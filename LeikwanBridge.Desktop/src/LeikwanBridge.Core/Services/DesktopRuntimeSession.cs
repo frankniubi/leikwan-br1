@@ -40,6 +40,17 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
 
 public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 {
+    // A control-plane outage during startup should not surface as a hard
+    // disconnect when the endpoint supervisor can recover shortly afterwards.
+    // Keep this retry local to the initial pull; the API payload and runtime
+    // reconciliation remain unchanged.
+    private static readonly TimeSpan[] StartupSyncRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(7),
+    ];
+
     private readonly MasterApiClient _api;
     private readonly ConfigPollingService _polling;
     private readonly HeartbeatService _heartbeat;
@@ -87,7 +98,11 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
                 QueueHeartbeat();
         };
-        _polling.SyncError += exception => LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+        _polling.SyncError += exception =>
+        {
+            LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+            _polling.RequestControlPlaneRecovery();
+        };
         _polling.ClientUpdated += client => QueueDiagnostics(client);
         _health.HealthIssue += (forwardId, issue) => LogRaised?.Invoke($"health_issue:{forwardId}:{BoundCode(issue)}");
         _heartbeat.UltraActionsReceived += ApplyUltraPolicyActions;
@@ -143,7 +158,33 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             return;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         LogRaised?.Invoke("preparing_config");
-        await _polling.SyncOnceAsync(_cts.Token).ConfigureAwait(false);
+        Exception? lastSyncError = null;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await _polling.SyncOnceAsync(_cts.Token).ConfigureAwait(false);
+                lastSyncError = null;
+                break;
+            }
+            catch (OperationCanceledException) when (_cts.Token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (attempt < StartupSyncRetryDelays.Length)
+            {
+                lastSyncError = exception;
+                LogRaised?.Invoke($"startup_sync_retry:{attempt + 1}:{exception.GetType().Name}");
+                await Task.Delay(StartupSyncRetryDelays[attempt], _cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                lastSyncError = exception;
+                break;
+            }
+        }
+        if (lastSyncError is not null)
+            throw lastSyncError;
         _cts.Token.ThrowIfCancellationRequested();
         _polling.Start(_pollIntervalSeconds);
         _heartbeatLoop = RunHeartbeatLoopAsync(_cts.Token);
