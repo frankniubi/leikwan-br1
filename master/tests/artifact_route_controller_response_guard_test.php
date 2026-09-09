@@ -17,6 +17,12 @@ if (json_decode((string) ($manifest['body'] ?? ''), true) === null) fail('versio
 $client = $probe->probe('/artifacts/client-agent.py');
 if (($client['status'] ?? 0) !== 200) fail('client-agent route probe must dispatch controller status 200');
 if (($client['sha256'] ?? '') !== hash('sha256', (string) $client['body'])) fail('route probe sha must describe controller body bytes');
+$windows = $probe->probe('/artifacts/leikwan-bridge-setup.exe');
+$versions = json_decode((string) ($manifest['body'] ?? ''), true);
+$windowsEntry = is_array($versions) ? ($versions['windows_client_app'] ?? []) : [];
+if (($windows['status'] ?? 0) !== 200) fail('windows installer route probe must return 200');
+if (($windows['sha256'] ?? '') !== strtolower((string) ($windowsEntry['sha256'] ?? ''))) fail('windows installer route probe must use ETag sha for streamed body');
+if ((int) ($windows['size_bytes'] ?? 0) !== (int) ($windowsEntry['size_bytes'] ?? -1)) fail('windows installer route probe must use Content-Length for streamed body');
 
 final class RRoute { public function probe(string $path): array { if ($path === '/artifacts/versions.json') { $b = json_encode(m_route()); return ['status' => 200, 'body' => $b, 'headers' => [], 'sha256' => hash('sha256', $b), 'size_bytes' => strlen($b)]; } if ($path === '/artifacts/wstunnel/leikwan-bond_windows_amd64.exe') { $b = 'wrong-windows-bond'; } else { $b = $path === '/artifacts/leikwan-bridge-setup.exe' ? 'windows-app' : 'client'; } return ['status' => 200, 'body' => $b, 'headers' => [], 'sha256' => hash('sha256', $b), 'size_bytes' => strlen($b)]; } }
 final class RMeta { public function metadataForActivation(array $keys): array { return array_intersect_key(m_route(), array_flip($keys)); } }

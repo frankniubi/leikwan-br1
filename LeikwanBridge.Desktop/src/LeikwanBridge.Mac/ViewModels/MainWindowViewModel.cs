@@ -566,9 +566,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             await _controller.ConnectAsync();
         }
-        catch
+        catch (Exception exception)
         {
             ValidationMessage = "Connection failed.";
+            Log.Warning("mac manual connect failed type={ErrorType} code={ErrorCode}",
+                exception.GetType().Name,
+                BoundErrorCode(exception));
+            ShowNotice(ValidationMessage);
         }
     }
 
@@ -594,8 +598,43 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand] private Task StartAllAsync() => _controller.StartAllAsync();
     [RelayCommand] private async Task StopAllAsync()
     {
-        await StopConnectionAsync();
-        await _controller.StopAllAsync();
+        Exception? failure = null;
+        try
+        {
+            await StopConnectionAsync();
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            Log.Warning("mac stop local connection failed type={ErrorType}", exception.GetType().Name);
+        }
+
+        try
+        {
+            await _controller.StopAllAsync();
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+            Log.Warning("mac stop all forwards failed type={ErrorType}", exception.GetType().Name);
+        }
+
+        if (failure is null)
+        {
+            ValidationMessage = string.Empty;
+            ShowNotice("All forwards stopped.");
+        }
+        else if (failure is InvalidOperationException
+                 && string.Equals(failure.Message, "client_not_connected", StringComparison.Ordinal))
+        {
+            ValidationMessage = string.Empty;
+            ShowNotice("All forwards are already stopped.");
+        }
+        else
+        {
+            ValidationMessage = "Could not stop all forwards. Please try again.";
+            ShowNotice(ValidationMessage);
+        }
     }
 
     [RelayCommand]
@@ -1324,6 +1363,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         NoticeText = notice;
         IsNoticeVisible = true;
+    }
+
+    private static string BoundErrorCode(Exception exception)
+    {
+        var message = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (message.Length > 120)
+            message = message[..120];
+        return string.IsNullOrWhiteSpace(message) ? "unknown" : message;
     }
 
     private void ShowUpdate(string version)
