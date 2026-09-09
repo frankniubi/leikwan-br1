@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -183,6 +184,33 @@ class UltraClientLeaseTests(unittest.TestCase):
         self.assertEqual(32, len(body["forwards"][0]["nonce"]))
         self.assertEqual("ul2_test", resolved[0]["_ultra_lease"]["lease_id"])
         self.assertNotIn("_ultra_lease", resolved[1])
+
+    def test_resolve_uses_mirror_only_when_primary_post_has_no_response(self):
+        forward = {"forward_id": 42, "backend_mode": "ultra", "target": "203.0.113.10:443", "ultra_access": {"session_ticket": "opaque", "policy_generation": "a" * 64}}
+        response = {"ok": True, "leases": [{"forward_id": 42, "lease_id": "mirror-lease"}]}
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "endpoint.json"
+            with mock.patch.object(MODULE, "http_json", side_effect=[TimeoutError("primary timeout"), response]) as request:
+                resolved = MODULE.resolve_ultra_leases(
+                    "https://v3.leikwanhost.com", "token", "device", [forward],
+                    fallback_endpoints=["https://v3.leikwanhost.com", "https://api-leikwanbridge.nbwly.com"],
+                    state_path=state,
+                )
+            self.assertEqual("mirror-lease", resolved[0]["_ultra_lease"]["lease_id"])
+            self.assertEqual("https://api-leikwanbridge.nbwly.com/api/client/ultra/lease", request.call_args_list[1].args[1])
+            self.assertEqual("https://api-leikwanbridge.nbwly.com", json.loads(state.read_text())["current_endpoint"])
+
+    def test_resolve_does_not_duplicate_post_after_http_response(self):
+        forward = {"forward_id": 42, "backend_mode": "ultra", "target": "203.0.113.10:443", "ultra_access": {"session_ticket": "opaque", "policy_generation": "a" * 64}}
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(MODULE, "http_json", side_effect=RuntimeError("http 503 https://v3.leikwanhost.com: unavailable")) as request:
+                with self.assertRaises(RuntimeError):
+                    MODULE.resolve_ultra_leases(
+                        "https://v3.leikwanhost.com", "token", "device", [forward],
+                        fallback_endpoints=["https://v3.leikwanhost.com", "https://api-leikwanbridge.nbwly.com"],
+                        state_path=Path(td) / "endpoint.json",
+                    )
+            request.assert_called_once()
 
     def test_resolve_defaults_to_bounded_candidate_batch(self):
         forward = {

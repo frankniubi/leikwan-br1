@@ -738,6 +738,78 @@ def http_json_with_headers(
     return json.loads(content), response_headers
 
 
+DEFAULT_PANEL_MIRROR_URLS = ["https://api-leikwanbridge.nbwly.com"]
+
+
+class ControlPlaneEndpointState:
+    """Small persistent endpoint selector; API paths and payloads stay unchanged."""
+
+    def __init__(self, path: pathlib.Path | None):
+        self.path = pathlib.Path(path) if path is not None else None
+        self.current_endpoint = ""
+        self.failures: dict[str, dict] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if self.path is None or not self.path.exists():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(payload, dict):
+            self.current_endpoint = str(payload.get("current_endpoint", "") or "").rstrip("/")
+            raw = payload.get("failures", {})
+            if isinstance(raw, dict):
+                self.failures = {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
+
+    def _save(self) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"current_endpoint": self.current_endpoint, "failures": self.failures}
+        temporary = self.path.with_name(self.path.name + ".new")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, self.path)
+
+    def ordered(self, endpoints: list[str]) -> list[str]:
+        normalized = [str(item).rstrip("/") for item in endpoints if str(item).strip()]
+        if not normalized:
+            return []
+        primary = normalized[0]
+        # Keep the last known-good endpoint sticky during an outage, but probe the
+        # primary again after exponential backoff so recovery is transparent.
+        if self.current_endpoint in normalized and self.current_endpoint != primary:
+            failure = self.failures.get(primary, {})
+            count = int(failure.get("count", 0) or 0)
+            last_failure = float(failure.get("last_failure_at", 0) or 0)
+            retry_after = min(300.0, 15.0 * (2 ** max(0, count - 1)))
+            if count > 0 and time.time() >= last_failure + retry_after:
+                return normalized
+            return [self.current_endpoint] + [item for item in normalized if item != self.current_endpoint]
+        return normalized
+
+    def success(self, endpoint: str) -> None:
+        self.current_endpoint = str(endpoint).rstrip("/")
+        self.failures.pop(self.current_endpoint, None)
+        self._save()
+
+    def failure(self, endpoint: str, error: Exception) -> None:
+        key = str(endpoint).rstrip("/")
+        entry = self.failures.setdefault(key, {})
+        entry["count"] = int(entry.get("count", 0) or 0) + 1
+        entry["last_error"] = str(error)[:512]
+        entry["last_failure_at"] = time.time()
+        self._save()
+
+
+def _is_control_plane_business_error(error: Exception) -> bool:
+    match = re.search(r"\bhttp\s+(\d{3})\b", str(error), flags=re.IGNORECASE)
+    if not match:
+        return False
+    return int(match.group(1)) in {400, 401, 403, 404, 409, 422}
+
+
 def control_plane_endpoints(config: dict) -> list[str]:
     primary = str(config.get("master_url", "") or "").rstrip("/")
     candidates = [primary] if primary else []
@@ -751,9 +823,16 @@ def control_plane_endpoints(config: dict) -> list[str]:
     return candidates
 
 
-def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str], str]:
+def pull_client_configs(
+    config: dict,
+    token: str,
+    *,
+    state_path: pathlib.Path | None = None,
+) -> tuple[dict, dict[str, str], str]:
+    endpoints = control_plane_endpoints(config)
+    selector = ControlPlaneEndpointState(state_path)
     errors: list[str] = []
-    for base_url in control_plane_endpoints(config):
+    for base_url in selector.ordered(endpoints):
         try:
             payload, headers = http_json_with_headers(
                 "GET",
@@ -761,9 +840,14 @@ def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str],
                 token,
                 extra_headers={"x-device-platform": "linux"},
             )
+            selector.success(base_url)
             return payload, headers, base_url
         except Exception as exc:  # noqa: BLE001
-            errors.append(str(exc))
+            selector.failure(base_url, exc)
+            errors.append(f"{base_url}: {exc}")
+            # Do not hide authentication/authorization or contract errors behind a mirror.
+            if _is_control_plane_business_error(exc):
+                raise
     raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
 
@@ -864,6 +948,8 @@ def resolve_ultra_leases(
     forwards: list[dict],
     *,
     selection_mode: str = "auto",
+    fallback_endpoints: list[str] | None = None,
+    state_path: pathlib.Path | None = None,
 ) -> list[dict]:
     normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
     max_candidates = 4 if normalized_selection_mode == "auto" else 1
@@ -895,21 +981,34 @@ def resolve_ultra_leases(
         )
     if not requests:
         return forwards
+    selector = ControlPlaneEndpointState(state_path)
+    configured = [str(master).rstrip("/")]
+    for endpoint in fallback_endpoints or []:
+        normalized = str(endpoint or "").rstrip("/")
+        if normalized and normalized not in configured:
+            configured.append(normalized)
     last_error: Exception | None = None
     response: dict | None = None
-    for attempt in range(3):
+    selected_master = str(master).rstrip("/")
+    for endpoint in selector.ordered(configured):
         try:
             response = http_json(
                 "POST",
-                f"{master.rstrip('/')}/api/client/ultra/lease",
+                f"{endpoint}/api/client/ultra/lease",
                 agent_token,
                 {"device_id": device_id, "forwards": requests},
             )
+            selected_master = endpoint
+            selector.success(endpoint)
             break
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            if attempt < 2:
-                time.sleep(0.5 if attempt == 0 else 1.5)
+            selector.failure(endpoint, exc)
+            # Once the server returns an HTTP response, do not duplicate the POST
+            # against another CDN. The next polling cycle will switch endpoints.
+            if re.search(r"\bhttp\s+\d{3}\b", str(exc), flags=re.IGNORECASE):
+                raise RuntimeError(f"ultra material resolution failed: {exc}") from exc
+            continue
     if response is None:
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
     leases_by_forward: dict[int, list[dict]] = {}
@@ -982,6 +1081,8 @@ class ClientAgent:
         self.applied_path = self.state_dir / "applied.json"
         self.pull_state_path = self.state_dir / "config_pull_state.json"
         self.usage_state_path = self.state_dir / "usage_state.json"
+        self.endpoint_state_path = self.state_dir / "control-plane-endpoint.json"
+        self.active_control_plane_endpoint = str(self.config.get("master_url", "") or "").rstrip("/")
         self.latest_forwards: list[dict] = []
         self.health_restart_after: dict[int, float] = {}
         self.health_reorder_after: dict[int, float] = {}
@@ -997,6 +1098,30 @@ class ClientAgent:
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
         )
+
+    def pull_client_configs(self, token: str) -> tuple[dict, dict[str, str], str]:
+        payload, headers, endpoint = pull_client_configs(
+            self.config, token, state_path=getattr(self, "endpoint_state_path", None)
+        )
+        self.active_control_plane_endpoint = endpoint
+        return payload, headers, endpoint
+
+    def _systemd_watchdog_notify(self) -> None:
+        notify_socket = os.environ.get("NOTIFY_SOCKET", "").strip()
+        if notify_socket == "":
+            return
+        try:
+            address = notify_socket
+            if address.startswith("@"):
+                address = "\0" + address[1:]
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                sock.connect(address)
+                sock.sendall(b"READY=1\nWATCHDOG=1\nSTATUS=Leikwan client agent running")
+            finally:
+                sock.close()
+        except Exception:
+            logging.debug("systemd watchdog notification unavailable", exc_info=True)
 
     def _forward_lock(self, forward_id: int) -> threading.RLock:
         if not hasattr(self, "_forward_locks_guard"):
@@ -1976,7 +2101,7 @@ class ClientAgent:
         # Failure retries are bounded; never launch overlapping maintenance cycles.
         for forward in due:
             schedule[int(forward["forward_id"])] = now + 10
-        payload, _headers, master = pull_client_configs(self.config, self.config["agent_token"])
+        payload, _headers, master = self.pull_client_configs(self.config["agent_token"])
         fresh = {int(f.get("forward_id", 0) or 0): f for f in payload.get("forwards", []) if isinstance(f, dict)}
         compatible = []
         for old in due:
@@ -1990,7 +2115,12 @@ class ClientAgent:
         if not compatible:
             return
         client = payload.get("client") or {}
-        resolved = resolve_ultra_leases(master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible, selection_mode=self.ultra_selection_mode())
+        resolved = resolve_ultra_leases(
+            master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible,
+            selection_mode=self.ultra_selection_mode(),
+            fallback_endpoints=control_plane_endpoints(self.config),
+            state_path=getattr(self, "endpoint_state_path", None),
+        )
         for forward in resolved:
             fid = int(forward["forward_id"])
             lock = self._forward_lock(fid)
@@ -2061,6 +2191,7 @@ class ClientAgent:
                 except Exception as exc:  # noqa: BLE001
                     logging.exception("cfwg latency watchdog failed: %s", exc)
 
+                self._systemd_watchdog_notify()
                 time.sleep(5)
         finally:
             stop.set()
@@ -2131,7 +2262,7 @@ class ClientAgent:
         return force_ids
     def sync_once(self) -> None:
         token = self.config["agent_token"]
-        payload, response_headers, master = pull_client_configs(self.config, token)
+        payload, response_headers, master = self.pull_client_configs(token)
         pulled_forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
         unsupported_forward_ids = []
         for forward in pulled_forwards:
@@ -2158,6 +2289,8 @@ class ClientAgent:
                 device_id,
                 self.latest_forwards,
                 selection_mode=self.ultra_selection_mode(),
+                fallback_endpoints=control_plane_endpoints(self.config),
+                state_path=getattr(self, "endpoint_state_path", None),
             )
         except Exception as exc:  # noqa: BLE001
             # Keep an already-running Ultra process on its last in-memory lease
@@ -2179,7 +2312,6 @@ class ClientAgent:
             self.apply_management_state(client_meta)
         except Exception as exc:  # noqa: BLE001
             logging.exception("failed to apply client management state: %s", exc)
-        master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
@@ -2508,7 +2640,7 @@ class ClientAgent:
             )
             self.save_update_state(update_state)
             try:
-                self.request_self_update(request_token)
+                self.request_self_update(request_token, self.active_control_plane_endpoint)
             except Exception as exc:  # noqa: BLE001
                 update_state["status"] = "error"
                 update_state["last_error"] = str(exc)
@@ -2651,14 +2783,19 @@ class ClientAgent:
                 target_usage_state = new_state_dir / "usage_state.json"
                 if not target_usage_state.exists():
                     target_usage_state.write_text(self.usage_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+            if getattr(self, "endpoint_state_path", None) is not None and self.endpoint_state_path.exists():
+                target_endpoint_state = new_state_dir / "control-plane-endpoint.json"
+                if not target_endpoint_state.exists():
+                    target_endpoint_state.write_text(self.endpoint_state_path.read_text(encoding="utf-8"), encoding="utf-8")
             self.state_dir = new_state_dir
             self.applied_path = new_state_dir / "applied.json"
             self.pull_state_path = new_state_dir / "config_pull_state.json"
             self.usage_state_path = new_state_dir / "usage_state.json"
+            self.endpoint_state_path = new_state_dir / "control-plane-endpoint.json"
 
         logging.info("applied client config patch keys=%s", ",".join(sorted(set(patch.keys()) & allowed_keys)))
 
-    def request_self_update(self, request_token: str) -> None:
+    def request_self_update(self, request_token: str, artifact_base: str | None = None) -> None:
         helper_path = pathlib.Path("/usr/local/bin/leikwan-client-agent-update")
         if not helper_path.exists():
             raise RuntimeError(f"update helper missing: {helper_path}")
@@ -2680,6 +2817,7 @@ class ClientAgent:
                     request_token,
                     "--state-path",
                     str(state_path),
+                    *( ["--artifact-base", artifact_base] if artifact_base else [] ),
                 ],
                 check=True,
             )
@@ -2693,7 +2831,7 @@ class ClientAgent:
                     request_token,
                     "--state-path",
                     str(state_path),
-                ],
+                ] + (["--artifact-base", artifact_base] if artifact_base else []),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -6123,6 +6261,8 @@ class ClientAgent:
             "config_path": str(self.config_path),
             "state_dir": str(getattr(self, "state_dir", "/var/lib/leikwan-client-agent")),
             "master_url": str(self.config.get("master_url", "")),
+            "panel_mirror_urls": control_plane_endpoints(self.config)[1:],
+            "control_plane_endpoint_state": str(getattr(self, "endpoint_state_path", "")),
             "client_id": int(self.config.get("client_id", 0) or 0),
             "service_active": self.systemd_is_active("leikwan-client-agent"),
             "agent_update_state": self.load_update_state(),
@@ -6150,11 +6290,26 @@ class ClientAgent:
 
         if live:
             try:
-                payload = http_json(
-                    "GET",
-                    f"{str(self.config['master_url']).rstrip('/')}/api/client/configs/pull",
-                    str(self.config["agent_token"]),
-                )
+                selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
+                live_errors: list[str] = []
+                payload = None
+                for endpoint in selector.ordered(control_plane_endpoints(self.config)):
+                    try:
+                        payload = http_json(
+                            "GET",
+                            f"{endpoint}/api/client/configs/pull",
+                            str(self.config["agent_token"]),
+                        )
+                        selector.success(endpoint)
+                        self.active_control_plane_endpoint = endpoint
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        selector.failure(endpoint, exc)
+                        live_errors.append(f"{endpoint}: {exc}")
+                        if _is_control_plane_business_error(exc):
+                            raise
+                if payload is None:
+                    raise RuntimeError("; ".join(live_errors) if live_errors else "no control-plane endpoint configured")
                 forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
                 bond_forward_ids = [
                     int(forward.get("forward_id", 0) or 0)
