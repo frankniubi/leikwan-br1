@@ -40,7 +40,15 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = (MainViewModel)DataContext;
         _connectionRecovery = new ConnectionRecoverySupervisor(
-            _ => _vm.ConnectCommand.ExecuteAsync(null));
+            async _ =>
+            {
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                    await _vm.ConnectCommand.ExecuteAsync(null);
+                    if (!_vm.IsConnected)
+                        throw new InvalidOperationException("connection_not_ready");
+                }).Task.Unwrap();
+            });
         if (!App.Config.RememberLoginInfo)
         {
             App.Config.AgentToken = string.Empty;

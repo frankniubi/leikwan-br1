@@ -104,6 +104,7 @@ public sealed class BrandingAssetsTests
 
         Assert.Contains("await _vm.ConnectCommand.ExecuteAsync(null)", codeBehind, StringComparison.Ordinal);
         Assert.Contains("if (!_vm.IsConnected)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("connection_not_ready", codeBehind, StringComparison.Ordinal);
         Assert.Contains("_connectionRecovery.StartAsync(ct)", codeBehind, StringComparison.Ordinal);
     }
 
