@@ -322,6 +322,7 @@ public sealed class MainWindowViewModelTests
         var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var controller = new FakeController(new DesktopClientSnapshot
         {
+            IsSignedIn = true,
             Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
         })
         {
@@ -339,6 +340,7 @@ public sealed class MainWindowViewModelTests
         await vm.ImportProxyUriCommand.ExecuteAsync(null);
 
         vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        vm.SelectedConnectionProfile = connections.Profiles.Single();
         var start = vm.StartConnectionCommand.ExecuteAsync(null);
         await preparing.Task;
         await vm.StopConnectionCommand.ExecuteAsync(null);
