@@ -70,6 +70,19 @@ public sealed class MacAppUpdateServiceTests
     }
 
     [Fact]
+    public async Task CheckAsync_RequestsUpdateWhenPackagedHelperDiffers()
+    {
+        using var temp = new TempDirectory();
+        var currentHash = Sha256(ThinMachO("arm64"));
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            packageRuntimeSha256: $"\"bin/ultra-client\": \"{currentHash}\", \"bin/wstunnel\": \"{new string('B', 64)}\"")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.NotNull(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
     public async Task PrepareAsync_RejectsSizeAndHashMismatches()
     {
         using var temp = new TempDirectory();
@@ -328,15 +341,21 @@ public sealed class MacAppUpdateServiceTests
         };
     }
 
-    private static string ManifestJson(string version = "2.0.0", string? runtimeEntries = null)
+    private static string ManifestJson(
+        string version = "2.0.0",
+        string? runtimeEntries = null,
+        string? packageRuntimeSha256 = null)
     {
         var sha = new string('A', 64);
         var runtime = string.IsNullOrWhiteSpace(runtimeEntries) ? string.Empty : $", {runtimeEntries}";
+        var packageRuntime = string.IsNullOrWhiteSpace(packageRuntimeSha256)
+            ? string.Empty
+            : $", \"runtime_sha256\": {{ {packageRuntimeSha256} }}";
         return $$"""
         {
           "component": "desktop-client-app",
           "manifest": {
-            "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
+            "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip"{{packageRuntime}} },
             "macos_client_app_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{sha}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
             "macos_client_update_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-x64.zip", "sha256": "{{sha}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
             "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }{{runtime}}
@@ -370,11 +389,14 @@ public sealed class MacAppUpdateServiceTests
         File.WriteAllBytes(Path.Combine(macOs, "LeikwanBridge.Mac"), executable);
         var helperPath = Path.Combine(helpers, "ultra-client");
         File.WriteAllBytes(helperPath, executable);
+        var wstunnelPath = Path.Combine(helpers, "wstunnel");
+        File.WriteAllBytes(wstunnelPath, executable);
         File.WriteAllText(Path.Combine(bundle, "Contents", "Resources", "helper-manifest.json"), $$"""
         {
           "architecture": "{{architecture}}",
           "helpers": [
-            { "name": "ultra-client", "path": "bin/ultra-client", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} }
+            { "name": "ultra-client", "path": "bin/ultra-client", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} },
+            { "name": "wstunnel", "path": "bin/wstunnel", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} }
           ]
         }
         """);

@@ -36,6 +36,7 @@ for ($index = 1; $index < $argc; $index += 2) {
 }
 
 $retentionDays = max(1, (int) ($args['retention-days'] ?? 7));
+$ultraLeaseRetentionDays = max(1, (int) ($args['ultra-lease-retention-days'] ?? $retentionDays));
 $offlineMinutes = max(5, (int) ($args['offline-minutes'] ?? 60));
 $leaseTimeoutMinutes = max(1, (int) ($args['lease-timeout'] ?? 10));
 $dryRun = isset($args['dry-run']);
@@ -45,10 +46,11 @@ $db = $app->db();
 
 $now = gmdate('Y-m-d H:i:s');
 $retentionCutoff = gmdate('Y-m-d H:i:s', time() - $retentionDays * 86400);
+$ultraLeaseCutoff = gmdate('Y-m-d H:i:s', time() - $ultraLeaseRetentionDays * 86400);
 $offlineCutoff = gmdate('Y-m-d H:i:s', time() - $offlineMinutes * 60);
 $leaseCutoff = gmdate('Y-m-d H:i:s', time() - $leaseTimeoutMinutes * 60);
 
-echo "[cleanup-tasks] " . ($dryRun ? '(DRY RUN) ' : '') . "retention={$retentionDays}d offline={$offlineMinutes}m lease-timeout={$leaseTimeoutMinutes}m\n";
+echo "[cleanup-tasks] " . ($dryRun ? '(DRY RUN) ' : '') . "retention={$retentionDays}d ultra-lease-retention={$ultraLeaseRetentionDays}d offline={$offlineMinutes}m lease-timeout={$leaseTimeoutMinutes}m\n";
 
 try {
     // 1. Delete completed/failed provision_tasks older than retention period
@@ -331,6 +333,38 @@ try {
         echo "  purged {$deletedRepEvents} old bond leg reputation events (>{$retentionDays}d)\n";
     } else {
         echo "  would purge {$countRepEvents} old bond leg reputation events (>{$retentionDays}d)\n";
+    }
+
+    // 10. Reclaim expired, unrevoked Ultra nonce rows after a bounded
+    //     retention window. Expired rows cannot authorize a lease after the
+    //     five-minute policy TTL, and deleting them avoids marking a policy
+    //     generation revoked (which would reject future leases for that
+    //     generation). Revoked rows are retained as generation tombstones.
+    $countUltraLeases = (int) ($db->fetchOne(
+        'SELECT COUNT(*) AS cnt FROM ultra_client_leases
+         WHERE revoked_at IS NULL
+           AND expires_at < :now
+           AND created_at < :cutoff',
+        ['now' => $now, 'cutoff' => $ultraLeaseCutoff]
+    )['cnt'] ?? 0);
+
+    if (!$dryRun && $countUltraLeases > 0) {
+        $reclaimedUltraLeases = 0;
+        do {
+            $deletedUltraLeases = $db->execute(
+                'DELETE FROM ultra_client_leases
+                 WHERE revoked_at IS NULL
+                   AND expires_at < :now
+                   AND created_at < :cutoff
+                 ORDER BY id
+                 LIMIT 10000',
+                ['now' => $now, 'cutoff' => $ultraLeaseCutoff]
+            );
+            $reclaimedUltraLeases += $deletedUltraLeases;
+        } while ($deletedUltraLeases === 10000);
+        echo "  reclaimed {$reclaimedUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
+    } else {
+        echo "  would reclaim {$countUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
     }
 
     // Summary: show remaining queue depth
