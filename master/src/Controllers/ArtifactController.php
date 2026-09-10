@@ -472,6 +472,7 @@ final class ArtifactController extends BaseController
             'leikwan_bond_android_arm64',
             'leikwan_ingress_linux_amd64',
             'leikwan_ingress_linux_arm64',
+            'leikwan_ingress_windows_amd64',
             'leikwan_mptcp_relay_linux_amd64'
         );
         $macKeys = [
