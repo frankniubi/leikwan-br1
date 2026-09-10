@@ -45,6 +45,31 @@ public sealed class MacAppUpdateServiceTests
     }
 
     [Fact]
+    public async Task CheckAsync_IgnoresRuntimeHashesForOtherArchitectures()
+    {
+        using var temp = new TempDirectory();
+        var currentHash = Sha256(ThinMachO("arm64"));
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            runtimeEntries: $"\"ultra_client_runtime_macos_arm64\": {{ \"sha256\": \"{currentHash}\" }}, \"ultra_client_runtime_macos_x64\": {{ \"sha256\": \"{new string('B', 64)}\" }}, \"leikwan_uot_bond_linux_arm64\": {{ \"sha256\": \"{new string('C', 64)}\" }}")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.Null(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
+    public async Task CheckAsync_RequestsUpdateWhenCurrentRuntimeDiffers()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            runtimeEntries: $"\"ultra_client_runtime_macos_arm64\": {{ \"sha256\": \"{new string('B', 64)}\" }}")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.NotNull(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
     public async Task PrepareAsync_RejectsSizeAndHashMismatches()
     {
         using var temp = new TempDirectory();
@@ -303,9 +328,10 @@ public sealed class MacAppUpdateServiceTests
         };
     }
 
-    private static string ManifestJson(string version = "2.0.0")
+    private static string ManifestJson(string version = "2.0.0", string? runtimeEntries = null)
     {
         var sha = new string('A', 64);
+        var runtime = string.IsNullOrWhiteSpace(runtimeEntries) ? string.Empty : $", {runtimeEntries}";
         return $$"""
         {
           "component": "desktop-client-app",
@@ -313,7 +339,7 @@ public sealed class MacAppUpdateServiceTests
             "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
             "macos_client_app_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{sha}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
             "macos_client_update_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-x64.zip", "sha256": "{{sha}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
-            "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+            "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }{{runtime}}
           }
         }
         """;
