@@ -16,9 +16,13 @@ final class UltraClientStatusService
         private Config $config,
         private Database $db,
         private $clock = null,
+        ?UltraCandidateReputationService $candidateReputation = null,
     ) {
         $this->clock ??= static fn(): int => time();
+        $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
     }
+
+    private UltraCandidateReputationService $candidateReputation;
 
     /** @param array<int, mixed> $statuses */
     public function ingest(int $clientId, string $deviceId, array $statuses): int
@@ -63,6 +67,128 @@ final class UltraClientStatusService
             ]
         );
         return $updated > 0 ? count($normalized) : 0;
+    }
+
+    /**
+     * Ingest authenticated, bounded data-plane outcomes keyed by the opaque
+     * candidate hash issued in a lease. Client-supplied line IDs are never
+     * accepted here.
+     *
+     * @param array<int, mixed> $feedback
+     */
+    public function ingestFeedback(int $clientId, string $deviceId, array $feedback): int
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return 0;
+        }
+        $assignments = $this->assignmentsForClients([$clientId]);
+        $allowed = $assignments[$clientId] ?? [];
+        $observerHash = hash('sha256', $clientId . ':' . $deviceId);
+        $accepted = 0;
+        $seen = [];
+        foreach (array_slice(array_values($feedback), 0, UltraCandidateReputationService::MAX_FEEDBACK) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $forwardId = (int) ($item['forward_id'] ?? 0);
+            $candidateHash = strtolower(trim((string) ($item['candidate_key_hash'] ?? '')));
+            if ($forwardId <= 0 || !isset($allowed[$forwardId])
+                || preg_match('/^[a-f0-9]{64}$/', $candidateHash) !== 1
+                || !$this->feedbackBoundToLease($clientId, $deviceId, $forwardId, $candidateHash, $item['lease_hash'] ?? null)
+                || isset($seen[$forwardId . ':' . $candidateHash])) {
+                continue;
+            }
+            $scope = $this->candidateReputation->scopeForHash($candidateHash);
+            $assignment = $allowed[$forwardId] ?? null;
+            if ($scope === [] || !is_array($assignment)) {
+                continue;
+            }
+            $protocol = strtolower(trim((string) ($item['protocol'] ?? '')));
+            $scopeProtocol = (string) ($scope['protocol'] ?? '');
+            $protocolMatches = $protocol !== ''
+                && ($protocol === $scopeProtocol
+                    || ($scopeProtocol === 'tcp+udp' && in_array($protocol, ['tcp', 'udp', 'tcp+udp'], true)));
+            if (!$protocolMatches) {
+                continue;
+            }
+            $destination = strtolower(trim((string) ($assignment['ultra_destination_zone'] ?? 'unknown')));
+            if ($destination !== (string) ($scope['destination_zone'] ?? 'unknown')) {
+                continue;
+            }
+            $reportedIngress = strtolower(trim((string) ($item['detected_ingress_zone'] ?? 'unknown')));
+            if ($reportedIngress !== '' && $reportedIngress !== 'unknown'
+                && $reportedIngress !== (string) ($scope['ingress_zone'] ?? 'unknown')) {
+                continue;
+            }
+            $outcome = strtolower(trim((string) ($item['outcome'] ?? '')));
+            $reason = strtolower(trim((string) ($item['reason'] ?? '')));
+            // process_stderr is a diagnostic stream event, not data-plane proof.
+            if (!in_array($outcome, ['failure', 'success'], true) || $reason === 'process_stderr') {
+                continue;
+            }
+            if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))
+                || ($outcome === 'success' && $reason !== 'canary_probe_ok')) {
+                continue;
+            }
+            $evidenceId = trim((string) ($item['evidence_id'] ?? ''));
+            if ($evidenceId !== '' && preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $evidenceId) !== 1) {
+                continue;
+            }
+            $result = $outcome === 'failure'
+                ? $this->candidateReputation->observeFailureByHash($candidateHash, $reason, $observerHash, $evidenceId)
+                : $this->candidateReputation->observeSuccessByHash($candidateHash, $observerHash, $evidenceId);
+            if ($result !== []) {
+                $seen[$forwardId . ':' . $candidateHash] = true;
+                $accepted++;
+            }
+        }
+        return $accepted;
+    }
+
+    /**
+     * A candidate hash alone is not an authentication factor. Require the
+     * client/device/forward tuple to point at a consumed, non-revoked lease
+     * carrying the same opaque candidate and lease hashes. The lookup is
+     * deliberately fail-closed so telemetry cannot weaken the lease boundary.
+     */
+    private function feedbackBoundToLease(
+        int $clientId,
+        string $deviceId,
+        int $forwardId,
+        string $candidateKeyHash,
+        mixed $leaseHash,
+    ): bool {
+        $leaseHash = strtolower(trim((string) $leaseHash));
+        if ($clientId <= 0 || $forwardId <= 0
+            || preg_match('/^[a-f0-9]{64}$/', $candidateKeyHash) !== 1
+            || preg_match('/^[a-f0-9]{64}$/', $leaseHash) !== 1) {
+            return false;
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT id
+                 FROM ultra_client_leases
+                 WHERE client_id = :client_id
+                   AND device_hash = :device_hash
+                   AND forward_id = :forward_id
+                   AND candidate_key_hash = :candidate_key_hash
+                   AND lease_hash = :lease_hash
+                   AND consumed_at IS NOT NULL
+                   AND revoked_at IS NULL
+                 LIMIT 1',
+                [
+                    'client_id' => $clientId,
+                    'device_hash' => hash('sha256', trim($deviceId)),
+                    'forward_id' => $forwardId,
+                    'candidate_key_hash' => $candidateKeyHash,
+                    'lease_hash' => $leaseHash,
+                ]
+            );
+            return is_array($row) && isset($row['id']);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -263,6 +389,10 @@ final class UltraClientStatusService
             'rtt_ms' => max(0, min(60000, (int) ($selection['rtt_ms'] ?? 0))),
             'selected_at' => self::text($selection['selected_at'] ?? '', 40),
         ];
+        $candidateHash = strtolower(trim((string) ($selection['candidate_key_hash'] ?? '')));
+        if (preg_match('/^[a-f0-9]{64}$/', $candidateHash) === 1) {
+            $normalized['candidate_key_hash'] = $candidateHash;
+        }
         foreach ([
             'p95_rtt_ms' => 60000,
             'jitter_ms' => 60000,

@@ -19,6 +19,11 @@
     <string name="clipboard_import">Import</string>
     <string name="login_sign_in_failed">Sign in failed</string>
     <string name="login_subtitle">Connect to your network</string>
+    <string name="login_endpoint_title">连接站点</string>
+    <string name="login_endpoint_hint">请根据您所在地区选择</string>
+    <string name="login_endpoint_cloudflare">會聚總站 (Cloudflare)</string>
+    <string name="login_endpoint_aliyun_cdn">會聚中國内地 (Aliyun CDN)</string>
+    <string name="login_save_information">保存登录信息</string>
     <string name="login_client_id">Client ID</string>
     <string name="login_agent_token">Agent Token</string>
     <string name="login_signing_in">Enrolling...</string>
@@ -265,6 +270,11 @@
     <string name="tunnels_strategy_random">Random</string>
     <string name="tunnels_strategy_random_description">Assign each new connection to one healthy Slave at random.</string>
     <string name="nav_connections">Connect</string>
+    <string name="connections_standard_title">Standard proxy</string>
+    <string name="connections_standard_summary">Use your own node for service connections</string>
+    <string name="connections_optional">Optional</string>
+    <string name="connections_section_expand">Expand</string>
+    <string name="connections_section_collapse">Collapse</string>
     <string name="connections_pairing_heading">Your node × Service forward</string>
     <string name="connections_refresh">Refresh</string>
     <string name="connections_empty_forwards">No service forwards available</string>

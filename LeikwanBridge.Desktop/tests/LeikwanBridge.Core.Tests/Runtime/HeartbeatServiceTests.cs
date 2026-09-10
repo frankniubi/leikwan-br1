@@ -25,6 +25,47 @@ public sealed class HeartbeatServiceTests
     }
 
     [Fact]
+    public async Task SendHeartbeatAsync_ReportsBoundedCandidateFeedbackWithOpaqueLeaseHash()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-42.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 42,
+          "policy_generation": "{{new string('a', 64)}}",
+          "candidate_feedback": [
+            {
+              "candidate_key_hash": "{{new string('b', 64)}}",
+              "lease_hash": "{{new string('c', 64)}}",
+              "protocol": "tcp",
+              "outcome": "failure",
+              "reason": "relay_connect_timeout",
+              "evidence_id": "desktop-feedback-1",
+              "observed_at": "2030-01-01T00:00:01Z"
+            },
+            {
+              "candidate_key_hash": "{{new string('d', 64)}}",
+              "lease_hash": "{{new string('e', 64)}}",
+              "protocol": "tcp",
+              "outcome": "failure",
+              "reason": "process_stderr",
+              "evidence_id": "desktop-stderr"
+            }
+          ]
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var feedback = Assert.Single(document.RootElement.GetProperty("ultra_candidate_feedback").EnumerateArray());
+        Assert.Equal(new string('b', 64), feedback.GetProperty("candidate_key_hash").GetString());
+        Assert.Equal(new string('c', 64), feedback.GetProperty("lease_hash").GetString());
+    }
+
+    [Fact]
     public async Task SendHeartbeatAsync_UsesMacIdentityAndFindsNestedUltraStatus()
     {
         using var tempDir = new TempStateDirectory();

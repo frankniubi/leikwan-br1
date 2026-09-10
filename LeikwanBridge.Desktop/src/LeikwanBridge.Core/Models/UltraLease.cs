@@ -23,6 +23,7 @@ public sealed class UltraLease : IDisposable
     [JsonIgnore] public long QuotaRemainingBytes { get; init; }
     [JsonIgnore] public string SelectionRef { get; set; } = "";
     [JsonIgnore] public string SelectionTier { get; set; } = SelectionTierUnknown;
+    [JsonIgnore] public string CandidateKeyHash { get; set; } = "";
     [JsonIgnore] public string NonceHash { get; set; } = "";
     [JsonIgnore] public string ProviderIp { get; set; } = "";
     [JsonIgnore] public int ProviderPort { get; set; }
@@ -47,6 +48,8 @@ public sealed class UltraLease : IDisposable
             && Password.Length is > 0 and <= 255
             && SelectionRef.Length is >= 16 and <= 128
             && IsSelectionTier(SelectionTier)
+            && (CandidateKeyHash.Length == 0 || CandidateKeyHash.Length == 64
+                && CandidateKeyHash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))
             && NonceHash.Length == 64
             && NonceHash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
     }
@@ -59,6 +62,7 @@ public sealed class UltraLease : IDisposable
         SessionTicket = "";
         SelectionRef = "";
         SelectionTier = SelectionTierUnknown;
+        CandidateKeyHash = "";
         NonceHash = "";
         ProviderIp = "";
         ProviderPort = 0;

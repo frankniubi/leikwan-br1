@@ -327,11 +327,22 @@ public sealed class ConfigPollingService
     {
         var key = forward.ForwardId.ToString();
         var hasAppliedState = applied.TryGetValue(key, out var appliedState);
+        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+        var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
+        if (ForwardRuntimeManager.IsNativeOutboundForward(effectiveForward))
+        {
+            // Native outbound has its own relay lifecycle. Remove any stale
+            // ordinary Ultra state left by an earlier panel revision, but do
+            // not resolve a normal Ultra lease or apply a direct listener.
+            if (isRunning || hasAppliedState)
+                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            if (hasAppliedState)
+                _stateManager.RemoveApplied(forward.ForwardId);
+            return;
+        }
         if (hasAppliedState && appliedState!.UserStopped)
             return;
 
-        var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
-        var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
         if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
         {
             // A grant-scope failure only invalidates the affected forward. A
@@ -450,7 +461,8 @@ public sealed class ConfigPollingService
         var applied = _stateManager.LoadApplied();
         var ultraForwards = _latestForwards.Where(forward =>
             forward.ServiceStatus == "active"
-            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase));
+            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+            && !ForwardRuntimeManager.IsNativeOutboundForward(forward));
         await RunBoundedAsync(ultraForwards, MaxConcurrentForwardOperations,
             forward => RefreshUltraForwardAsync(forward, applied, ct), ct);
     }
@@ -465,6 +477,8 @@ public sealed class ConfigPollingService
             return;
 
         var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+        if (ForwardRuntimeManager.IsNativeOutboundForward(effectiveForward))
+            return;
         var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
         if (isRunning
             && effectiveForward.UltraAccess is { } policy

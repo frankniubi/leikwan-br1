@@ -236,17 +236,21 @@ selectionDone:
 		err = errSelectionSuperseded
 	}
 	if err == nil {
-		err = server.store.Replace(policy, selected)
+		err = server.store.ReplaceBatch(policy, selected, leases)
 		if err == nil && server.status != nil && probeResult.Sent > 0 {
 			if stringsContainsUDP(policy.Transport) {
-				server.status.UpdateUDPProbeWithTier(selected.SelectionRef, selected.SelectionTier, probeResult)
+				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
 			} else {
-				server.status.UpdateTCPWithTier(selected.SelectionRef, selected.SelectionTier, probeResult.MedianRTT)
+				server.status.UpdateTCPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "tcp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
 			}
 		}
 	}
 	if err != nil && server.status != nil && server.config.AutoSelect && len(leases) > 0 {
-		server.status.UpdateError("ultra_probe_failed")
+		server.status.UpdateError(controlErrorName(err))
 	}
 	selected.wipe()
 	for index := range leases {
@@ -269,6 +273,12 @@ func writeJSONFrame(writer io.Writer, value any) error {
 
 func controlErrorName(err error) string {
 	switch {
+	case errors.Is(err, errProbeTCPFailed):
+		return "probe_tcp_failed"
+	case errors.Is(err, errProbeUDPFailed):
+		return "probe_udp_failed"
+	case errors.Is(err, errNoHealthyCandidate):
+		return "no_healthy_candidate"
 	case errors.Is(err, ErrPolicyRollback):
 		return "policy_generation_invalid"
 	case errors.Is(err, ErrLeaseReplay):

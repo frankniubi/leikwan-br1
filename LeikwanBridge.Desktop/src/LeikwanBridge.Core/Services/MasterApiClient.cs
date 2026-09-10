@@ -532,6 +532,13 @@ public sealed class MasterApiClient : IDisposable
             return null;
         var endpoint = item.GetProperty("endpoint");
         var credential = item.GetProperty("credential");
+        var candidateKeyHash = item.TryGetProperty("candidate_key_hash", out var candidateHashElement)
+            ? (candidateHashElement.GetString() ?? "").Trim().ToLowerInvariant()
+            : "";
+        if (candidateKeyHash.Length != 0
+            && (candidateKeyHash.Length != 64
+                || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
+            return null;
         return new UltraLease
         {
             Protocol = protocol,
@@ -546,6 +553,7 @@ public sealed class MasterApiClient : IDisposable
             QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
             SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
             SelectionTier = selectionTier,
+            CandidateKeyHash = candidateKeyHash,
             NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
             ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
             ProviderPort = endpoint.GetProperty("port").GetInt32(),
@@ -615,6 +623,13 @@ public sealed class MasterApiClient : IDisposable
         var selectionTier = item.TryGetProperty("selection_tier", out var tierElement)
             ? tierElement.GetString() ?? UltraLease.SelectionTierUnknown
             : UltraLease.SelectionTierUnknown;
+        var candidateKeyHash = item.TryGetProperty("candidate_key_hash", out var candidateHashElement)
+            ? (candidateHashElement.GetString() ?? "").Trim().ToLowerInvariant()
+            : "";
+        if (candidateKeyHash.Length != 0
+            && (candidateKeyHash.Length != 64
+                || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
+            return null;
         var user = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? "");
         var password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? "");
         var lease = new NativeOutboundLease(
@@ -634,7 +649,8 @@ public sealed class MasterApiClient : IDisposable
             quota,
             selectionRef,
             selectionTier,
-            returnedPolicy);
+            returnedPolicy,
+            candidateKeyHash);
         if (user.Length is 0 or > 255 || password.Length is 0 or > 255
             || !lease.IsUsable(now))
         {

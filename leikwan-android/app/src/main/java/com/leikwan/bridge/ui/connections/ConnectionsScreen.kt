@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -41,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -121,7 +124,21 @@ internal fun ConnectionsScreenContent(
         MasterSwitchCard(state = state, onToggle = onToggle)
         Spacer(Modifier.height(16.dp))
 
+        state.error?.let { err ->
+            Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+        }
+
+        StandardProxyCard(
+            state = state,
+            onSelectForward = onSelectForward,
+            onOpenNodePicker = onOpenNodePicker,
+            onRefresh = onRefresh,
+            onImportNode = onImportNode,
+        )
+
         if (state.nativeVisible) {
+            Spacer(Modifier.height(16.dp))
             NativeOutboundCard(
                 state = state,
                 onSelected = onNativeSelected,
@@ -130,69 +147,6 @@ internal fun ConnectionsScreenContent(
                 onBypassChina = onNativeBypassChina,
                 onRoutePolicy = onNativeRoutePolicy,
             )
-            Spacer(Modifier.height(16.dp))
-        }
-
-        state.error?.let { err ->
-            Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(8.dp))
-        }
-
-        if (!state.hasUsablePath) {
-            EmptyNodeState(state = state, onImportNode = onImportNode, onRefresh = onRefresh)
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    stringResource(R.string.connections_pairing_heading),
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                IconButton(onClick = onRefresh) {
-                    Icon(Icons.Default.Refresh, stringResource(R.string.connections_refresh))
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            if (state.isLoading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-            }
-
-            if (state.forwards.isEmpty()) {
-                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(R.string.connections_empty_forwards),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(state.forwards, key = { it.forwardId }) { forward ->
-                        PairingCard(
-                            forward = forward,
-                            node = state.nodeFor(forward.forwardId),
-                            selected = forward.forwardId == state.selectedForwardId,
-                            isConnected = state.vpnStatus != VpnStatus.DISCONNECTED,
-                            nativeMode = state.nativeSelected && forward.forwardId == state.nativeForwardId,
-                            onSelect = { onSelectForward(forward.forwardId) },
-                            onOpenNodePicker = { onOpenNodePicker(forward.forwardId) },
-                        )
-                    }
-                    item(key = "import-more") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.Center,
-                        ) {
-                            TextButton(onClick = onImportNode) {
-                                Text(stringResource(R.string.connections_import_more))
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -248,6 +202,136 @@ private fun ConnectionsUiState.selectedForwardForwardName(): String {
     return forward.direction.takeIf { it.isNotBlank() } ?: forward.serviceName
 }
 
+@Composable
+private fun SectionDrawerHeader(
+    title: String,
+    summary: String? = null,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    trailingContent: @Composable () -> Unit = {},
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            summary?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        trailingContent()
+        IconButton(onClick = onToggle) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = stringResource(
+                    if (expanded) R.string.connections_section_collapse
+                    else R.string.connections_section_expand,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StandardProxyCard(
+    state: ConnectionsUiState,
+    onSelectForward: (Long) -> Unit,
+    onOpenNodePicker: (Long) -> Unit,
+    onRefresh: () -> Unit,
+    onImportNode: () -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column {
+            SectionDrawerHeader(
+                title = stringResource(R.string.connections_standard_title),
+                summary = stringResource(R.string.connections_standard_summary),
+                expanded = expanded,
+                onToggle = { expanded = !expanded },
+                trailingContent = {
+                    Text(
+                        stringResource(R.string.connections_optional),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            )
+            if (expanded) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
+                    if (!state.hasUsablePath) {
+                        EmptyNodeState(
+                            state = state,
+                            onImportNode = onImportNode,
+                            onRefresh = onRefresh,
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                stringResource(R.string.connections_pairing_heading),
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            IconButton(onClick = onRefresh) {
+                                Icon(Icons.Default.Refresh, stringResource(R.string.connections_refresh))
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+
+                        if (state.isLoading) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        if (state.forwards.isEmpty()) {
+                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                Text(
+                                    stringResource(R.string.connections_empty_forwards),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(state.forwards, key = { it.forwardId }) { forward ->
+                                    PairingCard(
+                                        forward = forward,
+                                        node = state.nodeFor(forward.forwardId),
+                                        selected = forward.forwardId == state.selectedForwardId,
+                                        isConnected = state.vpnStatus != VpnStatus.DISCONNECTED,
+                                        nativeMode = state.nativeSelected && forward.forwardId == state.nativeForwardId,
+                                        onSelect = { onSelectForward(forward.forwardId) },
+                                        onOpenNodePicker = { onOpenNodePicker(forward.forwardId) },
+                                    )
+                                }
+                                item(key = "import-more") {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                    ) {
+                                        TextButton(onClick = onImportNode) {
+                                            Text(stringResource(R.string.connections_import_more))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NativeOutboundCard(
@@ -258,115 +342,131 @@ private fun NativeOutboundCard(
     onBypassChina: (Boolean) -> Unit,
     onRoutePolicy: (String) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var drawerExpanded by rememberSaveable { mutableStateOf(false) }
+    var carrierExpanded by rememberSaveable { mutableStateOf(false) }
     val carrier = state.nativeCarrier
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.connections_native_title), style = MaterialTheme.typography.titleLarge)
+        Column {
+            SectionDrawerHeader(
+                title = stringResource(R.string.connections_native_title),
+                summary = carrier?.direction?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.connections_native_unknown),
+                expanded = drawerExpanded,
+                onToggle = {
+                    val nextExpanded = !drawerExpanded
+                    drawerExpanded = nextExpanded
+                    if (!nextExpanded) carrierExpanded = false
+                },
+                trailingContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            stringResource(R.string.connections_optional),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
+                    }
+                },
+            )
+            if (drawerExpanded) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
+                    Spacer(Modifier.height(4.dp))
+                    if (carrier?.unrestrictedAllowed == true) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(stringResource(R.string.connections_native_unrestricted))
+                            Switch(
+                                checked = state.nativeRoutePolicy == "unrestricted",
+                                onCheckedChange = { enabled ->
+                                    onRoutePolicy(if (enabled) "unrestricted" else "restricted")
+                                },
+                                enabled = state.vpnStatus == VpnStatus.DISCONNECTED,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
+                        ExposedDropdownMenuBox(
+                            expanded = carrierExpanded,
+                            onExpandedChange = { carrierExpanded = it },
+                        ) {
+                            OutlinedTextField(
+                                value = carrier?.direction.orEmpty(),
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text(stringResource(R.string.connections_native_forward)) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = carrierExpanded)
+                                },
+                            )
+                            ExposedDropdownMenu(
+                                expanded = carrierExpanded,
+                                onDismissRequest = { carrierExpanded = false },
+                            ) {
+                                state.nativeOutbound?.forwards.orEmpty().forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.direction) },
+                                        onClick = {
+                                            carrierExpanded = false
+                                            onForward(option.forwardId)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    val hasRestrictedScope = state.nativeScopes.any {
+                        it.equals("cn_only", ignoreCase = true) || it.equals("intl_only", ignoreCase = true)
+                    }
+                    if (hasRestrictedScope) {
+                        Text(
+                            stringResource(R.string.connections_native_scope),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        state.nativeScopes.forEach { scope ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { onRouteScope(scope) },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = state.nativeRouteScope == scope,
+                                    onClick = { onRouteScope(scope) },
+                                )
+                                Text(when {
+                                    scope.equals("cn_only", ignoreCase = true) ->
+                                        stringResource(R.string.connections_native_scope_cn_only)
+                                    scope.equals("intl_only", ignoreCase = true) ->
+                                        stringResource(R.string.connections_native_scope_intl_only)
+                                    else -> stringResource(R.string.connections_native_scope_global)
+                                })
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(stringResource(R.string.connections_native_bypass_china))
+                        Switch(
+                            checked = state.nativeBypassChina,
+                            onCheckedChange = onBypassChina,
+                            enabled = state.nativeRouteScope == "global",
+                        )
+                    }
                     Text(
-                        carrier?.direction?.takeIf { it.isNotBlank() }
-                            ?: stringResource(R.string.connections_native_unknown),
+                        stringResource(R.string.connections_native_no_node),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
             }
-            Spacer(Modifier.height(8.dp))
-            if (carrier?.unrestrictedAllowed == true) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(stringResource(R.string.connections_native_unrestricted))
-                    Switch(
-                        checked = state.nativeRoutePolicy == "unrestricted",
-                        onCheckedChange = { enabled ->
-                            onRoutePolicy(if (enabled) "unrestricted" else "restricted")
-                        },
-                        enabled = state.vpnStatus == VpnStatus.DISCONNECTED,
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-            if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it },
-                ) {
-                    OutlinedTextField(
-                        value = carrier?.direction.orEmpty(),
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text(stringResource(R.string.connections_native_forward)) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false },
-                    ) {
-                        state.nativeOutbound?.forwards.orEmpty().forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.direction) },
-                                onClick = {
-                                    expanded = false
-                                    onForward(option.forwardId)
-                                },
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-            val hasRestrictedScope = state.nativeScopes.any {
-                it.equals("cn_only", ignoreCase = true) || it.equals("intl_only", ignoreCase = true)
-            }
-            if (hasRestrictedScope) {
-                Text(stringResource(R.string.connections_native_scope), style = MaterialTheme.typography.labelLarge)
-                state.nativeScopes.forEach { scope ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable { onRouteScope(scope) },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(
-                            selected = state.nativeRouteScope == scope,
-                            onClick = { onRouteScope(scope) },
-                        )
-                        Text(when {
-                            scope.equals("cn_only", ignoreCase = true) ->
-                                stringResource(R.string.connections_native_scope_cn_only)
-                            scope.equals("intl_only", ignoreCase = true) ->
-                                stringResource(R.string.connections_native_scope_intl_only)
-                            else -> stringResource(R.string.connections_native_scope_global)
-                        })
-                    }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(stringResource(R.string.connections_native_bypass_china))
-                Switch(
-                    checked = state.nativeBypassChina,
-                    onCheckedChange = onBypassChina,
-                    enabled = state.nativeRouteScope == "global",
-                )
-            }
-            Text(
-                stringResource(R.string.connections_native_no_node),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

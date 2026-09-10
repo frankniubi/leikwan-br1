@@ -61,6 +61,7 @@ public sealed class UnixUltraLeaseClient
             target_digest = lease.ScopeDigest,
             selection_ref = lease.SelectionRef,
             selection_tier = lease.SelectionTier,
+            candidate_key_hash = lease.CandidateKeyHash,
             direction = lease.Direction,
             route_scope = lease.RouteScope,
             route_policy = lease.RoutePolicy,
@@ -157,6 +158,7 @@ public sealed class UnixUltraLeaseClient
                 target_digest = lease.TargetDigest,
                 selection_ref = lease.SelectionRef,
                 selection_tier = lease.SelectionTier,
+                candidate_key_hash = lease.CandidateKeyHash,
                 nonce_hash = lease.NonceHash,
                 endpoint = new { ip = lease.ProviderIp, port = lease.ProviderPort },
                 credential = new

@@ -899,6 +899,12 @@ def _normalize_ultra_selection(value: object) -> dict | None:
         "rtt_ms": rtt_ms,
         "selected_at": str(value.get("selected_at", "") or "").strip()[:40],
     }
+    candidate_key_hash = str(value.get("candidate_key_hash", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", candidate_key_hash) is not None:
+        normalized["candidate_key_hash"] = candidate_key_hash
+    lease_hash = str(value.get("lease_hash", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", lease_hash) is not None:
+        normalized["lease_hash"] = lease_hash
     for key, maximum in (("p95_rtt_ms", 60000), ("jitter_ms", 60000), ("loss_percent", 100), ("probe_sent", 4096), ("probe_received", 4096)):
         if key not in value:
             continue
@@ -907,6 +913,46 @@ def _normalize_ultra_selection(value: object) -> dict | None:
         except (TypeError, ValueError):
             normalized[key] = 0
     return normalized
+
+
+def _normalize_ultra_feedback(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    feedback: list[dict] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        candidate_key_hash = str(item.get("candidate_key_hash", "") or "").strip().lower()
+        if re.fullmatch(r"[a-f0-9]{64}", candidate_key_hash) is None:
+            continue
+        lease_hash = str(item.get("lease_hash", "") or "").strip().lower()
+        if re.fullmatch(r"[a-f0-9]{64}", lease_hash) is None:
+            continue
+        protocol = str(item.get("protocol", "") or "").strip().lower()
+        if protocol not in {"tcp", "udp", "tcp+udp", "native_socks5"}:
+            continue
+        outcome = str(item.get("outcome", "") or "").strip().lower()
+        if outcome not in {"failure", "success"}:
+            continue
+        reason = str(item.get("reason", "") or "").strip().lower()[:64]
+        if not reason or reason == "process_stderr":
+            continue
+        evidence_id = str(item.get("evidence_id", "") or "").strip()[:128]
+        if evidence_id and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", evidence_id) is None:
+            continue
+        observed_at = str(item.get("observed_at", "") or "").strip()[:40]
+        feedback.append(
+            {
+                "candidate_key_hash": candidate_key_hash,
+                "lease_hash": lease_hash,
+                "protocol": protocol,
+                "outcome": outcome,
+                "reason": reason,
+                "evidence_id": evidence_id,
+                "observed_at": observed_at,
+            }
+        )
+    return feedback
 
 
 def collect_ultra_status(
@@ -964,6 +1010,7 @@ def collect_ultra_status(
                 "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
                 "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
                 "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
+                "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
                 "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
                 "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
                 "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
@@ -972,6 +1019,26 @@ def collect_ultra_status(
             }
         )
     return statuses
+
+
+def collect_ultra_candidate_feedback(statuses: list[dict]) -> list[dict]:
+    feedback: list[dict] = []
+    for status in statuses[:32]:
+        if not isinstance(status, dict):
+            continue
+        try:
+            forward_id = int(status.get("forward_id", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if forward_id <= 0 or forward_id > 2147483647:
+            continue
+        for item in _normalize_ultra_feedback(status.get("candidate_feedback")):
+            enriched = dict(item)
+            enriched["forward_id"] = forward_id
+            feedback.append(enriched)
+            if len(feedback) >= 32:
+                return feedback
+    return feedback
 
 
 def resolve_ultra_leases(
@@ -2737,6 +2804,7 @@ class ClientAgent:
         local_clock = self.time_sync_state()
         cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
         # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
+        ultra_status = collect_ultra_status()
         heartbeat_response = self.control_plane_request(
             "POST",
             "/api/client/heartbeat",
@@ -2763,7 +2831,8 @@ class ClientAgent:
                 "bond_leg_reputation": {
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
-                "ultra_status": collect_ultra_status(),
+                "ultra_status": ultra_status,
+                "ultra_candidate_feedback": collect_ultra_candidate_feedback(ultra_status),
             },
         )
         self.apply_ultra_actions(heartbeat_response)

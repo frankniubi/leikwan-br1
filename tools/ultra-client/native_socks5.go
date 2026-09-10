@@ -563,18 +563,21 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	started := time.Now()
 	remote, err := dialNativeStream(lease, request.host, request.port, timeout)
 	if err != nil {
+		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
+			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", "relay_connect_timeout", lease.LeaseHash)
 			runtime.status.UpdateError("tcp_connect_failed")
 		}
 		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
 		return
 	}
 	defer remote.Close()
+	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
 	if err := writeNativeSocks5Reply(connection, nativeSocks5ReplySucceeded); err != nil {
 		return
 	}
 	if runtime.status != nil {
-		runtime.status.UpdateTCPWithTier(lease.SelectionRef, lease.SelectionTier, time.Since(started))
+		runtime.status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 	}
 	local := net.Conn(connection)
 	if request.reader != nil {
@@ -806,8 +809,10 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 	session, err := armDatagram(lease, timeout)
 	if err != nil {
 		log.Printf("native UDP association setup failed: %v", err)
+		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
 			runtime.status.AddUDPSetupFailure()
+			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "udp", "udp_association_failed", lease.LeaseHash)
 			runtime.status.UpdateError("udp_association_failed")
 		}
 		association.close()
@@ -818,8 +823,9 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 		return
 	}
 	if runtime.status != nil {
-		runtime.status.UpdateUDPWithTier(lease.SelectionRef, lease.SelectionTier, time.Since(started))
+		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 	}
+	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
 	runtime.startNativeAssociationKeepalive(ctx, association)
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)

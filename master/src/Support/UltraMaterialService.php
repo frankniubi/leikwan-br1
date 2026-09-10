@@ -26,13 +26,17 @@ final class UltraMaterialService
     /** @var array<string, string> */
     private array $memorySettings = [];
 
+    private UltraCandidateReputationService $candidateReputation;
+
     public function __construct(
         private Config $config,
         private ?Database $db = null,
         private ?AppSettings $settings = null,
         ?callable $clock = null,
+        ?UltraCandidateReputationService $candidateReputation = null,
     ) {
         $this->clock = $clock ?? static fn(): int => time();
+        $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
     }
 
     /** @return array<int, int> */
@@ -357,7 +361,12 @@ final class UltraMaterialService
 
         $candidateOffset = max(0, min(7, $candidateOffset));
         $nativePurpose = strtolower(trim($purpose)) === UltraMode::NATIVE_OUTBOUND_PURPOSE;
-        $validCandidateIndex = 0;
+        $transport = strtolower(trim((string) ($payload['transport'] ?? 'tcp+udp')));
+        if (!in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)) {
+            $transport = 'tcp+udp';
+        }
+        $candidateProtocol = $nativePurpose ? 'native_socks5' : $transport;
+        $candidates = [];
         $seenCandidates = [];
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
@@ -402,9 +411,17 @@ final class UltraMaterialService
                     continue;
                 }
                 $seenCandidates[$candidateKey] = true;
-                if ($validCandidateIndex++ < $candidateOffset) {
-                    continue;
-                }
+                $candidateScope = [
+                    'source_id' => $sourceId,
+                    'line_id' => $lineId,
+                    'ingress_zone' => (string) ($scopeLine['ingress_zone'] ?? 'unknown'),
+                    'destination_zone' => (string) ($scopeLine['destination_zone'] ?? ($payload['destination_zone'] ?? 'unknown')),
+                    'protocol' => $candidateProtocol,
+                ];
+                // Register the scoped identity even in shadow mode so an
+                // authenticated feedback hash can be resolved before the
+                // dynamic filter is enabled.
+                $this->candidateReputation->stateFor($candidateScope);
                 $candidate = [
                     'selection_ref' => $selectionRef,
                     'policy_generation' => (string) ($payload['policy_generation'] ?? ''),
@@ -412,16 +429,60 @@ final class UltraMaterialService
                     'port' => $port,
                     'user' => $user,
                     'credential' => $credential,
-                    'transport' => (string) ($payload['transport'] ?? 'tcp+udp'),
+                    'transport' => $transport,
                     'selection_tier' => $this->selectionTier($sourceId, $lineId),
+                    // This opaque hash is safe for lease-audit linkage and does
+                    // not disclose the provider line identity to the client.
+                    'candidate_key_hash' => UltraCandidateReputationService::candidateKeyHash($candidateScope),
+                    '_candidate_scope' => $candidateScope,
                 ];
                 if ($nativePurpose) {
                     $candidate['native_socks5_state'] = 'verified';
                 }
-                return $candidate;
+                $candidates[] = $candidate;
             }
         }
+        if ($this->candidateDynamicQuarantineEnabled()) {
+            $candidates = $this->candidateReputation->filterCandidates($candidates, 1);
+        }
+        $candidate = $candidates[$candidateOffset] ?? [];
+        if (is_array($candidate)) {
+            unset($candidate['_candidate_scope']);
+            return $candidate;
+        }
         return [];
+    }
+
+    /**
+     * Fingerprint the dynamic candidate states that are relevant to a grant.
+     * The broker folds this value into policy_generation so an enforced
+     * quarantine cannot leave a client pinned to the old sticky candidate.
+     *
+     * @param array<int, mixed> $lineRefs
+     */
+    public function candidateReputationFingerprint(array $lineRefs, string $transport): string
+    {
+        if (!$this->candidateDynamicQuarantineEnabled()) {
+            return '';
+        }
+        $transport = strtolower(trim($transport));
+        if (!in_array($transport, ['tcp', 'udp', 'tcp+udp'], true)) {
+            $transport = 'tcp+udp';
+        }
+        $protocols = [$transport];
+        if ($transport === 'tcp+udp') {
+            // Native outbound leases share the v2 grant generation with
+            // ordinary Ultra, so a native-only state change must invalidate
+            // the same sticky ticket as well.
+            $protocols[] = 'native_socks5';
+        }
+        $scopes = [];
+        foreach ($this->normalizeClientScopeLines(['lines' => $lineRefs]) as $line) {
+            foreach ($protocols as $protocol) {
+                $scopes[] = $line + ['protocol' => $protocol];
+            }
+        }
+        return $this->candidateReputation->snapshotFingerprint($scopes);
     }
 
     /** @return array<string, array<string, mixed>> */
@@ -799,6 +860,16 @@ final class UltraMaterialService
     private function grantCacheKey(int $clientId, string $deviceId): string
     {
         return self::GRANT_CACHE_PREFIX . $clientId . '.device.' . hash('sha256', $deviceId !== '' ? $deviceId : 'none');
+    }
+
+    private function candidateDynamicQuarantineEnabled(): bool
+    {
+        $configured = $this->settings?->get('ULTRA_CANDIDATE_QUARANTINE_ENABLED', null);
+        if ($configured === null || trim($configured) === '') {
+            $configured = $this->config->get('ULTRA_CANDIDATE_QUARANTINE_ENABLED', '0');
+        }
+        $value = strtolower(trim((string) ($configured ?? '0')));
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 
     private function settingGet(string $key, string $default): string
