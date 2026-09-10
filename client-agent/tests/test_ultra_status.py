@@ -89,11 +89,58 @@ class UltraStatusCollectionTests(unittest.TestCase):
             {key: statuses[0]["active_udp"][key] for key in ("p95_rtt_ms", "jitter_ms", "loss_percent", "probe_sent", "probe_received")},
         )
 
+    def test_collection_preserves_valid_candidate_hash_on_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["latest_tcp"]["candidate_key_hash"] = "d" * 64
+            status["latest_tcp"]["candidate_key_hash_bad"] = "not-a-hash"
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual("d" * 64, statuses[0]["latest_tcp"]["candidate_key_hash"])
+        self.assertNotIn("candidate_key_hash_bad", statuses[0]["latest_tcp"])
+
+    def test_collection_preserves_only_classified_candidate_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["candidate_feedback"] = [
+                {
+                    "candidate_key_hash": "b" * 64,
+                    "lease_hash": "e" * 64,
+                    "protocol": "tcp",
+                    "outcome": "failure",
+                    "reason": "relay_connect_timeout",
+                    "evidence_id": "evidence-1",
+                    "observed_at": "2030-01-01T00:00:03Z",
+                },
+                {
+                    "candidate_key_hash": "c" * 64,
+                    "protocol": "tcp",
+                    "outcome": "failure",
+                    "reason": "process_stderr",
+                    "evidence_id": "stderr-1",
+                },
+            ]
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual(1, len(statuses[0]["candidate_feedback"]))
+        self.assertEqual("b" * 64, statuses[0]["candidate_feedback"][0]["candidate_key_hash"])
+        self.assertEqual("e" * 64, statuses[0]["candidate_feedback"][0]["lease_hash"])
+        collected = MODULE.collect_ultra_candidate_feedback(statuses)
+        self.assertEqual(3, collected[0]["forward_id"])
+        expected = [dict(statuses[0]["candidate_feedback"][0], forward_id=3)]
+        self.assertEqual(
+            expected,
+            collected,
+        )
+
     def test_existing_heartbeat_contains_one_status_array(self):
         source = (ROOT / "client-agent" / "client_agent.py").read_text(encoding="utf-8")
         heartbeat = source[source.index('f"{master}/api/client/heartbeat"') :]
         heartbeat = heartbeat[: heartbeat.index("now = time.time()")]
         self.assertEqual(1, heartbeat.count('"ultra_status"'))
+        self.assertIn('"ultra_candidate_feedback"', heartbeat)
         self.assertIn("collect_ultra_status", heartbeat)
 
 

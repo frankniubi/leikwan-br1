@@ -93,11 +93,12 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             }
             if (autoSelect)
             {
-                staticConfig["probe_target"] = "1.1.1.1:53";
-                staticConfig["probe_duration_seconds"] = 30;
-                staticConfig["probe_timeout_ms"] = 800;
-                staticConfig["probe_samples"] = 30;
-                staticConfig["probe_interval_ms"] = 1000;
+                staticConfig["probe_target"] = UltraProbeContract.Target;
+                staticConfig["probe_duration_seconds"] = UltraProbeContract.DurationSeconds;
+                staticConfig["probe_timeout_ms"] = UltraProbeContract.TimeoutMilliseconds;
+                staticConfig["probe_samples"] = UltraProbeContract.Samples;
+                staticConfig["probe_interval_ms"] = UltraProbeContract.IntervalMilliseconds;
+                staticConfig["probe_workers"] = UltraProbeContract.Workers;
             }
             Directory.CreateDirectory(runtimeDirectory);
             File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions

@@ -94,6 +94,7 @@ public sealed class HeartbeatService
         {
             ultraUsage = CollectUltraUsage(usage, out pendingUltraState);
         }
+        var ultraCandidateFeedback = CollectUltraCandidateFeedback();
 
         if (!hasPendingUltra)
         {
@@ -117,6 +118,7 @@ public sealed class HeartbeatService
             WireguardListenPort = _wireguardListenPort,
             WireguardFallbackTcpPort = _wireguardFallbackTcpPort,
             UltraUsage = ultraUsage,
+            UltraCandidateFeedback = ultraCandidateFeedback,
         };
 
         var response = await _api.SendHeartbeatAsync(payload, ct);
@@ -155,43 +157,7 @@ public sealed class HeartbeatService
         var lastInByInstance = new Dictionary<string, long>(usage.UltraLastBytesInByInstance, StringComparer.OrdinalIgnoreCase);
         var lastOutByInstance = new Dictionary<string, long>(usage.UltraLastBytesOutByInstance, StringComparer.OrdinalIgnoreCase);
         var result = new List<UltraUsageSnapshot>();
-        var roots = new List<(string Path, bool Legacy)>
-        {
-            (Path.Combine(_stateManager.EffectiveStateDir, "runtime"), true),
-        };
-        roots.AddRange(_additionalRuntimeDirectories.Select(path => (Path.Combine(path, "native-usage"), false)));
-        var statusFiles = new List<(string Path, bool Legacy)>();
-        foreach (var (runtimeDir, legacy) in roots.OrderBy(item => item.Legacy).DistinctBy(item => item.Path, StringComparer.OrdinalIgnoreCase))
-        {
-            if (!Directory.Exists(runtimeDir))
-                continue;
-            try
-            {
-                if (legacy)
-                {
-                    statusFiles.AddRange(Directory.EnumerateFiles(runtimeDir, "ultra-forward-*.status.json", SearchOption.TopDirectoryOnly)
-                        .Select(path => (path, true)));
-                    // macOS ordinary Ultra stores its status one level below
-                    // runtime/ultra-<forward>-<instance>. Old native relay
-                    // paths are runtime/native-*, while new native accounting
-                    // is exclusively under native-usage; neither belongs to
-                    // the legacy ordinary stream.
-                    statusFiles.AddRange(Directory.EnumerateDirectories(runtimeDir, "ultra-*", SearchOption.TopDirectoryOnly)
-                        .Select(directory => Path.Combine(directory, "status.json"))
-                        .Where(File.Exists)
-                        .Select(path => (path, true)));
-                }
-                else
-                {
-                    statusFiles.AddRange(Directory.EnumerateFiles(runtimeDir, "status.json", SearchOption.AllDirectories)
-                        .Select(path => (path, false)));
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Log.Debug(exception, "could not enumerate Ultra runtime directory {Path}", runtimeDir);
-            }
-        }
+        var statusFiles = EnumerateUltraStatusFiles();
 
         // Ordinary Ultra status files retain the old latest-per-forward rule;
         // native lease directories are independent streams and all contribute.
@@ -339,4 +305,116 @@ public sealed class HeartbeatService
         pending = (lastIn, lastOut, sequences, lastInByInstance, lastOutByInstance);
         return result;
     }
+
+    private IEnumerable<(string Path, bool Legacy)> EnumerateUltraStatusFiles()
+    {
+        var roots = new List<(string Path, bool Legacy)>
+        {
+            (Path.Combine(_stateManager.EffectiveStateDir, "runtime"), true),
+        };
+        roots.AddRange(_additionalRuntimeDirectories.Select(path => (Path.Combine(path, "native-usage"), false)));
+        var statusFiles = new List<(string Path, bool Legacy)>();
+        foreach (var (runtimeDir, legacy) in roots.OrderBy(item => item.Legacy).DistinctBy(item => item.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!Directory.Exists(runtimeDir))
+                continue;
+            try
+            {
+                if (legacy)
+                {
+                    statusFiles.AddRange(Directory.EnumerateFiles(runtimeDir, "ultra-forward-*.status.json", SearchOption.TopDirectoryOnly)
+                        .Select(path => (path, true)));
+                    // macOS ordinary Ultra stores its status one level below
+                    // runtime/ultra-<forward>-<instance>.
+                    statusFiles.AddRange(Directory.EnumerateDirectories(runtimeDir, "ultra-*", SearchOption.TopDirectoryOnly)
+                        .Select(directory => Path.Combine(directory, "status.json"))
+                        .Where(File.Exists)
+                        .Select(path => (path, true)));
+                }
+                else
+                {
+                    statusFiles.AddRange(Directory.EnumerateFiles(runtimeDir, "status.json", SearchOption.AllDirectories)
+                        .Select(path => (path, false)));
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Log.Debug(exception, "could not enumerate Ultra runtime directory {Path}", runtimeDir);
+            }
+        }
+        return statusFiles.DistinctBy(item => item.Path, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private List<UltraCandidateFeedback> CollectUltraCandidateFeedback()
+    {
+        var result = new List<UltraCandidateFeedback>();
+        foreach (var (path, _) in EnumerateUltraStatusFiles())
+        {
+            if (result.Count >= 32)
+                break;
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length > 64 * 1024)
+                    continue;
+                using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+                var root = document.RootElement;
+                if (!root.TryGetProperty("forward_id", out var forwardElement)
+                    || !forwardElement.TryGetInt32(out var forwardId) || forwardId <= 0
+                    || !root.TryGetProperty("candidate_feedback", out var feedbackElement)
+                    || feedbackElement.ValueKind != JsonValueKind.Array)
+                    continue;
+                foreach (var item in feedbackElement.EnumerateArray())
+                {
+                    if (result.Count >= 32 || item.ValueKind != JsonValueKind.Object)
+                        break;
+                    var candidateHash = ReadOpaqueHash(item, "candidate_key_hash");
+                    var leaseHash = ReadOpaqueHash(item, "lease_hash");
+                    var protocol = ReadBounded(item, "protocol", 32).ToLowerInvariant();
+                    var outcome = ReadBounded(item, "outcome", 16).ToLowerInvariant();
+                    var reason = ReadBounded(item, "reason", 64).ToLowerInvariant();
+                    var evidenceId = ReadBounded(item, "evidence_id", 128);
+                    if (candidateHash.Length != 64 || leaseHash.Length != 64
+                        || protocol is not ("tcp" or "udp" or "tcp+udp" or "native_socks5")
+                        || outcome is not ("failure" or "success")
+                        || reason.Length == 0 || reason == "process_stderr"
+                        || !IsSafeFeedbackText(evidenceId))
+                        continue;
+                    result.Add(new UltraCandidateFeedback
+                    {
+                        ForwardId = forwardId,
+                        CandidateKeyHash = candidateHash,
+                        LeaseHash = leaseHash,
+                        Protocol = protocol,
+                        Outcome = outcome,
+                        Reason = reason,
+                        EvidenceId = evidenceId,
+                        ObservedAt = ReadBounded(item, "observed_at", 40),
+                    });
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidOperationException or FormatException)
+            {
+                Log.Debug(exception, "skipping malformed Ultra candidate feedback file {Path}", path);
+            }
+        }
+        return result;
+    }
+
+    private static string ReadOpaqueHash(JsonElement item, string property)
+    {
+        var value = ReadBounded(item, property, 64).ToLowerInvariant();
+        return value.Length == 64 && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f')
+            ? value
+            : "";
+    }
+
+    private static string ReadBounded(JsonElement item, string property, int maximum)
+        => item.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? (value.GetString() ?? "").Trim()[..Math.Min((value.GetString() ?? "").Trim().Length, maximum)]
+            : "";
+
+    private static bool IsSafeFeedbackText(string value)
+        => value.Length == 0 || value.All(character => character is >= 'A' and <= 'Z'
+            or >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '_' or ':' or '-');
 }

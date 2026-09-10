@@ -18,6 +18,7 @@ object UltraForwardRunner {
         binaries: RuntimeBinaryPaths,
         runtimeDir: File,
         nativeSocks5: Boolean = false,
+        autoSelect: Boolean = false,
         listenPortOverride: Int? = null,
         nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     ): UltraRuntimePlan {
@@ -43,6 +44,7 @@ object UltraForwardRunner {
         } else {
             NATIVE_ROUTE_POLICY_RESTRICTED
         }
+        val automaticSelection = nativeSocks5 || autoSelect
 
         val config = JsonObject().apply {
             addProperty("forward_id", forward.forwardId)
@@ -69,6 +71,9 @@ object UltraForwardRunner {
             addProperty("location_lock_path", locationLockFile.absolutePath)
             addProperty("status_path", statusFile.absolutePath)
             addProperty("probe_timeout_ms", 800)
+            if (automaticSelection) {
+                addProperty("probe_target", "1.1.1.1:53")
+            }
             if (nativeSocks5) {
                 // Native batches are probed by the local adapter before one path is activated.
                 // Keep the window bounded so Android startup remains responsive while allowing
@@ -78,8 +83,15 @@ object UltraForwardRunner {
                 addProperty("probe_samples", 20)
                 addProperty("probe_interval_ms", 250)
                 addProperty("probe_workers", 4)
+            } else if (autoSelect) {
+                addProperty("auto_select", true)
+                addProperty("probe_duration_seconds", 30)
+                addProperty("probe_samples", 30)
+                addProperty("probe_interval_ms", 1000)
+                addProperty("probe_workers", 4)
             } else {
-                addProperty("probe_workers", 2)
+                addProperty("auto_select", false)
+                addProperty("probe_workers", 4)
             }
         }
         configFile.writeText(config.toString(), Charsets.UTF_8)

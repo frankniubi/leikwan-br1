@@ -24,7 +24,8 @@ public sealed class NativeOutboundLease : IDisposable
         long quotaRemainingBytes = 0,
         string selectionRef = "",
         string selectionTier = UltraLease.SelectionTierUnknown,
-        string routePolicy = "restricted")
+        string routePolicy = "restricted",
+        string candidateKeyHash = "")
     {
         ForwardId = forwardId;
         LeaseId = leaseId;
@@ -44,6 +45,7 @@ public sealed class NativeOutboundLease : IDisposable
         SelectionTier = string.IsNullOrWhiteSpace(selectionTier)
             ? UltraLease.SelectionTierUnknown
             : selectionTier.Trim().ToLowerInvariant();
+        CandidateKeyHash = candidateKeyHash?.Trim().ToLowerInvariant() ?? string.Empty;
         RoutePolicy = NormalizeRoutePolicy(routePolicy);
     }
 
@@ -63,6 +65,7 @@ public sealed class NativeOutboundLease : IDisposable
     [JsonIgnore] public long QuotaRemainingBytes { get; }
     [JsonIgnore] public string SelectionRef { get; }
     [JsonIgnore] public string SelectionTier { get; }
+    [JsonIgnore] public string CandidateKeyHash { get; }
     [JsonIgnore] public string RoutePolicy { get; }
 
     public bool IsUsable(DateTimeOffset now)
@@ -87,7 +90,9 @@ public sealed class NativeOutboundLease : IDisposable
             && QuotaRemainingBytes is > 0 and <= 107374182400
             && SelectionRef.Length is >= 16 and <= 128
             && SelectionRef.All(character => char.IsLetterOrDigit(character) || character is '_' or '-')
-            && UltraLease.IsSelectionTier(SelectionTier);
+            && UltraLease.IsSelectionTier(SelectionTier)
+            && (CandidateKeyHash.Length == 0 || CandidateKeyHash.Length == 64
+                && CandidateKeyHash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f'));
 
     public static string ComputeScopeDigest(int forwardId, string direction, string transport, string routeScope)
     {

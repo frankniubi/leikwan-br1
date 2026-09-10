@@ -287,7 +287,7 @@ if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 
-install -d -m 0750 -o root -g root "$CONFIG_DIR"
+install -d -m 0750 -o root -g "$SERVICE_GROUP" "$CONFIG_DIR"
 CONFIG_TMP="$(mktemp "$CONFIG_DIR/.config.json.XXXXXX")"
 SS_PASSWORD="$PASSWORD" python3 - "$CONFIG_TMP" "$LISTEN_ADDRESS" "$PORT" <<'PY'
 import json
@@ -354,7 +354,7 @@ ProtectSystem=full
 ProtectHome=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LimitNOFILE=65535
 
 [Install]
@@ -369,10 +369,15 @@ if [[ "$NO_START" == "1" ]]; then
   echo "installed $SERVICE_NAME.service without starting it"
 else
   systemctl enable --now "$SERVICE_NAME.service"
-  systemctl is-active --quiet "$SERVICE_NAME.service" || die "service is not active"
-  if ! ss -H -lntu | awk -v port="$PORT" '$4 ~ (":" port "$|\\]:" port "$") { found=1 } END { exit !found }'; then
-    die "service is active but no TCP/UDP listener was found on port $PORT"
-  fi
+  listener_ready=0
+  for _ in {1..15}; do
+    if systemctl is-active --quiet "$SERVICE_NAME.service" && ss -H -lntu | awk -v port="$PORT" '$4 ~ (":" port "$|\\]:" port "$") { found=1 } END { exit !found }'; then
+      listener_ready=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$listener_ready" == "1" ]] || die "service did not become active with a TCP/UDP listener on port $PORT"
   echo "started and verified $SERVICE_NAME.service"
 fi
 

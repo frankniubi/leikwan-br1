@@ -170,6 +170,40 @@ class UltraLeaseClientTest {
     }
 
     @Test
+    fun `client sends ordinary candidate batch and wipes every credential`() {
+        val now = Instant.parse("2026-08-27T00:00:00Z")
+        val policy = UltraPolicy.from(sampleForward(), now)!!
+        val leases = (0..1).map { index ->
+            val raw = leaseJson().deepCopy().apply {
+                addProperty("lease_id", "ul2_batch_lease_$index")
+                addProperty("nonce_hash", ('b'.code + index).toChar().toString().repeat(64))
+                addProperty("selection_ref", "selection_batch_ref_$index")
+                add("endpoint", JsonObject().apply {
+                    addProperty("ip", "203.0.113.${20 + index}")
+                    addProperty("port", 5438 + index)
+                })
+            }
+            UltraLease.from(raw, policy, now)!!
+        }
+        var sentPayload = ""
+        val socket = UltraControlSocket { _, frame ->
+            val size = ByteBuffer.wrap(frame, 0, 4).order(ByteOrder.BIG_ENDIAN).int
+            sentPayload = frame.copyOfRange(4, 4 + size).toString(Charsets.UTF_8)
+            """{"ok":true,"forward_id":42,"policy_generation":"${policy.policyGeneration}"}"""
+                .toByteArray(Charsets.UTF_8)
+        }
+
+        val accepted = UltraLeaseClient(socket, sleep = {}).send("/private/ultra.sock", policy, leases)
+
+        assertTrue(accepted)
+        assertEquals(2, JsonParser.parseString(sentPayload).asJsonObject.getAsJsonArray("leases").size())
+        leases.forEach { lease ->
+            assertTrue(lease.user.all { it == 0.toByte() })
+            assertTrue(lease.password.all { it == 0.toByte() })
+        }
+    }
+
+    @Test
     fun `client rejects an oversized control reply and still wipes credentials`() {
         val now = Instant.parse("2026-08-27T00:00:00Z")
         val policy = UltraPolicy.from(sampleForward(), now)!!

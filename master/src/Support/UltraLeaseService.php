@@ -149,15 +149,20 @@ final class UltraLeaseService
             return ['ok' => false, 'error' => 'policy_generation_invalid'];
         }
 
+        $candidateKeyHash = strtolower(trim((string) ($candidate['candidate_key_hash'] ?? '')));
+        if (preg_match('/^[a-f0-9]{64}$/', $candidateKeyHash) !== 1) {
+            $candidateKeyHash = '';
+        }
+
         $deviceHash = hash('sha256', trim($deviceId));
         $nonceHash = hash('sha256', $normalized['nonce']);
-        if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt)) {
+        if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt, $candidateKeyHash)) {
             return ['ok' => false, 'error' => 'lease_replayed'];
         }
 
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
         $leaseExpiresAt = min($expiresAt, $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS);
-        $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt);
+        $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt, $candidateKeyHash);
         $lease = $this->scrubLease([
             'protocol' => $isNative ? UltraMode::NATIVE_SOCKS5_PROTOCOL : UltraMode::POLICY_PROTOCOL,
             'purpose' => $normalized['purpose'],
@@ -170,6 +175,7 @@ final class UltraLeaseService
             'rate_limit_mbps' => max(0, min(100000, (int) ($policy['rate_limit_mbps'] ?? 0))),
             'quota_remaining_bytes' => $quotaBytes,
             'selection_ref' => (string) ($candidate['selection_ref'] ?? ''),
+            'candidate_key_hash' => $candidateKeyHash,
             'selection_tier' => $this->selectionTier($candidate['selection_tier'] ?? 1),
             'target_digest' => $normalized['target_digest'],
             'direction' => $direction,
@@ -347,7 +353,7 @@ final class UltraLeaseService
         return ($isIpv6 ? strtolower($ip) : $ip) . '/' . $prefix;
     }
 
-    private function consumeNonce(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $generation, int $quotaBytes, int $expiresAt): bool
+    private function consumeNonce(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $generation, int $quotaBytes, int $expiresAt, string $candidateKeyHash = ''): bool
     {
         $memoryKey = implode(':', [$clientId, $deviceHash, $forwardId, $nonceHash]);
         if (isset($this->memoryNonces[$memoryKey])) {
@@ -366,6 +372,7 @@ final class UltraLeaseService
                 'policy_generation' => strtolower($generation),
                 'nonce_hash' => $nonceHash,
                 'lease_hash' => hash('sha256', $memoryKey),
+                'candidate_key_hash' => $candidateKeyHash !== '' ? $candidateKeyHash : null,
                 'quota_bytes' => $quotaBytes,
                 'issued_at' => $now,
                 'expires_at' => gmdate('Y-m-d H:i:s', $expiresAt),
@@ -414,14 +421,15 @@ final class UltraLeaseService
         }
     }
 
-    private function markConsumed(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $leaseHash, int $expiresAt): void
+    private function markConsumed(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $leaseHash, int $expiresAt, string $candidateKeyHash = ''): void
     {
         if ($this->db === null) {
             return;
         }
         $this->db->execute(
             'UPDATE ultra_client_leases
-             SET lease_hash = :lease_hash, consumed_at = :consumed_at, expires_at = :expires_at, updated_at = :updated_at
+             SET lease_hash = :lease_hash, candidate_key_hash = :candidate_key_hash,
+                 consumed_at = :consumed_at, expires_at = :expires_at, updated_at = :updated_at
              WHERE client_id = :client_id AND device_hash = :device_hash AND forward_id = :forward_id AND nonce_hash = :nonce_hash',
             [
                 'client_id' => $clientId,
@@ -429,6 +437,7 @@ final class UltraLeaseService
                 'forward_id' => $forwardId,
                 'nonce_hash' => $nonceHash,
                 'lease_hash' => $leaseHash,
+                'candidate_key_hash' => $candidateKeyHash !== '' ? $candidateKeyHash : null,
                 'consumed_at' => gmdate('Y-m-d H:i:s', $this->now()),
                 'expires_at' => gmdate('Y-m-d H:i:s', $expiresAt),
                 'updated_at' => gmdate('Y-m-d H:i:s', $this->now()),
@@ -450,6 +459,7 @@ final class UltraLeaseService
             'rate_limit_mbps' => (int) $lease['rate_limit_mbps'],
             'quota_remaining_bytes' => (int) $lease['quota_remaining_bytes'],
             'selection_ref' => (string) $lease['selection_ref'],
+            'candidate_key_hash' => (string) ($lease['candidate_key_hash'] ?? ''),
             'target_digest' => (string) ($lease['target_digest'] ?? ''),
             'nonce_hash' => (string) ($lease['nonce_hash'] ?? ''),
             'endpoint' => [
@@ -479,6 +489,7 @@ final class UltraLeaseService
             'rate_limit_mbps' => (int) $lease['rate_limit_mbps'],
             'quota_remaining_bytes' => (int) $lease['quota_remaining_bytes'],
             'selection_ref' => (string) $lease['selection_ref'],
+            'candidate_key_hash' => (string) ($lease['candidate_key_hash'] ?? ''),
             'direction' => (string) ($lease['direction'] ?? ''),
             'route_scope' => (string) ($lease['route_scope'] ?? ''),
             'route_policy' => UltraMode::normalizeNativeRoutePolicy($lease['route_policy'] ?? '')

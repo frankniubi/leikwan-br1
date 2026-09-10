@@ -24,6 +24,7 @@ use Leikwan\Master\Support\MermaidSourcePolicy;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\UltraClientStatusService;
+use Leikwan\Master\Support\UltraCandidateReputationService;
 use Leikwan\Master\Support\UltraInventoryService;
 use Leikwan\Master\Support\UltraMode;
 
@@ -3124,7 +3125,7 @@ final class AdminController extends BaseController
         $inventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
         $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
         $view = strtolower(trim((string) $request->input('view', 'sessions')));
-        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source'], true)) {
+        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source', 'reputation'], true)) {
             $view = 'sessions';
         }
         $limit = min(200, max(1, (int) $request->input('limit', 50)));
@@ -3154,6 +3155,7 @@ final class AdminController extends BaseController
             ['view' => 'lines', 'href' => '/admin/ultra?view=lines', 'label' => 'Lines'],
             ['view' => 'combinations', 'href' => '/admin/ultra?view=combinations', 'label' => 'Combinations'],
             ['view' => 'source', 'href' => '/admin/ultra?view=source', 'label' => 'Source'],
+            ['view' => 'reputation', 'href' => '/admin/ultra?view=reputation', 'label' => 'Reputation'],
         ] as $tab) {
             $tabs .= '<a class="button ' . ($view === $tab['view'] ? '' : 'ghost') . '" href="' . $tab['href'] . '">' . $tab['label'] . '</a>';
         }
@@ -3308,6 +3310,34 @@ final class AdminController extends BaseController
                 $rows = '<tr><td colspan="8" class="muted">No Ultra combinations.</td></tr>';
             }
             $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Combination</th><th>Destination</th><th>Ingress zones</th><th>Fallback</th><th>Lines</th><th>Forwards</th><th>Action</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'reputation') {
+            $candidateReputation = new UltraCandidateReputationService($this->db);
+            try {
+                $reputationRows = $candidateReputation->latest($limit);
+            } catch (\Throwable) {
+                $reputationRows = [];
+            }
+            $rows = '';
+            foreach ($reputationRows as $row) {
+                $state = strtolower(trim((string) ($row['state'] ?? 'healthy')));
+                $badge = $state === UltraCandidateReputationService::STATE_QUARANTINED
+                    ? 'danger'
+                    : ($state === UltraCandidateReputationService::STATE_PROBATION ? 'info' : 'success');
+                $quarantineUntil = trim((string) ($row['quarantine_until'] ?? ''));
+                $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($row['source_id'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($row['line_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($row['ingress_zone'] ?? 'unknown')) . ' -> ' . $this->escape((string) ($row['destination_zone'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape((string) ($row['protocol'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($row['consecutive_failures'] ?? 0) . ' / ' . (int) ($row['consecutive_successes'] ?? 0) . '</td>'
+                    . '<td>' . (int) ($row['independent_observers'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($row['last_reason'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape($quarantineUntil !== '' ? $quarantineUntil : '-') . '</td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="9" class="muted">No dynamic Ultra reputation observations.</td></tr>';
+            }
+            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Dynamic reputation is observational and does not replace static line policy.</div><div class="table-wrap"><table><thead><tr><th>State</th><th>Source</th><th>Line</th><th>Scope</th><th>Protocol</th><th>Failures / successes</th><th>Observers</th><th>Last reason</th><th>Quarantine until</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } else {
             $sources = $inventory->listSourcesForAdmin();
             $rows = '';

@@ -100,7 +100,24 @@ data class UltraLease(
     val user: ByteArray,
     val password: ByteArray,
     val directConnectivity: ProtectedConnectivitySet,
+    val selectionTier: String = "unknown",
+    val candidateKeyHash: String = "",
+    val leaseHash: String = "",
 ) {
+    fun isUsable(now: Instant = Instant.now()): Boolean =
+        leaseId.isNotBlank()
+            && forwardId > 0L
+            && policyGeneration.isLowerHex64()
+            && expiresAt.isAfter(now)
+            && transport in setOf("tcp", "udp", "tcp+udp")
+            && endpointIp.isUltraValidIp()
+            && endpointPort in 1..65535
+            && user.isNotEmpty() && user.size <= 255
+            && password.isNotEmpty() && password.size <= 255
+            && selectionRef.matches(Regex("^[A-Za-z0-9_-]{16,128}$"))
+            && selectionTier in setOf("paid", "mixed", "free", "unknown")
+            && (candidateKeyHash.isEmpty() || candidateKeyHash.matches(Regex("^[a-f0-9]{64}$")))
+
     fun toControlPayload(): JsonObject = JsonObject().apply {
         addProperty("protocol", ULTRA_POLICY_PROTOCOL)
         addProperty("forward_id", forwardId)
@@ -113,6 +130,8 @@ data class UltraLease(
         addProperty("quota_remaining_bytes", quotaRemainingBytes)
         addProperty("target_digest", targetDigest)
         addProperty("selection_ref", selectionRef)
+        addProperty("selection_tier", selectionTier)
+        if (candidateKeyHash.isNotBlank()) addProperty("candidate_key_hash", candidateKeyHash)
         addProperty("nonce_hash", nonceHash)
         add("endpoint", JsonObject().apply {
             addProperty("ip", endpointIp)
@@ -141,6 +160,8 @@ data class UltraLease(
             val rateLimit = raw.long("rate_limit_mbps") ?: return null
             val quota = raw.long("quota_remaining_bytes") ?: return null
             val selectionRef = raw.requiredString("selection_ref") ?: return null
+            val selectionTier = raw.requiredString("selection_tier")?.lowercase() ?: "unknown"
+            val candidateKeyHash = raw.requiredString("candidate_key_hash")?.lowercase() ?: ""
             val targetDigest = raw.requiredString("target_digest") ?: return null
             val nonceHash = raw.requiredString("nonce_hash") ?: return null
             val endpoint = raw.objectValue("endpoint") ?: return null
@@ -165,6 +186,8 @@ data class UltraLease(
                 || rateLimit !in 0L..policy.rateLimitMbps
                 || quota !in 1L..policy.quotaRemainingBytes
                 || selectionRef.matches(Regex("^[A-Za-z0-9_-]{16,128}$")).not()
+                || selectionTier !in setOf("paid", "mixed", "free", "unknown")
+                || (candidateKeyHash.isNotEmpty() && !candidateKeyHash.matches(Regex("^[a-f0-9]{64}$")))
                 || targetDigest != policy.targetDigest
                 || !nonceHash.isLowerHex64()
                 || endpointPort !in 1..65535
@@ -192,6 +215,12 @@ data class UltraLease(
                 user = user,
                 password = password,
                 directConnectivity = directConnectivity,
+                selectionTier = selectionTier,
+                candidateKeyHash = candidateKeyHash,
+                leaseHash = raw.requiredString("lease_hash")?.lowercase() ?:
+                    MessageDigest.getInstance("SHA-256")
+                        .digest(leaseId.toByteArray(Charsets.UTF_8))
+                        .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) },
             )
         }
 
@@ -227,6 +256,8 @@ private fun JsonObject.objectValue(name: String): JsonObject? = get(name)?.takeI
 private fun JsonObject.arrayValue(name: String): JsonArray? = get(name)?.takeIf { it.isJsonArray }?.asJsonArray
 
 private fun String.isLowerHex64(): Boolean = matches(Regex("^[a-f0-9]{64}$"))
+
+private fun String.isUltraValidIp(): Boolean = runCatching { InetAddress.getByName(this) }.isSuccess
 
 private fun String.normalizedIpLiteral(): String? {
     val value = trim().removeSurrounding("[", "]")
