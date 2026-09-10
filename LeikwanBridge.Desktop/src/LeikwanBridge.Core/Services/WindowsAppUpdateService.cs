@@ -30,6 +30,29 @@ public sealed class WindowsAppUpdateService : IDisposable
         return remote > local;
     }
 
+    public static bool HasRuntimeDrift(AgentConfig config, WindowsClientAppArtifact artifact)
+    {
+        if (artifact.RuntimeSha256.Count == 0)
+            return false;
+        var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ultra_client_runtime_windows"] = config.GetEffectiveUltraBin(),
+            ["leikwan_bond_windows_amd64"] = config.GetEffectiveBondBin(),
+            ["leikwan_ingress_windows_amd64"] = config.GetEffectiveBondIngressBin(),
+            ["leikwan_uot_bond_windows_amd64"] = config.GetEffectiveUotBondBin(),
+            ["leikwan_mptcp_relay_windows_amd64"] = config.GetEffectiveMptcpRelayBin(),
+            ["wstunnel_windows_amd64"] = config.GetEffectiveWstunnelBin(),
+        };
+        foreach (var (key, expected) in artifact.RuntimeSha256)
+        {
+            if (!paths.TryGetValue(key, out var path) || string.IsNullOrWhiteSpace(expected))
+                continue;
+            if (!File.Exists(path) || !string.Equals(ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     public static bool ShouldCheckForUpdatesOnStartup(AgentConfig config)
     {
         return !config.DisableAutoUpdates
@@ -200,7 +223,18 @@ public sealed class WindowsAppUpdateService : IDisposable
         var json = await responseMessage.Content.ReadAsStringAsync(ct);
         var response = JsonSerializer.Deserialize<WindowsClientArtifactManifestResponse>(json)
             ?? throw new InvalidOperationException("null client manifest response");
-        return response.Manifest.WindowsClientApp;
+        var artifact = response.Manifest.WindowsClientApp;
+        foreach (var (key, component) in response.Manifest.Components)
+        {
+            if (!key.Contains("runtime", StringComparison.OrdinalIgnoreCase)
+                || component.ValueKind != JsonValueKind.Object)
+                continue;
+            if (component.TryGetProperty("sha256", out var sha)
+                && sha.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(sha.GetString()))
+                artifact.RuntimeSha256[key] = sha.GetString()!;
+        }
+        return artifact;
     }
 
     public async Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)

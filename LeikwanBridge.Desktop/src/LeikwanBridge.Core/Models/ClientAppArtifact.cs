@@ -25,6 +25,9 @@ public sealed record ClientAppArtifact
     [JsonPropertyName("format")]
     public string Format { get; init; } = string.Empty;
 
+    [JsonPropertyName("runtime_sha256")]
+    public Dictionary<string, string> RuntimeSha256 { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
     [JsonIgnore]
     public ClientAppArtifact? ManualInstaller { get; init; }
 }

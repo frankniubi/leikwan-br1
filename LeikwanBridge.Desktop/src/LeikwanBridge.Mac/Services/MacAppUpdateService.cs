@@ -82,11 +82,39 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             throw new InvalidDataException("update_manifest_architecture_missing");
         update = ValidateArtifact(update, "zip", panel);
         installer = ValidateArtifact(installer, "dmg", panel);
+        foreach (var (key, component) in manifest.Manifest)
+        {
+            if (key.Contains("runtime", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(component.Sha256))
+                update.RuntimeSha256[key] = component.Sha256;
+        }
         if (!VersionsEquivalent(update.Version, installer.Version))
             throw new InvalidDataException("update_manifest_version_mismatch");
-        if (!IsRemoteVersionNewer(update.Version, currentVersion))
+        if (!IsRemoteVersionNewer(update.Version, currentVersion)
+            && !HasRuntimeDrift(update, _currentBundlePath))
             return null;
         return update with { ManualInstaller = installer };
+    }
+
+    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath)
+    {
+        if (artifact.RuntimeSha256.Count == 0)
+            return false;
+        var bin = Path.Combine(bundlePath, "Contents", "Resources", "bin");
+        var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ultra_client_runtime_macos_arm64"] = Path.Combine(bin, "ultra-client"),
+            ["ultra_client_runtime_macos_x64"] = Path.Combine(bin, "ultra-client"),
+            ["leikwan_uot_bond_linux_arm64"] = Path.Combine(bin, "leikwan-uot-bond"),
+        };
+        foreach (var (key, expected) in artifact.RuntimeSha256)
+        {
+            if (!paths.TryGetValue(key, out var path) || string.IsNullOrWhiteSpace(expected))
+                continue;
+            if (!File.Exists(path) || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     public async Task<PreparedAppUpdate> PrepareAsync(
