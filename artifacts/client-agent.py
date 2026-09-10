@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.10.2"
+AGENT_VERSION = "2026.09.11.2"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -2379,12 +2379,8 @@ class ClientAgent:
         if str(update_state.get("last_completed_request_token", "") or "") == request_token:
             return False
 
-        tracked_request_token = str(update_state.get("request_token", "") or "")
         tracked_status = str(update_state.get("status", "") or "")
         last_attempt_at = self.state_timestamp(update_state.get("last_attempt_at"))
-
-        if tracked_request_token != request_token:
-            return True
 
         if tracked_status == "running" and last_attempt_at > 0 and (now - last_attempt_at) < UPDATE_STALE_SECONDS:
             return False
@@ -2931,6 +2927,15 @@ class ClientAgent:
         else:
             authoritative_config = {"udp_uot_sidepath": None}
         self.apply_config_patch(authoritative_config)
+        # Root-local, time-bounded canary pin. Do not consume/acknowledge a
+        # pending panel update while download mirrors are being reconciled.
+        # Not panel-configurable; expired/invalid/unbounded holds fail open.
+        try:
+            hold_remaining = float(os.environ.get("LEIKWAN_UPDATE_HOLD_UNTIL", "0")) - time.time()
+        except ValueError:
+            hold_remaining = 0
+        if 0 < hold_remaining <= 86400:
+            return
         explicit_request_token = str(client_meta.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(client_meta)
         update_state = self.load_update_state()
@@ -3879,6 +3884,32 @@ class ClientAgent:
             service_name = forward_runtime_service_name(forward)
             if not self.systemd_is_active(service_name):
                 self.restart_forward_service(forward_id, service_name, "systemd inactive")
+                continue
+
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                # A cold runtime needs its first lease and up to 30s of probing.
+                # Dialing its public port is not a readiness test: it creates a
+                # real provider connection, and a transient miss must not restart
+                # all active flows. Inspect listeners and debounce genuine loss.
+                streaks = getattr(self, "_ultra_listener_failures", None)
+                if streaks is None:
+                    streaks = self._ultra_listener_failures = {}
+                age = self.service_active_age_seconds(service_name)
+                if age is not None and age < 90.0:
+                    streaks.pop(forward_id, None)
+                    continue
+                port = int(forward.get("listen_port", 0) or 0)
+                probes = [self.local_listener_present(port, protocol)
+                          for protocol in self.transport_protocols(forward.get("transport", "tcp+udp"))]
+                if probes and all(item[0] for item in probes):
+                    streaks.pop(forward_id, None)
+                    continue
+                now = time.monotonic()
+                count, first = streaks.get(forward_id, (0, now))
+                streaks[forward_id] = (count + 1, first)
+                if count + 1 >= 3 and now - first >= 10.0:
+                    self.restart_forward_service(forward_id, service_name, "Ultra listener absent on 3 spaced checks")
+                    streaks.pop(forward_id, None)
                 continue
 
             endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
