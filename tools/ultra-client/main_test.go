@@ -455,7 +455,8 @@ type testUDPProvider struct {
 	firstAccepted   chan struct{}
 	acceptedOnce    sync.Once
 	packets         chan []byte
-	echoOuterTarget bool
+	echoOuterTarget atomic.Bool
+	silent          atomic.Bool
 }
 
 func newTestUDPProvider(t *testing.T) *testUDPProvider {
@@ -507,6 +508,9 @@ func (provider *testUDPProvider) serveUDP() {
 		if err != nil {
 			return
 		}
+		if provider.silent.Load() {
+			continue
+		}
 		packet := append([]byte(nil), buffer[:count]...)
 		select {
 		case provider.packets <- packet:
@@ -527,7 +531,7 @@ func (provider *testUDPProvider) serveUDP() {
 		// echoing the destination header as application data.
 		responseAddress := []byte{127, 0, 0, 1}
 		responsePort := uint16(53)
-		if provider.echoOuterTarget && len(packet) >= 16 {
+		if provider.echoOuterTarget.Load() && len(packet) >= 16 {
 			responseAddress = append([]byte(nil), packet[10:14]...)
 			responsePort = binary.BigEndian.Uint16(packet[14:16])
 		}
