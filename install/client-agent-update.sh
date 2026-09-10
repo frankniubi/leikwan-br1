@@ -10,8 +10,10 @@ UPDATE_UNIT_PREFIX="leikwan-client-agent-update"
 FORWARD_UNITS=()
 FORWARD_UNITS_ACTIVE=()
 SERVICE_WAS_ACTIVE=0
-TEMP_INSTALLER="/tmp/leikwan-install-client-agent.sh"
-TEMP_UPDATE_HELPER="/tmp/leikwan-client-agent-update.sh"
+UPDATE_TMP=$(mktemp -d /tmp/leikwan-client-update.XXXXXX)
+TEMP_INSTALLER="$UPDATE_TMP/install.sh"
+TEMP_UPDATE_HELPER="$UPDATE_TMP/update.sh"
+TEMP_AGENT="$UPDATE_TMP/agent.py"
 VERSIONS_TMP=""
 
 while [[ $# -gt 0 ]]; do
@@ -138,7 +140,8 @@ cleanup_update() {
   local status=$?
   trap - EXIT
   restore_previous_runtime_state "$status"
-  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER"
+  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER" "$TEMP_AGENT"
+  rmdir "$UPDATE_TMP" 2>/dev/null || true
   [[ -z "${VERSIONS_TMP:-}" ]] || rm -f "$VERSIONS_TMP"
   exit "$status"
 }
@@ -411,6 +414,8 @@ if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
   exit 1
 fi
 
+exec 9>"${STATE_DIR%/}/agent-update.lock"
+flock -n 9 || { rmdir "$UPDATE_TMP"; exit 75; }
 write_update_state "running"
 trap cleanup_update EXIT
 
@@ -418,15 +423,8 @@ if command -v systemctl >/dev/null 2>&1; then
   if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
     SERVICE_WAS_ACTIVE=1
   fi
-  mapfile -t FORWARD_UNITS < <(systemctl list-units 'leikwan-client-*.service' --all --no-legend --no-pager 2>/dev/null | awk '{ unit=$1; if (unit !~ /^[[:alnum:]_.@-]+\.service$/) { sub(/^[^[:alnum:]_.@-]+/, "", unit); if (unit == "") unit=$2 } print unit }' | grep -E '^leikwan-client-[^[:space:]]+\.service$' | grep -v "^${SERVICE_NAME}\.service$" | grep -v "^${UPDATE_UNIT_PREFIX}" || true)
-  for unit in "${FORWARD_UNITS[@]}"; do
-    [[ -n "${unit}" ]] || continue
-    if systemctl is-active --quiet "$unit"; then
-      FORWARD_UNITS_ACTIVE+=("$unit")
-    fi
-    systemctl stop "$unit" || true
-  done
-  systemctl stop "${SERVICE_NAME}.service" || true
+  # Keep all forwarding listeners and the Agent alive during download and
+  # validation. The installer performs one Agent restart only after success.
 fi
 
 if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh" "$TEMP_INSTALLER"; then
@@ -456,12 +454,38 @@ if not isinstance(update_value, str) or len(update_value) != 64 or any(char not 
 print(value.lower(), update_value.lower())
 PY
 )
-rm -f "$VERSIONS_TMP"
-VERSIONS_TMP=""
 if ! echo "$EXPECTED_INSTALLER_SHA256  $TEMP_INSTALLER" | sha256sum -c - >/dev/null 2>&1; then
   write_update_state "error" "installer sha256 mismatch"
   exit 1
 fi
+
+# Validate the agent payload and requested version before running any installer.
+if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent.py" "$TEMP_AGENT"; then
+  write_update_state "error" "failed to preflight client agent"
+  exit 1
+fi
+if ! python3 - "$VERSIONS_TMP" "$TEMP_AGENT" "$REQUEST_TOKEN" <<'PYGUARD'
+import ast,hashlib,json,pathlib,sys
+m=json.loads(pathlib.Path(sys.argv[1]).read_text())
+data=pathlib.Path(sys.argv[2]).read_bytes()
+e=m.get('client_agent',{})
+if hashlib.sha256(data).hexdigest()!=e.get('sha256'): raise SystemExit('agent hash differs from manifest')
+version=None
+for node in ast.parse(data).body:
+    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): version=ast.literal_eval(node.value)
+if not version or version!=e.get('version'): raise SystemExit('agent version differs from manifest')
+token=sys.argv[3]
+if token.startswith('auto-release:'):
+    fields=dict(part.split('=',1) for part in token[len('auto-release:'):].split('|') if '=' in part)
+    if fields.get('agent',version)!=version: raise SystemExit('agent differs from requested version')
+    if fields.get('agent_sha256',e['sha256']).lower()!=e['sha256'].lower(): raise SystemExit('agent differs from requested hash')
+PYGUARD
+then
+  write_update_state "error" "agent preflight mismatch; keeping current services"
+  exit 1
+fi
+rm -f "$VERSIONS_TMP"
+VERSIONS_TMP=""
 
 chmod +x "$TEMP_INSTALLER"
 if LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER" --master "${MASTER_URL}" --artifact-base "${ARTIFACT_BASE}" --client-id "${CLIENT_ID}" --agent-token "${AGENT_TOKEN}" --config-dir "/etc/leikwan-client-agent"; then

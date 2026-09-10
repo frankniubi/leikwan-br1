@@ -23,6 +23,7 @@ type leaseFrame struct {
 	TargetDigest        string `json:"target_digest"`
 	SelectionRef        string `json:"selection_ref"`
 	SelectionTier       string `json:"selection_tier"`
+	CandidateKeyHash    string `json:"candidate_key_hash"`
 	NonceHash           string `json:"nonce_hash"`
 	Endpoint            struct {
 		IP   string `json:"ip"`
@@ -75,13 +76,18 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 		nonceHash = hex.EncodeToString(digest[:])
 	}
 	lease := ProviderLease{
-		LeaseID: f.LeaseID, PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
-		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier, NonceHash: nonceHash,
+		LeaseID: f.LeaseID, LeaseHash: leaseHash(f.LeaseID), PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
+		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier,
+		CandidateKeyHash: strings.ToLower(strings.TrimSpace(f.CandidateKeyHash)), NonceHash: nonceHash,
 		IP: net.ParseIP(strings.TrimSpace(f.Endpoint.IP)).String(), Port: f.Endpoint.Port,
 		User: []byte(f.Credential.User), Password: []byte(f.Credential.Password),
 	}
 	if lease.IP == "<nil>" {
 		lease.IP = ""
+	}
+	if lease.CandidateKeyHash != "" && (len(lease.CandidateKeyHash) != 64 || !isLowerHex(lease.CandidateKeyHash)) {
+		lease.wipe()
+		return Policy{}, ProviderLease{}, ErrLeaseInvalid
 	}
 	if err := policy.Validate(config, now); err != nil {
 		lease.wipe()
@@ -92,6 +98,15 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 		return Policy{}, ProviderLease{}, err
 	}
 	return policy, lease, nil
+}
+
+func leaseHash(leaseID string) string {
+	leaseID = strings.TrimSpace(leaseID)
+	if leaseID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(leaseID))
+	return hex.EncodeToString(digest[:])
 }
 
 func decodeLeaseFrame(raw []byte, config Config) (Policy, ProviderLease, error) {

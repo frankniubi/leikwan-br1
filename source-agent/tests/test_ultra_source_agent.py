@@ -352,7 +352,7 @@ class UltraSourceAgentTests(unittest.TestCase):
 
         self.assertEqual([119, 120, 453, 460], [line["line_id"] for line in inventory["lines"]])
         self.assertTrue(inventory["complete"])
-        self.assertEqual(2, inventory["schema_version"])
+        self.assertEqual(3, inventory["schema_version"])
         audit_line = inventory["lines"][0]
         self.assertEqual("paid", audit_line["access_class"])
         self.assertEqual("verified", audit_line["native_udp_state"])
@@ -394,7 +394,7 @@ class UltraSourceAgentTests(unittest.TestCase):
         self.assertEqual(119, len(inventory["lines"]))
         self.assertTrue(inventory["complete"])
         self.assertEqual(list(range(1, 120)), [line["line_id"] for line in inventory["lines"]])
-        self.assertEqual(2, inventory["schema_version"])
+        self.assertEqual(3, inventory["schema_version"])
         self.assertNotEqual("2026.08.24.3", inventory["agent_version"])
 
     def test_inventory_fingerprint_covers_lines_beyond_payload_limit(self):

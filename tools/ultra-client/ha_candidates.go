@@ -33,13 +33,6 @@ func wipeSnapshots(ss []RuntimeSnapshot) {
 	}
 }
 
-func (s *PolicyStore) wipeBackupsLocked() {
-	for i := range s.backups {
-		s.backups[i].wipe()
-	}
-	s.backups = nil
-}
-
 func (s *PolicyStore) CandidateSnapshots(protocol string) []RuntimeSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -47,7 +40,12 @@ func (s *PolicyStore) CandidateSnapshots(protocol string) []RuntimeSnapshot {
 	if s.policy == nil || s.lease == nil || !s.policy.ExpiresAt.After(now) {
 		return nil
 	}
-	candidates := append([]ProviderLease{*s.lease}, s.backups...)
+	candidates := []ProviderLease{*s.lease}
+	for _, candidate := range s.candidates {
+		if candidate != nil {
+			candidates = append(candidates, *candidate)
+		}
+	}
 	result := make([]RuntimeSnapshot, 0, len(candidates))
 	seen := map[string]bool{}
 	for _, l := range candidates {
@@ -89,8 +87,8 @@ func (s *PolicyStore) failCandidateKey(protocol, key, generation string) {
 		return
 	}
 	matched := haPathKey(*s.lease) == key
-	for _, l := range s.backups {
-		matched = matched || haPathKey(l) == key
+	for _, l := range s.candidates {
+		matched = matched || (l != nil && haPathKey(*l) == key)
 	}
 	if !matched {
 		return

@@ -1,9 +1,11 @@
 package com.leikwan.bridge.ui.login
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,7 +18,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -40,9 +47,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
+import com.leikwan.bridge.data.PanelEndpoint
 
 private enum class EnrollmentMethod { TOKEN, CODE }
 
+private fun endpointLabelRes(endpoint: PanelEndpoint): Int = when (endpoint) {
+    PanelEndpoint.CLOUDFLARE -> R.string.login_endpoint_cloudflare
+    PanelEndpoint.ALIYUN_CDN -> R.string.login_endpoint_aliyun_cdn
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EnrollmentScreen(
     onEnrollmentSuccess: () -> Unit,
@@ -53,9 +67,13 @@ fun EnrollmentScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var method by remember { mutableStateOf(EnrollmentMethod.TOKEN) }
-    var clientId by remember { mutableStateOf(prefilledClientId.filter(Char::isDigit)) }
-    var agentToken by remember { mutableStateOf("") }
-    var enrollmentCode by remember { mutableStateOf(prefilledEnrollmentCode) }
+    var clientId by remember(prefilledClientId, state.savedClientId) {
+        mutableStateOf((prefilledClientId.ifBlank { state.savedClientId }).filter(Char::isDigit))
+    }
+    var agentToken by remember(state.savedAgentToken) { mutableStateOf(state.savedAgentToken) }
+    var enrollmentCode by remember(prefilledEnrollmentCode) { mutableStateOf(prefilledEnrollmentCode) }
+    var rememberLoginInfo by remember(state.rememberLoginInfo) { mutableStateOf(state.rememberLoginInfo) }
+    var endpointExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(prefilledEnrollmentCode, prefilledClientId) {
         if (prefilledEnrollmentCode.isNotBlank()) {
@@ -108,6 +126,40 @@ fun EnrollmentScreen(
                 )
                 Spacer(Modifier.height(24.dp))
 
+                ExposedDropdownMenuBox(
+                    expanded = endpointExpanded,
+                    onExpandedChange = { expanded ->
+                        if (!state.isLoading) endpointExpanded = expanded
+                    },
+                ) {
+                    OutlinedTextField(
+                        value = stringResource(endpointLabelRes(state.panelEndpoint)),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.login_endpoint_title)) },
+                        supportingText = { Text(stringResource(R.string.login_endpoint_hint)) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = endpointExpanded)
+                        },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = endpointExpanded,
+                        onDismissRequest = { endpointExpanded = false },
+                    ) {
+                        PanelEndpoint.entries.forEach { endpoint ->
+                            DropdownMenuItem(
+                                text = { Text(stringResource(endpointLabelRes(endpoint))) },
+                                onClick = {
+                                    viewModel.selectPanelEndpoint(endpoint)
+                                    endpointExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
                 TabRow(selectedTabIndex = method.ordinal, modifier = Modifier.fillMaxWidth()) {
                     Tab(
                         selected = method == EnrollmentMethod.TOKEN,
@@ -151,13 +203,29 @@ fun EnrollmentScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !state.isLoading) {
+                            rememberLoginInfo = !rememberLoginInfo
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = rememberLoginInfo,
+                        onCheckedChange = { rememberLoginInfo = it },
+                        enabled = !state.isLoading,
+                    )
+                    Text(stringResource(R.string.login_save_information))
+                }
+                Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = {
                         if (method == EnrollmentMethod.TOKEN) {
-                            viewModel.enrollWithToken(clientId, agentToken)
+                            viewModel.enrollWithToken(clientId, agentToken, rememberLoginInfo)
                         } else {
-                            viewModel.enrollWithCode(clientId, enrollmentCode)
+                            viewModel.enrollWithCode(clientId, enrollmentCode, rememberLoginInfo)
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),

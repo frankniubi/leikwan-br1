@@ -960,6 +960,19 @@ final class ClientAgentController extends BaseController
                 // Runtime status is observational and must not interrupt the data-plane heartbeat.
             }
         }
+        $ultraCandidateFeedback = $request->input('ultra_candidate_feedback', []);
+        if (is_array($ultraCandidateFeedback)) {
+            try {
+                $this->ultraClientStatus->ingestFeedback(
+                    (int) $client['id'],
+                    $deviceId,
+                    $ultraCandidateFeedback
+                );
+            } catch (\Throwable) {
+                // Candidate reputation is observational and must not interrupt
+                // the ordinary heartbeat or forwarding path.
+            }
+        }
         $usageBytesIn = max(0, (int) $request->input('usage_bytes_in', 0));
         $usageBytesOut = max(0, (int) $request->input('usage_bytes_out', 0));
         $existingAgentConfig = is_string($client['agent_config_json'] ?? null)

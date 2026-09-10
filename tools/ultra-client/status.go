@@ -5,45 +5,58 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type SelectionStatus struct {
-	SelectionRef  string `json:"selection_ref"`
-	SelectionTier string `json:"selection_tier"`
-	RTTMillis     int64  `json:"rtt_ms"`
-	P95RTTMillis  int64  `json:"p95_rtt_ms,omitempty"`
-	JitterMillis  int64  `json:"jitter_ms,omitempty"`
-	LossPercent   int64  `json:"loss_percent,omitempty"`
-	ProbeSent     int    `json:"probe_sent,omitempty"`
-	ProbeReceived int    `json:"probe_received,omitempty"`
-	SelectedAt    string `json:"selected_at"`
+	SelectionRef     string `json:"selection_ref"`
+	SelectionTier    string `json:"selection_tier"`
+	CandidateKeyHash string `json:"candidate_key_hash,omitempty"`
+	LeaseHash        string `json:"lease_hash,omitempty"`
+	RTTMillis        int64  `json:"rtt_ms"`
+	P95RTTMillis     int64  `json:"p95_rtt_ms,omitempty"`
+	JitterMillis     int64  `json:"jitter_ms,omitempty"`
+	LossPercent      int64  `json:"loss_percent,omitempty"`
+	ProbeSent        int    `json:"probe_sent,omitempty"`
+	ProbeReceived    int    `json:"probe_received,omitempty"`
+	SelectedAt       string `json:"selected_at"`
 }
 
 type RuntimeStatus struct {
-	UDPRuntimeSession *SelectionStatus `json:"udp_runtime_session,omitempty"`
-	HAEvents          []HAEvent        `json:"ha_events,omitempty"`
-	HAFailures        int64            `json:"ha_failures,omitempty"`
-	UDPKeepaliveACKs  int64            `json:"udp_keepalive_acks,omitempty"`
-	UDPLastACKAt      string           `json:"udp_last_ack_at,omitempty"`
+	UDPRuntimeSession      *SelectionStatus    `json:"udp_runtime_session,omitempty"`
+	HAEvents               []HAEvent           `json:"ha_events,omitempty"`
+	HAFailures             int64               `json:"ha_failures,omitempty"`
+	UDPKeepaliveACKs       int64               `json:"udp_keepalive_acks,omitempty"`
+	UDPLastACKAt           string              `json:"udp_last_ack_at,omitempty"`
+	ForwardID              int                 `json:"forward_id"`
+	State                  string              `json:"state"`
+	DetectedIngressZone    string              `json:"detected_ingress_zone"`
+	LocationSource         string              `json:"location_source"`
+	LatestTCP              *SelectionStatus    `json:"latest_tcp,omitempty"`
+	ActiveUDP              *SelectionStatus    `json:"active_udp,omitempty"`
+	UpdatedAt              string              `json:"updated_at"`
+	ErrorCode              string              `json:"error_code,omitempty"`
+	PolicyGeneration       string              `json:"policy_generation,omitempty"`
+	BytesIn                int64               `json:"bytes_in,omitempty"`
+	BytesOut               int64               `json:"bytes_out,omitempty"`
+	UDPActiveAssociations  int                 `json:"udp_active_associations,omitempty"`
+	UDPPendingAssociations int                 `json:"udp_pending_associations,omitempty"`
+	UDPQueueDrops          int64               `json:"udp_queue_drops,omitempty"`
+	UDPSetupFailures       int64               `json:"udp_setup_failures,omitempty"`
+	CandidateFeedback      []CandidateFeedback `json:"candidate_feedback,omitempty"`
+}
 
-	ForwardID              int              `json:"forward_id"`
-	State                  string           `json:"state"`
-	DetectedIngressZone    string           `json:"detected_ingress_zone"`
-	LocationSource         string           `json:"location_source"`
-	LatestTCP              *SelectionStatus `json:"latest_tcp,omitempty"`
-	ActiveUDP              *SelectionStatus `json:"active_udp,omitempty"`
-	UpdatedAt              string           `json:"updated_at"`
-	ErrorCode              string           `json:"error_code,omitempty"`
-	PolicyGeneration       string           `json:"policy_generation,omitempty"`
-	BytesIn                int64            `json:"bytes_in,omitempty"`
-	BytesOut               int64            `json:"bytes_out,omitempty"`
-	UDPActiveAssociations  int              `json:"udp_active_associations,omitempty"`
-	UDPPendingAssociations int              `json:"udp_pending_associations,omitempty"`
-	UDPQueueDrops          int64            `json:"udp_queue_drops,omitempty"`
-	UDPSetupFailures       int64            `json:"udp_setup_failures,omitempty"`
+type CandidateFeedback struct {
+	CandidateKeyHash string `json:"candidate_key_hash"`
+	LeaseHash        string `json:"lease_hash"`
+	Protocol         string `json:"protocol"`
+	Outcome          string `json:"outcome"`
+	Reason           string `json:"reason"`
+	EvidenceID       string `json:"evidence_id"`
+	ObservedAt       string `json:"observed_at"`
 }
 
 type StatusWriter struct {
@@ -104,8 +117,12 @@ func (writer *StatusWriter) UpdateTCP(selectionRef string, rtt time.Duration) {
 }
 
 func (writer *StatusWriter) UpdateTCPWithTier(selectionRef, selectionTier string, rtt time.Duration) {
+	writer.UpdateTCPWithTierAndCandidate(selectionRef, selectionTier, "", rtt)
+}
+
+func (writer *StatusWriter) UpdateTCPWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash string, rtt time.Duration, leaseHashes ...string) {
 	writer.update(func(status *RuntimeStatus) {
-		status.LatestTCP = selectionStatusWithTier(selectionRef, selectionTier, rtt)
+		status.LatestTCP = selectionStatusWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash, rtt, leaseHashes...)
 		status.State = "ready"
 		status.ErrorCode = ""
 	})
@@ -116,10 +133,55 @@ func (writer *StatusWriter) UpdateUDP(selectionRef string, rtt time.Duration) {
 }
 
 func (writer *StatusWriter) UpdateUDPWithTier(selectionRef, selectionTier string, rtt time.Duration) {
+	writer.UpdateUDPWithTierAndCandidate(selectionRef, selectionTier, "", rtt)
+}
+
+func (writer *StatusWriter) UpdateUDPWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash string, rtt time.Duration, leaseHashes ...string) {
 	writer.update(func(status *RuntimeStatus) {
-		status.ActiveUDP = selectionStatusWithTier(selectionRef, selectionTier, rtt)
+		status.ActiveUDP = selectionStatusWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash, rtt, leaseHashes...)
 		status.State = "ready"
 		status.ErrorCode = ""
+	})
+}
+
+func (writer *StatusWriter) RecordCandidateFailure(candidateKeyHash, protocol, reason string, leaseHashes ...string) {
+	writer.recordCandidateFeedback(candidateKeyHash, protocol, "failure", reason, leaseHashes...)
+}
+
+func (writer *StatusWriter) RecordCandidateSuccess(candidateKeyHash, protocol string, leaseHashes ...string) {
+	writer.recordCandidateFeedback(candidateKeyHash, protocol, "success", "canary_probe_ok", leaseHashes...)
+}
+
+func (writer *StatusWriter) recordCandidateFeedback(candidateKeyHash, protocol, outcome, reason string, leaseHashes ...string) {
+	if writer == nil || len(candidateKeyHash) != 64 || !isLowerHex(strings.ToLower(candidateKeyHash)) {
+		return
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol != "tcp" && protocol != "udp" && protocol != "tcp+udp" && protocol != "native_socks5" {
+		return
+	}
+	reason = boundedStatusText(strings.ToLower(strings.TrimSpace(reason)), 64)
+	if reason == "" || reason == "process_stderr" {
+		return
+	}
+	leaseHash := ""
+	if len(leaseHashes) > 0 {
+		leaseHash = normalizedLeaseHash(leaseHashes[0])
+	}
+	evidence := fmt.Sprintf("%d-%s", time.Now().UTC().UnixNano(), boundedStatusText(candidateKeyHash, 8))
+	writer.update(func(status *RuntimeStatus) {
+		status.CandidateFeedback = append(status.CandidateFeedback, CandidateFeedback{
+			CandidateKeyHash: strings.ToLower(candidateKeyHash),
+			LeaseHash:        leaseHash,
+			Protocol:         protocol,
+			Outcome:          outcome,
+			Reason:           reason,
+			EvidenceID:       evidence,
+			ObservedAt:       time.Now().UTC().Format(time.RFC3339),
+		})
+		if len(status.CandidateFeedback) > 8 {
+			status.CandidateFeedback = status.CandidateFeedback[len(status.CandidateFeedback)-8:]
+		}
 	})
 }
 
@@ -128,6 +190,10 @@ func (writer *StatusWriter) UpdateUDPProbe(selectionRef string, result udpProbeR
 }
 
 func (writer *StatusWriter) UpdateUDPProbeWithTier(selectionRef, selectionTier string, result udpProbeResult) {
+	writer.UpdateUDPProbeWithTierAndCandidate(selectionRef, selectionTier, "", result)
+}
+
+func (writer *StatusWriter) UpdateUDPProbeWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash string, result udpProbeResult, leaseHashes ...string) {
 	if result.Sent <= 0 || result.Received <= 0 {
 		return
 	}
@@ -138,15 +204,17 @@ func (writer *StatusWriter) UpdateUDPProbeWithTier(selectionRef, selectionTier s
 	lossPercent := int64(lost * 100 / result.Sent)
 	writer.update(func(status *RuntimeStatus) {
 		status.ActiveUDP = &SelectionStatus{
-			SelectionRef:  boundedStatusText(selectionRef, 128),
-			SelectionTier: normalizedSelectionTier(selectionTier),
-			RTTMillis:     maxInt64(result.MedianRTT.Milliseconds(), 0),
-			P95RTTMillis:  maxInt64(result.P95RTT.Milliseconds(), 0),
-			JitterMillis:  maxInt64(result.Jitter.Milliseconds(), 0),
-			LossPercent:   maxInt64(minInt64(lossPercent, 100), 0),
-			ProbeSent:     result.Sent,
-			ProbeReceived: result.Received,
-			SelectedAt:    time.Now().UTC().Format(time.RFC3339),
+			SelectionRef:     boundedStatusText(selectionRef, 128),
+			SelectionTier:    normalizedSelectionTier(selectionTier),
+			CandidateKeyHash: normalizedCandidateKeyHash(candidateKeyHash),
+			LeaseHash:        normalizedLeaseHash(firstOptional(leaseHashes)),
+			RTTMillis:        maxInt64(result.MedianRTT.Milliseconds(), 0),
+			P95RTTMillis:     maxInt64(result.P95RTT.Milliseconds(), 0),
+			JitterMillis:     maxInt64(result.Jitter.Milliseconds(), 0),
+			LossPercent:      maxInt64(minInt64(lossPercent, 100), 0),
+			ProbeSent:        result.Sent,
+			ProbeReceived:    result.Received,
+			SelectedAt:       time.Now().UTC().Format(time.RFC3339),
 		}
 		status.State = "ready"
 		status.ErrorCode = ""
@@ -290,6 +358,10 @@ func selectionStatus(selectionRef string, rtt time.Duration) *SelectionStatus {
 }
 
 func selectionStatusWithTier(selectionRef, selectionTier string, rtt time.Duration) *SelectionStatus {
+	return selectionStatusWithTierAndCandidate(selectionRef, selectionTier, "", rtt)
+}
+
+func selectionStatusWithTierAndCandidate(selectionRef, selectionTier, candidateKeyHash string, rtt time.Duration, leaseHashes ...string) *SelectionStatus {
 	millis := rtt.Milliseconds()
 	if millis < 0 {
 		millis = 0
@@ -298,11 +370,36 @@ func selectionStatusWithTier(selectionRef, selectionTier string, rtt time.Durati
 		millis = 60000
 	}
 	return &SelectionStatus{
-		SelectionRef:  boundedStatusText(selectionRef, 128),
-		SelectionTier: normalizedSelectionTier(selectionTier),
-		RTTMillis:     millis,
-		SelectedAt:    time.Now().UTC().Format(time.RFC3339),
+		SelectionRef:     boundedStatusText(selectionRef, 128),
+		SelectionTier:    normalizedSelectionTier(selectionTier),
+		CandidateKeyHash: normalizedCandidateKeyHash(candidateKeyHash),
+		LeaseHash:        normalizedLeaseHash(firstOptional(leaseHashes)),
+		RTTMillis:        millis,
+		SelectedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+func firstOptional(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func normalizedLeaseHash(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 64 && isLowerHex(value) {
+		return value
+	}
+	return ""
+}
+
+func normalizedCandidateKeyHash(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 64 && isLowerHex(value) {
+		return value
+	}
+	return ""
 }
 
 func normalizedSelectionTier(value string) string {

@@ -426,7 +426,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
     /** @param array<string, mixed> $request */
     private function policyGeneration(array $request, string $materialFingerprint, int $quotaBytes): string
     {
-        return hash('sha256', implode("\n", [
+        $parts = [
             (string) ($request['forward_id'] ?? 0),
             'active',
             hash('sha256', (string) ($request['target'] ?? '')),
@@ -435,7 +435,15 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             (string) $quotaBytes,
             (string) ($request['service_expire_at'] ?? ''),
             $materialFingerprint,
-        ]));
+        ];
+        $reputationFingerprint = $this->materials->candidateReputationFingerprint(
+            is_array($request['lines'] ?? null) ? $request['lines'] : [],
+            (string) ($request['transport'] ?? 'tcp+udp')
+        );
+        if ($reputationFingerprint !== '') {
+            $parts[] = $reputationFingerprint;
+        }
+        return hash('sha256', implode("\n", $parts));
     }
 
     private function parseTimestamp(string $value): ?int

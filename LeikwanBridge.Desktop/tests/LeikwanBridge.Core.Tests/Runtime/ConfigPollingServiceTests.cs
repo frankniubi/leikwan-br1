@@ -409,6 +409,54 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_SkipsNativeOutboundForwardInOrdinaryUltraReconciliation()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildUltraPullResponseJson()
+            .Replace("\"forward_id\": 42", "\"forward_id\": 180", StringComparison.Ordinal)
+            .Replace("\"listen_port\": 12042", "\"listen_port\": 54544", StringComparison.Ordinal)
+            .Replace(
+                "\"backend_mode\": \"ultra\",",
+                "\"backend_mode\": \"ultra\",\n              \"native_outbound\": true,\n              \"native_direction\": \"Mainland China -> Hong Kong\",",
+                StringComparison.Ordinal);
+        using var server = new PullApiServer(payload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var state = new StateManager(tempDir.Path);
+        state.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["180"] = new()
+            {
+                ForwardId = 180,
+                Mode = "ultra",
+                ListenPort = 54544,
+                ProcessRoles = ["ultra-runtime"],
+                UserStopped = false,
+            },
+        });
+        var runtime = new RecordingForwardRuntimeManager(config, state, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtime, state);
+
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtime.AppliedForwardIds);
+        Assert.Empty(runtime.RefreshedForwardIds);
+        Assert.Equal([180], runtime.StoppedForwardIds);
+        Assert.Empty(server.UltraLeaseRequestForwardIds);
+        Assert.DoesNotContain("180", state.LoadApplied().Keys);
+        Assert.True(service.LatestForwards.Single(forward => forward.ForwardId == 180).NativeOutboundEnabled);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseScopeRotates()
     {
         using var tempDir = new TempStateDirectory();

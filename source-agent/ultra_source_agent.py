@@ -27,9 +27,9 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.08.31.1"
+AGENT_VERSION = "2026.09.01.1"
 MAX_INVENTORY_BYTES = 256 * 1024
-INVENTORY_SCHEMA_VERSION = 2
+INVENTORY_SCHEMA_VERSION = 3
 MAX_INVENTORY_RECORDS = 1024
 CATALOG_SCHEMA_VERSION = 1
 
@@ -172,6 +172,7 @@ def _parse_line_config(raw: bytes) -> dict[str, object]:
             "family",
             "access_class",
             "native_udp_state",
+            "native_socks5_state",
             "route_class",
             "pricing_class",
             "pricing_evidence",
@@ -229,6 +230,7 @@ def _line_audit_manifest(manifest_path: Path | None) -> dict[int, dict[str, obje
     known_fields = {
         "access_class",
         "native_udp_state",
+        "native_socks5_state",
         "route_class",
         "pricing_class",
         "pricing_evidence",
@@ -691,6 +693,9 @@ def build_inventory(
             ),
             "native_udp_state": _inventory_classification(
                 _first_value(audited, indexed, metadata, keys=("native_udp_state",))
+            ),
+            "native_socks5_state": _inventory_classification(
+                _first_value(audited, indexed, metadata, keys=("native_socks5_state",))
             ),
             "route_class": _inventory_classification(
                 _first_value(audited, indexed, metadata, keys=("route_class",))

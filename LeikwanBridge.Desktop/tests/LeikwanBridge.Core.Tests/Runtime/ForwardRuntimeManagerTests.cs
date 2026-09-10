@@ -57,6 +57,70 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Equal([880], host.Stops);
     }
 
+    [Fact]
+    public void NativeOutboundApply_SkipsOrdinaryUltraStartAndPanelPortChecks()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var state = new StateManager(tempDir.Path);
+        var host = new RecordingUltraRuntimeHost();
+        var preflightCalls = 0;
+        var portProbeCalls = 0;
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            portListeningProbe: _ =>
+            {
+                portProbeCalls++;
+                return true;
+            },
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            portPreflight: _ =>
+            {
+                preflightCalls++;
+                return new PortPreflightResult(false, "", 0, []);
+            },
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward(180, 54544);
+        forward.NativeOutboundEnabled = true;
+        forward.NativeDirection = "Mainland China -> Hong Kong";
+
+        manager.ApplyForward(forward, "native-signature", "config_sync");
+
+        Assert.Empty(host.Starts);
+        Assert.Empty(supervisor.StartedRoles);
+        Assert.Equal(0, preflightCalls);
+        Assert.Equal(0, portProbeCalls);
+        Assert.DoesNotContain("180", state.LoadApplied().Keys);
+        Assert.Empty(forward.RuntimeLeases);
+        Assert.Null(forward.RuntimeLease);
+    }
+
+    [Fact]
+    public void NativeOutboundRefresh_IsRejectedWithoutDeliveringLease()
+    {
+        using var tempDir = new TempStateDirectory();
+        var host = new RecordingUltraRuntimeHost();
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            new TestProcessSupervisor(),
+            new StateManager(tempDir.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward(180, 54544);
+        forward.NativeOutboundEnabled = true;
+        forward.NativeDirection = "Mainland China -> Hong Kong";
+
+        Assert.False(manager.RefreshUltraLease(forward));
+        Assert.Empty(host.Refreshes);
+        Assert.Empty(forward.RuntimeLeases);
+        Assert.Null(forward.RuntimeLease);
+    }
+
     [Theory]
     [InlineData("single", 1)]
     [InlineData("race", 2)]

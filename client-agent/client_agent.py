@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.11.1"
+AGENT_VERSION = "2026.09.11.2"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -2379,12 +2379,8 @@ class ClientAgent:
         if str(update_state.get("last_completed_request_token", "") or "") == request_token:
             return False
 
-        tracked_request_token = str(update_state.get("request_token", "") or "")
         tracked_status = str(update_state.get("status", "") or "")
         last_attempt_at = self.state_timestamp(update_state.get("last_attempt_at"))
-
-        if tracked_request_token != request_token:
-            return True
 
         if tracked_status == "running" and last_attempt_at > 0 and (now - last_attempt_at) < UPDATE_STALE_SECONDS:
             return False

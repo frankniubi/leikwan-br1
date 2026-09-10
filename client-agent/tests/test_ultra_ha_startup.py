@@ -10,6 +10,13 @@ spec.loader.exec_module(module)
 
 
 class UltraHAStartupTests(unittest.TestCase):
+    def test_update_token_rotation_cannot_bypass_cooldown(self):
+        agent = object.__new__(module.ClientAgent)
+        for status in ['running', 'error', 'success', 'scheduled']:
+            state = {'request_token': 'old', 'status': status, 'last_attempt_at': 100}
+            self.assertFalse(agent.should_retry_update(state, 'new', 101))
+        self.assertTrue(agent.should_retry_update({'request_token': 'old', 'status': 'error', 'last_attempt_at': 100}, 'new', 10000))
+
     def test_local_release_hold_does_not_acknowledge_or_schedule_updates(self):
         agent = object.__new__(module.ClientAgent)
         agent.apply_config_patch = mock.Mock()

@@ -124,12 +124,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             }
             if (autoSelect)
             {
-                bootstrapConfig["probe_target"] = "1.1.1.1:53";
-                bootstrapConfig["probe_duration_seconds"] = 3;
-                bootstrapConfig["probe_timeout_ms"] = 800;
-                bootstrapConfig["probe_samples"] = 6;
-                bootstrapConfig["probe_interval_ms"] = 500;
-                bootstrapConfig["probe_workers"] = 4;
+                bootstrapConfig["probe_target"] = UltraProbeContract.Target;
+                bootstrapConfig["probe_duration_seconds"] = UltraProbeContract.DurationSeconds;
+                bootstrapConfig["probe_timeout_ms"] = UltraProbeContract.TimeoutMilliseconds;
+                bootstrapConfig["probe_samples"] = UltraProbeContract.Samples;
+                bootstrapConfig["probe_interval_ms"] = UltraProbeContract.IntervalMilliseconds;
+                bootstrapConfig["probe_workers"] = UltraProbeContract.Workers;
             }
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
