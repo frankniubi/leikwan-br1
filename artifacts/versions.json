@@ -64,9 +64,9 @@
     "artifact_url": "/artifacts/install-client-agent-linux-arm64",
     "format": "binary",
     "path": "artifacts/install-client-agent-linux-arm64",
-    "sha256": "f49e43baacf34594bcc0347978c6f2a025355df76b2e9f5612a5ed28ccc2db14",
+    "sha256": "e97a9d6185d73fc477c891869183a3692dd208d6821c98176b03d6539e5611b8",
     "size_bytes": 40304766,
-    "version": "2026.09.11.2"
+    "version": "2026.09.11.3"
   },
   "client_installer": {
     "install_url": "/artifacts/install-client.sh",
