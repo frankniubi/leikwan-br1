@@ -46,7 +46,7 @@
     "sha256": "54d14675149a53155921b1cc5328ea1e5b843039babc7b2431c96284342dfa3c",
      "size": 333677,
      "size_bytes": 333677,
-  "version": "2026.09.10.2"
+  "version": "2026.09.11.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
