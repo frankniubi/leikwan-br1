@@ -189,6 +189,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/ultra/ultra-client_linux_amd64', 'application/octet-stream', $request);
     }
 
+    public function ultraClientLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function ultraClientWindows(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/ultra/ultra-client_windows_amd64.exe', 'application/octet-stream', $request);
@@ -272,6 +277,16 @@ final class ArtifactController extends BaseController
     public function installClientAgent(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installClientAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/install-client-agent-linux-arm64',
+            'application/octet-stream',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="install-client-agent-linux-arm64"']
+        );
     }
 
     public function clientAgentUpdate(Request $request, array $params): Response
@@ -422,14 +437,17 @@ final class ArtifactController extends BaseController
             'install_forward_runtime',
             'cfwg_latency_watchdog',
             'client_agent_installer',
+            'client_agent_installer_linux_arm64',
             'client_rate_limit',
             'wg_watchdog',
             'ultra_client_runtime',
+            'ultra_client_runtime_linux_arm64',
             'ultra_client_runtime_windows',
             'mptcp_client_runtime',
             'uot_runtime',
             'uot_bond_runtime',
             'leikwan_uot_bond_linux_amd64',
+            'leikwan_uot_bond_linux_arm64',
             'leikwan_uot_bond_windows_amd64',
             'sidecar_agent',
             'mptcp_sidecar_runtime',
@@ -446,10 +464,14 @@ final class ArtifactController extends BaseController
             'macos_client_update_x64',
             'legacy_client',
             'wstunnel_linux_amd64',
+            'wstunnel_linux_arm64',
             'wstunnel_windows_amd64',
             'leikwan_bond_linux_amd64',
+            'leikwan_bond_linux_arm64',
             'leikwan_bond_windows_amd64',
             'leikwan_bond_android_arm64',
+            'leikwan_ingress_linux_amd64',
+            'leikwan_ingress_linux_arm64',
             'leikwan_mptcp_relay_linux_amd64'
         );
         $macKeys = [

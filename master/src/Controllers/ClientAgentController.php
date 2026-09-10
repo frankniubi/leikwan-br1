@@ -542,8 +542,9 @@ final class ClientAgentController extends BaseController
 
         $sinceRevision = trim((string) $request->input('since_revision', ''));
         $waitSeconds = max(0, min(25, (int) $request->input('wait_seconds', 0)));
+        $runtimeArchitecture = $this->clientRuntimeArchitecture($request);
 
-        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
         $configRevision = (string) $snapshot['config_revision'];
         $forceApply = (bool) $snapshot['force_apply'];
 
@@ -552,7 +553,7 @@ final class ClientAgentController extends BaseController
             $deadline = microtime(true) + $waitSeconds;
             while (microtime(true) < $deadline) {
                 usleep(500000);
-                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
                 if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
                     break;
                 }
@@ -658,17 +659,32 @@ final class ClientAgentController extends BaseController
      * @param array<string, mixed> $client
      * @return array<string, mixed>
      */
-    private function stableConfigSnapshot(int $clientId, ?array $deviceSession, array $client): array
+    private function stableConfigSnapshot(
+        int $clientId,
+        ?array $deviceSession,
+        array $client,
+        string $runtimeArchitecture = 'amd64'
+    ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
         $clientAgent = $this->artifactMetadata('client_agent');
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
+        $arm64 = $runtimeArchitecture === 'arm64';
         $ultraClientRuntime = $this->artifactMetadata('ultra_client_runtime');
+        if ($arm64) {
+            $ultraClientRuntime = $this->artifactMetadata('ultra_client_runtime_linux_arm64');
+        }
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
+        if ($arm64) {
+            $bondBinary = $this->artifactMetadata('leikwan_bond_linux_arm64');
+        }
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
         $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_amd64');
+        if ($arm64) {
+            $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_arm64');
+        }
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $desiredUltraRuntimeVersion = (string) ($ultraClientRuntime['version'] ?? '');
         $desiredUltraRuntimeSha256 = (string) ($ultraClientRuntime['binary_sha256'] ?? $ultraClientRuntime['sha256'] ?? '');
@@ -710,10 +726,11 @@ final class ClientAgentController extends BaseController
             'install_forward_runtime' => $installForwardRuntime,
             'ultra_client_runtime' => $ultraClientRuntime,
             'leikwan_bond_linux_amd64' => $bondBinary,
+            'leikwan_bond_linux_' . $runtimeArchitecture => $bondBinary,
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'wstunnel_binary' => $wstunnelBinary,
-        ], ['debug_collection' => $debugCollection]);
+        ], ['debug_collection' => $debugCollection, 'runtime_architecture' => $runtimeArchitecture]);
 
         return [
             'forwards' => $forwards,
@@ -725,6 +742,8 @@ final class ClientAgentController extends BaseController
             'install_forward_runtime' => $installForwardRuntime,
             'ultra_client_runtime' => $ultraClientRuntime,
             'bond_binary' => $bondBinary,
+            'wstunnel_binary' => $wstunnelBinary,
+            'runtime_architecture' => $runtimeArchitecture,
             'mptcp_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'desired_bond_sha256' => $desiredBondSha256,
@@ -1301,6 +1320,12 @@ final class ClientAgentController extends BaseController
     private function isAndroidRequest(Request $request): bool
     {
         return str_starts_with(strtolower(trim((string) ($request->header('x-device-platform') ?? ''))), 'android');
+    }
+
+    private function clientRuntimeArchitecture(Request $request): string
+    {
+        $raw = strtolower(trim((string) ($request->header('x-device-architecture') ?? $request->input('architecture', ''))));
+        return in_array($raw, ['arm64', 'aarch64', 'armv8'], true) ? 'arm64' : 'amd64';
     }
 
     private function requireAndroidRequest(Request $request): void

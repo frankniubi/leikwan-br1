@@ -22,7 +22,11 @@ final class LeigodOnlyArtifactSourceBuildMap
             'leigod_linux_amd64' => ['paths' => ['artifacts/leigod/leigod-linux-amd64'], 'route_path' => '/artifacts/leigod/leigod-linux-amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'lguot_linux_amd64' => ['paths' => ['artifacts/lguot/lguot_linux_amd64'], 'route_path' => '/artifacts/lguot/lguot_linux_amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'leikwan_bond_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-bond', 'artifacts/wstunnel/leikwan-bond_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-bond_linux_amd64', 'platform_family' => 'linux-bond'],
+            'leikwan_bond_linux_arm64' => ['paths' => ['wstunnel-main/leikwan-bond', 'artifacts/wstunnel/leikwan-bond_linux_arm64'], 'route_path' => '/artifacts/wstunnel/leikwan-bond_linux_arm64', 'platform_family' => 'linux-bond'],
             'leikwan_uot_bond_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-uot-bond_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-uot-bond_linux_amd64', 'platform_family' => 'linux-bond'],
+            'leikwan_uot_bond_linux_arm64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-uot-bond_linux_arm64'], 'route_path' => '/artifacts/wstunnel/leikwan-uot-bond_linux_arm64', 'platform_family' => 'linux-bond'],
+            'leikwan_ingress_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-ingress', 'artifacts/wstunnel/leikwan-ingress_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-ingress_linux_amd64', 'platform_family' => 'linux-bond'],
+            'leikwan_ingress_linux_arm64' => ['paths' => ['wstunnel-main/leikwan-ingress', 'artifacts/wstunnel/leikwan-ingress_linux_arm64'], 'route_path' => '/artifacts/wstunnel/leikwan-ingress_linux_arm64', 'platform_family' => 'linux-bond'],
             'leikwan_udp_uot_merge_linux_amd64' => ['paths' => ['wstunnel-main/leikwan-uot', 'artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64'], 'route_path' => '/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64', 'platform_family' => 'linux-bond'],
             'windows_client_app' => ['paths' => ['wstunnel-main/leikwan-client-win', 'artifacts/windows/leikwan-bridge-setup.exe'], 'route_path' => '/artifacts/leikwan-bridge-setup.exe', 'platform_family' => 'windows-bond'],
             'leikwan_bond_windows_amd64' => ['paths' => ['wstunnel-main/leikwan-bond', 'artifacts/wstunnel/leikwan-bond_windows_amd64.exe'], 'route_path' => '/artifacts/wstunnel/leikwan-bond_windows_amd64.exe', 'platform_family' => 'windows-bond'],
@@ -36,6 +40,21 @@ final class LeigodOnlyArtifactSourceBuildMap
             'ultra_client_runtime' => [
                 'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_linux_amd64'],
                 'route_path' => '/artifacts/ultra/ultra-client_linux_amd64',
+            ],
+            'ultra_client_runtime_linux_arm64' => [
+                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_linux_arm64'],
+                'route_path' => '/artifacts/ultra/ultra-client_linux_arm64',
+                'platform_family' => 'linux-bond',
+            ],
+            'wstunnel_linux_arm64' => [
+                'paths' => ['.build/tool-sources/wstunnel-v10.5.2', 'artifacts/wstunnel/wstunnel_linux_arm64'],
+                'route_path' => '/artifacts/wstunnel/wstunnel_linux_arm64',
+                'platform_family' => 'linux-bond',
+            ],
+            'client_agent_installer_linux_arm64' => [
+                'paths' => ['tools/linux-arm64-installer', 'artifacts/install-client-agent-linux-arm64'],
+                'route_path' => '/artifacts/install-client-agent-linux-arm64',
+                'platform_family' => 'linux-bond',
             ],
             'ultra_client_runtime_windows' => [
                 'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_windows_amd64.exe'],
