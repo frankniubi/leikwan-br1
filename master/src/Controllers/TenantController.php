@@ -1290,6 +1290,7 @@ final class TenantController extends BaseController
 
         // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
         $macosInstallSection = $this->renderMacClientInstallSection();
+        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
@@ -1301,6 +1302,10 @@ final class TenantController extends BaseController
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
             . '</div></section>'
+            . '<section class="tenant-client-install__platform"><strong>Linux ARM64 installer</strong>'
+            . '<div class="flash" style="margin:10px 0 0!important;color:var(--warning);">系统要求：仅支持 Debian 11/12/13（Linux ARM64）。</div>'
+            . '<div class="actions"><a class="button secondary" href="' . $this->escape($linuxArm64InstallerUrl) . '">下载 ARM64 installer</a></div>'
+            . '</section>'
             . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '</section>'
