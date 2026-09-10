@@ -6,6 +6,7 @@
   <li>Have your panel <strong>Master URL</strong>, account <strong>Email</strong>, and <strong>Password</strong> ready for Windows.</li>
   <li>For Android, use an arm64 device running Android 8.0+ and be ready to approve the VPN request.</li>
   <li>For Linux, use a machine with systemd, Python 3, network access, and root-equivalent permission.</li>
+  <li><strong>The Linux arm64 single-file installer supports Debian 11, 12, and 13 only.</strong> Use the regular Linux install command for amd64 or another supported flow.</li>
   <li>Treat credentials and copied commands as secrets. A Linux installer command contains a bearer agent token.</li>
 </ul>
 
@@ -36,6 +37,7 @@ E --&gt; F</pre>
   <li>Select one of the supported LeiGod services offered by the app. Use only a service that the app lets you select.</li>
   <li>Watch the visible state move from <strong>Ready to connect</strong> to <strong>Connecting...</strong> and then <strong>Connected</strong>.</li>
   <li><strong>Linux:</strong> Open <strong>Tenant → Clients</strong>, expand <strong>Linux Install</strong>, and select <strong>Copy Install Command</strong>.</li>
+  <li>For <strong>Linux ARM64 Installer</strong>, confirm that the host is arm64/aarch64 and runs Debian 11, 12, or 13.</li>
   <li>Run the copied command once with root-equivalent permission. Do not paste it into chat, tickets, logs, or shared shell history.</li>
   <li>Confirm the installer prints <code>installed leikwan-client-agent</code>.</li>
   <li>Return to the panel and confirm a recent sync. On the Linux host, you may also confirm that <code>config_pull_state.json</code> reports <code>status</code> as <code>ok</code>.</li>

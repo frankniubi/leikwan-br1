@@ -90,6 +90,10 @@ ingress, and UoT native helpers; only the control-plane API is contacted during
 installation. The configured `--artifact-base` is retained in
 `/etc/leikwan-client-agent/config.json` for later hash-verified updates.
 
+**Support boundary:** this single-file installer is **Debian 11/12/13 only** on
+Linux `arm64`/`aarch64`. Do not use it on `amd64` hosts or other distributions;
+use the regular Linux installer or the platform-specific client package instead.
+
 ```bash
 curl -fsSL https://v3.leikwanhost.com/artifacts/install-client-agent-linux-arm64 \
   -o install-client-agent-linux-arm64

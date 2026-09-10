@@ -294,6 +294,14 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('windows_client_app', '/artifacts/leikwan-bridge-setup.exe');
     }
 
+    protected function linuxArm64ClientInstallerUrl(): string
+    {
+        return $this->clientAppArtifactUrl(
+            'client_agent_installer_linux_arm64',
+            '/artifacts/install-client-agent-linux-arm64'
+        );
+    }
+
     protected function macosClientArm64AppUrl(): string
     {
         return $this->clientAppArtifactUrl('macos_client_app_arm64', '/artifacts/macos/leikwan-bridge-arm64.dmg');
@@ -556,6 +564,7 @@ abstract class BaseController
     {
         $windowsAppUrl = $this->windowsClientAppUrl();
         $androidApkUrl = $this->androidClientApkUrl();
+        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $hasClient = $clientId > 0 && $agentToken !== '';
@@ -602,12 +611,22 @@ abstract class BaseController
                 $linuxActions,
                 $linuxDescription
             )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $linuxArm64InstallerUrl,
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
+                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
+                ],
+                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
+            )
             . '</section>';
     }
 
     protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string
     {
         $installCommand = $this->clientAgentInstallCommand($client);
+        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $windowsInstallerUrl = $this->clientWindowsInstallerUrl();
         $windowsManagerCommand = $this->clientWindowsManagerCommand($client);
         $windowsManagerUrl = $this->clientWindowsManagerUrlForClient($client);
@@ -667,6 +686,15 @@ abstract class BaseController
                     $this->renderCopyButton('Copy Install Command', $installCommand),
                 ],
                 'Manual/local install for this client on the Linux host that will run the client-agent.'
+            )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $linuxArm64InstallerUrl,
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
+                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
+                ],
+                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
