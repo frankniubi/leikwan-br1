@@ -91,29 +91,26 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         if (!VersionsEquivalent(update.Version, installer.Version))
             throw new InvalidDataException("update_manifest_version_mismatch");
         if (!IsRemoteVersionNewer(update.Version, currentVersion)
-            && !HasRuntimeDrift(update, _currentBundlePath))
+            && !HasRuntimeDrift(update, _currentBundlePath, _architecture))
             return null;
         return update with { ManualInstaller = installer };
     }
 
-    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath)
+    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath, string architecture)
     {
         if (artifact.RuntimeSha256.Count == 0)
             return false;
         var bin = Path.Combine(bundlePath, "Contents", "Resources", "bin");
-        var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["ultra_client_runtime_macos_arm64"] = Path.Combine(bin, "ultra-client"),
-            ["ultra_client_runtime_macos_x64"] = Path.Combine(bin, "ultra-client"),
-            ["leikwan_uot_bond_linux_arm64"] = Path.Combine(bin, "leikwan-uot-bond"),
-        };
-        foreach (var (key, expected) in artifact.RuntimeSha256)
-        {
-            if (!paths.TryGetValue(key, out var path) || string.IsNullOrWhiteSpace(expected))
-                continue;
-            if (!File.Exists(path) || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
+        var key = architecture == "arm64"
+            ? "ultra_client_runtime_macos_arm64"
+            : "ultra_client_runtime_macos_x64";
+        if (!artifact.RuntimeSha256.TryGetValue(key, out var expected)
+            || string.IsNullOrWhiteSpace(expected))
+            return false;
+        var path = Path.Combine(bin, "ultra-client");
+        if (!File.Exists(path)
+            || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+            return true;
         return false;
     }
 
