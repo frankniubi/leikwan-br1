@@ -17,7 +17,7 @@
 1. 停止连接并退出应用。
 2. 删除旧的 `LeiKwan Bridge.app` 及旧更新缓存目录。
 3. 保留 Keychain、登录配置和必要日志。
-4. 安装 `1.0.27` 或更高版本的对应架构 DMG。
+4. 安装线上已发布的对应架构 DMG；`1.0.27` 正式包上线后，所有旧版统一切换到该版本。不要把本地 fallback 包当作正式发布包。
 5. 启动后确认 `.app/Contents/Resources/bin` 下的 runtime hash 与 manifest 一致。
 
 ## Linux
