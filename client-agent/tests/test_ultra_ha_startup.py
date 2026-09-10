@@ -10,6 +10,28 @@ spec.loader.exec_module(module)
 
 
 class UltraHAStartupTests(unittest.TestCase):
+    def test_local_release_hold_does_not_acknowledge_or_schedule_updates(self):
+        agent = object.__new__(module.ClientAgent)
+        agent.apply_config_patch = mock.Mock()
+        agent.auto_update_request_token = mock.Mock(return_value='auto-release:old')
+        agent.load_update_state = mock.Mock(return_value={})
+        agent.request_self_update = mock.Mock()
+        with mock.patch.dict(module.os.environ, {'LEIKWAN_UPDATE_HOLD_UNTIL': '200'}), mock.patch.object(module.time, 'time', return_value=100):
+            agent.apply_management_state({'agent_update_request_token': 'explicit'})
+        agent.apply_config_patch.assert_called_once()
+        agent.load_update_state.assert_not_called()
+        agent.request_self_update.assert_not_called()
+
+    def test_expired_or_invalid_release_hold_allows_normal_management(self):
+        for value in ['99', 'invalid', 'nan', 'inf', '99999999']:
+            agent = object.__new__(module.ClientAgent)
+            agent.apply_config_patch = mock.Mock()
+            agent.auto_update_request_token = mock.Mock(return_value='')
+            agent.load_update_state = mock.Mock(return_value={})
+            with mock.patch.dict(module.os.environ, {'LEIKWAN_UPDATE_HOLD_UNTIL': value}), mock.patch.object(module.time, 'time', return_value=100):
+                agent.apply_management_state({})
+            agent.load_update_state.assert_called_once()
+
     def make_agent(self):
         agent = object.__new__(module.ClientAgent)
         agent.load_applied = mock.Mock(return_value={'170': {}})

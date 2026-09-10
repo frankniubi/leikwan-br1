@@ -2931,6 +2931,15 @@ class ClientAgent:
         else:
             authoritative_config = {"udp_uot_sidepath": None}
         self.apply_config_patch(authoritative_config)
+        # Root-local, time-bounded canary pin. Do not consume/acknowledge a
+        # pending panel update while download mirrors are being reconciled.
+        # Not panel-configurable; expired/invalid/unbounded holds fail open.
+        try:
+            hold_remaining = float(os.environ.get("LEIKWAN_UPDATE_HOLD_UNTIL", "0")) - time.time()
+        except ValueError:
+            hold_remaining = 0
+        if 0 < hold_remaining <= 86400:
+            return
         explicit_request_token = str(client_meta.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(client_meta)
         update_state = self.load_update_state()
