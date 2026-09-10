@@ -47,6 +47,7 @@
 - 随后无活跃 TCP 会话时移走 forward-170 灰度 ExecStart 覆盖，进行一次计划 runtime 升级重启；新 PID `1796781`，`/proc/1796781/exe` 哈希匹配正式 runtime。
 - 新版现场 TCP HTTP 返回 402 bytes，UDP DNS 返回 71 bytes，均通过原有拓扑。
 - Agent PID `1796046`，不再受原先 24 小时暂停控制；原截止时间已不适用。
+- 最终 75 秒观察：runtime PID `1796781`、Agent PID `1796046` 均不变，ACK 18 → 48、状态 ready；再次 TCP 402 bytes / 1.131 秒、UDP 71 bytes / 0.054 秒通过。
 - 升级前一次 TCP canary 出现上游 reset/空响应，UDP 成功；新版启动后两项通过。没有据此断言所有公网目标永不失败。
 
 ## 备份、发布异常和剩余范围
