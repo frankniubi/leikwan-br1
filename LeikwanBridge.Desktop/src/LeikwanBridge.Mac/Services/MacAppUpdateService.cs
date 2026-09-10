@@ -100,18 +100,46 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     {
         if (artifact.RuntimeSha256.Count == 0)
             return false;
-        var bin = Path.Combine(bundlePath, "Contents", "Resources", "bin");
-        var key = architecture == "arm64"
+        foreach (var (key, expected) in artifact.RuntimeSha256)
+        {
+            if (!TryResolveRuntimePath(key, bundlePath, architecture, out var path))
+                continue;
+            if (!Regex.IsMatch(expected ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
+                || !File.Exists(path)
+                || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool TryResolveRuntimePath(
+        string key,
+        string bundlePath,
+        string architecture,
+        out string path)
+    {
+        path = string.Empty;
+        var normalized = key.Trim();
+        var activeUltraKey = architecture == "arm64"
             ? "ultra_client_runtime_macos_arm64"
             : "ultra_client_runtime_macos_x64";
-        if (!artifact.RuntimeSha256.TryGetValue(key, out var expected)
-            || string.IsNullOrWhiteSpace(expected))
-            return false;
-        var path = Path.Combine(bin, "ultra-client");
-        if (!File.Exists(path)
-            || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(normalized, activeUltraKey, StringComparison.OrdinalIgnoreCase))
+        {
+            path = Path.Combine(bundlePath, "Contents", "Resources", "bin", "ultra-client");
             return true;
-        return false;
+        }
+
+        // Mac package metadata records helper paths (for example
+        // `bin/wstunnel`) so every native helper is covered by the same
+        // runtime-drift check. Reject traversal before combining the path.
+        if (!normalized.StartsWith("bin/", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var relative = normalized.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(relative)
+            || relative.Split(Path.DirectorySeparatorChar).Any(segment => segment is "" or "." or ".."))
+            return false;
+        path = Path.Combine(bundlePath, "Contents", "Resources", relative);
+        return true;
     }
 
     public async Task<PreparedAppUpdate> PrepareAsync(

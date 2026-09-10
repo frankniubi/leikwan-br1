@@ -10,13 +10,15 @@
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
     "path": "install/install-bond-sidecar.sh",
-    "sha256": "8f0065011b1dd083722ddcf53179c257bbd5880f0b78166dfda00f5f0a185b8e",
-    "size_bytes": 8942,
+    "sha256": "84edb2f1c90217c4f06bb51fa6d8a0429eb1de5628fe8587c0d27bedf3a80af9",
+    "size_bytes": 9507,
     "version": "2026.08.10.1"
   },
   "bond_sidecar_uninstaller": {
     "install_url": "/artifacts/uninstall-bond-sidecar.sh",
     "path": "install/uninstall-bond-sidecar.sh",
+    "sha256": "7b244075328d41aee424647e47fac54c344e66a9517d81dd543ec0b8bc2320b2",
+    "size_bytes": 1487,
     "version": "2026.04.08.1"
   },
   "cfwg_latency_watchdog": {
@@ -53,9 +55,9 @@
     "install_url": "/artifacts/install-client-agent.sh",
     "path": "install/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "980eee89a89c215f5b3ca08d710061a749e73bc9e5b622edfeb6c19503eafdad",
-    "size_bytes": 35369,
-    "version": "2026.09.11.2"
+    "sha256": "8a8f7ffe8c3a2901efb37948e5d7cf89865de7f01c4a3de77a2171a9d3c365a6",
+    "size_bytes": 35589,
+    "version": "2026.09.11.3"
   },
   "client_agent_installer_linux_arm64": {
     "architecture": "arm64",
@@ -77,11 +79,15 @@
   "client_installer_windows": {
     "install_url": "/artifacts/install-client.ps1",
     "path": "install/install-client.ps1",
+    "sha256": "48e3017886bbb77f75a5730e1cfdfa52fdec8f7ecb35f8c0f42cc439c17db05e",
+    "size_bytes": 1089,
     "version": "2026.04.08.1"
   },
   "client_manager_windows": {
     "install_url": "/artifacts/manage-client.ps1",
     "path": "install/manage-client.ps1",
+    "sha256": "b58586a6701750b07276782c5b9bf14672d2969fc4c6ab1c00700574b481b56b",
+    "size_bytes": 1526,
     "version": "2026.04.08.1"
   },
   "forward_strategy": {
@@ -163,6 +169,8 @@
   "leikwan_ingress_windows_amd64": {
     "artifact_url": "/artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
     "path": "artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
+    "sha256": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
+    "size_bytes": 2339328,
     "version": "0.1.0"
   },
   "leikwan_mptcp_relay_linux_amd64": {
@@ -325,8 +333,8 @@
   "mptcp_sidecar_runtime": {
     "artifact_url": "/artifacts/leikwan-mptcp-sidecar.py",
     "path": "sidecar-agent/leikwan_mptcp_sidecar.py",
-    "sha256": "71392d8faccc26522da72edff645053d97a62b094567894df30740f230ef66d0",
-    "size_bytes": 42508,
+    "sha256": "d1cb2beb23d25e14442f8be83618ee10e3dc2d9692a73360b6336f8207017dde",
+    "size_bytes": 41512,
     "version": "2026.05.13.1"
   },
   "sidecar_agent": {
@@ -349,8 +357,8 @@
     "install_url": "/artifacts/install-slave.sh",
     "path": "install/install-slave.sh",
     "remote_install_url": "/artifacts/remote-install-slave.sh",
-    "sha256": "8b9fe30c52311be93d98411d6cc5184882cf0c61d595258939e325d4889e6f11",
-    "size_bytes": 17667,
+    "sha256": "72e66b8b85d470df8bf2508b5346d6a0baa304aaf87ed8ee67d1a3ebd09a9e2c",
+    "size_bytes": 18323,
     "version": "2026.08.10.1"
   },
   "slave_preconnect_relay": {
@@ -374,9 +382,9 @@
     "install_url": "/artifacts/install-tcp-accel.sh",
     "note": "Debian 12 self-contained tcp-accel role installer for client/slave/sidecar; installs dependencies and systemd units without external build steps.",
     "path": "install/install-tcp-accel.sh",
-    "sha256": "8a6752604bac264374a15765aa23f2477e729ea719967f9e7400eb5e9350286a",
-    "size": 8389,
-    "size_bytes": 8389,
+    "sha256": "4a9f40040669265225c77e1ee0e411795c43aa1b6c3be11adddd43cbe8764017",
+    "size": 8467,
+    "size_bytes": 8467,
     "version": "2026.08.10.1"
   },
   "tcp_accel_runtime": {
@@ -407,8 +415,8 @@
   "udp_uot_merge_runtime": {
     "artifact_url": "/artifacts/leikwan-udp-uot-merge.py",
     "path": "sidecar-agent/leikwan_udp_uot_merge.py",
-    "sha256": "2c40404274ed1c5b1b828f500e299fdf61790c404ad293857d5725ef719c3525",
-    "size_bytes": 30481,
+    "sha256": "7f48daa2cd847ea20ca2014ec24ba81da55480d7cbfe6847a3be2d97ed4dd7bb",
+    "size_bytes": 30743,
     "version": "2026.08.08.1"
   },
   "ultra_client_runtime": {

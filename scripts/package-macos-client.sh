@@ -143,6 +143,20 @@ for key, entry in artifacts.items():
         }
         if allowed_hardening:
             merged["hardening"] = allowed_hardening
+    runtime_sha256 = entry.get("runtime_sha256")
+    if not isinstance(runtime_sha256, dict) or not runtime_sha256:
+        raise SystemExit(f"runtime hashes missing: {key}")
+    normalized_runtime = {}
+    for runtime_path, runtime_hash in runtime_sha256.items():
+        relative_runtime = pathlib.PurePosixPath(str(runtime_path))
+        if (relative_runtime.as_posix() != str(runtime_path)
+                or not str(runtime_path).startswith("bin/")
+                or relative_runtime.is_absolute()
+                or ".." in relative_runtime.parts
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", str(runtime_hash))):
+            raise SystemExit(f"invalid runtime hash: {key}:{runtime_path}")
+        normalized_runtime[str(runtime_path)] = str(runtime_hash).lower()
+    merged["runtime_sha256"] = normalized_runtime
     versions[key] = merged
 
 versions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,6 +426,13 @@ update_key = "macos_client_update_" + suffix
 dmg_name = "leikwan-bridge-" + suffix + ".dmg"
 zip_name = "leikwan-bridge-update-" + suffix + ".zip"
 helpers = json.loads(pathlib.Path(helper_manifest).read_text(encoding="utf-8"))
+runtime_sha256 = {
+    str(helper["path"]): str(helper["sha256"]).lower()
+    for helper in helpers.get("helpers", [])
+    if isinstance(helper, dict) and helper.get("path") and helper.get("sha256")
+}
+if not runtime_sha256:
+    raise SystemExit("helper manifest has no runtime hashes")
 payload = {
     "version": version,
     "architecture": architecture,
@@ -430,6 +451,7 @@ payload = {
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },
+            "runtime_sha256": runtime_sha256,
         },
         update_key: {
             "version": version,
@@ -444,6 +466,7 @@ payload = {
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },
+            "runtime_sha256": runtime_sha256,
         },
     },
     "helpers": helpers,
