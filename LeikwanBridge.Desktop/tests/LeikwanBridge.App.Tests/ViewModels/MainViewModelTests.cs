@@ -38,6 +38,28 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ForwardCatalogStartsLoadingAndBecomesReadyAfterSnapshot()
+    {
+        var vm = new MainViewModel();
+
+        Assert.True(vm.IsLoadingForwards);
+
+        vm.ApplyForwardSnapshot([], _ => false);
+
+        Assert.False(vm.IsLoadingForwards);
+    }
+
+    [Fact]
+    public void ProxyCannotConnectUntilModeIsExplicitlySelected()
+    {
+        var vm = new MainViewModel();
+        Assert.False(vm.IsProxyModeSelected);
+        Assert.False(vm.IsProxyReadyForSelectedPairedForward);
+        vm.IsProxyModeSelected = true;
+        Assert.False(vm.IsProxyReadyForSelectedPairedForward);
+    }
+
+    [Fact]
     public void NativeOutboundDrawerIsCollapsedByDefault()
     {
         var vm = new MainViewModel
@@ -171,7 +193,7 @@ public sealed class MainViewModelTests
 
         var forward = Assert.Single(vm.Forwards);
         Assert.Equal(59, forward.ForwardId);
-        Assert.Equal("Forward #59 | Port 11059 | Direction CAN->HKG", forward.DisplayName);
+        Assert.Equal("Forward #59 · CAN->HKG", forward.DisplayName);
         Assert.Equal(ForwardLifecycleState.Connected, forward.Summary.Lifecycle);
         Assert.Equal(ForwardQualityState.Good, forward.Summary.Quality);
         Assert.True(forward.Summary.CanStop);
@@ -186,7 +208,7 @@ public sealed class MainViewModelTests
 
         var forward = Assert.Single(vm.Forwards);
 
-        Assert.Equal("Forward #26 | Port 10026 | Direction -", forward.DisplayName);
+        Assert.Equal("Forward #26 · -", forward.DisplayName);
     }
 
     [Fact]

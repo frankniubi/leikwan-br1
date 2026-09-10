@@ -2,9 +2,10 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.08.29.3"
+INSTALLER_VERSION="2026.09.10.2"
 MASTER_URL=""
 ARTIFACT_BASE=""
+DOWNLOAD_BASE=""
 CLIENT_ID=""
 AGENT_TOKEN=""
 CONFIG_DIR="/etc/leikwan-client-agent"
@@ -15,6 +16,17 @@ REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 REQUIRE_MPTCP=0
 TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
 STATE_DIR="/var/lib/leikwan-client-agent"
+RUNTIME_ARCH="amd64"
+ULTRA_RUNTIME_KEY="ultra_client_runtime"
+ULTRA_RUNTIME_PATH="artifacts/ultra/ultra-client_linux_amd64"
+UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
+UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_amd64"
+WSTUNNEL_RUNTIME_KEY="wstunnel_linux_amd64"
+WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_amd64"
+INGRESS_RUNTIME_KEY="leikwan_ingress_linux_amd64"
+INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_amd64"
+BOND_RUNTIME_KEY="leikwan_bond_linux_amd64"
+BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_amd64"
 
 die() {
   echo "install-client-agent: $*" >&2
@@ -27,8 +39,33 @@ validate_install_arguments() {
   local arch
   arch="$(uname -m)"
   case "$arch" in
-    x86_64|amd64) ;;
-    *) die "unsupported architecture '$arch'; published Linux client artifacts support x86_64/amd64 only" ;;
+    x86_64|amd64)
+      RUNTIME_ARCH="amd64"
+      ULTRA_RUNTIME_KEY="ultra_client_runtime"
+      ULTRA_RUNTIME_PATH="artifacts/ultra/ultra-client_linux_amd64"
+      UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
+      UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_amd64"
+      WSTUNNEL_RUNTIME_KEY="wstunnel_linux_amd64"
+      WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_amd64"
+      INGRESS_RUNTIME_KEY="leikwan_ingress_linux_amd64"
+      INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_amd64"
+      BOND_RUNTIME_KEY="leikwan_bond_linux_amd64"
+      BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_amd64"
+      ;;
+    aarch64|arm64)
+      RUNTIME_ARCH="arm64"
+      ULTRA_RUNTIME_KEY="ultra_client_runtime_linux_arm64"
+      ULTRA_RUNTIME_PATH="artifacts/ultra/ultra-client_linux_arm64"
+      UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_arm64"
+      UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_arm64"
+      WSTUNNEL_RUNTIME_KEY="wstunnel_linux_arm64"
+      WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_arm64"
+      INGRESS_RUNTIME_KEY="leikwan_ingress_linux_arm64"
+      INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_arm64"
+      BOND_RUNTIME_KEY="leikwan_bond_linux_arm64"
+      BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_arm64"
+      ;;
+    *) die "unsupported architecture '$arch'; published Linux client artifacts support x86_64/amd64 and aarch64/arm64" ;
   esac
 
   # The generated runtime has a stable /usr/local/bin contract for all helper
@@ -39,7 +76,7 @@ validate_install_arguments() {
   [[ -n "$AGENT_TOKEN" ]] || die "agent token must not be empty"
 
   local value
-  for value in "$MASTER_URL" "$ARTIFACT_BASE" "$AGENT_TOKEN" "$CONFIG_DIR" "$BIN_DIR" "$SERVICE_NAME"; do
+  for value in "$MASTER_URL" "$ARTIFACT_BASE" "$DOWNLOAD_BASE" "$AGENT_TOKEN" "$CONFIG_DIR" "$BIN_DIR" "$SERVICE_NAME"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "arguments must not contain newlines"
   done
   [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "invalid service name"
@@ -85,9 +122,17 @@ suggested_mptcp_kernel_packages() {
   case "${ID:-}" in
     debian)
       if uname -r | grep -q 'cloud'; then
-        echo "linux-image-cloud-amd64 linux-headers-cloud-amd64"
+        if [[ "$RUNTIME_ARCH" == "arm64" ]]; then
+          echo "linux-image-cloud-arm64 linux-headers-cloud-arm64"
+        else
+          echo "linux-image-cloud-amd64 linux-headers-cloud-amd64"
+        fi
       else
-        echo "linux-image-amd64 linux-headers-amd64"
+        if [[ "$RUNTIME_ARCH" == "arm64" ]]; then
+          echo "linux-image-arm64 linux-headers-arm64"
+        else
+          echo "linux-image-amd64 linux-headers-amd64"
+        fi
       fi
       ;;
     ubuntu)
@@ -256,6 +301,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --master) MASTER_URL="$2"; shift 2 ;;
     --artifact-base) ARTIFACT_BASE="$2"; shift 2 ;;
+    --download-base) DOWNLOAD_BASE="$2"; shift 2 ;;
     --client-id) CLIENT_ID="$2"; shift 2 ;;
     --agent-token) AGENT_TOKEN="$2"; shift 2 ;;
     --config-dir) CONFIG_DIR="$2"; shift 2 ;;
@@ -273,8 +319,15 @@ if [[ -z "$MASTER_URL" || -z "$CLIENT_ID" || -z "$AGENT_TOKEN" ]]; then
   exit 1
 fi
 
+# The control plane is intentionally pinned to Cloudflare. The user-supplied
+# address may still be used as the artifact source when --artifact-base is omitted.
+REQUESTED_MASTER_URL="$MASTER_URL"
+MASTER_URL="https://v3.leikwanhost.com"
 if [[ -z "$ARTIFACT_BASE" ]]; then
-  ARTIFACT_BASE="$MASTER_URL"
+  ARTIFACT_BASE="$REQUESTED_MASTER_URL"
+fi
+if [[ -z "$DOWNLOAD_BASE" ]]; then
+  DOWNLOAD_BASE="$ARTIFACT_BASE"
 fi
 
 validate_install_arguments
@@ -745,7 +798,7 @@ download_manifest_artifact() {
 }
 
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
-leikwan_protected_download "$ARTIFACT_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
+leikwan_protected_download "$DOWNLOAD_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
 _VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
 rm -f "$_VERSIONS_PATH"
 if [[ -z "$INSTALLER_SHA256" ]]; then
@@ -758,41 +811,50 @@ fi
 
 # download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
 # download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
-download_manifest_artifact client_agent "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
-download_manifest_artifact cfwg_latency_watchdog "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
+download_manifest_artifact client_agent "$DOWNLOAD_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   # Keep the legacy artifact route visible for older operator tooling while
   # enforcing the manifest hash through download_manifest_artifact.
   # download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
-  download_manifest_artifact client_agent_update "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
+  download_manifest_artifact client_agent_update "$DOWNLOAD_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
 fi
-download_manifest_artifact install_forward_runtime "$ARTIFACT_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
-download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"
-download_manifest_artifact forward_strategy "$ARTIFACT_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
-download_manifest_artifact tcp_race_runtime "$ARTIFACT_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
-download_manifest_artifact udp_fanout_runtime "$ARTIFACT_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
+download_manifest_artifact install_forward_runtime "$DOWNLOAD_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
+download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_PATH" "$BIN_DIR/ultra-client"
+# Legacy amd64 route contract retained for older static tooling:
+# download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"
+download_manifest_artifact forward_strategy "$DOWNLOAD_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
+download_manifest_artifact tcp_race_runtime "$DOWNLOAD_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
+download_manifest_artifact udp_fanout_runtime "$DOWNLOAD_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
 backup_existing "$BIN_DIR/leikwan-client-strategy"
 cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
 WRAPPER
 chmod 0755 "$BIN_DIR/leikwan-client-strategy"
-download_manifest_artifact client_rate_limit "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
-download_manifest_artifact uot_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
-download_manifest_artifact uot_bond_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
-download_manifest_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
+download_manifest_artifact client_rate_limit "$DOWNLOAD_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
+download_manifest_artifact uot_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
+download_manifest_artifact uot_bond_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
+download_manifest_artifact "$UOT_BOND_RUNTIME_KEY" "$DOWNLOAD_BASE/$UOT_BOND_RUNTIME_PATH" "$BIN_DIR/leikwan-uot-bond"
+# Legacy amd64 route contract retained for older static tooling:
+# download_manifest_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
 "$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
 import json, sys
 value = json.load(sys.stdin)
 if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("scheduler_modes", []) or "leg-progress-v1" not in value.get("capabilities", []):
     raise SystemExit("installed native UoT runtime lacks feedback capability")
 '
-download_manifest_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+download_manifest_artifact "$WSTUNNEL_RUNTIME_KEY" "$DOWNLOAD_BASE/$WSTUNNEL_RUNTIME_PATH" "$BIN_DIR/wstunnel"
 # download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+# Legacy amd64 route contract retained for older static tooling:
+# download_manifest_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
 "$BIN_DIR/wstunnel" --version >/dev/null 2>&1 || die "wstunnel binary failed its startup check"
-download_manifest_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
-download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
-WSTUNNEL_VERSION="$(_vers_value wstunnel_linux_amd64 version)"
+download_manifest_artifact "$INGRESS_RUNTIME_KEY" "$DOWNLOAD_BASE/$INGRESS_RUNTIME_PATH" "$BIN_DIR/leikwan-ingress"
+download_manifest_artifact "$BOND_RUNTIME_KEY" "$DOWNLOAD_BASE/$BOND_RUNTIME_PATH" "$BIN_DIR/leikwan-bond"
+# Legacy amd64 route contracts retained for older static tooling:
+# download_manifest_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
+# download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
+WSTUNNEL_VERSION="$(_vers_value "$WSTUNNEL_RUNTIME_KEY" version)"
 
 CONFIG_TMP="$CONFIG_DIR/config.json.new"
 backup_existing "$CONFIG_DIR/config.json"
@@ -805,6 +867,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 payload = {
     "master_url": os.environ["MASTER_URL"],
+    "panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"],
     "artifact_base_url": os.environ["ARTIFACT_BASE"],
     "client_id": int(os.environ["CLIENT_ID"]),
     "agent_token": os.environ["AGENT_TOKEN"],
@@ -840,6 +903,8 @@ EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5
+WatchdogSec=90
+NotifyAccess=main
 
 [Install]
 WantedBy=multi-user.target

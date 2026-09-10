@@ -221,6 +221,69 @@ function Copy-StagedPayload {
     }
 }
 
+function New-InstallSnapshot {
+    param([string]$TargetDir)
+
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        return [pscustomobject]@{
+            Exists = $false
+            Path = ""
+        }
+    }
+
+    $snapshotRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("leikwan-install-snapshot-" + [guid]::NewGuid().ToString("N"))
+    $snapshotPayload = Join-Path $snapshotRoot "payload"
+    New-Item -ItemType Directory -Path $snapshotPayload -Force | Out-Null
+    Copy-Item -LiteralPath $TargetDir -Destination $snapshotPayload -Recurse -Force
+
+    return [pscustomobject]@{
+        Exists = $true
+        Path = $snapshotRoot
+    }
+}
+
+function Restore-InstallSnapshot {
+    param(
+        [string]$TargetDir,
+        [object]$Snapshot
+    )
+
+    if ($null -eq $Snapshot) {
+        throw "install snapshot is missing"
+    }
+
+    if (Test-Path -LiteralPath $TargetDir) {
+        Remove-Item -LiteralPath $TargetDir -Recurse -Force
+    }
+
+    if (-not [bool]$Snapshot.Exists) {
+        return
+    }
+
+    $snapshotPayload = Join-Path ([string]$Snapshot.Path) "payload"
+    if (-not (Test-Path -LiteralPath $snapshotPayload)) {
+        throw "install snapshot payload is missing"
+    }
+
+    $snapshotInstall = Get-ChildItem -LiteralPath $snapshotPayload -Force | Select-Object -First 1
+    if ($null -eq $snapshotInstall) {
+        throw "install snapshot payload is empty"
+    }
+
+    New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+    foreach ($entry in Get-ChildItem -LiteralPath $snapshotInstall.FullName -Force) {
+        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $TargetDir $entry.Name) -Recurse -Force
+    }
+}
+
+function Remove-InstallSnapshot {
+    param([object]$Snapshot)
+
+    if ($null -ne $Snapshot -and [bool]$Snapshot.Exists -and -not [string]::IsNullOrWhiteSpace([string]$Snapshot.Path)) {
+        Remove-Item -LiteralPath ([string]$Snapshot.Path) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Write-CompatibilityCopies {
     param([string]$TargetDir)
 
@@ -632,21 +695,34 @@ function Invoke-InstallMode {
     $previousInstalledFiles = Get-InstalledFilesFromManifest -TargetDir $InstallDir
     $currentInstalledFiles = Get-StagedPayloadRelativeFiles -PayloadRoot $payloadRoot
 
-    Stop-InstalledProcesses -TargetDir $InstallDir
-    Remove-ClientBackupDirectories -TargetDir $InstallDir
-    # Client updates replace installer-owned files in place. Development-side
-    # artifacts may keep backups, but the installed client must not create them.
-    $backupDir = ""
-    Remove-StaleInstallerOwnedFiles -TargetDir $InstallDir -PreviousInstalledFiles $previousInstalledFiles -CurrentInstalledFiles $currentInstalledFiles
-    Copy-StagedPayload -PayloadRoot $payloadRoot -TargetDir $InstallDir
-    Write-CompatibilityCopies -TargetDir $InstallDir
-    Install-EmbeddedHelper -TargetDir $InstallDir
-    Ensure-DesktopShortcutState -TargetDir $InstallDir -ShouldExist $selectedDesktopShortcut -ShortcutDisplayName $DisplayName -EffectiveInstallMode $InstallMode
-    $installedFiles = $currentInstalledFiles
-    Write-InstallManifest -TargetDir $InstallDir -BackupDir $backupDir -InstalledFiles $installedFiles
-    Write-InstallState -TargetDir $InstallDir -SelectedInstallMode $InstallMode -SelectedDesktopShortcut $selectedDesktopShortcut -SelectedDisplayName $DisplayName -SelectedAppVersion $AppVersion
+    $snapshot = New-InstallSnapshot -TargetDir $InstallDir
+    try {
+        Stop-InstalledProcesses -TargetDir $InstallDir
+        Remove-ClientBackupDirectories -TargetDir $InstallDir
+        # Client updates replace installer-owned files in place. Development-side
+        # artifacts may keep backups, but the installed client must not create them.
+        $backupDir = ""
+        Remove-StaleInstallerOwnedFiles -TargetDir $InstallDir -PreviousInstalledFiles $previousInstalledFiles -CurrentInstalledFiles $currentInstalledFiles
+        Copy-StagedPayload -PayloadRoot $payloadRoot -TargetDir $InstallDir
+        Write-CompatibilityCopies -TargetDir $InstallDir
+        Install-EmbeddedHelper -TargetDir $InstallDir
+        Ensure-DesktopShortcutState -TargetDir $InstallDir -ShouldExist $selectedDesktopShortcut -ShortcutDisplayName $DisplayName -EffectiveInstallMode $InstallMode
+        $installedFiles = $currentInstalledFiles
+        Write-InstallManifest -TargetDir $InstallDir -BackupDir $backupDir -InstalledFiles $installedFiles
+        Write-InstallState -TargetDir $InstallDir -SelectedInstallMode $InstallMode -SelectedDesktopShortcut $selectedDesktopShortcut -SelectedDisplayName $DisplayName -SelectedAppVersion $AppVersion
 
-    Write-Host "Installed LeiKwan Bridge to $InstallDir"
+        Write-Host "Installed LeiKwan Bridge to $InstallDir"
+    } catch {
+        $installError = $_
+        try {
+            Restore-InstallSnapshot -TargetDir $InstallDir -Snapshot $snapshot
+        } catch {
+            throw "install failed and rollback failed: $($installError.Exception.Message); rollback: $($_.Exception.Message)"
+        }
+        throw "install failed; previous installation restored: $($installError.Exception.Message)"
+    } finally {
+        Remove-InstallSnapshot -Snapshot $snapshot
+    }
 }
 
 function Invoke-UninstallMode {

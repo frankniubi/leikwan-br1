@@ -96,7 +96,13 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             ):
                 self.assertEqual(method, "GET")
                 self.assertTrue(url.endswith("/api/client/configs/pull"))
-                self.assertEqual({"x-device-platform": "linux"}, extra_headers)
+                self.assertEqual(
+                    {
+                        "x-device-platform": "linux",
+                        "x-device-architecture": client_agent_module.local_runtime_architecture(),
+                    },
+                    extra_headers,
+                )
                 return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
 
             def fake_post(method: str, url: str, token: str, payload: dict | None = None):

@@ -16,13 +16,54 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
 
     var panelUrl: String
         get() = if (BuildConfig.DEBUG) {
-            prefs.getString("panel_url", BuildConfig.PANEL_URL) ?: BuildConfig.PANEL_URL
+            prefs.getString("panel_url", panelEndpoint.url) ?: panelEndpoint.url
         } else {
-            BuildConfig.PANEL_URL
+            panelEndpoint.url
         }
         set(v) {
             if (BuildConfig.DEBUG) prefs.edit().putString("panel_url", v).apply()
         }
+
+    /** The selected allowlisted panel origin used by all new API clients. */
+    var panelEndpoint: PanelEndpoint
+        get() = PanelEndpoint.fromStorage(
+            prefs.getString("panel_endpoint", PanelEndpoint.DEFAULT.storageKey),
+        )
+        set(v) {
+            prefs.edit()
+                .putString("panel_endpoint", v.storageKey)
+                // A debug-only URL override must not shadow an explicit endpoint choice.
+                .remove("panel_url")
+                .apply()
+        }
+
+    var rememberLoginInfo: Boolean
+        get() = prefs.getBoolean("remember_login_info", true)
+        set(v) = prefs.edit().putBoolean("remember_login_info", v).apply()
+
+    val savedClientId: Long?
+        get() = if (rememberLoginInfo) prefs.getLong("saved_client_id", 0L).takeIf { it > 0L } else null
+
+    val savedAgentToken: String?
+        get() = if (rememberLoginInfo) prefs.getString("saved_agent_token", null)?.takeIf { it.isNotBlank() } else null
+
+    fun saveLoginInfo(clientId: Long, agentToken: String) {
+        require(clientId > 0L) { "client_id_invalid" }
+        require(agentToken.isNotBlank()) { "agent_token_required" }
+        prefs.edit()
+            .putLong("saved_client_id", clientId)
+            .putString("saved_agent_token", agentToken.trim())
+            .putBoolean("remember_login_info", true)
+            .apply()
+    }
+
+    fun clearSavedLoginInfo() {
+        prefs.edit()
+            .remove("saved_client_id")
+            .remove("saved_agent_token")
+            .putBoolean("remember_login_info", false)
+            .apply()
+    }
 
     var agentToken: String?
         get() = prefs.getString("agent_token", null)

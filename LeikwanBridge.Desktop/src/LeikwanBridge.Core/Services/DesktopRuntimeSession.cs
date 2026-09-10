@@ -17,6 +17,13 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
+    Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        => ProxyForwardLease.AcquireAsync(
+            Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+                ?? throw new InvalidOperationException("proxy_forward_unavailable"),
+            () => IsForwardRunning(forwardId),
+            token => StartForwardAsync(forwardId, token),
+            token => StopForwardAsync(forwardId, token), ct);
     Task StartAllAsync(CancellationToken ct);
     Task StopAllAsync(CancellationToken ct);
     Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
@@ -33,6 +40,17 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
 
 public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 {
+    // A control-plane outage during startup should not surface as a hard
+    // disconnect when the endpoint supervisor can recover shortly afterwards.
+    // Keep this retry local to the initial pull; the API payload and runtime
+    // reconciliation remain unchanged.
+    private static readonly TimeSpan[] StartupSyncRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(7),
+    ];
+
     private readonly MasterApiClient _api;
     private readonly ConfigPollingService _polling;
     private readonly HeartbeatService _heartbeat;
@@ -74,12 +92,17 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _polling.ForwardsUpdated += OnForwardsUpdated;
         _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
+        _polling.PreparationProgress += (done, total) => LogRaised?.Invoke($"preparing_routes:{done}/{total}");
         _polling.PullStateChanged += state =>
         {
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
                 QueueHeartbeat();
         };
-        _polling.SyncError += exception => LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+        _polling.SyncError += exception =>
+        {
+            LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+            _polling.RequestControlPlaneRecovery();
+        };
         _polling.ClientUpdated += client => QueueDiagnostics(client);
         _health.HealthIssue += (forwardId, issue) => LogRaised?.Invoke($"health_issue:{forwardId}:{BoundCode(issue)}");
         _heartbeat.UltraActionsReceived += ApplyUltraPolicyActions;
@@ -108,17 +131,25 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         string routePolicy,
         CancellationToken ct)
     {
-        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
-        if (forward is null || NativeOutbound is null)
-            return null;
-        forward.NativeOutbound = NativeOutbound;
-        forward.NativeRouteScope = routeScope.Trim().ToLowerInvariant();
-        return await _api.ResolveNativeOutboundLeaseAsync(
-            forward,
-            NativeOutbound,
-            forward.NativeRouteScope,
-            routePolicy,
-            ct);
+        // Native reconnects need fresh rotating tickets, not a revision-cached
+        // forward. Pull only the policy; do not restart ordinary forwards.
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var pull = await _api.PullConfigsAsync(ct: ct).ConfigureAwait(false);
+            var forward = pull.Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
+            if (!pull.Ok || pull.NotModified || forward is null || pull.NativeOutbound is null)
+                return null;
+            try
+            {
+                return await _api.ResolveNativeOutboundLeaseAsync(
+                    forward, pull.NativeOutbound, routeScope.Trim().ToLowerInvariant(), routePolicy, ct).ConfigureAwait(false);
+            }
+            catch (MasterApiException error) when (attempt == 0 && error.StatusCode == 409 && error.Message == "lease_scope_invalid")
+            {
+                LogRaised?.Invoke("native_lease_policy_refresh");
+            }
+        }
+        return null;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -126,7 +157,35 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         if (_cts is not null)
             return;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        await _polling.SyncOnceAsync(_cts.Token);
+        LogRaised?.Invoke("preparing_config");
+        Exception? lastSyncError = null;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await _polling.SyncOnceAsync(_cts.Token).ConfigureAwait(false);
+                lastSyncError = null;
+                break;
+            }
+            catch (OperationCanceledException) when (_cts.Token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (attempt < StartupSyncRetryDelays.Length)
+            {
+                lastSyncError = exception;
+                LogRaised?.Invoke($"startup_sync_retry:{attempt + 1}:{exception.GetType().Name}");
+                await Task.Delay(StartupSyncRetryDelays[attempt], _cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                lastSyncError = exception;
+                break;
+            }
+        }
+        if (lastSyncError is not null)
+            throw lastSyncError;
+        _cts.Token.ThrowIfCancellationRequested();
         _polling.Start(_pollIntervalSeconds);
         _heartbeatLoop = RunHeartbeatLoopAsync(_cts.Token);
     }
@@ -175,9 +234,37 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         ct.ThrowIfCancellationRequested();
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
             ?? throw new KeyNotFoundException("forward_not_found");
-        _runtime.RestartForward(forward, force: true, reason: "manual_apply");
-        PublishCurrentForwards();
-        return Task.CompletedTask;
+        return Task.Run(() =>
+        {
+            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+            PublishCurrentForwards();
+        }, ct);
+    }
+
+    public async Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+            ?? throw new InvalidOperationException("proxy_forward_unavailable");
+        ProxyForwardLease? lease = null;
+        try
+        {
+            lease = await _runtime.AcquireProxyForwardAsync(forward, ct).ConfigureAwait(false);
+            PublishCurrentForwards();
+            return lease.OwnsForward
+                ? new ProxyForwardLease(lease.Forward, true, async _ =>
+                {
+                    try { await lease.DisposeAsync().ConfigureAwait(false); }
+                    finally { PublishCurrentForwards(); }
+                })
+                : lease;
+        }
+        catch
+        {
+            if (lease is not null)
+                await lease.DisposeAsync().ConfigureAwait(false);
+            PublishCurrentForwards();
+            throw;
+        }
     }
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct)
@@ -360,9 +447,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             await gate.WaitAsync(ct);
             try
             {
-                await Task.Yield();
-                ct.ThrowIfCancellationRequested();
-                await action(item);
+                await Task.Run(() => action(item), ct).ConfigureAwait(false);
             }
             finally
             {

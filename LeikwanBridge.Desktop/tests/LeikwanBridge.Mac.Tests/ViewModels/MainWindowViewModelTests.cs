@@ -2,12 +2,429 @@ using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Mac.ViewModels;
+using LeikwanBridge.Mac.Services;
 using Xunit;
 
 namespace LeikwanBridge.Mac.Tests.ViewModels;
 
 public sealed class MainWindowViewModelTests
 {
+    [Fact]
+    public void PairingNavigationDoesNotEnterProxyOrStartConnections()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot { IsSignedIn = true });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        vm.ShowPairingCommand.Execute(null);
+
+        Assert.Equal("pairing", vm.SelectedSection);
+        Assert.False(vm.IsConnectionsVisible);
+        Assert.False(vm.IsDashboardVisible);
+        Assert.Empty(controller.AcquiredForwards);
+
+        vm.ShowConnectionsCommand.Execute(null);
+        Assert.Equal("connections", vm.SelectedSection);
+        Assert.True(vm.IsConnectionsVisible);
+    }
+
+    [Fact]
+    public async Task UnpairedRouteNeverBorrowsThePreviouslySelectedSavedNode()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "test-web", Server = "private.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards =
+            [
+                new DesktopForwardSnapshot(123, "First route", "single", 12001, false, "stopped"),
+                new DesktopForwardSnapshot(124, "Second route", "single", 12002, true, "running"),
+            ],
+        });
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        vm.SelectedConnectionForward = vm.Forwards[1];
+
+        Assert.Null(vm.SelectedConnectionProfile);
+        Assert.False(connections.Selection.ForwardProfiles.ContainsKey(124));
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+        Assert.Empty(controller.AcquiredForwards);
+        Assert.False(vm.IsLocalConnectionActive);
+    }
+
+    [Fact]
+    public async Task ExistingLibraryDoesNotAutomaticallyBindFirstRouteOnLoad()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "test-web", Server = "private.test" });
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "First route", "single", 12001, false, "stopped")],
+        });
+
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        Assert.Null(vm.SelectedConnectionProfile);
+        Assert.Empty(connections.Selection.ForwardProfiles);
+    }
+
+    [Fact]
+    public async Task PairingRowsExposeAnExplicitDefaultNodeAndUnpairedRoutesStayOutOfConnectionsSelector()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "test-web", Server = "private.test" });
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards =
+            [
+                new DesktopForwardSnapshot(123, "First route", "single", 12001, false, "stopped"),
+                new DesktopForwardSnapshot(124, "Second route", "single", 12002, false, "stopped"),
+            ],
+        });
+
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        Assert.Equal(2, vm.ConnectionRoutes.Count);
+        Assert.Empty(vm.PairedConnectionRoutes);
+        Assert.Equal(0, vm.ConnectionRoutes[0].NodeOptions[0].Id);
+        Assert.Equal("未选择已保存节点", vm.ConnectionRoutes[0].NodeOptions[0].Name);
+        Assert.Null(vm.SelectedConnectionForward?.SelectedNode);
+    }
+
+    [Fact]
+    public async Task ConnectionCannotStartUntilModeIsSelected()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "test-web", Server = "private.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "First route", "single", 12001, false, "stopped")],
+        });
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+
+        Assert.Null(vm.SelectedConnectionMode);
+        Assert.False(vm.CanStartLocalConnection);
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+        Assert.Empty(controller.AcquiredForwards);
+        Assert.Contains("mode", vm.LocalConnectionError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TwoRouteRowsShowIndependentNamesAndStartTheRowsOwnPair()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "test-web", Server = "secret-a.test" });
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 5, Name = "work-wg", Server = "secret-b.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        await connections.SaveSelectionAsync(124, 5);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards =
+            [
+                new DesktopForwardSnapshot(123, "Forward #123 · First", "single", 12001, false, "stopped"),
+                new DesktopForwardSnapshot(124, "Forward #124 · Second", "single", 12002, true, "running"),
+            ],
+        });
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        Assert.Equal(new[] { "test-web", "work-wg" }, vm.ConnectionRoutes.Select(route => route.SavedNodeName));
+        Assert.False(vm.IsLocalConnectionActive);
+        await vm.ConnectionRoutes[0].StartConnectionCommand.ExecuteAsync(null);
+        Assert.Equal(new[] { 123 }, controller.AcquiredForwards);
+        Assert.Equal(4, connections.LastProfileId);
+        Assert.Equal(0, connections.DirectStartCalls);
+    }
+
+    [Theory]
+    [InlineData("wireguard", "tcp", false)]
+    [InlineData("wireguard", "udp", true)]
+    [InlineData("wireguard", "tcp+udp", true)]
+    [InlineData("shadowsocks", "udp", false)]
+    [InlineData("shadowsocks", "tcp", true)]
+    [InlineData("shadowsocks", "tcp+udp", true)]
+    [InlineData("external", "tcp", true)]
+    [InlineData("external", "udp", true)]
+    [InlineData("external", "tcp+udp", true)]
+    public async Task SavedNodeProtocolMustMatchSelectedTransportBeforeAcquire(string protocol, string transport, bool compatible)
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
+        }) { ForwardTransport = transport };
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Protocol = protocol, Name = "Node", Server = "node.example.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+
+        Assert.Equal(compatible ? 1 : 0, controller.AcquiredForwards.Count);
+        Assert.Equal(compatible ? 1 : 0, connections.RoutedStartCalls);
+        Assert.Equal(0, connections.DirectStartCalls);
+        if (!compatible)
+        {
+            Assert.Contains("selected route", vm.LocalConnectionError, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(vm.Logs, message => message.EndsWith("proxy_forward_transport_mismatch", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task RemovedOrStoppedForwardDuringHelperStartupCannotBecomeConnected(bool removed, bool publishChange)
+    {
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeHelper = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
+        });
+        var connections = new CapturingMacConnectionService
+        {
+            RoutedStartHandler = async cancellation =>
+            {
+                started.SetResult(cancellation);
+                await completeHelper.Task;
+            },
+        };
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "Node", Server = "node.example.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        var starting = vm.StartConnectionCommand.ExecuteAsync(null);
+        var startupToken = await started.Task;
+        var changed = removed ? Array.Empty<DesktopForwardSnapshot>()
+            : [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")];
+        if (publishChange)
+            controller.RaiseForwards(changed);
+        else
+            controller.SetForwardsWithoutNotification(changed);
+        try
+        {
+            if (publishChange)
+                Assert.True(startupToken.IsCancellationRequested);
+        }
+        finally
+        {
+            completeHelper.SetResult();
+            await starting;
+        }
+
+        Assert.Equal(MacConnectionState.Disconnected, connections.Snapshot.State);
+        Assert.False(vm.IsLocalConnectionActive);
+        Assert.Equal([123], controller.ReleasedForwards);
+        Assert.NotEmpty(vm.LocalConnectionError);
+        Assert.Equal(0, connections.DirectStartCalls);
+    }
+
+    [Fact]
+    public async Task RestoredPairingAndRouteSwitchSelectEachSavedNode()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "First", Server = "first.test" });
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 5, Name = "Second", Server = "second.test" });
+        await connections.SaveSelectionAsync(123, 4);
+        await connections.SaveSelectionAsync(124, 5);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards =
+            [
+                new DesktopForwardSnapshot(123, "First route", "single", 12001, false, "stopped"),
+                new DesktopForwardSnapshot(124, "Second route", "single", 12002, false, "stopped"),
+            ],
+        });
+
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        Assert.Equal(124, vm.SelectedConnectionForward?.ForwardId);
+        Assert.Equal(5, vm.SelectedConnectionProfile?.Id);
+        vm.SelectedConnectionForward = vm.Forwards[0];
+        Assert.Equal(4, vm.SelectedConnectionProfile?.Id);
+        Assert.Equal(123, connections.Selection.ForwardId);
+        Assert.False(vm.IsProxyEditorExpanded);
+    }
+
+    [Fact]
+    public async Task MissingSavedRouteDoesNotSelectADifferentRouteOrStartDirectly()
+    {
+        var connections = new CapturingMacConnectionService();
+        await connections.SaveProfileAsync(new MacConnectionProfile { Id = 4, Name = "First", Server = "first.test" });
+        await connections.SaveSelectionAsync(124, 4);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Other route", "single", 12001, false, "stopped")],
+        });
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+
+        Assert.Null(vm.SelectedConnectionForward);
+        Assert.Empty(controller.AcquiredForwards);
+        Assert.Equal(0, connections.DirectStartCalls);
+        Assert.Equal(0, connections.RoutedStartCalls);
+        Assert.NotEmpty(vm.LocalConnectionError);
+    }
+
+    [Fact]
+    public async Task StopWaitsForOwnedForwardReleaseEvenWhenDisconnectSnapshotArrivesFirst()
+    {
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
+        }) { ReleaseCompletion = released.Task };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+        vm.ProxyImportUri = "ss://aes-256-gcm:secret@example.test:8443#Tokyo";
+        await vm.ImportProxyUriCommand.ExecuteAsync(null);
+        vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        vm.SelectedConnectionProfile = connections.Profiles.Single();
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+
+        var stopping = vm.StopConnectionCommand.ExecuteAsync(null);
+
+        Assert.False(stopping.IsCompleted);
+        released.SetResult();
+        await stopping;
+        Assert.Equal([123], controller.ReleasedForwards);
+    }
+
+    [Fact]
+    public async Task StopAllTreatsAnAlreadyDisconnectedRuntimeAsStopped()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot())
+        {
+            StopAllException = new InvalidOperationException("client_not_connected"),
+        };
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        await vm.StopAllCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, controller.StopAllCalls);
+        Assert.True(vm.IsNoticeVisible);
+        Assert.Contains("already stopped", vm.NoticeText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StopDuringForwardPreparationCancelsWithoutLaunchingProxy()
+    {
+        var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
+        })
+        {
+            AcquireHandler = async cancellation =>
+            {
+                preparing.SetResult();
+                await Task.Delay(Timeout.Infinite, cancellation);
+                throw new InvalidOperationException("unreachable");
+            },
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+        vm.ProxyImportUri = "ss://aes-256-gcm:secret@example.test:8443#Tokyo";
+        await vm.ImportProxyUriCommand.ExecuteAsync(null);
+
+        vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        var start = vm.StartConnectionCommand.ExecuteAsync(null);
+        await preparing.Task;
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+        await start;
+
+        Assert.Equal(0, connections.RoutedStartCalls);
+        Assert.False(vm.IsLocalConnectionActive);
+        Assert.Empty(vm.LocalConnectionError);
+    }
+
+    [Fact]
+    public async Task ImportSavesAndSelectsTheOriginalNodeBeforeStart()
+    {
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), connections, dispatch: action => action());
+        vm.ProxyImportUri = "ss://aes-256-gcm:secret@example.test:8443#Tokyo";
+
+        vm.ImportProxyUriCommand.Execute(null);
+        if (vm.ImportProxyUriCommand is CommunityToolkit.Mvvm.Input.IAsyncRelayCommand import)
+            await import.ExecutionTask!;
+
+        var saved = Assert.Single(connections.Profiles);
+        Assert.Equal(saved.Id, vm.SelectedConnectionProfile?.Id);
+        Assert.Equal("example.test", saved.Server);
+        Assert.Equal(8443, saved.Port);
+        Assert.Equal(0, connections.RoutedStartCalls);
+        Assert.False(vm.IsProxyEditorExpanded);
+    }
+
+    [Fact]
+    public async Task SelectedNodeStartAcquiresChosenForwardBeforeLaunchingProxyAndReleasesItOnStop()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            IsSignedIn = true, IsConnected = true,
+            Forwards = [new DesktopForwardSnapshot(123, "Selected route", "single", 12001, false, "stopped")],
+        });
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+        vm.ProxyImportUri = "ss://aes-256-gcm:secret@example.test:8443#Tokyo";
+        vm.ImportProxyUriCommand.Execute(null);
+        if (vm.ImportProxyUriCommand is CommunityToolkit.Mvvm.Input.IAsyncRelayCommand import)
+            await import.ExecutionTask!;
+        vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        vm.SelectedConnectionProfile = connections.Profiles.Single();
+
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+
+        Assert.Equal([123], controller.AcquiredForwards);
+        Assert.Equal(12001, connections.LastForwardListenPort);
+        Assert.Equal(1, connections.RoutedStartCalls);
+        Assert.Equal(0, connections.DirectStartCalls);
+        Assert.Equal(123, connections.Selection.ForwardId);
+        Assert.Equal(vm.SelectedConnectionProfile!.Id, connections.Selection.ProfileId);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+        Assert.Equal([123], controller.ReleasedForwards);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ForwardOrProxyStartFailureNeverFallsBackToOriginalNode(bool failForward)
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            Forwards = [new DesktopForwardSnapshot(123, "Selected route", "single", 12001, false, "stopped")],
+        }) { ThrowOnAcquire = failForward };
+        var connections = new CapturingMacConnectionService { ThrowOnRoutedStart = !failForward };
+        var vm = new MainWindowViewModel(controller, connections, () => controller.ForwardConfigs, dispatch: action => action());
+        vm.SelectedConnectionMode = MacConnectionMode.Proxy;
+        vm.ProxyImportUri = "ss://aes-256-gcm:secret@example.test:8443#Tokyo";
+        vm.ImportProxyUriCommand.Execute(null);
+        if (vm.ImportProxyUriCommand is CommunityToolkit.Mvvm.Input.IAsyncRelayCommand import)
+            await import.ExecutionTask!;
+        vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        vm.SelectedConnectionProfile = connections.Profiles.Single();
+
+        await vm.StartConnectionCommand.ExecuteAsync(null);
+
+        Assert.NotEmpty(vm.LocalConnectionError);
+        Assert.Equal(0, connections.DirectStartCalls);
+        Assert.Equal(failForward ? 0 : 1, connections.RoutedStartCalls);
+        Assert.Equal(failForward ? [] : new[] {123}, controller.ReleasedForwards);
+    }
+
     [Fact]
     public void NativeRouteScopeSelectorFollowsSelectedCarrier()
     {
@@ -145,6 +562,12 @@ public sealed class MainWindowViewModelTests
 
         await vm.StartNativeConnectionCommand.ExecuteAsync(null);
 
+        Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
+        Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+        Assert.True(vm.NativeUnrestrictedRoute);
+        vm.SelectedNativeConnectionMode = LeikwanBridge.Mac.Services.MacConnectionMode.Proxy;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
         Assert.Equal("unrestricted", controller.LastNativeRoutePolicy);
         Assert.Equal("unrestricted", connections.LastNativeRoutePolicy);
     }
@@ -291,6 +714,21 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void BusyStateDisplaysActualConnectionPhase()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = true, IsBusy = true, ConnectionStatus = "connecting" });
+        Assert.Contains("Starting", vm.BusyMessage);
+        controller.RaiseLog("preparing_config");
+        Assert.Equal("Starting routes", vm.BusyMessage);
+        controller.RaiseLog("preparing_routes:2/5");
+        Assert.Equal("Starting routes 2/5", vm.BusyMessage);
+        controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = false, IsBusy = true });
+        Assert.Equal("Signing in", vm.BusyMessage);
+    }
+
+    [Fact]
     public async Task ClientIdTokenLoginUsesTheSelectedAuthenticationMode()
     {
         var controller = new FakeController(new DesktopClientSnapshot());
@@ -299,6 +737,7 @@ public sealed class MainWindowViewModelTests
         vm.PanelUrl = "https://panel.example.test";
         vm.ClientIdText = "27";
         vm.AgentToken = "agent-token-27";
+        vm.RememberLoginInfo = false;
         await vm.LoginCommand.ExecuteAsync(null);
 
         Assert.Equal(1, controller.AgentTokenLoginCalls);
@@ -379,6 +818,33 @@ public sealed class MainWindowViewModelTests
         public List<int> SelectedClients { get; } = [];
         public List<int> StartedForwards { get; } = [];
         public List<int> StoppedForwards { get; } = [];
+        public List<int> AcquiredForwards { get; } = [];
+        public List<int> ReleasedForwards { get; } = [];
+        public bool ThrowOnAcquire { get; init; }
+        public Exception? StopAllException { get; init; }
+        public int StopAllCalls { get; private set; }
+        public string ForwardTransport { get; init; } = "tcp+udp";
+        public IReadOnlyList<ForwardConfig> ForwardConfigs => Snapshot.Forwards.Select(forward => new ForwardConfig
+        {
+            ForwardId = forward.ForwardId, ListenPort = forward.ListenPort, Transport = ForwardTransport,
+        }).ToList();
+        public Task ReleaseCompletion { get; init; } = Task.CompletedTask;
+        public Func<CancellationToken, Task<ProxyForwardLease>>? AcquireHandler { get; init; }
+
+        public Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        {
+            AcquiredForwards.Add(forwardId);
+            if (AcquireHandler is not null)
+                return AcquireHandler(ct);
+            if (ThrowOnAcquire)
+                throw new InvalidOperationException("forward_not_ready");
+            RaiseForwards(Snapshot.Forwards.Select(forward => forward.ForwardId == forwardId
+                ? forward with { IsRunning = true, Status = "running" } : forward).ToList());
+            return Task.FromResult(new ProxyForwardLease(
+                new ForwardConfig { ForwardId = forwardId, ListenPort = 12001, Transport = ForwardTransport },
+                ownsForward: true,
+                _ => { ReleasedForwards.Add(forwardId); return ReleaseCompletion; }));
+        }
 
         public Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
         {
@@ -431,7 +897,13 @@ public sealed class MainWindowViewModelTests
             return Task.CompletedTask;
         }
         public Task StartAllAsync(CancellationToken ct = default) => Task.CompletedTask;
-        public Task StopAllAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task StopAllAsync(CancellationToken ct = default)
+        {
+            StopAllCalls++;
+            return StopAllException is null
+                ? Task.CompletedTask
+                : Task.FromException(StopAllException);
+        }
         public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(int forwardId, string routeScope, CancellationToken ct = default)
             => Task.FromResult<NativeOutboundLease?>(null);
         public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
@@ -452,7 +924,13 @@ public sealed class MainWindowViewModelTests
             SnapshotChanged?.Invoke(snapshot);
         }
 
-        public void RaiseForwards(IReadOnlyList<DesktopForwardSnapshot> forwards) => ForwardsChanged?.Invoke(forwards);
+        public void SetForwardsWithoutNotification(IReadOnlyList<DesktopForwardSnapshot> forwards)
+            => Snapshot = Snapshot with { Forwards = forwards };
+        public void RaiseForwards(IReadOnlyList<DesktopForwardSnapshot> forwards)
+        {
+            SetForwardsWithoutNotification(forwards);
+            ForwardsChanged?.Invoke(forwards);
+        }
         public void RaiseNativeOutbound(NativeOutboundCapability? capability)
         {
             Snapshot = Snapshot with { NativeOutbound = capability };
@@ -467,7 +945,15 @@ public sealed class MainWindowViewModelTests
     {
         public event Action<LeikwanBridge.Mac.Services.MacConnectionSnapshot>? SnapshotChanged;
 
-        public IReadOnlyList<LeikwanBridge.Mac.Services.MacConnectionProfile> Profiles { get; } = [];
+        private readonly List<MacConnectionProfile> _profiles = [];
+        public IReadOnlyList<MacConnectionProfile> Profiles => _profiles;
+        public MacConnectionSelection Selection { get; private set; } = MacConnectionSelection.Empty;
+        public int RoutedStartCalls { get; private set; }
+        public int DirectStartCalls { get; private set; }
+        public int LastForwardListenPort { get; private set; }
+        public int LastProfileId { get; private set; }
+        public bool ThrowOnRoutedStart { get; init; }
+        public Func<CancellationToken, Task>? RoutedStartHandler { get; init; }
         public LeikwanBridge.Mac.Services.MacConnectionSnapshot Snapshot { get; private set; } =
             LeikwanBridge.Mac.Services.MacConnectionSnapshot.Disconnected;
         public DateTimeOffset? ActiveNativeLeaseExpiresAt { get; private set; }
@@ -477,7 +963,21 @@ public sealed class MainWindowViewModelTests
 
         public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task SaveProfileAsync(LeikwanBridge.Mac.Services.MacConnectionProfile profile, CancellationToken ct = default)
-            => Task.CompletedTask;
+        {
+            if (profile.Id == 0)
+                profile.Id = _profiles.Count + 1;
+            _profiles.RemoveAll(item => item.Id == profile.Id);
+            _profiles.Add(profile.Clone());
+            return Task.CompletedTask;
+        }
+        public Task SaveSelectionAsync(int forwardId, int profileId, CancellationToken ct = default)
+        {
+            var pairs = new Dictionary<int, int>(Selection.ForwardProfiles);
+            if (forwardId > 0 && profileId > 0)
+                pairs[forwardId] = profileId;
+            Selection = new MacConnectionSelection(forwardId, profileId, pairs);
+            return Task.CompletedTask;
+        }
         public Task DeleteProfileAsync(int profileId, CancellationToken ct = default) => Task.CompletedTask;
         public Task StartAsync(
             LeikwanBridge.Mac.Services.MacConnectionMode mode,
@@ -485,7 +985,23 @@ public sealed class MainWindowViewModelTests
             string panelUrl,
             IEnumerable<ForwardConfig> forwards,
             CancellationToken ct = default)
-            => Task.CompletedTask;
+        {
+            DirectStartCalls++;
+            return Task.CompletedTask;
+        }
+        public async Task StartRoutedAsync(MacConnectionMode mode, int profileId, int forwardListenPort,
+            string panelUrl, IEnumerable<ForwardConfig> forwards, CancellationToken ct = default)
+        {
+            RoutedStartCalls++;
+            LastProfileId = profileId;
+            LastForwardListenPort = forwardListenPort;
+            if (ThrowOnRoutedStart)
+                throw new InvalidOperationException("proxy_start_failed");
+            if (RoutedStartHandler is not null)
+                await RoutedStartHandler(ct);
+            Snapshot = new MacConnectionSnapshot(MacConnectionState.Connected, mode, "Node", 2080, 0, "");
+            SnapshotChanged?.Invoke(Snapshot);
+        }
         public Task StartNativeAsync(
             LeikwanBridge.Mac.Services.MacConnectionMode mode,
             NativeOutboundLease lease,

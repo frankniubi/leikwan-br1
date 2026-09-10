@@ -34,8 +34,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.08.31.1"
+AGENT_VERSION = "2026.09.10.2"
 UPDATE_RETRY_SECONDS = 300
+
+
+class ControlPlaneResponseError(RuntimeError):
+    """The server answered, but its response could not be decoded safely."""
+
+    response_received = True
 CLIENT_BOND_ENDPOINT_PROBATION_SECONDS = 60.0
 CLIENT_BOND_ENDPOINT_QUARANTINE_SECONDS = 30.0 * 60.0
 UPDATE_STALE_SECONDS = 900
@@ -172,6 +178,7 @@ def upload_debug_collection(
         payload,
         extra_headers={
             "x-device-platform": "linux",
+            "x-device-architecture": local_runtime_architecture(),
             "x-device-id": str(client_meta.get("current_device_id", "") or ""),
         },
     )[0])
@@ -698,7 +705,10 @@ def http_json(method: str, url: str, token: str, payload: dict | None = None) ->
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
         with _urlopen_for_request(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            try:
+                return json.loads(resp.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ControlPlaneResponseError(f"invalid JSON response from {url}") from exc
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
@@ -735,7 +745,98 @@ def http_json_with_headers(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
-    return json.loads(content), response_headers
+    try:
+        return json.loads(content), response_headers
+    except json.JSONDecodeError as exc:
+        raise ControlPlaneResponseError(f"invalid JSON response from {url}") from exc
+
+
+DEFAULT_PANEL_MIRROR_URLS = ["https://api-leikwanbridge.nbwly.com"]
+
+
+def local_runtime_architecture() -> str:
+    """Return the manifest architecture token understood by the panel."""
+    machine = platform.machine().strip().lower()
+    if machine in {"aarch64", "arm64", "armv8", "armv8l"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64", "x64"}:
+        return "amd64"
+    return machine or "unknown"
+
+
+class ControlPlaneEndpointState:
+    """Small persistent endpoint selector; API paths and payloads stay unchanged."""
+
+    def __init__(self, path: pathlib.Path | None):
+        self.path = pathlib.Path(path) if path is not None else None
+        self.current_endpoint = ""
+        self.failures: dict[str, dict] = {}
+        self._lock = threading.RLock()
+        self._load()
+
+    def _load(self) -> None:
+        if self.path is None or not self.path.exists():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(payload, dict):
+            self.current_endpoint = str(payload.get("current_endpoint", "") or "").rstrip("/")
+            raw = payload.get("failures", {})
+            if isinstance(raw, dict):
+                self.failures = {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
+
+    def _save(self) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"current_endpoint": self.current_endpoint, "failures": self.failures}
+        temporary = self.path.with_name(self.path.name + ".new")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, self.path)
+
+    def ordered(self, endpoints: list[str]) -> list[str]:
+        with self._lock:
+            normalized = [str(item).rstrip("/") for item in endpoints if str(item).strip()]
+            if not normalized:
+                return []
+            primary = normalized[0]
+            if self.current_endpoint in normalized and self.current_endpoint != primary:
+                failure = self.failures.get(primary, {})
+                count = int(failure.get("count", 0) or 0)
+                last_failure = float(failure.get("last_failure_at", 0) or 0)
+                retry_after = min(300.0, 15.0 * (2 ** max(0, count - 1)))
+                if count > 0 and time.time() >= last_failure + retry_after:
+                    return normalized
+                return [self.current_endpoint] + [item for item in normalized if item != self.current_endpoint]
+            return normalized
+
+    def success(self, endpoint: str) -> None:
+        with self._lock:
+            self.current_endpoint = str(endpoint).rstrip("/")
+            self.failures.pop(self.current_endpoint, None)
+            self._save()
+
+    def failure(self, endpoint: str, error: Exception) -> None:
+        with self._lock:
+            key = str(endpoint).rstrip("/")
+            entry = self.failures.setdefault(key, {})
+            entry["count"] = int(entry.get("count", 0) or 0) + 1
+            entry["last_error"] = str(error)[:512]
+            entry["last_failure_at"] = time.time()
+            self._save()
+
+
+def _is_control_plane_business_error(error: Exception) -> bool:
+    match = re.search(r"\bhttp\s+(\d{3})\b", str(error), flags=re.IGNORECASE)
+    if not match:
+        return False
+    return int(match.group(1)) in {400, 401, 403, 404, 409, 422}
+
+
+def _has_control_plane_http_response(error: Exception) -> bool:
+    return re.search(r"\bhttp\s+\d{3}\b", str(error), flags=re.IGNORECASE) is not None
 
 
 def control_plane_endpoints(config: dict) -> list[str]:
@@ -751,19 +852,35 @@ def control_plane_endpoints(config: dict) -> list[str]:
     return candidates
 
 
-def pull_client_configs(config: dict, token: str) -> tuple[dict, dict[str, str], str]:
+def pull_client_configs(
+    config: dict,
+    token: str,
+    *,
+    state_path: pathlib.Path | None = None,
+    selector: ControlPlaneEndpointState | None = None,
+) -> tuple[dict, dict[str, str], str]:
+    endpoints = control_plane_endpoints(config)
+    selector = selector or ControlPlaneEndpointState(state_path)
     errors: list[str] = []
-    for base_url in control_plane_endpoints(config):
+    for base_url in selector.ordered(endpoints):
         try:
             payload, headers = http_json_with_headers(
                 "GET",
                 f"{base_url}/api/client/configs/pull",
                 token,
-                extra_headers={"x-device-platform": "linux"},
+                extra_headers={
+                    "x-device-platform": "linux",
+                    "x-device-architecture": local_runtime_architecture(),
+                },
             )
+            selector.success(base_url)
             return payload, headers, base_url
         except Exception as exc:  # noqa: BLE001
-            errors.append(str(exc))
+            selector.failure(base_url, exc)
+            errors.append(f"{base_url}: {exc}")
+            # Do not hide authentication/authorization or contract errors behind a mirror.
+            if _is_control_plane_business_error(exc):
+                raise
     raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
 
@@ -782,6 +899,12 @@ def _normalize_ultra_selection(value: object) -> dict | None:
         "rtt_ms": rtt_ms,
         "selected_at": str(value.get("selected_at", "") or "").strip()[:40],
     }
+    candidate_key_hash = str(value.get("candidate_key_hash", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", candidate_key_hash) is not None:
+        normalized["candidate_key_hash"] = candidate_key_hash
+    lease_hash = str(value.get("lease_hash", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", lease_hash) is not None:
+        normalized["lease_hash"] = lease_hash
     for key, maximum in (("p95_rtt_ms", 60000), ("jitter_ms", 60000), ("loss_percent", 100), ("probe_sent", 4096), ("probe_received", 4096)):
         if key not in value:
             continue
@@ -790,6 +913,46 @@ def _normalize_ultra_selection(value: object) -> dict | None:
         except (TypeError, ValueError):
             normalized[key] = 0
     return normalized
+
+
+def _normalize_ultra_feedback(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    feedback: list[dict] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        candidate_key_hash = str(item.get("candidate_key_hash", "") or "").strip().lower()
+        if re.fullmatch(r"[a-f0-9]{64}", candidate_key_hash) is None:
+            continue
+        lease_hash = str(item.get("lease_hash", "") or "").strip().lower()
+        if re.fullmatch(r"[a-f0-9]{64}", lease_hash) is None:
+            continue
+        protocol = str(item.get("protocol", "") or "").strip().lower()
+        if protocol not in {"tcp", "udp", "tcp+udp", "native_socks5"}:
+            continue
+        outcome = str(item.get("outcome", "") or "").strip().lower()
+        if outcome not in {"failure", "success"}:
+            continue
+        reason = str(item.get("reason", "") or "").strip().lower()[:64]
+        if not reason or reason == "process_stderr":
+            continue
+        evidence_id = str(item.get("evidence_id", "") or "").strip()[:128]
+        if evidence_id and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", evidence_id) is None:
+            continue
+        observed_at = str(item.get("observed_at", "") or "").strip()[:40]
+        feedback.append(
+            {
+                "candidate_key_hash": candidate_key_hash,
+                "lease_hash": lease_hash,
+                "protocol": protocol,
+                "outcome": outcome,
+                "reason": reason,
+                "evidence_id": evidence_id,
+                "observed_at": observed_at,
+            }
+        )
+    return feedback
 
 
 def collect_ultra_status(
@@ -847,6 +1010,7 @@ def collect_ultra_status(
                 "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
                 "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
                 "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
+                "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
                 "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
                 "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
                 "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
@@ -857,6 +1021,26 @@ def collect_ultra_status(
     return statuses
 
 
+def collect_ultra_candidate_feedback(statuses: list[dict]) -> list[dict]:
+    feedback: list[dict] = []
+    for status in statuses[:32]:
+        if not isinstance(status, dict):
+            continue
+        try:
+            forward_id = int(status.get("forward_id", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if forward_id <= 0 or forward_id > 2147483647:
+            continue
+        for item in _normalize_ultra_feedback(status.get("candidate_feedback")):
+            enriched = dict(item)
+            enriched["forward_id"] = forward_id
+            feedback.append(enriched)
+            if len(feedback) >= 32:
+                return feedback
+    return feedback
+
+
 def resolve_ultra_leases(
     master: str,
     agent_token: str,
@@ -864,6 +1048,9 @@ def resolve_ultra_leases(
     forwards: list[dict],
     *,
     selection_mode: str = "auto",
+    fallback_endpoints: list[str] | None = None,
+    state_path: pathlib.Path | None = None,
+    selector: ControlPlaneEndpointState | None = None,
 ) -> list[dict]:
     normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
     max_candidates = 4 if normalized_selection_mode == "auto" else 1
@@ -895,25 +1082,68 @@ def resolve_ultra_leases(
         )
     if not requests:
         return forwards
+    selector = selector or ControlPlaneEndpointState(state_path)
+    configured = [str(master).rstrip("/")]
+    for endpoint in fallback_endpoints or []:
+        normalized = str(endpoint or "").rstrip("/")
+        if normalized and normalized not in configured:
+            configured.append(normalized)
     last_error: Exception | None = None
-    response: dict | None = None
-    for attempt in range(3):
-        try:
-            response = http_json(
-                "POST",
-                f"{master.rstrip('/')}/api/client/ultra/lease",
-                agent_token,
-                {"device_id": device_id, "forwards": requests},
-            )
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            if attempt < 2:
-                time.sleep(0.5 if attempt == 0 else 1.5)
-    if response is None:
+    lease_items: list[dict] = []
+    failed_forward_ids: set[int] = set()
+    completed_batches = 0
+    batches = [requests[index : index + 4] for index in range(0, len(requests), 4)]
+    for batch in batches:
+        batch_completed = False
+        batch_forward_ids = {int(item["forward_id"]) for item in batch}
+        for endpoint in selector.ordered(configured):
+            try:
+                # The panel caps requests at four forwards. Retry only this
+                # batch, with fresh nonces, never previously successful batches.
+                batch_requests = []
+                for item in batch:
+                    request = dict(item)
+                    request["nonce"] = secrets.token_hex(16)
+                    batch_requests.append(request)
+                batch_response = http_json(
+                    "POST",
+                    f"{endpoint}/api/client/ultra/lease",
+                    agent_token,
+                    {"device_id": device_id, "forwards": batch_requests},
+                )
+                if not isinstance(batch_response, dict) or batch_response.get("ok") is not True:
+                    raise ControlPlaneResponseError("invalid ultra lease response")
+                raw_leases = batch_response.get("leases")
+                if not isinstance(raw_leases, list):
+                    raise ControlPlaneResponseError("invalid ultra lease list")
+                valid_leases = [item for item in raw_leases if isinstance(item, dict)]
+                lease_items.extend(valid_leases)
+                returned_forward_ids = {int(item.get("forward_id", 0) or 0) for item in valid_leases}
+                failed_forward_ids.update(batch_forward_ids - returned_forward_ids)
+                completed_batches += 1
+                batch_completed = True
+                selector.success(endpoint)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                selector.failure(endpoint, exc)
+                # An HTTP response must not replay this POST through another CDN.
+                if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
+                    if _is_control_plane_business_error(exc):
+                        failed_forward_ids.update(batch_forward_ids)
+                        completed_batches += 1
+                        batch_completed = True
+                    break
+        if not batch_completed:
+            failed_forward_ids.update(item["forward_id"] for item in batch)
+    if completed_batches == 0:
+        if last_error is not None and (getattr(last_error, "response_received", False) or _has_control_plane_http_response(last_error)):
+            raise last_error
         raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
+    if failed_forward_ids:
+        logging.warning("Ultra lease batches failed for forwards %s; retaining successful batches", sorted(failed_forward_ids))
     leases_by_forward: dict[int, list[dict]] = {}
-    for item in response.get("leases", []):
+    for item in lease_items:
         if not isinstance(item, dict):
             continue
         forward_id = int(item.get("forward_id", 0) or 0)
@@ -930,6 +1160,9 @@ def resolve_ultra_leases(
         if not isinstance(forward, dict):
             continue
         enriched = dict(forward)
+        enriched.pop("_ultra_lease_resolution_failed", None)
+        if int(enriched.get("forward_id", 0) or 0) in failed_forward_ids:
+            enriched["_ultra_lease_resolution_failed"] = True
         leases = leases_by_forward.get(int(enriched.get("forward_id", 0) or 0), [])
         if leases:
             enriched["_ultra_lease"] = leases[0]
@@ -982,10 +1215,15 @@ class ClientAgent:
         self.applied_path = self.state_dir / "applied.json"
         self.pull_state_path = self.state_dir / "config_pull_state.json"
         self.usage_state_path = self.state_dir / "usage_state.json"
+        self.endpoint_state_path = self.state_dir / "control-plane-endpoint.json"
+        self.endpoint_selector = ControlPlaneEndpointState(self.endpoint_state_path)
+        self.active_control_plane_endpoint = str(self.config.get("master_url", "") or "").rstrip("/")
         self.latest_forwards: list[dict] = []
         self.health_restart_after: dict[int, float] = {}
         self.health_reorder_after: dict[int, float] = {}
         self.invalid_forward_log_after: dict[int, float] = {}
+        self.missing_forward_observations: dict[int, dict[str, object]] = {}
+        self.last_ultra_leases: dict[int, list[dict]] = {}
         self.self_leg_probe_cache: dict[str, dict] = {}
         self._cfwg_latency_watchdog = None
         self._applied_state_lock = threading.RLock()
@@ -997,6 +1235,74 @@ class ClientAgent:
             level=getattr(logging, str(self.config.get("log_level", "INFO")).upper(), logging.INFO),
             format="%(asctime)s %(levelname)s %(message)s",
         )
+
+    def pull_client_configs(self, token: str) -> tuple[dict, dict[str, str], str]:
+        payload, headers, endpoint = pull_client_configs(
+            self.config,
+            token,
+            state_path=getattr(self, "endpoint_state_path", None),
+            selector=getattr(self, "endpoint_selector", None),
+        )
+        self.active_control_plane_endpoint = endpoint
+        return payload, headers, endpoint
+
+    def control_plane_request(
+        self,
+        method: str,
+        path: str,
+        token: str,
+        payload: dict | None = None,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict:
+        selector = getattr(self, "endpoint_selector", None) or ControlPlaneEndpointState(
+            getattr(self, "endpoint_state_path", None)
+        )
+        endpoints = selector.ordered(control_plane_endpoints(self.config))
+        errors: list[str] = []
+        for endpoint in endpoints:
+            try:
+                if extra_headers:
+                    result = http_json_with_headers(
+                        method,
+                        f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
+                        token,
+                        payload,
+                        extra_headers=extra_headers,
+                    )[0]
+                else:
+                    result = http_json(
+                        method,
+                        f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
+                        token,
+                        payload,
+                    )
+                selector.success(endpoint)
+                self.active_control_plane_endpoint = endpoint
+                return result
+            except Exception as exc:  # noqa: BLE001
+                selector.failure(endpoint, exc)
+                errors.append(f"{endpoint}: {exc}")
+                if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
+                    raise
+        raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
+
+    def _systemd_watchdog_notify(self) -> None:
+        notify_socket = os.environ.get("NOTIFY_SOCKET", "").strip()
+        if notify_socket == "":
+            return
+        try:
+            address = notify_socket
+            if address.startswith("@"):
+                address = "\0" + address[1:]
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                sock.connect(address)
+                sock.sendall(b"READY=1\nWATCHDOG=1\nSTATUS=Leikwan client agent running")
+            finally:
+                sock.close()
+        except Exception:
+            logging.debug("systemd watchdog notification unavailable", exc_info=True)
 
     def _forward_lock(self, forward_id: int) -> threading.RLock:
         if not hasattr(self, "_forward_locks_guard"):
@@ -1012,7 +1318,28 @@ class ClientAgent:
         with self._applied_state_lock:
             applied = self.load_applied()
             applied[str(forward_id)] = entry
-            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_applied_state_locked(applied)
+
+    def _write_applied_state_locked(self, applied: dict) -> None:
+        """Atomically publish applied runtime metadata under the process lock."""
+        self.applied_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{self.applied_path.name}.", suffix=".tmp", dir=str(self.applied_path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(applied, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, self.applied_path)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+
+    def write_applied_state(self, applied: dict) -> None:
+        if not hasattr(self, "_applied_state_lock"):
+            self._applied_state_lock = threading.RLock()
+        with self._applied_state_lock:
+            self._write_applied_state_locked(applied)
 
     def schedule_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
         """Start at most one daemon uploader; config sync remains non-blocking."""
@@ -1036,7 +1363,24 @@ class ClientAgent:
 
     def _run_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
         try:
-            result = upload_debug_collection(master, token, client_meta, self.state_dir, self.config)
+            result = upload_debug_collection(
+                master,
+                token,
+                client_meta,
+                self.state_dir,
+                self.config,
+                post=lambda payload: self.control_plane_request(
+                    "POST",
+                    "/api/client/debug/log",
+                    token,
+                    payload,
+                    extra_headers={
+                        "x-device-platform": "linux",
+                        "x-device-architecture": local_runtime_architecture(),
+                        "x-device-id": str(client_meta.get("current_device_id", "") or ""),
+                    },
+                ),
+            )
             if result.get("status") not in {"not_requested", "inactive", "expired", "complete"}:
                 logging.info("debug log upload status=%s chunks=%s bytes=%s", result.get("status"), result.get("chunks"), result.get("bytes"))
         except Exception as exc:  # noqa: BLE001
@@ -1469,22 +1813,33 @@ class ClientAgent:
         for unit in units:
             if not isinstance(unit, dict):
                 continue
+            service_name = str(unit.get("service_name", "") or "")
             normalized_files = []
             for file_entry in unit.get("files", []):
                 if not isinstance(file_entry, dict):
                     continue
                 if file_entry.get("restart_on_change") is False:
                     continue
+                content = str(file_entry.get("content", "") or "")
+                if service_name.startswith("ultra-forward-"):
+                    try:
+                        decoded = json.loads(content)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        decoded = None
+                    if isinstance(decoded, dict) and "policy_generation" in decoded:
+                        decoded = dict(decoded)
+                        decoded.pop("policy_generation", None)
+                        content = json.dumps(decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 normalized_files.append(
                     {
                         "path": str(file_entry.get("path", "") or ""),
-                        "content": str(file_entry.get("content", "") or ""),
+                        "content": content,
                         "mode": file_entry.get("mode"),
                     }
                 )
             normalized_units.append(
                 {
-                    "service_name": str(unit.get("service_name", "") or ""),
+                    "service_name": service_name,
                     "service_path": str(unit.get("service_path", "") or ""),
                     "service_unit": str(unit.get("service_unit", "") or ""),
                     "start_script_path": str(unit.get("start_script_path", "") or ""),
@@ -1521,6 +1876,39 @@ class ClientAgent:
                 if extra_path != "":
                     paths.add(extra_path)
         return paths
+
+    @classmethod
+    def ultra_static_runtime_matches_disk(
+        cls, rendered: dict, previous: dict, mode: str, transport: str, listen_port: int
+    ) -> bool:
+        # Older agents hashed policy_generation. Verify the actual static files
+        # before migrating that signature without interrupting a live runtime.
+        raw_previous_paths = previous.get("managed_paths", []) if isinstance(previous, dict) else []
+        previous_paths = {str(path).strip() for path in raw_previous_paths if str(path).strip() != ""} if isinstance(raw_previous_paths, list) else set()
+        if cls.rendered_managed_paths(rendered) != previous_paths:
+            return False
+        disk = json.loads(json.dumps(rendered))
+        units = [disk] + [item for item in disk.get("extra_units", []) if isinstance(item, dict)]
+        if {unit.get("service_name") for unit in units} != {
+            unit.get("service_name") for unit in previous.get("units", []) if isinstance(unit, dict)
+        }:
+            return False
+        try:
+            for unit in units:
+                unit["service_unit"] = pathlib.Path(unit["service_path"]).read_text(encoding="utf-8")
+                if unit.get("start_script_path"):
+                    unit["start_script"] = pathlib.Path(unit["start_script_path"]).read_text(encoding="utf-8")
+                for file_entry in unit.get("files", []):
+                    file_path = pathlib.Path(file_entry["path"])
+                    expected_mode = file_entry.get("mode")
+                    if os.name == "posix" and expected_mode is not None and (file_path.stat().st_mode & 0o777) != int(expected_mode):
+                        return False
+                    file_entry["content"] = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, KeyError, TypeError):
+            return False
+        return cls.rendered_runtime_signature(disk, mode, transport, listen_port) == cls.rendered_runtime_signature(
+            rendered, mode, transport, listen_port
+        )
 
     def apply_reload_only_files(self, rendered: dict) -> bool:
         changed_any = False
@@ -1614,6 +2002,62 @@ class ClientAgent:
                 return False
         return True
 
+    @staticmethod
+    def inferred_ultra_runtime_entry(forward_id: int) -> dict:
+        service_name = f"ultra-forward-{int(forward_id)}"
+        managed_paths = [
+            f"/etc/systemd/system/{service_name}.service",
+            f"/etc/ultra/forward-{int(forward_id)}.json",
+        ]
+        return {
+            "units": [{"service_name": service_name, "managed_paths": managed_paths}],
+            "managed_paths": managed_paths,
+            "runtime_mode": "single",
+            "published_mode": "ultra",
+        }
+
+    def preserve_missing_ultra_forward(self, forward_id: int, previous: dict, snapshot_revision: str) -> bool:
+        if not isinstance(previous, dict):
+            return False
+        runtime_mode = str(previous.get("runtime_mode", "") or previous.get("published_mode", "")).strip().lower()
+        if runtime_mode != "ultra" and not any(
+            str(unit.get("service_name", "") or "").startswith("ultra-forward-")
+            for unit in (previous.get("units", []) if isinstance(previous.get("units", []), list) else [])
+            if isinstance(unit, dict)
+        ):
+            return False
+        revision = snapshot_revision.strip() or "missing-revision"
+        current = self.missing_forward_observations.get(int(forward_id), {})
+        if str(current.get("revision", "")) != revision:
+            current = {"revision": revision, "count": 0, "first_seen": time.time()}
+        current["count"] = int(current.get("count", 0) or 0) + 1
+        self.missing_forward_observations[int(forward_id)] = current
+        if int(current["count"]) < 2:
+            logging.warning(
+                "forward %s missing from config snapshot revision=%s; preserving runtime pending confirmation",
+                forward_id,
+                revision[:64],
+            )
+            return True
+        self.missing_forward_observations.pop(int(forward_id), None)
+        return False
+
+    @staticmethod
+    def applied_forward_definition_is_present(previous: dict, forward_id: int | None = None) -> bool:
+        if not isinstance(previous, dict):
+            return False
+        raw_units = previous.get("units", [])
+        units = [item for item in raw_units if isinstance(item, dict)] if isinstance(raw_units, list) else []
+        if not units or any(str(item.get("service_name", "") or "").strip() == "" for item in units):
+            return False
+        if forward_id is not None and forward_id > 0:
+            expected_service = f"ultra-forward-{forward_id}"
+            if not any(str(item.get("service_name", "") or "").strip() == expected_service for item in units):
+                return False
+        raw_paths = previous.get("managed_paths", [])
+        paths = [str(item).strip() for item in raw_paths if str(item).strip() != ""] if isinstance(raw_paths, list) else []
+        return bool(paths) and all(pathlib.Path(path).exists() for path in paths)
+
     def persist_forward_apply_signatures(
         self,
         forward_id: int,
@@ -1632,7 +2076,7 @@ class ClientAgent:
                 previous["rendered_signature"] = rendered_signature
             previous["updated_at"] = int(time.time())
             applied[str(forward_id)] = previous
-            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_applied_state_locked(applied)
 
     def forward_apply_is_noop(self, forward_id: int, contract_signature: str) -> bool:
         previous = self.load_applied().get(str(forward_id), {})
@@ -1891,12 +2335,7 @@ class ClientAgent:
         }
 
     def bridge_lite_fetch_linux_profile_runtime(self, master: str, token: str) -> dict:
-        payload = http_json_with_headers(
-            "GET",
-            f"{master.rstrip('/')}/api/client/configs/pull",
-            token,
-            extra_headers={"x-device-platform": "linux"},
-        )[0]
+        payload, _headers, _endpoint = self.pull_client_configs(token)
         return payload.get("linux_profile_runtime", {}) if isinstance(payload, dict) else {}
 
     def bond_leg_snapshot_dir(self) -> pathlib.Path:
@@ -1955,46 +2394,123 @@ class ClientAgent:
 
         return True
 
-    def run(self) -> None:
-        next_sync = 0.0
-        next_health = 0.0
-        while True:
-            now = time.time()
-            if now >= next_sync:
-                try:
-                    self.sync_once()
-                except Exception as exc:  # noqa: BLE001
-                    self.save_pull_state(
-                        {
-                            "status": "error",
-                            "last_attempt_at": now,
-                            "last_error": str(exc),
-                            "agent_version": AGENT_VERSION,
-                        }
-                    )
-                    logging.exception("sync failed: %s", exc)
-                base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
-                stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
-                next_sync = now + ultra_config_poll_delay(
-                    self.latest_forwards,
-                    now=now,
-                    base_delay=base_delay,
-                    stable_key=stable_key,
-                )
-
-            if now >= next_health:
-                try:
-                    self.ensure_runtime_health(self.latest_forwards)
-                except Exception as exc:  # noqa: BLE001
-                    logging.exception("health check failed: %s", exc)
-                next_health = now + int(self.config.get("health_check_interval_seconds", 20))
-
+    def renew_ultra_leases_once(self) -> None:
+        """Refresh compatible active Ultra runtimes independently of config/diagnostic work."""
+        snapshot = list(self.latest_forwards)
+        now = time.time()
+        schedule = getattr(self, "_ultra_renew_schedule", None)
+        if schedule is None:
+            schedule = self._ultra_renew_schedule = {}
+        due = []
+        for forward in snapshot:
+            if str(forward.get("backend_mode", "")).lower() != "ultra":
+                continue
+            fid = int(forward.get("forward_id", 0) or 0)
+            access = forward.get("ultra_access") or {}
+            renewal = parse_rfc3339(access.get("renew_after")) or now
+            if fid > 0 and str(forward.get("service_status", "active")) == "active" and now >= schedule.get(fid, renewal - 30):
+                due.append(forward)
+        if not due:
+            return
+        # Failure retries are bounded; never launch overlapping maintenance cycles.
+        for forward in due:
+            schedule[int(forward["forward_id"])] = now + 10
+        payload, _headers, master = self.pull_client_configs(self.config["agent_token"])
+        fresh = {int(f.get("forward_id", 0) or 0): f for f in payload.get("forwards", []) if isinstance(f, dict)}
+        compatible = []
+        for old in due:
+            fid = int(old["forward_id"])
+            new = fresh.get(fid)
+            if not new or str(new.get("service_status", "active")) != "active" or str(new.get("backend_mode", "")).lower() != "ultra":
+                continue  # Normal authoritative reconciliation handles removal/revocation.
+            if self.forward_contract_signature(old) != self.forward_contract_signature(new):
+                continue  # Never hot-apply a changed target/transport/static contract.
+            compatible.append(new)
+        if not compatible:
+            return
+        client = payload.get("client") or {}
+        resolved = resolve_ultra_leases(
+            master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible,
+            selection_mode=self.ultra_selection_mode(),
+            fallback_endpoints=control_plane_endpoints(self.config),
+            state_path=getattr(self, "endpoint_state_path", None),
+            selector=getattr(self, "endpoint_selector", None),
+        )
+        for forward in resolved:
+            fid = int(forward["forward_id"])
+            lock = self._forward_lock(fid)
+            if not lock.acquire(blocking=False):
+                continue
             try:
-                self.run_cfwg_latency_watchdog(self.latest_forwards)
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("cfwg latency watchdog failed: %s", exc)
+                # A concurrent authoritative sync may have removed/changed this forward.
+                current = next((f for f in self.latest_forwards if int(f.get("forward_id", 0) or 0) == fid), None)
+                if current is None or self.forward_contract_signature(current) != self.forward_contract_signature(forward):
+                    continue
+                if not self.systemd_is_active(forward_runtime_service_name(forward)):
+                    continue
+                leases = ultra_lease_candidates(forward)
+                if leases and self.send_ultra_leases(fid, leases):
+                    renewal = parse_rfc3339((forward.get("ultra_access") or {}).get("renew_after")) or time.time() + 40
+                    schedule[fid] = max(time.time() + 10, renewal - 30)
+                    logging.info("forward %s independent Ultra lease renewal delivered", fid)
+            finally:
+                lock.release()
 
-            time.sleep(5)
+    def _ultra_renewal_loop(self, stop: threading.Event, interval_seconds: float = 5.0) -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                self.renew_ultra_leases_once()
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("independent Ultra renewal failed (%s); retrying", type(exc).__name__)
+
+    def run(self) -> None:
+        stop = threading.Event()
+        renewal = threading.Thread(target=self._ultra_renewal_loop, args=(stop,), name="ultra-renewal", daemon=True)
+        renewal.start()
+        try:
+            next_sync = 0.0
+            next_health = 0.0
+            while True:
+                now = time.time()
+                if now >= next_sync:
+                    try:
+                        self.sync_once()
+                    except Exception as exc:  # noqa: BLE001
+                        self.save_pull_state(
+                            {
+                                "status": "error",
+                                "last_attempt_at": now,
+                                "last_error": str(exc),
+                                "agent_version": AGENT_VERSION,
+                            }
+                        )
+                        logging.exception("sync failed: %s", exc)
+                    base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
+                    stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
+                    next_sync = now + ultra_config_poll_delay(
+                        self.latest_forwards,
+                        now=now,
+                        base_delay=base_delay,
+                        stable_key=stable_key,
+                    )
+
+                if now >= next_health:
+                    try:
+                        self.ensure_runtime_health(self.latest_forwards)
+                    except Exception as exc:  # noqa: BLE001
+                        logging.exception("health check failed: %s", exc)
+                    next_health = now + int(self.config.get("health_check_interval_seconds", 20))
+
+                try:
+                    self.run_cfwg_latency_watchdog(self.latest_forwards)
+                except Exception as exc:  # noqa: BLE001
+                    logging.exception("cfwg latency watchdog failed: %s", exc)
+
+                self._systemd_watchdog_notify()
+                time.sleep(5)
+        finally:
+            stop.set()
+            renewal.join(timeout=1.0)
 
     def run_cfwg_latency_watchdog(self, forwards: list[dict]) -> None:
         watchdog_config = self.config.get("cfwg_latency_watchdog", {})
@@ -2057,12 +2573,19 @@ class ClientAgent:
             force_ids.add(forward_id)
             applied[f"_last_runtime_refresh_{forward_id}"] = token
         if force_ids:
-            self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.write_applied_state(applied)
         return force_ids
     def sync_once(self) -> None:
         token = self.config["agent_token"]
-        payload, response_headers, master = pull_client_configs(self.config, token)
-        pulled_forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
+        payload, response_headers, master = self.pull_client_configs(token)
+        raw_forwards = payload.get("forwards") if isinstance(payload, dict) else None
+        if not isinstance(raw_forwards, list) or any(not isinstance(forward, dict) for forward in raw_forwards):
+            raise ControlPlaneResponseError("invalid client config snapshot")
+        pulled_forwards = list(raw_forwards)
+        snapshot_revision = str(payload.get("config_revision", "") or "") if isinstance(payload, dict) else ""
+        pulled_forward_ids = {int(forward.get("forward_id", 0) or 0) for forward in pulled_forwards if int(forward.get("forward_id", 0) or 0) > 0}
+        for forward_id in pulled_forward_ids:
+            self.missing_forward_observations.pop(forward_id, None)
         unsupported_forward_ids = []
         for forward in pulled_forwards:
             if unsupported_client_backend_mode(forward) == "":
@@ -2088,6 +2611,9 @@ class ClientAgent:
                 device_id,
                 self.latest_forwards,
                 selection_mode=self.ultra_selection_mode(),
+                fallback_endpoints=control_plane_endpoints(self.config),
+                state_path=getattr(self, "endpoint_state_path", None),
+                selector=getattr(self, "endpoint_selector", None),
             )
         except Exception as exc:  # noqa: BLE001
             # Keep an already-running Ultra process on its last in-memory lease
@@ -2109,7 +2635,6 @@ class ClientAgent:
             self.apply_management_state(client_meta)
         except Exception as exc:  # noqa: BLE001
             logging.exception("failed to apply client management state: %s", exc)
-        master = self.config["master_url"].rstrip("/")
         token = self.config["agent_token"]
         desired_ids = set()
         force_runtime_refresh_ids = self.consume_local_refresh_requests()
@@ -2134,8 +2659,17 @@ class ClientAgent:
                 continue
             if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra" and not ultra_lease_candidates(runtime_forward):
                 previous = self.load_applied().get(str(forward_id), {})
-                if lease_resolution_failed and isinstance(previous, dict) and self.applied_forward_runtime_is_present(previous):
-                    logging.warning("forward %s Ultra lease refresh failed; preserving current runtime", forward_id)
+                refresh_failed = lease_resolution_failed or runtime_forward.get("_ultra_lease_resolution_failed") is True
+                definition_present = self.applied_forward_definition_is_present(previous, forward_id)
+                runtime_present = self.applied_forward_runtime_is_present(previous) if definition_present else False
+                if definition_present:
+                    reason = "refresh failed" if refresh_failed else "lease grant unavailable"
+                    logging.warning(
+                        "forward %s Ultra %s; preserving last known-good runtime (runtime_present=%s)",
+                        forward_id,
+                        reason,
+                        runtime_present,
+                    )
                     desired_ids.add(forward_id)
                     continue
                 skipped_invalid_forward_ids.append(forward_id)
@@ -2254,10 +2788,14 @@ class ClientAgent:
             except (TypeError, ValueError):
                 continue
             if forward_id not in desired_ids:
+                previous = applied.get(str(forward_id), {})
+                if self.preserve_missing_ultra_forward(forward_id, previous, snapshot_revision):
+                    desired_ids.add(forward_id)
+                    continue
                 self.stop_forward(forward_id, delete_files=True)
                 applied.pop(str(forward_id), None)
 
-        self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.write_applied_state(applied)
         self.reconcile_global_mptcp_state(self.latest_forwards)
         self.schedule_debug_log_upload(master, token, client_meta)
         self.run_diagnostics_if_requested(master, token, client_meta, self.latest_forwards)
@@ -2265,9 +2803,11 @@ class ClientAgent:
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
         cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
-        heartbeat_response = http_json(
+        # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
+        ultra_status = collect_ultra_status()
+        heartbeat_response = self.control_plane_request(
             "POST",
-            f"{master}/api/client/heartbeat",
+            "/api/client/heartbeat",
             token,
             {
                 "agent_version": AGENT_VERSION,
@@ -2291,7 +2831,8 @@ class ClientAgent:
                 "bond_leg_reputation": {
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
-                "ultra_status": collect_ultra_status(),
+                "ultra_status": ultra_status,
+                "ultra_candidate_feedback": collect_ultra_candidate_feedback(ultra_status),
             },
         )
         self.apply_ultra_actions(heartbeat_response)
@@ -2400,7 +2941,7 @@ class ClientAgent:
                 applied = self.load_applied()
                 if applied.get("_last_agent_update_request_token") != explicit_request_token:
                     applied["_last_agent_update_request_token"] = explicit_request_token
-                    self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self.write_applied_state(applied)
             elif not self.management_requires_local_update(client_meta):
                 now = time.time()
                 update_state.update(
@@ -2417,7 +2958,7 @@ class ClientAgent:
                 self.save_update_state(update_state)
                 applied = self.load_applied()
                 applied["_last_agent_update_request_token"] = explicit_request_token
-                self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+                self.write_applied_state(applied)
                 explicit_request_token = ""
 
         for request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
@@ -2438,7 +2979,7 @@ class ClientAgent:
             )
             self.save_update_state(update_state)
             try:
-                self.request_self_update(request_token)
+                self.request_self_update(request_token, self.active_control_plane_endpoint)
             except Exception as exc:  # noqa: BLE001
                 update_state["status"] = "error"
                 update_state["last_error"] = str(exc)
@@ -2581,14 +3122,20 @@ class ClientAgent:
                 target_usage_state = new_state_dir / "usage_state.json"
                 if not target_usage_state.exists():
                     target_usage_state.write_text(self.usage_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+            if getattr(self, "endpoint_state_path", None) is not None and self.endpoint_state_path.exists():
+                target_endpoint_state = new_state_dir / "control-plane-endpoint.json"
+                if not target_endpoint_state.exists():
+                    target_endpoint_state.write_text(self.endpoint_state_path.read_text(encoding="utf-8"), encoding="utf-8")
             self.state_dir = new_state_dir
             self.applied_path = new_state_dir / "applied.json"
             self.pull_state_path = new_state_dir / "config_pull_state.json"
             self.usage_state_path = new_state_dir / "usage_state.json"
+            self.endpoint_state_path = new_state_dir / "control-plane-endpoint.json"
+            self.endpoint_selector = ControlPlaneEndpointState(self.endpoint_state_path)
 
         logging.info("applied client config patch keys=%s", ",".join(sorted(set(patch.keys()) & allowed_keys)))
 
-    def request_self_update(self, request_token: str) -> None:
+    def request_self_update(self, request_token: str, artifact_base: str | None = None) -> None:
         helper_path = pathlib.Path("/usr/local/bin/leikwan-client-agent-update")
         if not helper_path.exists():
             raise RuntimeError(f"update helper missing: {helper_path}")
@@ -2610,6 +3157,7 @@ class ClientAgent:
                     request_token,
                     "--state-path",
                     str(state_path),
+                    *( ["--artifact-base", artifact_base] if artifact_base else [] ),
                 ],
                 check=True,
             )
@@ -2623,7 +3171,7 @@ class ClientAgent:
                     request_token,
                     "--state-path",
                     str(state_path),
-                ],
+                ] + (["--artifact-base", artifact_base] if artifact_base else []),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -2718,6 +3266,87 @@ class ClientAgent:
             force_runtime_restart=force_runtime_restart,
         )
 
+    @staticmethod
+    def _capture_runtime_files(paths: set[str]) -> dict[str, tuple[bool, bytes, int]]:
+        snapshot: dict[str, tuple[bool, bytes, int]] = {}
+        for raw_path in sorted(paths):
+            path = pathlib.Path(raw_path)
+            try:
+                if path.is_file() and not path.is_symlink():
+                    snapshot[raw_path] = (True, path.read_bytes(), path.stat().st_mode & 0o777)
+                else:
+                    snapshot[raw_path] = (False, b"", 0)
+            except OSError:
+                snapshot[raw_path] = (False, b"", 0)
+        return snapshot
+
+    @staticmethod
+    def _restore_runtime_file(path: pathlib.Path, content: bytes, mode: int) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".rollback", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fchmod(stream.fileno(), mode or 0o600)
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, path)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+
+    def _rollback_ultra_runtime_apply(
+        self,
+        forward_id: int,
+        previous: dict,
+        applied_before: dict,
+        previous_runtime_present: bool,
+        previous_paths: set[str],
+        current_paths: set[str],
+        previous_service_names: set[str],
+        current_service_names: set[str],
+        file_snapshot: dict[str, tuple[bool, bytes, int]],
+        previous_leases: list[dict],
+    ) -> None:
+        """Restore the last known-good Ultra runtime after a failed handoff."""
+        try:
+            for service_name in sorted(current_service_names):
+                subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
+            for raw_path in sorted(current_paths - previous_paths):
+                path = pathlib.Path(raw_path)
+                try:
+                    if path.exists() or path.is_symlink():
+                        path.unlink()
+                except OSError:
+                    logging.warning("failed to remove rolled-back runtime path %s", path, exc_info=True)
+            for raw_path, (exists, content, mode) in file_snapshot.items():
+                path = pathlib.Path(raw_path)
+                if exists:
+                    self._restore_runtime_file(path, content, mode)
+                elif path.exists() or path.is_symlink():
+                    path.unlink()
+
+            subprocess.run("systemctl daemon-reload", shell=True, check=False)
+            if previous_runtime_present:
+                for service_name in sorted(previous_service_names):
+                    subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+                    subprocess.run(f"systemctl start {service_name}.service", shell=True, check=False)
+                if previous_leases and not self.send_ultra_leases(forward_id, previous_leases):
+                    logging.error("forward %s restored service but could not restore its previous Ultra lease", forward_id)
+            else:
+                for service_name in sorted(current_service_names):
+                    subprocess.run(f"systemctl disable {service_name}.service", shell=True, check=False)
+
+            applied = dict(applied_before)
+            if previous:
+                applied[str(forward_id)] = previous
+            else:
+                applied.pop(str(forward_id), None)
+            self.write_applied_state(applied)
+            logging.warning("forward %s Ultra runtime handoff rolled back after lease delivery failure", forward_id)
+        except Exception:  # noqa: BLE001
+            logging.exception("forward %s Ultra runtime rollback failed", forward_id)
+
     def _apply_forward_locked(self, forward: dict, contract_signature: str | None = None, force_runtime_restart: bool = False) -> None:
         from install_forward_runtime import render_forward_runtime  # local helper
 
@@ -2760,11 +3389,31 @@ class ClientAgent:
         applied = self.load_applied()
         previous = applied.get(str(forward_id), {})
         previous_runtime_present = self.applied_forward_runtime_is_present(previous) if isinstance(previous, dict) and previous else False
+        ultra_runtime = str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+        previous_for_runtime_checks = previous
+        if ultra_runtime and not previous_runtime_present:
+            inferred_previous = self.inferred_ultra_runtime_entry(forward_id)
+            inferred_paths = [pathlib.Path(path) for path in inferred_previous["managed_paths"]]
+            if all(path.exists() for path in inferred_paths) and self.systemd_is_active(f"ultra-forward-{forward_id}"):
+                previous_for_runtime_checks = dict(previous) if isinstance(previous, dict) else {}
+                previous_for_runtime_checks.setdefault("units", inferred_previous["units"])
+                previous_for_runtime_checks.setdefault("managed_paths", inferred_previous["managed_paths"])
+                previous_for_runtime_checks.setdefault("runtime_mode", inferred_previous["runtime_mode"])
+                previous_for_runtime_checks.setdefault("published_mode", inferred_previous["published_mode"])
+                previous_runtime_present = True
+                previous = previous_for_runtime_checks
+                logging.info("forward %s recovered applied runtime metadata from live Ultra files", forward_id)
         previous_runtime_mode = self.normalize_mode(previous.get("runtime_mode") or previous.get("published_mode") or "") if isinstance(previous, dict) else ""
         live_mptcp_runtime_interfaces = self.mptcp_forward_runtime_interfaces(forward_id) if mode != "mptcp" else []
         cleanup_for_runtime_transition = previous_runtime_mode == "mptcp" and mode != "mptcp"
         cleanup_for_stale_non_mptcp_runtime = mode != "mptcp" and live_mptcp_runtime_interfaces != []
         rendered_unchanged = isinstance(previous, dict) and str(previous.get("rendered_signature", "") or "") == rendered_signature
+        ultra_generation_only_refresh = (
+            str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+            and previous_runtime_present
+            and not rendered_unchanged
+            and self.ultra_static_runtime_matches_disk(rendered, previous_for_runtime_checks, mode, transport, listen_port)
+        )
         if cleanup_for_runtime_transition or cleanup_for_stale_non_mptcp_runtime:
             if cleanup_for_stale_non_mptcp_runtime and not cleanup_for_runtime_transition:
                 logging.info(
@@ -2775,13 +3424,18 @@ class ClientAgent:
                 )
             self.cleanup_mptcp_forward_runtime(forward_id)
             previous_runtime_present = False
-        if rendered_unchanged and previous_runtime_present:
+        ultra_forced_restart = force_runtime_restart and str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+        if (rendered_unchanged or ultra_generation_only_refresh) and previous_runtime_present and not ultra_forced_restart:
             if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
                 leases = ultra_lease_candidates(render_forward)
                 if not leases or not self.send_ultra_leases(forward_id, leases):
                     raise RuntimeError("ultra lease delivery failed")
                 self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
-                logging.debug("forward %s static runtime unchanged; delivered fresh Ultra lease", forward_id)
+                logging.debug(
+                    "forward %s static runtime unchanged%s; delivered fresh Ultra lease",
+                    forward_id,
+                    " (legacy signature migrated)" if ultra_generation_only_refresh and not rendered_unchanged else "",
+                )
                 return
             self.apply_reload_only_files(rendered)
             if force_runtime_restart:
@@ -2796,6 +3450,39 @@ class ClientAgent:
             logging.debug("forward %s rendered runtime unchanged; recorded signature and skipped no-op apply", forward_id)
             return
         runtime_reapply_needed = force_runtime_restart
+
+        if ultra_runtime and not ultra_lease_candidates(render_forward):
+            if previous_runtime_present or isinstance(previous, dict) and previous:
+                logging.warning("forward %s Ultra lease unavailable; preserving current runtime before apply", forward_id)
+                return
+            raise RuntimeError("ultra lease delivery failed")
+
+        previous_leases = self.cached_ultra_leases(forward_id) if ultra_runtime else []
+        if ultra_runtime and previous_runtime_present and not force_runtime_restart and not previous_leases:
+            logging.warning(
+                "forward %s Ultra static runtime change deferred because no previous lease snapshot is available",
+                forward_id,
+            )
+            return
+
+        applied_before = json.loads(json.dumps(applied, ensure_ascii=False))
+        previous_paths = {
+            str(path)
+            for path in (previous.get("managed_paths", []) if isinstance(previous, dict) else [])
+            if str(path).strip() != ""
+        }
+        current_paths = self.rendered_managed_paths(rendered)
+        previous_service_names = {
+            str(unit.get("service_name", "") or "")
+            for unit in (previous.get("units", []) if isinstance(previous, dict) else [])
+            if isinstance(unit, dict) and str(unit.get("service_name", "") or "").strip() != ""
+        }
+        current_service_names = {
+            str(unit.get("service_name", "") or "")
+            for unit in [rendered] + [item for item in rendered.get("extra_units", []) if isinstance(item, dict)]
+            if str(unit.get("service_name", "") or "").strip() != ""
+        }
+        runtime_file_snapshot = self._capture_runtime_files(previous_paths | current_paths) if ultra_runtime else {}
 
         logging.info(
             "applying forward %s mode=%s transport=%s endpoints=%s target=%s",
@@ -2856,7 +3543,18 @@ class ClientAgent:
                 managed_paths.append(str(extra_path))
 
             service_active = self.systemd_is_active(service_name)
-            if unit_changed or script_changed or files_changed or not service_active or runtime_reapply_needed:
+            restart_reasons = []
+            if unit_changed:
+                restart_reasons.append("unit_changed")
+            if script_changed:
+                restart_reasons.append("script_changed")
+            if files_changed:
+                restart_reasons.append("files_changed")
+            if not service_active:
+                restart_reasons.append("service_inactive")
+            if runtime_reapply_needed:
+                restart_reasons.append("forced_refresh")
+            if restart_reasons:
                 if mode == "mptcp" and not mptcp_runtime_cleaned:
                     self.cleanup_mptcp_forward_runtime(forward_id)
                     mptcp_runtime_cleaned = True
@@ -2878,11 +3576,29 @@ class ClientAgent:
                 unit_changed,
                 script_changed,
             )
+            if restart_reasons:
+                logging.info(
+                    "forward %s service=%s runtime restart reasons=%s",
+                    forward_id,
+                    service_name,
+                    ",".join(restart_reasons),
+                )
 
         if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
             leases = ultra_lease_candidates(render_forward)
             if not leases or not self.send_ultra_leases(forward_id, leases):
-                self.stop_forward(forward_id, delete_files=True)
+                self._rollback_ultra_runtime_apply(
+                    forward_id,
+                    previous if isinstance(previous, dict) else {},
+                    applied_before,
+                    previous_runtime_present,
+                    previous_paths,
+                    current_paths,
+                    previous_service_names,
+                    current_service_names,
+                    runtime_file_snapshot,
+                    previous_leases,
+                )
                 raise RuntimeError("ultra lease delivery failed")
 
         current_managed_paths = {path for unit in persisted_units for path in unit["managed_paths"]}
@@ -2907,6 +3623,23 @@ class ClientAgent:
             "updated_at": int(time.time()),
         }
         self._save_applied_entry(forward_id, applied_entry)
+
+    def cached_ultra_leases(self, forward_id: int) -> list[dict]:
+        leases = self.last_ultra_leases.get(int(forward_id), [])
+        if not isinstance(leases, list):
+            return []
+        try:
+            return json.loads(json.dumps(leases, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return []
+
+    def remember_ultra_leases(self, forward_id: int, leases: list[dict]) -> None:
+        try:
+            copied = json.loads(json.dumps(leases, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return
+        if isinstance(copied, list) and copied:
+            self.last_ultra_leases[int(forward_id)] = copied
 
     def send_ultra_lease(self, forward_id: int, lease: dict) -> bool:
         return self.send_ultra_leases(forward_id, [lease])
@@ -2937,17 +3670,32 @@ class ClientAgent:
             # Candidate batches allow association setup, a 30-second UDP
             # window, and response margin; single-lease delivery stays short.
             timeout = 70.0 if len(wire_leases) > 1 else 3.0
+            expiries = [parse_rfc3339(lease.get("expires_at")) for lease in wire_leases]
+            remaining = [expiry - time.time() - 5.0 for expiry in expiries if expiry is not None]
+            budget = min([timeout, *remaining]) if remaining else timeout
+            if budget <= 0:
+                return False
+            total_deadline = time.monotonic() + budget
+            def remaining_timeout() -> float:
+                left = total_deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("Ultra lease delivery total deadline exceeded")
+                return left
             for attempt in range(3):
+                if time.monotonic() >= total_deadline:
+                    break
                 try:
-                    deadline = time.monotonic() + min(3.0, timeout)
+                    deadline = min(total_deadline, time.monotonic() + 3.0)
                     while not socket_path.exists() and time.monotonic() < deadline:
                         time.sleep(0.1)
                     if not socket_path.exists():
                         raise OSError("control socket missing")
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                        connection.settimeout(timeout)
+                        connection.settimeout(remaining_timeout())
                         connection.connect(str(socket_path))
+                        connection.settimeout(remaining_timeout())
                         connection.sendall(frame)
+                        connection.settimeout(remaining_timeout())
                         header = connection.recv(4)
                         if len(header) != 4:
                             raise OSError("control response header incomplete")
@@ -2956,6 +3704,7 @@ class ClientAgent:
                             raise OSError("control response size invalid")
                         response = b""
                         while len(response) < size:
+                            connection.settimeout(remaining_timeout())
                             chunk = connection.recv(size - len(response))
                             if not chunk:
                                 raise OSError("control response incomplete")
@@ -2963,12 +3712,13 @@ class ClientAgent:
                         decoded = json.loads(response.decode("utf-8"))
                         if not isinstance(decoded, dict) or decoded.get("ok") is not True:
                             raise OSError(str(decoded.get("error", "lease rejected")) if isinstance(decoded, dict) else "lease rejected")
+                        self.remember_ultra_leases(forward_id, leases)
                         return True
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
-                    if attempt == 2:
+                    if attempt == 2 or time.monotonic() >= total_deadline:
                         logging.warning("Ultra lease delivery failed for forward %s: %s", forward_id, exc)
-                    else:
-                        time.sleep((0.1, 0.3, 0.9)[attempt])
+                        break
+                    time.sleep(min((0.1, 0.3, 0.9)[attempt], max(0.0, total_deadline - time.monotonic())))
         finally:
             for payload, endpoint, credential in sensitive:
                 payload.clear()
@@ -3111,6 +3861,20 @@ class ClientAgent:
             forward_id = int(forward.get("forward_id", 0) or 0)
             if forward_id <= 0:
                 continue
+
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                applied = self.load_applied().get(str(forward_id), {})
+                if not self.applied_forward_definition_is_present(applied, forward_id):
+                    # An active panel forward may be intentionally absent locally
+                    # after a failed/partial reconciliation. Do not create a
+                    # restart loop for a unit that this agent does not own.
+                    continue
+                access = forward.get("ultra_access")
+                if not isinstance(access, dict) or not str(access.get("session_ticket", "") or "").strip():
+                    # A broker grant can be temporarily absent from an otherwise
+                    # valid panel snapshot. Do not turn that control-plane gap
+                    # into a data-plane restart; the next sync will retry it.
+                    continue
 
             service_name = forward_runtime_service_name(forward)
             if not self.systemd_is_active(service_name):
@@ -3408,15 +4172,16 @@ class ClientAgent:
         return result.returncode == 0 and result.stdout.strip() != ""
 
     def restart_forward_service(self, forward_id: int, service_name: str, reason: str) -> None:
-        now = time.time()
-        next_allowed = self.health_restart_after.get(forward_id, 0.0)
-        if now < next_allowed:
-            return
+        with self._forward_lock(forward_id):
+            now = time.time()
+            next_allowed = self.health_restart_after.get(forward_id, 0.0)
+            if now < next_allowed:
+                return
 
-        subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
-        subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
-        self.health_restart_after[forward_id] = now + 30
-        logging.warning("restarted %s due to runtime health check: %s", service_name, reason)
+            subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
+            subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+            self.health_restart_after[forward_id] = now + 30
+            logging.warning("restarted %s due to runtime health check: %s", service_name, reason)
 
     def reorder_forward_endpoints(self, forward_id: int, forward: dict, endpoints: list[dict], service_name: str) -> None:
         now = time.time()
@@ -5564,9 +6329,9 @@ class ClientAgent:
         except Exception as exc:  # noqa: BLE001
             error_message = str(exc)
 
-        http_json(
+        self.control_plane_request(
             "POST",
-            f"{master}/api/client/diagnostics/result",
+            "/api/client/diagnostics/result",
             token,
             {
                 "request_token": request_token,
@@ -5575,7 +6340,7 @@ class ClientAgent:
             },
         )
         applied["_last_diag_request_token"] = request_token
-        self.applied_path.write_text(json.dumps(applied, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.write_applied_state(applied)
 
     @staticmethod
     def tcp_ping(host: str, port: int, timeout: float = 2.5) -> tuple[bool, float | None, str | None]:
@@ -6037,6 +6802,8 @@ class ClientAgent:
             "config_path": str(self.config_path),
             "state_dir": str(getattr(self, "state_dir", "/var/lib/leikwan-client-agent")),
             "master_url": str(self.config.get("master_url", "")),
+            "panel_mirror_urls": control_plane_endpoints(self.config)[1:],
+            "control_plane_endpoint_state": str(getattr(self, "endpoint_state_path", "")),
             "client_id": int(self.config.get("client_id", 0) or 0),
             "service_active": self.systemd_is_active("leikwan-client-agent"),
             "agent_update_state": self.load_update_state(),
@@ -6064,11 +6831,26 @@ class ClientAgent:
 
         if live:
             try:
-                payload = http_json(
-                    "GET",
-                    f"{str(self.config['master_url']).rstrip('/')}/api/client/configs/pull",
-                    str(self.config["agent_token"]),
-                )
+                selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
+                live_errors: list[str] = []
+                payload = None
+                for endpoint in selector.ordered(control_plane_endpoints(self.config)):
+                    try:
+                        payload = http_json(
+                            "GET",
+                            f"{endpoint}/api/client/configs/pull",
+                            str(self.config["agent_token"]),
+                        )
+                        selector.success(endpoint)
+                        self.active_control_plane_endpoint = endpoint
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        selector.failure(endpoint, exc)
+                        live_errors.append(f"{endpoint}: {exc}")
+                        if _is_control_plane_business_error(exc):
+                            raise
+                if payload is None:
+                    raise RuntimeError("; ".join(live_errors) if live_errors else "no control-plane endpoint configured")
                 forwards = [forward for forward in payload.get("forwards", []) if isinstance(forward, dict)]
                 bond_forward_ids = [
                     int(forward.get("forward_id", 0) or 0)
@@ -6084,7 +6866,10 @@ class ClientAgent:
                     int(forward.get("forward_id", 0) or 0)
                     for forward in forwards
                     if (
-                        self.normalize_mode(forward.get("mode", "single")) != "mptcp"
+                        forward_requires_panel_endpoints(
+                            forward,
+                            self.normalize_mode(forward.get("mode", "single")),
+                        )
                         and self.usable_endpoints(forward) == []
                     )
                 ]

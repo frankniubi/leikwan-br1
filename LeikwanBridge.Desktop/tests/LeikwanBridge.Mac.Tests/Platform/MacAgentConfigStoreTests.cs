@@ -34,6 +34,35 @@ public sealed class MacAgentConfigStoreTests
         Assert.Equal(paths.BinDirectory + "/ultra-client", loaded.UltraBin);
     }
 
+    [Fact]
+    public async Task DisablingRememberLoginInfoRemovesKeychainCredentialsAndDiskIdentity()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var secrets = new InMemorySecretStore();
+        var store = new MacAgentConfigStore(paths, secrets);
+        await secrets.SetAsync("client-agent-42", "old-token", CancellationToken.None);
+        await secrets.SetAsync("desktop-session", "old-session", CancellationToken.None);
+
+        await store.SaveAsync(new AgentConfig
+        {
+            MasterUrl = "https://panel.example.test",
+            ClientId = 42,
+            ActiveClientId = 42,
+            AgentToken = "new-token",
+            DesktopSessionToken = "new-session",
+            RememberLoginInfo = false,
+        }, CancellationToken.None);
+
+        Assert.Null(await secrets.GetAsync("client-agent-42", CancellationToken.None));
+        Assert.Null(await secrets.GetAsync("desktop-session", CancellationToken.None));
+        var loaded = await store.LoadAsync(CancellationToken.None);
+        Assert.False(loaded.RememberLoginInfo);
+        Assert.Equal(0, loaded.ActiveClientId);
+        Assert.Empty(loaded.AgentToken);
+        Assert.DoesNotContain("new-token", File.ReadAllText(paths.ConfigPath));
+    }
+
     private sealed class InMemorySecretStore : LeikwanBridge.Core.Services.Platform.ISecretStore
     {
         private readonly Dictionary<string, string> _values = [];

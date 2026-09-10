@@ -18,8 +18,10 @@ public sealed class MasterApiClient : IDisposable
     private readonly string _deviceId;
     private readonly bool _ownsHttpClient;
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
+    private readonly ControlPlaneEndpointSupervisor _endpointSupervisor;
 
     public string LastErrorMessage { get; private set; } = "";
+    public Uri CurrentControlPlaneEndpoint => _endpointSupervisor.CurrentEndpoint;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -36,7 +38,8 @@ public sealed class MasterApiClient : IDisposable
         Func<HttpClient>? httpClientFactory = null,
         bool ownsHttpClient = true,
         Action<HttpRequestMessage>? onRequestForTest = null,
-        ClientPlatformIdentity? platformIdentity = null)
+        ClientPlatformIdentity? platformIdentity = null,
+        IReadOnlyList<string>? fallbackEndpoints = null)
     {
         if (platformIdentity is not null)
         {
@@ -50,6 +53,10 @@ public sealed class MasterApiClient : IDisposable
         _http = httpClientFactory?.Invoke() ?? LeikwanHttpClientFactory.CreateFor(new Uri(_masterUrl));
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
+        _endpointSupervisor = new ControlPlaneEndpointSupervisor(
+            _masterUrl,
+            fallbackEndpoints ?? DefaultFallbackEndpoints(_masterUrl),
+            (request, ct) => _http.SendAsync(request, ct));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _agentToken);
         var userAgentProduct = platformIdentity?.UserAgentProduct ?? "Leikwan-Windows-GUI";
         var appVersion = platformIdentity?.AppVersion ?? AgentVersion;
@@ -159,6 +166,75 @@ public sealed class MasterApiClient : IDisposable
         string routePolicy,
         CancellationToken ct = default)
     {
+        var leases = await ResolveNativeOutboundLeasesAsync(
+            forward,
+            capability,
+            routeScope,
+            routePolicy,
+            autoSelect: false,
+            ct: ct).ConfigureAwait(false);
+        if (leases.Count == 0)
+            return null;
+        var first = leases[0];
+        foreach (var lease in leases.Skip(1))
+            lease.Dispose();
+        return first;
+    }
+
+    public Task<IReadOnlyList<NativeOutboundLease>> ResolveNativeOutboundLeasesAsync(
+        ForwardConfig forward,
+        NativeOutboundCapability? capability,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
+        => ResolveNativeOutboundLeasesAsync(
+            forward,
+            capability,
+            routeScope,
+            routePolicy,
+            autoSelect: true,
+            ct: ct);
+
+    /// <summary>
+    /// Pulls an uncached policy snapshot immediately before requesting a
+    /// native lease batch. Ultra session tickets rotate independently of the
+    /// stable config revision, so a UI-held ForwardConfig can remain otherwise
+    /// current while its ticket has already been replaced by the Panel.
+    /// </summary>
+    public async Task<IReadOnlyList<NativeOutboundLease>> ResolveFreshNativeOutboundLeasesAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
+    {
+        if (forwardId <= 0)
+            return [];
+
+        var pull = await PullConfigsAsync(ct: ct).ConfigureAwait(false);
+        if (!pull.Ok || pull.NotModified || pull.NativeOutbound is not { Enabled: true } capability)
+            return [];
+        var forward = pull.Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
+        if (forward is null)
+            return [];
+
+        forward.NativeOutbound = capability;
+        return await ResolveNativeOutboundLeasesAsync(
+            forward,
+            capability,
+            routeScope,
+            routePolicy,
+            autoSelect: true,
+            ct: ct).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<NativeOutboundLease>> ResolveNativeOutboundLeasesAsync(
+        ForwardConfig forward,
+        NativeOutboundCapability? capability,
+        string routeScope,
+        string routePolicy,
+        bool autoSelect,
+        CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(forward);
         var policy = forward.UltraAccess;
         var carrier = capability?.FindForward(forward.ForwardId);
@@ -176,7 +252,7 @@ public sealed class MasterApiClient : IDisposable
             || string.IsNullOrWhiteSpace(carrier.Direction)
             || (normalizedPolicy == "unrestricted" && !carrier.UnrestrictedAllowed)
             || policy.GetValidationFailure(forward, DateTimeOffset.UtcNow) is not null)
-            return null;
+            return [];
 
         var expectedDigest = normalizedPolicy == "unrestricted"
             ? NativeOutboundLease.ComputeScopeDigestV2(
@@ -207,8 +283,8 @@ public sealed class MasterApiClient : IDisposable
                     transport = "tcp+udp",
                     route_scope = normalizedScope,
                     route_policy = normalizedPolicy,
-                    selection_mode = "single",
-                    max_candidates = 1,
+                    selection_mode = autoSelect ? "auto" : "single",
+                    max_candidates = autoSelect ? 4 : 1,
                 },
             },
         };
@@ -233,9 +309,37 @@ public sealed class MasterApiClient : IDisposable
                 using var document = JsonDocument.Parse(responseBytes);
                 if (!document.RootElement.TryGetProperty("leases", out var leases)
                     || leases.ValueKind != JsonValueKind.Array
-                    || leases.GetArrayLength() != 1)
-                    return null;
-                return ParseNativeOutboundLease(leases[0], forward, policy, carrier, normalizedScope, normalizedPolicy, expectedDigest);
+                    || leases.GetArrayLength() is < 1 or > 4)
+                    return [];
+                var parsed = new List<NativeOutboundLease>(Math.Min(leases.GetArrayLength(), autoSelect ? 4 : 1));
+                try
+                {
+                    foreach (var item in leases.EnumerateArray().Take(autoSelect ? 4 : 1))
+                    {
+                        var parsedLease = ParseNativeOutboundLease(
+                            item,
+                            forward,
+                            policy,
+                            carrier,
+                            normalizedScope,
+                            normalizedPolicy,
+                            expectedDigest);
+                        if (parsedLease is null)
+                        {
+                            foreach (var existing in parsed)
+                                existing.Dispose();
+                            return [];
+                        }
+                        parsed.Add(parsedLease);
+                    }
+                    return parsed;
+                }
+                catch
+                {
+                    foreach (var existing in parsed)
+                        existing.Dispose();
+                    throw;
+                }
             }
             finally
             {
@@ -244,23 +348,23 @@ public sealed class MasterApiClient : IDisposable
         }
         catch (JsonException)
         {
-            return null;
+            return [];
         }
         catch (KeyNotFoundException)
         {
-            return null;
+            return [];
         }
         catch (InvalidOperationException)
         {
-            return null;
+            return [];
         }
         catch (FormatException)
         {
-            return null;
+            return [];
         }
         catch (OverflowException)
         {
-            return null;
+            return [];
         }
         finally
         {
@@ -428,6 +532,13 @@ public sealed class MasterApiClient : IDisposable
             return null;
         var endpoint = item.GetProperty("endpoint");
         var credential = item.GetProperty("credential");
+        var candidateKeyHash = item.TryGetProperty("candidate_key_hash", out var candidateHashElement)
+            ? (candidateHashElement.GetString() ?? "").Trim().ToLowerInvariant()
+            : "";
+        if (candidateKeyHash.Length != 0
+            && (candidateKeyHash.Length != 64
+                || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
+            return null;
         return new UltraLease
         {
             Protocol = protocol,
@@ -442,6 +553,7 @@ public sealed class MasterApiClient : IDisposable
             QuotaRemainingBytes = item.GetProperty("quota_remaining_bytes").GetInt64(),
             SelectionRef = item.GetProperty("selection_ref").GetString() ?? "",
             SelectionTier = selectionTier,
+            CandidateKeyHash = candidateKeyHash,
             NonceHash = item.GetProperty("nonce_hash").GetString() ?? "",
             ProviderIp = endpoint.GetProperty("ip").GetString() ?? "",
             ProviderPort = endpoint.GetProperty("port").GetInt32(),
@@ -511,6 +623,13 @@ public sealed class MasterApiClient : IDisposable
         var selectionTier = item.TryGetProperty("selection_tier", out var tierElement)
             ? tierElement.GetString() ?? UltraLease.SelectionTierUnknown
             : UltraLease.SelectionTierUnknown;
+        var candidateKeyHash = item.TryGetProperty("candidate_key_hash", out var candidateHashElement)
+            ? (candidateHashElement.GetString() ?? "").Trim().ToLowerInvariant()
+            : "";
+        if (candidateKeyHash.Length != 0
+            && (candidateKeyHash.Length != 64
+                || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
+            return null;
         var user = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? "");
         var password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? "");
         var lease = new NativeOutboundLease(
@@ -530,7 +649,8 @@ public sealed class MasterApiClient : IDisposable
             quota,
             selectionRef,
             selectionTier,
-            returnedPolicy);
+            returnedPolicy,
+            candidateKeyHash);
         if (user.Length is 0 or > 255 || password.Length is 0 or > 255
             || !lease.IsUsable(now))
         {
@@ -631,10 +751,52 @@ public sealed class MasterApiClient : IDisposable
             _http.DefaultRequestHeaders.TryAddWithoutValidation(name, value.Trim());
     }
 
-    private Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        _onRequestForTest?.Invoke(request);
-        return _http.SendAsync(request, ct);
+        var requestUri = request.RequestUri
+            ?? throw new InvalidOperationException("master_api_request_uri_missing");
+        var relativePath = requestUri.PathAndQuery;
+        var body = request.Content is null
+            ? null
+            : await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var contentHeaders = request.Content?.Headers
+            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var requestHeaders = request.Headers
+            .ToDictionary(header => header.Key, header => header.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+        return await _endpointSupervisor.ExecuteAsync(
+            request.Method,
+            relativePath,
+            endpoint =>
+            {
+                var next = new HttpRequestMessage(request.Method, new Uri(endpoint, relativePath));
+                foreach (var header in requestHeaders)
+                    next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                if (body is not null)
+                {
+                    var content = new ByteArrayContent(body);
+                    foreach (var header in contentHeaders)
+                        content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    next.Content = content;
+                }
+                _onRequestForTest?.Invoke(next);
+                return next;
+            },
+            static (response, _) => Task.FromResult(response),
+            ct).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<string> DefaultFallbackEndpoints(string masterUrl)
+    {
+        if (Uri.TryCreate(masterUrl, UriKind.Absolute, out var endpoint))
+        {
+            if (string.Equals(endpoint.Host, "v3.leikwanhost.com", StringComparison.OrdinalIgnoreCase))
+                return ["https://api-leikwanbridge.nbwly.com"];
+            if (string.Equals(endpoint.Host, "api-leikwanbridge.nbwly.com", StringComparison.OrdinalIgnoreCase))
+                return ["https://v3.leikwanhost.com"];
+        }
+        return [];
     }
 
     private static async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, CancellationToken ct)

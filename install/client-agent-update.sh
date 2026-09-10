@@ -4,6 +4,7 @@ umask 077
 CONFIG_PATH="/etc/leikwan-client-agent/config.json"
 REQUEST_TOKEN=""
 STATE_PATH=""
+ARTIFACT_BASE_OVERRIDE=""
 SERVICE_NAME="leikwan-client-agent"
 UPDATE_UNIT_PREFIX="leikwan-client-agent-update"
 FORWARD_UNITS=()
@@ -17,6 +18,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --request-token) REQUEST_TOKEN="$2"; shift 2 ;;
     --state-path) STATE_PATH="$2"; shift 2 ;;
+    --artifact-base) ARTIFACT_BASE_OVERRIDE="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -36,6 +38,10 @@ data = json.loads(path.read_text(encoding="utf-8"))
 print(data.get("artifact_base_url") or data.get("master_url", ""))
 PY
 )
+
+if [[ -n "${ARTIFACT_BASE_OVERRIDE}" ]]; then
+  ARTIFACT_BASE="${ARTIFACT_BASE_OVERRIDE}"
+fi
 
 CLIENT_ID=$(python3 - "${CONFIG_PATH}" <<'PY'
 import json, pathlib, sys

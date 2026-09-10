@@ -43,6 +43,7 @@ import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraLeaseClient
 import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.session.ClientControlLoop
+import com.leikwan.bridge.session.ControlPlaneState
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.session.SessionGate
 import com.leikwan.bridge.session.SessionRevocationCoordinator
@@ -57,6 +58,7 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.io.IOException
 import java.util.IdentityHashMap
 
 /** Keeps one runtime owner per Android application process. */
@@ -132,6 +134,9 @@ class TunnelOrchestrator internal constructor(
     private val nativeLeaseBatchSender: (String, List<NativeOutboundLease>) -> Boolean = { socketPath, leases ->
         UltraLeaseClient().sendNative(socketPath, leases)
     },
+    private val ultraLeaseBatchSender: (String, UltraPolicy, List<UltraLease>) -> Boolean = { socketPath, policy, leases ->
+        UltraLeaseClient().send(socketPath, policy, leases)
+    },
 ) {
     companion object {
         private val applicationInstances = ApplicationScoped<TunnelOrchestrator>()
@@ -164,12 +169,18 @@ class TunnelOrchestrator internal constructor(
         ClientControlLoop(
             scope = controlScope,
             poll = {
-                panelRepo.heartbeat()
+                if (!panelRepo.heartbeat()) {
+                    throw IOException("control_plane_unavailable")
+                }
                 refreshUltraIfDue()
                 refreshNativeIfDue()
             },
             onTerminal = ::revokeFromPanel,
             shouldContinue = { LeikwanVpnService.isRunning },
+            onStateChanged = { state ->
+                controlPlaneState = state
+                Log.i(TAG, "control plane state: $state")
+            },
         )
     }
     private val revocationCoordinator by lazy {
@@ -197,6 +208,10 @@ class TunnelOrchestrator internal constructor(
     private var activeRouteRuleRuntimeKeys: Set<Long> = emptySet()
     @Volatile private var activeUltra: ActiveUltraRuntime? = null
     @Volatile private var activeNative: ActiveNativeRuntime? = null
+
+    @Volatile
+    var controlPlaneState: ControlPlaneState = ControlPlaneState.STOPPED
+        private set
 
     /**
      * Build the authoritative [RoutingPolicySnapshot] for one startup/rebuild cycle from the
@@ -506,20 +521,25 @@ class TunnelOrchestrator internal constructor(
             Log.i(TAG, "Starting service ${forward.forwardId}: ${forward.serviceName}")
             if (effective.mode == ForwardMode.ULTRA) {
                 val policy = requireNotNull(ultraPolicy)
-                val planned = UltraForwardRunner.buildPlan(
-                    forward = forward,
-                    policy = policy,
-                    binaries = binaries,
-                    runtimeDir = context.filesDir,
-                )
-                processRunner.start(forward.forwardId, planned.runtimeContext)
+                val leases = panelRepo.resolveUltraLeases(policy, maxCandidates = 4)
+                var processStarted = false
                 try {
-                    val lease = panelRepo.resolveUltraLease(policy)
-                    val protectedConnectivity = lease.directConnectivity
-                    val accepted = try {
-                        ultraLeaseSender(planned.controlSocketFile.absolutePath, policy, lease)
-                    } finally {
-                        lease.wipe()
+                    val planned = UltraForwardRunner.buildPlan(
+                        forward = forward,
+                        policy = policy,
+                        binaries = binaries,
+                        runtimeDir = context.filesDir,
+                        autoSelect = leases.size > 1,
+                    )
+                    processRunner.start(forward.forwardId, planned.runtimeContext)
+                    processStarted = true
+                    val protectedConnectivity = leases
+                        .map(UltraLease::directConnectivity)
+                        .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
+                    val accepted = if (leases.size == 1) {
+                        ultraLeaseSender(planned.controlSocketFile.absolutePath, policy, leases.first())
+                    } else {
+                        ultraLeaseBatchSender(planned.controlSocketFile.absolutePath, policy, leases)
                     }
                     if (!accepted) {
                         throw Exception("Ultra lease was rejected by the local runtime")
@@ -536,8 +556,10 @@ class TunnelOrchestrator internal constructor(
                     )
                     return@run runtime
                 } catch (error: Exception) {
-                    processRunner.stopForward(forward.forwardId)
+                    if (processStarted) processRunner.stopForward(forward.forwardId)
                     throw error
+                } finally {
+                    leases.forEach(UltraLease::wipe)
                 }
             }
             val relayNodes = selection.activeNodes.filter { it.type.lowercase() != "wireguard" }
@@ -776,22 +798,32 @@ class TunnelOrchestrator internal constructor(
         val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
             ?: throw IllegalStateException("ultra_policy_unavailable")
         val nextPolicy = UltraPolicy.from(forward) ?: throw IllegalStateException("ultra_policy_unavailable")
-        if (nextPolicy.policyGeneration != active.policy.policyGeneration) {
+        // Generation and ticket rotate with provider material/quota. The adapter
+        // can replace them in place; only static forwarding bindings need a restart.
+        if (nextPolicy.forwardId != active.policy.forwardId
+            || nextPolicy.targetDigest != active.policy.targetDigest
+            || nextPolicy.transport != active.policy.transport) {
             startForForward(active.forwardId, preserveControlLoop = true)
             return
         }
 
-        val lease = panelRepo.resolveUltraLease(nextPolicy)
-        val nextProtectedConnectivity = lease.directConnectivity
+        val leases = panelRepo.resolveUltraLeases(nextPolicy, maxCandidates = 4)
+        val nextProtectedConnectivity = leases
+            .map(UltraLease::directConnectivity)
+            .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
         if (nextProtectedConnectivity != active.protectedConnectivity) {
-            lease.wipe()
+            leases.forEach(UltraLease::wipe)
             startForForward(active.forwardId, preserveControlLoop = true)
             return
         }
         val accepted = try {
-            ultraLeaseSender(active.controlSocketPath, nextPolicy, lease)
+            if (leases.size == 1) {
+                ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
+            } else {
+                ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
+            }
         } finally {
-            lease.wipe()
+            leases.forEach(UltraLease::wipe)
         }
         if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
         activeUltra = active.copy(policy = nextPolicy)

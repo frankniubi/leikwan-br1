@@ -1,0 +1,18 @@
+﻿{
+    "status":  "ok",
+    "artifact":  "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\artifacts/android/leikwan-android-client.apk",
+    "sha256":  "dc5caed055c3278c1bd54a14030201b7d37c17cb957d453273aa45a099e12bfc",
+    "size_bytes":  88879451,
+    "signature_v2_v3":  true,
+    "abi_matrix":  [
+                       "arm64-v8a",
+                       "x86_64"
+                   ],
+    "runtime_version":  "2026.09.04.3",
+    "version_name":  "0.2.23",
+    "version_code":  25,
+    "release_contract_checked":  true,
+    "retired_update_classes":  0,
+    "update_manifest_unchanged":  true,
+    "update_push_touched":  false
+}

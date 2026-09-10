@@ -29,8 +29,9 @@ public static class MacAppBootstrap
         Log.Information("mac_bootstrap_config_load_begin");
         var config = await configStore.LoadAsync(ct).ConfigureAwait(false);
         Log.Information("mac_bootstrap_config_load_complete");
+        config.MasterUrl = PanelEndpoints.NormalizeKnownUrl(config.MasterUrl);
         if (string.IsNullOrWhiteSpace(config.MasterUrl))
-            config.MasterUrl = "https://v3.leikwanhost.com";
+            config.MasterUrl = PanelEndpoints.Default.Url;
         Log.Information("mac_bootstrap_identity_begin");
         var identity = new MacPlatformIdentityProvider(paths).GetOrCreate();
         Log.Information("mac_bootstrap_identity_complete");
@@ -86,13 +87,18 @@ public static class MacAppBootstrap
             supervisor,
             state,
             portPreflight: portPreflight,
-            ultraRuntimeHost: ultraHost);
+            ultraRuntimeHost: ultraHost,
+            proxyPortOwners: ownership.FindOwners);
         var api = new MasterApiClient(
             config.MasterUrl,
             config.AgentToken,
             platformIdentity: identity);
         var polling = new ConfigPollingService(api, runtime, state, MacForwardPolicy.Instance);
-        var heartbeat = new HeartbeatService(api, state, platformIdentity: identity);
+        var heartbeat = new HeartbeatService(
+            api,
+            state,
+            platformIdentity: identity,
+            additionalRuntimeDirectories: [paths.RuntimeDirectory]);
         var health = new HealthCheckService(supervisor, runtime, state, config: config);
         var diagnostics = new ClientDiagnosticsService(supervisor, config, logDirectory: paths.LogDirectory);
         return new DesktopRuntimeSession(

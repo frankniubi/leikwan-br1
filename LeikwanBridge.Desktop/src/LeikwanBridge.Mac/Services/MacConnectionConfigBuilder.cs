@@ -10,7 +10,6 @@ public static class MacConnectionConfigBuilder
 {
     public const int DefaultProxyPort = 2080;
     public const int DefaultTunMtu = 1280;
-    public const string TunInterfaceName = "LeiKwan Bridge";
     public const string TunAddress = "172.19.0.1/30";
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
@@ -53,7 +52,7 @@ public static class MacConnectionConfigBuilder
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error" },
-            ["dns"] = BuildDns(profile, bypassDomains),
+            ["dns"] = BuildDns(profile, bypassDomains, systemTun: mode == MacConnectionMode.Vpn),
             ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = outbounds,
             ["route"] = BuildRoute(bypassIps, bypassDomains, mode: mode),
@@ -75,7 +74,8 @@ public static class MacConnectionConfigBuilder
         int proxyPort = DefaultProxyPort,
         bool bypassChinaMainland = false,
         string? nativeProxyHost = null,
-        int? nativeProxyPort = null)
+        int? nativeProxyPort = null,
+        MacNativeRuleSetPaths? ruleSetPaths = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -116,7 +116,9 @@ public static class MacConnectionConfigBuilder
                 bootstrapProfile,
                 bypassDomains,
                 lease.RouteScope == "cn_only" ? "direct" : "proxy",
-                lease.RouteScope),
+                lease.RouteScope,
+                lease.RoutePolicy,
+                systemTun: mode == MacConnectionMode.Vpn),
             ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
             ["outbounds"] = new JsonArray
             {
@@ -136,7 +138,8 @@ public static class MacConnectionConfigBuilder
             root["route"]!.AsObject(),
             lease.RouteScope,
             bypassChinaMainland,
-            lease.RouteScope == "cn_only" ? "direct" : "proxy");
+            lease.RouteScope == "cn_only" ? "direct" : "proxy",
+            ruleSetPaths);
         return new MacConnectionConfigResult(
             root.ToJsonString(JsonOptions),
             bypassIps,
@@ -148,7 +151,9 @@ public static class MacConnectionConfigBuilder
         MacConnectionProfile profile,
         IReadOnlyList<string> bypassDomains,
         string remoteDetour = "proxy",
-        string? nativeRouteScope = null)
+        string? nativeRouteScope = null,
+        string? nativeRoutePolicy = null,
+        bool systemTun = false)
     {
         remoteDetour = string.Equals(remoteDetour, "direct", StringComparison.OrdinalIgnoreCase)
             ? "direct"
@@ -160,25 +165,29 @@ public static class MacConnectionConfigBuilder
         bootstrapDomains.AddRange(bypassDomains);
         var isChinaOnly = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase);
         var isInternationalOnly = string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase);
+        // Restricted native leases reject every port below 1000, including
+        // DoH's 443. DNS must follow the same direct low-port policy.
+        var restricted = !string.IsNullOrWhiteSpace(nativeRouteScope)
+            && NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy) == "restricted";
         var remoteServer = new JsonObject
         {
             ["type"] = "https",
             ["tag"] = "remote",
-            ["server"] = "1.1.1.1",
+            ["server"] = restricted && !isChinaOnly ? "223.5.5.5" : "1.1.1.1",
             ["server_port"] = 443,
             ["path"] = "/dns-query",
             ["tls"] = new JsonObject
             {
                 ["enabled"] = true,
-                ["server_name"] = "cloudflare-dns.com",
+                ["server_name"] = restricted && !isChinaOnly ? "dns.alidns.com" : "cloudflare-dns.com",
             },
         };
-        if (remoteDetour == "proxy")
+        if (remoteDetour == "proxy" && !restricted)
             remoteServer["detour"] = "proxy";
         var servers = new JsonArray { remoteServer };
         if (isChinaOnly)
         {
-            servers.Add(new JsonObject
+            var chinaServer = new JsonObject
             {
                 ["type"] = "https",
                 ["tag"] = "china",
@@ -190,10 +199,16 @@ public static class MacConnectionConfigBuilder
                     ["enabled"] = true,
                     ["server_name"] = "dns.alidns.com",
                 },
-                ["detour"] = "proxy",
-            });
+            };
+            if (!restricted) chinaServer["detour"] = "proxy";
+            servers.Add(chinaServer);
         }
-        servers.Add(new JsonObject
+        // The system resolver points at our TUN while connected. A "local"
+        // transport here would recursively query the same DNS listener.
+        servers.Add(systemTun ? new JsonObject
+        {
+            ["type"] = "udp", ["tag"] = "local", ["server"] = "223.5.5.5", ["server_port"] = 53,
+        } : new JsonObject
         {
             ["type"] = "local",
             ["tag"] = "local",
@@ -203,6 +218,7 @@ public static class MacConnectionConfigBuilder
             ["servers"] = servers,
             ["final"] = "remote",
         };
+        if (!string.IsNullOrWhiteSpace(nativeRouteScope)) dns["strategy"] = "ipv4_only";
         var dnsRules = new JsonArray();
         if (bootstrapDomains.Count > 0)
         {
@@ -257,7 +273,8 @@ public static class MacConnectionConfigBuilder
                 {
                     ["type"] = "tun",
                     ["tag"] = "tun-in",
-                    ["interface_name"] = TunInterfaceName,
+                    // Let sing-box allocate a free utunN; an app display name
+                    // or the bare prefix "utun" is not a valid Darwin name.
                     ["address"] = new JsonArray(TunAddress, TunIpv6Address),
                     ["mtu"] = DefaultTunMtu,
                     ["auto_route"] = true,
@@ -350,6 +367,7 @@ public static class MacConnectionConfigBuilder
                 NativeOutboundLease.NormalizeRoutePolicy(nativeRoutePolicy),
                 "restricted",
                 StringComparison.Ordinal);
+        var resolveNativeDomains = nativeMode && (!restrictedNative || nativeRouteScope != "global");
         var nativePortRange = restrictedNative ? $"{NativePortMin}:65535" : "1:65535";
         if (mode == MacConnectionMode.Vpn)
         {
@@ -380,8 +398,7 @@ public static class MacConnectionConfigBuilder
                 ["domain"] = new JsonArray(bypassDomains.Select(item => JsonValue.Create(item)).ToArray()),
                 ["outbound"] = "direct",
             });
-        if (string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(nativeRouteScope, "intl_only", StringComparison.OrdinalIgnoreCase))
+        if (resolveNativeDomains)
         {
             // Resolve the destination before the SOCKS handoff so the relay
             // cannot perform a second lookup on a different DNS path.
@@ -430,7 +447,7 @@ public static class MacConnectionConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope) ? "remote" : "local",
+            ["default_domain_resolver"] = resolveNativeDomains ? "remote" : "local",
             ["rules"] = rules,
             ["final"] = string.Equals(nativeRouteScope, "cn_only", StringComparison.OrdinalIgnoreCase) ? "direct" : "proxy",
         };
@@ -440,12 +457,30 @@ public static class MacConnectionConfigBuilder
         JsonObject route,
         string routeScope,
         bool bypassChinaMainland,
-        string downloadDetour = "proxy")
+        string downloadDetour = "proxy",
+        MacNativeRuleSetPaths? ruleSetPaths = null)
     {
         if (!string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase)
             && !(string.Equals(routeScope, "global", StringComparison.OrdinalIgnoreCase) && bypassChinaMainland))
             return;
+        if (ruleSetPaths is not null)
+        {
+            route["rule_set"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["tag"] = "geoip-cn", ["type"] = "local", ["format"] = "binary",
+                    ["path"] = ruleSetPaths.GeoIpPath,
+                },
+                new JsonObject
+                {
+                    ["tag"] = "geosite-cn", ["type"] = "local", ["format"] = "binary",
+                    ["path"] = ruleSetPaths.GeoSitePath,
+                },
+            };
+            return;
+        }
         downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
             ? "direct"
             : "proxy";
@@ -469,10 +504,6 @@ public static class MacConnectionConfigBuilder
             },
         };
     }
-
-    private static bool IsNativeRestrictedScope(string? routeScope)
-        => string.Equals(routeScope, "cn_only", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(routeScope, "intl_only", StringComparison.OrdinalIgnoreCase);
 
     private static void AddBypass(string value, ICollection<string> ips, ICollection<string> domains)
     {

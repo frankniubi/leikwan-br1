@@ -20,8 +20,10 @@ public sealed class MacConnectionService : IMacConnectionService
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private MacConnectionSnapshot _snapshot = MacConnectionSnapshot.Disconnected;
     private string? _configPath;
+    private string? _activeProcessConfigPath;
     private NativeOutboundLease? _activeNativeLease;
     private bool _disposed;
+    private MacConnectionSelection _selection = MacConnectionSelection.Empty;
 
     public const string NativeOutboundDisplayName = "原生出口";
 
@@ -39,6 +41,7 @@ public sealed class MacConnectionService : IMacConnectionService
         _processHost = processHost ?? new MacConnectionProcessHost();
         _proxyPort = proxyPort;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost(windows: false);
+        _processHost.UnexpectedExit += OnProcessExited;
     }
 
     public event Action<MacConnectionSnapshot>? SnapshotChanged;
@@ -53,6 +56,10 @@ public sealed class MacConnectionService : IMacConnectionService
     }
 
     public MacConnectionSnapshot Snapshot => _snapshot;
+    public MacConnectionSelection Selection => _selection with
+    {
+        ForwardProfiles = new Dictionary<int, int>(_selection.ForwardProfiles),
+    };
 
     public DateTimeOffset? ActiveNativeLeaseExpiresAt => _activeNativeLease?.ExpiresAt;
 
@@ -69,6 +76,7 @@ public sealed class MacConnectionService : IMacConnectionService
         {
             _profiles.Clear();
             _profiles.AddRange(await _store.LoadAsync(ct).ConfigureAwait(false));
+            _selection = await _store.LoadSelectionAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -82,16 +90,29 @@ public sealed class MacConnectionService : IMacConnectionService
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, [], _proxyPort);
+            if (profile.Protocol == MacConnectionProtocol.External)
+            {
+                if (!IPAddress.TryParse(profile.Server, out _) || profile.Port is < 1 or > 65535)
+                    throw new ArgumentException("external_endpoint_invalid", nameof(profile));
+            }
+            else
+                MacConnectionConfigBuilder.Build(profile, MacConnectionMode.Proxy, [], _proxyPort);
             var copy = profile.Clone();
             if (copy.Id <= 0)
                 copy.Id = NextId();
-            var index = _profiles.FindIndex(item => item.Id == copy.Id);
+            var nextProfiles = _profiles.ToList();
+            var index = nextProfiles.FindIndex(item => item.Id == copy.Id);
             if (index >= 0)
-                _profiles[index] = copy;
+                nextProfiles[index] = copy;
             else
-                _profiles.Add(copy);
-            await _store.SaveAsync(_profiles, ct).ConfigureAwait(false);
+                nextProfiles.Add(copy);
+            await _store.SaveAsync(nextProfiles, ct).ConfigureAwait(false);
+            lock (_profiles)
+            {
+                _profiles.Clear();
+                _profiles.AddRange(nextProfiles);
+            }
+            profile.Id = copy.Id;
         }
         finally
         {
@@ -108,6 +129,13 @@ public sealed class MacConnectionService : IMacConnectionService
         {
             _profiles.RemoveAll(profile => profile.Id == profileId);
             await _store.SaveAsync(_profiles, ct).ConfigureAwait(false);
+            _selection = _selection with
+            {
+                ProfileId = _selection.ProfileId == profileId ? 0 : _selection.ProfileId,
+                ForwardProfiles = _selection.ForwardProfiles.Where(pair => pair.Value != profileId)
+                    .ToDictionary(pair => pair.Key, pair => pair.Value),
+            };
+            await _store.SaveSelectionAsync(_selection, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -115,9 +143,38 @@ public sealed class MacConnectionService : IMacConnectionService
         }
     }
 
-    public async Task StartAsync(
+    public async Task SaveSelectionAsync(int forwardId, int profileId, CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (profileId > 0 && !_profiles.Any(profile => profile.Id == profileId))
+                throw new KeyNotFoundException("connection_profile_not_found");
+            var pairs = new Dictionary<int, int>(_selection.ForwardProfiles);
+            if (forwardId > 0 && profileId > 0)
+                pairs[forwardId] = profileId;
+            var nextSelection = new MacConnectionSelection(Math.Max(0, forwardId), Math.Max(0, profileId), pairs);
+            await _store.SaveSelectionAsync(nextSelection, ct).ConfigureAwait(false);
+            _selection = nextSelection;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public Task StartAsync(
         MacConnectionMode mode,
         int profileId,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        CancellationToken ct = default)
+        => Task.FromException(new InvalidOperationException("connection_route_required"));
+
+    public async Task StartRoutedAsync(
+        MacConnectionMode mode,
+        int profileId,
+        int forwardListenPort,
         string panelUrl,
         IEnumerable<ForwardConfig> forwards,
         CancellationToken ct = default)
@@ -126,8 +183,10 @@ public sealed class MacConnectionService : IMacConnectionService
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            var profile = _profiles.FirstOrDefault(item => item.Id == profileId)
-                ?? throw new KeyNotFoundException("connection_profile_not_found");
+            if (forwardListenPort is < 1 or > 65535)
+                throw new ArgumentOutOfRangeException(nameof(forwardListenPort));
+            var profile = (_profiles.FirstOrDefault(item => item.Id == profileId)
+                ?? throw new KeyNotFoundException("connection_profile_not_found")).Clone();
             Publish(new MacConnectionSnapshot(
                 MacConnectionState.Starting,
                 mode,
@@ -136,6 +195,13 @@ public sealed class MacConnectionService : IMacConnectionService
                 0,
                 ""));
             await StopCoreAsync(ct).ConfigureAwait(false);
+            if (profile.Protocol == MacConnectionProtocol.External)
+            {
+                Publish(new MacConnectionSnapshot(MacConnectionState.Connected, mode, profile.Name, forwardListenPort, 0, ""));
+                return;
+            }
+            profile.Server = "127.0.0.1";
+            profile.Port = forwardListenPort;
             var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct).ConfigureAwait(false);
             var compiled = MacConnectionConfigBuilder.Build(
                 profile,
@@ -150,6 +216,7 @@ public sealed class MacConnectionService : IMacConnectionService
                 $"connection-{Guid.NewGuid():N}.json");
             await WriteEphemeralConfigAsync(configPath, compiled.Json, ct).ConfigureAwait(false);
             _configPath = configPath;
+            _activeProcessConfigPath = configPath;
             try
             {
                 await _processHost.StartAsync(executable, configPath, mode, ct).ConfigureAwait(false);
@@ -170,6 +237,8 @@ public sealed class MacConnectionService : IMacConnectionService
         }
         catch (Exception exception)
         {
+            await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
+            _activeProcessConfigPath = null;
             Publish(new MacConnectionSnapshot(
                 MacConnectionState.Error,
                 mode,
@@ -236,6 +305,8 @@ public sealed class MacConnectionService : IMacConnectionService
             await StopCoreAsync(ct).ConfigureAwait(false);
             var resolution = await _resolver.ResolveAsync(panelUrl, forwards ?? [], ct).ConfigureAwait(false);
             var nativeRelayPort = AllocateLoopbackPort(_proxyPort);
+            var ruleSets = await MacNativeRuleSetStore.EnsureAsync(
+                Path.Combine(_paths.StateDirectory, "native-rule-sets"), ct).ConfigureAwait(false);
             var compiled = MacConnectionConfigBuilder.BuildNative(
                 lease,
                 mode,
@@ -243,7 +314,8 @@ public sealed class MacConnectionService : IMacConnectionService
                 _proxyPort,
                 bypassChinaMainland,
                 nativeProxyHost: "127.0.0.1",
-                nativeProxyPort: nativeRelayPort);
+                nativeProxyPort: nativeRelayPort,
+                ruleSetPaths: ruleSets);
             var executable = _paths.BinDirectory.TrimEnd('/', '\\') + "/sing-box";
             if (!File.Exists(executable))
                 throw new FileNotFoundException("sing-box helper is missing", executable);
@@ -262,6 +334,7 @@ public sealed class MacConnectionService : IMacConnectionService
                 _paths.RuntimeDirectory,
                 $"connection-{Guid.NewGuid():N}.json");
             _configPath = configPath;
+            _activeProcessConfigPath = configPath;
             await WriteEphemeralConfigAsync(configPath, compiled.Json, ct).ConfigureAwait(false);
             try
             {
@@ -285,6 +358,7 @@ public sealed class MacConnectionService : IMacConnectionService
         }
         catch (Exception exception)
         {
+            Log.Warning("mac native connection failed error={ErrorCode}", ErrorCode(exception));
             if (relayStarted || _configPath is not null)
                 await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
             if (!transferred)
@@ -316,6 +390,7 @@ public sealed class MacConnectionService : IMacConnectionService
             if (_disposed
                 || current is null
                 || _snapshot.State != MacConnectionState.Connected
+                || !_processHost.IsRunning
                 || lease == current
                 || lease.ForwardId != current.ForwardId
                 || !string.Equals(lease.RouteScope, current.RouteScope, StringComparison.OrdinalIgnoreCase)
@@ -357,6 +432,7 @@ public sealed class MacConnectionService : IMacConnectionService
         if (_disposed)
             return;
         _disposed = true;
+        _processHost.UnexpectedExit -= OnProcessExited;
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         await _processHost.DisposeAsync().ConfigureAwait(false);
         await _nativeRelayHost.DisposeAsync().ConfigureAwait(false);
@@ -365,13 +441,44 @@ public sealed class MacConnectionService : IMacConnectionService
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
-        await _processHost.StopAsync(ct).ConfigureAwait(false);
-        await _nativeRelayHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
-        if (_configPath is not null)
-            SecureDelete(_configPath);
-        _configPath = null;
-        _activeNativeLease?.Dispose();
-        _activeNativeLease = null;
+        _activeProcessConfigPath = null;
+        try { await _processHost.StopAsync(ct).ConfigureAwait(false); }
+        finally
+        {
+            try { await _nativeRelayHost.StopAsync(CancellationToken.None).ConfigureAwait(false); }
+            finally
+            {
+                if (_configPath is not null) SecureDelete(_configPath);
+                _configPath = null;
+                _activeNativeLease?.Dispose();
+                _activeNativeLease = null;
+            }
+        }
+    }
+
+    private void OnProcessExited(MacConnectionProcessExit exit)
+        => _ = Task.Run(() => HandleProcessExitAsync(exit));
+
+    private async Task HandleProcessExitAsync(MacConnectionProcessExit exit)
+    {
+        if (_disposed) return;
+        try
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed || _activeProcessConfigPath != exit.ConfigPath) return;
+                var snapshot = _snapshot;
+                try { await StopCoreAsync(CancellationToken.None).ConfigureAwait(false); }
+                finally { Publish(snapshot with { State = MacConnectionState.Error, ErrorCode = exit.ErrorCode }); }
+            }
+            finally { _gate.Release(); }
+        }
+        catch (ObjectDisposedException) { }
+        catch (Exception)
+        {
+            Log.Warning("mac connection exit cleanup failed");
+        }
     }
 
     private static int AllocateLoopbackPort(int avoidPort)

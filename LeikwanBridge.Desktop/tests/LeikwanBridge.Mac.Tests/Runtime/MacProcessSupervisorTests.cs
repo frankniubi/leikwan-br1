@@ -7,6 +7,29 @@ namespace LeikwanBridge.Mac.Tests.Runtime;
 public sealed class MacProcessSupervisorTests
 {
     [Fact]
+    public void StopAll_WhenProcessGroupCreationFailed_SignalsOwnedPidDirectly()
+    {
+        Process? process = null;
+        var signals = new List<int>();
+        using var supervisor = new MacProcessSupervisor(
+            processStarter: info => process = Process.Start(info)!,
+            setProcessGroup: (_, _) => -1,
+            signalProcessGroup: (pid, _) =>
+            {
+                signals.Add(pid);
+                if (pid == process!.Id && !process.HasExited) process.Kill(entireProcessTree: true);
+                return pid > 0 ? 0 : -1;
+            },
+            stopTimeout: TimeSpan.FromMilliseconds(50));
+        var command = LongRunningCommand();
+        var child = supervisor.StartProcess(77, "ultra-runtime", "test", command.Executable, command.Arguments);
+        var id = child.Id;
+        supervisor.StopAll(77);
+        Assert.Contains(id, signals);
+        Assert.DoesNotContain(-id, signals);
+    }
+
+    [Fact]
     public void StartAndStop_UsesDedicatedProcessGroupAndClearsStandardInput()
     {
         Process? launched = null;

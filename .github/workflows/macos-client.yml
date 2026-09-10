@@ -148,6 +148,8 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/tests/test-macos-client-packaging.sh
+          python3 -m unittest discover -s scripts/tests -p test_verify_macos_dmg_layout.py -v
+          python3 -m unittest discover -s scripts/tests -p test_prepare_macos_bundle.py -v
           bash scripts/test-macos-ultra-leaks.sh --fixture
 
       - name: Read application version
@@ -167,7 +169,7 @@ jobs:
           )"
           printf 'MAC_CLIENT_VERSION=%s\n' "$version" >>"$GITHUB_ENV"
 
-      - name: Build unsigned native package
+      - name: Build ad-hoc signed native test package
         shell: bash
         run: |
           set -euo pipefail
@@ -263,6 +265,9 @@ jobs:
           PY
           )"
           test -d "$mount_point/LeiKwan Bridge.app"
+          python3 scripts/verify-macos-dmg-layout.py "$mount_point" \
+            --version "$MAC_CLIENT_VERSION" --architecture "$architecture"
+          codesign --verify --deep --strict --verbose=2 "$mount_point/LeiKwan Bridge.app"
           test "$(lipo -archs "$mount_point/LeiKwan Bridge.app/Contents/MacOS/LeikwanBridge.Mac")" = "$architecture"
           cleanup_mount
           trap - EXIT

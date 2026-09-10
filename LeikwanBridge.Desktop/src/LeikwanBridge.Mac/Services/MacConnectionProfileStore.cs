@@ -6,6 +6,7 @@ namespace LeikwanBridge.Mac.Services;
 public sealed class MacConnectionProfileStore
 {
     public const string SecretAccount = "connection-profiles";
+    private const string SelectionAccount = "connection-route-selection";
     private const int MaxProfiles = 64;
     private const int MaxSerializedBytes = 512 * 1024;
 
@@ -22,6 +23,33 @@ public sealed class MacConnectionProfileStore
     {
         _secrets = secrets;
     }
+
+    public async Task<MacConnectionSelection> LoadSelectionAsync(CancellationToken ct)
+    {
+        var encoded = await _secrets.GetAsync(SelectionAccount, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(encoded) || encoded.Length > MaxSerializedBytes)
+            return MacConnectionSelection.Empty;
+        try
+        {
+            return NormalizeSelection(JsonSerializer.Deserialize<MacConnectionSelection>(encoded, JsonOptions));
+        }
+        catch (JsonException)
+        {
+            return MacConnectionSelection.Empty;
+        }
+    }
+
+    public Task SaveSelectionAsync(MacConnectionSelection selection, CancellationToken ct)
+        => _secrets.SetAsync(SelectionAccount, JsonSerializer.Serialize(NormalizeSelection(selection), JsonOptions), ct);
+
+    private static MacConnectionSelection NormalizeSelection(MacConnectionSelection? selection)
+        => selection is null ? MacConnectionSelection.Empty : new MacConnectionSelection(
+            Math.Max(0, selection.ForwardId),
+            Math.Max(0, selection.ProfileId),
+            (selection.ForwardProfiles ?? new Dictionary<int, int>())
+                .Where(pair => pair.Key > 0 && pair.Value > 0)
+                .Take(128)
+                .ToDictionary(pair => pair.Key, pair => pair.Value));
 
     public async Task<IReadOnlyList<MacConnectionProfile>> LoadAsync(CancellationToken ct)
     {

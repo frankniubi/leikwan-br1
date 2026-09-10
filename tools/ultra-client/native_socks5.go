@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -317,16 +318,18 @@ func (reader *byteReader) ReadByte() (byte, error) {
 // nativeSocks5UDPAssociation carries one local UDP client to one custom Ultra
 // datagram session. A single association may address many destinations.
 type nativeSocks5UDPAssociation struct {
-	client       *net.UDPAddr
-	controlKey   string
-	ready        chan struct{}
-	readyOnce    sync.Once
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	pending      []nativeSocks5UDPRequest
-	session      *DatagramSession
-	closed       bool
-	setupStarted bool
+	client          *net.UDPAddr
+	clientHost      string
+	controlKey      string
+	ready           chan struct{}
+	readyOnce       sync.Once
+	mu              sync.Mutex
+	writeMu         sync.Mutex
+	pending         []nativeSocks5UDPRequest
+	session         *DatagramSession
+	keepaliveCancel context.CancelFunc
+	closed          bool
+	setupStarted    bool
 }
 
 type nativeSocks5UDPRequest struct {
@@ -362,11 +365,16 @@ func (association *nativeSocks5UDPAssociation) close() {
 	association.closed = true
 	session := association.session
 	association.session = nil
+	cancel := association.keepaliveCancel
+	association.keepaliveCancel = nil
 	for index := range association.pending {
 		clearBytes(association.pending[index].payload)
 	}
 	association.pending = nil
 	association.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if session != nil {
 		session.Close()
 	}
@@ -441,6 +449,8 @@ type nativeSocks5Runtime struct {
 	udp           *net.UDPConn
 	associationMu sync.Mutex
 	associations  map[string]*nativeSocks5UDPAssociation
+	controlMu     sync.Mutex
+	controlRefs   map[string]int
 }
 
 func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
@@ -470,6 +480,7 @@ func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, s
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status, udp: udpConn,
 		associations: make(map[string]*nativeSocks5UDPAssociation),
+		controlRefs:  make(map[string]int),
 	}
 	defer runtime.closeAssociations()
 
@@ -552,18 +563,21 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	started := time.Now()
 	remote, err := dialNativeStream(lease, request.host, request.port, timeout)
 	if err != nil {
+		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
+			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", "relay_connect_timeout", lease.LeaseHash)
 			runtime.status.UpdateError("tcp_connect_failed")
 		}
 		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
 		return
 	}
 	defer remote.Close()
+	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
 	if err := writeNativeSocks5Reply(connection, nativeSocks5ReplySucceeded); err != nil {
 		return
 	}
 	if runtime.status != nil {
-		runtime.status.UpdateTCPWithTier(lease.SelectionRef, lease.SelectionTier, time.Since(started))
+		runtime.status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 	}
 	local := net.Conn(connection)
 	if request.reader != nil {
@@ -582,31 +596,66 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	}
 	done := make(chan struct{}, 2)
 	go func() {
-		_ = copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
+		err := copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
+		if err == nil || errors.Is(err, io.EOF) {
+			// A SOCKS client may half-close after sending an HTTP request. Keep
+			// the reverse direction alive so the response can still drain.
+			closeNativeWrite(remote)
+		} else {
+			_ = remote.Close()
+			_ = connection.Close()
+		}
 		done <- struct{}{}
 	}()
 	go func() {
-		_ = copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
+		err := copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
+		if err == nil || errors.Is(err, io.EOF) {
+			closeNativeWrite(local)
+		} else {
+			_ = remote.Close()
+			_ = connection.Close()
+		}
 		done <- struct{}{}
 	}()
-	select {
-	case <-ctx.Done():
-		_ = connection.Close()
-		_ = remote.Close()
-	case <-done:
+	completed := 0
+	for completed < 2 {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+			_ = remote.Close()
+			completed = 2
+		case <-done:
+			completed++
+		}
+	}
+}
+
+// closeNativeWrite preserves the other half of a TCP stream after a local
+// reader reaches EOF. The wrappers used for SOCKS prelude buffering and
+// optional inspection intentionally keep the underlying half-close operation.
+func closeNativeWrite(connection net.Conn) {
+	if connection == nil {
+		return
+	}
+	switch wrapped := connection.(type) {
+	case interface{ CloseWrite() error }:
+		_ = wrapped.CloseWrite()
+	case *bufferedConn:
+		closeNativeWrite(wrapped.Conn)
+	case *bufferedNativeConn:
+		closeNativeWrite(wrapped.Conn)
+	case *nativeInspectingConn:
+		closeNativeWrite(wrapped.Conn)
 	}
 }
 
 func (runtime *nativeSocks5Runtime) handleUDPAssociate(ctx context.Context, connection net.Conn) {
-	clientKey := nativeSocks5ClientKey(connection.RemoteAddr())
-	if clientKey == "" {
-		clientKey = "local"
+	clientHost := nativeSocks5ClientHost(connection.RemoteAddr())
+	if clientHost == "" {
+		clientHost = "local"
 	}
-	association := runtime.ensureAssociation(clientKey, nil)
-	defer func() {
-		association.close()
-		runtime.removeAssociation(association)
-	}()
+	runtime.addControl(clientHost)
+	defer runtime.releaseControl(clientHost)
 	if err := writeNativeSocks5ReplyAddress(connection, nativeSocks5ReplySucceeded, "127.0.0.1", runtime.config.ListenPort); err != nil {
 		return
 	}
@@ -668,7 +717,7 @@ func (runtime *nativeSocks5Runtime) serveUDP(ctx context.Context) error {
 			}
 			continue
 		}
-		key := nativeSocks5ClientKey(client)
+		key := nativeSocks5UDPClientKey(client)
 		association := runtime.ensureAssociation(key, client)
 		if association == nil {
 			continue
@@ -684,7 +733,7 @@ func (runtime *nativeSocks5Runtime) serveUDP(ctx context.Context) error {
 		if session != nil {
 			runtime.sendUDPRequest(association, session, request)
 		} else if association.startSetup() {
-			go runtime.setupUDPAssociation(association)
+			go runtime.setupUDPAssociation(ctx, association)
 		}
 	}
 }
@@ -737,14 +786,14 @@ func (runtime *nativeSocks5Runtime) ensureAssociation(key string, client *net.UD
 		return existing
 	}
 	association := &nativeSocks5UDPAssociation{
-		client: cloneUDPAddr(client), controlKey: key,
+		client: cloneUDPAddr(client), clientHost: nativeSocks5ClientHost(client), controlKey: key,
 		ready: make(chan struct{}), pending: make([]nativeSocks5UDPRequest, 0, nativeSocks5UDPQueuePackets),
 	}
 	runtime.associations[key] = association
 	return association
 }
 
-func (runtime *nativeSocks5Runtime) setupUDPAssociation(association *nativeSocks5UDPAssociation) {
+func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, association *nativeSocks5UDPAssociation) {
 	snapshot, ok := runtime.store.Snapshot()
 	if !ok {
 		association.close()
@@ -756,10 +805,14 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(association *nativeSocks
 	if timeout < 5*time.Second || timeout > 30*time.Second {
 		timeout = 15 * time.Second
 	}
+	started := time.Now()
 	session, err := armDatagram(lease, timeout)
 	if err != nil {
+		log.Printf("native UDP association setup failed: %v", err)
+		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
 			runtime.status.AddUDPSetupFailure()
+			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "udp", "udp_association_failed", lease.LeaseHash)
 			runtime.status.UpdateError("udp_association_failed")
 		}
 		association.close()
@@ -769,16 +822,65 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(association *nativeSocks
 	if !association.markReady(session) {
 		return
 	}
+	if runtime.status != nil {
+		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
+	}
+	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
+	runtime.startNativeAssociationKeepalive(ctx, association)
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)
 	}
 	go runtime.readUDPResponses(association, session)
 }
 
+func (runtime *nativeSocks5Runtime) startNativeAssociationKeepalive(ctx context.Context, association *nativeSocks5UDPAssociation) {
+	interval := resolveUDPKeepaliveInterval(runtime.config)
+	if interval <= 0 {
+		return
+	}
+	keepaliveContext, keepaliveCancel := context.WithCancel(ctx)
+	association.mu.Lock()
+	if association.closed || association.session == nil {
+		association.mu.Unlock()
+		keepaliveCancel()
+		return
+	}
+	association.keepaliveCancel = keepaliveCancel
+	association.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepaliveContext.Done():
+				return
+			case <-ticker.C:
+				association.writeMu.Lock()
+				association.mu.Lock()
+				if association.closed || association.session == nil {
+					association.mu.Unlock()
+					association.writeMu.Unlock()
+					return
+				}
+				session := association.session
+				association.mu.Unlock()
+				err := sendDatagramKeepalive(session)
+				association.writeMu.Unlock()
+				if err != nil {
+					association.close()
+					runtime.removeAssociation(association)
+					return
+				}
+			}
+		}
+	}()
+}
+
 func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPAssociation, session *DatagramSession, request nativeSocks5UDPRequest) {
 	defer clearBytes(request.payload)
 	targetIP, err := resolveNativeUDPHost(request.host)
 	if err != nil {
+		log.Printf("native UDP target resolve failed: %v", err)
 		return
 	}
 	packet, err := makeDatagramEnvelope(session.mode, session.sid, targetIP, request.port, request.payload)
@@ -879,6 +981,10 @@ func (runtime *nativeSocks5Runtime) closeAssociations() {
 }
 
 func nativeSocks5ClientKey(address net.Addr) string {
+	return nativeSocks5ClientHost(address)
+}
+
+func nativeSocks5ClientHost(address net.Addr) string {
 	if address == nil {
 		return ""
 	}
@@ -886,6 +992,52 @@ func nativeSocks5ClientKey(address net.Addr) string {
 		return host
 	}
 	return strings.TrimSpace(address.String())
+}
+
+func nativeSocks5UDPClientKey(address *net.UDPAddr) string {
+	if address == nil {
+		return ""
+	}
+	host := nativeSocks5ClientHost(address)
+	if host == "" {
+		return ""
+	}
+	return net.JoinHostPort(host, fmt.Sprint(address.Port))
+}
+
+func (runtime *nativeSocks5Runtime) addControl(host string) {
+	runtime.controlMu.Lock()
+	runtime.controlRefs[host]++
+	runtime.controlMu.Unlock()
+}
+
+func (runtime *nativeSocks5Runtime) releaseControl(host string) {
+	runtime.controlMu.Lock()
+	count := runtime.controlRefs[host]
+	if count <= 1 {
+		delete(runtime.controlRefs, host)
+	} else {
+		runtime.controlRefs[host] = count - 1
+	}
+	remaining := count - 1
+	runtime.controlMu.Unlock()
+	if remaining > 0 {
+		return
+	}
+
+	runtime.associationMu.Lock()
+	stale := make([]*nativeSocks5UDPAssociation, 0)
+	for key, association := range runtime.associations {
+		if association == nil || association.clientHost != host {
+			continue
+		}
+		delete(runtime.associations, key)
+		stale = append(stale, association)
+	}
+	runtime.associationMu.Unlock()
+	for _, association := range stale {
+		association.close()
+	}
 }
 
 func cloneUDPAddr(address *net.UDPAddr) *net.UDPAddr {

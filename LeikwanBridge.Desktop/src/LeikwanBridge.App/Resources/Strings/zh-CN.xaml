@@ -39,7 +39,13 @@
 
     <!-- Navigation -->
     <system:String x:Key="NavDashboard">仪表盘</system:String>
-    <system:String x:Key="NavForwards">转发管理</system:String>
+    <system:String x:Key="NavForwards">转发配对</system:String>
+    <system:String x:Key="ForwardPairingTitle">转发配对</system:String>
+    <system:String x:Key="ForwardPairingHint">该功能非必须，您可于其他代理软件将服务器地址改为 127.0.0.1 后使用</system:String>
+    <system:String x:Key="ForwardPairingListHint">请选择每条线路对应的已保存节点。这里只保存配对，不会发起连接。</system:String>
+    <system:String x:Key="ForwardPairingSave">保存配对</system:String>
+    <system:String x:Key="ForwardPairingSaved">配对已保存</system:String>
+    <system:String x:Key="ForwardPairingOpenProxy">前往代理连接</system:String>
     <system:String x:Key="NavLog">日志</system:String>
     <system:String x:Key="NavSettings">设置</system:String>
 
@@ -62,6 +68,7 @@
     <system:String x:Key="DashOpenLogs">打开完整日志</system:String>
     <system:String x:Key="DashOpenSettings">打开设置</system:String>
     <system:String x:Key="DashNoVisibleForwards">当前没有可显示的转发。</system:String>
+    <system:String x:Key="DashForwardLoading">正在加载转发线路…</system:String>
 
     <!-- Forward Card -->
     <system:String x:Key="FwdId">转发 ID</system:String>
@@ -90,8 +97,13 @@
     <system:String x:Key="SetupTitle">欢迎使用利群會聚</system:String>
     <system:String x:Key="SetupSubtitle">配置连接信息以开始使用</system:String>
     <system:String x:Key="SetupMasterUrl">主控面板地址</system:String>
+    <system:String x:Key="SetupEndpoint">连接站点</system:String>
+    <system:String x:Key="SetupEndpointCloudflare">會聚總站 (Cloudflare)</system:String>
+    <system:String x:Key="SetupEndpointAliyun">會聚中國内地 (Aliyun CDN)</system:String>
+    <system:String x:Key="SetupEndpointHint">请根据您所在地区选择</system:String>
     <system:String x:Key="SetupClientId">客户端 ID</system:String>
     <system:String x:Key="SetupAgentToken">认证令牌</system:String>
+    <system:String x:Key="SetupSaveInfo">保存客户端 ID 和认证令牌到本机</system:String>
     <system:String x:Key="SetupFieldsRequired">请填写全部字段。</system:String>
     <system:String x:Key="SetupConnecting">连接中...</system:String>
     <system:String x:Key="SetupSuccess">连接成功！</system:String>
@@ -147,6 +159,8 @@
     <system:String x:Key="ProxyTitle">本地代理</system:String>
     <system:String x:Key="ProxySubtitle">同一个节点可用于 HTTP、全设备 TUN 或游戏加速。</system:String>
     <system:String x:Key="ProxyElevationHint">TUN 和游戏加速需要管理员权限。</system:String>
+    <system:String x:Key="ProxyOrdinaryTitle">普通代理</system:String>
+    <system:String x:Key="ProxyOrdinaryOptional">可选</system:String>
     <system:String x:Key="ProxyNativeOutboundTitle">原生出口</system:String>
     <system:String x:Key="ProxyNativeOutboundBadge">套餐已启用</system:String>
     <system:String x:Key="ProxyNativeOutboundOptional">可选</system:String>
@@ -159,18 +173,41 @@
     <system:String x:Key="ProxyNativeOutboundIntlOnly">仅国际</system:String>
     <system:String x:Key="ProxyNativeOutboundGlobal">全局</system:String>
     <system:String x:Key="ProxyConvergenceHint">如需使用会聚服务，请将 IP 改为 127.0.0.1。</system:String>
-    <system:String x:Key="ProxyProfiles">节点配置</system:String>
+    <system:String x:Key="ProxyProfiles">已保存节点</system:String>
+    <system:String x:Key="ProxyForward">转发线路</system:String>
+    <system:String x:Key="ProxySelectPairedForward">选择已配对转发</system:String>
+    <system:String x:Key="ProxyPairedForwardHint">仅显示已在“转发配对”中保存节点的线路。</system:String>
+    <system:String x:Key="ProxyEdit">编辑</system:String>
+    <system:String x:Key="ProxyAdvanced">高级设置</system:String>
+    <system:String x:Key="ProxyNodeEditor">添加 / 编辑节点</system:String>
+    <system:String x:Key="ProxyMyNodes">我的节点</system:String>
+    <system:String x:Key="ProxyRowNode">已保存节点</system:String>
+    <system:String x:Key="ProxyUnboundNode">未选择已保存节点</system:String>
+    <system:String x:Key="ProxyCancel">取消</system:String>
+    <system:String x:Key="ProxyForwardTcpRequired">此节点需要 TCP，请选择支持 TCP 或 TCP+UDP 的线路。</system:String>
+    <system:String x:Key="ProxyForwardTransportInvalid">线路传输类型无效，请选择支持 TCP 或 UDP 的线路。</system:String>
+    <system:String x:Key="ProxyExternalEndpointInvalid">请输入有效的外部 IP 地址和 1-65535 端口。</system:String>
+    <system:String x:Key="ProxySavedProfileRequired">请先保存并选择节点。</system:String>
+    <system:String x:Key="ProxyForwardRequired">请选择可用的转发线路。</system:String>
+    <system:String x:Key="ProxyForwardRuntimeUnavailable">转发服务尚未就绪，请先连接面板。</system:String>
+    <system:String x:Key="ProxyExternalConnectionHint">您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>
-    <system:String x:Key="ProxyImport">导入链接</system:String>
+    <system:String x:Key="ProxyImport">导入并保存</system:String>
+    <system:String x:Key="ProxyImportPrompt">输入 "ss://"</system:String>
+    <system:String x:Key="ProxyImportSupported">仅支持 Shadowsocks</system:String>
+    <system:String x:Key="ProxyManualTitle">手动填写节点</system:String>
+    <system:String x:Key="ProxyConnectionTitle">连接设置</system:String>
+    <system:String x:Key="ProxyRouteListenPort">线路监听端口</system:String>
     <system:String x:Key="ProxyProtocol">协议</system:String>
     <system:String x:Key="ProxyMode">模式</system:String>
+    <system:String x:Key="ProxyModeSelect">请选择代理模式</system:String>
     <system:String x:Key="ProxyModeHttp">HTTP</system:String>
     <system:String x:Key="ProxyModeTun">TUN（全设备）</system:String>
     <system:String x:Key="ProxyModeProcess">游戏加速</system:String>
     <system:String x:Key="ProxyName">节点名称</system:String>
     <system:String x:Key="ProxyServer">服务器</system:String>
     <system:String x:Key="ProxyPort">端口</system:String>
-    <system:String x:Key="ProxyLocalListenPort">本地监听端口</system:String>
+    <system:String x:Key="ProxyLocalListenPort">本地代理端口 (HTTP/SOCKS5)</system:String>
     <system:String x:Key="ProxyLocalListenPortHint">HTTP 和游戏加速模式使用此端口；端口被占用时，游戏加速会自动选择附近的可用端口。</system:String>
     <system:String x:Key="ProxyMethod">加密方式</system:String>
     <system:String x:Key="ProxyPassword">密码</system:String>
@@ -191,7 +228,9 @@
     <system:String x:Key="ProxyProcessHint">选择游戏后，会同时匹配启动器和游戏主进程；游戏可以稍后再启动。</system:String>
     <system:String x:Key="ProxySave">保存节点</system:String>
     <system:String x:Key="ProxyDelete">删除节点</system:String>
-    <system:String x:Key="ProxyStart">启动代理</system:String>
+    <system:String x:Key="ProxyStart">连接</system:String>
+    <system:String x:Key="ProxyConnect">连接</system:String>
+    <system:String x:Key="ProxyDisconnect">断开连接</system:String>
     <system:String x:Key="ProxyStop">停止代理</system:String>
     <system:String x:Key="ProxyTestUdp">测试 UDP</system:String>
     <system:String x:Key="ProxyRefreshProcesses">刷新进程</system:String>

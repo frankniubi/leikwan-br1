@@ -4,6 +4,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -43,5 +44,26 @@ class ClientControlLoopTest {
 
         assertEquals("device_banned", terminal?.code)
         assertTrue(!loop.isRunning)
+    }
+
+    @Test
+    fun `transient control failure reports reconnecting without stopping the loop`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val states = mutableListOf<ControlPlaneState>()
+        val loop = ClientControlLoop(
+            scope = scope,
+            intervalMs = 30_000,
+            poll = { throw IOException("panel timeout") },
+            onTerminal = {},
+            onStateChanged = states::add,
+        )
+
+        loop.start()
+
+        assertEquals(ControlPlaneState.RECONNECTING, loop.state)
+        assertTrue(ControlPlaneState.RECONNECTING in states)
+        assertTrue(loop.isRunning)
+        loop.stop()
+        assertEquals(ControlPlaneState.STOPPED, loop.state)
     }
 }

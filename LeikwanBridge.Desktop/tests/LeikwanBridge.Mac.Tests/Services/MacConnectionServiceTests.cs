@@ -9,6 +9,44 @@ namespace LeikwanBridge.Mac.Tests.Services;
 public sealed class MacConnectionServiceTests
 {
     [Fact]
+    public async Task FailedKeychainSaveDoesNotExposeAnUnsavedNode()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var secrets = new MemorySecretStore { FailWrites = true };
+        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(secrets));
+        await service.InitializeAsync();
+        var node = new MacConnectionProfile
+        {
+            Name = "External", Protocol = "external", Server = "198.51.100.50", Port = 8443,
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveProfileAsync(node));
+
+        Assert.Empty(service.Profiles);
+        Assert.Equal(0, node.Id);
+    }
+
+    [Fact]
+    public async Task ExternalEndpointCanBeSavedWithoutProxyCredentials()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(new MemorySecretStore()));
+        await service.InitializeAsync();
+
+        await service.SaveProfileAsync(new MacConnectionProfile
+        {
+            Name = "External endpoint", Protocol = "external", Server = "198.51.100.50", Port = 8443,
+        });
+
+        var saved = Assert.Single(service.Profiles);
+        Assert.Equal("external", saved.Protocol);
+        Assert.Equal("198.51.100.50", saved.Server);
+        Assert.Equal(8443, saved.Port);
+    }
+
+    [Fact]
     public async Task StartCompilesEphemeralConfigAndCleansItAfterHelperStarts()
     {
         using var temp = new TemporaryDirectory();
@@ -31,9 +69,10 @@ public sealed class MacConnectionServiceTests
             Password = "memory-secret",
         });
 
-        await service.StartAsync(
+        await service.StartRoutedAsync(
             MacConnectionMode.Proxy,
             4,
+            12345,
             "https://panel.example.test",
             [new ForwardConfig
             {
@@ -46,6 +85,13 @@ public sealed class MacConnectionServiceTests
         Assert.Contains("memory-secret", host.StartedConfigJson, StringComparison.Ordinal);
         Assert.DoesNotContain("memory-secret", string.Join("\n", Directory.GetFiles(paths.RuntimeDirectory)));
         Assert.True(host.StartCalls == 1);
+        using var compiled = System.Text.Json.JsonDocument.Parse(host.StartedConfigJson);
+        var proxy = compiled.RootElement.GetProperty("outbounds")[0];
+        Assert.Equal("127.0.0.1", proxy.GetProperty("server").GetString());
+        Assert.Equal(12345, proxy.GetProperty("server_port").GetInt32());
+        Assert.Equal("198.51.100.50", service.Profiles[0].Server);
+        Assert.Equal(443, service.Profiles[0].Port);
+        Assert.Equal("198.51.100.50", (await store.LoadAsync(CancellationToken.None))[0].Server);
 
         await service.StopAsync();
         Assert.Equal(2, host.StopCalls);
@@ -53,7 +99,72 @@ public sealed class MacConnectionServiceTests
     }
 
     [Fact]
+    public async Task RouteNodePairingSurvivesReloadWithoutChangingSavedEndpoint()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var store = new MacConnectionProfileStore(new MemorySecretStore());
+        await using var service = new MacConnectionService(paths, store);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new MacConnectionProfile
+        {
+            Id = 4, Name = "External", Protocol = "external", Server = "198.51.100.50", Port = 8443,
+        });
+        await service.SaveSelectionAsync(123, 4);
+
+        await using var reloaded = new MacConnectionService(paths, store);
+        await reloaded.InitializeAsync();
+
+        Assert.Equal(123, reloaded.Selection.ForwardId);
+        Assert.Equal(4, reloaded.Selection.ProfileId);
+        Assert.Equal(4, reloaded.Selection.ForwardProfiles[123]);
+        Assert.Equal("198.51.100.50", reloaded.Profiles[0].Server);
+    }
+
+    [Fact]
+    public async Task ExternalRoutedStartDoesNotLaunchAProxyProcess()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var host = new CapturingProcessHost();
+        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(new MemorySecretStore()), processHost: host);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new MacConnectionProfile
+        {
+            Id = 4, Name = "External", Protocol = "external", Server = "198.51.100.50", Port = 8443,
+        });
+
+        await service.StartRoutedAsync(MacConnectionMode.Proxy, 4, 12345, "https://panel.example.test", []);
+
+        Assert.Equal(0, host.StartCalls);
+        Assert.Equal(MacConnectionState.Connected, service.Snapshot.State);
+        Assert.Equal(12345, service.Snapshot.ProxyPort);
+    }
+
+    [Fact]
+    public async Task LegacyDirectStartEntryPointRequiresASelectedRoute()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var host = new CapturingProcessHost();
+        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(new MemorySecretStore()), processHost: host);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.StartAsync(MacConnectionMode.Proxy, 1, "https://panel.example.test", []));
+
+        Assert.Equal("connection_route_required", exception.Message);
+        Assert.Equal(0, host.StartCalls);
+    }
+
+    [Fact]
     public async Task NativeVpnStartUsesLeaseAndWipesCredentialsOnStop()
+        => await VerifyNativeLeaseCleanupAsync(false);
+
+    [Fact]
+    public async Task NativeProcessExitClearsConnectedStateAndStopsRelay()
+        => await VerifyNativeLeaseCleanupAsync(true);
+
+    private static async Task VerifyNativeLeaseCleanupAsync(bool unexpectedExit)
     {
         using var temp = new TemporaryDirectory();
         var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
@@ -97,8 +208,23 @@ public sealed class MacConnectionServiceTests
         Assert.True(service.IsNativeOutboundActive);
         Assert.Contains("127.0.0.1", host.StartedConfigJson, StringComparison.Ordinal);
         Assert.DoesNotContain("native-password", host.StartedConfigJson, StringComparison.Ordinal);
+        using var compiled = System.Text.Json.JsonDocument.Parse(host.StartedConfigJson);
+        Assert.All(compiled.RootElement.GetProperty("route").GetProperty("rule_set").EnumerateArray(), item =>
+        {
+            Assert.Equal("local", item.GetProperty("type").GetString());
+            Assert.True(File.Exists(item.GetProperty("path").GetString()));
+        });
         Assert.Equal(1, relay.StartCalls);
 
+        if (unexpectedExit)
+        {
+            host.ExitUnexpectedly();
+            for (var attempt = 0; attempt < 50 && service.Snapshot.State != MacConnectionState.Error; attempt++)
+                await Task.Delay(20);
+            Assert.Equal(MacConnectionState.Error, service.Snapshot.State);
+            Assert.Equal("vpn_process_exited", service.Snapshot.ErrorCode);
+            Assert.False(relay.IsRunning);
+        }
         await service.StopAsync();
 
         Assert.False(service.IsNativeOutboundActive);
@@ -282,6 +408,9 @@ public sealed class MacConnectionServiceTests
 
     private sealed class CapturingProcessHost : IMacConnectionProcessHost
     {
+        public bool IsRunning { get; private set; }
+        public event Action<MacConnectionProcessExit>? UnexpectedExit;
+        public string StartedConfigPath { get; private set; } = string.Empty;
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
         public string StartedConfigJson { get; private set; } = string.Empty;
@@ -293,12 +422,21 @@ public sealed class MacConnectionServiceTests
             if (FailStart)
                 throw new InvalidOperationException("process_start_failed");
             StartedConfigJson = await File.ReadAllTextAsync(configPath, ct);
+            StartedConfigPath = configPath;
+            IsRunning = true;
         }
 
         public Task StopAsync(CancellationToken ct)
         {
             StopCalls++;
+            IsRunning = false;
             return Task.CompletedTask;
+        }
+
+        public void ExitUnexpectedly()
+        {
+            IsRunning = false;
+            UnexpectedExit?.Invoke(new MacConnectionProcessExit(StartedConfigPath, "vpn_process_exited"));
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -307,12 +445,15 @@ public sealed class MacConnectionServiceTests
     private sealed class MemorySecretStore : ISecretStore
     {
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+        public bool FailWrites { get; init; }
 
         public Task<string?> GetAsync(string name, CancellationToken ct)
             => Task.FromResult(_values.GetValueOrDefault(name));
 
         public Task SetAsync(string name, string value, CancellationToken ct)
         {
+            if (FailWrites)
+                throw new InvalidOperationException("keychain_save_failed");
             _values[name] = value;
             return Task.CompletedTask;
         }
@@ -330,6 +471,7 @@ public sealed class MacConnectionServiceTests
         public int RefreshCalls { get; private set; }
         public int StopCalls { get; private set; }
         private bool _started;
+        public bool IsRunning => _started;
 
         public Task<LeikwanBridge.Core.Services.Ultra.NativeOutboundRelayEndpoint> StartAsync(
             int forwardId,

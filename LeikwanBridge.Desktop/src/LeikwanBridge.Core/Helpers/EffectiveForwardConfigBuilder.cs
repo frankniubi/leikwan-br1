@@ -20,6 +20,7 @@ public static class EffectiveForwardConfigBuilder
             ContractVersion = forward.ContractVersion,
             ClientMode = forward.ClientMode,
             RuntimePreference = forward.RuntimePreference,
+            ForwardCombinationDirection = forward.ForwardCombinationDirection,
             BondIngressMode = forward.BondIngressMode,
             ActiveFamily = forward.ActiveFamily,
             AggregationEnabled = forward.AggregationEnabled,
@@ -31,6 +32,8 @@ public static class EffectiveForwardConfigBuilder
             Mptcp = forward.Mptcp,
             UltraAccess = forward.UltraAccess,
             RuntimeLease = forward.RuntimeLease,
+            NativeOutboundEnabled = forward.NativeOutboundEnabled,
+            NativeDirection = forward.NativeDirection,
             NativeOutbound = forward.NativeOutbound,
             NativeRouteScope = forward.NativeRouteScope,
             Endpoints = forward.Endpoints

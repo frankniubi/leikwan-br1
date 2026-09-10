@@ -362,6 +362,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
     {
         if (name != "desktop-session"
             && name != MacConnectionProfileStore.SecretAccount
+            && name != "connection-route-selection"
             && !Regex.IsMatch(name, "^client-agent-[1-9][0-9]*$", RegexOptions.CultureInvariant))
             throw new ArgumentException("secret account invalid", nameof(name));
     }

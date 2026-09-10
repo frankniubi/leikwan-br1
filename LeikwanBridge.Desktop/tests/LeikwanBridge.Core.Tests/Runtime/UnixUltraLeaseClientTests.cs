@@ -11,6 +11,52 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class UnixUltraLeaseClientTests
 {
     [Fact]
+    public async Task SendAsync_DoesNotDependOnCallingSynchronizationContext()
+    {
+        var path = TemporarySocketPath();
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(path));
+        listener.Listen(1);
+        using var lease = CreateLease();
+        var server = Task.Run(async () =>
+        {
+            using var connection = await listener.AcceptAsync();
+            var header = new byte[4];
+            await ReadExactlyAsync(connection, header);
+            var body = new byte[BinaryPrimitives.ReadUInt32BigEndian(header)];
+            await ReadExactlyAsync(connection, body);
+            await Task.Delay(30);
+            var ack = JsonSerializer.SerializeToUtf8Bytes(new { ok = true, forward_id = lease.ForwardId, policy_generation = lease.PolicyGeneration });
+            BinaryPrimitives.WriteUInt32BigEndian(header, (uint)ack.Length);
+            await connection.SendAsync(header);
+            await connection.SendAsync(ack);
+        });
+        var context = new CountingContext();
+        var previous = SynchronizationContext.Current;
+        Task<bool> pending;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+            pending = new UnixUltraLeaseClient().SendAsync(path, lease.ForwardId, lease);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        Assert.True(await pending.WaitAsync(TimeSpan.FromSeconds(3)));
+        await server;
+        TryDelete(path);
+        Assert.InRange(context.PostCount, 0, 8);
+    }
+
+    private sealed class CountingContext : SynchronizationContext
+    {
+        public int PostCount;
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            Interlocked.Increment(ref PostCount);
+            ThreadPool.QueueUserWorkItem(_ => callback(state));
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_WritesBoundedFrameAndRequiresMatchingAcknowledgement()
     {
         var socketPath = TemporarySocketPath();

@@ -157,6 +157,7 @@ public sealed class MacUltraRuntimeHostTests
         Assert.Contains("\"probe_target\":\"1.1.1.1:53\"", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"probe_timeout_ms\":800", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"probe_interval_ms\":1000", bootstrapText, StringComparison.Ordinal);
+        Assert.Contains("\"probe_workers\":4", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"udp_prewarm\":true", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"udp_keepalive_interval_seconds\":5", bootstrapText, StringComparison.Ordinal);
         Assert.All(first.Password, value => Assert.Equal(0, value));

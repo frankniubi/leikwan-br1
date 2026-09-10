@@ -295,6 +295,7 @@ $requiredArticleText = [
         'config_pull_state.json',
         'status',
         'ok',
+        'The Linux arm64 single-file installer supports Debian 11, 12, and 13 only.',
     ],
     'getting-started-first-forward-checklist' => [
         'Forward Route',
@@ -382,7 +383,7 @@ $forbiddenFirstForwardText = [
 $requiredLocalizedArticleText = [
     'zh-Hans' => [
         'getting-started-five-minute-overview' => ['有效套餐', 'Create Forward', '系统分配的本地端口', '实际应用协议', '应用请求成功', '保存', '预配', '最近同步', 'Running'],
-        'install-client' => ['Download Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '受支持 LeiGod 服务', 'Linux Install', 'Copy Install Command', 'systemd', 'Python 3', '相当于 root', '身份验证的令牌', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不要据此承诺 Android 支持 Race 或 MPTCP'],
+        'install-client' => ['Download Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '受支持 LeiGod 服务', 'Linux Install', 'Copy Install Command', 'systemd', 'Python 3', '相当于 root', '身份验证的令牌', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', 'Linux ARM64 单文件安装包', 'Debian 11、12、13', 'Linux ARM64 Installer', '不要据此承诺 Android 支持 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', 'Create Forward', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', 'Transport', 'TCP', 'TCP + UDP', 'UDP', '保存', '预配', '最近同步', 'Running', '应用成功'],
         'connect-and-verify' => ['127.0.0.1', '可访问的 Windows 或 Linux 客户端主机地址', '防火墙', '安全组', 'NAT', 'Android', '仅监听回环地址', '实际应用协议', '目标日志', '公网 IP'],
         'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是带宽聚合', '每条连接选择一个胜出路径', '数据报发送到多个可用路径', '至少两个可用端点', '因客户端平台而异', 'Android 不承诺 Race 或 MPTCP', '已发布的线路约定', '仅在线路约定要求时使用 Sidecar', '速度翻倍', '跑满带宽', '所有路径'],
@@ -392,7 +393,7 @@ $requiredLocalizedArticleText = [
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
-        'install-client' => ['下載 Windows App', '租戶 → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
+        'install-client' => ['下載 Windows App', '租戶 → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', 'Linux ARM64 單檔安裝包', 'Debian 11、12、13', 'Linux ARM64 Installer', '不能因此承諾 Android 支援 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
         'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
         'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是頻寬聚合', '每條連線選出一條勝出路徑', '資料包送往多條可用路徑', '至少兩個可用端點', '依用戶端平台而異', 'Android 不承諾 Race 或 MPTCP', '已發布的線路約定', '僅在線路約定要求時使用 Sidecar', '速度加倍', '跑滿頻寬', '所有路徑'],

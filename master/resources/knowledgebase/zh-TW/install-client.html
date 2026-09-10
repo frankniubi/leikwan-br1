@@ -6,6 +6,7 @@
   <li>Windows 登入需要 App 顯示的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
   <li>Android 需要 arm64、Android 8.0+ 裝置，並準備允許系統建立 VPN 連線。</li>
   <li>Linux 主機需要 systemd、Python 3、可用的網路，以及等同 root 的權限。</li>
+  <li><strong>Linux ARM64 單檔安裝包僅支援 Debian 11、12、13。</strong>其他發行版或 amd64 主機請使用對應的 Linux 安裝指令。</li>
   <li>登入資訊和複製的指令都屬於機密；Linux 安裝指令內含用於 Agent 身分驗證權杖。</li>
 </ul>
 
@@ -33,6 +34,7 @@ E --&gt; F</pre>
   <li>允許 Android 的 VPN 要求，只選擇 App 列出的支援的 LeiGod 服務。</li>
   <li>觀察狀態從 <strong>Ready to connect</strong>，經過 <strong>Connecting...</strong>，最後成為 <strong>Connected</strong>。不能因此承諾 Android 支援 Race 或 MPTCP。</li>
   <li><strong>Linux：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），展開 <strong>Linux Install</strong>（Linux 安裝），選擇 <strong>Copy Install Command</strong>（複製安裝指令）。</li>
+  <li>如果使用 <strong>Linux ARM64 Installer</strong>，請確認主機是 arm64/aarch64，且作業系統為 Debian 11、12 或 13。</li>
   <li>以等同 root 的權限執行一次複製的指令；不要貼到聊天、工單、記錄或共用的 Shell 歷程。</li>
   <li>確認安裝程式輸出 <code>installed leikwan-client-agent</code>。</li>
   <li>回到面板查看最近同步；也可在主機確認 <code>config_pull_state.json</code> 的 <code>status</code> 為 <code>ok</code>。</li>

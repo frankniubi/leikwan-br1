@@ -44,6 +44,37 @@ class UltraForwardRunnerTest {
     }
 
     @Test
+    fun `ordinary automatic selection uses the shared probe contract`() {
+        val runtimeDir = Files.createTempDirectory("leikwan-ultra-auto-test").toFile()
+        val forward = sampleForward()
+        val policy = UltraPolicy.from(forward, Instant.parse("2026-08-27T00:00:00Z"))!!
+
+        val plan = UltraForwardRunner.buildPlan(
+            forward = forward,
+            policy = policy,
+            binaries = RuntimeBinaryPaths(
+                wstunnelBinary = "/runtime/wstunnel",
+                ingressBinary = "/runtime/leikwan-ingress",
+                bondBinary = "/runtime/leikwan-bond",
+                ultraBinary = "/runtime/ultra-client",
+            ),
+            runtimeDir = runtimeDir,
+            autoSelect = true,
+        )
+
+        val config = JsonParser.parseString(plan.configFile.readText()).asJsonObject
+        assertTrue(config.get("auto_select").asBoolean)
+        assertEquals("1.1.1.1:53", config.get("probe_target").asString)
+        assertEquals(30, config.get("probe_duration_seconds").asInt)
+        assertEquals(800, config.get("probe_timeout_ms").asInt)
+        assertEquals(30, config.get("probe_samples").asInt)
+        assertEquals(1000, config.get("probe_interval_ms").asInt)
+        assertEquals(4, config.get("probe_workers").asInt)
+
+        UltraForwardRunner.cleanup(plan.runtimeContext)
+    }
+
+    @Test
     fun `native runner disables opengfw and port gate only for explicit unrestricted policy`() {
         val runtimeDir = Files.createTempDirectory("leikwan-ultra-native-unrestricted-test").toFile()
         val forward = sampleForward()

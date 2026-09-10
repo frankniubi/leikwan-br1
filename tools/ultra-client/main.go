@@ -503,6 +503,80 @@ func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout 
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
 }
 
+type streamCandidateDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)
+
+// dialStreamWithCandidates retries a new local connection against the
+// remaining leases before any application bytes are read. This preserves the
+// caller's payload: a provider failure cannot cause an already-sent request to
+// be replayed to another relay. The helper owns the lease snapshots it tries;
+// a successful lease is returned to the caller for the stream lifetime.
+func dialStreamWithCandidates(
+	ctx context.Context,
+	store *PolicyStore,
+	policy Policy,
+	initial ProviderLease,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	dial streamCandidateDial,
+	onFailure func(ProviderLease, error),
+) (net.Conn, ProviderLease, error) {
+	if store == nil || dial == nil {
+		initial.wipe()
+		return nil, ProviderLease{}, errNoHealthyCandidate
+	}
+	current := initial
+	attempted := make([]string, 0, 4)
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err := ctx.Err(); err != nil {
+			current.wipe()
+			return nil, ProviderLease{}, err
+		}
+		if !current.ExpiresAt.After(time.Now()) {
+			current.wipe()
+			return nil, ProviderLease{}, fmt.Errorf("%w: %v", errNoHealthyCandidate, ErrPolicyExpired)
+		}
+		identity := strings.TrimSpace(current.CandidateKeyHash)
+		if identity == "" {
+			identity = strings.TrimSpace(current.SelectionRef)
+		}
+		if identity != "" {
+			attempted = append(attempted, identity)
+		}
+		attemptTimeout := timeout
+		if remaining := time.Until(current.ExpiresAt); remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		connection, err := dial(current, targetHost, targetPort, attemptTimeout)
+		if err == nil {
+			return connection, current, nil
+		}
+		lastErr = err
+		if onFailure != nil {
+			onFailure(current, err)
+		}
+		failureKey := current.CandidateKeyHash
+		if strings.TrimSpace(failureKey) == "" {
+			failureKey = current.SelectionRef
+		}
+		store.MarkCandidateFailure(failureKey)
+		current.wipe()
+		if attempt == 3 {
+			break
+		}
+		next, ok := store.SnapshotNextCandidate(attempted...)
+		if !ok {
+			break
+		}
+		current = next.Lease
+	}
+	if lastErr == nil {
+		lastErr = errProbeUnavailable
+	}
+	return nil, ProviderLease{}, fmt.Errorf("%w: %v", errNoHealthyCandidate, lastErr)
+}
+
 func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
@@ -582,16 +656,34 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					status.UpdateError("policy_stopped")
 					return
 				}
-				lease := snapshot.Lease
-				defer lease.wipe()
 				started := time.Now()
-				remote, dialErr := dialStream(lease, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second)
+				remote, lease, dialErr := dialStreamWithCandidates(
+					ctx,
+					store,
+					snapshot.Policy,
+					snapshot.Lease,
+					targetHost,
+					targetPort,
+					time.Duration(config.ConnectTimeoutSecs)*time.Second,
+					dialStream,
+					func(failed ProviderLease, _ error) {
+						log.Printf("tcp stream candidate failed endpoint=%s:%d selection_ref=%s", failed.IP, failed.Port, failed.SelectionRef)
+						status.RecordCandidateFailure(failed.CandidateKeyHash, "tcp", "relay_connect_timeout", failed.LeaseHash)
+					},
+				)
 				if dialErr != nil {
-					log.Printf("tcp stream setup failed: %v", dialErr)
-					status.UpdateError("tcp_connect_failed")
+					if !errors.Is(dialErr, context.Canceled) || ctx.Err() == nil {
+						log.Printf("tcp stream setup failed: %v", dialErr)
+						if errors.Is(dialErr, errNoHealthyCandidate) {
+							status.UpdateError("no_healthy_candidate")
+						} else {
+							status.UpdateError("tcp_connect_failed")
+						}
+					}
 					return
 				}
 				defer remote.Close()
+				store.MarkCandidateSuccess(lease.CandidateKeyHash)
 				connectionDone := make(chan struct{})
 				go func() {
 					select {
@@ -602,7 +694,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					}
 				}()
 				defer close(connectionDone)
-				status.UpdateTCPWithTier(lease.SelectionRef, lease.SelectionTier, time.Since(started))
+				status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 				done := make(chan struct{}, 2)
 				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
 				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
@@ -1150,13 +1242,15 @@ func (association *udpAssociation) close() {
 }
 
 type udpWarmSession struct {
-	session         *DatagramSession
-	selectionRef    string
-	selectionTier   string
-	started         time.Time
-	keepaliveCancel context.CancelFunc
-	claimed         chan struct{}
-	err             error
+	session          *DatagramSession
+	selectionRef     string
+	selectionTier    string
+	candidateKeyHash string
+	leaseHash        string
+	started          time.Time
+	keepaliveCancel  context.CancelFunc
+	claimed          chan struct{}
+	err              error
 }
 
 // runPersistentWarmWorker keeps one unclaimed UDP association ready for the
@@ -1533,7 +1627,7 @@ func serveUDPOnConn(
 		association.pending = nil
 		associationMu.Unlock()
 		publishAssociationCounts()
-		status.UpdateUDPWithTier(warm.selectionRef, warm.selectionTier, time.Since(warm.started))
+		status.UpdateUDPWithTierAndCandidate(warm.selectionRef, warm.selectionTier, warm.candidateKeyHash, time.Since(warm.started), warm.leaseHash)
 		for _, queuedPayload := range queued {
 			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
 			if packetErr != nil {
@@ -1553,6 +1647,8 @@ func serveUDPOnConn(
 	startNativeSetup := func(key string, association *udpAssociation, lease ProviderLease) {
 		selectionRef := lease.SelectionRef
 		selectionTier := lease.SelectionTier
+		candidateKeyHash := lease.CandidateKeyHash
+		leaseHash := lease.LeaseHash
 		go func() {
 			select {
 			case setupSlots <- struct{}{}:
@@ -1575,11 +1671,14 @@ func serveUDPOnConn(
 			lease.wipe()
 			if armErr != nil {
 				status.AddUDPSetupFailure()
+				store.MarkCandidateFailure(candidateKeyHash)
+				status.RecordCandidateFailure(candidateKeyHash, "udp", "udp_association_failed", leaseHash)
 				status.UpdateError("udp_association_failed")
 				closeAssociation(key, association)
 				return
 			}
-			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started})
+			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, selectionTier: selectionTier, candidateKeyHash: candidateKeyHash, leaseHash: leaseHash, started: started})
+			store.MarkCandidateSuccess(candidateKeyHash)
 		}()
 	}
 	if prewarmEnabled {
@@ -1603,16 +1702,20 @@ func serveUDPOnConn(
 					lease := snapshot.Lease
 					selectionRef := lease.SelectionRef
 					selectionTier := lease.SelectionTier
+					candidateKeyHash := lease.CandidateKeyHash
+					leaseHash := lease.LeaseHash
 					started := time.Now()
 					next, armErr := armDatagram(lease, probeAssociationTimeout(config))
 					<-setupSlots
 					lease.wipe()
 					if armErr != nil {
 						status.AddUDPSetupFailure()
+						store.MarkCandidateFailure(candidateKeyHash)
 						return udpWarmSession{}, armErr
 					}
+					store.MarkCandidateSuccess(candidateKeyHash)
 					return udpWarmSession{
-						session: next, selectionRef: selectionRef, selectionTier: selectionTier, started: started,
+						session: next, selectionRef: selectionRef, selectionTier: selectionTier, candidateKeyHash: candidateKeyHash, leaseHash: leaseHash, started: started,
 					}, nil
 				},
 				sendDatagramKeepalive,
@@ -1948,6 +2051,9 @@ func main() {
 		case <-rootContext.Done():
 		case <-runtimeContext.Done():
 		case err := <-runtimeErrors:
+			if err != nil {
+				log.Printf("runtime stopped: %v", err)
+			}
 			if err != nil && rootContext.Err() == nil {
 				status.UpdateError("runtime_stopped")
 			}

@@ -95,6 +95,19 @@ class WindowsClientSetupInstallerScriptTests(unittest.TestCase):
         self.assertIn("LEIKWANINSTALLMODE", self.inno_source)
         self.assertIn("LEIKWANDESKTOPSHORTCUT", self.inno_source)
 
+    def test_inno_script_declares_supported_windows_install_matrix(self) -> None:
+        self.assertIn("MinVersion=10.0.17763", self.inno_source)
+        self.assertIn("ArchitecturesAllowed=x64compatible", self.inno_source)
+        self.assertIn("ArchitecturesInstallIn64BitMode=x64compatible", self.inno_source)
+
+    def test_helper_wraps_payload_replacement_in_transactional_rollback(self) -> None:
+        helper_source = INSTALL_HELPER.read_text(encoding="utf-8")
+        self.assertIn("New-InstallSnapshot", helper_source)
+        self.assertIn("Restore-InstallSnapshot", helper_source)
+        self.assertIn("$snapshotRoot", helper_source)
+        self.assertIn("try {", helper_source)
+        self.assertIn("catch {", helper_source)
+
     def test_directory_contains_real_install_ignores_updates_only_cache(self) -> None:
         with tempfile.TemporaryDirectory(prefix="leikwan-migration-detect-") as temp_dir:
             temp_path = pathlib.Path(temp_dir)

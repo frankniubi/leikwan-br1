@@ -52,6 +52,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var tunFd: ParcelFileDescriptor? = null
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
+    private val networkMonitor by lazy {
+        AndroidNetworkMonitor(this) { network ->
+            setUnderlyingNetworks(network?.let { arrayOf(it) })
+        }
+    }
+
 
     companion object {
         var instance: LeikwanVpnService? = null
@@ -129,7 +135,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         return START_STICKY
     }
 
-    fun stopVpn() {
+    private fun closeRuntime() {
         try {
             commandClient?.disconnect()
         } catch (e: Exception) {
@@ -138,17 +144,23 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         commandClient = null
         try {
             commandServer?.closeService()
-            commandServer?.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing CommandServer", e)
+            Log.e(TAG, "Error closing libbox service", e)
         }
+        runCatching { commandServer?.close() }
+            .onFailure { Log.e(TAG, "Error closing CommandServer", it) }
         commandServer = null
+        networkMonitor.close()
         try {
             tunFd?.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error closing TUN", e)
         }
         tunFd = null
+    }
+
+    fun stopVpn() {
+        closeRuntime()
         // The config contains ephemeral native SOCKS credentials. Do not keep it
         // reachable after the VPN runtime has been stopped.
         configJson = null
@@ -162,6 +174,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        closeRuntime()
         instance = null
         isRunning = false
         configJson = null
@@ -231,7 +244,11 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.i(TAG, "Excluded VPN owner package from captured traffic: $packageName")
         }
 
-        tunFd = builder.establish() ?: throw Exception("VPN permission not granted")
+        val replacement = builder.establish() ?: throw Exception("VPN permission not granted")
+        val previous = tunFd
+        tunFd = replacement
+        // libbox owns a dup of the descriptor, not this Android-side handle.
+        runCatching { previous?.close() }.onFailure { Log.w(TAG, "Error closing replaced TUN", it) }
         Log.i(TAG, "TUN interface established, fd=${tunFd!!.fd}")
         return tunFd!!.fd
     }
@@ -250,15 +267,50 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun readWIFIState(): WIFIState? = null
 
-    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+        if (listener != null) networkMonitor.start(listener)
+    }
 
-    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+        if (listener != null) networkMonitor.remove(listener)
+    }
 
     override fun startNeighborMonitor(listener: NeighborUpdateListener?) {}
 
     override fun closeNeighborMonitor(listener: NeighborUpdateListener?) {}
 
-    override fun getInterfaces(): NetworkInterfaceIterator? = null
+    override fun getInterfaces(): NetworkInterfaceIterator {
+        val items = networkMonitor.interfaces().map { physical ->
+            io.nekohasekai.libbox.NetworkInterface().apply {
+                name = physical.name
+                index = physical.index
+                mtu = physical.mtu.coerceAtLeast(1280)
+                flags = 1 or 64 // IFF_UP | IFF_RUNNING, not java.net flag ordinals.
+                addresses = stringIterator(physical.addresses)
+                dnsServer = stringIterator(physical.dnsServers)
+                metered = physical.metered
+                type = when (physical.transport) {
+                    NetworkCapabilities.TRANSPORT_WIFI -> Libbox.InterfaceTypeWIFI
+                    NetworkCapabilities.TRANSPORT_CELLULAR -> Libbox.InterfaceTypeCellular
+                    NetworkCapabilities.TRANSPORT_ETHERNET -> Libbox.InterfaceTypeEthernet
+                    else -> Libbox.InterfaceTypeOther
+                }
+            }
+        }.iterator()
+        return object : NetworkInterfaceIterator {
+            override fun hasNext() = items.hasNext()
+            override fun next(): io.nekohasekai.libbox.NetworkInterface = items.next()
+        }
+    }
+
+    private fun stringIterator(values: List<String>): StringIterator {
+        val items = values.iterator()
+        return object : StringIterator {
+            override fun hasNext() = items.hasNext()
+            override fun next(): String = items.next()
+            override fun len(): Int = values.size
+        }
+    }
 
     override fun underNetworkExtension(): Boolean = false
 
@@ -267,7 +319,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     override fun clearDNSCache() {}
 
     override fun autoDetectInterfaceControl(fd: Int) {
-        protect(fd)
+        if (!protect(fd)) throw java.io.IOException("protect_socket_failed")
     }
 
     override fun usePlatformAutoDetectInterfaceControl(): Boolean = true

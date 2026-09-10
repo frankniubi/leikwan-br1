@@ -39,6 +39,12 @@ foreach ($requiredBaseSnippets as $snippet) {
     }
 }
 
+foreach (['Linux ARM64 Installer', 'Debian 11/12/13 only', 'arm64/aarch64'] as $snippet) {
+    if (!str_contains($baseSource, $snippet)) {
+        fail('Linux install surface missing Debian support notice: ' . $snippet);
+    }
+}
+
 foreach (['Advanced client settings', 'Client ID + Token'] as $snippet) {
     if (!str_contains($adminSource, $snippet)) {
         fail('expected AdminController to contain snippet: ' . $snippet);

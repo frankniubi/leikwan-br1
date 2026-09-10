@@ -15,12 +15,21 @@ public interface IDesktopClientController : IAsyncDisposable
     NativeOutboundCapability? NativeOutbound { get; }
     Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default);
     Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default);
+    Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        bool rememberCredentials,
+        CancellationToken ct = default)
+        => LoginWithAgentTokenAsync(panelUrl, clientId, agentToken, ct);
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
     Task ConnectAsync(CancellationToken ct = default);
     Task RefreshAsync(CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
     Task StartForwardAsync(int forwardId, CancellationToken ct = default);
     Task StopForwardAsync(int forwardId, CancellationToken ct = default);
+    Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        => throw new InvalidOperationException("proxy_forward_unavailable");
     Task StartAllAsync(CancellationToken ct = default);
     Task StopAllAsync(CancellationToken ct = default);
     Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
@@ -38,6 +47,7 @@ public interface IDesktopClientController : IAsyncDisposable
 
 public sealed class DesktopClientController : IDesktopClientController
 {
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(45);
     private readonly AgentConfig _config;
     private readonly ClientPlatformIdentity _identity;
     private readonly Func<AgentConfig, CancellationToken, Task> _saveConfig;
@@ -129,10 +139,18 @@ public sealed class DesktopClientController : IDesktopClientController
         }
     }
 
+    public Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        CancellationToken ct = default)
+        => LoginWithAgentTokenAsync(panelUrl, clientId, agentToken, rememberCredentials: true, ct: ct);
+
     public async Task LoginWithAgentTokenAsync(
         string panelUrl,
         int clientId,
         string agentToken,
+        bool rememberCredentials,
         CancellationToken ct = default)
     {
         await _lifecycleGate.WaitAsync(ct);
@@ -164,7 +182,14 @@ public sealed class DesktopClientController : IDesktopClientController
             _config.SignedInUsername = string.Empty;
             _config.SignedInEmail = string.Empty;
             _config.AvailableClients = [];
-            await _saveConfig(_config, ct);
+            _config.RememberLoginInfo = rememberCredentials;
+            var persistedConfig = _config.Clone();
+            if (!rememberCredentials)
+            {
+                persistedConfig.AgentToken = string.Empty;
+                persistedConfig.DesktopSessionToken = string.Empty;
+            }
+            await _saveConfig(persistedConfig, ct);
             PublishSnapshot(SnapshotFromConfig(_config) with
             {
                 IsBusy = false,
@@ -221,7 +246,10 @@ public sealed class DesktopClientController : IDesktopClientController
             session.ForwardRejected += (_, notice) => NoticeRaised?.Invoke(notice);
             session.LogRaised += message => LogRaised?.Invoke(message);
             _runtimeSession = session;
-            await session.StartAsync(ct);
+            PublishSnapshot(Snapshot with { ConnectionStatus = "starting_routes" });
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectCts.CancelAfter(ConnectTimeout);
+            await session.StartAsync(connectCts.Token).ConfigureAwait(false);
             PublishSnapshot(Snapshot with
             {
                 IsConnected = true,
@@ -320,6 +348,17 @@ public sealed class DesktopClientController : IDesktopClientController
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StopForwardAsync(forwardId, ct));
+
+    public async Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
+            return await runtime.AcquireProxyForwardAsync(forwardId, ct).ConfigureAwait(false);
+        }
+        finally { _lifecycleGate.Release(); }
+    }
 
     public Task StartAllAsync(CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StartAllAsync(ct));
@@ -431,7 +470,7 @@ public sealed class DesktopClientController : IDesktopClientController
         var runtime = _runtimeSession;
         var publicForwards = forwards.Select(forward => new DesktopForwardSnapshot(
             forward.ForwardId,
-            $"Forward {forward.ForwardId}",
+            $"Forward #{forward.ForwardId} · {FormatForwardDirection(forward)}",
             string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
                 ? "ultra"
                 : (!string.IsNullOrWhiteSpace(forward.ClientMode) ? forward.ClientMode : forward.Mode).Trim().ToLowerInvariant(),
@@ -442,6 +481,11 @@ public sealed class DesktopClientController : IDesktopClientController
         PublishSnapshot(Snapshot with { Forwards = publicForwards, NativeOutbound = _nativeOutbound });
         ForwardsChanged?.Invoke(publicForwards);
     }
+
+    private static string FormatForwardDirection(ForwardConfig forward) =>
+        string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
+            ? "-"
+            : forward.ForwardCombinationDirection.Trim();
 
     private void OnRuntimeNativeOutboundChanged(NativeOutboundCapability? capability)
     {
