@@ -37,6 +37,73 @@ func TestDNSProbePayloadAndResponseMatchTransactionID(t *testing.T) {
 	}
 }
 
+func TestDNSProbeResponseRejectsMalformedOrNonAuthoritativeFrames(t *testing.T) {
+	query, transactionID := buildDNSProbePayload(8)
+	valid := append([]byte(nil), query...)
+	valid[2] = 0x81
+	valid[3] = 0x80
+	if !probeResponseMatches(valid, transactionID) {
+		t.Fatal("expected valid DNS response")
+	}
+
+	cases := []struct {
+		name string
+		edit func([]byte) []byte
+	}{
+		{name: "truncated header", edit: func(frame []byte) []byte { return frame[:11] }},
+		{name: "query flag", edit: func(frame []byte) []byte { frame[2] = 0x01; return frame }},
+		{name: "truncated response", edit: func(frame []byte) []byte { frame[2] = 0x81; frame[3] = 0x80; frame[12] = 0; return frame }},
+		{name: "wrong opcode", edit: func(frame []byte) []byte { frame[2] = 0x89; frame[3] = 0x80; return frame }},
+		{name: "truncated bit", edit: func(frame []byte) []byte { frame[2] = 0x83; frame[3] = 0x80; return frame }},
+		{name: "server failure", edit: func(frame []byte) []byte { frame[2] = 0x81; frame[3] = 0x82; return frame }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			frame := append([]byte(nil), valid...)
+			frame = test.edit(frame)
+			if probeResponseMatches(frame, transactionID) {
+				t.Fatalf("accepted malformed DNS response: %x", frame)
+			}
+		})
+	}
+}
+
+func TestSelectBestLeaseStopsDispatchWhenQualityWindowIsCancelled(t *testing.T) {
+	leases := []ProviderLease{
+		{IP: "203.0.113.10", Port: 5438, SelectionRef: "selection-reference-000-abcdefghijklmnop"},
+		{IP: "203.0.113.11", Port: 5438, SelectionRef: "selection-reference-001-abcdefghijklmnop"},
+		{IP: "203.0.113.12", Port: 5438, SelectionRef: "selection-reference-002-abcdefghijklmnop"},
+		{IP: "203.0.113.13", Port: 5438, SelectionRef: "selection-reference-003-abcdefghijklmnop"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{}, len(leases))
+	probe := func(ctx context.Context, _ ProviderLease, _ Config, _ Policy) udpProbeResult {
+		started <- struct{}{}
+		<-ctx.Done()
+		return udpProbeResult{Err: ctx.Err()}
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := selectBestLeaseWithProbe(ctx, Config{ProbeWorkers: 4}, Policy{Transport: "udp"}, leases, probe)
+		result <- err
+	}()
+	for len(started) < 4 {
+		select {
+		case <-time.After(time.Second):
+			t.Fatal("workers did not start")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+	select {
+	case <-result:
+	case <-time.After(time.Second):
+		t.Fatal("selection workers did not stop after cancellation")
+	}
+}
+
 func TestRankUDPProbeResultsPrefersDeliveryThenLatencyThenStableOrder(t *testing.T) {
 	results := []udpProbeResult{
 		{Index: 0, Sent: 20, Received: 20, MedianRTT: 40 * time.Millisecond, P95RTT: 50 * time.Millisecond, Jitter: 3 * time.Millisecond},
@@ -86,6 +153,48 @@ func TestRankUDPProbeResultsPrefersLowerJitterBeforeRawLatency(t *testing.T) {
 	ranked := rankUDPProbeResults(results)
 	if ranked[0].Index != 1 {
 		t.Fatalf("low-jitter candidate should win: %+v", ranked)
+	}
+}
+
+func TestProbeResultUsesBothProtocolsForTCPAndUDP(t *testing.T) {
+	dual := udpProbeResult{
+		Sent: 10, Received: 10,
+		TCPSent:     1,
+		TCPReceived: 1,
+	}
+	if !dual.usableFor("tcp+udp") {
+		t.Fatal("dual candidate with both paths should be usable")
+	}
+	dual.TCPError = errProbeTCPFailed
+	if dual.usableFor("tcp+udp") {
+		t.Fatal("dual candidate with a TCP failure must be unusable")
+	}
+	if !dual.usableFor("udp") {
+		t.Fatal("UDP result should remain usable for UDP transport")
+	}
+}
+
+func TestRankProbeResultsRequiresDualProtocolAndPreservesStableOrder(t *testing.T) {
+	results := []udpProbeResult{
+		{Index: 0, Sent: 10, Received: 10, MedianRTT: 5 * time.Millisecond, TCPSent: 1, TCPReceived: 0, TCPError: errProbeTCPFailed},
+		{Index: 1, Sent: 10, Received: 10, MedianRTT: 30 * time.Millisecond, TCPSent: 1, TCPReceived: 1, TCPRTT: 30 * time.Millisecond},
+		{Index: 2, Sent: 10, Received: 10, MedianRTT: 30 * time.Millisecond, TCPSent: 1, TCPReceived: 1, TCPRTT: 30 * time.Millisecond},
+	}
+	ranked := rankProbeResults(results, "tcp+udp")
+	if ranked[0].Index != 1 || ranked[1].Index != 2 || ranked[2].Index != 0 {
+		t.Fatalf("dual ranking=%+v", ranked)
+	}
+}
+
+func TestProbeFailureNamesAreProtocolSpecific(t *testing.T) {
+	if controlErrorName(errProbeTCPFailed) != "probe_tcp_failed" {
+		t.Fatalf("TCP probe error name=%q", controlErrorName(errProbeTCPFailed))
+	}
+	if controlErrorName(errProbeUDPFailed) != "probe_udp_failed" {
+		t.Fatalf("UDP probe error name=%q", controlErrorName(errProbeUDPFailed))
+	}
+	if controlErrorName(errNoHealthyCandidate) != "no_healthy_candidate" {
+		t.Fatalf("all-fail error name=%q", controlErrorName(errNoHealthyCandidate))
 	}
 }
 

@@ -87,6 +87,42 @@ class UltraLeaseClient(
         }
     }
 
+    /** Delivers a bounded ordinary Ultra candidate batch for local protocol-aware selection. */
+    fun send(controlSocketPath: String, policy: UltraPolicy, leases: List<UltraLease>): Boolean {
+        try {
+            val first = leases.firstOrNull()
+            if (controlSocketPath.isBlank()
+                || leases.size !in 1..MAX_NATIVE_LEASE_CANDIDATES
+                || first == null
+                || leases.any { lease ->
+                    lease.forwardId != policy.forwardId
+                        || lease.policyGeneration != policy.policyGeneration
+                        || lease.transport != policy.transport
+                        || lease.user.isEmpty()
+                        || lease.password.isEmpty()
+                }) return false
+            val payload = if (leases.size == 1) {
+                first.toControlPayload().toString().toByteArray(Charsets.UTF_8)
+            } else {
+                JsonObject().also { root ->
+                    root.add("leases", JsonArray().also { array ->
+                        leases.forEach { array.add(it.toControlPayload()) }
+                    })
+                }.toString().toByteArray(Charsets.UTF_8)
+            }
+            return sendPayload(
+                controlSocketPath = controlSocketPath,
+                payload = payload,
+                forwardId = policy.forwardId,
+                policyGeneration = policy.policyGeneration,
+                timeoutMs = if (leases.size > 1) ULTRA_NATIVE_BATCH_TIMEOUT_MS else ULTRA_CONTROL_TIMEOUT_MS,
+                connectAttempts = if (leases.size > 1) ULTRA_NATIVE_CONNECT_ATTEMPTS else ULTRA_CONTROL_CONNECT_ATTEMPTS,
+            )
+        } finally {
+            leases.forEach(UltraLease::wipe)
+        }
+    }
+
     /** Delivers a native-outbound lease to the app-private Ultra adapter. */
     fun sendNative(controlSocketPath: String, lease: NativeOutboundLease): Boolean =
         sendNativeInternal(

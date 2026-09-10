@@ -62,6 +62,10 @@ func controlDeadlineDuration(config Config) time.Duration {
 }
 
 func sameLeaseSelection(left, right ProviderLease) bool {
+	if left.CandidateKeyHash != "" && right.CandidateKeyHash != "" &&
+		!strings.EqualFold(left.CandidateKeyHash, right.CandidateKeyHash) {
+		return false
+	}
 	if !strings.EqualFold(strings.TrimSpace(left.IP), strings.TrimSpace(right.IP)) || left.Port != right.Port {
 		return false
 	}

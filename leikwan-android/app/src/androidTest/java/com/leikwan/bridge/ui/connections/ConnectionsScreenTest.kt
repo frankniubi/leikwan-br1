@@ -1,7 +1,11 @@
 package com.leikwan.bridge.ui.connections
 
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onLast
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.runtime.ForwardMode
 import com.leikwan.bridge.runtime.NativeOutboundCapability
@@ -95,6 +99,8 @@ class ConnectionsScreenTest {
 
         assertTrue(capability.isUsable())
         composeRule.onNodeWithText("Native outbound").assertExists()
+        composeRule.onNodeWithText("Traffic scope").assertDoesNotExist()
+        composeRule.onAllNodesWithContentDescription("Expand").onLast().performClick()
         composeRule.onNodeWithText("Mainland China only").assertExists()
         composeRule.onNodeWithText("Global").assertExists()
         composeRule.onNodeWithText("Bypass mainland China").assertExists()
@@ -150,6 +156,8 @@ class ConnectionsScreenTest {
 
         composeRule.onNodeWithText("Native outbound").assertExists()
         composeRule.onNodeWithText("Traffic scope").assertDoesNotExist()
+        composeRule.onAllNodesWithContentDescription("Expand").onLast().performClick()
+        composeRule.onNodeWithText("Traffic scope").assertDoesNotExist()
         composeRule.onNodeWithText("Global").assertDoesNotExist()
     }
 
@@ -204,6 +212,7 @@ class ConnectionsScreenTest {
             }
         }
 
+        composeRule.onAllNodesWithContentDescription("Expand").onLast().performClick()
         composeRule.onNodeWithText("Traffic scope").assertExists()
         composeRule.onNodeWithText("International only").assertExists()
         composeRule.onNodeWithText("Global").assertExists()
@@ -232,6 +241,63 @@ class ConnectionsScreenTest {
                 )
             }
         }
+        composeRule.onAllNodesWithContentDescription("Expand").onLast().performClick()
         composeRule.onNodeWithText("Unrestricted native route").assertExists()
+    }
+
+    @Test
+    fun standardProxyDrawerStartsCollapsedAndExpandsToPairingControls() {
+        val node = com.leikwan.bridge.data.ProxyNode(
+            id = 17L,
+            name = "QA node",
+            type = "socks5",
+            originalServer = "node.example.test",
+            originalPort = 443,
+            configJson = "{}",
+        )
+        composeRule.setContent {
+            LeikwanTheme {
+                ConnectionsScreenContent(
+                    state = ConnectionsUiState(
+                        forwards = listOf(forward),
+                        nodes = listOf(node),
+                    ),
+                    onToggle = {},
+                    onSelectForward = {},
+                    onOpenNodePicker = {},
+                    onRefresh = {},
+                    onImportNode = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Standard proxy").assertExists()
+        composeRule.onNodeWithText("Your node × Service forward").assertDoesNotExist()
+        composeRule.onAllNodesWithContentDescription("Expand").onFirst().performClick()
+        composeRule.onNodeWithText("Your node × Service forward").assertExists()
+        composeRule.onNodeWithText("QA node").assertExists()
+        composeRule.onAllNodesWithContentDescription("Collapse").onFirst().performClick()
+        composeRule.onNodeWithText("Your node × Service forward").assertDoesNotExist()
+    }
+
+    @Test
+    fun standardProxyDrawerKeepsEmptyNodeStateCollapsed() {
+        composeRule.setContent {
+            LeikwanTheme {
+                ConnectionsScreenContent(
+                    state = ConnectionsUiState(forwards = listOf(forward)),
+                    onToggle = {},
+                    onSelectForward = {},
+                    onOpenNodePicker = {},
+                    onRefresh = {},
+                    onImportNode = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Standard proxy").assertExists()
+        composeRule.onNodeWithText("No node yet").assertDoesNotExist()
+        composeRule.onAllNodesWithContentDescription("Expand").onFirst().performClick()
+        composeRule.onNodeWithText("No node yet").assertExists()
     }
 }

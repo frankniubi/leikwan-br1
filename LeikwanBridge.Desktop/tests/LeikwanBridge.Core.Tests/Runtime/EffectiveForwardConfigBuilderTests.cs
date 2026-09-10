@@ -63,4 +63,27 @@ public sealed class EffectiveForwardConfigBuilderTests
         Assert.False(effective.SidecarRequired);
         Assert.Null(effective.BondSidecarPointId);
     }
+
+    [Fact]
+    public void Build_PreservesNativeOutboundIdentityAndCombinationDirection()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 180,
+            BackendMode = "ultra",
+            ForwardCombinationDirection = "mainland_to_hong_kong",
+            NativeOutboundEnabled = true,
+            NativeDirection = "Mainland China -> Hong Kong",
+            NativeRouteScope = "global",
+            NativeOutbound = new NativeOutboundCapability { Enabled = true },
+        };
+
+        var effective = EffectiveForwardConfigBuilder.Build(forward);
+
+        Assert.True(effective.NativeOutboundEnabled);
+        Assert.Equal("Mainland China -> Hong Kong", effective.NativeDirection);
+        Assert.Equal("mainland_to_hong_kong", effective.ForwardCombinationDirection);
+        Assert.Equal("global", effective.NativeRouteScope);
+        Assert.Same(forward.NativeOutbound, effective.NativeOutbound);
+    }
 }

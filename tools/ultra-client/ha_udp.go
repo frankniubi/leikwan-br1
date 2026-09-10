@@ -38,9 +38,10 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 			}
 			configureRuntimeDatagram(session, store, status, ss.Lease)
 			session.startRuntimeReader(3 * safeUDPKeepaliveInterval)
-			return udpWarmSession{session: session, selectionRef: ss.Lease.SelectionRef, selectionTier: ss.Lease.SelectionTier, started: started}, nil
+			return udpWarmSession{session: session, selectionRef: ss.Lease.SelectionRef, selectionTier: ss.Lease.SelectionTier, candidateKeyHash: ss.Lease.CandidateKeyHash, leaseHash: ss.Lease.LeaseHash, started: started}, nil
 		}
 		store.FailCandidate("udp", ss.Lease)
+		status.RecordCandidateFailure(ss.Lease.CandidateKeyHash, "udp", "udp_association_failed", ss.Lease.LeaseHash)
 		status.RecordHAEvent("udp", haErrorClass(err), ss.Policy.PolicyGeneration)
 		log.Printf("udp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(err))
 		last = err
@@ -140,8 +141,10 @@ func (s *DatagramSession) readRuntime(buffer []byte) (int, error) {
 
 func configureRuntimeDatagram(s *DatagramSession, store *PolicyStore, status *StatusWriter, lease ProviderLease) {
 	key, generation := haPathKey(lease), lease.PolicyGeneration
+	candidateKey, leaseHash := lease.CandidateKeyHash, lease.LeaseHash
 	s.onRuntimeFailure = func(err error) {
 		store.failCandidateKey("udp", key, generation)
+		status.RecordCandidateFailure(candidateKey, "udp", "udp_association_failed", leaseHash)
 		status.RecordHAEvent("udp", haErrorClass(err), generation)
 		log.Printf("udp session failed forward_id=%d reason=%s generation=%s", store.config.ForwardID, haErrorClass(err), generation)
 	}

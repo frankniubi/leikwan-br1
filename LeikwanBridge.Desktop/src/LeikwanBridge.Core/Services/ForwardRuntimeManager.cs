@@ -42,6 +42,9 @@ public class ForwardRuntimeManager : IDisposable
 
     private bool HasOwnedProxyListener(ForwardConfig forward)
     {
+        if (IsNativeOutboundForward(forward))
+            return false;
+
         var pids = _supervisor.GetProcessIds(forward.ForwardId);
         var owners = _proxyPortOwners(forward.ListenPort);
         var protocols = forward.Transport.Trim().ToLowerInvariant() switch
@@ -57,9 +60,14 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     public bool IsForwardStarting(int forwardId) => _startingForwards.ContainsKey(forwardId);
-    public bool IsForwardReady(ForwardConfig forward) => !IsForwardStarting(forward.ForwardId)
+    public bool IsForwardReady(ForwardConfig forward) => !IsNativeOutboundForward(forward)
+        && !IsForwardStarting(forward.ForwardId)
         && IsForwardRunning(forward.ForwardId)
         && (forward.ListenPort <= 0 || _portListeningProbe(forward.ListenPort));
+
+    public static bool IsNativeOutboundForward(ForwardConfig forward)
+        => forward.NativeOutboundEnabled
+            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
 
     public ForwardRuntimeManager(
         AgentConfig config,
@@ -103,6 +111,11 @@ public class ForwardRuntimeManager : IDisposable
         {
             var applied = _stateManager.LoadApplied();
             applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
+            if (IsNativeOutboundForward(forward))
+            {
+                SuppressOrdinaryUltraRuntime(forward);
+                return;
+            }
             // A lease/config request can complete after the user stopped its
             // forward. Re-check under the runtime lock before applying it.
             if (previousState?.UserStopped == true && applyReason == "config_sync")
@@ -135,6 +148,11 @@ public class ForwardRuntimeManager : IDisposable
 
     private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
+        if (IsNativeOutboundForward(forward))
+        {
+            SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
         if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
         {
             ApplyUltraForward(forward, previousState, contractSignature, applyReason);
@@ -239,6 +257,11 @@ public class ForwardRuntimeManager : IDisposable
 
     private void ApplyUltraForward(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
+        if (IsNativeOutboundForward(forward))
+        {
+            SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
         var policy = forward.UltraAccess;
         var leases = forward.RuntimeLeases.Count > 0
             ? forward.RuntimeLeases.ToList()
@@ -325,6 +348,12 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual void RestartForward(ForwardConfig forward, bool force, string reason)
     {
+        if (IsNativeOutboundForward(forward))
+        {
+            lock (LockFor(forward.ForwardId))
+                SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
         var ultra = string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
         // Health recovery must never wait behind a slow lease delivery and then
         // destroy the now-ready runtime using a credential-free catalog snapshot.
@@ -386,6 +415,7 @@ public class ForwardRuntimeManager : IDisposable
             try
             {
                 if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                    || IsNativeOutboundForward(forward)
                     || leases.Count == 0 || policy is null
                     || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
                     || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
@@ -432,6 +462,25 @@ public class ForwardRuntimeManager : IDisposable
         return sidepath != null
             && sidepath.EnabledForwardIds.Contains(forward.ForwardId)
             && string.Equals(sidepath.SchedulerMode, "feedback_drr", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SuppressOrdinaryUltraRuntime(ForwardConfig forward)
+    {
+        var leases = forward.RuntimeLeases.Count > 0
+            ? forward.RuntimeLeases.ToList()
+            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+        try
+        {
+            Log.Information("skip ordinary Ultra runtime for native outbound forward {ForwardId}", forward.ForwardId);
+            _ultraRuntimeHost.Stop(forward.ForwardId);
+            _stateManager.RemoveApplied(forward.ForwardId);
+        }
+        finally
+        {
+            DisposeLeases(leases);
+            forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
+        }
     }
 
     private bool WaitForRequiredPorts(IEnumerable<int> ports, TimeSpan timeout)
@@ -513,6 +562,7 @@ public class ForwardRuntimeManager : IDisposable
             ContractVersion = forward.ContractVersion,
             ClientMode = forward.ClientMode,
             RuntimePreference = forward.RuntimePreference,
+            ForwardCombinationDirection = forward.ForwardCombinationDirection,
             BondIngressMode = forward.BondIngressMode,
             ActiveFamily = forward.ActiveFamily,
             AggregationEnabled = forward.AggregationEnabled,
@@ -525,6 +575,8 @@ public class ForwardRuntimeManager : IDisposable
             PathPrefix = forward.PathPrefix,
             Transport = forward.Transport,
             SpeedLimitMbps = forward.SpeedLimitMbps,
+            NativeOutboundEnabled = forward.NativeOutboundEnabled,
+            NativeDirection = forward.NativeDirection,
             Endpoints = selectedEndpoints,
             Bonding = forward.Bonding,
             Mptcp = forward.Mptcp,

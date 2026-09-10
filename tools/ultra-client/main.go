@@ -505,6 +505,80 @@ func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout 
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
 }
 
+type streamCandidateDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)
+
+// dialStreamWithCandidates retries a new local connection against the
+// remaining leases before any application bytes are read. This preserves the
+// caller's payload: a provider failure cannot cause an already-sent request to
+// be replayed to another relay. The helper owns the lease snapshots it tries;
+// a successful lease is returned to the caller for the stream lifetime.
+func dialStreamWithCandidates(
+	ctx context.Context,
+	store *PolicyStore,
+	policy Policy,
+	initial ProviderLease,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	dial streamCandidateDial,
+	onFailure func(ProviderLease, error),
+) (net.Conn, ProviderLease, error) {
+	if store == nil || dial == nil {
+		initial.wipe()
+		return nil, ProviderLease{}, errNoHealthyCandidate
+	}
+	current := initial
+	attempted := make([]string, 0, 4)
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err := ctx.Err(); err != nil {
+			current.wipe()
+			return nil, ProviderLease{}, err
+		}
+		if !current.ExpiresAt.After(time.Now()) {
+			current.wipe()
+			return nil, ProviderLease{}, fmt.Errorf("%w: %v", errNoHealthyCandidate, ErrPolicyExpired)
+		}
+		identity := strings.TrimSpace(current.CandidateKeyHash)
+		if identity == "" {
+			identity = strings.TrimSpace(current.SelectionRef)
+		}
+		if identity != "" {
+			attempted = append(attempted, identity)
+		}
+		attemptTimeout := timeout
+		if remaining := time.Until(current.ExpiresAt); remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		connection, err := dial(current, targetHost, targetPort, attemptTimeout)
+		if err == nil {
+			return connection, current, nil
+		}
+		lastErr = err
+		if onFailure != nil {
+			onFailure(current, err)
+		}
+		failureKey := current.CandidateKeyHash
+		if strings.TrimSpace(failureKey) == "" {
+			failureKey = current.SelectionRef
+		}
+		store.MarkCandidateFailure(failureKey)
+		current.wipe()
+		if attempt == 3 {
+			break
+		}
+		next, ok := store.SnapshotNextCandidate(attempted...)
+		if !ok {
+			break
+		}
+		current = next.Lease
+	}
+	if lastErr == nil {
+		lastErr = errProbeUnavailable
+	}
+	return nil, ProviderLease{}, fmt.Errorf("%w: %v", errNoHealthyCandidate, lastErr)
+}
+
 func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
@@ -588,7 +662,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					return
 				}
 				defer snapshot.Lease.wipe()
-				status.UpdateTCPWithTier(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, time.Since(started))
+				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
 				relayTCP(ctx, local, remote, store.Limiter(), status, config.ForwardID, snapshot.Policy.PolicyGeneration, snapshot.Lease.SelectionRef)
 
 			}()
@@ -1142,13 +1216,15 @@ func (association *udpAssociation) close() {
 }
 
 type udpWarmSession struct {
-	session         *DatagramSession
-	selectionRef    string
-	selectionTier   string
-	started         time.Time
-	keepaliveCancel context.CancelFunc
-	claimed         chan struct{}
-	err             error
+	session          *DatagramSession
+	selectionRef     string
+	selectionTier    string
+	candidateKeyHash string
+	leaseHash        string
+	started          time.Time
+	keepaliveCancel  context.CancelFunc
+	claimed          chan struct{}
+	err              error
 }
 
 // runPersistentWarmWorker keeps one unclaimed UDP association ready for the
@@ -1533,7 +1609,7 @@ func serveUDPOnConn(
 		association.pending = nil
 		associationMu.Unlock()
 		publishAssociationCounts()
-		status.UpdateUDPWithTier(warm.selectionRef, warm.selectionTier, time.Since(warm.started))
+		status.UpdateUDPWithTierAndCandidate(warm.selectionRef, warm.selectionTier, warm.candidateKeyHash, time.Since(warm.started), warm.leaseHash)
 		status.RecordUDPAttached(warm.selectionRef, warm.selectionTier)
 		for _, queuedPayload := range queued {
 			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)

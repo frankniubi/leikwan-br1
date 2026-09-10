@@ -6,6 +6,7 @@ import com.google.gson.JsonElement
 import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.clientrules.ClientRouteRule
 import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
+import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
@@ -70,10 +71,11 @@ class PanelRepository(
         DeviceSecurity.evaluate(context.applicationContext)
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
+    private val panelEndpointOverride: PanelEndpoint? = null,
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
-    private val api: PanelApi = apiOverride ?: buildApi(prefs.panelUrl)
+    private val api: PanelApi = apiOverride ?: buildApi(panelEndpointOverride?.url ?: prefs.panelUrl)
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
@@ -437,7 +439,17 @@ class PanelRepository(
     }
 
     /** Resolves one ephemeral Ultra lease for the currently trusted device session. */
-    suspend fun resolveUltraLease(policy: UltraPolicy): UltraLease {
+    suspend fun resolveUltraLease(policy: UltraPolicy): UltraLease =
+        resolveUltraLeases(policy, maxCandidates = 1).single()
+
+    /** Resolves up to four ordinary Ultra candidates for local protocol-aware selection. */
+    suspend fun resolveUltraLeases(
+        policy: UltraPolicy,
+        maxCandidates: Int = 4,
+    ): List<UltraLease> {
+        if (maxCandidates !in 1..4) {
+            throw IllegalArgumentException("ultra_candidate_limit_invalid")
+        }
         val session = requireActiveSession()
         val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
@@ -454,6 +466,8 @@ class PanelRepository(
                             nonce = nonce,
                             targetDigest = policy.targetDigest,
                             transport = policy.transport,
+                            selectionMode = if (maxCandidates > 1) "auto" else "single",
+                            maxCandidates = maxCandidates,
                         )
                     ),
                 ),
@@ -470,10 +484,21 @@ class PanelRepository(
                     ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string()),
             )
         }
-        val rawLease = body.leases.singleOrNull()
-            ?: throw IllegalStateException("ultra_lease_invalid")
-        return UltraLease.from(rawLease, policy, Instant.ofEpochMilli(nowMs()))
-            ?: throw IllegalStateException("ultra_lease_invalid")
+        if (body.leases.isEmpty() || body.leases.size > maxCandidates) {
+            throw IllegalStateException("ultra_lease_invalid")
+        }
+        val now = Instant.ofEpochMilli(nowMs())
+        val leases = mutableListOf<UltraLease>()
+        try {
+            body.leases.forEach { rawLease ->
+                leases += UltraLease.from(rawLease, policy, now)
+                    ?: throw IllegalStateException("ultra_lease_invalid")
+            }
+            return leases
+        } catch (error: Exception) {
+            leases.forEach(UltraLease::wipe)
+            throw error
+        }
     }
 
     /** Resolves one short-lived, forward-bound native SOCKS5 lease without exposing its provider. */

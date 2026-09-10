@@ -3,6 +3,7 @@ package com.leikwan.bridge.api
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.leikwan.bridge.BuildConfig
+import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.security.AttestationProof
@@ -30,6 +31,7 @@ class AndroidEnrollmentRepositoryTest {
     private lateinit var server: MockWebServer
     private lateinit var prefs: Prefs
     private lateinit var repository: PanelRepository
+    private val observedHosts = mutableListOf<String>()
     private val nowMs = Instant.parse("2030-01-01T00:00:00Z").toEpochMilli()
     private val deviceId = "android-client-17-aabbccddeeff00112233445566778899"
 
@@ -48,6 +50,7 @@ class AndroidEnrollmentRepositoryTest {
             // test request to MockWebServer so fixtures never contact the live Panel.
             httpClientOverride = OkHttpClient.Builder().addInterceptor { chain ->
                 val request = chain.request()
+                observedHosts += request.url.host
                 val localUrl = request.url.newBuilder()
                     .scheme("http")
                     .host(server.hostName)
@@ -116,6 +119,48 @@ class AndroidEnrollmentRepositoryTest {
         assertTrue(repository.heartbeat())
         val heartbeat = server.takeRequest()
         assertEquals("device-session", heartbeat.getHeader("X-Device-Session"))
+    }
+
+    @Test
+    fun `selected panel endpoint controls enrollment request host`() = runBlocking {
+        prefs.panelEndpoint = PanelEndpoint.ALIYUN_CDN
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val selectedRepository = PanelRepository(
+            context = context,
+            prefsOverride = prefs,
+            routeRuleStore = ClientRouteRuleStore.from(context),
+            httpClientOverride = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                observedHosts += request.url.host
+                val localUrl = request.url.newBuilder()
+                    .scheme("http")
+                    .host(server.hostName)
+                    .port(server.port)
+                    .build()
+                chain.proceed(request.newBuilder().url(localUrl).build())
+            }.build(),
+            deviceIdProvider = { deviceId },
+            identityPublicKeyProvider = { "identity-public-key".toByteArray() },
+            attestationProofProvider = { _, _, _ ->
+                AttestationProof(
+                    certificateChain = listOf("leaf-certificate"),
+                    identityPublicKey = "identity-public-key",
+                    bindingSignature = "binding-signature",
+                )
+            },
+            deviceNameProvider = { "Pixel QA" },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+            nowMs = { nowMs },
+        )
+        server.enqueue(json(200, """{"ok":true,"nonce":"challenge-a","expires_at":"2030-01-01T00:05:00Z"}"""))
+        server.enqueue(json(200, """{"ok":true,"client_id":17,"device_session":"device-session","expires_at":"2030-01-01T00:15:00Z","command_version":0}"""))
+
+        selectedRepository.enroll(17L, "agent-token")
+
+        assertEquals(
+            listOf("api-leikwanbridge.nbwly.com", "api-leikwanbridge.nbwly.com"),
+            observedHosts,
+        )
     }
 
     @Test

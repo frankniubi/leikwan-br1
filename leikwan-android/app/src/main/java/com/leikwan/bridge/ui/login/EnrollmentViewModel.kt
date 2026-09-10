@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.R
 import com.leikwan.bridge.api.PanelRepository
+import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.session.SessionGate
@@ -19,6 +20,10 @@ data class EnrollmentUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val isEnrolled: Boolean = false,
+    val panelEndpoint: PanelEndpoint = PanelEndpoint.DEFAULT,
+    val savedClientId: String = "",
+    val savedAgentToken: String = "",
+    val rememberLoginInfo: Boolean = true,
 )
 
 internal fun enrollmentErrorMessage(
@@ -40,41 +45,88 @@ internal fun enrollmentErrorMessage(
 
 class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
     private val appContext = app.applicationContext
-    private val repo = PanelRepository(app)
     private val prefs = Prefs.get(app)
 
-    private val _state = MutableStateFlow(EnrollmentUiState(isEnrolled = prefs.isLoggedIn()))
+    private val _state = MutableStateFlow(
+        EnrollmentUiState(
+            isEnrolled = prefs.isLoggedIn(),
+            panelEndpoint = prefs.panelEndpoint,
+            savedClientId = prefs.savedClientId?.toString().orEmpty(),
+            savedAgentToken = prefs.savedAgentToken.orEmpty(),
+            rememberLoginInfo = prefs.rememberLoginInfo,
+        ),
+    )
     val state = _state.asStateFlow()
 
-    fun enrollWithToken(clientIdText: String, agentToken: String) {
+    fun selectPanelEndpoint(endpoint: PanelEndpoint) {
+        prefs.panelEndpoint = endpoint
+        _state.value = _state.value.copy(panelEndpoint = endpoint)
+    }
+
+    fun enrollWithToken(
+        clientIdText: String,
+        agentToken: String,
+        rememberLoginInfo: Boolean = _state.value.rememberLoginInfo,
+    ) {
         val clientId = clientIdText.trim().toLongOrNull()
         if (clientId == null || clientId <= 0L || agentToken.isBlank()) {
             _state.value = _state.value.copy(error = s(R.string.login_error_credentials_required))
             return
         }
-        launchEnrollment { repo.enroll(clientId, agentToken.trim()) }
+        val endpoint = _state.value.panelEndpoint
+        launchEnrollment(endpoint, clientId, rememberLoginInfo) { repo ->
+            repo.enroll(clientId, agentToken.trim())
+        }
     }
 
-    fun enrollWithCode(clientIdText: String, enrollmentCode: String) {
+    fun enrollWithCode(
+        clientIdText: String,
+        enrollmentCode: String,
+        rememberLoginInfo: Boolean = _state.value.rememberLoginInfo,
+    ) {
         val clientId = clientIdText.trim().toLongOrNull()
         if (clientId == null || clientId <= 0L || enrollmentCode.isBlank()) {
             _state.value = _state.value.copy(error = s(R.string.enrollment_error_code_required))
             return
         }
-        launchEnrollment { repo.enrollWithCode(clientId, enrollmentCode.trim()) }
+        val endpoint = _state.value.panelEndpoint
+        launchEnrollment(endpoint, clientId, rememberLoginInfo) { repo ->
+            repo.enrollWithCode(clientId, enrollmentCode.trim())
+        }
     }
 
     fun clearError() {
         _state.value = _state.value.copy(error = null)
     }
 
-    private fun launchEnrollment(action: suspend () -> Unit) {
+    private fun launchEnrollment(
+        endpoint: PanelEndpoint,
+        clientId: Long,
+        rememberLoginInfo: Boolean,
+        action: suspend (PanelRepository) -> Unit,
+    ) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null)
             try {
-                action()
+                val repo = PanelRepository(
+                    context = appContext,
+                    prefsOverride = prefs,
+                    panelEndpointOverride = endpoint,
+                )
+                action(repo)
+                if (rememberLoginInfo) {
+                    prefs.saveLoginInfo(clientId, prefs.agentToken.orEmpty())
+                } else {
+                    prefs.clearSavedLoginInfo()
+                }
                 SessionGate.clear()
-                _state.value = _state.value.copy(isLoading = false, isEnrolled = true)
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    isEnrolled = true,
+                    savedClientId = if (rememberLoginInfo) clientId.toString() else "",
+                    savedAgentToken = if (rememberLoginInfo) prefs.agentToken.orEmpty() else "",
+                    rememberLoginInfo = rememberLoginInfo,
+                )
             } catch (terminal: PanelControlException) {
                 SessionGate.markTerminal(terminal)
                 _state.value = _state.value.copy(isLoading = false, error = terminal.code)

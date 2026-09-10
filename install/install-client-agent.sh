@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.10.2"
+INSTALLER_VERSION="2026.09.11.2"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -789,12 +789,19 @@ download_manifest_artifact() {
     echo "  $key up to date, skipping download"
     return 0
   fi
-  download_atomic "$url" "$path"
-  if [[ -n "$expected_sha256" ]] && ! check_binary_current "$path" "$expected_sha256"; then
-    rm -f "$path"
+  local staged="${path}.verified.$$"
+  if ! leikwan_protected_download "$url" "$staged"; then
+    rm -f "$staged"
+    return 1
+  fi
+  if ! check_binary_current "$staged" "$expected_sha256"; then
+    rm -f "$staged"
     echo "downloaded artifact sha256 mismatch: $key" >&2
     return 1
   fi
+  chmod 0755 "$staged"
+  backup_existing "$path"
+  mv "$staged" "$path"
 }
 
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
