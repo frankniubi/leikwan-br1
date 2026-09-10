@@ -1,0 +1,444 @@
+<?php
+declare(strict_types=1);
+
+namespace Leikwan\Master\Support;
+
+use Leikwan\Master\Config;
+use Leikwan\Master\Database\Database;
+
+final class UltraClientStatusService
+{
+    public const MAX_STATUSES = 32;
+    public const MAX_STATUS_BYTES = 65536;
+
+    /** @param callable():int|null $clock */
+    public function __construct(
+        private Config $config,
+        private Database $db,
+        private $clock = null,
+        ?UltraCandidateReputationService $candidateReputation = null,
+    ) {
+        $this->clock ??= static fn(): int => time();
+        $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
+    }
+
+    private UltraCandidateReputationService $candidateReputation;
+
+    /** @param array<int, mixed> $statuses */
+    public function ingest(int $clientId, string $deviceId, array $statuses): int
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '' || strlen($deviceId) > 191) {
+            return 0;
+        }
+        $assignments = $this->assignmentsForClients([$clientId]);
+        $allowed = $assignments[$clientId] ?? [];
+        $normalized = [];
+        foreach (array_slice(array_values($statuses), 0, self::MAX_STATUSES) as $status) {
+            if (!is_array($status)) {
+                continue;
+            }
+            $forwardId = (int) ($status['forward_id'] ?? 0);
+            if (!isset($allowed[$forwardId]) || isset($normalized[$forwardId])) {
+                continue;
+            }
+            $entry = $this->normalizeStatus($status, $forwardId);
+            if ($entry !== null) {
+                $normalized[$forwardId] = $entry;
+            }
+        }
+        $encoded = json_encode(array_values($normalized), JSON_UNESCAPED_SLASHES);
+        if (!is_string($encoded) || strlen($encoded) > self::MAX_STATUS_BYTES) {
+            return 0;
+        }
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        $updated = $this->db->execute(
+            'UPDATE client_device_sessions
+             SET ultra_status_json = :ultra_status_json,
+                 ultra_status_updated_at = :ultra_status_updated_at,
+                 updated_at = :updated_at
+             WHERE client_id = :client_id AND device_id = :device_id',
+            [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+                'ultra_status_json' => $encoded,
+                'ultra_status_updated_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+        return $updated > 0 ? count($normalized) : 0;
+    }
+
+    /**
+     * Ingest authenticated, bounded data-plane outcomes keyed by the opaque
+     * candidate hash issued in a lease. Client-supplied line IDs are never
+     * accepted here.
+     *
+     * @param array<int, mixed> $feedback
+     */
+    public function ingestFeedback(int $clientId, string $deviceId, array $feedback): int
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return 0;
+        }
+        $assignments = $this->assignmentsForClients([$clientId]);
+        $allowed = $assignments[$clientId] ?? [];
+        $observerHash = hash('sha256', $clientId . ':' . $deviceId);
+        $accepted = 0;
+        $seen = [];
+        foreach (array_slice(array_values($feedback), 0, UltraCandidateReputationService::MAX_FEEDBACK) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $forwardId = (int) ($item['forward_id'] ?? 0);
+            $candidateHash = strtolower(trim((string) ($item['candidate_key_hash'] ?? '')));
+            if ($forwardId <= 0 || !isset($allowed[$forwardId])
+                || preg_match('/^[a-f0-9]{64}$/', $candidateHash) !== 1
+                || !$this->feedbackBoundToLease($clientId, $deviceId, $forwardId, $candidateHash, $item['lease_hash'] ?? null)
+                || isset($seen[$forwardId . ':' . $candidateHash])) {
+                continue;
+            }
+            $scope = $this->candidateReputation->scopeForHash($candidateHash);
+            $assignment = $allowed[$forwardId] ?? null;
+            if ($scope === [] || !is_array($assignment)) {
+                continue;
+            }
+            $protocol = strtolower(trim((string) ($item['protocol'] ?? '')));
+            $scopeProtocol = (string) ($scope['protocol'] ?? '');
+            $protocolMatches = $protocol !== ''
+                && ($protocol === $scopeProtocol
+                    || ($scopeProtocol === 'tcp+udp' && in_array($protocol, ['tcp', 'udp', 'tcp+udp'], true)));
+            if (!$protocolMatches) {
+                continue;
+            }
+            $destination = strtolower(trim((string) ($assignment['ultra_destination_zone'] ?? 'unknown')));
+            if ($destination !== (string) ($scope['destination_zone'] ?? 'unknown')) {
+                continue;
+            }
+            $reportedIngress = strtolower(trim((string) ($item['detected_ingress_zone'] ?? 'unknown')));
+            if ($reportedIngress !== '' && $reportedIngress !== 'unknown'
+                && $reportedIngress !== (string) ($scope['ingress_zone'] ?? 'unknown')) {
+                continue;
+            }
+            $outcome = strtolower(trim((string) ($item['outcome'] ?? '')));
+            $reason = strtolower(trim((string) ($item['reason'] ?? '')));
+            // process_stderr is a diagnostic stream event, not data-plane proof.
+            if (!in_array($outcome, ['failure', 'success'], true) || $reason === 'process_stderr') {
+                continue;
+            }
+            if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))
+                || ($outcome === 'success' && $reason !== 'canary_probe_ok')) {
+                continue;
+            }
+            $evidenceId = trim((string) ($item['evidence_id'] ?? ''));
+            if ($evidenceId !== '' && preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $evidenceId) !== 1) {
+                continue;
+            }
+            $result = $outcome === 'failure'
+                ? $this->candidateReputation->observeFailureByHash($candidateHash, $reason, $observerHash, $evidenceId)
+                : $this->candidateReputation->observeSuccessByHash($candidateHash, $observerHash, $evidenceId);
+            if ($result !== []) {
+                $seen[$forwardId . ':' . $candidateHash] = true;
+                $accepted++;
+            }
+        }
+        return $accepted;
+    }
+
+    /**
+     * A candidate hash alone is not an authentication factor. Require the
+     * client/device/forward tuple to point at a consumed, non-revoked lease
+     * carrying the same opaque candidate and lease hashes. The lookup is
+     * deliberately fail-closed so telemetry cannot weaken the lease boundary.
+     */
+    private function feedbackBoundToLease(
+        int $clientId,
+        string $deviceId,
+        int $forwardId,
+        string $candidateKeyHash,
+        mixed $leaseHash,
+    ): bool {
+        $leaseHash = strtolower(trim((string) $leaseHash));
+        if ($clientId <= 0 || $forwardId <= 0
+            || preg_match('/^[a-f0-9]{64}$/', $candidateKeyHash) !== 1
+            || preg_match('/^[a-f0-9]{64}$/', $leaseHash) !== 1) {
+            return false;
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT id
+                 FROM ultra_client_leases
+                 WHERE client_id = :client_id
+                   AND device_hash = :device_hash
+                   AND forward_id = :forward_id
+                   AND candidate_key_hash = :candidate_key_hash
+                   AND lease_hash = :lease_hash
+                   AND consumed_at IS NOT NULL
+                   AND revoked_at IS NULL
+                 LIMIT 1',
+                [
+                    'client_id' => $clientId,
+                    'device_hash' => hash('sha256', trim($deviceId)),
+                    'forward_id' => $forwardId,
+                    'candidate_key_hash' => $candidateKeyHash,
+                    'lease_hash' => $leaseHash,
+                ]
+            );
+            return is_array($row) && isset($row['id']);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function sessionsForAdmin(array $filters, int $limit, int $offset): array
+    {
+        $limit = max(1, min(200, $limit));
+        $offset = max(0, $offset);
+        $since = gmdate('Y-m-d H:i:s', $this->now() - 86400);
+        $sessions = $this->db->fetchAll(
+            'SELECT cds.client_id, cds.device_id, cds.device_name, cds.platform, cds.last_ip,
+                    cds.last_seen_at, cds.last_heartbeat_at, cds.ultra_status_json, cds.ultra_status_updated_at,
+                    c.name AS client_name, c.group_id, u.name AS user_name, u.email AS user_email
+             FROM client_device_sessions cds
+             INNER JOIN clients c ON c.id = cds.client_id
+             LEFT JOIN users u ON u.id = c.owner_user_id
+             WHERE cds.last_seen_at >= :since
+               AND cds.ultra_status_json IS NOT NULL
+             ORDER BY cds.last_seen_at DESC, cds.id DESC
+             LIMIT 200',
+            ['since' => $since]
+        );
+        $clientIds = [];
+        foreach ($sessions as $session) {
+            $clientId = (int) ($session['client_id'] ?? 0);
+            if ($clientId > 0) {
+                $clientIds[$clientId] = $clientId;
+            }
+        }
+        $assignments = $this->assignmentsForClients(array_values($clientIds));
+        $stateFilter = strtolower(trim((string) ($filters['state'] ?? '')));
+        $zoneFilter = strtolower(trim((string) ($filters['destination_zone'] ?? '')));
+        $search = strtolower(trim((string) ($filters['search'] ?? '')));
+        $forwardSearch = strtolower(trim((string) ($filters['forward'] ?? '')));
+        $rows = [];
+        foreach ($sessions as $session) {
+            $clientId = (int) ($session['client_id'] ?? 0);
+            $lastSeen = strtotime((string) ($session['last_seen_at'] ?? '')) ?: 0;
+            $state = $this->sessionState($lastSeen);
+            if ($stateFilter !== '' && $stateFilter !== strtolower($state)) {
+                continue;
+            }
+            $haystack = strtolower(implode(' ', [
+                (string) ($session['user_name'] ?? ''),
+                (string) ($session['user_email'] ?? ''),
+                (string) ($session['client_name'] ?? ''),
+                (string) ($session['device_id'] ?? ''),
+                (string) ($session['device_name'] ?? ''),
+                (string) ($session['last_ip'] ?? ''),
+            ]));
+            if ($search !== '' && !str_contains($haystack, $search)) {
+                continue;
+            }
+            $decoded = is_string($session['ultra_status_json'] ?? null)
+                ? json_decode((string) $session['ultra_status_json'], true)
+                : [];
+            foreach (array_slice(is_array($decoded) ? $decoded : [], 0, self::MAX_STATUSES) as $status) {
+                if (!is_array($status)) {
+                    continue;
+                }
+                $forwardId = (int) ($status['forward_id'] ?? 0);
+                $assignment = $assignments[$clientId][$forwardId] ?? null;
+                if (!is_array($assignment)) {
+                    continue;
+                }
+                $destinationZone = strtolower(trim((string) ($assignment['ultra_destination_zone'] ?? 'unknown')));
+                if ($zoneFilter !== '' && $destinationZone !== $zoneFilter) {
+                    continue;
+                }
+                $forwardHaystack = strtolower($forwardId . ' ' . (string) ($assignment['tenant_label'] ?? '') . ' ' . (string) ($assignment['name'] ?? ''));
+                if ($forwardSearch !== '' && !str_contains($forwardHaystack, $forwardSearch)) {
+                    continue;
+                }
+                $tcp = is_array($status['latest_tcp'] ?? null) ? $status['latest_tcp'] : [];
+                $udp = is_array($status['active_udp'] ?? null) ? $status['active_udp'] : [];
+                $tcpRef = self::selectionRef($tcp['selection_ref'] ?? $tcp['entry_ref'] ?? '');
+                $udpRef = self::selectionRef($udp['selection_ref'] ?? $udp['entry_ref'] ?? '');
+                $rows[] = [
+                    'state' => $state,
+                    'user_name' => self::text($session['user_name'] ?? '', 191),
+                    'user_email' => self::text($session['user_email'] ?? '', 191),
+                    'client_id' => $clientId,
+                    'client_name' => self::text($session['client_name'] ?? '', 191),
+                    'device_id' => self::text($session['device_id'] ?? '', 191),
+                    'device_name' => self::text($session['device_name'] ?? '', 191),
+                    'client_ip' => self::ip($session['last_ip'] ?? ''),
+                    'forward_id' => $forwardId,
+                    'forward_label' => self::text($assignment['tenant_label'] ?? $assignment['name'] ?? '', 191),
+                    'destination' => self::text($assignment['target_host'] ?? '', 255) . ':' . (int) ($assignment['target_port'] ?? 0),
+                    'destination_zone' => $destinationZone,
+                    'detected_ingress_zone' => self::zone($status['detected_ingress_zone'] ?? 'unknown'),
+                    'latest_tcp_selection_ref' => $tcpRef,
+                    'active_udp_selection_ref' => $udpRef,
+                    // Compatibility keys stay empty so no provider line/IP is serialized.
+                    'latest_tcp_line' => '',
+                    'latest_tcp_ip' => '',
+                    'active_udp_line' => '',
+                    'active_udp_ip' => '',
+                    'last_seen_at' => (string) ($session['last_seen_at'] ?? ''),
+                    'status_updated_at' => (string) ($session['ultra_status_updated_at'] ?? ''),
+                    'error_code' => self::text($status['error_code'] ?? '', 64),
+                ];
+            }
+        }
+        return array_slice($rows, $offset, $limit);
+    }
+
+    /** @return array{online:int,stale:int,offline:int} */
+    public function statusCounts(): array
+    {
+        $now = $this->now();
+        $rows = $this->db->fetchAll(
+            'SELECT last_seen_at FROM client_device_sessions
+             WHERE last_seen_at >= :since AND ultra_status_json IS NOT NULL
+             ORDER BY last_seen_at DESC LIMIT 1000',
+            ['since' => gmdate('Y-m-d H:i:s', $now - 86400)]
+        );
+        $counts = ['online' => 0, 'stale' => 0, 'offline' => 0];
+        foreach ($rows as $row) {
+            $state = strtolower($this->sessionState(strtotime((string) ($row['last_seen_at'] ?? '')) ?: 0));
+            if (isset($counts[$state])) {
+                $counts[$state]++;
+            }
+        }
+        return $counts;
+    }
+
+    /** @param array<int, int> $clientIds @return array<int, array<int, array<string, mixed>>> */
+    private function assignmentsForClients(array $clientIds): array
+    {
+        if ($clientIds === []) {
+            return [];
+        }
+        $clients = $this->db->fetchAll(
+            'SELECT id, group_id FROM clients WHERE id IN (' . implode(',', array_map('intval', $clientIds)) . ')'
+        );
+        $rows = $this->db->fetchAll(
+            'SELECT f.id, f.line_client_id, f.line_client_group_id, f.line_client_group_ids_json,
+                    f.target_host, f.target_port, fc.name, fc.tenant_label, fc.ultra_destination_zone
+             FROM forwards f
+             INNER JOIN services s ON s.id = f.service_id AND s.status = :active_status
+             INNER JOIN forward_combinations fc ON fc.id = f.forward_combination_id AND fc.backend_mode = :backend_mode
+             WHERE f.enabled = 1
+             ORDER BY f.id ASC',
+            ['active_status' => 'active', 'backend_mode' => UltraMode::BACKEND_MODE]
+        );
+        $result = [];
+        foreach ($clients as $client) {
+            $clientId = (int) ($client['id'] ?? 0);
+            $groupId = (int) ($client['group_id'] ?? 0);
+            foreach ($rows as $row) {
+                $groups = is_string($row['line_client_group_ids_json'] ?? null)
+                    ? json_decode((string) $row['line_client_group_ids_json'], true)
+                    : [];
+                $assigned = (int) ($row['line_client_id'] ?? 0) === $clientId
+                    || ($groupId > 0 && (int) ($row['line_client_group_id'] ?? 0) === $groupId)
+                    || ($groupId > 0 && is_array($groups) && in_array($groupId, array_map('intval', $groups), true));
+                if ($assigned) {
+                    $result[$clientId][(int) $row['id']] = $row;
+                }
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $status
+     * @return array<string, mixed>|null
+     */
+    private function normalizeStatus(array $status, int $forwardId): ?array
+    {
+        $state = strtolower(trim((string) ($status['state'] ?? 'ready')));
+        if (!in_array($state, ['ready', 'degraded', 'error', 'stopped'], true)) {
+            $state = 'error';
+        }
+        return [
+            'forward_id' => $forwardId,
+            'state' => $state,
+            'detected_ingress_zone' => self::zone($status['detected_ingress_zone'] ?? 'unknown'),
+            'latest_tcp' => $this->normalizeSelection($status['latest_tcp'] ?? null),
+            'active_udp' => $this->normalizeSelection($status['active_udp'] ?? null),
+            'updated_at' => self::text($status['updated_at'] ?? '', 40),
+            'error_code' => self::text($status['error_code'] ?? '', 64),
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function normalizeSelection(mixed $selection): ?array
+    {
+        if (!is_array($selection)) {
+            return null;
+        }
+        $reference = self::selectionRef($selection['selection_ref'] ?? $selection['entry_ref'] ?? '');
+        if ($reference === '') {
+            return null;
+        }
+        $normalized = [
+            'selection_ref' => $reference,
+            'rtt_ms' => max(0, min(60000, (int) ($selection['rtt_ms'] ?? 0))),
+            'selected_at' => self::text($selection['selected_at'] ?? '', 40),
+        ];
+        $candidateHash = strtolower(trim((string) ($selection['candidate_key_hash'] ?? '')));
+        if (preg_match('/^[a-f0-9]{64}$/', $candidateHash) === 1) {
+            $normalized['candidate_key_hash'] = $candidateHash;
+        }
+        foreach ([
+            'p95_rtt_ms' => 60000,
+            'jitter_ms' => 60000,
+            'loss_percent' => 100,
+            'probe_sent' => 4096,
+            'probe_received' => 4096,
+        ] as $key => $maximum) {
+            if (array_key_exists($key, $selection)) {
+                $normalized[$key] = max(0, min($maximum, (int) $selection[$key]));
+            }
+        }
+        return $normalized;
+    }
+
+    private static function selectionRef(mixed $value): string
+    {
+        $reference = trim((string) $value);
+        return preg_match('/^[A-Za-z0-9_-]{16,128}$/', $reference) === 1 ? $reference : '';
+    }
+
+    private function sessionState(int $lastSeen): string
+    {
+        $age = max(0, $this->now() - $lastSeen);
+        return $age < 180 ? 'Online' : ($age <= 900 ? 'Stale' : 'Offline');
+    }
+
+    private static function text(mixed $value, int $limit): string
+    {
+        $text = trim((string) $value);
+        return function_exists('mb_substr') ? mb_substr($text, 0, $limit, 'UTF-8') : substr($text, 0, $limit);
+    }
+
+    private static function ip(mixed $value): string
+    {
+        $ip = trim((string) $value);
+        return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
+    }
+
+    private static function zone(mixed $value): string
+    {
+        $zone = strtolower(trim((string) $value));
+        return preg_match('/^[a-z0-9-]{1,32}$/', $zone) === 1 ? $zone : 'unknown';
+    }
+
+    private function now(): int
+    {
+        return (int) ($this->clock)();
+    }
+}

@@ -1,0 +1,586 @@
+using System.Text.Json;
+using System.Collections.Concurrent;
+using LeikwanBridge.Core.Helpers;
+using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Core.Services.Ultra;
+using Serilog;
+
+namespace LeikwanBridge.Core.Services;
+
+/// <summary>
+/// Manages forward process lifecycles: apply (start), stop, restart.
+/// </summary>
+public class ForwardRuntimeManager : IDisposable
+{
+    private readonly AgentConfig _config;
+    private readonly IProcessSupervisor _supervisor;
+    private readonly BondRuntimeBuilder _bondBuilder;
+    private readonly BondEndpointHealthService _bondEndpointHealth;
+    private readonly MptcpRuntimeBuilder _mptcpBuilder;
+    private readonly StateManager _stateManager;
+    private readonly Func<string, bool> _binaryExists;
+    private readonly Func<int, bool> _portListeningProbe;
+    private readonly IUltraRuntimeHost _ultraRuntimeHost;
+    private readonly Func<int, IReadOnlyList<PortOwner>> _proxyPortOwners;
+    private readonly ConcurrentDictionary<int, object> _forwardLocks = new();
+    private readonly ConcurrentDictionary<int, byte> _startingForwards = new();
+
+    public event Action<int, string>? UltraRecoveryRequested;
+
+    public Task<ProxyForwardLease> AcquireProxyForwardAsync(ForwardConfig forward, CancellationToken ct = default)
+        => ProxyForwardLease.AcquireAsync(
+            forward,
+            () => IsForwardRunning(forward.ForwardId) || IsForwardStarting(forward.ForwardId),
+            token => Task.Run(() => RestartForward(forward, force: true, reason: "manual_apply"), token),
+            _ => Task.Run(() => StopForward(forward.ForwardId)),
+            ct,
+            async (candidate, token) => !IsForwardStarting(candidate.ForwardId)
+                && IsForwardRunning(candidate.ForwardId)
+                && HasOwnedProxyListener(candidate)
+                && await ProxyForwardLease.IsListenerReadyAsync(candidate, token).ConfigureAwait(false));
+
+    private bool HasOwnedProxyListener(ForwardConfig forward)
+    {
+        if (IsNativeOutboundForward(forward))
+            return false;
+
+        var pids = _supervisor.GetProcessIds(forward.ForwardId);
+        var owners = _proxyPortOwners(forward.ListenPort);
+        var protocols = forward.Transport.Trim().ToLowerInvariant() switch
+        {
+            "tcp" => new[] { "tcp" },
+            "udp" => new[] { "udp" },
+            "tcp+udp" => new[] { "tcp", "udp" },
+            _ => Array.Empty<string>(),
+        };
+        return protocols.Length > 0 && protocols.All(protocol =>
+            owners.Any(owner => owner.Protocol == protocol && pids.Contains(owner.Pid))
+            && owners.Where(owner => owner.Protocol == protocol).All(owner => pids.Contains(owner.Pid)));
+    }
+
+    public bool IsForwardStarting(int forwardId) => _startingForwards.ContainsKey(forwardId);
+    public bool IsForwardReady(ForwardConfig forward) => !IsNativeOutboundForward(forward)
+        && !IsForwardStarting(forward.ForwardId)
+        && IsForwardRunning(forward.ForwardId)
+        && (forward.ListenPort <= 0 || _portListeningProbe(forward.ListenPort));
+
+    public static bool IsNativeOutboundForward(ForwardConfig forward)
+        => forward.NativeOutboundEnabled
+            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+
+    public ForwardRuntimeManager(
+        AgentConfig config,
+        IProcessSupervisor supervisor,
+        StateManager stateManager,
+        Func<string, bool>? binaryExists = null,
+        Func<int, bool>? portListeningProbe = null,
+        Func<int, UltraLease, CancellationToken, Task<bool>>? ultraLeaseSender = null,
+        Func<int, PortPreflightResult>? portPreflight = null,
+        IUltraRuntimeHost? ultraRuntimeHost = null,
+        Func<int, IReadOnlyList<PortOwner>>? proxyPortOwners = null)
+    {
+        _config = config;
+        _supervisor = supervisor;
+        _bondBuilder = new BondRuntimeBuilder(config);
+        _mptcpBuilder = new MptcpRuntimeBuilder(config);
+        _bondEndpointHealth = new BondEndpointHealthService(stateManager);
+        _stateManager = stateManager;
+        _binaryExists = binaryExists ?? File.Exists;
+        _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
+        _proxyPortOwners = proxyPortOwners ?? (OperatingSystem.IsWindows()
+            ? PortOwnerEnumerator.FindOwners : _ => []);
+        _ultraRuntimeHost = ultraRuntimeHost ?? new WindowsUltraRuntimeHost(
+            config,
+            supervisor,
+            stateManager,
+            _binaryExists,
+            _portListeningProbe,
+            ultraLeaseSender,
+            portPreflight);
+    }
+
+    public virtual void ApplyForward(ForwardConfig forward)
+    {
+        ApplyForward(forward, contractSignature: null, applyReason: "manual_apply");
+    }
+
+    public virtual void ApplyForward(ForwardConfig forward, string? contractSignature, string applyReason)
+    {
+        lock (LockFor(forward.ForwardId))
+        {
+            var applied = _stateManager.LoadApplied();
+            applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
+            if (IsNativeOutboundForward(forward))
+            {
+                SuppressOrdinaryUltraRuntime(forward);
+                return;
+            }
+            // A lease/config request can complete after the user stopped its
+            // forward. Re-check under the runtime lock before applying it.
+            if (previousState?.UserStopped == true && applyReason == "config_sync")
+            {
+                DisposeLeases(forward.RuntimeLeases.Concat(forward.RuntimeLease is null ? [] : new[] { forward.RuntimeLease }));
+                forward.RuntimeLease = null;
+                forward.RuntimeLeases.Clear();
+                return;
+            }
+            _startingForwards[forward.ForwardId] = 0;
+            try { ApplyForwardCore(forward, previousState, contractSignature, applyReason); }
+            finally { _startingForwards.TryRemove(forward.ForwardId, out _); }
+        }
+    }
+
+    public virtual void ApplyAuthoritativeAgentConfig(JsonElement? agentConfigJson)
+    {
+        _config.ApplyAuthoritativeConfig(agentConfigJson);
+    }
+
+    public virtual string ComputeContractSignature(ForwardConfig forward)
+    {
+        var sidepath = _config.UdpUotSidepath;
+        if (sidepath == null || !sidepath.EnabledForwardIds.Contains(forward.ForwardId))
+            return ForwardContractSignature.Compute(forward);
+
+        var uotIdentity = UotRuntimeCapabilityProbe.BuildIdentity(_config.GetEffectiveUotBondBin());
+        return ForwardContractSignature.Compute(forward, sidepath, uotIdentity);
+    }
+
+    private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
+    {
+        if (IsNativeOutboundForward(forward))
+        {
+            SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
+        if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyUltraForward(forward, previousState, contractSignature, applyReason);
+            return;
+        }
+        var selectedForward = forward;
+        var forwardId = selectedForward.ForwardId;
+        var mode = ModeNormalizer.Normalize(selectedForward.Mode);
+        if (mode == "mptcp" && !HasUsableMptcpRelay(selectedForward))
+        {
+            selectedForward = MptcpFallbackService.ConvertToBond(selectedForward);
+            mode = ModeNormalizer.Normalize(selectedForward.Mode);
+        }
+        var frontendMode = WindowsForwardPolicy.GetSidecarFrontendMode(selectedForward);
+
+
+        Log.Information("applying forward {ForwardId} mode={Mode} transport={Transport} endpoints={Count}",
+            forwardId, mode, selectedForward.Transport, selectedForward.Endpoints.Count);
+
+        BondRuntimeBuilder.RuntimeSpec spec;
+        try
+        {
+            spec = frontendMode != ""
+                ? _bondBuilder.BuildFrontend(WithSelectedBondRuntimeEndpoints(selectedForward))
+                : mode switch
+                {
+                    "bond" => _bondBuilder.Build(WithSelectedBondRuntimeEndpoints(selectedForward)),
+                    "race" => _bondBuilder.BuildRace(selectedForward),
+                    "mptcp" => _mptcpBuilder.Build(selectedForward),
+                    _ => _bondBuilder.BuildSingle(selectedForward),
+                };
+            if (RequiresFeedbackScheduler(selectedForward))
+                UotRuntimeCapabilityProbe.RequireFeedbackCapability(_config.GetEffectiveUotBondBin());
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "failed to validate runtime spec for forward {ForwardId}; existing runtime preserved", forwardId);
+            return;
+        }
+
+        // Validation above is intentionally complete before replacing the running runtime.
+        _supervisor.StopAll(forwardId);
+        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
+
+        foreach (var file in spec.GeneratedFiles ?? [])
+        {
+            var directory = Path.GetDirectoryName(file.FilePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllText(file.FilePath, file.Content);
+        }
+
+        foreach (var process in spec.Processes.Where(p => p.RequiredForReadiness))
+        {
+            if (!_binaryExists(process.ExePath))
+            {
+                Log.Error("binary not found: {ExePath} for forward {ForwardId} [{Label}]", process.ExePath, forwardId, process.Label);
+                continue;
+            }
+            _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
+        }
+
+        if (spec.LegPorts.Count > 0 && !WaitForRequiredPorts(spec.LegPorts, TimeSpan.FromSeconds(15)))
+        {
+            Log.Error("forward {ForwardId}: required leg ports did not become ready", forwardId);
+            _supervisor.StopAll(forwardId);
+            return;
+        }
+
+        foreach (var process in spec.Processes.Where(p => !p.RequiredForReadiness))
+        {
+            if (!_binaryExists(process.ExePath))
+            {
+                Log.Error("binary not found: {ExePath} for forward {ForwardId} [{Label}]", process.ExePath, forwardId, process.Label);
+                continue;
+            }
+            _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
+        }
+
+        // Save only this forward atomically; sibling forward applies may be
+        // running concurrently during a config reconciliation.
+        var state = new AppliedForwardState
+        {
+            ForwardId = forwardId,
+            Mode = mode,
+            ListenPort = selectedForward.ListenPort,
+            IngressMode = spec.IngressMode,
+            EndpointCount = selectedForward.Endpoints.Count,
+            LegPorts = [.. spec.LegPorts],
+            ProcessRoles = [.. spec.Processes.Select(process => process.Role)],
+            ProcessLabels = [.. spec.Processes.Select(process => process.Label)],
+            ProcessIds = [.. _supervisor.GetProcessIds(forwardId)],
+            ContractSignature = contractSignature ?? previousState?.ContractSignature ?? string.Empty,
+            LastApplyReason = string.IsNullOrWhiteSpace(applyReason)
+                ? previousState?.LastApplyReason ?? "config_sync"
+                : applyReason,
+            UserStopped = false,
+            UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+        _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
+    }
+
+    private void ApplyUltraForward(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
+    {
+        if (IsNativeOutboundForward(forward))
+        {
+            SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
+        var policy = forward.UltraAccess;
+        var leases = forward.RuntimeLeases.Count > 0
+            ? forward.RuntimeLeases.ToList()
+            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+        var now = DateTimeOffset.UtcNow;
+        var policyFailure = policy?.GetValidationFailure(forward, now);
+        var usableLeases = policy is null
+            ? []
+            : leases.Where(candidate => candidate.IsUsable(policy, forward, now)).ToList();
+        if (policy is null || usableLeases.Count == 0 || policyFailure is not null)
+        {
+            Log.Warning(
+                "Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback (policy_reason={PolicyReason}, lease_count={LeaseCount}, usable_count={UsableCount})",
+                forward.ForwardId,
+                policy is null ? "missing" : policyFailure ?? "ok",
+                leases.Count,
+                usableLeases.Count);
+            DisposeLeases(leases);
+            forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
+            StopForwardForPolicy(forward.ForwardId);
+            return;
+        }
+        try
+        {
+            _ultraRuntimeHost.Start(
+                forward,
+                usableLeases,
+                contractSignature ?? previousState?.ContractSignature ?? string.Empty,
+                string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning("Ultra runtime start failed for forward {ForwardId} ({ErrorType})",
+                forward.ForwardId, ex.GetType().Name);
+            StopForwardForPolicy(forward.ForwardId);
+        }
+        finally
+        {
+            DisposeLeases(leases);
+            forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
+        }
+    }
+
+    public virtual void StopForward(int forwardId)
+    {
+        lock (LockFor(forwardId))
+        {
+            Log.Information("stopping forward {ForwardId}", forwardId);
+            _ultraRuntimeHost.Stop(forwardId);
+
+            var applied = _stateManager.LoadApplied();
+            if (!applied.TryGetValue(forwardId.ToString(), out var state))
+            {
+                state = new AppliedForwardState { ForwardId = forwardId };
+            }
+
+            state.ProcessIds = [];
+            state.UserStopped = true;
+            state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
+        }
+    }
+
+    public virtual void StopForwardForPolicy(int forwardId)
+    {
+        lock (LockFor(forwardId))
+        {
+            StopForward(forwardId);
+            var applied = _stateManager.LoadApplied();
+            if (!applied.TryGetValue(forwardId.ToString(), out var state))
+                return;
+            state.UserStopped = false;
+            state.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
+        }
+    }
+
+    public virtual void RestartForward(ForwardConfig forward)
+    {
+        RestartForward(forward, force: true, reason: "manual_apply");
+    }
+
+    public virtual void RestartForward(ForwardConfig forward, bool force, string reason)
+    {
+        if (IsNativeOutboundForward(forward))
+        {
+            lock (LockFor(forward.ForwardId))
+                SuppressOrdinaryUltraRuntime(forward);
+            return;
+        }
+        var ultra = string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+        // Health recovery must never wait behind a slow lease delivery and then
+        // destroy the now-ready runtime using a credential-free catalog snapshot.
+        if (ultra && IsForwardStarting(forward.ForwardId))
+            return;
+        var manual = string.Equals(reason, "manual_apply", StringComparison.Ordinal);
+        lock (LockFor(forward.ForwardId))
+        {
+            if (ultra)
+            {
+                var state = _stateManager.LoadApplied().GetValueOrDefault(forward.ForwardId.ToString());
+                if (!manual && (state?.UserStopped == true || IsForwardReady(forward)))
+                    return;
+                if (manual && state?.UserStopped == true)
+                {
+                    state.UserStopped = false;
+                    _stateManager.UpdateApplied(current => current[forward.ForwardId.ToString()] = state);
+                }
+                var leases = forward.RuntimeLeases.Count > 0
+                    ? forward.RuntimeLeases
+                    : forward.RuntimeLease is null ? [] : new List<UltraLease> { forward.RuntimeLease };
+                var hasFreshLease = forward.UltraAccess is { } policy
+                    && leases.Any(lease => lease.IsUsable(policy, forward, DateTimeOffset.UtcNow));
+                // Catalog/UI snapshots deliberately have no retained credentials.
+                // A manual Start from such a snapshot also needs lease-aware recovery.
+                if (!manual || !hasFreshLease)
+                {
+                    UltraRecoveryRequested?.Invoke(forward.ForwardId, reason);
+                    return;
+                }
+            }
+            var applied = _stateManager.LoadApplied();
+            applied.TryGetValue(forward.ForwardId.ToString(), out var previousState);
+
+            var effectiveForward = EffectiveForwardConfigBuilder.Build(forward);
+            var contractSignature = ComputeContractSignature(effectiveForward);
+            var signatureMatches = previousState != null
+                && string.Equals(previousState.ContractSignature, contractSignature, StringComparison.Ordinal);
+            if (!force && signatureMatches && IsForwardRunning(forward.ForwardId))
+                return;
+
+            _startingForwards[forward.ForwardId] = 0;
+            try
+            {
+                ApplyForwardCore(effectiveForward, previousState, contractSignature, string.IsNullOrWhiteSpace(reason) ? "manual_apply" : reason);
+            }
+            finally { _startingForwards.TryRemove(forward.ForwardId, out _); }
+        }
+    }
+
+    public virtual bool RefreshUltraLease(ForwardConfig forward)
+    {
+        lock (LockFor(forward.ForwardId))
+        {
+            var leases = forward.RuntimeLeases.Count > 0
+                ? forward.RuntimeLeases.ToList()
+                : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+            var policy = forward.UltraAccess;
+            try
+            {
+                if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                    || IsNativeOutboundForward(forward)
+                    || leases.Count == 0 || policy is null
+                    || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
+                    || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
+                    return false;
+                return _ultraRuntimeHost.Refresh(forward, leases);
+            }
+            finally
+            {
+                DisposeLeases(leases);
+                forward.RuntimeLease = null;
+                forward.RuntimeLeases.Clear();
+            }
+        }
+    }
+
+    public bool IsForwardRunning(int forwardId) => _supervisor.IsRunning(forwardId);
+
+    public void StopAll()
+    {
+        foreach (var forwardId in _stateManager.LoadApplied().Keys.Select(key => int.TryParse(key, out var id) ? id : 0).Where(id => id > 0))
+            _ultraRuntimeHost.Stop(forwardId);
+        _supervisor.StopAll();
+        _stateManager.SaveApplied([]);
+    }
+
+    public void Dispose() => _supervisor.Dispose();
+
+    private object LockFor(int forwardId)
+        => _forwardLocks.GetOrAdd(forwardId, static _ => new object());
+
+    private static void DisposeLeases(IEnumerable<UltraLease> leases)
+    {
+        var seen = new HashSet<UltraLease>();
+        foreach (var lease in leases)
+        {
+            if (seen.Add(lease))
+                lease.Dispose();
+        }
+    }
+
+    private bool RequiresFeedbackScheduler(ForwardConfig forward)
+    {
+        var sidepath = _config.UdpUotSidepath;
+        return sidepath != null
+            && sidepath.EnabledForwardIds.Contains(forward.ForwardId)
+            && string.Equals(sidepath.SchedulerMode, "feedback_drr", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SuppressOrdinaryUltraRuntime(ForwardConfig forward)
+    {
+        var leases = forward.RuntimeLeases.Count > 0
+            ? forward.RuntimeLeases.ToList()
+            : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+        try
+        {
+            Log.Information("skip ordinary Ultra runtime for native outbound forward {ForwardId}", forward.ForwardId);
+            _ultraRuntimeHost.Stop(forward.ForwardId);
+            _stateManager.RemoveApplied(forward.ForwardId);
+        }
+        finally
+        {
+            DisposeLeases(leases);
+            forward.RuntimeLease = null;
+            forward.RuntimeLeases.Clear();
+        }
+    }
+
+    private bool WaitForRequiredPorts(IEnumerable<int> ports, TimeSpan timeout)
+    {
+        if (!ports.Any())
+            return true;
+
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (ports.All(_portListeningProbe))
+                return true;
+
+            Thread.Sleep(100);
+        }
+
+        return ports.All(_portListeningProbe);
+    }
+
+    private void WaitForPortsReleased(IEnumerable<int> ports, TimeSpan timeout)
+    {
+        var requiredPorts = ports.Where(port => port > 0).Distinct().ToList();
+        if (requiredPorts.Count == 0)
+            return;
+
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (requiredPorts.All(port => !_portListeningProbe(port)))
+                return;
+
+            Thread.Sleep(100);
+        }
+    }
+
+    private static IEnumerable<int> PortsForReleaseWait(AppliedForwardState? previousState, int listenPort)
+    {
+        var ports = new List<int> { listenPort };
+        if (previousState != null)
+            ports.AddRange(previousState.LegPorts);
+
+        return ports;
+    }
+
+    private static bool HasUsableMptcpRelay(ForwardConfig forward)
+    {
+        var mptcp = forward.Mptcp;
+        if (mptcp is null)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.SlaveRelayHost) && mptcp.SlaveRelayPort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.RelayHost) && mptcp.RelayPort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.RemoteHost) && mptcp.RemotePort > 0)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(mptcp.SidecarHost) && mptcp.SidecarPort > 0)
+            return true;
+
+        return false;
+    }
+
+    private ForwardConfig WithSelectedBondRuntimeEndpoints(ForwardConfig forward)
+    {
+        if (!WindowsForwardPolicy.UsesBondRuntime(forward)
+            || !string.Equals(forward.Bonding?.PolicyMode, "latency_first", StringComparison.OrdinalIgnoreCase))
+            return forward;
+
+        var selectedEndpoints = _bondEndpointHealth.SelectRuntimeEndpoints(forward);
+        return new ForwardConfig
+        {
+            ForwardId = forward.ForwardId,
+            ServiceStatus = forward.ServiceStatus,
+            Mode = forward.Mode,
+            BackendMode = forward.BackendMode,
+            ContractVersion = forward.ContractVersion,
+            ClientMode = forward.ClientMode,
+            RuntimePreference = forward.RuntimePreference,
+            ForwardCombinationDirection = forward.ForwardCombinationDirection,
+            BondIngressMode = forward.BondIngressMode,
+            ActiveFamily = forward.ActiveFamily,
+            AggregationEnabled = forward.AggregationEnabled,
+            TargetContract = forward.TargetContract,
+            SidecarRequired = forward.SidecarRequired,
+            BondSidecarPointId = forward.BondSidecarPointId,
+            ListenPort = forward.ListenPort,
+            Target = forward.Target,
+            Sni = forward.Sni,
+            PathPrefix = forward.PathPrefix,
+            Transport = forward.Transport,
+            SpeedLimitMbps = forward.SpeedLimitMbps,
+            NativeOutboundEnabled = forward.NativeOutboundEnabled,
+            NativeDirection = forward.NativeDirection,
+            Endpoints = selectedEndpoints,
+            Bonding = forward.Bonding,
+            Mptcp = forward.Mptcp,
+        };
+    }
+
+}

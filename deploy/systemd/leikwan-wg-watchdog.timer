@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Leikwan WG Watchdog every 60s
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+Unit=leikwan-wg-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+09-04 07:30:03.520  4545  4566 I TestRunner: run started: 2 tests
+09-04 07:30:03.522  4545  4566 I TestRunner: started: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.055  4545  4566 I TestRunner: finished: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.060  4545  4566 I TestRunner: started: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.082  4545  4566 I TestRunner: finished: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:04.086  4545  4566 I TestRunner: run finished: 2 tests, 0 failed, 0 ignored
+09-04 07:30:07.320  4604  4648 I TestRunner: run started: 2 tests
+09-04 07:30:07.322  4604  4648 I TestRunner: started: packagedOrdinaryUltraForwardsTcpPayloadThroughProvider(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:11.333  4604  4648 I TestRunner: finished: packagedOrdinaryUltraForwardsTcpPayloadThroughProvider(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:11.337  4604  4648 I TestRunner: started: packagedOrdinaryUltraStartsAndOpensControlSocket(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:11.501  4604  4648 I TestRunner: finished: packagedOrdinaryUltraStartsAndOpensControlSocket(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:11.504  4604  4648 I TestRunner: run finished: 2 tests, 0 failed, 0 ignored
+09-04 07:30:43.629  4895  4954 I TestRunner: run started: 2 tests
+09-04 07:30:43.631  4895  4954 I TestRunner: started: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:43.987  4895  4954 I TestRunner: finished: libboxAcceptsRestrictedNativeDnsProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:43.991  4895  4954 I TestRunner: started: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:44.020  4895  4954 I TestRunner: finished: libboxAcceptsOrdinaryUltraProfiles(com.leikwan.bridge.singbox.NativeOutboundConfigRuntimeTest)
+09-04 07:30:44.023  4895  4954 I TestRunner: run finished: 2 tests, 0 failed, 0 ignored
+09-04 07:30:45.846  4988  5009 I TestRunner: run started: 2 tests
+09-04 07:30:45.848  4988  5009 I TestRunner: started: packagedOrdinaryUltraForwardsTcpPayloadThroughProvider(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:49.841  4988  5009 I TestRunner: finished: packagedOrdinaryUltraForwardsTcpPayloadThroughProvider(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:49.846  4988  5009 I TestRunner: started: packagedOrdinaryUltraStartsAndOpensControlSocket(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:50.014  4988  5009 I TestRunner: finished: packagedOrdinaryUltraStartsAndOpensControlSocket(com.leikwan.bridge.runtime.UltraRuntimeProcessSmokeTest)
+09-04 07:30:50.017  4988  5009 I TestRunner: run finished: 2 tests, 0 failed, 0 ignored

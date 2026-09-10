@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leikwan.example/schemas/macos-helper-manifest.json",
+  "title": "LeiKwan macOS helper manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["architecture", "helpers"],
+  "properties": {
+    "architecture": {
+      "enum": ["arm64", "x86_64"]
+    },
+    "helpers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "sha256", "size_bytes"],
+        "properties": {
+          "name": {
+            "enum": ["sing-box", "wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^bin/(sing-box|wstunnel|leikwan-bond|leikwan-ingress|leikwan-uot-bond|ultra-client)$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

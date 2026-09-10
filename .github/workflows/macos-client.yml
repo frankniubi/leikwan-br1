@@ -1,0 +1,586 @@
+name: macOS client
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-client.yml"
+      - "LeikwanBridge.Desktop/**"
+      - "master/**"
+      - "scripts/**"
+      - "tools/ultra-client/**"
+      - "wstunnel-main/**"
+      - "docs/third-party/**"
+  push:
+    branches:
+      - master
+      - codex/macos-client
+    paths:
+      - ".github/workflows/macos-client.yml"
+      - "LeikwanBridge.Desktop/**"
+      - "master/**"
+      - "scripts/**"
+      - "tools/ultra-client/**"
+      - "wstunnel-main/**"
+      - "docs/third-party/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.architecture }} native package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            rid: osx-arm64
+            rust_target: aarch64-apple-darwin
+            architecture: arm64
+            suffix: arm64
+          - runner: macos-15-intel
+            rid: osx-x64
+            rust_target: x86_64-apple-darwin
+            architecture: x86_64
+            suffix: x64
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      NUGET_PACKAGES: ${{ github.workspace }}/.build/nuget-packages
+      CARGO_HOME: ${{ github.workspace }}/.build/cargo-home
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "${{ matrix.architecture }}"
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Go 1.27
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+          cache-dependency-path: tools/ultra-client/go.sum
+
+      - name: Set up Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache locked native and .NET inputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build/nuget-packages
+            .build/cargo-home/registry
+            .build/cargo-home/git
+            .build/tool-sources
+            wstunnel-main/target
+          key: macos-${{ matrix.rid }}-${{ hashFiles('LeikwanBridge.Desktop/**/packages.lock.json', 'wstunnel-main/Cargo.lock', 'tools/ultra-client/go.sum', 'scripts/build-macos-client.sh') }}
+          restore-keys: |
+            macos-${{ matrix.rid }}-
+
+      - name: Ensure PHP is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v php >/dev/null 2>&1; then
+            brew install php
+          fi
+          php --version
+
+      - name: Restore locked .NET dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj --locked-mode
+          dotnet restore LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj --locked-mode
+
+      - name: Run Core and Mac tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj -c Release --no-restore --filter "Platform!=Windows"
+          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj -c Release --no-restore
+
+      - name: Run Go and Rust tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd tools/ultra-client && go test -mod=readonly ./... -count=1)
+          cargo test \
+            --manifest-path wstunnel-main/Cargo.toml \
+            --locked \
+            -p leikwan-bond \
+            -p leikwan-ingress \
+            -p leikwan-uot
+
+      - name: Run panel contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          php master/tests/client_agent_macos_ultra_policy_v2_contract_test.php
+          php master/tests/ultra_policy_lease_contract_test.php
+          php master/tests/macos_client_artifact_manifest_test.php
+          php master/tests/macos_client_install_surface_test.php
+          php master/tests/windows_client_app_version_manifest_regression_test.php
+
+      - name: Validate packaging and leak fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/test-macos-client-packaging.sh
+          python3 -m unittest discover -s scripts/tests -p test_verify_macos_dmg_layout.py -v
+          python3 -m unittest discover -s scripts/tests -p test_prepare_macos_bundle.py -v
+          bash scripts/test-macos-ultra-leaks.sh --fixture
+
+      - name: Read application version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(pathlib.Path("LeikwanBridge.Desktop/src/LeikwanBridge.Mac/LeikwanBridge.Mac.csproj")).getroot()
+          values = [node.text for node in root.iter("Version") if node.text]
+          if len(values) != 1:
+              raise SystemExit("expected exactly one Mac application version")
+          print(values[0])
+          PY
+          )"
+          printf 'MAC_CLIENT_VERSION=%s\n' "$version" >>"$GITHUB_ENV"
+
+      - name: Build ad-hoc signed native test package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-macos-client.sh \
+            --rid "${{ matrix.rid }}" \
+            --version "$MAC_CLIENT_VERSION"
+
+      - name: Validate ZIP, DMG, plist, and helper architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.suffix }}"
+          architecture="${{ matrix.architecture }}"
+          dmg="$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-$suffix.dmg"
+          update_zip="$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-update-$suffix.zip"
+          metadata="$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-$suffix-metadata.json"
+          extracted="$RUNNER_TEMP/leikwan-update-$suffix"
+          attach_plist="$RUNNER_TEMP/leikwan-dmg-$suffix.plist"
+          mount_point=""
+          cleanup_mount() {
+            if [[ -n "$mount_point" ]]; then
+              hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true
+              mount_point=""
+            fi
+          }
+          trap cleanup_mount EXIT
+
+          test -s "$dmg"
+          test -s "$update_zip"
+          test -s "$metadata"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          ditto -x -k "$update_zip" "$extracted"
+          app="$extracted/LeiKwan Bridge.app"
+          test -d "$app"
+          plutil -lint "$app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = "com.leikwan.bridge"
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$MAC_CLIENT_VERSION"
+
+          python3 - "$app" "$metadata" "$architecture" "$MAC_CLIENT_VERSION" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          app = pathlib.Path(sys.argv[1])
+          metadata_path = pathlib.Path(sys.argv[2])
+          architecture = sys.argv[3]
+          version = sys.argv[4]
+          helper_manifest = json.loads((app / "Contents/Resources/helper-manifest.json").read_text(encoding="utf-8"))
+          expected_helpers = {"sing-box", "wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"}
+          helpers = helper_manifest.get("helpers")
+          if helper_manifest.get("architecture") != architecture or not isinstance(helpers, list):
+              raise SystemExit("invalid helper manifest header")
+          if {item.get("name") for item in helpers} != expected_helpers:
+              raise SystemExit("helper manifest set mismatch")
+          for item in helpers:
+              binary = app / "Contents/Resources" / item["path"]
+              data = binary.read_bytes()
+              if len(data) != item.get("size_bytes") or hashlib.sha256(data).hexdigest() != item.get("sha256"):
+                  raise SystemExit(f"helper metadata mismatch: {item.get('name')}")
+          metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+          if metadata.get("architecture") != architecture or metadata.get("version") != version:
+              raise SystemExit("package metadata header mismatch")
+          if len(metadata.get("artifacts", {})) != 2:
+              raise SystemExit("package metadata artifact count mismatch")
+          PY
+
+          binaries=(
+            "$app/Contents/MacOS/LeikwanBridge.Mac"
+            "$app/Contents/Resources/bin/wstunnel"
+            "$app/Contents/Resources/bin/sing-box"
+            "$app/Contents/Resources/bin/leikwan-bond"
+            "$app/Contents/Resources/bin/leikwan-ingress"
+            "$app/Contents/Resources/bin/leikwan-uot-bond"
+            "$app/Contents/Resources/bin/ultra-client"
+          )
+          for binary in "${binaries[@]}"; do
+            test "$(lipo -archs "$binary")" = "$architecture"
+          done
+
+          hdiutil attach -readonly -nobrowse -plist "$dmg" >"$attach_plist"
+          mount_point="$(python3 - "$attach_plist" <<'PY'
+          import plistlib
+          import sys
+
+          with open(sys.argv[1], "rb") as handle:
+              payload = plistlib.load(handle)
+          mounts = [item.get("mount-point") for item in payload.get("system-entities", []) if item.get("mount-point")]
+          if len(mounts) != 1:
+              raise SystemExit("expected one mounted DMG volume")
+          print(mounts[0])
+          PY
+          )"
+          test -d "$mount_point/LeiKwan Bridge.app"
+          python3 scripts/verify-macos-dmg-layout.py "$mount_point" \
+            --version "$MAC_CLIENT_VERSION" --architecture "$architecture"
+          codesign --verify --deep --strict --verbose=2 "$mount_point/LeiKwan Bridge.app"
+          test "$(lipo -archs "$mount_point/LeiKwan Bridge.app/Contents/MacOS/LeikwanBridge.Mac")" = "$architecture"
+          cleanup_mount
+          trap - EXIT
+
+      - name: Capture native UI states
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.suffix }}"
+          app="$RUNNER_TEMP/leikwan-update-$suffix/LeiKwan Bridge.app"
+          executable="$app/Contents/MacOS/LeikwanBridge.Mac"
+          screenshots="$RUNNER_TEMP/leikwan-screenshots-$suffix"
+          capture="$RUNNER_TEMP/capture-macos-window"
+          mkdir -p "$screenshots"
+          swiftc scripts/capture-macos-window.swift -o "$capture"
+
+          fixture_pid=""
+          cleanup_fixture() {
+            if [[ -n "$fixture_pid" ]] && kill -0 "$fixture_pid" 2>/dev/null; then
+              kill -TERM "$fixture_pid" 2>/dev/null || true
+              for _ in $(seq 1 50); do
+                kill -0 "$fixture_pid" 2>/dev/null || break
+                sleep 0.1
+              done
+              if kill -0 "$fixture_pid" 2>/dev/null; then
+                kill -KILL "$fixture_pid" 2>/dev/null || true
+              fi
+              wait "$fixture_pid" 2>/dev/null || true
+            fi
+            fixture_pid=""
+          }
+          trap cleanup_fixture EXIT
+          for dimensions in 1440x900 1024x768; do
+            width="${dimensions%x*}"
+            height="${dimensions#*x}"
+            for state in login dashboard forwards settings; do
+              LEIKWAN_TEST_UI=1 "$executable" \
+                --ui-fixture "$state" \
+                --window-width "$width" \
+                --window-height "$height" &
+              fixture_pid=$!
+              "$capture" "$fixture_pid" "$width" "$height" "$screenshots/$state-$dimensions.png"
+              cleanup_fixture
+            done
+          done
+          trap - EXIT
+          test "$(find "$screenshots" -type f -name '*.png' | wc -l | tr -d ' ')" = "8"
+
+      - name: Run native Ultra canary leak gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.suffix }}"
+          bash scripts/test-macos-ultra-leaks.sh \
+            --app-bundle "$RUNNER_TEMP/leikwan-update-$suffix/LeiKwan Bridge.app" \
+            --dmg "$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-$suffix.dmg" \
+            --update-zip "$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-update-$suffix.zip"
+
+      - name: Stage credential-free deliverables
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.suffix }}"
+          stage="$RUNNER_TEMP/leikwan-upload-$suffix"
+          mkdir -p "$stage/screenshots"
+          cp "artifacts/macos/leikwan-bridge-$suffix.dmg" "$stage/"
+          cp "artifacts/macos/leikwan-bridge-update-$suffix.zip" "$stage/"
+          cp "artifacts/macos/leikwan-bridge-$suffix-metadata.json" "$stage/"
+          cp "$RUNNER_TEMP/leikwan-screenshots-$suffix/"*.png "$stage/screenshots/"
+
+      - name: Upload native deliverables
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-client-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/leikwan-upload-${{ matrix.suffix }}
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-artifacts:
+    name: Cross-architecture artifact gate
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source for authenticated artifact export
+        uses: actions/checkout@v4
+
+      - name: Download both architecture outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-client-*
+          path: ${{ runner.temp }}/macos-downloads
+
+      - name: Verify metadata, bytes, architecture separation, and screenshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/macos-downloads" "$RUNNER_TEMP/macos-client-combined-metadata.json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          output = pathlib.Path(sys.argv[2])
+          expected = {
+              "arm64": ("arm64", "macos_client_app_arm64", "macos_client_update_arm64"),
+              "x64": ("x86_64", "macos_client_app_x64", "macos_client_update_x64"),
+          }
+          combined = {"artifacts": {}, "architectures": {}}
+          package_hashes = {"dmg": [], "zip": []}
+          helper_hashes = {}
+          source_commits = set()
+          forbidden = (
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"AWS_SECRET_ACCESS_KEY=",
+              b"DATABASE_URL=",
+          )
+
+          for suffix, (architecture, app_key, update_key) in expected.items():
+              directory = root / f"macos-client-{suffix}"
+              metadata_path = directory / f"leikwan-bridge-{suffix}-metadata.json"
+              metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+              if metadata.get("architecture") != architecture:
+                  raise SystemExit(f"architecture mismatch: {suffix}")
+              source_commits.add(metadata.get("source_commit"))
+              artifacts = metadata.get("artifacts")
+              if not isinstance(artifacts, dict) or set(artifacts) != {app_key, update_key}:
+                  raise SystemExit(f"artifact key mismatch: {suffix}")
+              for key, artifact in artifacts.items():
+                  fmt = artifact.get("format")
+                  filename = pathlib.PurePosixPath(artifact.get("path", "")).name
+                  path = directory / filename
+                  data = path.read_bytes()
+                  digest = hashlib.sha256(data).hexdigest()
+                  if not data or artifact.get("architecture") != architecture:
+                      raise SystemExit(f"empty or mislabeled artifact: {key}")
+                  if artifact.get("size_bytes") != len(data) or artifact.get("sha256") != digest:
+                      raise SystemExit(f"metadata/file mismatch: {key}")
+                  if fmt not in package_hashes:
+                      raise SystemExit(f"unexpected package format: {key}")
+                  if artifact.get("artifact_url") != "/artifacts/macos/" + filename:
+                      raise SystemExit(f"artifact URL mismatch: {key}")
+                  package_hashes[fmt].append(digest)
+                  combined["artifacts"][key] = artifact
+              helpers = metadata.get("helpers", {})
+              if helpers.get("architecture") != architecture:
+                  raise SystemExit(f"helper architecture mismatch: {suffix}")
+              helper_items = helpers.get("helpers")
+              if not isinstance(helper_items, list) or len(helper_items) != 5:
+                  raise SystemExit(f"helper set incomplete: {suffix}")
+              helper_hashes[suffix] = {item.get("name"): item.get("sha256") for item in helper_items}
+              screenshots = sorted((directory / "screenshots").glob("*.png"))
+              expected_shots = {
+                  f"{state}-{size}.png"
+                  for state in ("login", "dashboard", "forwards", "settings")
+                  for size in ("1440x900", "1024x768")
+              }
+              if {shot.name for shot in screenshots} != expected_shots:
+                  raise SystemExit(f"screenshot set mismatch: {suffix}")
+              shot_hashes = [hashlib.sha256(shot.read_bytes()).hexdigest() for shot in screenshots]
+              if len(set(shot_hashes)) != len(shot_hashes):
+                  raise SystemExit(f"duplicate UI screenshots: {suffix}")
+              combined["architectures"][suffix] = {
+                  "architecture": architecture,
+                  "version": metadata.get("version"),
+                  "screenshots": sorted(expected_shots),
+              }
+              for path in directory.rglob("*"):
+                  if not path.is_file():
+                      continue
+                  data = path.read_bytes()
+                  if any(value in data for value in forbidden):
+                      raise SystemExit(f"high-risk literal in deliverable: {path.name}")
+
+          if len(source_commits) != 1 or None in source_commits:
+              raise SystemExit("source commit mismatch")
+          if any(len(values) != 2 or len(set(values)) != 2 for values in package_hashes.values()):
+              raise SystemExit("cross-architecture package hashes are not distinct")
+          if set(helper_hashes["arm64"]) != set(helper_hashes["x64"]):
+              raise SystemExit("cross-architecture helper sets differ")
+          for helper in helper_hashes["arm64"]:
+              if helper_hashes["arm64"][helper] == helper_hashes["x64"][helper]:
+                  raise SystemExit(f"cross-architecture helper hash duplicated: {helper}")
+          combined["source_commit"] = source_commits.pop()
+          output.write_text(json.dumps(combined, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Export verified packages to a temporary private branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          downloads="$RUNNER_TEMP/macos-downloads"
+          export_root="$RUNNER_TEMP/macos-client-export"
+          package_root="$export_root/package"
+          parts_root="$export_root/parts"
+          archive="$export_root/macos-client-test.tar"
+          manifest="$export_root/export-manifest.json"
+          branch="artifacts/macos-test-${GITHUB_SHA:0:12}"
+          rm -rf "$export_root"
+          mkdir -p "$package_root" "$parts_root"
+          for suffix in arm64 x64; do
+            cp "$downloads/macos-client-$suffix/leikwan-bridge-$suffix.dmg" "$package_root/"
+            cp "$downloads/macos-client-$suffix/leikwan-bridge-update-$suffix.zip" "$package_root/"
+            cp "$downloads/macos-client-$suffix/leikwan-bridge-$suffix-metadata.json" "$package_root/"
+          done
+          cp "$RUNNER_TEMP/macos-client-combined-metadata.json" "$package_root/"
+          tar -C "$package_root" -cf "$archive" .
+          split -b 80M -d -a 3 "$archive" "$parts_root/macos-client-test.tar.part-"
+          python3 - "$package_root" "$archive" "$parts_root" "$manifest" "$GITHUB_SHA" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          package_root = pathlib.Path(sys.argv[1])
+          archive = pathlib.Path(sys.argv[2])
+          parts_root = pathlib.Path(sys.argv[3])
+          manifest = pathlib.Path(sys.argv[4])
+          source_commit = sys.argv[5]
+
+          def describe(path):
+              data = path.read_bytes()
+              return {
+                  "name": path.name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size_bytes": len(data),
+              }
+
+          parts = [describe(path) for path in sorted(parts_root.iterdir()) if path.is_file()]
+          if not parts or any(item["size_bytes"] > 80 * 1024 * 1024 for item in parts):
+              raise SystemExit("artifact branch part limit violated")
+          payload = {
+              "source_commit": source_commit,
+              "archive": describe(archive),
+              "parts": parts,
+              "files": [describe(path) for path in sorted(package_root.iterdir()) if path.is_file()],
+          }
+          manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$branch"
+          git rm -rf .
+          mkdir -p macos-client-test
+          cp "$parts_root/"* macos-client-test/
+          cp "$manifest" macos-client-test/export-manifest.json
+          git add macos-client-test
+          git commit -m "artifact(mac): export test packages ${GITHUB_SHA:0:12}"
+          git push --force origin "HEAD:refs/heads/$branch"
+          printf 'Temporary artifact branch: `%s`\n' "$branch" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined verified metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-client-combined-metadata
+          path: ${{ runner.temp }}/macos-client-combined-metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+  report-status:
+    name: Export private build status
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-test
+      - verify-artifacts
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source for authenticated status export
+        uses: actions/checkout@v4
+
+      - name: Push status to a temporary private branch
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ needs.build-and-test.result }}
+          VERIFY_RESULT: ${{ needs.verify-artifacts.result }}
+        run: |
+          set -euo pipefail
+          branch="status/macos-test-${GITHUB_SHA:0:12}"
+          status_root="$RUNNER_TEMP/macos-client-status"
+          mkdir -p "$status_root"
+          python3 - "$status_root/status.json" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" "$BUILD_RESULT" "$VERIFY_RESULT" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          output, source_commit, run_id, attempt, build_result, verify_result = sys.argv[1:]
+          payload = {
+              "source_commit": source_commit,
+              "run_id": int(run_id),
+              "run_attempt": int(attempt),
+              "build_result": build_result,
+              "verify_result": verify_result,
+          }
+          pathlib.Path(output).write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$branch"
+          git rm -rf .
+          mkdir -p macos-client-status
+          cp "$status_root/status.json" macos-client-status/status.json
+          git add macos-client-status/status.json
+          git commit -m "ci(mac): record test package status ${GITHUB_SHA:0:12}"
+          git push --force origin "HEAD:refs/heads/$branch"

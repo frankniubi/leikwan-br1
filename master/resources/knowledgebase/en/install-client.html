@@ -1,0 +1,57 @@
+<h2>What you will accomplish</h2>
+<p>You will install the Client on Windows, Android, or Linux, sign in safely, and confirm that the device has received a recent configuration sync.</p>
+
+<h2>Before you begin</h2>
+<ul>
+  <li>Have your panel <strong>Master URL</strong>, account <strong>Email</strong>, and <strong>Password</strong> ready for Windows.</li>
+  <li>For Android, use an arm64 device running Android 8.0+ and be ready to approve the VPN request.</li>
+  <li>For Linux, use a machine with systemd, Python 3, network access, and root-equivalent permission.</li>
+  <li><strong>The Linux arm64 single-file installer supports Debian 11, 12, and 13 only.</strong> Use the regular Linux install command for amd64 or another supported flow.</li>
+  <li>Treat credentials and copied commands as secrets. A Linux installer command contains a bearer agent token.</li>
+</ul>
+
+<h2>Steps</h2>
+<pre class="mermaid">flowchart TD
+accTitle: Client installation choices
+accDescr: Choose the device operating system, follow its installation path, and finish by confirming a recent sync.
+A[Choose device] --&gt; B{Operating system}
+B -- Windows --&gt; C[Download Windows App]
+B -- Android --&gt; D[Install arm64 Android app]
+B -- Linux --&gt; E[Copy Linux install command]
+C --&gt; F[Confirm recent sync]
+D --&gt; F
+E --&gt; F</pre>
+<p>Each operating system has a different sign-in or installation path, but all three finish at the same observable result: the panel reports a recent client sync.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view showing Windows, Android, and Linux installation choices">
+  <figcaption>Demo screenshot. The download buttons and sync time show where to check your own session.</figcaption>
+</figure>
+<ol>
+  <li><strong>Windows:</strong> Open <strong>Tenant → Clients</strong> and select <strong>Download Windows App</strong>.</li>
+  <li>Install and open the app.</li>
+  <li>Enter <strong>Master URL</strong>, <strong>Email</strong>, and <strong>Password</strong>.</li>
+  <li>Select <strong>Connect</strong>.</li>
+  <li>Confirm <strong>Connection successful!</strong>, the global state <strong>Connected</strong>, and each ready Forward marked <strong>Running</strong>.</li>
+  <li><strong>Android:</strong> Download and install the arm64 Android app on Android 8.0+.</li>
+  <li>Sign in and approve the Android VPN request.</li>
+  <li>Select one of the supported LeiGod services offered by the app. Use only a service that the app lets you select.</li>
+  <li>Watch the visible state move from <strong>Ready to connect</strong> to <strong>Connecting...</strong> and then <strong>Connected</strong>.</li>
+  <li><strong>Linux:</strong> Open <strong>Tenant → Clients</strong>, expand <strong>Linux Install</strong>, and select <strong>Copy Install Command</strong>.</li>
+  <li>For <strong>Linux ARM64 Installer</strong>, confirm that the host is arm64/aarch64 and runs Debian 11, 12, or 13.</li>
+  <li>Run the copied command once with root-equivalent permission. Do not paste it into chat, tickets, logs, or shared shell history.</li>
+  <li>Confirm the installer prints <code>installed leikwan-client-agent</code>.</li>
+  <li>Return to the panel and confirm a recent sync. On the Linux host, you may also confirm that <code>config_pull_state.json</code> reports <code>status</code> as <code>ok</code>.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The panel shows a recent sync from the expected device. Windows also shows <strong>Connection successful!</strong>, global <strong>Connected</strong>, and a ready Forward as <strong>Running</strong>. Android reaches <strong>Connected</strong>. Linux reports the completed installer line and a successful pull state.</p>
+
+<h2>If it did not work</h2>
+<p><strong>Stop before sharing credentials or rerunning secret commands in public places.</strong> Check the Master URL, device clock, internet access, required permissions, and the exact visible error. On Android, confirm the VPN approval was granted. On Linux, confirm systemd and Python 3 are available, then collect diagnostics without copying the bearer agent token.</p>
+
+<h2>Related guides</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">Get Connected in Five Minutes</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
+</ul>
