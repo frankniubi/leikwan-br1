@@ -1390,7 +1390,8 @@ public partial class MainWindow : Window
             var localVersion = GetCurrentAppVersion();
             App.Config.LastUpdateCheckAt = DateTimeOffset.UtcNow.ToString("O");
             SaveCurrentConfig();
-            if (WindowsAppUpdateService.IsRemoteVersionNewer(artifact.Version, localVersion))
+            if (WindowsAppUpdateService.IsRemoteVersionNewer(artifact.Version, localVersion)
+                || WindowsAppUpdateService.HasRuntimeDrift(App.Config, artifact))
             {
                 _vm.PresentUpdatePrompt(artifact);
             }

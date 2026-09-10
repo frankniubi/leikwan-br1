@@ -42,6 +42,25 @@ public sealed class WindowsAppUpdateServiceTests
     }
 
     [Fact]
+    public void HasRuntimeDrift_RequestsUpdateWhenInstalledUltraHashDiffers()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        var ultra = Path.Combine(tempDir.Path, "ultra.exe");
+        File.WriteAllText(ultra, "old-runtime");
+        var config = new AgentConfig { UltraBin = ultra };
+        var artifact = new WindowsClientAppArtifact
+        {
+            Version = "0.1.20.27",
+            RuntimeSha256 = new Dictionary<string, string>
+            {
+                ["ultra_client_runtime_windows"] = new string('a', 64),
+            },
+        };
+
+        Assert.True(WindowsAppUpdateService.HasRuntimeDrift(config, artifact));
+    }
+
+    [Fact]
     public void WindowsAppUpdateManifest_DeserializesWindowsClientMetadata()
     {
         var json = """
