@@ -298,6 +298,8 @@ type PolicyStore struct {
 	config     Config
 	policy     *Policy
 	lease      *ProviderLease
+	backups    []ProviderLease
+	isolated   map[string]time.Time
 	seenNonces map[string]struct{}
 	seenGens   map[string]struct{}
 	revoked    map[string]struct{}
@@ -312,6 +314,13 @@ func NewPolicyStore(config Config) *PolicyStore {
 }
 
 func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
+	return s.ReplaceCandidates(policy, lease, []ProviderLease{lease})
+}
+
+func (s *PolicyStore) ReplaceCandidates(policy Policy, lease ProviderLease, candidates []ProviderLease) error {
+	if len(candidates) < 1 || len(candidates) > 4 {
+		return ErrLeaseInvalid
+	}
 	now := time.Now()
 	if err := policy.Validate(s.config, now); err != nil {
 		return err
@@ -319,8 +328,30 @@ func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
 	if err := lease.Validate(policy, now); err != nil {
 		return err
 	}
+	batch := map[string]bool{}
+	selected := false
+	for _, c := range candidates {
+		if err := c.Validate(policy, now); err != nil {
+			return err
+		}
+		if batch[c.NonceHash] {
+			return ErrLeaseReplay
+		}
+		batch[c.NonceHash] = true
+		if c.NonceHash == lease.NonceHash && haPathKey(c) == haPathKey(lease) {
+			selected = true
+		}
+	}
+	if !selected {
+		return ErrLeaseInvalid
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for nonce := range batch {
+		if _, ok := s.seenNonces[nonce]; ok {
+			return ErrLeaseReplay
+		}
+	}
 	if _, revoked := s.revoked[policy.PolicyGeneration]; revoked {
 		return ErrPolicyRollback
 	}
@@ -329,6 +360,18 @@ func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
 	}
 	if _, seen := s.seenGens[policy.PolicyGeneration]; seen && s.policy != nil && s.policy.PolicyGeneration != policy.PolicyGeneration {
 		return ErrPolicyRollback
+	}
+	s.wipeBackupsLocked()
+	for key, until := range s.isolated {
+		if !until.After(now) {
+			delete(s.isolated, key)
+		}
+	}
+	for _, c := range candidates {
+		s.seenNonces[c.NonceHash] = struct{}{}
+		if c.NonceHash != lease.NonceHash {
+			s.backups = append(s.backups, cloneHALease(c))
+		}
 	}
 	if s.lease != nil {
 		s.lease.wipe()
@@ -356,6 +399,7 @@ func (s *PolicyStore) Revoke(generation string) {
 		if s.lease != nil {
 			s.lease.wipe()
 		}
+		s.wipeBackupsLocked()
 		s.policy = nil
 		s.lease = nil
 		s.limiter.Revoke(generation)
@@ -370,6 +414,7 @@ func (s *PolicyStore) ClearExpired() {
 		if s.lease != nil {
 			s.lease.wipe()
 		}
+		s.wipeBackupsLocked()
 		s.policy = nil
 		s.lease = nil
 		s.limiter.Revoke("")

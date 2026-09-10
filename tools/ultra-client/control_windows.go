@@ -236,7 +236,10 @@ selectionDone:
 		err = errSelectionSuperseded
 	}
 	if err == nil {
-		err = server.store.Replace(policy, selected)
+		err = server.store.ReplaceCandidates(policy, selected, leases)
+		if err == nil && server.status != nil {
+			server.status.UpdatePolicy(policy.PolicyGeneration)
+		}
 		if err == nil && server.status != nil && probeResult.Sent > 0 {
 			if stringsContainsUDP(policy.Transport) {
 				server.status.UpdateUDPProbeWithTier(selected.SelectionRef, selected.SelectionTier, probeResult)

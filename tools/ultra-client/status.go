@@ -23,6 +23,12 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
+	UDPRuntimeSession *SelectionStatus `json:"udp_runtime_session,omitempty"`
+	HAEvents          []HAEvent        `json:"ha_events,omitempty"`
+	HAFailures        int64            `json:"ha_failures,omitempty"`
+	UDPKeepaliveACKs  int64            `json:"udp_keepalive_acks,omitempty"`
+	UDPLastACKAt      string           `json:"udp_last_ack_at,omitempty"`
+
 	ForwardID              int              `json:"forward_id"`
 	State                  string           `json:"state"`
 	DetectedIngressZone    string           `json:"detected_ingress_zone"`
