@@ -60,7 +60,10 @@ class UltraClientLeaseTests(unittest.TestCase):
             "GET",
             "https://panel.example.test/api/client/configs/pull",
             "client-agent-token",
-            extra_headers={"x-device-platform": "linux"},
+            extra_headers={
+                "x-device-platform": "linux",
+                "x-device-architecture": MODULE.local_runtime_architecture(),
+            },
         )
 
     def test_extra_headers_are_sent_on_config_pull(self):

@@ -178,6 +178,7 @@ def upload_debug_collection(
         payload,
         extra_headers={
             "x-device-platform": "linux",
+            "x-device-architecture": local_runtime_architecture(),
             "x-device-id": str(client_meta.get("current_device_id", "") or ""),
         },
     )[0])
@@ -753,6 +754,16 @@ def http_json_with_headers(
 DEFAULT_PANEL_MIRROR_URLS = ["https://api-leikwanbridge.nbwly.com"]
 
 
+def local_runtime_architecture() -> str:
+    """Return the manifest architecture token understood by the panel."""
+    machine = platform.machine().strip().lower()
+    if machine in {"aarch64", "arm64", "armv8", "armv8l"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64", "x64"}:
+        return "amd64"
+    return machine or "unknown"
+
+
 class ControlPlaneEndpointState:
     """Small persistent endpoint selector; API paths and payloads stay unchanged."""
 
@@ -857,7 +868,10 @@ def pull_client_configs(
                 "GET",
                 f"{base_url}/api/client/configs/pull",
                 token,
-                extra_headers={"x-device-platform": "linux"},
+                extra_headers={
+                    "x-device-platform": "linux",
+                    "x-device-architecture": local_runtime_architecture(),
+                },
             )
             selector.success(base_url)
             return payload, headers, base_url
@@ -1272,6 +1286,7 @@ class ClientAgent:
                     payload,
                     extra_headers={
                         "x-device-platform": "linux",
+                        "x-device-architecture": local_runtime_architecture(),
                         "x-device-id": str(client_meta.get("current_device_id", "") or ""),
                     },
                 ),
