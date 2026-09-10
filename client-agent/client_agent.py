@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.10.2"
+AGENT_VERSION = "2026.09.11.1"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -3810,6 +3810,32 @@ class ClientAgent:
             service_name = forward_runtime_service_name(forward)
             if not self.systemd_is_active(service_name):
                 self.restart_forward_service(forward_id, service_name, "systemd inactive")
+                continue
+
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                # A cold runtime needs its first lease and up to 30s of probing.
+                # Dialing its public port is not a readiness test: it creates a
+                # real provider connection, and a transient miss must not restart
+                # all active flows. Inspect listeners and debounce genuine loss.
+                streaks = getattr(self, "_ultra_listener_failures", None)
+                if streaks is None:
+                    streaks = self._ultra_listener_failures = {}
+                age = self.service_active_age_seconds(service_name)
+                if age is not None and age < 90.0:
+                    streaks.pop(forward_id, None)
+                    continue
+                port = int(forward.get("listen_port", 0) or 0)
+                probes = [self.local_listener_present(port, protocol)
+                          for protocol in self.transport_protocols(forward.get("transport", "tcp+udp"))]
+                if probes and all(item[0] for item in probes):
+                    streaks.pop(forward_id, None)
+                    continue
+                now = time.monotonic()
+                count, first = streaks.get(forward_id, (0, now))
+                streaks[forward_id] = (count + 1, first)
+                if count + 1 >= 3 and now - first >= 10.0:
+                    self.restart_forward_service(forward_id, service_name, "Ultra listener absent on 3 spaced checks")
+                    streaks.pop(forward_id, None)
                 continue
 
             endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
