@@ -1,3 +1,0 @@
-[workspace]
-members = ["leikwan-bond", "leikwan-ingress", "leikwan-mptcp-relay", "leikwan-uot", "leikwan-client-win/src-tauri"]
-resolver = "2"

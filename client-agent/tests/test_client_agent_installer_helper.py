@@ -104,33 +104,28 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertNotIn("mptcp-relay", source)
         self.assertIn('if [[ "$required" != "1" && "$AUTO_INSTALL_MPTCP_KERNEL" != "1" ]]; then', source)
 
-    def test_update_helper_stops_forward_services_before_reinstall(self) -> None:
+    def test_update_helper_preserves_forward_services(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+        body = source[source.index('write_update_state "running"'):]
+        self.assertNotIn('systemctl stop', body)
+        self.assertNotIn('systemctl list-units', body)
 
-        self.assertIn("systemctl list-units 'leikwan-client-*.service'", source)
-        self.assertIn("systemctl stop \"$unit\"", source)
-
-    def test_update_helper_does_not_stop_its_own_transient_update_unit(self) -> None:
+    def test_update_helper_preflights_before_install(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+        self.assertLess(source.index('agent preflight mismatch'), source.index('LEIKWAN_SKIP_UPDATE_HELPER=1'))
+        self.assertIn("agent version differs from manifest", source)
+        self.assertIn("agent hash differs from manifest", source)
 
-        self.assertIn('UPDATE_UNIT_PREFIX="leikwan-client-agent-update"', source)
-        self.assertIn('grep -v "^${UPDATE_UNIT_PREFIX}"', source)
-
-    def test_update_helper_handles_systemctl_marker_rows(self) -> None:
+    def test_update_helper_serializes_all_request_tokens(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
+        self.assertIn('flock -n 9', source)
+        self.assertIn('agent-update.lock', source)
 
-        self.assertIn('if (unit !~ /^[[:alnum:]_.@-]+\\.service$/', source)
-        self.assertIn('sub(/^[^[:alnum:]_.@-]+/, "", unit)', source)
-        self.assertIn("grep -E '^leikwan-client-[^[:space:]]+\\.service$'", source)
-
-    def test_update_helper_restores_previously_active_forward_units_on_every_exit(self) -> None:
+    def test_update_helper_cleanup_preserves_preexisting_runtime(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")
-
-        self.assertIn("FORWARD_UNITS_ACTIVE=()", source)
-        self.assertIn("systemctl is-active --quiet \"$unit\"", source)
         self.assertIn("restore_previous_runtime_state", source)
         self.assertIn("trap cleanup_update EXIT", source)
-        self.assertIn('rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER"', source)
+        self.assertIn('mktemp -d /tmp/leikwan-client-update.XXXXXX', source)
 
     def test_installer_bootstrap_covers_all_commands_used_before_download(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")

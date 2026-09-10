@@ -1,8 +1,0 @@
-[Unit]
-Description=Leikwan SSL Certificate Task Worker
-After=network.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=/var/www/master
-ExecStart=/usr/bin/php /var/www/master/scripts/process_ssl_certificate_tasks.php --limit 5

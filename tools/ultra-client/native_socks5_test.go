@@ -346,7 +346,7 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 
 func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	provider := newTestUDPProvider(t)
-	provider.echoOuterTarget = true
+	provider.echoOuterTarget.Store(true)
 	listenPort := freeNativeTCPPort(t)
 	config := Config{
 		ForwardID: 175, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
@@ -426,7 +426,7 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 
 func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 	provider := newTestUDPProvider(t)
-	provider.echoOuterTarget = true
+	provider.echoOuterTarget.Store(true)
 	listenPort := freeNativeTCPPort(t)
 	config := Config{
 		ForwardID: 176, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
@@ -520,7 +520,7 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 
 func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
 	provider := newTestUDPProvider(t)
-	provider.echoOuterTarget = true
+	provider.echoOuterTarget.Store(true)
 	listenPort := freeNativeTCPPort(t)
 	config := Config{
 		ForwardID: 177, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,

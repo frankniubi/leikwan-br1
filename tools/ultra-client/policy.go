@@ -304,6 +304,7 @@ type RuntimeSnapshot struct {
 }
 
 type PolicyStore struct {
+	isolated              map[string]time.Time
 	mu                    sync.RWMutex
 	config                Config
 	policy                *Policy
@@ -326,6 +327,10 @@ func NewPolicyStore(config Config) *PolicyStore {
 	}
 }
 
+func (s *PolicyStore) ReplaceCandidates(policy Policy, selected ProviderLease, leases []ProviderLease) error {
+	return s.ReplaceBatch(policy, selected, leases)
+}
+
 func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
 	return s.ReplaceBatch(policy, lease, []ProviderLease{lease})
 }
@@ -341,10 +346,20 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	if err := policy.Validate(s.config, now); err != nil {
 		return err
 	}
+	if err := selected.Validate(policy, now); err != nil {
+		return err
+	}
+	selectedFound := false
 	for _, lease := range leases {
+		if lease.NonceHash == selected.NonceHash && haPathKey(lease) == haPathKey(selected) {
+			selectedFound = true
+		}
 		if err := lease.Validate(policy, now); err != nil {
 			return err
 		}
+	}
+	if !selectedFound {
+		return ErrLeaseInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -364,7 +379,14 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	if _, seen := s.seenGens[policy.PolicyGeneration]; seen && s.policy != nil && s.policy.PolicyGeneration != policy.PolicyGeneration {
 		return ErrPolicyRollback
 	}
+	oldFailures, oldIsolation := s.candidateFailures, s.candidateIsolatedTill
 	s.wipeCandidatesLocked()
+	s.candidateFailures, s.candidateIsolatedTill = oldFailures, oldIsolation
+	for key, until := range s.isolated {
+		if !until.After(now) {
+			delete(s.isolated, key)
+		}
+	}
 	for nonce := range batchNonces {
 		s.seenNonces[nonce] = struct{}{}
 	}
@@ -376,15 +398,13 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	for index := range leases {
 		leaseCopy := cloneProviderLease(leases[index])
 		s.candidates = append(s.candidates, leaseCopy)
-		if s.lease == nil && selectedKey != "" && providerLeaseIdentity(*leaseCopy) == selectedKey {
+		if selectedKey != "" && leaseCopy.NonceHash == selected.NonceHash && providerLeaseIdentity(*leaseCopy) == selectedKey {
 			s.lease = leaseCopy
 		}
 		if index == 0 && s.lease == nil {
 			s.lease = leaseCopy
 		}
 	}
-	s.candidateFailures = make(map[string]int)
-	s.candidateIsolatedTill = make(map[string]time.Time)
 	_ = s.limiter.Replace(policy.RateLimitMbps, policy.QuotaRemainingBytes, policy.ExpiresAt, policy.PolicyGeneration)
 	s.notifyLocked()
 	return nil

@@ -1,7 +1,0 @@
-# This binary targets Linux. On this Windows dev machine:
-#   cargo +stable-x86_64-pc-windows-gnu check -p leikwan-mptcp-relay
-# For production builds, cross-compile on Linux or in CI:
-#   cargo build --release -p leikwan-mptcp-relay --target x86_64-unknown-linux-gnu
-
-[target.x86_64-unknown-linux-musl]
-linker = "rust-lld"

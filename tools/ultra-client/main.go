@@ -23,6 +23,8 @@ const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa
 
 const defaultProbeTarget = "1.1.1.1:53"
 
+var runtimeBuildVersion = "development"
+
 const (
 	datagramCandidateFirst         = byte(0x20)
 	datagramCandidateLimit         = byte(0x40)
@@ -651,54 +653,18 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 			go func() {
 				defer func() { <-semaphore }()
 				defer local.Close()
-				snapshot, ok := store.Snapshot()
-				if !ok {
-					status.UpdateError("policy_stopped")
-					return
-				}
 				started := time.Now()
-				remote, lease, dialErr := dialStreamWithCandidates(
-					ctx,
-					store,
-					snapshot.Policy,
-					snapshot.Lease,
-					targetHost,
-					targetPort,
-					time.Duration(config.ConnectTimeoutSecs)*time.Second,
-					dialStream,
-					func(failed ProviderLease, _ error) {
-						log.Printf("tcp stream candidate failed endpoint=%s:%d selection_ref=%s", failed.IP, failed.Port, failed.SelectionRef)
-						status.RecordCandidateFailure(failed.CandidateKeyHash, "tcp", "relay_connect_timeout", failed.LeaseHash)
-					},
-				)
+				remote, snapshot, dialErr := dialCandidateStream(ctx, store, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second, dialStream)
 				if dialErr != nil {
-					if !errors.Is(dialErr, context.Canceled) || ctx.Err() == nil {
-						log.Printf("tcp stream setup failed: %v", dialErr)
-						if errors.Is(dialErr, errNoHealthyCandidate) {
-							status.UpdateError("no_healthy_candidate")
-						} else {
-							status.UpdateError("tcp_connect_failed")
-						}
-					}
+					status.RecordHAEvent("tcp", haErrorClass(dialErr), "")
+					log.Printf("tcp stream setup failed forward_id=%d: %v", config.ForwardID, dialErr)
+					status.UpdateError("tcp_connect_failed")
 					return
 				}
-				defer remote.Close()
-				store.MarkCandidateSuccess(lease.CandidateKeyHash)
-				connectionDone := make(chan struct{})
-				go func() {
-					select {
-					case <-ctx.Done():
-						_ = local.Close()
-						_ = remote.Close()
-					case <-connectionDone:
-					}
-				}()
-				defer close(connectionDone)
-				status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
-				done := make(chan struct{}, 2)
-				go func() { _ = copyOutbound(remote, local, store.Limiter(), status); done <- struct{}{} }()
-				go func() { _ = copyInbound(local, remote, store.Limiter(), status); done <- struct{}{} }()
-				<-done
+				defer snapshot.Lease.wipe()
+				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
+				relayTCP(ctx, local, remote, store.Limiter(), status, config.ForwardID, snapshot.Policy.PolicyGeneration, snapshot.Lease.SelectionRef)
+
 			}()
 		default:
 			local.Close()
@@ -744,6 +710,12 @@ func readControlReplyUntil(conn net.Conn, deadline time.Time) ([]byte, error) {
 }
 
 type DatagramSession struct {
+	receiver         datagramReceiver
+	closeOnce        sync.Once
+	onRuntimeFailure func(error)
+	onRuntimeACK     func()
+	onRuntimeDrop    func()
+
 	control *net.TCPConn
 	remote  *net.UDPConn
 	mode    byte
@@ -751,12 +723,14 @@ type DatagramSession struct {
 }
 
 func (session *DatagramSession) Close() {
-	if session.remote != nil {
-		session.remote.Close()
-	}
-	if session.control != nil {
-		session.control.Close()
-	}
+	session.closeOnce.Do(func() {
+		if session.remote != nil {
+			session.remote.Close()
+		}
+		if session.control != nil {
+			session.control.Close()
+		}
+	})
 }
 
 func makeDatagramEnvelope(mode byte, sid []byte, targetIP string, targetPort int, payload []byte) ([]byte, error) {
@@ -1351,6 +1325,13 @@ func runPersistentWarmWorker(
 			// so later local associations also start warm.
 			keepaliveCancel()
 			continue
+		case <-warm.session.runtimeDone():
+			keepaliveCancel()
+			removeWarm(warm.session)
+			warm.session.Close()
+			if !waitRetry() {
+				return
+			}
 		case <-failed:
 			keepaliveCancel()
 			removeWarm(warm.session)
@@ -1514,10 +1495,11 @@ func serveUDPOnConn(
 		status.UpdateUDPAssociations(0, 0)
 	}()
 	startSessionLoops := func(key string, association *udpAssociation, session *DatagramSession) {
+		session.startRuntimeReader(3 * safeUDPKeepaliveInterval)
 		go func() {
 			readBuffer := make([]byte, 65535)
 			for {
-				responseCount, responseErr := session.remote.Read(readBuffer)
+				responseCount, responseErr := session.readRuntime(readBuffer)
 				if responseErr != nil {
 					closeAssociation(key, association)
 					return
@@ -1628,6 +1610,7 @@ func serveUDPOnConn(
 		associationMu.Unlock()
 		publishAssociationCounts()
 		status.UpdateUDPWithTierAndCandidate(warm.selectionRef, warm.selectionTier, warm.candidateKeyHash, time.Since(warm.started), warm.leaseHash)
+		status.RecordUDPAttached(warm.selectionRef, warm.selectionTier)
 		for _, queuedPayload := range queued {
 			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
 			if packetErr != nil {
@@ -1645,15 +1628,11 @@ func serveUDPOnConn(
 		startSessionLoops(key, association, next)
 	}
 	startNativeSetup := func(key string, association *udpAssociation, lease ProviderLease) {
-		selectionRef := lease.SelectionRef
-		selectionTier := lease.SelectionTier
-		candidateKeyHash := lease.CandidateKeyHash
-		leaseHash := lease.LeaseHash
+		lease.wipe()
 		go func() {
 			select {
 			case setupSlots <- struct{}{}:
 			case <-ctx.Done():
-				lease.wipe()
 				closeAssociation(key, association)
 				return
 			}
@@ -1662,23 +1641,18 @@ func serveUDPOnConn(
 			associationMu.Unlock()
 			if !active {
 				<-setupSlots
-				lease.wipe()
 				return
 			}
-			started := time.Now()
-			next, armErr := armDatagram(lease, probeAssociationTimeout(config))
+			warm, armErr := armRuntimeCandidates(ctx, store, config, status)
 			<-setupSlots
-			lease.wipe()
 			if armErr != nil {
 				status.AddUDPSetupFailure()
-				store.MarkCandidateFailure(candidateKeyHash)
-				status.RecordCandidateFailure(candidateKeyHash, "udp", "udp_association_failed", leaseHash)
 				status.UpdateError("udp_association_failed")
 				closeAssociation(key, association)
 				return
 			}
-			attachSession(key, association, udpWarmSession{session: next, selectionRef: selectionRef, selectionTier: selectionTier, candidateKeyHash: candidateKeyHash, leaseHash: leaseHash, started: started})
-			store.MarkCandidateSuccess(candidateKeyHash)
+			attachSession(key, association, warm)
+
 		}()
 	}
 	if prewarmEnabled {
@@ -1694,29 +1668,9 @@ func serveUDPOnConn(
 					case <-warmContext.Done():
 						return udpWarmSession{}, warmContext.Err()
 					}
-					snapshot, ok := store.Snapshot()
-					if !ok {
-						<-setupSlots
-						return udpWarmSession{}, errors.New("udp prewarm policy unavailable")
-					}
-					lease := snapshot.Lease
-					selectionRef := lease.SelectionRef
-					selectionTier := lease.SelectionTier
-					candidateKeyHash := lease.CandidateKeyHash
-					leaseHash := lease.LeaseHash
-					started := time.Now()
-					next, armErr := armDatagram(lease, probeAssociationTimeout(config))
-					<-setupSlots
-					lease.wipe()
-					if armErr != nil {
-						status.AddUDPSetupFailure()
-						store.MarkCandidateFailure(candidateKeyHash)
-						return udpWarmSession{}, armErr
-					}
-					store.MarkCandidateSuccess(candidateKeyHash)
-					return udpWarmSession{
-						session: next, selectionRef: selectionRef, selectionTier: selectionTier, candidateKeyHash: candidateKeyHash, leaseHash: leaseHash, started: started,
-					}, nil
+					defer func() { <-setupSlots }()
+					return armRuntimeCandidates(warmContext, store, config, status)
+
 				},
 				sendDatagramKeepalive,
 				resolveUDPKeepaliveInterval(config),
@@ -1863,7 +1817,7 @@ func serveUDPOnConn(
 				// not held behind the warm worker.
 				select {
 				case warm := <-warmSessions:
-					if warm.err != nil || warm.session == nil {
+					if warm.err != nil || warm.session == nil || warm.session.runtimeError() != nil {
 						startNativeSetup(key, association, lease)
 					} else {
 						if warm.claimed != nil {
@@ -1918,9 +1872,14 @@ func serveUDPOnConn(
 }
 
 func main() {
+	version := flag.Bool("version", false, "print runtime build version")
 	configPath := flag.String("config", "", "runtime configuration file")
 	configStdin := flag.Bool("config-stdin", false, "read runtime configuration from stdin")
 	flag.Parse()
+	if *version {
+		fmt.Println(runtimeBuildVersion)
+		return
+	}
 	if err := applyProcessSecurity(); err != nil {
 		log.Fatal("process security unavailable")
 	}

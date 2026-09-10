@@ -1,1 +1,0 @@
-ALTER TABLE service_plans ADD COLUMN max_client_profiles INT NOT NULL DEFAULT 1 AFTER default_client_online_device_limit;
