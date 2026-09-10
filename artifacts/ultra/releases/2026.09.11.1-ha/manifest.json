@@ -1,0 +1,37 @@
+{
+  "version": "2026.09.11.1-ha",
+  "channel": "targeted-canary",
+  "runtime_source_commit": "56b7fad41446751d9980624cc440c1a4e4e06614",
+  "agent_source_commit": "540c0b31d92fc61e0ff38db0687e951abd13e069",
+  "deployed_runtime_scope": "172.21.255.189 forward-170 only",
+  "deployed_agent_scope": "172.21.255.189",
+  "arm64_hardware_verified": false,
+  "global_publication_complete": false,
+  "update_hold_until": "2026-09-12T02:53:27+08:00",
+  "files": {
+    "ultra-client_linux_amd64": {
+      "sha256": "3d274b56d1ddfea8d3b9a79c8c500b30414d5e437736597e27849783d61c2da5",
+      "size": 16167178
+    },
+    "ultra-client_linux_arm64": {
+      "sha256": "c3881a4193095f93d16ceef0b95b2b0ab54d5266855ff3d4f74510c67ca6ba10",
+      "size": 14614794
+    },
+    "client-agent.py": {
+      "sha256": "995d53ec3ad71fb9439752492aba1350068b39f6508861c2346a4d15a20b923d",
+      "size": 335713
+    },
+    "ha-canary.py": {
+      "sha256": "c1765c4dd2a7f95e2eec5c13c9aa4bb437a9bf7a9c3bcfb882e63a87c22d3f0b",
+      "size": 2576
+    },
+    "rollback-agent.sh": {
+      "sha256": "6e41b2a5fcb42b5f942f8f4ac019e9d99f1972f737e65a93bb35f4aa5855d807",
+      "size": 1017
+    },
+    "repair-plan.md": {
+      "sha256": "4f8169e10017a8b9de9ce2fb3df6af02f8d5cdcd8b1a9fc777287bd5daf04a30",
+      "size": 12530
+    }
+  }
+}
