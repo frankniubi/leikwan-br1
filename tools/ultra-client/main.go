@@ -381,6 +381,15 @@ var (
 	errDatagramAssociationFailed      = errors.New("datagram association failed")
 )
 
+// Test-only observation hooks. The production runtime never assigns these;
+// the in-process game-sim benchmark uses them to inspect the kernel buffer
+// sizes on the sockets the runtime itself configures (4MB datagram buffers).
+var (
+	testHookLocalUDPListening  func(local *net.UDPConn)
+	testHookDatagramArmed      func(remote *net.UDPConn)
+	testHookRuntimeQueueDepth  func(depth int)
+)
+
 type handshakePhaseError struct {
 	cause error
 }
@@ -1118,6 +1127,9 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 			if validDatagramSessionResponse(buffer[:count], sid) {
 				_ = remote.SetReadDeadline(time.Time{})
 				_ = remote.SetWriteDeadline(time.Time{})
+				if testHookDatagramArmed != nil {
+					testHookDatagramArmed(remote)
+				}
 				return &DatagramSession{control: control, remote: remote, mode: mode, sid: sid}, nil
 			}
 		}
@@ -1411,6 +1423,9 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	// the kernel drop counter (UdpRcvbufErrors) climbs silently otherwise.
 	_ = local.SetReadBuffer(4 << 20)
 	_ = local.SetWriteBuffer(4 << 20)
+	if testHookLocalUDPListening != nil {
+		testHookLocalUDPListening(local)
+	}
 	targetIP, err := resolveIPv4(targetHost)
 	if err != nil {
 		local.Close()
