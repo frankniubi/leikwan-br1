@@ -434,9 +434,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "e546aac8296cc94e041f0ae1c1563f9e0c39210b9931047d5596e47131de4a5b",
-    "size_bytes": 16253194,
-    "version": "2026.09.11.2"
+    "sha256": "841fb2565bdbed241f523c28e9986f88aea807555cc149db266a38fa23458cfd",
+    "size_bytes": 16183562,
+    "version": "2026.09.11.3"
   },
   "ultra_client_runtime_linux_arm64": {
     "architecture": "arm64",
@@ -454,35 +454,35 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "4e6da7a3356dae60b2f8b3c0dbc2986287af249a33bf31ceaa9dd42a0331d7e9",
-    "size_bytes": 14680330,
-    "version": "2026.09.11.2"
+    "sha256": "dc9ec52685622d8622fba801db525041376816886f5187c0e0fe4294b1d26b9d",
+    "size_bytes": 14549258,
+    "version": "2026.09.11.3"
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "build": "go1.26.5 windows/amd64, cgo-disabled, stripped, native-tun-udp-keepalive-batch-fresh-grant",
-    "sha256": "62174c051552d4b127c7a5d7fd692512f5ab9afa59520b6463e28c3da5454f4b",
-    "size_bytes": 6887424,
-    "version": "2026.09.05.1"
+    "build": "go1.26.5 windows/amd64, cgo-disabled, stripped, garble-v0.17.0, ha-candidates-2026.09.11.3",
+    "sha256": "d31e4efbd56f87742cd344397b376759969b0c09c01533f38b16770bbdbda94d",
+    "size_bytes": 15282176,
+    "version": "2026.09.11.3"
   },
   "ultra_client_runtime_macos_x64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
     "path": "artifacts/ultra/ultra-client_macos_amd64",
     "architecture": "x86_64",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "33cb7a67b61754de536fb5d0bfab9719b8b25413c778b7d1fc7b1ef6eccb3787",
-    "size_bytes": 14499296,
-    "version": "2026.09.04.3"
+    "sha256": "b82b9fe62045010dff051ad5556b58ca9c6e6a21d04ad1f75d90ec70058e3b86",
+    "size_bytes": 14876480,
+    "version": "2026.09.11.3"
   },
   "ultra_client_runtime_macos_arm64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
     "architecture": "arm64",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "3f20e9a9524d19c93de1595f9f9bbf6355325ffc43a2b60a1f7d9af562309938",
-    "size_bytes": 13013680,
-    "version": "2026.09.04.3"
+    "sha256": "00b8ab33dc04b5ca584b372f4142c858aec311fbeea15c7fd84fbd354a9e3ce3",
+    "size_bytes": 13315890,
+    "version": "2026.09.11.3"
   },
   "uot_bond_runtime": {
     "artifact_url": "/artifacts/leikwan-uot-bond.py",
@@ -505,7 +505,7 @@
     "sha256": "359cb696d3cd481a5337a6c15148ed6fec5ba372890909b359ad575c95ede29d",
     "size_bytes": 69466713,
     "runtime_sha256": {
-      "ultra_client_runtime_windows": "62174c051552d4b127c7a5d7fd692512f5ab9afa59520b6463e28c3da5454f4b",
+      "ultra_client_runtime_windows": "d31e4efbd56f87742cd344397b376759969b0c09c01533f38b16770bbdbda94d",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
