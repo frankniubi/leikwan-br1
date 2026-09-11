@@ -1,35 +1,49 @@
 using System.Net;
 using System.Net.Sockets;
+using LeikwanBridge.Core.Services.PanelEgress;
 
 namespace LeikwanBridge.Core.Services;
 
 public sealed class LeikwanDnsRoutingConnector
 {
     private readonly ILeikwanDnsResolver _resolver;
+    private readonly IPanelDirectEgressCoordinator? _egress;
+    private readonly Action<Socket>? _configureSocket;
     private readonly Func<string, int, CancellationToken, ValueTask<Stream>> _connectToHostAsync;
     private readonly Func<IPAddress, int, CancellationToken, ValueTask<Stream>> _connectToIpAsync;
 
     public LeikwanDnsRoutingConnector(ILeikwanDnsResolver resolver)
-        : this(resolver, ConnectSocketAsync, ConnectSocketAsync)
+        : this(resolver, null, null, null, null)
     {
     }
 
     public LeikwanDnsRoutingConnector(
         ILeikwanDnsResolver resolver,
-        Func<string, int, CancellationToken, ValueTask<Stream>> connectToHostAsync,
-        Func<IPAddress, int, CancellationToken, ValueTask<Stream>> connectToIpAsync)
+        Func<string, int, CancellationToken, ValueTask<Stream>>? connectToHostAsync = null,
+        Func<IPAddress, int, CancellationToken, ValueTask<Stream>>? connectToIpAsync = null,
+        IPanelDirectEgressCoordinator? egress = null,
+        Action<Socket>? configureSocket = null)
     {
-        _resolver = resolver;
-        _connectToHostAsync = connectToHostAsync;
-        _connectToIpAsync = connectToIpAsync;
+        _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
+        _connectToHostAsync = connectToHostAsync ?? ConnectSocketAsync;
+        _connectToIpAsync = connectToIpAsync ?? ConnectSocketAsync;
+        _egress = egress;
+        _configureSocket = configureSocket;
     }
 
     public async ValueTask<Stream> ConnectAsync(Uri requestUri, string host, int port, CancellationToken ct)
     {
-        if (!LeikwanHttpHostPolicy.ShouldResolveWithDoh(requestUri))
+        var directEgressHost = _egress?.IsDirectEgressHost(requestUri.IdnHost) == true;
+        if (!directEgressHost && !LeikwanHttpHostPolicy.ShouldResolveWithDoh(requestUri))
             return await _connectToHostAsync(host, port, ct).ConfigureAwait(false);
 
-        var addresses = await _resolver.ResolveAAsync(requestUri.IdnHost, ct).ConfigureAwait(false);
+        // Direct-egress hosts always resolve through the anti-poison DoH
+        // path (via the shared engine when available) so a TUN tool cannot
+        // poison the answers either.
+        var addresses = directEgressHost
+            ? await _egress!.ResolveHostAsync(requestUri.IdnHost, ct).ConfigureAwait(false)
+            : await _resolver.ResolveAAsync(requestUri.IdnHost, ct).ConfigureAwait(false);
+
         Exception? lastError = null;
         foreach (var address in addresses)
         {
@@ -49,7 +63,7 @@ public sealed class LeikwanDnsRoutingConnector
         throw new InvalidOperationException($"No usable public DoH A record for {requestUri.IdnHost}", lastError);
     }
 
-    private static async ValueTask<Stream> ConnectSocketAsync(string host, int port, CancellationToken ct)
+    private async ValueTask<Stream> ConnectSocketAsync(string host, int port, CancellationToken ct)
     {
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
@@ -64,11 +78,15 @@ public sealed class LeikwanDnsRoutingConnector
         }
     }
 
-    private static async ValueTask<Stream> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
+    private async ValueTask<Stream> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
     {
         var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
+            // Panel connections leave through the physical NIC: force the
+            // outgoing interface before the connect so the TUN default route
+            // is never consulted.
+            _configureSocket?.Invoke(socket);
             await socket.ConnectAsync(address, port, ct).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
