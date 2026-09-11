@@ -675,6 +675,18 @@ def build_inventory(
             "line_type": _unsigned_int(
                 metadata.get("line_type"), audited.get("line_type"), indexed.get("line_type")
             ),
+            # Carrier metadata (2026-09-11): the sweep index is the freshest source,
+            # the audit manifest may add it later. The panel normalizes 电信/联通/移动/通用
+            # into telecom/unicom/mobile/generic.
+            "in_line_type": _unsigned_int(
+                metadata.get("in_line_type"), audited.get("in_line_type"), indexed.get("in_line_type")
+            ),
+            "isp": _safe_inventory_text(
+                _first_value(indexed, audited, metadata, keys=("isp",)), 32
+            ),
+            "provider": _safe_inventory_text(
+                _first_value(indexed, audited, metadata, keys=("provider",)), 64
+            ),
             "catalog_ingress": _safe_inventory_text(
                 _first_value(cataloged, audited, indexed, keys=("catalog_ingress",)), 191
             ),

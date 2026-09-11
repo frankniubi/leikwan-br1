@@ -1,0 +1,109 @@
+{
+	"admin/services/leikwan": {
+		"title": "Leikwan 会聚",
+		"order": 45,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/firstboot": {
+		"title": "首次配置向导 (First-boot setup)",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "leikwan/setup"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ],
+			"fs": { "/etc/leikwan/secret.json": "absent" }
+		}
+	},
+
+	"admin/services/leikwan/overview": {
+		"title": "概览 (Overview)",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "leikwan/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/setup": {
+		"title": "配置向导 (Setup Wizard)",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "leikwan/setup"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/lines": {
+		"title": "转发线路 (Forward Lines)",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "leikwan/lines"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/routing": {
+		"title": "路由与网关 (Routing & Gateway)",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "leikwan/routing"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/uplinks": {
+		"title": "多 WAN 高可用 (Uplinks)",
+		"order": 50,
+		"action": {
+			"type": "view",
+			"path": "leikwan/uplinks"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/logs": {
+		"title": "日志与诊断 (Logs & Diagnostics)",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "leikwan/logs"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	},
+
+	"admin/services/leikwan/advanced": {
+		"title": "高级设置 (Advanced)",
+		"order": 70,
+		"action": {
+			"type": "view",
+			"path": "leikwan/advanced"
+		},
+		"depends": {
+			"acl": [ "luci-app-leikwan" ]
+		}
+	}
+}

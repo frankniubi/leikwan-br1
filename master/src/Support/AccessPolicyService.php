@@ -44,6 +44,19 @@ class AccessPolicyService
         $this->clientIpResolver = $clientIpResolver ?? new TrustedClientIpResolver();
     }
 
+    /**
+     * Router platform aliases shared by every platform-aware surface.
+     *
+     * Router builds report either the distribution (openwrt, openwrt-23.05) or
+     * only the device form factor (router); both must classify identically so
+     * the location endpoints and the policy context never disagree.
+     */
+    public static function isRouterPlatform(string $platform): bool
+    {
+        $platform = strtolower(trim($platform));
+        return str_starts_with($platform, 'openwrt') || $platform === 'router';
+    }
+
     /** @param array<string, mixed> $client @return array<string, mixed> */
     public function issueLocationChallenge(
         array $client,
@@ -1249,10 +1262,11 @@ class AccessPolicyService
             str_starts_with($platform, 'android') => 'android',
             str_starts_with($platform, 'ios') => 'ios',
             str_starts_with($platform, 'linux') => 'linux',
+            self::isRouterPlatform($platform) => 'openwrt',
             default => $platform,
         };
         if (strlen($platform) > 32 || preg_match('/^[a-z0-9._-]+$/', $platform) !== 1
-            || !in_array($platform, ['android', 'windows', 'macos', 'ios', 'linux', 'unknown'], true)) {
+            || !in_array($platform, ['android', 'windows', 'macos', 'ios', 'linux', 'openwrt', 'unknown'], true)) {
             throw new ApiException('location_platform_invalid', 422);
         }
         if ($userId <= 0) {

@@ -1701,7 +1701,8 @@
     "province_reset": "省份重設",
     "tenant_or_admin": "租戶或管理員",
     "admin_only": "僅管理員",
-    "Permanent device bans require administrator release.": "永久裝置封鎖需要管理員解除。"
+    "Permanent device bans require administrator release.": "永久裝置封鎖需要管理員解除。",
+    "OpenWrt Pairing Code": "OpenWrt 配對碼"
   },
   "attributes": {
     "Label": "標籤",

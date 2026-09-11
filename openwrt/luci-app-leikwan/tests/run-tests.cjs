@@ -1,0 +1,359 @@
+'use strict';
+/*
+ * Client-side tests for luci-app-leikwan.
+ *
+ * Two suites:
+ *   1. Every view is loaded and rendered against the LuCI stubs with a
+ *      realistic daemon response, so a runtime error in the render path is a
+ *      test failure rather than a blank page on the router.
+ *   2. The three hand-written contracts that must agree — the rpc.declare
+ *      calls in the views, the method table in the rpcd ucode script, and the
+ *      ACL grants — are cross-checked against each other.
+ *
+ * Usage: node openwrt/luci-app-leikwan/tests/run-tests.cjs
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { createStubs, FakeNode } = require('./luci-stubs.cjs');
+
+const ROOT = path.resolve(__dirname, '..');
+const VIEW_DIR = path.join(ROOT, 'htdocs/luci-static/resources/view/leikwan');
+const RPCD = path.join(ROOT, 'root/usr/libexec/rpcd/luci.leikwand');
+const ACL = path.join(ROOT, 'root/usr/share/rpcd/acl.d/luci-app-leikwan.json');
+const MENU = path.join(ROOT, 'root/usr/share/luci/menu.d/luci-app-leikwan.json');
+
+let passed = 0;
+let failed = 0;
+
+function ok(name) { passed++; console.log('  \x1b[32mPASS\x1b[0m ' + name); }
+function bad(name, detail) { failed++; console.log('  \x1b[31mFAIL\x1b[0m ' + name + (detail ? ' — ' + detail : '')); }
+function step(name) { console.log('\n== ' + name + ' =='); }
+function check(name, condition, detail) { condition ? ok(name) : bad(name, detail); }
+
+// ---------------------------------------------------------------------------
+// Realistic daemon responses (shapes copied from the Go StatusSnapshot)
+// ---------------------------------------------------------------------------
+
+const STATUS = {
+	ok: true,
+	data: {
+		version: '1.0.0', platform: 'openwrt', architecture: 'amd64', uptime_seconds: 7543,
+		mode: 'hybrid', enabled: true, enrolled: true,
+		panel_url: 'https://v3.leikwanhost.com', panel_platform_tag: 'openwrt',
+		device_id: 'openwrt-abc123', device_name: 'Leikwan Bridge on router',
+		client_id: 42, client_name: 'Home Router', config_revision: 'rev-abcdef123456',
+		last_pull_at: '2026-01-01T00:00:00Z', last_pull_error: '',
+		forward_count: 2,
+		forwards: [
+			{
+				forward_id: 3, status: 'running', health: 'good', mode: 'race', transport: 'tcp+udp',
+				listen_port: 10001, target: 'example.com:443', uptime_seconds: 7200, restarts: 0,
+				last_error: '', zone: 'HK', selection_tier: 'paid', rtt_ms: 23, p95_rtt_ms: 31,
+				loss_percent: 0, candidates: 4, ha_failures: 1,
+				lease_expires_at: '2026-01-01T00:05:00Z', lease_error: '',
+				bytes_in: 123456789, bytes_out: 987654
+			},
+			{
+				forward_id: 4, status: 'running', health: 'degraded', mode: 'single', transport: 'tcp',
+				listen_port: 10002, target: '10.0.0.5:25565', uptime_seconds: 600, restarts: 2,
+				last_error: 'probe_tcp_failed', zone: '', selection_tier: '', rtt_ms: 0,
+				p95_rtt_ms: 0, loss_percent: 100, candidates: 2, ha_failures: 7,
+				lease_expires_at: '', lease_error: 'no_healthy_candidate', bytes_in: 0, bytes_out: 0
+			}
+		],
+		uplinks: [
+			{ interface: 'wan', up: true, healthy: true, active: true, gateway: '192.168.1.1', metric: 10, latency_ms: 12, loss_percent: 0, consecutive_successes: 42, consecutive_failures: 0, last_error: '', last_switch: '' },
+			{ interface: 'wanb', up: true, healthy: false, active: false, gateway: '192.168.2.1', metric: 910, latency_ms: 0, loss_percent: 100, consecutive_successes: 0, consecutive_failures: 5, last_error: 'no_probe_response', last_switch: '' }
+		],
+		gateway: {
+			enabled: true, running: true, carrier_forward_id: 3, route_scope: 'global',
+			route_policy: 'restricted', tun_address: '172.19.0.1/30', socks_port: 2080,
+			bypass_cn: true, last_error: '', sing_box_version: ''
+		},
+		runtime_bin: '/usr/libexec/leikwan/ultra-client', runtime_present: true, singbox_present: true,
+		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok'
+	}
+};
+
+const FORWARDS = { ok: true, data: STATUS.data.forwards };
+
+const LOGS = {
+	ok: true,
+	data: [
+		{ at: '2026-01-01T00:00:00Z', level: 'info', scope: 'panel', message: 'config revision=rev-abc forwards=2 force=false' },
+		{ at: '2026-01-01T00:00:05Z', level: 'warn', scope: 'lease', message: 'forward 4 runtime rejected lease batch' },
+		{ at: '2026-01-01T00:00:09Z', level: 'error', scope: 'runtime', message: 'forward 4 did not become ready' }
+	]
+};
+
+const DIAGNOSE = {
+	ok: true,
+	data: {
+		generated_at: '2026-01-01T00:00:00Z', version: '1.0.0', architecture: 'amd64',
+		kernel: '6.6.110', panel: 'https://v3.leikwanhost.com', panel_platform_tag: 'openwrt',
+		runtime_present: true, singbox_present: true,
+		effective_config: { mode: 'hybrid', poll_interval: '30', uplink_enabled: 'true' },
+		checks: [
+			{ name: 'runtime_binary', ok: true, detail: '/usr/libexec/leikwan/ultra-client' },
+			{ name: 'panel_reachable', ok: true, detail: 'https://v3.leikwanhost.com' },
+			{ name: 'forward_4', ok: false, detail: 'running / degraded' }
+		]
+	}
+};
+
+const RPC_RESPONSES = {
+	status: STATUS,
+	forwards: FORWARDS,
+	logs: LOGS,
+	diagnose: DIAGNOSE,
+	test_connection: { ok: true, data: { panel: 'https://v3.leikwanhost.com', platform: 'openwrt' } },
+	get_config: { ok: true, data: { mode: 'hybrid', enabled: '1', panel_url: 'https://v3.leikwanhost.com' } },
+	enroll: { ok: true, data: { client_id: 42, client_name: 'Home Router' } },
+	pair: { ok: true, data: { client_id: 42, client_name: 'Home Router' } },
+	sign_out: { ok: true, data: { signed_out: true } },
+	forward_action: { ok: true, data: {} },
+	reload: { ok: true, data: STATUS.data },
+	set_config: { ok: true, data: { applied: {} } }
+};
+
+const UCI_VALUES = {
+	leikwand: {
+		'main': 'main',
+		'main.enabled': '1',
+		'main.panel_url': 'https://v3.leikwanhost.com',
+		'main.mode': 'hybrid',
+		'main.gateway_enabled': '1',
+		'main.uplink_enabled': '1',
+		'main.uplink_interfaces': 'wan wanb'
+	},
+	leikwan: {
+		'main': 'main',
+		'main.enabled': '1',
+		'main.panel_url': 'https://v3.leikwanhost.com',
+		'main.mode': 'hybrid',
+		'main.gateway_enabled': '1',
+		'main.uplink_enabled': '1',
+		'main.uplink_interfaces': 'wan wanb'
+	}
+};
+
+// ---------------------------------------------------------------------------
+// Suite 1: load and render every view
+// ---------------------------------------------------------------------------
+
+async function renderView(file) {
+	const source = fs.readFileSync(path.join(VIEW_DIR, file), 'utf8');
+	const stubs = createStubs({ rpcResponses: RPC_RESPONSES, uciValues: UCI_VALUES });
+	const m = stubs.modules;
+
+	// LuCI loads a view as a function body: the leading 'require x' lines are
+	// inert string statements and the file ends with a top-level return.
+	const factory = new Function(
+		'view', 'rpc', 'poll', 'ui', 'dom', 'form', 'uci', 'fs', 'request', '_', '__', 'E', 'L',
+		source
+	);
+	const View = factory(m.view, m.rpc, m.poll, m.ui, m.dom, m.form, m.uci, m.fs, m.request, m._, m.__, stubs.E, stubs.L);
+
+	if (typeof View !== 'function')
+		throw new Error('view did not export a constructor');
+
+	const instance = new View();
+
+	// LuCI's dispatcher resolves load() and passes its value to render(data).
+	// Calling render() with no argument would make views that read data[1]
+	// throw for a reason that has nothing to do with the view being broken.
+	var loaded;
+	if (typeof instance.load === 'function')
+		loaded = await instance.load();
+
+	if (typeof instance.render !== 'function')
+		throw new Error('view has no render()');
+
+	const rendered = await instance.render(loaded);
+
+	if (rendered === null || rendered === undefined)
+		throw new Error('render() returned nothing');
+
+	return {
+		rendered, instance, stubs,
+		nodeCount: rendered instanceof FakeNode ? rendered.countNodes() : 0,
+		text: rendered instanceof FakeNode ? rendered.allText() : ''
+	};
+}
+
+async function suiteViews() {
+	step('view rendering (real render path, stubbed LuCI runtime)');
+	const files = fs.readdirSync(VIEW_DIR).filter(f => f.endsWith('.js')).sort();
+	check('views discovered', files.length === 7, 'found ' + files.length);
+
+	for (const file of files) {
+		try {
+			const result = await renderView(file);
+			const isNode = result.rendered instanceof FakeNode;
+			const inline = Array.isArray(result.rendered);
+			if (!isNode && !inline) {
+				bad(file + ' renders a DOM node', 'got ' + typeof result.rendered);
+				continue;
+			}
+			const nodes = isNode ? result.nodeCount : result.rendered.length;
+			check(file + ' renders without throwing (' + nodes + ' nodes)', nodes > 0);
+
+			// Every view must offer the operator a way to act: a form to save,
+			// a poll so the page is live, or buttons in the rendered output.
+			// A page that only prints static text is a dead end.
+			const hasSave = typeof result.instance.handleSave === 'function'
+				|| typeof result.instance.handleSaveApply === 'function';
+			const hasPoll = result.stubs.recorded.polls.length > 0;
+			let buttons = 0;
+			const walk = (node) => {
+				if (!(node instanceof FakeNode)) return;
+				if (node.tagName === 'BUTTON') buttons++;
+				node.children.forEach(walk);
+			};
+			if (isNode) walk(result.rendered);
+			else result.rendered.forEach(walk);
+
+			if (hasSave) ok(file + ' exposes a save handler');
+			else if (hasPoll) ok(file + ' registers a refresh poll');
+			else check(file + ' renders at least one actionable button (' + buttons + ')', buttons > 0);
+		}
+		catch (err) {
+			bad(file + ' renders without throwing', (err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : String(err)));
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Suite 2: contract cross-checks
+// ---------------------------------------------------------------------------
+
+function declaredRpcMethods() {
+	const declared = new Map(); // method -> Set(file)
+	for (const file of fs.readdirSync(VIEW_DIR).filter(f => f.endsWith('.js'))) {
+		const source = fs.readFileSync(path.join(VIEW_DIR, file), 'utf8');
+		const re = /rpc\.declare\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
+		let match;
+		while ((match = re.exec(source)) !== null) {
+			const body = match[1];
+			const object = (body.match(/object\s*:\s*'([^']+)'/) || [])[1];
+			const method = (body.match(/method\s*:\s*'([^']+)'/) || [])[1];
+			if (object !== 'luci.leikwand' || !method) continue;
+			if (!declared.has(method)) declared.set(method, new Set());
+			declared.get(method).add(file);
+		}
+	}
+	return declared;
+}
+
+function rpcdMethods() {
+	const source = fs.readFileSync(RPCD, 'utf8');
+	// The signature table is the authoritative list the rpcd plugin advertises.
+	const table = source.match(/\{\s*\n\s*status:\s*\{\}/);
+	if (!table) throw new Error('rpcd signature table not found');
+	const start = table.index;
+	const tail = source.slice(start);
+	const names = new Set();
+	const re = /^\s*([a-z_]+)\s*:\s*\{/gm;
+	let match;
+	let depthGuard = 0;
+	while ((match = re.exec(tail)) !== null && depthGuard++ < 50)
+		names.add(match[1]);
+	return names;
+}
+
+// rpcd ACLs nest ubus grants under a scope: { read: { ubus: { <obj>: [..] } },
+// write: { ubus: { ... } } }. Both scopes are collected, and kept separate so
+// the read/write split can be asserted rather than only the union.
+function aclGrants() {
+	const acl = JSON.parse(fs.readFileSync(ACL, 'utf8'));
+	const read = new Set();
+	const write = new Set();
+	for (const role of Object.keys(acl)) {
+		for (const scope of ['read', 'write']) {
+			const grants = ((acl[role] || {})[scope] || {}).ubus || {};
+			const methods = grants['luci.leikwand'];
+			if (!methods) continue;
+			const target = scope === 'read' ? read : write;
+			if (methods === '*') { target.add('*'); continue; }
+			if (Array.isArray(methods)) methods.forEach(x => target.add(x));
+		}
+	}
+	return { read, write };
+}
+
+function suiteContracts() {
+	step('client/rpcd/ACL contract cross-check');
+
+	const declared = declaredRpcMethods();
+	check('views declare rpc methods', declared.size > 0, 'found ' + declared.size);
+
+	let rpcd;
+	try { rpcd = rpcdMethods(); }
+	catch (err) { bad('rpcd signature table is parseable', err.message); return; }
+	check('rpcd advertises methods', rpcd.size >= 12, 'found ' + rpcd.size);
+
+	for (const [method, files] of [...declared.entries()].sort()) {
+		check('rpcd implements "' + method + '" (used by ' + [...files].join(', ') + ')', rpcd.has(method));
+	}
+
+	const acl = aclGrants();
+	const granted = new Set([...acl.read, ...acl.write]);
+	const wildcard = granted.has('*');
+	for (const method of [...declared.keys()].sort()) {
+		check('ACL grants "' + method + '"', wildcard || granted.has(method));
+	}
+
+	// A read-only method must never be granted write: a view that mutates the
+	// panel or the runtime has to be deliberate about it.
+	const readOnly = ['status', 'forwards', 'logs', 'diagnose', 'test_connection', 'get_config'];
+	for (const method of readOnly)
+		check('ACL keeps "' + method + '" read-only', !acl.write.has(method));
+
+	const writeOnly = ['enroll', 'pair', 'sign_out', 'forward_action', 'set_config'];
+	for (const method of writeOnly)
+		check('ACL grants write for "' + method + '"', acl.write.has(method) || wildcard);
+
+	// Every method the daemon exposes must be reachable by an operator, either
+	// from a view or from the documented CLI/ubus surface. Anything else is
+	// dead weight nobody can call.
+	const cliOnly = new Set(['forwards', 'get_config', 'set_config']);
+	for (const method of [...rpcd].sort()) {
+		const reachable = declared.has(method) || cliOnly.has(method);
+		check('rpcd method "' + method + '" is reachable', reachable);
+		check('rpcd method "' + method + '" is ACL-granted', wildcard || granted.has(method));
+	}
+}
+
+function suiteMenu() {
+	step('menu and ACL file sanity');
+	const menu = JSON.parse(fs.readFileSync(MENU, 'utf8'));
+	const entries = Object.keys(menu);
+	check('menu has entries', entries.length > 0, entries.join(', '));
+
+	const views = new Set(fs.readdirSync(VIEW_DIR).filter(f => f.endsWith('.js')).map(f => f.replace(/\.js$/, '')));
+	for (const key of entries) {
+		const entry = menu[key];
+		const action = entry && entry.action;
+		if (!action || action.type !== 'view') continue;
+		const leaf = String(action.path || '').split('/').pop();
+		check('menu "' + key + '" points at an existing view (' + action.path + ')', views.has(leaf));
+	}
+
+	const acl = JSON.parse(fs.readFileSync(ACL, 'utf8'));
+	const text = JSON.stringify(acl);
+	check('ACL does not grant read of the secret directory', !text.includes('/etc/leikwan'));
+	check('ACL constrains the control runtime directory', text.includes('/var/run/leikwand'));
+}
+
+(async function main() {
+	await suiteViews();
+	suiteContracts();
+	suiteMenu();
+	step('result');
+	console.log(passed + ' passed, ' + failed + ' failed');
+	process.exit(failed === 0 ? 0 : 1);
+})().catch(err => {
+	console.error('harness error:', err);
+	process.exit(2);
+});

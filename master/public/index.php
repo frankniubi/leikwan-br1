@@ -73,6 +73,10 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'debug_chunk_too_large',
         'debug_chunk_hash_mismatch',
         'debug_collection_quota_exceeded',
+        'openwrt_pairing_unavailable',
+        'openwrt_pairing_code_invalid',
+        'openwrt_pairing_code_expired',
+        'openwrt_pairing_device_invalid',
     ];
     if ($exception instanceof ApiException
         && in_array($exception->getMessage(), $clientSafeCodes, true)
