@@ -797,6 +797,102 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(vm.ValidationMessage, vm.NoticeText);
     }
 
+    [Fact]
+    public async Task CheckFailureShowsErrorAndRetryRerunsTheCheck()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var attempts = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    throw new InvalidOperationException("manifest unreachable");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        await vm.CheckForUpdatesCommand.ExecuteAsync(null);
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Contains("manifest unreachable", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateBannerVisible);
+        Assert.False(vm.IsUpdateInProgress);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, attempts);
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+    }
+
+    [Fact]
+    public async Task InstallFailureShowsErrorAndRetryRerunsTheInstall()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installCalls = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installCalls++;
+                if (installCalls == 1)
+                    throw new InvalidOperationException("update_hash_mismatch");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        controller.RaiseUpdate("2.0.0");
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Contains("update_hash_mismatch", vm.UpdateErrorMessage);
+        Assert.False(vm.IsUpdateInstalling);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, installCalls);
+        Assert.False(vm.ShowUpdateError);
+    }
+
+    [Fact]
+    public void UpdateProgressReportsPhasePercentAndMessage()
+    {
+        var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
+
+        vm.ReportUpdateProgress(UpdateProgress.Downloading(37, "Downloading update... (37 bytes)"));
+
+        Assert.Equal("Downloading update", vm.UpdatePhaseText);
+        Assert.Equal(37, vm.UpdatePercent);
+        Assert.Equal("Downloading update... (37 bytes)", vm.UpdateProgressMessage);
+        Assert.True(vm.IsUpdateInProgress);
+
+        vm.ReportUpdateFinished();
+        Assert.False(vm.IsUpdateInProgress);
+        Assert.Equal(0, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void EndpointSelectionPersistsImmediately()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        string? savedPanelUrl = null;
+        var vm = new MainWindowViewModel(
+            controller,
+            savePreferences: (url, _, _, _) =>
+            {
+                savedPanelUrl = url;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        vm.SelectedPanelEndpoint = PanelEndpoints.Options.First(option => option.Key == "aliyun-cdn");
+
+        Assert.Equal(PanelEndpoints.AliyunCdnUrl, savedPanelUrl);
+        Assert.Equal(PanelEndpoints.AliyunCdnUrl, vm.PanelUrl);
+    }
+
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;
