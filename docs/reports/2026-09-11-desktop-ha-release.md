@@ -133,6 +133,24 @@ runtime, and tool-agnostic direct panel egress (bypass any TUN/HTTP proxy).
     `/root/codex-backups/windows-installer-20260911-29/`; served sha256 and
     size verified on both the Cloudflare and Aliyun entrances.
 
+## Linux client runtime 2026.09.12.1 (published 2026-09-11)
+
+- Published the queued linux fix from 21dece57: `client-agent/install_forward_runtime.py`
+  now passes `udp_queue_packets=256` (was 64), matching the Windows/macOS
+  hosts.
+- versions.json `install_forward_runtime` -> 2026.09.12.1,
+  sha256 `c6367cda4ad1200396cb961830e2d78d397f005cbcbf171a2ddfa36539b680aa`,
+  95,477 bytes. Agents pick it up through
+  `desired_install_forward_runtime_sha256` on their next poll.
+- Backup: `/root/codex-backups/linux-runtime-20260912/`; served artifact and
+  manifest verified on the Cloudflare entrance.
+
+## Android status
+
+- No rebuild was required: the only Android-side change after APK 0.2.24 was
+  the signing-key rotation, which re-signed and republished the same 0.2.24
+  build (sha `aa7444b6…`). App sources and the Ultra runtime were unchanged.
+
 ## Verification
 
 - Integration solution tests: Core 435/435, App 97/97, Mac 170/170.
