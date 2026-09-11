@@ -85,8 +85,8 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             {
                 if (eventArgs.Data is null)
                     return;
-                Log.Warning("process_stderr for forward {ForwardId} [{Role}]", forwardId, role);
-                _onOutput?.Invoke(forwardId, label, "process_stderr");
+                Log.Warning("[fwd-{ForwardId}/{Role}] stderr: {Line}", forwardId, role, eventArgs.Data);
+                _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
             };
             process.Exited += (_, _) => ProcessExited?.Invoke(forwardId, role);
 

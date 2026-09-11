@@ -111,10 +111,45 @@ public sealed class MacProcessSupervisorTests
         supervisor.Dispose();
     }
 
+    [Fact]
+    public void StartProcess_ForwardsActualStderrLineInsteadOfGenericMarker()
+    {
+        var output = new List<string>();
+        using var supervisor = new MacProcessSupervisor(
+            onOutput: (_, _, line) =>
+            {
+                lock (output)
+                    output.Add(line);
+            },
+            setProcessGroup: (_, _) => 0,
+            signalProcessGroup: (_, _) => 0);
+        var (executable, arguments) = StderrCommand();
+
+        using var process = supervisor.StartProcess(44, "ultra-runtime", "Ultra runtime", executable, arguments);
+        process.WaitForExit(2000);
+        Assert.True(SpinWait.SpinUntil(() =>
+        {
+            lock (output)
+                return output.Any(line => line.EndsWith("probe-line", StringComparison.Ordinal));
+        }, TimeSpan.FromSeconds(2)));
+        lock (output)
+        {
+            Assert.Contains(output, line => line.EndsWith("probe-line", StringComparison.Ordinal));
+            Assert.DoesNotContain("process_stderr", output);
+        }
+    }
+
     private static (string Executable, string Arguments) LongRunningCommand()
     {
         return OperatingSystem.IsWindows()
             ? ("powershell.exe", "-NoProfile -Command Start-Sleep -Seconds 30")
             : ("/bin/sleep", "30");
+    }
+
+    private static (string Executable, string Arguments) StderrCommand()
+    {
+        return OperatingSystem.IsWindows()
+            ? ("powershell.exe", "-NoProfile -Command [Console]::Error.WriteLine('probe-line'); Start-Sleep -Seconds 1")
+            : ("/bin/sh", "-c \"printf 'probe-line\\n' >&2; sleep 1\"");
     }
 }

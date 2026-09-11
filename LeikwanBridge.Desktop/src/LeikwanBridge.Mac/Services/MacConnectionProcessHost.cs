@@ -24,17 +24,23 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<ProcessStartInfo, Process> _processStarter;
     private readonly Func<string, MacConnectionMode, CancellationToken, Task<bool>>? _readinessProbe;
+    private readonly Func<IMacCommandRunner> _commandRunnerFactory;
+    private readonly Func<bool> _isMacOs;
     private readonly TimeSpan _startupTimeout;
     private Run? _run;
 
     public MacConnectionProcessHost(
         Func<ProcessStartInfo, Process>? processStarter = null,
         Func<string, MacConnectionMode, CancellationToken, Task<bool>>? readinessProbe = null,
-        TimeSpan? startupTimeout = null)
+        TimeSpan? startupTimeout = null,
+        Func<IMacCommandRunner>? commandRunnerFactory = null,
+        Func<bool>? isMacOs = null)
     {
         _processStarter = processStarter ?? (info => Process.Start(info)
             ?? throw new InvalidOperationException("connection_process_start_failed"));
         _readinessProbe = readinessProbe;
+        _commandRunnerFactory = commandRunnerFactory ?? (() => new MacCommandRunner());
+        _isMacOs = isMacOs ?? OperatingSystem.IsMacOS;
         _startupTimeout = startupTimeout ?? TimeSpan.FromSeconds(90);
     }
 
@@ -59,6 +65,15 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                     port = config.RootElement.GetProperty("inbounds")[0].GetProperty("listen_port").GetInt32();
                     managesSystemProxy = config.RootElement.GetProperty("inbounds")[0]
                         .TryGetProperty("set_system_proxy", out var enabled) && enabled.GetBoolean();
+                    if (managesSystemProxy && _isMacOs())
+                    {
+                        // A crash or forced quit can leave WinINet-equivalent
+                        // macOS proxy flags behind after the local listener is
+                        // gone. Clear only the exact loopback endpoint owned by
+                        // this connection before testing port readiness.
+                        await ClearOwnedSystemProxyAsync(port, _commandRunnerFactory()).ConfigureAwait(false);
+                        Log.Information("mac stale system proxy cleanup complete port={Port}", port);
+                    }
                     if (await ProbePortAsync(port, ct).ConfigureAwait(false))
                         throw new InvalidOperationException("connection_port_in_use");
                 }
@@ -184,9 +199,9 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
             run.Process.Dispose();
             DeleteFile(run.ErrorPath);
             DeleteFile(run.DnsPath);
-            if (OperatingSystem.IsMacOS() && run.ManagedProxyPort > 0)
+            if (_isMacOs() && run.ManagedProxyPort > 0)
             {
-                try { await ClearOwnedSystemProxyAsync(run.ManagedProxyPort, new MacCommandRunner()).ConfigureAwait(false); }
+                try { await ClearOwnedSystemProxyAsync(run.ManagedProxyPort, _commandRunnerFactory()).ConfigureAwait(false); }
                 catch (Exception) { Log.Warning("mac system proxy cleanup failed"); }
             }
         }

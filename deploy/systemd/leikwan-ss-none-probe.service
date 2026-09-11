@@ -1,0 +1,30 @@
+[Unit]
+Description=LeiKwan Shadowsocks none TCP+UDP availability probe
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=leikwan-probe
+Group=leikwan-probe
+ExecStart=/usr/bin/python3 /usr/local/libexec/leikwan-ss-none-probe/ss-none-availability-probe.py --config /etc/leikwan-ss-none-probe/config.json
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/leikwan-ss-none-probe
+
+[Install]
+WantedBy=multi-user.target
