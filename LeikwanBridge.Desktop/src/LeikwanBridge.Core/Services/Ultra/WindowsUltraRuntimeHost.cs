@@ -55,7 +55,11 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             {
                 var preflight = _portPreflight(forward.ListenPort);
                 if (preflight.Blocked)
+                {
+                    Log.Warning("Ultra forward {ForwardId}: local port preflight blocked port {Port} code={Code} foreignPid={ForeignPid}",
+                        forward.ForwardId, forward.ListenPort, preflight.ConflictCode, preflight.ForeignPid);
                     throw new InvalidOperationException("ultra_port_conflict");
+                }
                 if (preflight.QuiescedPids.Count > 0)
                 {
                     Log.Information("Ultra forward {ForwardId}: quiesced managed-old owners {Pids}",

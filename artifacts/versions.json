@@ -502,8 +502,8 @@
   "windows_client_app": {
     "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
     "path": "artifacts/windows/leikwan-bridge-setup.exe",
-    "sha256": "61c47e4dc2c157974b87b7488fc12712f03c93a7ae3ae99ae557cc0101760023",
-    "size_bytes": 116979470,
+    "sha256": "359cb696d3cd481a5337a6c15148ed6fec5ba372890909b359ad575c95ede29d",
+    "size_bytes": 69466713,
     "runtime_sha256": {
       "ultra_client_runtime_windows": "62174c051552d4b127c7a5d7fd692512f5ab9afa59520b6463e28c3da5454f4b",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",

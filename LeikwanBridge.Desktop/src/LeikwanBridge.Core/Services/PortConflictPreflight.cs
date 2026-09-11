@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
@@ -99,13 +101,17 @@ public static class PortConflictPreflight
         Func<int, string?> pidToExe,
         string? installRoot,
         Action<int> killProcess,
-        TimeSpan? quiesceTimeout = null)
+        TimeSpan? quiesceTimeout = null,
+        Func<int, bool>? portExcluded = null)
     {
         var classification = Classify(ownerEnumerator(port), managedCurrentPids, pidToExe, installRoot);
 
         switch (classification.Class)
         {
             case PortOwnerClass.Free:
+                if ((portExcluded ?? IsPortExcludedByWindows)(port))
+                    return new PortPreflightResult(true, "PORT_EXCLUDED", 0, []);
+                return new PortPreflightResult(false, string.Empty, 0, []);
             case PortOwnerClass.ManagedCurrent:
                 return new PortPreflightResult(false, string.Empty, 0, []);
             case PortOwnerClass.Foreign:
@@ -145,7 +151,40 @@ public static class PortConflictPreflight
             PortOwnerEnumerator.ResolveExecutablePath,
             installRoot,
             KillTree,
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5),
+            IsPortExcludedByWindows);
+    }
+
+    /// <summary>
+    /// Detects Windows excluded-port ranges without parsing localized netsh
+    /// output. A free port that rejects a bind with AccessDenied is reserved by
+    /// the OS; AddressAlreadyInUse remains an owner-classification concern.
+    /// </summary>
+    public static bool IsPortExcludedByWindows(int port)
+    {
+        if (!OperatingSystem.IsWindows() || port is < 1 or > 65535)
+            return false;
+
+        return BindIsAccessDenied(SocketType.Stream, ProtocolType.Tcp, port)
+            || BindIsAccessDenied(SocketType.Dgram, ProtocolType.Udp, port);
+    }
+
+    private static bool BindIsAccessDenied(SocketType socketType, ProtocolType protocolType, int port)
+    {
+        using var socket = new Socket(AddressFamily.InterNetwork, socketType, protocolType);
+        try
+        {
+            socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            return false;
+        }
+        catch (SocketException exception)
+        {
+            return exception.SocketErrorCode == SocketError.AccessDenied;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static IReadOnlyCollection<int> ManagedPids(ProcessSupervisor supervisor)

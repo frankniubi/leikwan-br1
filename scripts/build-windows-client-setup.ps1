@@ -149,6 +149,17 @@ Require-File $appExe
 if (-not (Test-Path -LiteralPath $appBuildDir)) {
     throw "required app build directory missing: $appBuildDir"
 }
+
+$publishedAppVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe).FileVersion
+$builtAppPath = Join-Path $appBuildDir "LeikwanBridge.App.exe"
+Require-File $builtAppPath
+$builtAppVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($builtAppPath).FileVersion
+if ([string]::IsNullOrWhiteSpace($publishedAppVersion) -or [string]::IsNullOrWhiteSpace($builtAppVersion)) {
+    throw "unable to read Windows app versions from publish/build outputs"
+}
+if ($publishedAppVersion -ne $builtAppVersion) {
+    throw "Windows app publish version mismatch: publish=$publishedAppVersion build=$builtAppVersion; republish before packaging"
+}
 $BondExe = Resolve-InputFile -ConfiguredPath $BondExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('BondExe') -Fallbacks @(
     "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
     "artifacts/windows/rebuild_payload/leikwan-bond.exe"
@@ -295,7 +306,7 @@ if ([string]::IsNullOrWhiteSpace($outputDir)) {
     throw "output setup directory missing for $OutputSetup"
 }
 
-$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe).FileVersion
+$version = $publishedAppVersion
 $compileArgs = @(
     "/DAppVersion=$version",
     "/DStageDir=$([System.IO.Path]::GetFullPath($StageDir))",

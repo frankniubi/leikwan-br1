@@ -119,4 +119,38 @@ public sealed class PortConflictPreflightTests
         Assert.Equal(999, result.ForeignPid);
         Assert.Empty(killed);
     }
+
+    [Fact]
+    public void Run_BlocksFreePortWhenWindowsExcludesIt()
+    {
+        var result = PortConflictPreflight.Run(
+            54544,
+            [],
+            _ => [],
+            _ => null,
+            InstallRoot,
+            _ => { },
+            quiesceTimeout: TimeSpan.Zero,
+            portExcluded: _ => true);
+
+        Assert.True(result.Blocked);
+        Assert.Equal("PORT_EXCLUDED", result.ConflictCode);
+        Assert.Equal(0, result.ForeignPid);
+    }
+
+    [Fact]
+    public void Run_DoesNotProbeExcludedPortWhenManagedCurrentOwnerExists()
+    {
+        var result = PortConflictPreflight.Run(
+            30522,
+            [55],
+            _ => [new PortOwner("tcp", "127.0.0.1", 30522, 55)],
+            _ => null,
+            InstallRoot,
+            _ => { },
+            quiesceTimeout: TimeSpan.Zero,
+            portExcluded: _ => throw new InvalidOperationException("should not probe owned port"));
+
+        Assert.False(result.Blocked);
+    }
 }
