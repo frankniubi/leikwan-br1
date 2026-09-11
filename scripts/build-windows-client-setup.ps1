@@ -129,6 +129,7 @@ function Resolve-IsccPath {
         "C:\Program Files (x86)\Inno Setup 5\ISCC.exe",
         "C:\Program Files\Inno Setup 5\ISCC.exe",
         "C:\Tools\Inno Setup 6\ISCC.exe",
+        (Join-Path $env:USERPROFILE "Tools\Inno Setup 6\ISCC.exe"),
         "C:\Tools\Inno Setup\ISCC.exe"
     )
 
