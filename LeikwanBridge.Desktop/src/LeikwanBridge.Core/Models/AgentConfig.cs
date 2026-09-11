@@ -14,6 +14,11 @@ public sealed class AgentConfig
     [JsonPropertyName("remember_login_info")]
     public bool RememberLoginInfo { get; set; } = true;
 
+    // macOS only: opts the secret store back into the legacy login-keychain
+    // backend instead of the default private file store.
+    [JsonPropertyName("use_mac_keychain")]
+    public bool UseMacKeychain { get; set; }
+
     [JsonPropertyName("client_id")]
     public int ClientId { get; set; }
 
