@@ -382,10 +382,10 @@
     "install_url": "/artifacts/install-tcp-accel.sh",
     "note": "Debian 12 self-contained tcp-accel role installer for client/slave/sidecar; installs dependencies and systemd units without external build steps.",
     "path": "install/install-tcp-accel.sh",
-    "sha256": "4a9f40040669265225c77e1ee0e411795c43aa1b6c3be11adddd43cbe8764017",
-    "size": 8467,
-    "size_bytes": 8467,
-    "version": "2026.08.10.1"
+    "sha256": "9cdabfb1e47a6daf1dc66677271da59a79019458d2b77339dbca95dad4d5fbc4",
+    "size": 8778,
+    "size_bytes": 8778,
+    "version": "2026.09.11.1"
   },
   "tcp_accel_runtime": {
     "artifact_url": "/artifacts/leikwan-tcp-accel.py",
