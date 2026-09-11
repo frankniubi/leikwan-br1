@@ -2,8 +2,12 @@
 param(
     [string]$OutputPath = "",
     [string]$Keystore = "",
-    [string]$KeyAlias = "leikwan-android-unstable",
+    [string]$KeyAlias = "leikwan-android-release",
     [string]$PasswordFile = "",
+    [string]$Lineage = "",
+    [string]$NextSignerKeystore = "",
+    [string]$NextSignerKeyAlias = "",
+    [string]$NextSignerPasswordFile = "",
     [string]$SdkRoot = "",
     [string]$RuntimeVersion = "2026.09.01.1",
     [switch]$SkipRuntimeBuild
@@ -20,7 +24,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 
 if ([string]::IsNullOrWhiteSpace($Keystore)) {
-    $Keystore = Join-Path $env:USERPROFILE ".android\leikwan-android-unstable-20260827.jks"
+    $Keystore = Join-Path $env:USERPROFILE ".android\leikwan-android-release.jks"
 }
 if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
     $PasswordFile = [System.IO.Path]::ChangeExtension($Keystore, ".pass")
@@ -29,6 +33,27 @@ $Keystore = [System.IO.Path]::GetFullPath($Keystore)
 $PasswordFile = [System.IO.Path]::GetFullPath($PasswordFile)
 if (-not (Test-Path -LiteralPath $Keystore -PathType Leaf)) { throw "keystore not found: $Keystore" }
 if (-not (Test-Path -LiteralPath $PasswordFile -PathType Leaf)) { throw "keystore password file not found" }
+
+# Key rotation (v3 lineage): every build since 2026-09-11 must be signed with the
+# release key plus the lineage file, and the previous (unstable) key must co-sign
+# the v1/v2 blocks via --next-signer so Android 7-12 devices keep accepting the
+# update. Never sign with the old key alone again.
+if ([string]::IsNullOrWhiteSpace($Lineage)) {
+    $Lineage = Join-Path $env:USERPROFILE ".android\leikwan-android-release-lineage.pem"
+}
+$Lineage = [System.IO.Path]::GetFullPath($Lineage)
+if (-not (Test-Path -LiteralPath $Lineage -PathType Leaf)) { throw "signing lineage not found: $Lineage" }
+if ([string]::IsNullOrWhiteSpace($NextSignerKeystore)) {
+    $NextSignerKeystore = Join-Path $env:USERPROFILE ".android\leikwan-android-unstable-20260827.jks"
+}
+$NextSignerKeystore = [System.IO.Path]::GetFullPath($NextSignerKeystore)
+if ([string]::IsNullOrWhiteSpace($NextSignerKeyAlias)) { $NextSignerKeyAlias = "leikwan-android-unstable" }
+if ([string]::IsNullOrWhiteSpace($NextSignerPasswordFile)) {
+    $NextSignerPasswordFile = [System.IO.Path]::ChangeExtension($NextSignerKeystore, ".pass")
+}
+$NextSignerPasswordFile = [System.IO.Path]::GetFullPath($NextSignerPasswordFile)
+if (-not (Test-Path -LiteralPath $NextSignerKeystore -PathType Leaf)) { throw "next-signer keystore not found" }
+if (-not (Test-Path -LiteralPath $NextSignerPasswordFile -PathType Leaf)) { throw "next-signer password file not found" }
 
 $sdkCandidates = if ([string]::IsNullOrWhiteSpace($SdkRoot)) {
     @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, (Join-Path $env:LOCALAPPDATA "Android\Sdk"), (Join-Path $env:USERPROFILE "Android\Sdk"))
@@ -66,6 +91,7 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Split-Path -Parent $OutputPath) -Force | Out-Null
 
 $oldSignPass = [Environment]::GetEnvironmentVariable("LK_SIGN_PASS", "Process")
+$oldNextPass = [Environment]::GetEnvironmentVariable("LK_NEXT_PASS", "Process")
 $oldAndroidHome = [Environment]::GetEnvironmentVariable("ANDROID_HOME", "Process")
 $oldAndroidSdkRoot = [Environment]::GetEnvironmentVariable("ANDROID_SDK_ROOT", "Process")
 $result = $null
@@ -74,6 +100,8 @@ try {
     $env:ANDROID_SDK_ROOT = $sdk
     $env:LK_SIGN_PASS = (Get-Content -LiteralPath $PasswordFile -Raw).Trim()
     if ([string]::IsNullOrWhiteSpace($env:LK_SIGN_PASS)) { throw "keystore password is empty" }
+    $env:LK_NEXT_PASS = (Get-Content -LiteralPath $NextSignerPasswordFile -Raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($env:LK_NEXT_PASS)) { throw "next-signer keystore password is empty" }
 
     if (-not $SkipRuntimeBuild) {
         & (Join-Path $repoRoot "scripts\build-ultra-android.ps1") -Version $RuntimeVersion -Architectures "arm64-v8a,x86_64"
@@ -95,6 +123,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
     & $apksigner sign "--ks" $Keystore "--ks-key-alias" $KeyAlias `
         "--ks-pass" "env:LK_SIGN_PASS" "--key-pass" "env:LK_SIGN_PASS" `
+        "--lineage" $Lineage `
+        "--next-signer" "--ks" $NextSignerKeystore "--ks-key-alias" $NextSignerKeyAlias `
+        "--ks-pass" "env:LK_NEXT_PASS" "--key-pass" "env:LK_NEXT_PASS" `
         "--v1-signing-enabled" "true" "--v2-signing-enabled" "true" `
         "--v3-signing-enabled" "true" "--v4-signing-enabled" "false" `
         "--out" $signedPath $alignedPath
@@ -141,6 +172,7 @@ try {
     $result | ConvertTo-Json -Compress
 } finally {
     if ($null -eq $oldSignPass) { Remove-Item Env:LK_SIGN_PASS -ErrorAction SilentlyContinue } else { $env:LK_SIGN_PASS = $oldSignPass }
+    if ($null -eq $oldNextPass) { Remove-Item Env:LK_NEXT_PASS -ErrorAction SilentlyContinue } else { $env:LK_NEXT_PASS = $oldNextPass }
     if ($null -eq $oldAndroidHome) { Remove-Item Env:ANDROID_HOME -ErrorAction SilentlyContinue } else { $env:ANDROID_HOME = $oldAndroidHome }
     if ($null -eq $oldAndroidSdkRoot) { Remove-Item Env:ANDROID_SDK_ROOT -ErrorAction SilentlyContinue } else { $env:ANDROID_SDK_ROOT = $oldAndroidSdkRoot }
     Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
