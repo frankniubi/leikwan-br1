@@ -54,6 +54,154 @@ func TestNativeSocks5ConnectRequestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNativeStreamCandidateDialRetriesSiblingAndReportsFailure(t *testing.T) {
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	policy.Protocol = nativeSocks5Protocol
+	policy.Purpose = nativeSocks5Purpose
+	policy.Native = true
+	policy.Transport = "tcp+udp"
+	policy.TargetDigest = strings.Repeat("b", 64)
+	policy.Direction = "Hong Kong to Mainland China"
+	policy.RouteScope = "global"
+	policy.RoutePolicy = string(nativeRoutePolicyUnrestricted)
+	first := testLease(policy, strings.Repeat("c", 64))
+	first.Transport = policy.Transport
+	first.CandidateKeyHash = strings.Repeat("d", 64)
+	second := testLease(policy, strings.Repeat("e", 64))
+	second.Transport = policy.Transport
+	second.SelectionRef = "native-selection-reference-second"
+	second.CandidateKeyHash = strings.Repeat("f", 64)
+	store := NewPolicyStore(Config{ForwardID: policy.ForwardID, NativeSocks5: true, Target: "1.1.1.1:443", NativeRoutePolicy: nativeRoutePolicyUnrestricted})
+	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
+		t.Fatalf("replace batch: %v", err)
+	}
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	defer status.Close()
+	snapshot, ok := store.Snapshot()
+	if !ok {
+		t.Fatal("missing native snapshot")
+	}
+	var attempts []string
+	connection, selected, err := dialNativeStreamWithCandidates(
+		context.Background(), store, snapshot, "example.com", 443, time.Second,
+		func(lease ProviderLease, _ string, _ int, _ time.Duration) (net.Conn, error) {
+			attempts = append(attempts, lease.CandidateKeyHash)
+			if lease.CandidateKeyHash == first.CandidateKeyHash {
+				return nil, errors.New("provider timeout")
+			}
+			left, right := net.Pipe()
+			_ = right.Close()
+			return left, nil
+		}, status)
+	if err != nil {
+		t.Fatalf("native candidate dial: %v", err)
+	}
+	defer connection.Close()
+	defer selected.wipe()
+	if !strings.EqualFold(selected.CandidateKeyHash, second.CandidateKeyHash) {
+		t.Fatalf("selected candidate=%q, want sibling", selected.CandidateKeyHash)
+	}
+	if len(attempts) != 2 || attempts[0] != first.CandidateKeyHash || attempts[1] != second.CandidateKeyHash {
+		t.Fatalf("candidate attempts=%v, want first then sibling", attempts)
+	}
+	status.mu.Lock()
+	defer status.mu.Unlock()
+	if len(status.status.CandidateFeedback) != 1 {
+		t.Fatalf("candidate feedback=%d, want one failure", len(status.status.CandidateFeedback))
+	}
+	feedback := status.status.CandidateFeedback[0]
+	if feedback.CandidateKeyHash != first.CandidateKeyHash || feedback.Protocol != "tcp" || feedback.Reason != "relay_connect_timeout" {
+		t.Fatalf("candidate feedback=%+v", feedback)
+	}
+}
+
+func TestNativeAssociationCandidatesRetrySiblingAndReportFailure(t *testing.T) {
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	policy.Protocol = nativeSocks5Protocol
+	policy.Purpose = nativeSocks5Purpose
+	policy.Native = true
+	policy.Transport = "tcp+udp"
+	policy.TargetDigest = strings.Repeat("b", 64)
+	policy.Direction = "Hong Kong to Mainland China"
+	policy.RouteScope = "global"
+	policy.RoutePolicy = string(nativeRoutePolicyUnrestricted)
+	first := testLease(policy, strings.Repeat("c", 64))
+	first.Transport = policy.Transport
+	first.CandidateKeyHash = strings.Repeat("d", 64)
+	second := testLease(policy, strings.Repeat("e", 64))
+	second.Transport = policy.Transport
+	second.Port++
+	second.SelectionRef = "native-selection-reference-second"
+	second.CandidateKeyHash = strings.Repeat("f", 64)
+	config := Config{ForwardID: policy.ForwardID, NativeSocks5: true, Target: "1.1.1.1:443", NativeRoutePolicy: nativeRoutePolicyUnrestricted, ConnectTimeoutSecs: 2}
+	store := NewPolicyStore(config)
+	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
+		t.Fatalf("replace batch: %v", err)
+	}
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	defer status.Close()
+	var attempts []string
+	session, selected, err := armNativeAssociationCandidates(
+		context.Background(), store, config, status,
+		func(lease ProviderLease, _ time.Duration) (*DatagramSession, error) {
+			attempts = append(attempts, lease.CandidateKeyHash)
+			if lease.CandidateKeyHash == first.CandidateKeyHash {
+				return nil, errors.New("provider timeout")
+			}
+			return &DatagramSession{}, nil
+		})
+	if err != nil {
+		t.Fatalf("native UDP candidate arm: %v", err)
+	}
+	defer session.Close()
+	defer selected.wipe()
+	if selected.CandidateKeyHash != second.CandidateKeyHash {
+		t.Fatalf("selected candidate=%q, want sibling", selected.CandidateKeyHash)
+	}
+	if len(attempts) != 2 || attempts[0] != first.CandidateKeyHash || attempts[1] != second.CandidateKeyHash {
+		t.Fatalf("candidate attempts=%v, want first then sibling", attempts)
+	}
+	status.mu.Lock()
+	defer status.mu.Unlock()
+	if len(status.status.CandidateFeedback) != 1 {
+		t.Fatalf("candidate feedback=%d, want one failure", len(status.status.CandidateFeedback))
+	}
+	feedback := status.status.CandidateFeedback[0]
+	if feedback.CandidateKeyHash != first.CandidateKeyHash || feedback.Protocol != "udp" || feedback.Reason != "udp_association_failed" {
+		t.Fatalf("candidate feedback=%+v", feedback)
+	}
+}
+
+func TestNativeAssociationFailureReportsOnceAndMarksCandidate(t *testing.T) {
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	lease := testLease(policy, strings.Repeat("b", 64))
+	lease.CandidateKeyHash = strings.Repeat("c", 64)
+	config := testPolicyConfig()
+	store := NewPolicyStore(config)
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatalf("replace lease: %v", err)
+	}
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	defer status.Close()
+	association := &nativeSocks5UDPAssociation{
+		candidateKeyHash: lease.CandidateKeyHash,
+		leaseHash:        strings.Repeat("d", 64),
+		selectionRef:     lease.SelectionRef,
+		policyGeneration: policy.PolicyGeneration,
+	}
+	runtime := &nativeSocks5Runtime{config: config, store: store, status: status}
+	association.recordCandidateFailure(runtime, "udp", "udp_association_failed", errors.New("provider closed"))
+	association.recordCandidateFailure(runtime, "udp", "udp_association_failed", errors.New("provider closed"))
+	status.mu.Lock()
+	defer status.mu.Unlock()
+	if status.status.HAFailures != 1 || len(status.status.CandidateFeedback) != 1 {
+		t.Fatalf("failure evidence=%+v", status.status)
+	}
+	if status.status.CandidateFeedback[0].CandidateKeyHash != lease.CandidateKeyHash {
+		t.Fatalf("candidate feedback=%+v", status.status.CandidateFeedback[0])
+	}
+}
+
 func TestNativeSocks5UdpDatagramPreservesDestination(t *testing.T) {
 	payload := []byte("dns-payload")
 	packet, err := makeNativeSocks5UDPDatagram("1.1.1.1", 53, payload)
