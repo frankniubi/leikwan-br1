@@ -75,6 +75,94 @@ if (($audited['access_class'] ?? '') !== 'dynamic_ingress'
     failUltraInventory('audited line classifications were not preserved');
 }
 
+// Carrier metadata (2026-09-11): source hosts report 电信/联通/移动/通用, the catalog
+// stores a stable code so single-carrier lines can be filtered and classified.
+$carrier = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 993,
+    'title' => '香港-韩国',
+    'isp' => '联通',
+    'provider' => '层峰',
+    'in_line_type' => 3,
+    'config_sha256' => str_repeat('f', 64),
+], $zones, 1_893_456_000);
+if (($carrier['isp'] ?? '') !== 'unicom'
+    || ($carrier['provider'] ?? '') !== '层峰'
+    || ($carrier['in_line_type'] ?? null) !== 3) {
+    failUltraInventory('carrier metadata was not normalized and stored');
+}
+
+$carrierCodes = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 327,
+    'title' => '上海-韩国',
+    'isp' => 'telecom',
+    'config_sha256' => str_repeat('9', 64),
+], $zones, 1_893_456_000);
+if (($carrierCodes['isp'] ?? '') !== 'telecom' || ($carrierCodes['provider'] ?? null) !== null) {
+    failUltraInventory('english carrier codes must normalize as well');
+}
+
+$carrierUnknown = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 994,
+    'title' => 'X',
+    'isp' => 'not-a-carrier',
+    'provider' => str_repeat('p', 200),
+    'config_sha256' => str_repeat('a', 64),
+], $zones, 1_893_456_000);
+if (($carrierUnknown['isp'] ?? '') !== 'unknown'
+    || strlen((string) ($carrierUnknown['provider'] ?? '')) !== 64) {
+    failUltraInventory('unknown carrier must degrade to unknown and provider must be bounded');
+}
+
+// Tencent-marked entries are dispatched last (2026-09-11).
+if (UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'title' => '北京-德国-BGP']) !== 'low'
+    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => '上海-日本-BGP-腾讯云【本土】']) !== 'low'
+    || UltraInventoryService::dispatchClass(['provider' => '层峰', 'title' => '上海-韩国-电信']) !== 'normal'
+    || UltraInventoryService::dispatchClass([]) !== 'normal') {
+    failUltraInventory('tencent-marked entries must be classified as low dispatch priority');
+}
+$dispatch = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 493,
+    'title' => '北京-德国-BGP-腾讯云',
+    'provider' => '腾讯云',
+    'config_sha256' => str_repeat('7', 64),
+], $zones, 1_893_456_000);
+if (($dispatch['dispatch_class'] ?? '') !== 'low') {
+    failUltraInventory('dispatch class must be persisted by the inventory normalizer');
+}
+$normalPriority = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 494,
+    'title' => '北京-德国-BGP-层峰',
+    'provider' => '层峰',
+    'config_sha256' => str_repeat('8', 64),
+], $zones, 1_893_456_000);
+if (($normalPriority['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('unmarked entries must stay normal priority');
+}
+
+// Direction is derived from the resolved catalog zones; an admin choice survives
+// because the upsert only fills an "unknown" value.
+foreach ([
+    ['beijing', 'frankfurt', 'cn_to_intl'],
+    ['frankfurt', 'beijing', 'intl_to_cn'],
+    ['shanghai', 'guangzhou', 'domestic'],
+    ['hong-kong', 'tokyo', 'unknown'],
+    ['unknown', 'beijing', 'unknown'],
+] as [$from, $to, $expected]) {
+    if (UltraInventoryService::deriveDirection($from, $to) !== $expected) {
+        failUltraInventory('direction derivation wrong for ' . $from . ' -> ' . $to);
+    }
+}
+$directed = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 453,
+    'title' => '北京-德国-BGP-层峰',
+    'catalog_ingress' => '北京',
+    'catalog_destination' => '德国',
+    'config_sha256' => str_repeat('6', 64),
+], $zones, 1_893_456_000);
+if (($directed['direction_class'] ?? '') !== 'cn_to_intl') {
+    failUltraInventory('inventory normalization must derive the direction class');
+}
+
 $catalogNormalized = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 453,
     'title' => 'ambiguous title containing 北京 and 上海 and 美国',
@@ -126,6 +214,15 @@ foreach ([
     'catalog_ingress_label',
     'catalog_destination_label',
     'ON DUPLICATE KEY UPDATE',
+    "'isp' => self::normalizeIsp(",
+    "in_line_type = VALUES(in_line_type)",
+    'isp = VALUES(isp)',
+    'provider = VALUES(provider)',
+    'dispatch_class = VALUES(dispatch_class)',
+    "'ul.isp = :isp'",
+    "'ul.dispatch_class = :dispatch_class'",
+    "'direction_class' => self::deriveDirection(",
+    "WHEN ultra_lines.direction_class = \'unknown\' THEN VALUES(direction_class)",
 ] as $needle) {
     if (!str_contains((string) $source, $needle)) {
         failUltraInventory('missing inventory persistence boundary: ' . $needle);

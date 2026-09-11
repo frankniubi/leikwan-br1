@@ -21,6 +21,7 @@ use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\MermaidSourcePolicy;
+use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\UltraClientStatusService;
@@ -2292,6 +2293,7 @@ final class AdminController extends BaseController
                 <form class="inline" method="post" action="/admin/republish/client/' . (int) $client['id'] . '"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Republish</button></form>
                 <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/diagnose"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Run Diagnostics</button></form>
                 <form class="inline" method="post" action="/admin/clients/' . $clientId . '/request-update"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Request Update</button></form>
+                <form class="inline" method="post" action="/admin/clients/' . $clientId . '/openwrt-pairing-code"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">OpenWrt Pairing Code</button></form>
                 ' . $assignedForwardSummary . $installDetails . '
                 <details><summary>Diagnostics</summary><div class="muted">Status: ' . $this->escape((string) ($client['last_diag_status'] ?? '')) . '</div><div class="muted">Last Run: ' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</div><div class="muted">Error: ' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</div><div>' . $diagItems . '</div></details>
                 <details><summary>Usage Calendar</summary>' . $usagePanel . '</details>
@@ -3203,6 +3205,8 @@ final class AdminController extends BaseController
                 'native_socks5_state' => $request->input('native_socks5_state', ''),
                 'direction_class' => $request->input('direction_class', ''),
                 'pricing_class' => $request->input('pricing_class', ''),
+                'isp' => $request->input('isp', ''),
+                'dispatch_class' => $request->input('dispatch_class', ''),
                 'include_absent' => $request->input('include_absent', ''),
             ], $limit, $offset);
             $ingressZones = $inventory->activeZones('ingress');
@@ -3248,8 +3252,22 @@ final class AdminController extends BaseController
                     $directionOptions .= '<option value="' . $this->escape($option) . '"' . ((string) ($line['direction_class'] ?? 'unknown') === $option ? ' selected' : '') . '>' . $this->escape($directionLabels[$option] ?? $option) . '</option>';
                 }
                 $directionLabel = $directionLabels[(string) ($line['direction_class'] ?? 'unknown')] ?? 'Unknown';
+                $carrierLabel = match ((string) ($line['isp'] ?? 'unknown')) {
+                    'telecom' => 'Telecom',
+                    'unicom' => 'Unicom',
+                    'mobile' => 'Mobile',
+                    'generic' => 'Generic / BGP',
+                    default => 'Unknown',
+                };
+                $providerLabel = trim((string) ($line['provider'] ?? ''));
+                $inLineType = $line['in_line_type'] ?? null;
+                $carrierCell = $this->escape($carrierLabel)
+                    . ($providerLabel !== '' ? '<br><span class="muted">' . $this->escape($providerLabel) . '</span>' : '')
+                    . ($inLineType !== null ? '<br><span class="muted">in_type: ' . (int) $inLineType . '</span>' : '')
+                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '');
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
+                    . '<td>' . $carrierCell . '</td>'
                     . '<td>' . $this->escape((string) ($line['access_class'] ?? 'unknown')) . '<br><span class="muted">Direction: ' . $this->escape($directionLabel) . '<br>UDP: ' . $this->escape((string) ($line['native_udp_state'] ?? 'unknown')) . '<br>SOCKS5: ' . $this->escape((string) ($line['native_socks5_state'] ?? 'unknown')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['pricing_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['pricing_evidence'] ?? '')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['catalog_ingress_label'] ?? '')) . '</td>'
@@ -3268,7 +3286,7 @@ final class AdminController extends BaseController
                     . '<input name="notes" value="' . $this->escape((string) ($line['notes'] ?? '')) . '" placeholder="Notes"><button class="button" type="submit">Save</button></form></td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="13" class="muted">No discovered Ultra lines.</td></tr>';
+                $rows = '<tr><td colspan="14" class="muted">No discovered Ultra lines.</td></tr>';
             }
             $catalogIngressFilter = $this->escape((string) $request->input('catalog_ingress', ''));
             $catalogDestinationFilter = $this->escape((string) $request->input('catalog_destination', ''));
@@ -3276,6 +3294,17 @@ final class AdminController extends BaseController
             $nativeStateFilter = $this->escape((string) $request->input('native_udp_state', ''));
             $nativeSocks5StateFilter = $this->escape((string) $request->input('native_socks5_state', ''));
             $pricingFilter = $this->escape((string) $request->input('pricing_class', ''));
+            $dispatchRawFilter = strtolower(trim((string) $request->input('dispatch_class', '')));
+            $dispatchOptions = '<option value="">Any priority</option>';
+            foreach (['normal' => 'Normal', 'low' => 'Low priority'] as $dispatchValue => $dispatchLabel) {
+                $dispatchOptions .= '<option value="' . $dispatchValue . '"' . ($dispatchRawFilter === $dispatchValue ? ' selected' : '') . '>' . $dispatchLabel . '</option>';
+            }
+            $ispRawFilter = trim((string) $request->input('isp', ''));
+            $ispFilterValue = UltraInventoryService::normalizeIsp($ispRawFilter);
+            $ispOptions = '<option value="">Any carrier</option>';
+            foreach (['telecom' => 'Telecom', 'unicom' => 'Unicom', 'mobile' => 'Mobile', 'generic' => 'Generic / BGP', 'unknown' => 'Unknown'] as $ispValue => $ispLabel) {
+                $ispOptions .= '<option value="' . $ispValue . '"' . ($ispRawFilter !== '' && $ispFilterValue === $ispValue ? ' selected' : '') . '>' . $ispLabel . '</option>';
+            }
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
                 . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
@@ -3285,9 +3314,11 @@ final class AdminController extends BaseController
                 . '<label>SOCKS5 state <input name="native_socks5_state" value="' . $nativeSocks5StateFilter . '" maxlength="32"></label>'
                 . '<label>Direction <input name="direction_class" value="' . $this->escape((string) $request->input('direction_class', '')) . '" maxlength="32"></label>'
                 . '<label>Pricing <input name="pricing_class" value="' . $pricingFilter . '" maxlength="32"></label>'
+                . '<label>Carrier <select name="isp">' . $ispOptions . '</select></label>'
+                . '<label>Dispatch <select name="dispatch_class">' . $dispatchOptions . '</select></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';
@@ -4553,6 +4584,37 @@ final class AdminController extends BaseController
             SessionAuth::flash('success', 'Diagnostics requested. Debug collection expires at ' . (string) ($debugCollection['expires_at'] ?? '') . '.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request diagnostics: ' . $throwable->getMessage());
+        }
+
+        return Response::redirect('/admin/clients');
+    }
+
+    public function createOpenWrtPairingCode(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $clientId = $this->idParam($params);
+            $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
+            if ($client === null) {
+                throw new ApiException('client_not_found', 404);
+            }
+            $pairingCodes = new OpenWrtPairingCodeService($this->db, $this->config);
+            $pairingCodes->assertAvailable();
+            $issued = $pairingCodes->issue($clientId, (int) ($viewer['id'] ?? 0));
+            // The plaintext exists only in this flash message: the panel keeps
+            // the hash, so the code can never be shown again.
+            SessionAuth::flash(
+                'success',
+                'OpenWrt pairing code for ' . (string) ($client['name'] ?? ('client ' . $clientId))
+                . ' (single use, expires ' . (string) $issued['expires_at'] . ' UTC): ' . (string) $issued['code']
+            );
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to create OpenWrt pairing code: ' . $this->displayThrowableMessage($throwable));
         }
 
         return Response::redirect('/admin/clients');

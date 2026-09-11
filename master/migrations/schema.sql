@@ -1318,6 +1318,10 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     game_id INT UNSIGNED NULL,
     area_id INT UNSIGNED NULL,
     line_type INT UNSIGNED NULL,
+    in_line_type INT UNSIGNED NULL,
+    isp VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    provider VARCHAR(64) NULL,
+    dispatch_class VARCHAR(16) NOT NULL DEFAULT 'normal',
     discovery_ip VARCHAR(64) NULL,
     catalog_ingress_label VARCHAR(191) NULL,
     catalog_destination_label VARCHAR(191) NULL,
@@ -1350,6 +1354,8 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     UNIQUE KEY uniq_ultra_source_line (source_id, line_id),
     INDEX idx_ultra_lines_policy (is_source_present, is_enabled, auto_destination_zone, auto_ingress_zone),
     INDEX idx_ultra_lines_quality (access_class, native_udp_state, native_socks5_state, pricing_class, is_source_present, is_enabled),
+    INDEX idx_ultra_lines_carrier (isp, route_class, is_source_present, is_enabled),
+    INDEX idx_ultra_lines_dispatch (dispatch_class, is_source_present, is_enabled),
     INDEX idx_ultra_lines_material_expiry (last_material_expires_at)
 );
 
@@ -1534,6 +1540,19 @@ CREATE TABLE IF NOT EXISTS android_enrollment_codes (
     CONSTRAINT fk_android_enrollment_codes_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
     UNIQUE KEY uniq_android_enrollment_code_hash (code_hash),
     INDEX idx_android_enrollment_code_expiry (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS openwrt_pairing_codes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    code_hash CHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_openwrt_pairing_codes_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_openwrt_pairing_code_hash (code_hash),
+    INDEX idx_openwrt_pairing_code_expiry (expires_at)
 );
 
 CREATE TABLE IF NOT EXISTS client_device_control_audits (

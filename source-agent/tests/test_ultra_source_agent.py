@@ -467,6 +467,46 @@ class UltraSourceAgentTests(unittest.TestCase):
         self.assertNotIn("session_token", encoded)
         self.assertNotIn("must-not-survive", encoded)
 
+    def test_inventory_carries_carrier_metadata_without_ports_or_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            index = lines / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "lines": [
+                            {
+                                "line_id": 327,
+                                "title": "上海-韩国-电信单线",
+                                "game_id": 6262,
+                                "area_id": 11797,
+                                "line_type": 8,
+                                "in_line_type": 3,
+                                "isp": "电信",
+                                "provider": "华为云",
+                                "speed_ip": "203.0.113.21",
+                                "pc_port": 5438,
+                                "account_token": "must-not-survive",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, index, max_lines=256)
+
+        line = inventory["lines"][0]
+        self.assertEqual("电信", line["isp"])
+        self.assertEqual("华为云", line["provider"])
+        self.assertEqual(3, line["in_line_type"])
+        encoded = json.dumps(inventory, ensure_ascii=False).lower()
+        self.assertNotIn("pc_port", encoded)
+        self.assertNotIn("5438", encoded)
+        self.assertNotIn("must-not-survive", encoded)
+
     def test_inventory_is_sorted_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             lines = Path(directory)

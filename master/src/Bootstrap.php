@@ -253,6 +253,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
+        $this->router->add('POST', '/admin/clients/{id}/openwrt-pairing-code', [$admin, 'createOpenWrtPairingCode']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
         $this->router->add('POST', '/admin/node-groups', [$admin, 'saveNodeGroup']);
         $this->router->add('GET', '/admin/chains', [$admin, 'chainsPage']);
@@ -362,6 +363,7 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/devices/code/challenge', [$clientAgent, 'enrollmentCodeChallenge']);
         $this->router->add('POST', '/api/client/devices/code/enroll', [$clientAgent, 'enrollmentCodeEnroll']);
         $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
+        $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
