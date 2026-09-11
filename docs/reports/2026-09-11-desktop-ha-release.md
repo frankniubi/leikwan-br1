@@ -67,15 +67,34 @@ runtime, and tool-agnostic direct panel egress (bypass any TUN/HTTP proxy).
 - Rebuilt libultra_client.so for arm64-v8a (CGO=0) and x86_64 (CGO=1, NDK
   27.1.12297006; Go toolchain refuses internal linking for android/amd64).
   Export surface identical to the previous 09-04 build; PIE/RELRO/NX.
-- APK 0.2.24 (version_code 26), release build, zipaligned, apksigner v1+v2+v3
-  (existing keystore). AVD API34 x86_64 smoke passed; no physical device
-  attached, so physical arm64 TUN acceptance remains open.
+- APK 0.2.24 (version_code 26), release build, zipaligned. AVD API34 x86_64
+  smoke passed; no physical device attached, so physical arm64 TUN acceptance
+  remains open.
+
+### Android signing key rotation (2026-09-11)
+
+- The previous signing identity ("LeiKwan Android Unstable", created
+  2026-08-27) was replaced by a proper release identity via apksigner v3 key
+  rotation:
+  - New key: `leikwan-android-release`, RSA 4096, 100-year validity,
+    DN `CN=LeiKwan Bridge, O=LeiKwan, OU=Client Apps`,
+    cert SHA-256 `700adc0ab7147cb00e1fec8c0b54db64533480bac4b9cd8fef19ef532963ecb4`.
+  - Lineage: `leikwan-android/signing/leikwan-android-release-lineage.pem`
+    (committed; required on every future build).
+  - The legacy key co-signs the v1/v2 blocks via `--next-signer`, so
+    Android 8-12 devices keep accepting in-place upgrades (they see the old
+    cert); Android 13+ devices accept the new cert through the v3 lineage.
+  - `scripts/package-android-native-test.ps1` now signs with release key +
+    lineage + next-signer by default.
+  - Keystores, password files and lineage backed up to
+    `/root/codex-backups/android-signing-20260911/` on the panel host.
+  - Rule: never sign with the legacy key alone again.
 
   | Artifact | sha256 (12) | size |
   |---|---|---|
   | ultra-client_android_arm64 | a5b10542c65c | 14549252 |
   | ultra-client_android_x86_64 | abfb38956c08 | 16239072 |
-  | leikwan-android-client.apk | 97ba83259b64 | 89424219 |
+  | leikwan-android-client.apk (rotated) | aa7444b6b0ad | 89428315 |
 
 ## Direct panel egress (any TUN / proxy tool)
 
