@@ -227,7 +227,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                 ["policy_generation"] = lease.PolicyGeneration,
                 ["target_digest"] = lease.ScopeDigest,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 128,
+                ["udp_queue_packets"] = 256,
                 ["udp_max_associations"] = 1024,
                 ["connect_timeout_seconds"] = 5,
                 ["auto_select"] = leases.Count > 1,

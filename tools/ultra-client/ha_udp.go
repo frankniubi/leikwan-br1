@@ -66,7 +66,9 @@ func (s *DatagramSession) startRuntimeReader(timeout time.Duration) {
 		if timeout <= 0 {
 			timeout = 3 * safeUDPKeepaliveInterval
 		}
-		s.receiver.packets = make(chan []byte, 32)
+		// Sized for game burst rates; overflow is still counted as a drop
+		// instead of blocking the reader.
+		s.receiver.packets = make(chan []byte, 512)
 		s.receiver.done = make(chan struct{})
 		go func() {
 			defer close(s.receiver.done)

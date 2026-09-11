@@ -1107,7 +1107,7 @@ func TestResolveUDPLimits(t *testing.T) {
 		associations int
 		workers      int
 	}{
-		{name: "defaults", queue: 64, associations: 1024, workers: 64},
+		{name: "defaults", queue: 256, associations: 1024, workers: 64},
 		{
 			name: "configured",
 			config: Config{
@@ -1123,7 +1123,7 @@ func TestResolveUDPLimits(t *testing.T) {
 				UDPMaxAssociations: 16,
 				UDPSetupWorkers:    64,
 			},
-			queue: 64, associations: 16, workers: 16,
+			queue: 256, associations: 16, workers: 16,
 		},
 	}
 	for _, test := range tests {
