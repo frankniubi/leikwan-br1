@@ -109,10 +109,10 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "dca7be32de466358b40ba80f7496802f8364aa9e75935541938db6392c17628d",
+    "sha256": "c6367cda4ad1200396cb961830e2d78d397f005cbcbf171a2ddfa36539b680aa",
     "size": 95476,
-    "size_bytes": 95476,
-    "version": "2026.08.31.3"
+    "size_bytes": 95477,
+    "version": "2026.09.12.1"
   },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
