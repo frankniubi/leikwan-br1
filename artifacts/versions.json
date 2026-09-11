@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "version_code": 25,
-    "sha256": "dc5caed055c3278c1bd54a14030201b7d37c17cb957d453273aa45a099e12bfc",
-    "size_bytes": 88879451,
-    "version": "0.2.23"
+    "version_code": 26,
+    "sha256": "97ba83259b64b810f01d60b775a4c845041e052a0e47f8b6f7b751f1d60a10a3",
+    "size_bytes": 89424219,
+    "version": "0.2.24"
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -560,5 +560,46 @@
     "sha256": "9de7e942c746cc7f53fdc49f0ed4644f763a30c337ec5f671c07c8980d14ef0e",
     "size_bytes": 9085,
     "version": "2026.08.29.1"
+  },
+  "ultra_client_runtime_android_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "relro",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals",
+      "garble-tiny"
+    ],
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_android_arm64",
+    "sha256": "a5b10542c65c1fa62094bda87f187df111428d140256680c173eebba8f8c6360",
+    "size_bytes": 14549252,
+    "version": "2026.09.11.4"
+  },
+  "ultra_client_runtime_android_x86_64": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
+    "hardening": [
+      "pie",
+      "relro",
+      "bind-now",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals",
+      "garble-tiny"
+    ],
+    "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_android_x86_64",
+    "sha256": "abfb38956c08d8c3beb221ee10555255388dc0e39e1fce105161490b58af247f",
+    "size_bytes": 16239072,
+    "version": "2026.09.11.4"
   }
 }
