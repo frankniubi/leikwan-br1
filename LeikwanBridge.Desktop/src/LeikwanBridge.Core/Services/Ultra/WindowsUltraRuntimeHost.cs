@@ -86,7 +86,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 ["target_digest"] = leases[0].TargetDigest,
                 ["auto_select"] = autoSelect,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 64,
+                ["udp_queue_packets"] = 256,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
             };

@@ -1087,6 +1087,10 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 		if dialErr != nil {
 			continue
 		}
+		// Provider-side datagram sockets carry game bursts too; the OS default
+		// receive buffer overflows long before the reader loop can drain it.
+		_ = remote.SetReadBuffer(4 << 20)
+		_ = remote.SetWriteBuffer(4 << 20)
 		packet, packetErr := makeDatagramEnvelope(mode, sid, "2.0.0.0", 0, keep)
 		if packetErr != nil {
 			remote.Close()
@@ -1357,7 +1361,7 @@ type udpRuntimeLimits struct {
 func resolveUDPLimits(config Config) udpRuntimeLimits {
 	queuePackets := config.UDPQueuePackets
 	if queuePackets < 1 || queuePackets > 4096 {
-		queuePackets = 64
+		queuePackets = 256
 	}
 	maxAssociations := config.UDPMaxAssociations
 	if maxAssociations < 1 || maxAssociations > 8192 {
@@ -1403,6 +1407,10 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if err != nil {
 		return err
 	}
+	// Game clients burst well above the OS-default datagram receive buffer;
+	// the kernel drop counter (UdpRcvbufErrors) climbs silently otherwise.
+	_ = local.SetReadBuffer(4 << 20)
+	_ = local.SetWriteBuffer(4 << 20)
 	targetIP, err := resolveIPv4(targetHost)
 	if err != nil {
 		local.Close()
@@ -1426,8 +1434,10 @@ func serveUDPOnConn(
 	maxAssociations := limits.maxAssociations
 	setupSlots := make(chan struct{}, limits.setupWorkers)
 	associations := make(map[string]*udpAssociation)
-	const maxAssociationPackets = 100000
-	const associationIdle = 2 * time.Minute
+	// Associations are bounded by maxAssociations eviction and the idle GC
+	// below; a hard per-association packet cap caused a visible hiccup (a
+	// dropped packet plus a full re-handshake) every 100k packets.
+	const associationIdle = 10 * time.Minute
 	prewarmEnabled := config.UDPPrewarm && stringsContainsUDP(strings.ToLower(strings.TrimSpace(config.Transport)))
 	var associationMu sync.Mutex
 	warmSessions := make(chan udpWarmSession, 1)
@@ -1744,12 +1754,6 @@ func serveUDPOnConn(
 			association.lastSeen = time.Now()
 			association.lastUserActivity = association.lastSeen
 			association.packetCnt++
-			if association.packetCnt > maxAssociationPackets {
-				associationMu.Unlock()
-				lease.wipe()
-				closeAssociation(key, association)
-				continue
-			}
 			association.sessionMu.Lock()
 			modeSet := association.localModeSet
 			modeMatches := !modeSet || association.socksUDP == packetIsSocksUDP

@@ -517,6 +517,8 @@ func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, s
 	if err != nil {
 		return err
 	}
+	_ = udpConn.SetReadBuffer(4 << 20)
+	_ = udpConn.SetWriteBuffer(4 << 20)
 	defer udpConn.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status, udp: udpConn,
