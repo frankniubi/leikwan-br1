@@ -109,6 +109,9 @@ func (s *DatagramSession) startRuntimeReader(timeout time.Duration) {
 				packet := append([]byte(nil), buffer[:n]...)
 				select {
 				case s.receiver.packets <- packet:
+					if testHookRuntimeQueueDepth != nil {
+						testHookRuntimeQueueDepth(len(s.receiver.packets))
+					}
 				default:
 					if s.onRuntimeDrop != nil {
 						s.onRuntimeDrop()
