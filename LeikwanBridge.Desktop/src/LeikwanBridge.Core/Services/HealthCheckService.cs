@@ -426,10 +426,10 @@ public sealed class HealthCheckService : IDisposable
     {
         try
         {
-            using var http = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(2),
-            };
+            // Data-plane relay probe: keep OS default routing (so it still
+            // works through a TUN) but never route through an HTTP proxy.
+            using var http = LeikwanHttpClientFactory.CreatePlain();
+            http.Timeout = TimeSpan.FromSeconds(2);
             using var response = http.GetAsync($"http://{host}:{relayPort + 1}/health").GetAwaiter().GetResult();
             return response.IsSuccessStatusCode;
         }
