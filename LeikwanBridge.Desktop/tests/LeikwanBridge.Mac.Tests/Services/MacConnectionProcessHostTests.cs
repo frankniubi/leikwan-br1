@@ -30,6 +30,48 @@ public sealed class MacConnectionProcessHostTests
     }
 
     [Fact]
+    public async Task StartProxy_ClearsStaleOwnedSystemProxyBeforeStarting()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        const int port = 25842;
+        await File.WriteAllTextAsync(config, $"{{\"inbounds\":[{{\"listen_port\":{port},\"set_system_proxy\":true}}]}}");
+        var writes = new List<string>();
+        var runner = new FakeCommandRunner(info =>
+        {
+            var command = info.ArgumentList[0];
+            if (command == "-listallnetworkservices") return new MacCommandResult(0, "header\nEthernet\n", "");
+            if (command.StartsWith("-set"))
+            {
+                writes.Add(string.Join(" ", info.ArgumentList));
+                return new MacCommandResult(0, "", "");
+            }
+            return new MacCommandResult(0, $"Enabled: Yes\nServer: 127.0.0.1\nPort: {port}\n", "");
+        });
+        using var listener = new TcpListener(IPAddress.Loopback, port);
+        await using var host = new MacConnectionProcessHost(
+            processStarter: startInfo =>
+            {
+                var process = StartSleeper();
+                _ = startInfo;
+                Task.Run(async () =>
+                {
+                    await Task.Delay(100);
+                    listener.Start();
+                });
+                return process;
+            },
+            startupTimeout: TimeSpan.FromSeconds(5),
+            commandRunnerFactory: () => runner,
+            isMacOs: () => true);
+
+        await host.StartAsync("helper", config, MacConnectionMode.Proxy, CancellationToken.None);
+        Assert.Contains(writes, item => item.StartsWith("-setwebproxystate Ethernet off", StringComparison.Ordinal));
+        listener.Stop();
+        await host.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task DefaultProxyProbeDoesNotTreatElapsedTimeAsReadiness()
     {
         using var temp = new TemporaryDirectory();
