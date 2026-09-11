@@ -2,7 +2,6 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using LeikwanBridge.Core.Services.Platform;
 
 namespace LeikwanBridge.Mac.Services;
@@ -53,7 +52,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
 
     public async Task<string?> GetAsync(string name, CancellationToken ct)
     {
-        ValidateAccount(name);
+        MacSecretAccount.Validate(name);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -63,9 +62,10 @@ public sealed class MacKeychainSecretStore : ISecretStore
             MacKeychainReadResult result;
             try
             {
-                result = await RunNativeAsync(
+                result = await MacSecretStoreNativeRunner.RunAsync(
                     () => _native.Read(ServiceName, name),
                     ct,
+                    _nativeOperationTimeout,
                     cleanupIfAbandoned: value => CryptographicOperations.ZeroMemory(value.Secret)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -100,7 +100,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
 
     public async Task SetAsync(string name, string value, CancellationToken ct)
     {
-        ValidateAccount(name);
+        MacSecretAccount.Validate(name);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -116,9 +116,10 @@ public sealed class MacKeychainSecretStore : ISecretStore
             MacKeychainStatus status;
             try
             {
-                status = await RunNativeAsync(
+                status = await MacSecretStoreNativeRunner.RunAsync(
                     () => _native.Set(ServiceName, name, secret),
                     ct,
+                    _nativeOperationTimeout,
                     cleanupOnCompletion: () => CryptographicOperations.ZeroMemory(secret)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -147,7 +148,7 @@ public sealed class MacKeychainSecretStore : ISecretStore
 
     public async Task DeleteAsync(string name, CancellationToken ct)
     {
-        ValidateAccount(name);
+        MacSecretAccount.Validate(name);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -160,9 +161,10 @@ public sealed class MacKeychainSecretStore : ISecretStore
             MacKeychainStatus status;
             try
             {
-                status = await RunNativeAsync(
+                status = await MacSecretStoreNativeRunner.RunAsync(
                     () => _native.Delete(ServiceName, name),
-                    ct).ConfigureAwait(false);
+                    ct,
+                    _nativeOperationTimeout).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -218,9 +220,10 @@ public sealed class MacKeychainSecretStore : ISecretStore
         MacKeychainStatus status;
         try
         {
-            status = await RunNativeAsync(
+            status = await MacSecretStoreNativeRunner.RunAsync(
                 () => _native.Set(ServiceName, name, secret),
                 ct,
+                _nativeOperationTimeout,
                 cleanupOnCompletion: () => CryptographicOperations.ZeroMemory(secret)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -236,78 +239,6 @@ public sealed class MacKeychainSecretStore : ISecretStore
         else
             ActivateFallback();
         return value;
-    }
-
-    private async Task<T> RunNativeAsync<T>(
-        Func<T> operation,
-        CancellationToken ct,
-        Action? cleanupOnCompletion = null,
-        Action<T>? cleanupIfAbandoned = null)
-    {
-        Func<T> wrapped = cleanupOnCompletion is null
-            ? operation
-            : () =>
-            {
-                try
-                {
-                    return operation();
-                }
-                finally
-                {
-                    cleanupOnCompletion();
-                }
-            };
-        Task<T> work;
-        try
-        {
-            work = Task.Run(wrapped, CancellationToken.None);
-        }
-        catch
-        {
-            cleanupOnCompletion?.Invoke();
-            throw;
-        }
-
-        var abandoned = 0;
-        var cleanupClaimed = 0;
-        void CleanupAbandoned(T value)
-        {
-            if (Interlocked.Exchange(ref cleanupClaimed, 1) == 0)
-                cleanupIfAbandoned?.Invoke(value);
-        }
-        if (cleanupIfAbandoned is not null)
-            _ = ObserveAbandonedReadAsync(work, () => Volatile.Read(ref abandoned) == 1, CleanupAbandoned);
-
-        try
-        {
-            return await work.WaitAsync(_nativeOperationTimeout, ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            if (cleanupIfAbandoned is not null)
-            {
-                Volatile.Write(ref abandoned, 1);
-                if (work.IsCompletedSuccessfully)
-                    CleanupAbandoned(await work.ConfigureAwait(false));
-            }
-            throw;
-        }
-    }
-
-    private static async Task ObserveAbandonedReadAsync<T>(
-        Task<T> work,
-        Func<bool> isAbandoned,
-        Action<T> cleanup)
-    {
-        try
-        {
-            var value = await work.ConfigureAwait(false);
-            if (isAbandoned())
-                cleanup(value);
-        }
-        catch
-        {
-        }
     }
 
     private void SaveFallback(Dictionary<string, string> values)
@@ -356,15 +287,6 @@ public sealed class MacKeychainSecretStore : ISecretStore
             return;
         }
         SaveFallback(values);
-    }
-
-    private static void ValidateAccount(string name)
-    {
-        if (name != "desktop-session"
-            && name != MacConnectionProfileStore.SecretAccount
-            && name != "connection-route-selection"
-            && !Regex.IsMatch(name, "^client-agent-[1-9][0-9]*$", RegexOptions.CultureInvariant))
-            throw new ArgumentException("secret account invalid", nameof(name));
     }
 
     private static void SetPrivateDirectoryMode(string path)
