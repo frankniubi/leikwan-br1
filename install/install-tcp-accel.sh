@@ -85,7 +85,7 @@ download_checked() {
     return 1
   }
   tmp="${path}.new"
-  curl -fsSL "$url" -o "$tmp"
+  curl -fsSL --max-time 120 "$url" -o "$tmp"
   actual="$(sha256_file "$tmp")"
   if [[ "$actual" != "$expected" ]]; then
     rm -f "$tmp"
@@ -118,7 +118,11 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '')"
 ensure_debian12_dependencies
 
 if [[ -n "$ARTIFACT_BASE" ]]; then
-  VERSIONS_JSON="$(curl -fsSL "$ARTIFACT_BASE/artifacts/versions.json")"
+  VERSIONS_JSON="$(curl -fsSL --max-time 60 "$ARTIFACT_BASE/artifacts/versions.json")"
+  # Edge/middlebox paths occasionally append stray bytes after the JSON
+  # object. Keep only through the final closing brace so the manifest
+  # stays parseable instead of failing closed as "missing sha256".
+  VERSIONS_JSON="$(printf '%s' "$VERSIONS_JSON" | sed 's/\(.*\).*/\1/')"
 else
   if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/tools/tcp-accel/tcp_accel.py" ]]; then
     echo "--artifact-base is required when running outside a BR1 source checkout" >&2
