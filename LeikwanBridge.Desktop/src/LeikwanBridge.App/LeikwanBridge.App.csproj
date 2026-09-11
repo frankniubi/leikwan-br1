@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\LeikwanBridge.Core\LeikwanBridge.Core.csproj" />
@@ -23,9 +23,10 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Resources\Icons\leikwan-host.ico</ApplicationIcon>
-    <Version>0.1.20.27</Version>
-    <AssemblyVersion>0.1.20.27</AssemblyVersion>
-    <FileVersion>0.1.20.27</FileVersion>
+    <Version>0.1.20.28</Version>
+    <AssemblyVersion>0.1.20.28</AssemblyVersion>
+    <FileVersion>0.1.20.28</FileVersion>
   </PropertyGroup>
 
 </Project>
+
