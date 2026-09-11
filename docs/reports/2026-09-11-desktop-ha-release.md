@@ -114,6 +114,25 @@ runtime, and tool-agnostic direct panel egress (bypass any TUN/HTTP proxy).
 - Known limit: WFP kernel-driver per-process capture tools cannot be bypassed
   from user mode; mainstream route-table TUN tools are fully covered.
 
+## Windows installer 0.1.20.29 (published 2026-09-11)
+
+- Rebuilt the Windows client installer so it ships the desktop changes above
+  (update progress UI, per-user download source, direct panel egress):
+  - `artifacts/windows/leikwan-bridge-setup.exe`
+    sha256 `60ba7defddaec4b26f2a34f9289f1d1bd46b2bc4d9a462f8a105c87ddf92c60d`,
+    71,618,978 bytes, packaged app version 0.1.20.29, embedded
+    ultra-client runtime 2026.09.11.4 (`17fc936a…`).
+  - Built via `dotnet publish … -c Release -r win-x64 -p:SelfContained=true -o
+    artifacts/windows/publish` followed by
+    `scripts/build-windows-client-setup.ps1`. Note: do NOT use
+    `-p:PublishSingleFile=true` for this app — it doubles the payload
+    (155 MB single-file exe plus the component DLLs the packaging step also
+    copies) and inflates the installer to ~119 MB.
+  - `artifacts/versions.json` windows_client_app bumped to 0.1.20.29.
+  - Published to the panel with backup at
+    `/root/codex-backups/windows-installer-20260911-29/`; served sha256 and
+    size verified on both the Cloudflare and Aliyun entrances.
+
 ## Verification
 
 - Integration solution tests: Core 435/435, App 97/97, Mac 170/170.
