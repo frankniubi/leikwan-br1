@@ -507,6 +507,51 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_ReusesLastKnownUltraPolicyWhenPullOmitsIt()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildUltraPullResponseJson();
+        using var server = new PullApiServer(payload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new()
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        var missingPolicy = JsonNode.Parse(payload)!.AsObject();
+        missingPolicy["forwards"]![0]!.AsObject().Remove("ultra_access");
+        server.SetPayload(missingPolicy.ToJsonString());
+
+        await service.SyncOnceAsync();
+
+        Assert.NotNull(service.LatestForwards.Single().UltraAccess);
+        Assert.Equal([42], runtimeManager.RefreshedForwardIds);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseEndpointHasTransientServerError()
     {
         using var tempDir = new TempStateDirectory();

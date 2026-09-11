@@ -6,6 +6,18 @@ using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
+public sealed class ProxyForwardLeaseCancellationException : OperationCanceledException
+{
+    public int ForwardId { get; }
+    public string ErrorCode => "proxy_forward_start_cancelled";
+
+    public ProxyForwardLeaseCancellationException(int forwardId, Exception innerException)
+        : base("proxy_forward_start_cancelled", innerException)
+    {
+        ForwardId = forwardId;
+    }
+}
+
 public sealed class ProxyForwardLease : IAsyncDisposable
 {
     private Func<CancellationToken, Task>? _stop;
@@ -62,7 +74,34 @@ public sealed class ProxyForwardLease : IAsyncDisposable
                 Log.Warning(cleanupError, "failed to release ordinary proxy forward {ForwardId}", forward.ForwardId);
             }
             if (exception is OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                Log.Warning(
+                    "ordinary proxy forward readiness timed out forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward}",
+                    forward.ForwardId,
+                    forward.ListenPort,
+                    forward.Transport,
+                    ownsForward);
                 throw new TimeoutException("proxy_forward_readiness_timeout", exception);
+            }
+
+            if (exception is OperationCanceledException && ct.IsCancellationRequested)
+            {
+                Log.Information(
+                    "ordinary proxy forward start cancelled forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward}",
+                    forward.ForwardId,
+                    forward.ListenPort,
+                    forward.Transport,
+                    ownsForward);
+                throw new ProxyForwardLeaseCancellationException(forward.ForwardId, exception);
+            }
+
+            Log.Warning(
+                exception,
+                "ordinary proxy forward acquire failed forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward}",
+                forward.ForwardId,
+                forward.ListenPort,
+                forward.Transport,
+                ownsForward);
             throw;
         }
     }

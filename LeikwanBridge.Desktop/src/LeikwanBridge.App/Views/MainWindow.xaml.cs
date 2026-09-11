@@ -523,6 +523,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (ex is OperationCanceledException)
+            {
+                SetProxyReady();
+                Log.Debug(ex, "paired proxy start cancelled");
+                return;
+            }
             SetProxyStatusError(ex.Message);
             Log.Warning(ex, "failed to start local proxy for selected paired forward");
         }
@@ -651,6 +657,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (ex is OperationCanceledException)
+            {
+                SetProxyReady();
+                Log.Debug(ex, "proxy start cancelled");
+                return;
+            }
             if (mode == WindowsProxyMode.Process
                 && profileId > 0
                 && string.Equals(ex.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
@@ -1224,7 +1236,10 @@ public partial class MainWindow : Window
             "proxy_import_shadowsocks_only" => FindResource("ProxyImportSupported") as string ?? message,
             "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
             "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
+            "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? message,
             "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? message,
+            "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? message,
+            "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? message,
             "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? message,
             "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
             "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,

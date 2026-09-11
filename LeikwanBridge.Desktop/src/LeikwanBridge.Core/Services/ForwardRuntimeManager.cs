@@ -29,7 +29,23 @@ public class ForwardRuntimeManager : IDisposable
     public event Action<int, string>? UltraRecoveryRequested;
 
     public Task<ProxyForwardLease> AcquireProxyForwardAsync(ForwardConfig forward, CancellationToken ct = default)
-        => ProxyForwardLease.AcquireAsync(
+    {
+        ArgumentNullException.ThrowIfNull(forward);
+        var running = IsForwardRunning(forward.ForwardId) || IsForwardStarting(forward.ForwardId);
+        if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+            && !IsNativeOutboundForward(forward)
+            && forward.UltraAccess is null
+            && !running)
+        {
+            Log.Warning(
+                "ordinary proxy forward {ForwardId} cannot start because Ultra policy is missing (runtime_running={RuntimeRunning})",
+                forward.ForwardId,
+                running);
+            return Task.FromException<ProxyForwardLease>(
+                new InvalidOperationException("proxy_forward_policy_unavailable"));
+        }
+
+        return ProxyForwardLease.AcquireAsync(
             forward,
             () => IsForwardRunning(forward.ForwardId) || IsForwardStarting(forward.ForwardId),
             token => Task.Run(() => RestartForward(forward, force: true, reason: "manual_apply"), token),
@@ -39,6 +55,7 @@ public class ForwardRuntimeManager : IDisposable
                 && IsForwardRunning(candidate.ForwardId)
                 && HasOwnedProxyListener(candidate)
                 && await ProxyForwardLease.IsListenerReadyAsync(candidate, token).ConfigureAwait(false));
+    }
 
     private bool HasOwnedProxyListener(ForwardConfig forward)
     {
