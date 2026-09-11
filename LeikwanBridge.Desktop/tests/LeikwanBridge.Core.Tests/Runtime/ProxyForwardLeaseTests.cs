@@ -102,6 +102,43 @@ public sealed class ProxyForwardLeaseTests
         Assert.Equal(1, stops);
     }
 
+    [Fact]
+    public async Task MissingUltraPolicyDoesNotRestartStoppedForward()
+    {
+        using var temp = new TempStateDirectory();
+        var supervisor = new ReadySupervisor { Running = false };
+        using var runtime = new ListenerRuntime(supervisor, new StateManager(temp.Path));
+        var forward = Forward();
+        forward.BackendMode = "ultra";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runtime.AcquireProxyForwardAsync(forward));
+
+        Assert.Equal("proxy_forward_policy_unavailable", error.Message);
+        Assert.False(supervisor.Running);
+    }
+
+    [Fact]
+    public async Task CancelledReadinessSurfacesStableForwardStartCancellationCode()
+    {
+        using var cancellation = new CancellationTokenSource();
+
+        var error = await Assert.ThrowsAsync<ProxyForwardLeaseCancellationException>(() => ProxyForwardLease.AcquireAsync(
+            Forward(),
+            () => true,
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            cancellation.Token,
+            readinessProbe: (_, _) =>
+            {
+                cancellation.Cancel();
+                return Task.FromResult(false);
+            }));
+
+        Assert.Equal("proxy_forward_start_cancelled", error.ErrorCode);
+        Assert.Equal(180, error.ForwardId);
+    }
+
     [Theory]
     [InlineData(false, 1)]
     [InlineData(true, 0)]

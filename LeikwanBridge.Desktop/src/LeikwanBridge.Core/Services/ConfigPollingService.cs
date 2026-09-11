@@ -266,6 +266,7 @@ public sealed class ConfigPollingService
             if (forward.ServiceStatus == "active")
                 forwards.Add(forward);
         }
+        RestoreLastKnownUltraPolicies(forwards);
         _latestForwards = forwards;
 
         // The fresh policy payload has now been received. A failed pull keeps
@@ -629,6 +630,38 @@ public sealed class ConfigPollingService
             forwardId,
             reason);
         return true;
+    }
+
+    private void RestoreLastKnownUltraPolicies(List<ForwardConfig> forwards)
+    {
+        if (_latestForwards.Count == 0)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        var previousById = _latestForwards
+            .Where(forward => forward.UltraAccess is not null)
+            .GroupBy(forward => forward.ForwardId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        foreach (var forward in forwards)
+        {
+            if (forward.UltraAccess is not null
+                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                || ForwardRuntimeManager.IsNativeOutboundForward(forward)
+                || !_runtimeManager.IsForwardRunning(forward.ForwardId)
+                || !previousById.TryGetValue(forward.ForwardId, out var previous)
+                || previous.UltraAccess is not { } previousPolicy
+                || !string.Equals(previousPolicy.Transport, forward.Transport, StringComparison.OrdinalIgnoreCase)
+                || previousPolicy.GetValidationFailure(forward, now) is not null)
+                continue;
+
+            forward.UltraAccess = previousPolicy;
+            QueueConfigRefreshSoon(forward.ForwardId);
+            Log.Warning(
+                "Ultra policy missing for running forward {ForwardId}; reusing last valid policy until {ExpiresAt} and forcing full config refresh",
+                forward.ForwardId,
+                previousPolicy.ExpiresAt);
+        }
     }
 
     private IReadOnlySet<int> SnapshotTargetedUltraRefreshes()
