@@ -71,6 +71,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _activeClientName = "";
     [ObservableProperty] private bool _showUpdatePrompt;
     [ObservableProperty] private string _availableUpdateVersion = "";
+    [ObservableProperty] private string _updatePhaseText = "";
+    [ObservableProperty] private double _updatePercent;
+    [ObservableProperty] private string _updateProgressMessage = "";
+    [ObservableProperty] private string _updateErrorMessage = "";
+    [ObservableProperty] private bool _isUpdateInProgress;
+    [ObservableProperty] private bool _showUpdateError;
     [ObservableProperty] private ForwardViewModel? _selectedForward;
     [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
     [ObservableProperty] private string _selectedProxyGameId = "";
@@ -110,6 +116,38 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnCurrentViewChanged(string value)
         => OnPropertyChanged(nameof(IsForwardPairingView));
+
+    partial void OnShowUpdatePromptChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+
+    partial void OnShowUpdateErrorChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+
+    /// <summary>Shows the overlay for both the update prompt and failures.</summary>
+    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError;
+
+    /// <summary>
+    /// Injected by MainWindow so the retry button can re-run the failed
+    /// update step (manifest check or installer download/apply).
+    /// </summary>
+    public Func<Task>? RetryUpdateHandler { get; set; }
+
+    [RelayCommand]
+    private async Task RetryUpdateAsync()
+    {
+        if (RetryUpdateHandler is null)
+            return;
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        await RetryUpdateHandler();
+    }
+
+    [RelayCommand]
+    private void DismissUpdateError()
+    {
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+    }
 
     partial void OnIsProxyModeSelectedChanged(bool value)
         => NotifySelectedProxyPairingStateChanged();
@@ -1251,6 +1289,7 @@ public partial class MainViewModel : ObservableObject
         _availableUpdateArtifact = artifact;
         AvailableUpdateVersion = artifact.Version;
         ShowUpdatePrompt = true;
+        ReportUpdateFinished();
     }
 
     public void DeferUpdateForRestartForTests(string version, string installerPath, string sha256)
@@ -1261,6 +1300,7 @@ public partial class MainViewModel : ObservableObject
         _config.PendingUpdateDownloadedAt = DateTimeOffset.UtcNow.ToString("O");
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
+        ReportUpdateFinished();
     }
 
     public void ReportNoUpdateAvailableForTests(string version)
@@ -1268,6 +1308,7 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Already up to date ({version}).";
+        ReportUpdateFinished();
     }
 
     public void ReportUpdateCheckFailedForTests(string message)
@@ -1275,7 +1316,46 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Update check failed: {message}";
+        ReportUpdateFailed(message);
     }
+
+    /// <summary>Applies a progress update reported by the update service.</summary>
+    public void ReportUpdateProgress(UpdateProgress progress)
+    {
+        UpdatePhaseText = PhaseLabel(progress.Phase);
+        UpdatePercent = progress.Percent;
+        UpdateProgressMessage = progress.Message;
+        IsUpdateInProgress = true;
+    }
+
+    /// <summary>Shows a failed update step with details and a retry action.</summary>
+    public void ReportUpdateFailed(string message)
+    {
+        IsUpdateInProgress = false;
+        UpdateErrorMessage = message;
+        ShowUpdateError = true;
+    }
+
+    /// <summary>Clears progress/error state after an update flow completes.</summary>
+    public void ReportUpdateFinished()
+    {
+        IsUpdateInProgress = false;
+        UpdatePhaseText = string.Empty;
+        UpdatePercent = 0;
+        UpdateProgressMessage = string.Empty;
+        UpdateErrorMessage = string.Empty;
+        ShowUpdateError = false;
+    }
+
+    private static string PhaseLabel(UpdatePhase phase) => phase switch
+    {
+        UpdatePhase.Check => "Checking for updates",
+        UpdatePhase.Download => "Downloading update",
+        UpdatePhase.Verify => "Verifying download",
+        UpdatePhase.Stage => "Preparing update",
+        UpdatePhase.Apply => "Applying update",
+        _ => string.Empty,
+    };
 
     [RelayCommand]
     private async Task ConnectAsync(CancellationToken ct)

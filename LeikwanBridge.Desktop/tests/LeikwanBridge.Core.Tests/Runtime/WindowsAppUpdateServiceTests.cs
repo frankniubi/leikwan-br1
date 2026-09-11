@@ -423,6 +423,142 @@ public sealed class WindowsAppUpdateServiceTests
         Assert.False(WindowsAppUpdateService.HasPendingUpdate(new AgentConfig { PendingUpdateVersion = "0.1.15.0" }));
     }
 
+    [Fact]
+    public void ResolveArtifactUrl_RebindsKnownEndpointOriginToSelectedEndpoint()
+    {
+        var url = WindowsAppUpdateService.ResolveArtifactUrl(
+            "https://api-leikwanbridge.nbwly.com",
+            "https://v3.leikwanhost.com/artifacts/leikwan-bridge-setup.exe?v=0.1.20.28&sha256=ABC123");
+
+        Assert.Equal(
+            "https://api-leikwanbridge.nbwly.com/artifacts/leikwan-bridge-setup.exe?v=0.1.20.28&sha256=ABC123",
+            url);
+    }
+
+    [Fact]
+    public void ResolveArtifactUrl_KeepsAbsoluteKnownOriginUrl_WhenMasterIsCustom()
+    {
+        var url = WindowsAppUpdateService.ResolveArtifactUrl(
+            "https://panel.example.com",
+            "https://v3.leikwanhost.com/artifacts/leikwan-bridge-setup.exe");
+
+        Assert.Equal("https://v3.leikwanhost.com/artifacts/leikwan-bridge-setup.exe", url);
+    }
+
+    [Fact]
+    public void ResolveArtifactUrl_KeepsSelectedEndpointOriginUntouched()
+    {
+        var url = WindowsAppUpdateService.ResolveArtifactUrl(
+            "https://v3.leikwanhost.com",
+            "https://v3.leikwanhost.com/artifacts/leikwan-bridge-setup.exe");
+
+        Assert.Equal("https://v3.leikwanhost.com/artifacts/leikwan-bridge-setup.exe", url);
+    }
+
+    [Fact]
+    public async Task FetchWindowsClientArtifactAsync_ReportsCheckPhaseProgress()
+    {
+        using var http = new HttpClient(new ProgressStubHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var updates = new List<UpdateProgress>();
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: _ => http,
+            ownsHttpClient: false);
+
+        await service.FetchWindowsClientArtifactAsync(
+            "https://v3-mirror.leikwanhost.com",
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.NotEmpty(updates);
+        Assert.All(updates, update => Assert.Equal(UpdatePhase.Check, update.Phase));
+        Assert.Contains(updates, update => update.Message.Contains("Checking", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DownloadInstallerAsync_ReportsDownloadAndVerifyProgress()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        using var http = new HttpClient(new ProgressStubHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var updates = new List<UpdateProgress>();
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: _ => http,
+            ownsHttpClient: false);
+        var destination = Path.Combine(tempDir.Path, "setup.exe");
+        var localInstaller = Path.Combine(tempDir.Path, "source.exe");
+        File.WriteAllText(localInstaller, "stub installer");
+        var expectedSha = WindowsAppUpdateService.ComputeSha256(localInstaller);
+
+        await service.DownloadInstallerAsync(
+            "https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe",
+            destination,
+            new Progress<UpdateProgress>(updates.Add),
+            expectedSha);
+
+        Assert.Equal("stub installer", File.ReadAllText(destination));
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download && update.Percent == 100);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Verify && update.Percent == 100);
+    }
+
+    [Fact]
+    public async Task DownloadInstallerAsync_ThrowsAndCleansUpOnHashMismatch()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        using var http = new HttpClient(new ProgressStubHandler()) { Timeout = TimeSpan.FromSeconds(5) };
+        var updates = new List<UpdateProgress>();
+        var service = new WindowsAppUpdateService(
+            httpClientFactory: _ => http,
+            ownsHttpClient: false);
+        var destination = Path.Combine(tempDir.Path, "setup.exe");
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            service.DownloadInstallerAsync(
+                "https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe",
+                destination,
+                new Progress<UpdateProgress>(updates.Add),
+                new string('a', 64)));
+
+        Assert.Equal("downloaded installer hash mismatch", error.Message);
+        Assert.False(File.Exists(destination));
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Verify);
+    }
+
+    private sealed class ProgressStubHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/client-manifest.json", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("""
+                        {
+                          "component": "windows-client-app",
+                          "manifest": {
+                            "windows_client_app": {
+                              "version": "0.1.15.0",
+                              "path": "artifacts/windows/leikwan-bridge-setup.exe",
+                              "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+                              "sha256": "ABC123",
+                              "size_bytes": 14
+                            }
+                          }
+                        }
+                        """, Encoding.UTF8, "application/json"),
+                });
+            }
+
+            var content = new StringContent("stub installer", Encoding.UTF8, "application/octet-stream");
+            content.Headers.ContentLength = 14;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = content,
+            });
+        }
+    }
+
     private sealed class StubUpdateHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
