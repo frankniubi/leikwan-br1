@@ -80,9 +80,12 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">Update Available</system:String>
     <system:String x:Key="UpdateVersionReady">Version {0} is ready to install.</system:String>
+    <system:String x:Key="UpdateFailedTitle">Update Failed</system:String>
     <system:String x:Key="ActionInstallNow">Install now</system:String>
     <system:String x:Key="ActionDeferUpdate">Wait until next restart</system:String>
     <system:String x:Key="ActionCheckUpdates">Check for Updates</system:String>
+    <system:String x:Key="ActionRetryUpdate">Retry</system:String>
+    <system:String x:Key="ActionDismiss">Dismiss</system:String>
     <system:String x:Key="ActionSignOut">Sign Out</system:String>
 
     <!-- Settings -->

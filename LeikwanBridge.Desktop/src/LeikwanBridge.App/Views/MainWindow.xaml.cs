@@ -27,6 +27,10 @@ public partial class MainWindow : Window
     private bool _trayReady;
     private bool _proxyUiReady;
     private bool _updatingNativeUi;
+    // True until the constructor finishes so XAML-time SelectedIndex changes
+    // never persist an endpoint the user did not choose.
+    private bool _suppressEndpointChangeHandling = true;
+    private bool _updateFailureWasInstall;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly ConnectionRecoverySupervisor _connectionRecovery;
@@ -66,6 +70,7 @@ public partial class MainWindow : Window
         if (!_saveLoginInfo)
             new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _vm.RetryUpdateHandler = RetryFailedUpdateAsync;
 
         // Auto-scroll log
         _vm.LogEntries.CollectionChanged += (_, _) =>
@@ -77,12 +82,15 @@ public partial class MainWindow : Window
         // Populate settings fields
         PopulateSettings();
         UpdateVisiblePanel();
-        SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
+        _suppressEndpointChangeHandling = true;
+        try { SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl); }
+        finally { _suppressEndpointChangeHandling = false; }
         TxtMasterUrl.Text = string.IsNullOrWhiteSpace(App.Config.MasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
         SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         RestoreSetupLoginInfo();
+        _suppressEndpointChangeHandling = false;
 
         Loaded += (_, _) =>
         {
@@ -256,6 +264,19 @@ public partial class MainWindow : Window
             TxtMasterUrl.Text = url;
         else if (ReferenceEquals(combo, SettEndpointCombo) && SettMasterUrl is not null)
             SettMasterUrl.Text = url;
+
+        if (_suppressEndpointChangeHandling)
+            return;
+
+        // Persist the chosen endpoint immediately so update downloads and
+        // future sessions follow the selection without waiting for a Save.
+        var normalized = AppDefaults.NormalizeMasterUrl(url);
+        if (!string.Equals(normalized, App.Config.MasterUrl, StringComparison.Ordinal))
+        {
+            App.Config.MasterUrl = normalized;
+            SaveCurrentConfig();
+            Log.Information("update download endpoint changed to {Endpoint}", normalized);
+        }
     }
 
     private static string ResolveEndpointUrl(System.Windows.Controls.ComboBox combo)
@@ -1309,7 +1330,9 @@ public partial class MainWindow : Window
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(normalizedMasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : normalizedMasterUrl;
-        SelectEndpoint(SettEndpointCombo, SettMasterUrl.Text);
+        _suppressEndpointChangeHandling = true;
+        try { SelectEndpoint(SettEndpointCombo, SettMasterUrl.Text); }
+        finally { _suppressEndpointChangeHandling = false; }
         _saveLoginInfo = App.Config.RememberLoginInfo;
         SettClientId.Text = (App.Config.ClientId > 0 ? App.Config.ClientId : App.Config.ActiveClientId).ToString();
         SettAgentToken.Password = App.Config.AgentToken;
@@ -1358,16 +1381,17 @@ public partial class MainWindow : Window
         if (_vm.AvailableUpdateArtifact == null)
             return;
 
+        _updateFailureWasInstall = true;
         try
         {
-            var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact);
+            var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact, CreateUpdateProgress());
             var installerArguments = BuildSilentUpdateArguments(installerPath);
             ClearPendingUpdateState();
             LaunchInstallerAndExit(installerPath, installerArguments);
         }
         catch (Exception ex)
         {
-            SetupStatus.Text = ex.Message;
+            _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "install-now update flow failed");
         }
     }
@@ -1377,30 +1401,35 @@ public partial class MainWindow : Window
         if (_vm.AvailableUpdateArtifact == null)
             return;
 
+        _updateFailureWasInstall = true;
         try
         {
             var artifact = _vm.AvailableUpdateArtifact;
-            var installerPath = await PrepareCachedInstallerAsync(artifact);
+            var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
             var sha = WindowsAppUpdateService.ComputeSha256(installerPath);
             _vm.DeferUpdateForRestartForTests(artifact.Version, installerPath, sha);
             SaveCurrentConfig();
         }
         catch (Exception ex)
         {
-            SetupStatus.Text = ex.Message;
+            _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "deferred update flow failed");
         }
     }
 
     private async Task CheckForUpdatesAsync(CancellationToken ct = default)
     {
+        _updateFailureWasInstall = false;
         try
         {
             if (string.IsNullOrWhiteSpace(App.Config.MasterUrl))
                 return;
 
             ct.ThrowIfCancellationRequested();
-            var artifact = await _updateService.FetchWindowsClientArtifactAsync(App.Config.MasterUrl, ct);
+            var artifact = await _updateService.FetchWindowsClientArtifactAsync(
+                App.Config.MasterUrl,
+                CreateUpdateProgress(),
+                ct);
             ct.ThrowIfCancellationRequested();
             var localVersion = GetCurrentAppVersion();
             App.Config.LastUpdateCheckAt = DateTimeOffset.UtcNow.ToString("O");
@@ -1423,6 +1452,31 @@ public partial class MainWindow : Window
             Log.Warning(ex, "update check failed");
         }
     }
+
+    private async Task RetryFailedUpdateAsync()
+    {
+        try
+        {
+            if (_updateFailureWasInstall && _vm.AvailableUpdateArtifact is { } artifact)
+            {
+                var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
+                var installerArguments = BuildSilentUpdateArguments(installerPath);
+                ClearPendingUpdateState();
+                LaunchInstallerAndExit(installerPath, installerArguments);
+                return;
+            }
+
+            await CheckForUpdatesAsync(_lifecycleCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _vm.ReportUpdateFailed(ex.Message);
+            Log.Warning(ex, "update retry failed");
+        }
+    }
+
+    private Progress<UpdateProgress> CreateUpdateProgress()
+        => new(update => _vm.ReportUpdateProgress(update));
 
     private Task<bool> TryApplyPendingUpdateAsync()
     {
@@ -1471,7 +1525,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<string> PrepareCachedInstallerAsync(WindowsClientAppArtifact artifact)
+    private async Task<string> PrepareCachedInstallerAsync(
+        WindowsClientAppArtifact artifact,
+        IProgress<UpdateProgress>? progress = null)
     {
         var installRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeiKwan Bridge");
         var installerPath = WindowsAppUpdateService.BuildCachedInstallerPath(installRoot, artifact.Version);
@@ -1480,16 +1536,18 @@ public partial class MainWindow : Window
         {
             var cachedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
             if (string.Equals(cachedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                progress?.Report(UpdateProgress.Verifying(100, "Cached installer verified."));
                 return installerPath;
+            }
         }
 
+        // ResolveArtifactUrl rebinds the selected endpoint onto the artifact
+        // URL, so manifest, installer and runtime-drift downloads all follow
+        // the user's chosen download source.
         var artifactUrl = WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl);
         artifactUrl = WindowsAppUpdateService.BuildArtifactDownloadUrl(artifactUrl, artifact.Version, artifact.Sha256);
-        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath);
-        var downloadedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
-        if (!string.Equals(downloadedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("downloaded installer hash mismatch");
-
+        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath, progress, artifact.Sha256);
         return installerPath;
     }
 
@@ -1732,8 +1790,13 @@ public partial class MainWindow : Window
             stateManager.SaveConfig(App.ConfigPath, App.Config);
             TxtMasterUrl.Text = App.Config.MasterUrl;
             SettMasterUrl.Text = App.Config.MasterUrl;
-            SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
-            SelectEndpoint(SettEndpointCombo, App.Config.MasterUrl);
+            _suppressEndpointChangeHandling = true;
+            try
+            {
+                SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
+                SelectEndpoint(SettEndpointCombo, App.Config.MasterUrl);
+            }
+            finally { _suppressEndpointChangeHandling = false; }
         }
 
         if (!_vm.ShouldAutoConnectOnStartup)

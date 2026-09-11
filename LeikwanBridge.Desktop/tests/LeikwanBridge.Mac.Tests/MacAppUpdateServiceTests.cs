@@ -310,6 +310,104 @@ public sealed class MacAppUpdateServiceTests
         Assert.False(File.Exists(Path.Combine(current, "new-marker")));
     }
 
+    [Fact]
+    public async Task CheckAsync_RebindsKnownEndpointArtifactUrlsToSelectedPanel()
+    {
+        using var temp = new TempDirectory();
+        var requested = new List<Uri>();
+        var panelUrl = PanelEndpoints.AliyunCdnUrl;
+        var manifest = $$"""
+        {
+          "component": "desktop-client-app",
+          "manifest": {
+            "macos_client_update_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-arm64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
+            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
+            "macos_client_update_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-x64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
+            "macos_client_app_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-x64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+          }
+        }
+        """;
+        using var http = BuildHttp(request =>
+        {
+            requested.Add(request.RequestUri!);
+            return JsonResponse(manifest);
+        });
+        using var service = CreateService(temp, "arm64", http);
+
+        var artifact = await service.CheckAsync(panelUrl, "1.0.0");
+
+        Assert.NotNull(artifact);
+        Assert.StartsWith(panelUrl + "/", artifact.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(PanelEndpoints.CloudflareUrl, artifact.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(artifact.ManualInstaller);
+        Assert.StartsWith(panelUrl + "/", artifact.ManualInstaller!.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new Uri(panelUrl + "/artifacts/client-manifest.json"), Assert.Single(requested));
+    }
+
+    [Fact]
+    public async Task CheckAsync_ReportsCheckPhaseProgress()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson()));
+        using var service = CreateService(temp, "arm64", http);
+        var updates = new List<UpdateProgress>();
+
+        await service.CheckAsync(
+            "https://panel.example.test",
+            "1.0.0",
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.NotEmpty(updates);
+        Assert.All(updates, update => Assert.Equal(UpdatePhase.Check, update.Phase));
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReportsDownloadVerifyAndStagePhases()
+    {
+        using var source = new TempDirectory();
+        using var temp = new TempDirectory();
+        var bundle = CreateBundle(source.Path, "com.leikwan.bridge", "2.0.0", "arm64");
+        var package = ZipDirectory(bundle);
+        using var http = BuildHttp(_ => BytesResponse(package));
+        using var service = CreateService(temp, "arm64", http);
+        var updates = new List<UpdateProgress>();
+
+        var prepared = await service.PrepareAsync(
+            ArtifactFor(package),
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.True(Directory.Exists(prepared.StagedBundlePath));
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download && update.Percent == 100);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Verify && update.Percent == 100);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Stage && update.Percent == 100);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_ReportsApplyPhaseProgress()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => BytesResponse([]));
+        var launcher = new FakeUpdateLauncher();
+        using var service = CreateService(temp, "arm64", http, launcher, _ => true);
+        var stagedBundle = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", "ApplyProgress.app");
+        var prepared = new PreparedAppUpdate(
+            ArtifactFor(Encoding.UTF8.GetBytes("zip")),
+            "package.zip",
+            stagedBundle,
+            Sha256(File.ReadAllBytes(Path.Combine(stagedBundle, "Contents", "MacOS", "LeikwanBridge.Mac"))));
+        var updates = new List<UpdateProgress>();
+
+        var result = await service.ApplyAsync(
+            prepared,
+            deferUntilRestart: false,
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.True(result.Started);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Apply);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Apply && update.Percent == 100);
+    }
+
     private static MacAppUpdateService CreateService(
         TempDirectory temp,
         string architecture,

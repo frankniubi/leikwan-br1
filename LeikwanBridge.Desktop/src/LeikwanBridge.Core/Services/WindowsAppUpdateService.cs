@@ -165,11 +165,10 @@ public sealed class WindowsAppUpdateService : IDisposable
 
     public static string ResolveArtifactUrl(string masterUrl, string artifactUrl)
     {
-        if (string.IsNullOrWhiteSpace(artifactUrl))
-            return string.Empty;
-        if (Uri.TryCreate(artifactUrl, UriKind.Absolute, out var absolute))
-            return absolute.ToString();
-        return masterUrl.TrimEnd('/') + "/" + artifactUrl.TrimStart('/');
+        // Rebases relative URLs onto the selected endpoint and redirects
+        // absolute URLs that point at another known panel endpoint so every
+        // artifact download follows the user's chosen mirror.
+        return PanelEndpoints.RebaseArtifactUrl(masterUrl, artifactUrl);
     }
 
     public static string BuildArtifactDownloadUrl(string artifactUrl, string version, string sha256)
@@ -214,8 +213,15 @@ public sealed class WindowsAppUpdateService : IDisposable
         return false;
     }
 
-    public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
+    public Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
+        => FetchWindowsClientArtifactAsync(masterUrl, progress: null, ct);
+
+    public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(
+        string masterUrl,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default)
     {
+        Report(progress, UpdateProgress.Checking("Checking for updates..."));
         var uri = new Uri(masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json");
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         using var responseMessage = await SendAsync(request, ct);
@@ -234,21 +240,100 @@ public sealed class WindowsAppUpdateService : IDisposable
                 && !string.IsNullOrWhiteSpace(sha.GetString()))
                 artifact.RuntimeSha256[key] = sha.GetString()!;
         }
+        Report(progress, UpdateProgress.Checking("Update check finished."));
         return artifact;
     }
 
-    public async Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)
+    public Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress: null, expectedSha256: null, ct);
+
+    public Task DownloadInstallerAsync(
+        string artifactUrl,
+        string destinationPath,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default)
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress, expectedSha256: null, ct);
+
+    public async Task DownloadInstallerAsync(
+        string artifactUrl,
+        string destinationPath,
+        IProgress<UpdateProgress>? progress,
+        string? expectedSha256,
+        CancellationToken ct = default)
     {
         var dir = Path.GetDirectoryName(destinationPath);
         if (!string.IsNullOrWhiteSpace(dir))
             Directory.CreateDirectory(dir);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, artifactUrl);
-        using var response = await SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        await using var file = File.Create(destinationPath);
-        await stream.CopyToAsync(file, ct);
+        try
+        {
+            Report(progress, UpdateProgress.Downloading(0, "Downloading update..."));
+            using var request = new HttpRequestMessage(HttpMethod.Get, artifactUrl);
+            using var response = await SendAsync(request, ct);
+            response.EnsureSuccessStatusCode();
+            var contentLength = response.Content.Headers.ContentLength;
+            await using (var stream = await response.Content.ReadAsStreamAsync(ct))
+            await using (var file = File.Create(destinationPath))
+            {
+                var buffer = new byte[128 * 1024];
+                long total = 0;
+                while (true)
+                {
+                    var read = await stream.ReadAsync(buffer, ct);
+                    if (read == 0)
+                        break;
+                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                    total += read;
+                    Report(progress, UpdateProgress.Downloading(
+                        contentLength is > 0
+                            ? Math.Min(99.5, total * 100.0 / contentLength.Value)
+                            : 0,
+                        $"Downloading update... ({total} bytes)"));
+                }
+            }
+            Report(progress, UpdateProgress.Downloading(100, "Download finished."));
+
+            if (string.IsNullOrWhiteSpace(expectedSha256))
+                return;
+
+            Report(progress, UpdateProgress.Verifying(0, "Verifying download..."));
+            var actualSha256 = ComputeSha256(destinationPath);
+            if (!string.Equals(actualSha256, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("downloaded installer hash mismatch");
+            Report(progress, UpdateProgress.Verifying(100, "Download verified."));
+        }
+        catch
+        {
+            TryDeleteFile(destinationPath);
+            throw;
+        }
+    }
+
+    private static void Report(IProgress<UpdateProgress>? progress, UpdateProgress update)
+    {
+        try
+        {
+            progress?.Report(update);
+        }
+        catch (Exception)
+        {
+            // A broken UI progress sink must never fail the update pipeline.
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     public static string ComputeSha256(string path)

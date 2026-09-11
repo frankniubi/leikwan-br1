@@ -112,9 +112,12 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
     <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
+    <system:String x:Key="UpdateFailedTitle">更新失败</system:String>
     <system:String x:Key="ActionInstallNow">立即安装</system:String>
     <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>
     <system:String x:Key="ActionCheckUpdates">检查更新</system:String>
+    <system:String x:Key="ActionRetryUpdate">重试</system:String>
+    <system:String x:Key="ActionDismiss">关闭</system:String>
     <system:String x:Key="ActionSignOut">退出登录</system:String>
 
     <!-- Settings -->
