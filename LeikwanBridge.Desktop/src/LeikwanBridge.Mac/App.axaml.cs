@@ -297,6 +297,7 @@ public sealed partial class App : Application
             await _services.Controller.DisposeAsync();
             _services.Updater.Dispose();
         }
+        PanelDirectEgress.Shutdown();
         await Dispatcher.UIThread.InvokeAsync(() => desktop.Shutdown());
     }
 

@@ -22,6 +22,9 @@ public static class MacAppBootstrap
     {
         ConfigureLogging(paths);
         Log.Information("mac_bootstrap_begin");
+        // Panel/update traffic must egress through the physical interface
+        // (e.g. en0, discovered dynamically) even when a utun TUN is up.
+        PanelDirectEgress.Initialize();
         var secretsPath = MacSecretStoreSelection.SecretsFilePath(paths);
         MacSecretStoreSelection.MergeLegacyFallbackFile(secretsPath);
         ISecretStore secrets;

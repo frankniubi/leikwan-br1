@@ -55,6 +55,10 @@ public partial class App : System.Windows.Application
 
         Log.Information("Leikwan Bridge GUI starting...");
 
+        // Panel/update traffic must egress through the physical NIC even
+        // when a third-party TUN tool holds the default route.
+        PanelDirectEgress.Initialize();
+
         // Load config
         var configDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -82,6 +86,7 @@ public partial class App : System.Windows.Application
     protected override void OnExit(ExitEventArgs e)
     {
         Log.Information("Leikwan Bridge GUI shutting down.");
+        PanelDirectEgress.Shutdown();
         Log.CloseAndFlush();
         try { _mutex?.ReleaseMutex(); }
         catch (ApplicationException) { }
