@@ -125,9 +125,34 @@ actually needs elevation.
    requesting exit, so a declined UAC prompt leaves a working client instead of
    a dead one, and the pending update is only cleared once the installer
    actually launched.
-7. Releases: `windows_client_app` 0.1.20.35 (`0ad7a9ab...`, 69,538,340 bytes)
+7. `WindowsAppUpdateService.PruneCachedInstallers` keeps the per-user installer
+   cache to the running build plus a deferred update. Every release drops a
+   ~70 MB setup in `%LOCALAPPDATA%\LeiKwan Bridge\updates` and nothing removed
+   them, so the cache grew without bound (six builds, 471 MB on the test
+   machine). `App.OnStartup` prunes it and logs the count.
+8. `App.ResolveWritableLogDirectory` probes the exact file the Serilog sink will
+   open and falls back to `%LOCALAPPDATA%\LeiKwan Bridge\logs` when the shared
+   day log is not writable, so the client can never run silently log-less.
+9. Releases: `windows_client_app` 0.1.20.36 (`579643c2...`, 69,537,925 bytes)
    with runtime `2026.09.12.2` (`34d4f261...`, fingerprint
-   `2026.09.12.2.0dc69598`). 0.1.20.33/0.1.20.34 were the intermediate steps.
+   `2026.09.12.2.0dc69598`). 0.1.20.33/0.1.20.34/0.1.20.35 were the
+   intermediate steps.
+
+## Machine maintenance performed (2026-09-13 01:32, elevated)
+
+| item | before | after |
+| --- | --- | --- |
+| `%ProgramData%\Leikwan\ClientAgent\backups` (stale dev backups) | 1057.4 MB | removed |
+| `%ProgramData%\LeiKwan Bridge\backups` (stale installer backups) | 372.3 MB | removed |
+| `%LOCALAPPDATA%\LeiKwan Bridge\updates` (installer cache) | 470.9 MB | 66.3 MB |
+
+~1.83 GB reclaimed. Neither backup tree is referenced by any current product
+code (grep over `scripts/` and `LeikwanBridge.Desktop/src`), and rollback
+snapshots actually live in `%TEMP%\leikwan-install-snapshot-<guid>`.
+
+ACLs re-applied with `icacls ... /grant *S-1-5-32-545:M` on `config.json`,
+`state\` and `logs\` (`/T`); all three exited 0 and the non-elevated client
+started and stayed up afterwards.
 
 ## Panel side
 

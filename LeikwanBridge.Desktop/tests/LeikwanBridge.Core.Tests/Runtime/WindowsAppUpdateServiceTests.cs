@@ -26,6 +26,28 @@ public sealed class WindowsAppUpdateServiceTests
     }
 
     [Fact]
+    public void PruneCachedInstallers_KeepsOnlyTheRunningAndPendingBuilds()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        var updates = Path.Combine(tempDir.Path, "updates");
+        Directory.CreateDirectory(updates);
+        var current = Path.Combine(updates, "leikwan-bridge-setup-0.1.20.36.exe");
+        var pending = Path.Combine(updates, "leikwan-bridge-setup-0.1.20.37.exe");
+        var staleA = Path.Combine(updates, "leikwan-bridge-setup-0.1.20.31.exe");
+        var staleB = Path.Combine(updates, "leikwan-bridge-setup-0.1.20.32.exe");
+        foreach (var path in new[] { current, pending, staleA, staleB })
+            File.WriteAllText(path, "setup");
+
+        var removed = WindowsAppUpdateService.PruneCachedInstallers(tempDir.Path, "0.1.20.36", pending);
+
+        Assert.Equal(2, removed.Count);
+        Assert.True(File.Exists(current));
+        Assert.True(File.Exists(pending));
+        Assert.False(File.Exists(staleA));
+        Assert.False(File.Exists(staleB));
+    }
+
+    [Fact]
     public void AgentConfig_MigrateLegacyUltraBin_MigratesManagedPerMachineRuntimePath()
     {
         // The legacy per-machine client agent kept its own runtime copy that no
