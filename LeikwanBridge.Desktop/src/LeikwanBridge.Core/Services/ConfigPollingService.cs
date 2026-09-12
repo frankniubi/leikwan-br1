@@ -405,7 +405,14 @@ public sealed class ConfigPollingService
             }
             if (leases.Count == 0)
             {
-                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
+                // Name the forward in the refresh. A targeted refresh is the only
+                // thing that bypasses the "config revision unchanged, skip" path, and
+                // a forward can be refused a lease while the config revision stays
+                // put: the panel re-mints the policy generation behind the same
+                // revision. Without it the runtime kept the stale generation it was
+                // started with and the forward stayed down until someone restarted
+                // the client by hand.
+                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable", forward.ForwardId))
                     return;
                 Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
@@ -522,7 +529,7 @@ public sealed class ConfigPollingService
 
         if (leases.Count == 0)
         {
-            if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
+            if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable", forward.ForwardId))
                 return;
             Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
             _runtimeManager.StopForwardForPolicy(forward.ForwardId);

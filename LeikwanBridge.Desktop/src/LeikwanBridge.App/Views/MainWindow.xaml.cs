@@ -1557,6 +1557,11 @@ public partial class MainWindow : Window
 
     private void LaunchInstallerAndExit(string installerPath, IReadOnlyList<string>? installerArguments = null)
     {
+        // Without this the panel just sat at "download finished / 100%" while
+        // the elevation prompt was on screen, which reads as the update having
+        // silently stopped.
+        _vm.ReportUpdateProgress(UpdateProgress.Applying(100, "Waiting for administrator approval to install..."));
+
         var startInfo = new ProcessStartInfo
         {
             FileName = installerPath,
