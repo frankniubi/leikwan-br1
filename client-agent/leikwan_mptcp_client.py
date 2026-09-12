@@ -25,6 +25,13 @@ RELAY_COUNTER = itertools.count(1)
 PIPE_READ_CHUNK_BYTES = 256 * 1024
 PIPE_DRAIN_THRESHOLD_BYTES = 1024 * 1024
 DEFAULT_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
+# Cost the ultra relay adds to an overlay datagram: 16B runtime envelope + 20B outer IP + 8B outer UDP.
+PAYLOAD_ENVELOPE_OVERHEAD_BYTES = 44
+# Smallest overlay MTU still worth configuring, and the age after which a runtime
+# status snapshot no longer describes the association that is up right now.
+OVERLAY_MTU_FLOOR = 1280
+ULTRA_STATUS_MAX_AGE_SECONDS = 60.0
+OVERLAY_MTU_MONITOR_INTERVAL_SECONDS = 15.0
 
 
 def load_json(path: pathlib.Path) -> dict[str, Any]:
@@ -170,7 +177,123 @@ def apply_ipsec_underlay(config: dict[str, Any]) -> None:
                 run_command([str(part) for part in command], check=False)
 
 
-def build_wireguard_interface_config(config: dict[str, Any]) -> str:
+@dataclass(frozen=True)
+class OverlayMtuResolution:
+    """Overlay MTU decision for one transit interface."""
+
+    mtu: int
+    configured_mtu: int
+    ceiling: int | None
+    reason: str
+
+    @property
+    def unhealthy(self) -> bool:
+        return self.reason == "ceiling_zero"
+
+
+def underlay_forward_id(config: dict[str, Any], parent_config: dict[str, Any] | None = None) -> int:
+    """Resolve the forward that owns a transit underlay: explicit keys, leg keys, then interface name."""
+    for source in (config, parent_config):
+        if not isinstance(source, dict):
+            continue
+        for key in ("forward_id", "ultra_forward_id"):
+            try:
+                forward_id = int(source.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if forward_id > 0:
+                return forward_id
+    legs = config.get("legs", [])
+    for leg in legs if isinstance(legs, list) else []:
+        if not isinstance(leg, dict):
+            continue
+        try:
+            forward_id = int(leg.get("forward_id", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if forward_id > 0:
+            return forward_id
+    match = re.match(r"^lw-mptcp-(\d+)-", str(config.get("interface_name", "") or "").strip())
+    return int(match.group(1)) if match is not None else 0
+
+
+def ultra_status_path(config: dict[str, Any], parent_config: dict[str, Any] | None = None) -> pathlib.Path | None:
+    for source in (config, parent_config):
+        if not isinstance(source, dict):
+            continue
+        explicit = str(source.get("ultra_status_path", "") or "").strip()
+        if explicit != "":
+            return pathlib.Path(explicit)
+    forward_id = underlay_forward_id(config, parent_config)
+    if forward_id <= 0:
+        return None
+    return pathlib.Path(f"/run/ultra/forward-{forward_id}.status.json")
+
+
+def read_ultra_payload_ceiling(
+    path: pathlib.Path | None,
+    *,
+    now: float | None = None,
+    max_age_seconds: float = ULTRA_STATUS_MAX_AGE_SECONDS,
+) -> tuple[int | None, str]:
+    """Read the runtime's measured payload ceiling.
+
+    Returns (ceiling, reason) where ceiling None means "unknown" (missing, unreadable,
+    stale or never measured) and 0 means the runtime declared the association unusable.
+    """
+    if path is None:
+        return None, "no_status_path"
+    try:
+        stats = pathlib.Path(path).stat()
+    except OSError:
+        return None, "status_missing"
+    if ((time.time() if now is None else now) - stats.st_mtime) > max_age_seconds:
+        return None, "status_stale"
+    try:
+        payload = json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None, "status_invalid"
+    if not isinstance(payload, dict) or "udp_payload_ceiling" not in payload:
+        return None, "ceiling_unmeasured"
+    try:
+        ceiling = int(payload.get("udp_payload_ceiling", 0) or 0)
+    except (TypeError, ValueError):
+        return None, "ceiling_invalid"
+    if ceiling < 0:
+        return None, "ceiling_invalid"
+    if ceiling == 0:
+        return 0, "ceiling_zero"
+    return ceiling, "ceiling_measured"
+
+
+def resolve_overlay_mtu(
+    config: dict[str, Any],
+    parent_config: dict[str, Any] | None = None,
+    *,
+    status_path: pathlib.Path | None = None,
+    now: float | None = None,
+) -> OverlayMtuResolution:
+    """Clamp the configured overlay MTU to the measured per-association payload ceiling.
+
+    The ceiling belongs to the relay association and rotates with it, so the value is never
+    hardcoded per line: it is re-derived from the runtime status file every time it is applied.
+    """
+    try:
+        configured_mtu = max(0, int(config.get("mtu", 0) or 0))
+    except (TypeError, ValueError):
+        configured_mtu = 0
+    path = pathlib.Path(status_path) if status_path is not None else ultra_status_path(config, parent_config)
+    ceiling, reason = read_ultra_payload_ceiling(path, now=now)
+    if ceiling is None or ceiling == 0:
+        # Unknown or unusable association: keep the configured MTU instead of guessing.
+        return OverlayMtuResolution(mtu=configured_mtu, configured_mtu=configured_mtu, ceiling=ceiling, reason=reason)
+    mtu = max(OVERLAY_MTU_FLOOR, ceiling - PAYLOAD_ENVELOPE_OVERHEAD_BYTES)
+    if configured_mtu > 0:
+        mtu = min(mtu, configured_mtu)
+    return OverlayMtuResolution(mtu=mtu, configured_mtu=configured_mtu, ceiling=ceiling, reason=reason)
+
+
+def build_wireguard_interface_config(config: dict[str, Any], parent_config: dict[str, Any] | None = None) -> str:
     private_key_path = str(config.get("local_private_key_path", "") or "").strip()
     if private_key_path == "":
         raise RuntimeError("wireguard underlay missing local_private_key_path")
@@ -251,11 +374,19 @@ def build_wireguard_interface_config(config: dict[str, Any]) -> str:
         interface_lines.append("Address = " + ", ".join(address + "/32" for address in seen_addresses))
     # UoT/leigod underlays peer at 127.0.0.1 (the local carrier), so wg-quick auto-derives the
     # interface MTU from loopback (65536 -> 65456). Oversized MPTCP segments then black-hole on the
-    # real ~1280 leigod path (handshake fits, bulk data stalls). Honor a panel-supplied MTU so the
-    # overlay segments fit the carrier path. Applies to current + future leigod forwards/slaves.
-    mtu = max(0, int(config.get("mtu", 0) or 0))
-    if mtu > 0:
-        interface_lines.append(f"MTU = {mtu}")
+    # real carrier path (handshake fits, bulk data stalls). The panel-supplied MTU is an upper bound:
+    # when the runtime has measured this relay association the overlay follows the measured payload
+    # ceiling (ceiling - envelope/IP/UDP overhead), never above the configured value. Applies to
+    # current + future leigod forwards/slaves.
+    resolution = resolve_overlay_mtu(config, parent_config)
+    if resolution.unhealthy:
+        logging.warning(
+            "overlay mtu unusable: interface=%s udp_payload_ceiling=0, keeping configured mtu %s",
+            interface_name or "?",
+            resolution.configured_mtu,
+        )
+    if resolution.mtu > 0:
+        interface_lines.append(f"MTU = {resolution.mtu}")
     interface_lines.extend(route_lines)
     interface_lines.append("")
     return "\n".join(interface_lines) + "\n" + "\n".join(peer_blocks)
@@ -289,11 +420,11 @@ def apply_wireguard_transit_underlays(underlays: list[dict[str, Any]], parent_co
             continue
         # Inherit top-level config values that the underlay needs
         merged = dict(underlay)
-        for key in ("local_private_key_path", "initcwnd", "initrwnd"):
+        for key in ("local_private_key_path", "initcwnd", "initrwnd", "mtu"):
             if key not in merged and key in parent_config:
                 merged[key] = parent_config[key]
         name = str(merged.get("interface_name", "") or "").strip()
-        if apply_wireguard_transit_underlay_single(merged):
+        if apply_wireguard_transit_underlay_single(merged, parent_config):
             if name:
                 active_iface_names.add(name)
         elif name:
@@ -450,23 +581,27 @@ def wait_for_interface_absent(name: str, timeout_seconds: float = 5.0) -> bool:
     return False
 
 
-def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
+def transit_interface_config_path(interface_name: str, config: dict[str, Any]) -> pathlib.Path:
+    path_value = str(config.get("config_path", "") or "").strip()
+    if path_value != "":
+        return pathlib.Path(path_value)
+    return pathlib.Path(f"/etc/wireguard/{interface_name}.conf")
+
+
+def apply_wireguard_transit_underlay_single(config: dict[str, Any], parent_config: dict[str, Any] | None = None) -> bool:
     if os.name == "nt":
         return True
     name = str(config.get("interface_name", "") or "").strip()
     if name == "":
         raise RuntimeError("wireguard underlay missing interface_name")
-    path_value = str(config.get("config_path", "") or "").strip()
-    if path_value == "":
-        path_value = f"/etc/wireguard/{name}.conf"
     for leg in config.get("legs", []) if isinstance(config.get("legs", []), list) else []:
         if not isinstance(leg, dict):
             continue
         if not leg_uses_local_uot_endpoint(leg):
             continue
         ensure_uot_client_service(name, leg)
-    path = pathlib.Path(path_value)
-    config_text = build_wireguard_interface_config(config)
+    path = transit_interface_config_path(name, config)
+    config_text = build_wireguard_interface_config(config, parent_config)
     changed = write_text_if_changed(path, config_text, mode=0o600)
     ensure_clean_transit_interface(name, desired_transit_addresses(config))
     if shutil_which("wg-quick") and path.is_file():
@@ -501,6 +636,106 @@ def apply_wireguard_transit_underlay_single(config: dict[str, Any]) -> bool:
             ensure_clean_transit_interface(name, desired_transit_addresses(config))
             return False
         return True
+
+
+@dataclass
+class OverlayMtuApplyState:
+    """Last successfully applied overlay MTU and the reason it was chosen."""
+
+    mtu: int = 0
+    reason: str = ""
+
+
+def apply_overlay_mtu(
+    config: dict[str, Any],
+    parent_config: dict[str, Any] | None = None,
+    state: OverlayMtuApplyState | None = None,
+    *,
+    status_path: pathlib.Path | None = None,
+) -> int:
+    """Re-clamp a live transit interface when the measured ceiling moved.
+
+    Returns the applied MTU, or 0 when nothing changed (interface absent, unusable
+    association, or the interface already carries the resolved value).
+    """
+    name = str(config.get("interface_name", "") or "").strip()
+    if name == "":
+        return 0
+    state = state if state is not None else OverlayMtuApplyState()
+    try:
+        resolution = resolve_overlay_mtu(config, parent_config, status_path=status_path)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("transit interface %s mtu resolution failed: %s", name, exc)
+        return 0
+    if resolution.unhealthy and state.reason != resolution.reason:
+        logging.warning(
+            "overlay mtu unusable: interface=%s udp_payload_ceiling=0, keeping configured mtu %s",
+            name,
+            resolution.configured_mtu,
+        )
+    state.reason = resolution.reason
+    if resolution.unhealthy:
+        # Unusable association: the interface keeps the configured MTU it was created with.
+        state.mtu = resolution.mtu
+        return 0
+    if resolution.mtu <= 0 or resolution.mtu == state.mtu:
+        return 0
+    try:
+        write_text_if_changed(
+            transit_interface_config_path(name, config),
+            build_wireguard_interface_config(config, parent_config),
+            mode=0o600,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("transit interface %s config rewrite failed: %s", name, exc)
+        return 0
+    result = run_command(["ip", "link", "set", "dev", name, "mtu", str(resolution.mtu)], check=False)
+    if result.returncode != 0:
+        logging.warning(
+            "transit interface %s mtu %s not applied: %s",
+            name,
+            resolution.mtu,
+            str(result.stderr or result.stdout or "unknown error").strip(),
+        )
+        return 0
+    state.mtu = resolution.mtu
+    logging.info("transit interface %s mtu -> %s (udp_payload_ceiling=%s)", name, resolution.mtu, resolution.ceiling)
+    return resolution.mtu
+
+
+def refresh_overlay_mtu(config: dict[str, Any], states: dict[str, OverlayMtuApplyState] | None = None) -> dict[str, int]:
+    """One pass over the transit underlays of a runtime config; returns {interface_name: applied mtu}."""
+    states = states if states is not None else {}
+    applied: dict[str, int] = {}
+    underlays = config.get("underlays", [])
+    for underlay in underlays if isinstance(underlays, list) else []:
+        if not isinstance(underlay, dict):
+            continue
+        name = str(underlay.get("interface_name", "") or "").strip()
+        if name == "":
+            continue
+        mtu = apply_overlay_mtu(underlay, config, states.setdefault(name, OverlayMtuApplyState()))
+        if mtu > 0:
+            applied[name] = mtu
+    return applied
+
+
+def monitor_overlay_mtu(config: dict[str, Any], *, interval_seconds: float = OVERLAY_MTU_MONITOR_INTERVAL_SECONDS) -> None:
+    """Keep live transit interfaces clamped to the runtime's measured payload ceiling.
+
+    The ceiling rotates with the relay association, so this runs for the lifetime of the
+    forward service instead of being decided once at interface creation.
+    """
+    if os.name == "nt":
+        return
+    states: dict[str, OverlayMtuApplyState] = {}
+    interval = max(2.0, float(interval_seconds))
+    while True:
+        try:
+            refresh_overlay_mtu(config, states)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("overlay mtu refresh failed: %s", exc)
+        time.sleep(interval)
 
 
 def ensure_uot_client_service(interface_name: str, leg: dict[str, Any]) -> None:
@@ -1320,6 +1555,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Leikwan MPTCP client runtime")
     parser.add_argument("--config", required=True)
     parser.add_argument("--setup-underlays", action="store_true")
+    parser.add_argument("--monitor-overlay-mtu", action="store_true")
     return parser.parse_args()
 
 
@@ -1343,6 +1579,9 @@ def main() -> int:
     configure_logging(config)
     if args.setup_underlays:
         setup_underlays_only(config)
+        return 0
+    if args.monitor_overlay_mtu:
+        monitor_overlay_mtu(config)
         return 0
     return asyncio.run(main_async(config))
 

@@ -1854,6 +1854,7 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
+                RefreshMeasuredPayloadCeilings(forwards);
                 if (IsShuttingDown || _heartbeatService is null)
                     return;
                 await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
@@ -1867,6 +1868,34 @@ public partial class MainViewModel : ObservableObject
             _heartbeatTask = heartbeatTask;
 
         ScheduleNativeLeaseRefresh();
+    }
+
+    /// <summary>
+    /// Feeds the payload ceiling each running runtime published for its own
+    /// association into the proxy service, so a TUN that is started later (a
+    /// failover, a lease rotation, the next connect) uses the MTU that matches
+    /// the path. A live TUN is never resized here: the service records the
+    /// value, surfaces <c>MtuUpdatePending</c> and the existing restart paths
+    /// apply it. Ceilings rotate with the relay, so this must run on every tick.
+    /// </summary>
+    private void RefreshMeasuredPayloadCeilings(IReadOnlyList<ForwardConfig> forwards)
+    {
+        var proxyService = _proxyService;
+        if (proxyService is null || forwards.Count == 0)
+            return;
+        foreach (var forward in forwards)
+        {
+            if (forward.ForwardId <= 0 || _runtimeManager?.IsForwardRunning(forward.ForwardId) != true)
+                continue;
+            try
+            {
+                proxyService.RefreshMeasuredPayloadCeiling(forward.ForwardId);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "payload ceiling refresh failed forward={ForwardId}", forward.ForwardId);
+            }
+        }
     }
 
     private void OnNativeOutboundUpdated(NativeOutboundCapability? capability)

@@ -39,6 +39,43 @@ public sealed class UltraUsageSnapshot
     [JsonPropertyName("sequence")] public long Sequence { get; set; }
     [JsonPropertyName("bytes_in")] public long BytesIn { get; set; }
     [JsonPropertyName("bytes_out")] public long BytesOut { get; set; }
+
+    // Runtime status published by the same snapshot the counters above come
+    // from. Absent stays absent: a ceiling that was never measured and an
+    // attestation that was not reported are omitted, never defaulted.
+    [JsonPropertyName("udp_payload_ceiling")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int UdpPayloadCeiling { get; set; }
+
+    [JsonPropertyName("udp_oversize_drops")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long UdpOversizeDrops { get; set; }
+
+    [JsonPropertyName("runtime_attestation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RuntimeAttestationSnapshot? RuntimeAttestation { get; set; }
+}
+
+/// <summary>
+/// Identity the Ultra runtime reports about its own helper binary. The panel
+/// compares it against the release manifest; the host only relays what the
+/// runtime published and drops a malformed object instead of repairing it.
+/// </summary>
+public sealed class RuntimeAttestationSnapshot
+{
+    [JsonPropertyName("fingerprint")] public string Fingerprint { get; set; } = "";
+
+    [JsonPropertyName("self_sha256")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SelfSha256 { get; set; }
+
+    [JsonPropertyName("debugger")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Debugger { get; set; }
+
+    [JsonPropertyName("instrumented")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Instrumented { get; set; }
 }
 
 public sealed class UltraCandidateFeedback

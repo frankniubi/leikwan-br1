@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Core.Services.Ultra;
 
 namespace LeikwanBridge.Mac.Services;
 
@@ -25,7 +26,9 @@ public static class MacConnectionConfigBuilder
         MacConnectionProfile profile,
         MacConnectionMode mode,
         IEnumerable<string> bypassHosts,
-        int proxyPort = DefaultProxyPort)
+        int proxyPort = DefaultProxyPort,
+        int tunMtu = DefaultTunMtu,
+        int measuredPayloadCeiling = 0)
     {
         ArgumentNullException.ThrowIfNull(profile);
         profile = profile.Clone();
@@ -53,7 +56,7 @@ public static class MacConnectionConfigBuilder
         {
             ["log"] = new JsonObject { ["level"] = "error" },
             ["dns"] = BuildDns(profile, bypassDomains, systemTun: mode == MacConnectionMode.Vpn),
-            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps, tunMtu, measuredPayloadCeiling),
             ["outbounds"] = outbounds,
             ["route"] = BuildRoute(bypassIps, bypassDomains, mode: mode),
         };
@@ -75,7 +78,9 @@ public static class MacConnectionConfigBuilder
         bool bypassChinaMainland = false,
         string? nativeProxyHost = null,
         int? nativeProxyPort = null,
-        MacNativeRuleSetPaths? ruleSetPaths = null)
+        MacNativeRuleSetPaths? ruleSetPaths = null,
+        int tunMtu = DefaultTunMtu,
+        int measuredPayloadCeiling = 0)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -119,7 +124,7 @@ public static class MacConnectionConfigBuilder
                 lease.RouteScope,
                 lease.RoutePolicy,
                 systemTun: mode == MacConnectionMode.Vpn),
-            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, bypassIps, tunMtu, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
                 nativeOutbound,
@@ -255,7 +260,8 @@ public static class MacConnectionConfigBuilder
     private static JsonArray BuildInbounds(
         MacConnectionMode mode,
         int proxyPort,
-        IReadOnlyList<string>? bypassIps = null,
+        IReadOnlyList<string>? bypassIps,
+        int tunMtu,
         int measuredPayloadCeiling = 0)
     {
         if (mode == MacConnectionMode.Vpn)
@@ -279,7 +285,7 @@ public static class MacConnectionConfigBuilder
                     ["address"] = new JsonArray(TunAddress, TunIpv6Address),
                     // Clamp to the runtime-measured native-UDP payload ceiling instead of
                     // emitting frames the relay association will drop.
-                    ["mtu"] = UltraRuntimeMtu.Resolve(DefaultTunMtu, measuredPayloadCeiling),
+                    ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
                     ["auto_route"] = true,
                     ["strict_route"] = true,
                     ["stack"] = "mixed",

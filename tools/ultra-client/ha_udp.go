@@ -38,7 +38,11 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 			}
 			configureRuntimeDatagram(session, store, status, ss.Lease)
 			session.startRuntimeReader(3 * safeUDPKeepaliveInterval)
-			return udpWarmSession{session: session, selectionRef: ss.Lease.SelectionRef, selectionTier: ss.Lease.SelectionTier, candidateKeyHash: ss.Lease.CandidateKeyHash, leaseHash: ss.Lease.LeaseHash, started: started}, nil
+			return udpWarmSession{
+				session: session, selectionRef: ss.Lease.SelectionRef, selectionTier: ss.Lease.SelectionTier,
+				candidateKeyHash: ss.Lease.CandidateKeyHash, leaseHash: ss.Lease.LeaseHash,
+				payloadCeiling: normalizeRelayPayloadCeiling(ss.Lease.RelayPayloadCeiling), started: started,
+			}, nil
 		}
 		store.FailCandidate("udp", ss.Lease)
 		status.RecordCandidateFailure(ss.Lease.CandidateKeyHash, "udp", "udp_association_failed", ss.Lease.LeaseHash)
@@ -144,12 +148,21 @@ func (s *DatagramSession) readRuntime(buffer []byte) (int, error) {
 	return copy(buffer, packet), nil
 }
 
+// udpRuntimeFailureReason keeps the payload-ceiling verdict visible in status
+// while every other runtime failure keeps the generic label.
+func udpRuntimeFailureReason(err error) string {
+	if errors.Is(err, errDatagramUnusable) {
+		return udpPayloadCeilingUnusableReason
+	}
+	return "udp_association_failed"
+}
+
 func configureRuntimeDatagram(s *DatagramSession, store *PolicyStore, status *StatusWriter, lease ProviderLease) {
 	key, generation := haPathKey(lease), lease.PolicyGeneration
 	candidateKey, leaseHash := lease.CandidateKeyHash, lease.LeaseHash
 	s.onRuntimeFailure = func(err error) {
 		store.failCandidateKey("udp", key, generation)
-		status.RecordCandidateFailure(candidateKey, "udp", "udp_association_failed", leaseHash)
+		status.RecordCandidateFailure(candidateKey, "udp", udpRuntimeFailureReason(err), leaseHash)
 		status.RecordHAEvent("udp", haErrorClass(err), generation)
 		log.Printf("udp session failed forward_id=%d reason=%s generation=%s", store.config.ForwardID, haErrorClass(err), generation)
 	}

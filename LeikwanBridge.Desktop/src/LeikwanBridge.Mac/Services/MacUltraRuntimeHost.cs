@@ -210,6 +210,17 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         }
     }
 
+    /// <summary>
+    /// Payload ceiling the running runtime last published for a forward, or 0 while the
+    /// association is unusable or has not been measured yet. The value lives in the status
+    /// file handed to the helper as "status_path"; the Ultra forwards have no TUN, so this
+    /// is the observation point rather than an MTU input.
+    /// </summary>
+    public int GetPayloadCeiling(int forwardId)
+        => _runtimes.TryGetValue(forwardId, out var runtime)
+            ? MacUltraRuntimeStatusReader.ReadPayloadCeiling(runtime.StatusPath)
+            : 0;
+
     public bool Refresh(ForwardConfig forward, UltraLease lease)
         => Refresh(forward, new[] { lease });
 

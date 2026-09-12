@@ -17,11 +17,14 @@ public sealed class MacConnectionService : IMacConnectionService
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<MacConnectionProfile> _profiles = [];
     private readonly int _proxyPort;
+    private readonly int _tunMtu;
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private MacConnectionSnapshot _snapshot = MacConnectionSnapshot.Disconnected;
     private string? _configPath;
     private string? _activeProcessConfigPath;
     private NativeOutboundLease? _activeNativeLease;
+    private int _activeNativePayloadCeiling;
+    private int _activeNativeTunMtu;
     private bool _disposed;
     private MacConnectionSelection _selection = MacConnectionSelection.Empty;
 
@@ -33,13 +36,15 @@ public sealed class MacConnectionService : IMacConnectionService
         MacBypassResolver? resolver = null,
         IMacConnectionProcessHost? processHost = null,
         int proxyPort = MacConnectionConfigBuilder.DefaultProxyPort,
-        INativeOutboundRelayHost? nativeRelayHost = null)
+        INativeOutboundRelayHost? nativeRelayHost = null,
+        int tunMtu = MacConnectionConfigBuilder.DefaultTunMtu)
     {
         _paths = paths;
         _store = store;
         _resolver = resolver ?? new MacBypassResolver();
         _processHost = processHost ?? new MacConnectionProcessHost();
         _proxyPort = proxyPort;
+        _tunMtu = tunMtu;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost(windows: false);
         _processHost.UnexpectedExit += OnProcessExited;
     }
@@ -68,6 +73,30 @@ public sealed class MacConnectionService : IMacConnectionService
     public bool IsNativeOutboundActive
         => _activeNativeLease is not null
             && _snapshot.State == MacConnectionState.Connected;
+
+    /// <summary>
+    /// Payload ceiling the native relay published for the live association, or 0 while no
+    /// native connection is up or the runtime has not measured one yet.
+    /// </summary>
+    public int ActiveNativePayloadCeiling => _activeNativePayloadCeiling;
+
+    /// <summary>
+    /// True when the relay has since published a ceiling whose TUN MTU differs from the one
+    /// the running sing-box config was compiled with. sing-box only reads the TUN MTU at
+    /// startup, so <see cref="TryRefreshNativeAsync"/> declines an in-place refresh in that
+    /// case and the caller's existing restart path re-applies it.
+    /// </summary>
+    public bool IsNativeTunMtuPending
+    {
+        get
+        {
+            var lease = _activeNativeLease;
+            if (lease is null || _activeNativeTunMtu <= 0)
+                return false;
+            return UltraRuntimeMtu.Resolve(_tunMtu, ReadNativeRelayStatus(lease.ForwardId).PayloadCeiling)
+                != _activeNativeTunMtu;
+        }
+    }
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -307,6 +336,13 @@ public sealed class MacConnectionService : IMacConnectionService
             var nativeRelayPort = AllocateLoopbackPort(_proxyPort);
             var ruleSets = await MacNativeRuleSetStore.EnsureAsync(
                 Path.Combine(_paths.StateDirectory, "native-rule-sets"), ct).ConfigureAwait(false);
+            // The association that carried the previous session already measured a payload
+            // ceiling; the instance started below re-measures and refreshes it while it runs.
+            var relayStatus = ReadNativeRelayStatus(lease.ForwardId);
+            var tunMtu = UltraRuntimeMtu.Resolve(_tunMtu, relayStatus.PayloadCeiling);
+            Log.Information(
+                "mac_native_tun_mtu forward={ForwardId} ceiling={Ceiling} mtu={Mtu} oversize_drops={Drops}",
+                lease.ForwardId, relayStatus.PayloadCeiling, tunMtu, relayStatus.OversizeDrops);
             var compiled = MacConnectionConfigBuilder.BuildNative(
                 lease,
                 mode,
@@ -315,7 +351,9 @@ public sealed class MacConnectionService : IMacConnectionService
                 bypassChinaMainland,
                 nativeProxyHost: "127.0.0.1",
                 nativeProxyPort: nativeRelayPort,
-                ruleSetPaths: ruleSets);
+                ruleSetPaths: ruleSets,
+                tunMtu: tunMtu,
+                measuredPayloadCeiling: relayStatus.PayloadCeiling);
             var executable = _paths.BinDirectory.TrimEnd('/', '\\') + "/sing-box";
             if (!File.Exists(executable))
                 throw new FileNotFoundException("sing-box helper is missing", executable);
@@ -346,6 +384,8 @@ public sealed class MacConnectionService : IMacConnectionService
                 _configPath = null;
             }
             _activeNativeLease = lease;
+            _activeNativePayloadCeiling = relayStatus.PayloadCeiling;
+            _activeNativeTunMtu = tunMtu;
             transferred = true;
             Publish(new MacConnectionSnapshot(
                 MacConnectionState.Connected,
@@ -400,6 +440,12 @@ public sealed class MacConnectionService : IMacConnectionService
                 || !lease.IsRuntimeUsable(DateTimeOffset.UtcNow))
                 return false;
 
+            // sing-box reads the TUN MTU only at startup, so a re-measured ceiling cannot be
+            // hot-applied: decline the in-place refresh (leaving the lease to the caller) and
+            // let the existing restart path rebuild the config with the new MTU.
+            if (IsNativeTunMtuPending)
+                return false;
+
             if (!await _nativeRelayHost.RefreshAsync(lease.ForwardId, lease, ct).ConfigureAwait(false))
                 return false;
 
@@ -452,6 +498,8 @@ public sealed class MacConnectionService : IMacConnectionService
                 _configPath = null;
                 _activeNativeLease?.Dispose();
                 _activeNativeLease = null;
+                _activeNativePayloadCeiling = 0;
+                _activeNativeTunMtu = 0;
             }
         }
     }
@@ -480,6 +528,10 @@ public sealed class MacConnectionService : IMacConnectionService
             Log.Warning("mac connection exit cleanup failed");
         }
     }
+
+    private MacUltraRuntimeStatus ReadNativeRelayStatus(int forwardId)
+        => MacUltraRuntimeStatusReader.Read(
+            MacUltraRuntimeStatusReader.FindNativeRelayStatusPath(_paths.RuntimeDirectory, forwardId));
 
     private static int AllocateLoopbackPort(int avoidPort)
     {

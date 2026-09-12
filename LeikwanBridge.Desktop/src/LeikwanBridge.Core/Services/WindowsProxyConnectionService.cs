@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services.Ultra;
+using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
@@ -31,6 +32,10 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private int _activeProfileId;
     private NativeOutboundLease? _activeNativeLease;
     private List<NativeOutboundLease> _activeNativeLeases = [];
+    private int _measuredPayloadCeiling;
+    private int _appliedTunMtu;
+    private int _pendingTunMtu;
+    private bool _mtuUpdatePending;
     private bool _stopCompleted;
     private bool _disposed;
 
@@ -64,6 +69,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         tunStack = WindowsProxyConfigBuilder.NormalizeTunStack(tunStack);
         _proxyPort = proxyPort;
         _tunMtu = tunMtu;
+        _appliedTunMtu = tunMtu;
+        _pendingTunMtu = tunMtu;
         _tunStack = tunStack;
         _chinaIpListPath = chinaIpListPath ?? string.Empty;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
@@ -81,6 +88,26 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     }
 
     public WindowsProxySnapshot Snapshot => _snapshot;
+
+    /// <summary>
+    /// Payload ceiling the Ultra runtime measured for the active forward
+    /// (0 = nothing measured yet, so the configured MTU stands).
+    /// </summary>
+    public int MeasuredPayloadCeiling => _measuredPayloadCeiling;
+
+    /// <summary>TUN MTU of the running configuration.</summary>
+    public int AppliedTunMtu => _appliedTunMtu;
+
+    /// <summary>TUN MTU the last observed ceiling resolves to.</summary>
+    public int PendingTunMtu => _pendingTunMtu;
+
+    /// <summary>
+    /// True while a live TUN still runs with an MTU the runtime has since
+    /// out-measured. The runtime only re-measures after a failover, and the TUN
+    /// MTU is fixed when the interface is created, so the new value is applied by
+    /// the next start (reconnect/failover) and surfaced here until then.
+    /// </summary>
+    public bool MtuUpdatePending => _mtuUpdatePending;
 
     public DateTimeOffset? ActiveNativeLeaseExpiresAt => _activeNativeLease?.ExpiresAt;
 
@@ -126,6 +153,62 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             throw new InvalidOperationException("proxy_port_change_requires_stop");
         _proxyPort = proxyPort;
     }
+
+    /// <summary>
+    /// Records the payload ceiling a status snapshot reported for
+    /// <paramref name="forwardId"/> and reports whether the running connection
+    /// already uses the MTU it resolves to.  Returns false while a live TUN must
+    /// be recreated; <see cref="MtuUpdatePending"/> stays true until the next
+    /// start applies it.
+    /// </summary>
+    public bool ObserveMeasuredPayloadCeiling(int forwardId, int measuredPayloadCeiling)
+    {
+        if (forwardId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(forwardId));
+        if (measuredPayloadCeiling < 0)
+            throw new ArgumentOutOfRangeException(nameof(measuredPayloadCeiling));
+        // A native connection owns exactly one forward; another forward's
+        // ceiling must not resize its TUN.
+        if (_activeNativeLease is { } active && active.ForwardId != forwardId)
+            return false;
+
+        _measuredPayloadCeiling = measuredPayloadCeiling;
+        var resolved = UltraRuntimeMtu.Resolve(_tunMtu, measuredPayloadCeiling);
+        _pendingTunMtu = resolved;
+        if (resolved == _appliedTunMtu)
+        {
+            _mtuUpdatePending = false;
+            return true;
+        }
+        if (_snapshot.State == WindowsProxyConnectionState.Connected
+            && _snapshot.Mode == WindowsProxyMode.Tun)
+        {
+            if (!_mtuUpdatePending)
+            {
+                Log.Warning(
+                    "mtu_update_pending forward={ForwardId} ceiling={Ceiling} configured_mtu={ConfiguredMtu} applied_mtu={AppliedMtu} pending_mtu={PendingMtu}",
+                    forwardId,
+                    measuredPayloadCeiling,
+                    _tunMtu,
+                    _appliedTunMtu,
+                    resolved);
+            }
+            _mtuUpdatePending = true;
+            return false;
+        }
+        _mtuUpdatePending = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Re-reads the forward's runtime status snapshot and records the ceiling it
+    /// reports.  Call this from the status/heartbeat path to let a live TUN
+    /// follow a runtime that re-measured after a failover.
+    /// </summary>
+    public bool RefreshMeasuredPayloadCeiling(int forwardId)
+        => ObserveMeasuredPayloadCeiling(
+            forwardId,
+            UltraRuntimeStatus.ReadForwardPayloadCeiling(_runtimeDirectory, forwardId));
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -250,7 +333,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 bypassChinaMainland,
                 _chinaIpListPath,
                 dnsMode,
-                customDnsServers);
+                customDnsServers,
+                _measuredPayloadCeiling);
 
             // Perform all deterministic validation before tearing down an
             // existing connection.  A bad URI, missing runtime, or empty
@@ -317,6 +401,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 throw;
             }
 
+            RecordAppliedTunMtu();
             _activeProfileId = profileId;
             _stopCompleted = false;
             Publish(new WindowsProxySnapshot(
@@ -415,6 +500,12 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
             proxyPort = ResolveProxyPort(mode, previousSnapshot);
             var nativeRelayPort = AllocateLoopbackPort(proxyPort);
+            // The ceiling belongs to the relay association, and the runtime
+            // re-measures it after a failover, so read it from the status
+            // snapshot on every start instead of trusting a stale value.
+            _measuredPayloadCeiling = UltraRuntimeStatus.ReadForwardPayloadCeiling(
+                _runtimeDirectory,
+                lease.ForwardId);
             var compiled = WindowsProxyConfigBuilder.BuildNative(
                 lease,
                 mode,
@@ -427,7 +518,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 dnsMode,
                 customDnsServers,
                 nativeProxyHost: "127.0.0.1",
-                nativeProxyPort: nativeRelayPort);
+                nativeProxyPort: nativeRelayPort,
+                measuredPayloadCeiling: _measuredPayloadCeiling);
 
             Publish(new WindowsProxySnapshot(
                 WindowsProxyConnectionState.Starting,
@@ -492,6 +584,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 throw;
             }
 
+            RecordAppliedTunMtu();
             _activeProfileId = 0;
             _activeNativeLease = lease;
             _activeNativeLeases = leases.ToList();
@@ -651,6 +744,9 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
+        // Nothing live is left to resize; the next start resolves the MTU again
+        // from the ceiling that is current then.
+        _mtuUpdatePending = false;
         var failures = new List<Exception>();
 
         // Stop the local target first.  If a native redirector is slow to
@@ -725,6 +821,13 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             lease.Dispose();
         if (_activeNativeLease is not null && !leases.Any(lease => ReferenceEquals(lease, _activeNativeLease)))
             _activeNativeLease.Dispose();
+    }
+
+    private void RecordAppliedTunMtu()
+    {
+        _appliedTunMtu = UltraRuntimeMtu.Resolve(_tunMtu, _measuredPayloadCeiling);
+        _pendingTunMtu = _appliedTunMtu;
+        _mtuUpdatePending = false;
     }
 
     private int ResolveProxyPort(

@@ -241,10 +241,13 @@ type ProviderLease struct {
 	NonceHash        string
 	IP               string
 	Port             int
-	User             []byte
-	Password         []byte
-	userLocked       bool
-	passwordLocked   bool
+	// RelayPayloadCeiling is the panel-declared payload ceiling of this relay or
+	// line. 0 means the panel did not declare one and the runtime must measure.
+	RelayPayloadCeiling int
+	User                []byte
+	Password            []byte
+	userLocked          bool
+	passwordLocked      bool
 }
 
 func (l *ProviderLease) wipe() {

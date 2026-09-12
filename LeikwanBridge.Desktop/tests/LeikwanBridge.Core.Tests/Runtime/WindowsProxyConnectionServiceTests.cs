@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Core.Services.Ultra;
 using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
@@ -635,6 +637,161 @@ public sealed class WindowsProxyConnectionServiceTests
         Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
         Assert.Equal("process_redirector_stop_timeout", service.Snapshot.ErrorCode);
         adapter.StopException = null;
+    }
+
+    [Theory]
+    [InlineData(1500, 1456)]
+    [InlineData(1472, 1428)]
+    [InlineData(1440, 1396)]
+    [InlineData(1300, 1280)]
+    [InlineData(0, 1500)]
+    public async Task NativeTunStartSizesMtuFromTheRuntimeStatusCeiling(int ceiling, int expectedMtu)
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost());
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, ceiling);
+        var lease = CreateMtuLease(158);
+
+        await service.StartNativeAsync(WindowsProxyMode.Tun, lease);
+
+        Assert.Equal(expectedMtu, TunMtuOf(process.LastConfigJson));
+        Assert.Equal(expectedMtu, service.AppliedTunMtu);
+        Assert.Equal(ceiling, service.MeasuredPayloadCeiling);
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task LiveCeilingChangeSurfacesPendingUntilTheNextStartAppliesIt()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost());
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+        Assert.Equal(1456, service.AppliedTunMtu);
+
+        // The relay failed over and the runtime re-measured a narrower ceiling.
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.ObserveMeasuredPayloadCeiling(158, 1360));
+        Assert.True(service.MtuUpdatePending);
+        Assert.Equal(1316, service.PendingTunMtu);
+        // The live TUN keeps the MTU it was created with until it is recreated.
+        Assert.Equal(1456, service.AppliedTunMtu);
+
+        // The same change read straight from the status file the runtime rewrote.
+        Assert.Equal(1360, UltraRuntimeStatus.ReadForwardPayloadCeiling(temp.Path, 158));
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(service.MtuUpdatePending);
+        Assert.Equal(1316, service.PendingTunMtu);
+
+        // Another forward's ceiling never resizes this connection.
+        Assert.False(service.ObserveMeasuredPayloadCeiling(999, 1300));
+        Assert.Equal(1316, service.PendingTunMtu);
+
+        // The existing start path (failover/reconnect) rebuilds the config and
+        // recreates the TUN with the ceiling that is current now.
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+
+        Assert.Equal(1316, service.AppliedTunMtu);
+        Assert.Equal(1316, TunMtuOf(process.LastConfigJson));
+        Assert.Equal(1360, service.MeasuredPayloadCeiling);
+        Assert.False(service.MtuUpdatePending);
+        Assert.True(service.RefreshMeasuredPayloadCeiling(158));
+    }
+
+    [Fact]
+    public async Task SavedProfileTunStartUsesTheObservedCeiling()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile
+        {
+            Name = "saved",
+            Server = "198.51.100.7",
+            Method = "aes-256-gcm",
+            Password = "secret",
+        });
+
+        Assert.True(service.ObserveMeasuredPayloadCeiling(158, 1440));
+        await service.StartAsync(WindowsProxyMode.Tun, 1);
+
+        Assert.Equal(1396, service.AppliedTunMtu);
+        Assert.Equal(1396, TunMtuOf(process.LastConfigJson));
+        Assert.False(service.MtuUpdatePending);
+    }
+
+    private static void WriteRuntimeCeiling(string runtimeDirectory, int forwardId, int ceiling)
+    {
+        var statusPath = Path.Combine(runtimeDirectory, "native-usage", $"native-{forwardId}-mtu", "status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, ceiling > 0
+            ? $$"""{"forward_id": {{forwardId}}, "udp_payload_ceiling": {{ceiling}}}"""
+            : $$"""{"forward_id": {{forwardId}}}""");
+    }
+
+    private static int TunMtuOf(string configJson)
+    {
+        using var document = JsonDocument.Parse(configJson);
+        return document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32();
+    }
+
+    private static NativeOutboundLease CreateMtuLease(int forwardId)
+    {
+        const string direction = "Ultra Hong Kong to Mainland China";
+        const string routeScope = "cn_only";
+        return new NativeOutboundLease(
+            forwardId,
+            "native-lease-mtu",
+            new string('c', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            direction,
+            routeScope,
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", routeScope),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("native-user"),
+            System.Text.Encoding.UTF8.GetBytes("native-password"),
+            rateLimitMbps: 1000,
+            quotaRemainingBytes: 1024 * 1024,
+            selectionRef: "selection-native-mtu",
+            selectionTier: UltraLease.SelectionTierUnknown);
     }
 
     private sealed class FakeProcessHost : IWindowsProxyProcessHost

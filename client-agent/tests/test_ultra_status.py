@@ -135,6 +135,92 @@ class UltraStatusCollectionTests(unittest.TestCase):
             collected,
         )
 
+    def test_collection_passes_measured_ceiling_and_build_attestation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["udp_payload_ceiling"] = 1440
+            status["udp_oversize_drops"] = 7
+            status["runtime_attestation"] = {
+                "fingerprint": "a1b2c3d4",
+                "self_sha256": "f" * 64,
+                "debugger": False,
+                "instrumented": True,
+                "unexpected": "must-not-survive",
+            }
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual(1440, statuses[0]["udp_payload_ceiling"])
+        self.assertEqual(7, statuses[0]["udp_oversize_drops"])
+        self.assertEqual(
+            {
+                "fingerprint": "a1b2c3d4",
+                "self_sha256": "f" * 64,
+                "debugger": False,
+                "instrumented": True,
+            },
+            statuses[0]["runtime_attestation"],
+        )
+
+    def test_collection_accepts_development_attestation_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["runtime_attestation"] = {
+                "fingerprint": "development",
+                "self_sha256": "0" * 64,
+                "debugger": True,
+                "instrumented": False,
+            }
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual("development", statuses[0]["runtime_attestation"]["fingerprint"])
+        self.assertTrue(statuses[0]["runtime_attestation"]["debugger"])
+
+    def test_collection_omits_absent_and_zero_runtime_measurements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            absent = valid_status(1)
+            zeroed = valid_status(2)
+            zeroed["udp_payload_ceiling"] = 0
+            zeroed["udp_oversize_drops"] = 0
+            (root / "forward-1.status.json").write_text(json.dumps(absent), encoding="utf-8")
+            (root / "forward-2.status.json").write_text(json.dumps(zeroed), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual(2, len(statuses))
+        for status in statuses:
+            self.assertNotIn("udp_payload_ceiling", status)
+            self.assertNotIn("udp_oversize_drops", status)
+            self.assertNotIn("runtime_attestation", status)
+
+    def test_collection_drops_malformed_measurements_and_attestation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = valid_status(3)
+            status["udp_payload_ceiling"] = "not-a-number"
+            status["udp_oversize_drops"] = -4
+            status["runtime_attestation"] = {
+                "fingerprint": "a1b2c3d4",
+                "self_sha256": "too-short",
+                "debugger": False,
+                "instrumented": False,
+            }
+            (root / "forward-3.status.json").write_text(json.dumps(status), encoding="utf-8")
+            invalid_attestation = valid_status(4)
+            invalid_attestation["runtime_attestation"] = {
+                "fingerprint": "nrt1.nbwly.com",
+                "self_sha256": "f" * 64,
+                "debugger": "false",
+                "instrumented": False,
+            }
+            (root / "forward-4.status.json").write_text(json.dumps(invalid_attestation), encoding="utf-8")
+            statuses = MODULE.collect_ultra_status(root, expected_uid=getattr(os, "getuid", lambda: 0)())
+        self.assertEqual([3, 4], [status["forward_id"] for status in statuses])
+        for status in statuses:
+            self.assertNotIn("udp_payload_ceiling", status)
+            self.assertNotIn("udp_oversize_drops", status)
+            self.assertNotIn("runtime_attestation", status)
+
     def test_existing_heartbeat_contains_one_status_array(self):
         source = (ROOT / "client-agent" / "client_agent.py").read_text(encoding="utf-8")
         heartbeat = source[source.index('f"{master}/api/client/heartbeat"') :]
