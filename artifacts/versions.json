@@ -271,8 +271,8 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-        "sha256": "83aff2bdba7d03bd2e7babcf87e3fe5c7551c462ca2b98d45fa80e6112bcddc0",
-        "size_bytes": 68940349,
+        "sha256": "f13effce9de4e2885fede5db6a7163335f206ea359dc1786e684e6bbcde9b0db",
+        "size_bytes": 77414309,
         "version": "1.0.29"
     },
     "macos_client_app_x64": {
@@ -285,8 +285,8 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-        "sha256": "35eeff98d0eb3d2d5449a394bd5fc53c0f8089750a3638309c0dbfc5a62cac3a",
-        "size_bytes": 72938970,
+        "sha256": "44e117c9d5b29d0540720ec898aa3381209338ab8bc276e2c579e4ee8b06aec0",
+        "size_bytes": 81755324,
         "version": "1.0.29"
     },
     "macos_client_update_arm64": {
