@@ -724,11 +724,130 @@ type DatagramSession struct {
 	onRuntimeFailure func(error)
 	onRuntimeACK     func()
 	onRuntimeDrop    func()
+	// onCeilingMeasured publishes the measured payload ceiling to the status file.
+	onCeilingMeasured func(int)
 
 	control *net.TCPConn
 	remote  *net.UDPConn
 	mode    byte
 	sid     []byte
+
+	// Payload ceiling (path MTU) of this association, measured on demand.
+	ceilingOnce    sync.Once
+	payloadCeiling int
+}
+
+// Native-UDP payload ceiling self-measurement.
+//
+// Field sweep 2026-09-12 (189 lines from the source host): the ceiling belongs to
+// the relay association, not to the line -- some relays carry 2000-byte payloads,
+// others drop everything above ~1450 wire bytes, and one relay of line 946
+// returned nothing at all. The runtime had no MTU concept, so a 1500-byte TUN
+// frame became a 1516-byte datagram and vanished without a trace.
+const (
+	// defaultPayloadCeiling keeps envelope+IP+UDP at 1444 bytes, under every
+	// ceiling observed in the sweep; payloads at or below it never pay for a probe.
+	defaultPayloadCeiling = 1400
+	// floorPayloadCeiling is the smallest ceiling still considered usable.
+	floorPayloadCeiling = 1280
+	// payloadCeilingAttempts guards against the 1-in-12 flapping seen at 1440.
+	payloadCeilingAttempts = 2
+)
+
+var (
+	errDatagramOversize   = errors.New("datagram exceeds path payload ceiling")
+	payloadCeilingLadder  = []int{1500, 1472, 1440, 1400, 1360, 1280}
+	payloadCeilingTimeout = 300 * time.Millisecond
+	// payloadCeilingBudget bounds the one-time measurement on the send path.
+	payloadCeilingBudget = 900 * time.Millisecond
+)
+
+// probeEcho sends payload to the relay keep-echo target (2.0.0.0:0), the only
+// destination guaranteed to answer on an armed association, and reports whether
+// the identical bytes came back.
+func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration) bool {
+	if session.remote == nil {
+		return false
+	}
+	packet, err := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, payload)
+	if err != nil {
+		return false
+	}
+	if _, err := writeAllToUDP(session.remote, packet); err != nil {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	buffer := make([]byte, 65535)
+	for {
+		if err := session.remote.SetReadDeadline(deadline); err != nil {
+			return false
+		}
+		count, err := session.remote.Read(buffer)
+		if err != nil {
+			return false
+		}
+		if unwrapped, ok := unwrapDatagramForSession(buffer[:count]); ok && bytes.Equal(unwrapped, payload) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+	}
+}
+
+// measurePayloadCeiling walks the ladder from large to small and returns the first
+// size that echoed back on every attempt. ok is false when even the smallest rung
+// failed: the 2026-09-12 sweep found relays that complete the handshake but never
+// echo a real payload (10 of 180), and those must count as unusable instead of
+// silently swallowing traffic.
+func measurePayloadCeiling(echo func([]byte, time.Duration) bool) (int, bool) {
+	budget := time.Now().Add(payloadCeilingBudget)
+	for _, size := range payloadCeilingLadder {
+		if time.Now().After(budget) {
+			break
+		}
+		accepted := true
+		for attempt := 0; attempt < payloadCeilingAttempts && accepted; attempt++ {
+			payload := make([]byte, size)
+			for index := range payload {
+				payload[index] = byte(size + attempt + index)
+			}
+			if !echo(payload, payloadCeilingTimeout) {
+				accepted = false
+			}
+		}
+		if accepted {
+			return size, true
+		}
+	}
+	return 0, false
+}
+
+// payloadLimit measures the association once and caches the result. 0 means the
+// association cannot carry real payloads at all.
+func (session *DatagramSession) payloadLimit() int {
+	session.ceilingOnce.Do(func() {
+		size, ok := measurePayloadCeiling(session.probeEcho)
+		if !ok || size < floorPayloadCeiling {
+			session.payloadCeiling = 0
+		} else {
+			session.payloadCeiling = size
+		}
+		if session.onCeilingMeasured != nil {
+			session.onCeilingMeasured(session.payloadCeiling)
+		}
+	})
+	return session.payloadCeiling
+}
+
+// allowsPayload keeps sub-MTU traffic free of probes and only measures the path
+// for datagrams that could plausibly hit the ceiling.
+func (session *DatagramSession) allowsPayload(size int) bool {
+	if size <= floorPayloadCeiling {
+		return true
+	}
+	limit := session.payloadLimit()
+	return limit > 0 && size <= limit
 }
 
 func (session *DatagramSession) Close() {
@@ -1878,6 +1997,14 @@ func serveUDPOnConn(
 			continue
 		}
 		current.writeMu.Lock()
+		if !session.allowsPayload(len(payload)) {
+			// Refuse instead of handing the path a datagram it will silently drop.
+			if session.onRuntimeDrop != nil {
+				session.onRuntimeDrop()
+			}
+			current.writeMu.Unlock()
+			continue
+		}
 		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetIP, targetPort, payload)
 		if packetErr == nil {
 			if _, writeErr := session.remote.Write(packet); writeErr != nil {

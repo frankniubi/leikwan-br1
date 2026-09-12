@@ -1,0 +1,12 @@
+line	relay	arm	rtt_ms	512	1200	1400	1440	1472	1500	2000	verdict
+9	106.75.74.252	ok	23.7	0%	0%	0%	10%	0%	0%	0%	native_udp ok
+445	1.15.157.134	ok	4.8	0%	0%	0%	0%	0%	0%	0%	native_udp ok
+709	106.75.239.187	ok	4.9	0%	0%	0%	10%	0%	0%	0%	native_udp ok
+660	106.75.227.168	ok	4.2	0%	0%	0%	10%	100%	100%	100%	MTU wall ~1456
+904	43.139.81.249	ok	29.0	0%	0%	0%	0%	0%	0%	0%	native_udp ok (panel marks failed - stale)
+913	106.75.164.153	ok	32.0	0%	0%	0%	10%	0%	0%	0%	native_udp ok (panel marks failed - stale)
+965	106.75.142.192	ok	32.0	0%	0%	0%	10%	0%	0%	0%	native_udp ok
+946	123.58.193.158	ok	193.5	0%	0%	0%	100%	100%	100%	100%	relay-dependent; another relay dead
+951	190.92.232.41	ok	41.7	0%	0%	0%	0%	0%	0%	0%	native_udp ok
+691	-	FAIL	-	-	-	-	-	-	-	-	startacc-failed (no material)
+347	122.13.18.228	ok	29.1	0%	0%	0%	0%	100%	100%	100%	relay-dependent; good relay passes 1470

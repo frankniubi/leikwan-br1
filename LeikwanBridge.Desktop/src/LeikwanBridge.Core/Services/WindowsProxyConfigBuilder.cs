@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 
 namespace LeikwanBridge.Core.Services;
 
@@ -323,7 +324,8 @@ public static class WindowsProxyConfigBuilder
         int proxyPort,
         int tunMtu,
         string tunStack,
-        IReadOnlyList<string> bypassIps)
+        IReadOnlyList<string> bypassIps,
+        int measuredPayloadCeiling = 0)
     {
         if (mode != WindowsProxyMode.Tun)
         {
@@ -345,7 +347,9 @@ public static class WindowsProxyConfigBuilder
             ["tag"] = "tun-in",
             ["interface_name"] = TunInterfaceName,
             ["address"] = new JsonArray(TunAddress),
-            ["mtu"] = tunMtu,
+            // The runtime measures the native-UDP payload ceiling per association; an
+            // MTU above it would only produce frames the path silently drops.
+            ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
             ["auto_route"] = true,
             ["strict_route"] = true,
             ["stack"] = tunStack,

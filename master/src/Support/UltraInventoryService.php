@@ -130,7 +130,12 @@ final class UltraInventoryService
             'in_line_type' => self::nullableUnsigned($raw['in_line_type'] ?? null),
             'isp' => self::normalizeIsp($raw['isp'] ?? null),
             'provider' => self::cleanText($raw['provider'] ?? '', 64) ?: null,
-            'dispatch_class' => self::dispatchClass($raw),
+            // A source may declare the dispatch priority: a line whose relay association
+            // drops big datagrams is dispatched last, exactly like the Tencent ones. An
+            // unknown/absent declaration falls back to the provider/title rule.
+            'dispatch_class' => ($declaredDispatch = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES)) !== 'unknown'
+                ? $declaredDispatch
+                : self::dispatchClass($raw),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
             'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,

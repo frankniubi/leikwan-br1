@@ -145,3 +145,76 @@ ARM-ONLY（944/945/962）按约定**未标记**。
 注意：其中 6 条（880、946、951、994、996、1002）当前 30 分钟 sweep 已不再返回（intl_pairs 119 对全查无果），
 因此没有 `/opt/ultra-source/lines/<id>.toml` 采集配置 —— 它们会显示为 `Material not required`（未进任何组合时无影响），
 一旦 sweep 重新返回即可自动补齐 TOML。其余 10 条 TOML 已就绪、可正常采材料。
+---
+
+## 收尾（2026-09-11 19:42Z）
+
+按“线路名里已经带了这些”的结论做了收敛：
+
+- **保留**：`isp` 仅由线路名派生（标题含唯一 `电信/联通/移动` → 该运营商；含 `BGP` → `generic`），
+  实测面板 `generic=99 / telecom=20 / unicom=20 / mobile=20 / unknown=30`（189 行）；
+- **保留**：腾讯低优先派发（`dispatch_class=low` 32 条），排序验证通过；
+- **回滚**：`direction_class` 的 zone 自动判定（`deriveDirection` + `MAINLAND_ZONE_CODES`）已撤，
+  面板 `UltraInventoryService` 恢复为“carrier + dispatch”版本；带该逻辑的版本留档在
+  `/root/leigod-forward-backups/ultra-direction-20260911T193144Z/UltraInventoryService.with-direction.php`。
+  `direction_class` 回到纯管理员字段（列与后台筛选保留）。
+- 171 侧：`refresh_lines.py` v3.9、index 189 条（通用 99 / 空 30 / 电信 20 / 联通 20 / 移动 20）、
+  TOML 189 条、prune 单轮 0 误伤；audit 声明的 6 条线路已 pin 进 index。
+### 海外加速并入线上分组（2026-09-11 20:25Z）
+
+按运营要求：`unknown` 里凡是 `海外加速-*` 的并入现有 `generic`（通用/BGP 多线）分组，不新开分组：
+
+- `refresh_lines.title_carrier()`：无单一运营商 token 且标题含 `BGP` **或** `海外加速` → `通用`；
+- pinned（audit 声明）行同样按自己的线路名取组，不再固定留空；
+- 6 条 pinned 线路补了名字（取自 `/opt/leigod/intl_core.tsv`：880 海外加速-韩国、946 圣彼得堡-中国、
+  951 孟买-中国、994 海外加速-台湾-韩国、996 海外加速-台湾-新加坡、1002 海外加速-日本-韩国）。
+
+面板最终分布（189 行）：**generic=118 / telecom=20 / mobile=20 / unicom=20 / unknown=11**。
+剩 11 条名字里确实没有分组标记（9 北京-德国、347 TCP-游戏下载、445 上海-韩国【UDPOVERTCP】、
+660 上海-韩国-本土-优云、691 line-691、709 上海-美国【家庭IP】、904 广州-香港【Poe2】、
+913 全区服备份链路【勿取消】、965 永恒之塔2-台湾、946 圣彼得堡-中国、951 孟买-中国），
+需要时用后台 `admin_label`/Carrier 归属人工指定。
+### 人工确认的三条散线（2026-09-11 20:35Z）
+
+运营确认路线后按现有 `admin_label` 约定（`<ORIG> -> <DEST> / L<id>`）标注，并写入 notes：
+
+| line | 名称 | admin_label | notes |
+|---|---|---|---|
+| 9 | 北京-德国 | `PEK -> FRA / L9`（原有，未改） | PEK→FRA · operator-confirmed 2026-09-11 |
+| 445 | 上海-韩国【UDPOVERTCP】 | `SHA -> ICN / L445`（原有，未改） | SHA→SEO / UDP-over-TCP · operator-confirmed |
+| 709 | 上海-美国【家庭IP】 | `SHA -> LAX / L709 · 家宽 Residential IP` | SHA→LAX · 家宽IP (residential) · operator-confirmed |
+
+`admin_label` / `notes` 是管理员字段，inventory upsert 不会覆盖，所以标注是持久的。
+注意：709 的 label 被我短暂覆盖过一次（先写成纯 `家宽 Residential IP`），随后按约定格式重建；
+该源上共 41 条线路带 label。
+
+`isp` 分组维持不变：generic=118 / telecom=20 / mobile=20 / unicom=20 / unknown=11（其中 8 条尚待人工确认）。
+---
+
+## Native UDP + 大包丢包实测（2026-09-12 06:0xZ，171 上跑）
+
+工具：`research-lines-udp-20260817/components/udp_bigpkt_probe.py`（已装到 171 `/opt/leigod-native/scripts/`）。
+流程：每条线 `startacc` 取材料 → 用 `native_udp.NativeSession` arm（envelope 协议）→ 通过 relay 把不同大小的
+UDP 载荷打到回显目标（relay keep-echo `2.0.0.0:0`，relay 会原样回显）→ 统计丢包。
+探针 socket `SO_RCVBUF=4 MiB`（171 的 `net.core.rmem_max=128 MiB`，所以 4 MiB 真生效，不是被内核截断）。
+
+结论：
+
+- **native UDP**：11 条里 **10 条 arm 成功**（含面板标成 `relay_unreachable/udp=failed` 的 904、913 —— 那两条
+  audit 已过期，实测 arm ok、512B~2000B 全通）；只有 **691** `startacc` 失败（无材料，面板也是
+  `dynamic_ingress/unverified/disabled`，一致）。
+- **大包丢包**：与 4 MiB 缓冲无关（丢包是按尺寸**确定性**发生的，不是缓冲溢出），是路径 MTU：
+  - 安全线：445 / 904 / 951 / 9 / 709 / 913 / 965（≤2000B 全通，个别 1440B 偶发 1/12 抖动）
+  - **有墙**：660 在 **1456B 起 100% 丢**（1456 envelope 后正好 1500 字节线缆长度，仍丢 → 有效 MTU 约 1450）
+  - **取决于 relay**：946（一条 relay 1400B 过后即 100% 丢，另一条 relay 直接不回包）、
+    347（一条 relay 1472B 起全丢，另一条 relay 1470B 仍 0%）
+  - 材料里的 relay 每次 `startacc` 都会轮换（660/946/347 各拿到 3 个不同 relay），所以按线路描述能力会漂移，
+    **应当按 relay 维度评估**。
+
+建议：
+
+1. 受影响线路（660 等）在客户端把 MTU 兜底到 ≤1400（envelope+IP/UDP 后 ≤1444）；
+2. 用同款探针按 relay 扫一遍，把「大包必丢」的 relay 从候选里剔除（946 的 154.83.196.112 已实测全丢）；
+3. 904 / 913 值得重新 audit（实测可用），重新写入 `line-audit.json` 后即可恢复 `is_enabled=1`。
+
+原始数据：`docs/reports/2026-09-12-udp-bigpkt-probe.tsv`。

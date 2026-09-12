@@ -46,6 +46,12 @@ type RuntimeStatus struct {
 	UDPPendingAssociations int                 `json:"udp_pending_associations,omitempty"`
 	UDPQueueDrops          int64               `json:"udp_queue_drops,omitempty"`
 	UDPSetupFailures       int64               `json:"udp_setup_failures,omitempty"`
+	// UDPPayloadCeiling is the largest datagram payload the current association was
+	// measured to carry (0 = not measured yet, or the association is unusable).
+	// Hosts size the TUN MTU from this instead of guessing a fixed value.
+	UDPPayloadCeiling int `json:"udp_payload_ceiling,omitempty"`
+	// UDPOversizeDrops counts datagrams refused because they exceeded that ceiling.
+	UDPOversizeDrops int64 `json:"udp_oversize_drops,omitempty"`
 	CandidateFeedback      []CandidateFeedback `json:"candidate_feedback,omitempty"`
 }
 
@@ -225,6 +231,27 @@ func (writer *StatusWriter) UpdateUDPAssociations(active, pending int) {
 	writer.update(func(status *RuntimeStatus) {
 		status.UDPActiveAssociations = maxInt(active, 0)
 		status.UDPPendingAssociations = maxInt(pending, 0)
+	})
+}
+
+// UpdateUDPPayloadCeiling publishes the measured path payload ceiling of the active
+// association so hosts can clamp the TUN MTU (MTU = ceiling - envelope overhead).
+func (writer *StatusWriter) UpdateUDPPayloadCeiling(ceiling int) {
+	if ceiling < 0 {
+		ceiling = 0
+	}
+	writer.update(func(status *RuntimeStatus) {
+		if status.UDPPayloadCeiling == ceiling {
+			return
+		}
+		status.UDPPayloadCeiling = ceiling
+	})
+}
+
+// AddUDPOversizeDrop accounts for a datagram refused above the measured ceiling.
+func (writer *StatusWriter) AddUDPOversizeDrop() {
+	writer.update(func(status *RuntimeStatus) {
+		status.UDPOversizeDrops++
 	})
 }
 
