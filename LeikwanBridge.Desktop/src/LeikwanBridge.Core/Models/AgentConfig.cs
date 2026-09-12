@@ -350,12 +350,20 @@ public sealed class AgentConfig
         UdpUotSidepath = null;
     }
 
+    // Locations that the product itself owns and rewrites on every update.
+    // A runtime path persisted here is never a deliberate user override: it is
+    // left behind by an older installer or by the legacy per-machine client
+    // agent, and it goes stale the moment the GUI updates. Running it silently
+    // downgrades the helper and makes the update check report permanent runtime
+    // drift, so the GUI re-prompts for the update it just installed.
     private static bool IsLegacyUltraBinPath(string path)
     {
         var normalized = path.Trim().Replace('/', '\\');
         return normalized.Contains(@"\AppData\Local\LeiKwan Bridge\", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains(@"\AppData\Local\Programs\LeiKwan Bridge\", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains(@"\LeiKwan Bridge Backup\", StringComparison.OrdinalIgnoreCase);
+            || normalized.Contains(@"\LeiKwan Bridge Backup\", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\Leikwan\ClientAgent\runtime\", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(@"\LeiKwan\ClientAgent\runtime\", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool PathsEqual(string left, string right)

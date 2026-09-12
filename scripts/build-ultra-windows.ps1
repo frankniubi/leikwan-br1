@@ -1,17 +1,25 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.12.1",
+    [string]$Version = "2026.09.12.2",
     [string]$OutputPath = "",
-    [switch]$SkipReproducibilityCheck
     # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
     [string]$ShortSha = "",
-    [switch]$SkipReproducibilityCheck
+    # Garble obfuscation is OFF by default on Windows. Windows Defender flags
+    # every garble-produced image as Trojan:Win32/Gracing.* and quarantines the
+    # installed runtime; the client then dies with "access denied" and the
+    # update check reports permanent runtime drift for the update it just
+    # installed. Availability wins: the anti-reverse work is carried by the
+    # attestation fingerprint plus the signed release manifest. Re-enable only
+    # after a Defender false-positive report for the artifact has cleared.
+    [switch]$Obfuscate,
+    [switch]$SkipReproducibilityCheck,
+    [switch]$SkipDefenderScan
 )
 
-# Windows runtime build. Mirrors build-ultra-linux.ps1: same garble obfuscation,
-# same reproducibility check, same -X main.runtimeBuildVersion stamp so the
-# panel can match the artifact hash of a running helper against the release
-# manifest (see tools/ultra-client/attest.go).
+# Windows runtime build. Mirrors build-ultra-linux.ps1, minus obfuscation by
+# default: same reproducibility check and the same -X main.runtimeBuildVersion
+# stamp so the panel can match the artifact hash of a running helper against
+# the release manifest (see tools/ultra-client/attest.go).
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
@@ -32,23 +40,25 @@ $candidatePath = Join-Path $outputDir (".ultra-client-windows-{0}.new" -f $PID)
 $reproPath = Join-Path $outputDir (".ultra-client-windows-{0}.repro" -f $PID)
 
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
 
-$needsInstall = -not (Test-Path -LiteralPath $garblePath)
-if (-not $needsInstall) {
-    $installedVersion = (& $garblePath version 2>$null | Select-Object -First 1)
-    $needsInstall = $installedVersion -notmatch [regex]::Escape($garbleVersion)
-}
-if ($needsInstall) {
-    $previousGoBin = $env:GOBIN
-    try {
-        $env:GOBIN = $toolDir
-        & go install "mvdan.cc/garble@$garbleVersion"
-        if ($LASTEXITCODE -ne 0) {
-            throw "failed to install garble $garbleVersion"
+if ($Obfuscate) {
+    New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
+    $needsInstall = -not (Test-Path -LiteralPath $garblePath)
+    if (-not $needsInstall) {
+        $installedVersion = (& $garblePath version 2>$null | Select-Object -First 1)
+        $needsInstall = $installedVersion -notmatch [regex]::Escape($garbleVersion)
+    }
+    if ($needsInstall) {
+        $previousGoBin = $env:GOBIN
+        try {
+            $env:GOBIN = $toolDir
+            & go install "mvdan.cc/garble@$garbleVersion"
+            if ($LASTEXITCODE -ne 0) {
+                throw "failed to install garble $garbleVersion"
+            }
+        } finally {
+            if ($null -eq $previousGoBin) { Remove-Item Env:GOBIN -ErrorAction SilentlyContinue } else { $env:GOBIN = $previousGoBin }
         }
-    } finally {
-        if ($null -eq $previousGoBin) { Remove-Item Env:GOBIN -ErrorAction SilentlyContinue } else { $env:GOBIN = $previousGoBin }
     }
 }
 
@@ -58,7 +68,7 @@ $sourceFiles = Get-ChildItem -LiteralPath $sourceRoot -File |
 $sourceParts = foreach ($file in $sourceFiles) {
     "{0}:{1}" -f $file.Name, (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 }
-$seedMaterial = [System.Text.Encoding]::UTF8.GetBytes($Version + "`n" + ($sourceParts -join "`n"))
+$seedMaterial = [System.Text.Encoding]::UTF8.GetBytes($Version + [char]10 + ($sourceParts -join [char]10))
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
     $seedDigest = $sha256.ComputeHash($seedMaterial)
@@ -74,11 +84,47 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
 
-function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
-    if ($LASTEXITCODE -ne 0) {
-        throw "garble windows build failed"
+function Invoke-RuntimeBuild([string]$Destination) {
+    $ldflags = "-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion"
+    if ($Obfuscate) {
+        & $garblePath -literals -tiny "-seed=$seed" build -trimpath -buildvcs=false "-ldflags=$ldflags" -o $Destination .
+        if ($LASTEXITCODE -ne 0) {
+            throw "garble windows build failed"
+        }
+        return
     }
+
+    & go build -trimpath -buildvcs=false "-ldflags=$ldflags" -o $Destination .
+    if ($LASTEXITCODE -ne 0) {
+        throw "windows runtime build failed"
+    }
+}
+
+function Get-DefenderScanTool {
+    $platformRoot = Join-Path $env:ProgramData "Microsoft\Windows Defender\Platform"
+    if (-not (Test-Path -LiteralPath $platformRoot)) { return "" }
+    $platform = Get-ChildItem -LiteralPath $platformRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1
+    if ($null -eq $platform) { return "" }
+    $tool = Join-Path $platform.FullName "MpCmdRun.exe"
+    if (Test-Path -LiteralPath $tool) { return $tool }
+    return ""
+}
+
+# A runtime that Windows Defender quarantines is worse than an obfuscated one:
+# the client cannot launch it at all. Fail the build instead of shipping it.
+function Assert-DefenderClean([string]$ArtifactPath) {
+    if ($SkipDefenderScan) { return "skipped" }
+    $tool = Get-DefenderScanTool
+    if ([string]::IsNullOrWhiteSpace($tool)) {
+        Write-Warning "MpCmdRun.exe not found; Defender scan skipped"
+        return "skipped"
+    }
+    $output = (& $tool -Scan -ScanType 3 -File $ArtifactPath -DisableRemediation 2>&1) -join [char]10
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) { return "clean" }
+    $threat = (($output -split [char]10) | Where-Object { $_ -match "Threat\s*:" } | Select-Object -First 1)
+    throw "Windows Defender rejected the runtime artifact (exit $exitCode). $($threat.Trim()) Build with -Obfuscate:$false or fix the detection before shipping."
 }
 
 try {
@@ -87,18 +133,20 @@ try {
     $env:CGO_ENABLED = "0"
     Push-Location $sourceRoot
     try {
-        Invoke-GarbleBuild $candidatePath
+        Invoke-RuntimeBuild $candidatePath
         if (-not $SkipReproducibilityCheck) {
-            Invoke-GarbleBuild $reproPath
+            Invoke-RuntimeBuild $reproPath
             $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
             $reproHash = (Get-FileHash -LiteralPath $reproPath -Algorithm SHA256).Hash
             if ($candidateHash -ne $reproHash) {
-                throw "garble reproducibility check failed"
+                throw "runtime reproducibility check failed"
             }
         }
     } finally {
         Pop-Location
     }
+
+    $defenderState = Assert-DefenderClean -ArtifactPath $candidatePath
 
     Move-Item -LiteralPath $candidatePath -Destination $OutputPath -Force
     $artifact = Get-Item -LiteralPath $OutputPath
@@ -107,7 +155,8 @@ try {
         sha256 = (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
         size_bytes = $artifact.Length
         go_version = (& go version)
-        obfuscator = "garble-$garbleVersion"
+        obfuscator = if ($Obfuscate) { "garble-$garbleVersion" } else { "none" }
+        defender_scan = $defenderState
         reproducible = -not $SkipReproducibilityCheck
     } | ConvertTo-Json -Compress
 } finally {

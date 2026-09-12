@@ -662,7 +662,255 @@ function Schedule-InstalledHelperCleanup {
     Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $cleanupCommand -WindowStyle Hidden | Out-Null
 }
 
-function Invoke-InstallMode {
+function Get-UninstallRegistryRoots {
+    return @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+}
+
+function Test-LeiKwanUninstallEntry {
+    param([object]$Entry)
+
+    $names = $Entry.PSObject.Properties.Name
+    if ($names -notcontains "DisplayName") { return $false }
+    $displayName = [string]$Entry.DisplayName
+    if ([string]::IsNullOrWhiteSpace($displayName)) { return $false }
+    if ($displayName -match "LeiKwan") { return $true }
+    if ($displayName -match "Leikwan") { return $true }
+    return $displayName.Contains(([string][char]0x5229) + ([string][char]0x7FA4))
+}
+
+function Get-UninstallEntryTargetPath {
+    param([object]$Entry)
+
+    $quote = [string][char]34
+    foreach ($propertyName in @("InstallLocation", "DisplayIcon", "UninstallString")) {
+        if ($Entry.PSObject.Properties.Name -notcontains $propertyName) { continue }
+        $raw = [string]$Entry.$propertyName
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $candidate = $raw.Trim()
+        if ($candidate.StartsWith($quote)) {
+            $closingQuote = $candidate.IndexOf($quote, 1)
+            if ($closingQuote -gt 0) { $candidate = $candidate.Substring(1, $closingQuote - 1) } else { $candidate = $candidate.TrimStart([char]34) }
+        } elseif ($candidate.Contains(" ")) {
+            $exeMatch = [regex]::Match($candidate, "^(.+?\.exe)\b", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($exeMatch.Success) { $candidate = $exeMatch.Groups[1].Value }
+        }
+        $candidate = $candidate.Trim()
+        if ($candidate.Length -eq 0) { continue }
+        if (-not [System.IO.Path]::IsPathRooted($candidate)) { continue }
+        try { $fullPath = [System.IO.Path]::GetFullPath($candidate) } catch { continue }
+        if ([System.IO.Path]::GetExtension($fullPath).Equals(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $fullPath = [System.IO.Path]::GetDirectoryName($fullPath)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($fullPath)) { return $fullPath }
+    }
+    return ""
+}
+
+function Test-RealInstall {
+    param([string]$DirectoryPath)
+
+    if ([string]::IsNullOrWhiteSpace($DirectoryPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $DirectoryPath)) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $DirectoryPath "leikwan-client-win.exe")) { return $true }
+    return (Test-Path -LiteralPath (Join-Path $DirectoryPath "install-state.json"))
+}
+
+function Get-DuplicateInstallCandidates {
+    param([string]$TargetDir)
+
+    $normalizedTarget = Get-NormalizedPath -Path $TargetDir
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    $knownDirs = New-Object System.Collections.Generic.List[string]
+
+    $knownDirs.Add((Join-Path $env:LOCALAPPDATA "LeiKwan Bridge"))
+    $knownDirs.Add((Join-Path $env:LOCALAPPDATA "Programs\LeiKwan Bridge"))
+    foreach ($variableName in @("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")) {
+        $root = [Environment]::GetEnvironmentVariable($variableName)
+        if (-not [string]::IsNullOrWhiteSpace($root)) { $knownDirs.Add((Join-Path $root "LeiKwan Bridge")) }
+    }
+
+    foreach ($root in Get-UninstallRegistryRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+            $entry = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if ($null -eq $entry) { continue }
+            if (-not (Test-LeiKwanUninstallEntry -Entry $entry)) { continue }
+            $entryDir = Get-UninstallEntryTargetPath -Entry $entry
+            if (-not [string]::IsNullOrWhiteSpace($entryDir)) { $knownDirs.Add($entryDir) }
+        }
+    }
+
+    foreach ($dir in $knownDirs) {
+        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+        try { $normalized = Get-NormalizedPath -Path $dir } catch { continue }
+        if ($normalized.Equals($normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (-not (Test-Path -LiteralPath $normalized)) { continue }
+        if ($seen.Add($normalized)) { $candidates.Add($normalized) }
+    }
+
+    return $candidates
+}
+
+function Remove-DuplicateInstallDirectory {
+    param(
+        [string]$DirectoryPath,
+        [string]$TargetDir
+    )
+
+    $normalized = Get-NormalizedPath -Path $DirectoryPath
+    $normalizedTarget = Get-NormalizedPath -Path $TargetDir
+    if ($normalized.Equals($normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if (Is-UnderInstallRoot -TargetDir $normalized -CandidatePath $normalizedTarget) {
+        Write-Warning "duplicate sweep skipped a parent directory of the live install: $normalized"
+        return $false
+    }
+
+    Write-Host "removing duplicate LeiKwan Bridge install: $normalized"
+    $innoUninstaller = Join-Path $normalized "unins000.exe"
+    if (Test-Path -LiteralPath $innoUninstaller) {
+        try {
+            $process = Start-Process -FilePath $innoUninstaller -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait -PassThru
+            Write-Host "duplicate uninstaller exit code: $($process.ExitCode)"
+        } catch {
+            Write-Warning "duplicate uninstaller failed for $normalized : $($_.Exception.Message)"
+        }
+    }
+
+    if (-not (Test-RealInstall -DirectoryPath $normalized)) {
+        return -not (Test-Path -LiteralPath $normalized)
+    }
+
+    try { Stop-InstalledProcesses -TargetDir $normalized } catch { Write-Warning "failed to stop duplicate install processes: $($_.Exception.Message)" }
+
+    # The installer download cache lives inside the legacy per-user directory.
+    # It is still used by the running client, so it must survive the sweep.
+    $updatesDir = (Join-Path $normalized "updates") + [System.IO.Path]::DirectorySeparatorChar
+    Get-ChildItem -LiteralPath $normalized -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.FullName.StartsWith($updatesDir, [System.StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    Get-ChildItem -LiteralPath $normalized -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName.Length } -Descending |
+        ForEach-Object { Remove-EmptyDirectoryIfPossible -DirectoryPath $_.FullName }
+    Remove-EmptyDirectoryIfPossible -DirectoryPath $normalized
+
+    $cleaned = -not (Test-RealInstall -DirectoryPath $normalized)
+    if ($cleaned) { Write-Host "duplicate install files removed: $normalized" } else { Write-Warning "duplicate install still present after sweep: $normalized" }
+    return $cleaned
+}
+
+function Remove-GhostUninstallEntries {
+    param([string]$TargetDir)
+
+    $normalizedTarget = Get-NormalizedPath -Path $TargetDir
+    $removedCount = 0
+
+    foreach ($root in Get-UninstallRegistryRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+            $entry = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if ($null -eq $entry) { continue }
+            if (-not (Test-LeiKwanUninstallEntry -Entry $entry)) { continue }
+
+            $entryDir = Get-UninstallEntryTargetPath -Entry $entry
+            if (-not [string]::IsNullOrWhiteSpace($entryDir)) {
+                try { $entryDir = Get-NormalizedPath -Path $entryDir } catch { $entryDir = "" }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($entryDir)) {
+                # No usable location in the entry: keep it only when the live
+                # install is intact, so the user can still uninstall us.
+                if (Test-RealInstall -DirectoryPath $normalizedTarget) { continue }
+            } elseif ($entryDir.Equals($normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
+                if (Test-RealInstall -DirectoryPath $normalizedTarget) { continue }
+            } elseif (Test-RealInstall -DirectoryPath $entryDir) {
+                # A real second install that survived the sweep: keep its entry
+                # so the user can still remove it from Apps & features.
+                continue
+            }
+
+            try {
+                Remove-Item -LiteralPath $key.PSPath -Recurse -Force -ErrorAction Stop
+                Write-Host "removed stale uninstall entry: $($key.PSPath)"
+                $removedCount++
+            } catch {
+                Write-Warning "failed to remove stale uninstall entry $($key.PSPath): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    return $removedCount
+}
+
+# Runtime data left behind by the legacy per-machine client agent keeps its
+# own copy of the helper binary. It is not an install directory, so the
+# duplicate sweep cannot see it, yet a stale copy there is invisible to the
+# update: the client keeps launching an old helper and the update check keeps
+# reporting runtime drift for the update it just installed.
+function Update-LegacyRuntimeCopies {
+    param([string]$TargetDir)
+
+    $installedRuntime = Join-Path $TargetDir "bin\ultra-client.exe"
+    if (-not (Test-Path -LiteralPath $installedRuntime)) { return 0 }
+
+    $programData = [Environment]::GetEnvironmentVariable("ProgramData")
+    if ([string]::IsNullOrWhiteSpace($programData)) { return 0 }
+
+    $refreshedCount = 0
+    $legacyDirs = @(
+        (Join-Path $programData "Leikwan\ClientAgent\runtime"),
+        (Join-Path $programData "LeiKwan\ClientAgent\runtime")
+    )
+
+    foreach ($legacyDir in $legacyDirs) {
+        $legacyRuntime = Join-Path $legacyDir "ultra-client.exe"
+        if (-not (Test-Path -LiteralPath $legacyRuntime)) { continue }
+
+        Get-CimInstance Win32_Process | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.Equals($legacyRuntime, [System.StringComparison]::OrdinalIgnoreCase)
+        } | ForEach-Object {
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { Write-Warning "failed to stop legacy runtime [$($_.ProcessId)]: $($_.Exception.Message)" }
+        }
+        Start-Sleep -Milliseconds 400
+
+        try {
+            Copy-Item -LiteralPath $installedRuntime -Destination $legacyRuntime -Force -ErrorAction Stop
+            Write-Host "refreshed legacy runtime copy: $legacyRuntime"
+            $refreshedCount++
+        } catch {
+            Write-Warning "failed to refresh legacy runtime copy $legacyRuntime : $($_.Exception.Message)"
+        }
+
+        Get-ChildItem -LiteralPath $legacyDir -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "ultra-client.exe.tmp-*" } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
+
+    return $refreshedCount
+}
+
+function Invoke-DuplicateInstallSweep {
+    param([string]$TargetDir)
+
+    $removedCount = 0
+    foreach ($candidate in @(Get-DuplicateInstallCandidates -TargetDir $TargetDir)) {
+        try {
+            if (Remove-DuplicateInstallDirectory -DirectoryPath $candidate -TargetDir $TargetDir) { $removedCount++ }
+        } catch {
+            Write-Warning "duplicate install sweep failed for $candidate : $($_.Exception.Message)"
+        }
+    }
+
+    try { $removedCount += Remove-GhostUninstallEntries -TargetDir $TargetDir } catch { Write-Warning "stale uninstall entry sweep failed: $($_.Exception.Message)" }
+    try { Update-LegacyRuntimeCopies -TargetDir $TargetDir | Out-Null } catch { Write-Warning "legacy runtime refresh failed: $($_.Exception.Message)" }
+
+    if ($removedCount -gt 0) { Write-Host "duplicate install sweep removed $removedCount stale item(s)" }
+    return $removedCount
+}function Invoke-InstallMode {
     if ([string]::IsNullOrWhiteSpace($StageDir)) {
         throw "StageDir is required for install mode"
     }
@@ -722,6 +970,17 @@ function Invoke-InstallMode {
         throw "install failed; previous installation restored: $($installError.Exception.Message)"
     } finally {
         Remove-InstallSnapshot -Snapshot $snapshot
+    }
+
+    # Older builds could leave a second install behind: a leftover all-users
+    # copy, a pre-migration per-user copy, or a dead Apps & features entry
+    # whose files are already gone. They surface as a duplicate product and
+    # they keep stale runtimes alive after an update, so every interactive
+    # install and every silent update sweeps them away.
+    try {
+        Invoke-DuplicateInstallSweep -TargetDir $InstallDir | Out-Null
+    } catch {
+        Write-Warning "duplicate install sweep failed: $($_.Exception.Message)"
     }
 }
 
