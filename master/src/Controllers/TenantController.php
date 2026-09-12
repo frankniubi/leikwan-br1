@@ -1290,27 +1290,26 @@ final class TenantController extends BaseController
 
         // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
         $macosInstallSection = $this->renderMacClientInstallSection();
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
             . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
-            . '<section class="tenant-client-install__platform"><strong>Linux</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
+            . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
             . '</div></section>'
-            . '<section class="tenant-client-install__platform"><strong>Linux ARM64 installer</strong>'
-            . '<div class="flash" style="margin:10px 0 0!important;color:var(--warning);">系统要求：仅支持 Debian 11/12/13（Linux ARM64）。</div>'
-            . '<div class="actions"><a class="button secondary" href="' . $this->escape($linuxArm64InstallerUrl) . '">下载 ARM64 installer</a></div>'
-            . '</section>'
-            . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->escape($this->clientAppReleaseLabel('Windows App', 'windows_client_app')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '</section>'
             . $macosInstallSection
-            . '<section class="tenant-client-install__platform"><strong>Android (Unstable)</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'

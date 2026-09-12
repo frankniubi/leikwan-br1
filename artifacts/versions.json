@@ -48,7 +48,7 @@
         "sha256": "478dd70e8bf9e908d96506916134cd8a78b1695826c910b5a6fdd9c82308a979",
         "size": 337707,
         "size_bytes": 337707,
-        "version": "2026.09.12.1"
+        "version": "2026.09.11.2"
     },
     "client_agent_installer": {
         "artifact_url": "/artifacts/install-client-agent.sh",
@@ -72,9 +72,9 @@
         "install_url": "/artifacts/install-client.sh",
         "path": "install/install-client.sh",
         "remote_install_url": "/artifacts/remote-install-client.sh",
-        "sha256": "399bcbe34bce16d8307dc7f14d17e5f641f7cecc67665144090c809729ec8485",
-        "size_bytes": 16827,
-        "version": "2026.08.29.1"
+        "sha256": "ed2e9733d2986e720e195918b67e804ab6a2c3de9e951aa1cadded26c7db709b",
+        "size_bytes": 19459,
+        "version": "2026.09.13.1"
     },
     "client_installer_windows": {
         "install_url": "/artifacts/install-client.ps1",
@@ -543,8 +543,8 @@
     "windows_client_app": {
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",
-        "sha256": "e888467f04249c40c9ea0fe68e2aa9851bf67508c007645fc6f1cb77300260f7",
-        "size_bytes": 69530464,
+        "sha256": "c5a61e2e98313552b032f888704c34268af2eba510e9d308e9e25ab7c8300676",
+        "size_bytes": 69539899,
         "runtime_sha256": {
             "ultra_client_runtime_windows": "34d4f2611d14c47e8dea8f3e26339a8d43f0e3676620ef90ff26935c39e00681",
             "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -553,7 +553,7 @@
             "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
             "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1"
         },
-        "version": "0.1.20.38"
+        "version": "0.1.20.39"
     },
     "wstunnel_linux_amd64": {
         "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",

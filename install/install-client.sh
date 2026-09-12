@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 
+INSTALLER_VERSION="2026.09.13.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 FORWARD_ID=""
@@ -11,6 +12,23 @@ BIN_DIR="/usr/local/bin"
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 SKIP_MPTCP_CHECK=0
+
+# Arch-dependent runtime selection. Same convention as
+# install-client-agent.sh: the installer resolves every artifact key and path
+# from this matrix and verifies each download against artifacts/versions.json,
+# so amd64 and arm64 hosts follow one code path.
+RUNTIME_ARCH="amd64"
+UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
+UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_amd64"
+WSTUNNEL_RUNTIME_KEY="wstunnel_linux_amd64"
+WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_amd64"
+INGRESS_RUNTIME_KEY="leikwan_ingress_linux_amd64"
+INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_amd64"
+BOND_RUNTIME_KEY="leikwan_bond_linux_amd64"
+BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_amd64"
+# The MPTCP relay has no arm64 build yet; arm64 hosts install without it.
+MPTCP_RELAY_RUNTIME_KEY="leikwan_mptcp_relay_linux_amd64"
+MPTCP_RELAY_RUNTIME_PATH="artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64"
 
 die() {
   echo "install-client: $*" >&2
@@ -37,9 +55,37 @@ bootstrap_dependencies() {
 
 validate_host() {
   [[ "$(id -u)" == "0" ]] || die "must run as root"
-  case "$(uname -m)" in
-    x86_64|amd64) ;;
-    *) die "unsupported architecture '$(uname -m)'; published Linux client artifacts support x86_64/amd64 only" ;;
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)
+      RUNTIME_ARCH="amd64"
+      UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
+      UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_amd64"
+      WSTUNNEL_RUNTIME_KEY="wstunnel_linux_amd64"
+      WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_amd64"
+      INGRESS_RUNTIME_KEY="leikwan_ingress_linux_amd64"
+      INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_amd64"
+      BOND_RUNTIME_KEY="leikwan_bond_linux_amd64"
+      BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_amd64"
+      MPTCP_RELAY_RUNTIME_KEY="leikwan_mptcp_relay_linux_amd64"
+      MPTCP_RELAY_RUNTIME_PATH="artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64"
+      ;;
+    aarch64|arm64)
+      RUNTIME_ARCH="arm64"
+      UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_arm64"
+      UOT_BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-uot-bond_linux_arm64"
+      WSTUNNEL_RUNTIME_KEY="wstunnel_linux_arm64"
+      WSTUNNEL_RUNTIME_PATH="artifacts/wstunnel/wstunnel_linux_arm64"
+      INGRESS_RUNTIME_KEY="leikwan_ingress_linux_arm64"
+      INGRESS_RUNTIME_PATH="artifacts/wstunnel/leikwan-ingress_linux_arm64"
+      BOND_RUNTIME_KEY="leikwan_bond_linux_arm64"
+      BOND_RUNTIME_PATH="artifacts/wstunnel/leikwan-bond_linux_arm64"
+      # No arm64 MPTCP relay artifact is published yet.
+      MPTCP_RELAY_RUNTIME_KEY=""
+      MPTCP_RELAY_RUNTIME_PATH=""
+      ;;
+    *) die "unsupported architecture '$arch'; published Linux client artifacts support x86_64/amd64 and aarch64/arm64" ;;
   esac
 }
 
@@ -61,12 +107,14 @@ suggested_mptcp_kernel_packages() {
   fi
   # shellcheck disable=SC1091
   . /etc/os-release
+  local flavour="amd64"
+  [[ "$RUNTIME_ARCH" == "arm64" ]] && flavour="arm64"
   case "${ID:-}" in
     debian)
       if uname -r | grep -q 'cloud'; then
-        echo "linux-image-cloud-amd64 linux-headers-cloud-amd64"
+        echo "linux-image-cloud-$flavour linux-headers-cloud-$flavour"
       else
-        echo "linux-image-amd64 linux-headers-amd64"
+        echo "linux-image-$flavour linux-headers-$flavour"
       fi
       ;;
     ubuntu)
@@ -192,12 +240,14 @@ while [[ $# -gt 0 ]]; do
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
     --reboot-after-mptcp-kernel-install) REBOOT_AFTER_MPTCP_KERNEL_INSTALL=1; shift ;;
     --skip-mptcp-check) SKIP_MPTCP_CHECK=1; shift ;;
+    --version) echo "$INSTALLER_VERSION"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$MASTER_URL" || -z "$FORWARD_ID" || -z "$TOKEN" ]]; then
   echo "usage: install-client.sh --master <url> --forward-id <id> --token <token>" >&2
+  echo "       install-client.sh --version   # prints $INSTALLER_VERSION" >&2
   exit 1
 fi
 
@@ -309,7 +359,7 @@ download_verified_artifact install_forward_runtime "$ARTIFACT_BASE/artifacts/ins
 download_verified_artifact mptcp_client_runtime "$ARTIFACT_BASE/artifacts/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-mptcp-client.py"
 download_verified_artifact uot_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_verified_artifact uot_bond_runtime "$ARTIFACT_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
-download_verified_artifact leikwan_uot_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-uot-bond_linux_amd64" "$BIN_DIR/leikwan-uot-bond"
+download_verified_artifact "$UOT_BOND_RUNTIME_KEY" "$ARTIFACT_BASE/$UOT_BOND_RUNTIME_PATH" "$BIN_DIR/leikwan-uot-bond"
 "$BIN_DIR/leikwan-uot-bond" --build-info-json | python3 -c '
 import json, sys
 value = json.load(sys.stdin)
@@ -317,11 +367,15 @@ if value.get("protocol_version") != 2 or "feedback_drr" not in value.get("schedu
     raise SystemExit("installed native UoT runtime lacks feedback capability")
 '
 download_verified_artifact client_rate_limit "$ARTIFACT_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
-download_verified_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"
+download_verified_artifact "$WSTUNNEL_RUNTIME_KEY" "$ARTIFACT_BASE/$WSTUNNEL_RUNTIME_PATH" "$BIN_DIR/wstunnel"
 "$BIN_DIR/wstunnel" --version >/dev/null 2>&1 || die "wstunnel binary failed its startup check"
-download_verified_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"
-download_verified_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
-download_verified_artifact leikwan_mptcp_relay_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64" "/var/lib/leikwan-client-agent/leikwan-mptcp-relay"
+download_verified_artifact "$INGRESS_RUNTIME_KEY" "$ARTIFACT_BASE/$INGRESS_RUNTIME_PATH" "$BIN_DIR/leikwan-ingress"
+download_verified_artifact "$BOND_RUNTIME_KEY" "$ARTIFACT_BASE/$BOND_RUNTIME_PATH" "$BIN_DIR/leikwan-bond"
+if [[ -n "$MPTCP_RELAY_RUNTIME_PATH" ]]; then
+  download_verified_artifact "$MPTCP_RELAY_RUNTIME_KEY" "$ARTIFACT_BASE/$MPTCP_RELAY_RUNTIME_PATH" "$STATE_DIR/leikwan-mptcp-relay"
+else
+  echo "note: no $RUNTIME_ARCH MPTCP relay artifact is published; installing without the relay helper" >&2
+fi
 chmod 0755 "$BIN_DIR/install_forward_runtime.py" "$BIN_DIR/leikwan-mptcp-client.py" "$BIN_DIR/leikwan-uot.py" "$BIN_DIR/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond" "$BIN_DIR/leikwan-rate-limit.py" "$BIN_DIR/leikwan-ingress" "$BIN_DIR/leikwan-bond"
 
 # --- WireGuard watchdog ---

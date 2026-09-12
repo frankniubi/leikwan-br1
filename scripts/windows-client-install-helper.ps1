@@ -1070,6 +1070,10 @@ function Invoke-DuplicateInstallSweep {
         Write-InstallState -TargetDir $InstallDir -SelectedInstallMode $InstallMode -SelectedDesktopShortcut $selectedDesktopShortcut -SelectedDisplayName $DisplayName -SelectedAppVersion $AppVersion
 
         Write-Host "Installed LeiKwan Bridge to $InstallDir"
+        $repairToolPath = Join-Path $InstallDir "leikwan-bridge-repair.cmd"
+        if (Test-Path -LiteralPath $repairToolPath) {
+            Write-Host "Repair/update helper: $repairToolPath (run it as administrator to fix permissions and update)"
+        }
     } catch {
         $installError = $_
         try {

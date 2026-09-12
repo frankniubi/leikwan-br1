@@ -253,6 +253,13 @@ Copy-Item -LiteralPath $helperScript -Destination (Join-Path $StageDir "windows-
 
 Copy-Item -LiteralPath $appExe -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
 
+# The repair/update helper ships with the client: a machine that already has
+# the installer can then fix its own permissions and pull the current build
+# without downloading anything else.
+$repairTool = Join-Path "scripts" "leikwan-bridge-repair.cmd"
+Require-File $repairTool
+Copy-Item -LiteralPath $repairTool -Destination (Join-Path $appStageDir "leikwan-bridge-repair.cmd") -Force
+
 # The apphost is distributed under the user-facing leikwan-client-win.exe name.
 # Keep apphost sidecars under that same name so hostfxr can resolve them when
 # the renamed executable is launched from the installed directory.
