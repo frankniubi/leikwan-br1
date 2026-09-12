@@ -540,6 +540,15 @@
         "size_bytes": 7852,
         "version": "2026.05.29.1"
     },
+    "windows_update_helper": {
+        "artifact_url": "/artifacts/leikwan-bridge-repair.cmd",
+        "install_url": "/artifacts/leikwan-bridge-repair.cmd",
+        "path": "scripts/leikwan-bridge-repair.cmd",
+        "sha256": "ad46bc9541de4adcec8a953ce5cbdd8d92b66b826a5d3b3be287ddd3eeeadae2",
+        "size_bytes": 11610,
+        "version": "2026.09.13.1",
+        "note": "Standalone Windows repair/update helper. Run as administrator: it repairs the shared client permissions and then updates the client to the published build. Ships inside the installer as well."
+    },
     "windows_client_app": {
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",

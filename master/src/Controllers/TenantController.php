@@ -1298,7 +1298,7 @@ final class TenantController extends BaseController
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
-            . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。</div>'
+            . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
@@ -1307,6 +1307,14 @@ final class TenantController extends BaseController
             . $this->escape($this->clientAppReleaseLabel('Windows App', 'windows_client_app')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '</section>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</strong>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
+            . '<div class="muted">老版本客户端卡住时用：一键修复共享权限并更新到当前版本，需以管理员身份运行。</div>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
+            . '</div></section>'
             . $macosInstallSection
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'
