@@ -183,11 +183,41 @@ reset to inherit exactly those.
 ### One-click repair script
 
 `scripts/leikwan-bridge-repair.cmd` - published at
-`https://v3.leikwanhost.com/artifacts/files/leikwan-bridge-repair.cmd` - fixes both
-permission problems on a machine that is already broken. Pure batch + `icacls`,
-so it works where PowerShell scripts are blocked by execution policy; it
-elevates itself through UAC, prints the before/after ACLs, verifies the shared
-config is writable again and offers to start the client.
+`https://v3.leikwanhost.com/artifacts/files/leikwan-bridge-repair.cmd` - fixes
+both permission problems on a machine that is already broken **and then updates
+the client**, because repairing permissions alone still leaves the user one
+manual update away from a working install. Pure batch + `icacls` plus a few
+`powershell -Command` one-liners (which execution policy does not block), so it
+works where `.ps1` files cannot run. It elevates itself through UAC, prints the
+before/after ACLs, verifies the shared config is writable, then:
+
+1. reads `install-state.json` for the install directory, install mode and
+   installed version;
+2. reads `windows_client_app` from `/artifacts/client-manifest.json` (primary
+   endpoint, mirror as fallback);
+3. skips the download when the versions match, downloads and checks the SHA256
+   against the manifest otherwise, and refuses to install on a mismatch;
+4. runs the setup with the same silent arguments the client's own updater uses,
+   after which the installer repairs permissions again and restarts the client.
+
+`/FORCEUPDATE` reinstalls even when the versions match, which is how both the
+elevated and the self-elevating paths were verified end to end:
+
+```
+--- 1. permissions ---
+  ok      ...\config.json  (users: modify)
+  ok      ...\runtime  (users: read and execute only)
+  verified: the current user can write the shared config.
+--- 2. update ---
+  installed : 0.1.20.38
+  published : 0.1.20.38
+  downloading 0.1.20.38 ...
+  verifying sha256 ...
+  hash ok
+  installing 0.1.20.38 ...
+  installer finished (exit 0)
+  installed version is now 0.1.20.38
+```
 
 It has to live under `master/public/artifacts/`, not `artifacts/`: the vhost sends
 every `/artifacts/*` request into PHP (`try_files
