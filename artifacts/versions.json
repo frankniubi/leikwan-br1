@@ -487,13 +487,14 @@
     "ultra_client_runtime_windows": {
         "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
         "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-        "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
-        "sha256": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63",
-        "size_bytes": 16786944,
-        "version": "2026.09.12.1",
+        "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender false positive), path-mtu-2026.09.12.2",
+        "obfuscator": "none",
+        "sha256": "34d4f2611d14c47e8dea8f3e26339a8d43f0e3676620ef90ff26935c39e00681",
+        "size_bytes": 7100416,
+        "version": "2026.09.12.2",
         "attestation": {
-            "fingerprint": "2026.09.12.1.4b106b02",
-            "self_sha256": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63"
+            "fingerprint": "2026.09.12.2.0dc69598",
+            "self_sha256": "34d4f2611d14c47e8dea8f3e26339a8d43f0e3676620ef90ff26935c39e00681"
         }
     },
     "ultra_client_runtime_macos_x64": {
@@ -542,17 +543,17 @@
     "windows_client_app": {
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",
-        "sha256": "04fd83fe5ed2f0ceac8a3571f564c631caff07e3fd8980964de5045a46839231",
-        "size_bytes": 72003860,
+        "sha256": "7b99ee575d400ec63160ec73121c6f5856ea3fc60566b942ab9558c2638b28f7",
+        "size_bytes": 69536748,
         "runtime_sha256": {
-            "ultra_client_runtime_windows": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63",
+            "ultra_client_runtime_windows": "34d4f2611d14c47e8dea8f3e26339a8d43f0e3676620ef90ff26935c39e00681",
             "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
             "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
             "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
             "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
             "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1"
         },
-        "version": "0.1.20.32"
+        "version": "0.1.20.34"
     },
     "wstunnel_linux_amd64": {
         "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
