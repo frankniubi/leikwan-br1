@@ -379,15 +379,24 @@ public sealed class ConfigPollingService
                     ex.GetType().Name,
                     ex is MasterApiException apiException ? apiException.StatusCode : 0,
                     BoundErrorCode(ex.Message));
+                // A rotated grant/ticket (409 lease_scope_invalid and friends) is repaired by
+                // the next config pull, never by tearing the forward down. Stopping it here
+                // produced an endless start/stop loop - the panel re-mints the lease ticket
+                // whenever the relay material rotates, and the forward was usually not yet
+                // running at refresh time, so nothing could be "preserved" and the agent
+                // restarted it over and over (the user-visible "Starting routes" flashing).
+                if (IsGrantRefreshError(ex))
+                {
+                    QueueConfigRefreshSoon(forward.ForwardId);
+                    Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                    return;
+                }
                 if (TryPreserveRunningUltra(
                         forward.ForwardId,
                         hasAppliedState,
                         isRunning,
-                        "lease refresh exception",
-                        IsGrantRefreshError(ex) ? forward.ForwardId : null))
+                        "lease refresh exception"))
                 {
-                    if (IsGrantRefreshError(ex))
-                        Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
                     return;
                 }
                 Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
