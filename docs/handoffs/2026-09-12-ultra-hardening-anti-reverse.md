@@ -84,6 +84,8 @@ runtime 在 status JSON 里额外发布：
 
 ## 5. 尚未做（诚实清单）
 
+0. **现状（2026-09-12 已上线）**：指纹注入已覆盖 linux/windows/android/macOS 四个构建脚本，attestation 由 runtime 上报 → 心跳/agent → 面板落库，管理页有 Attestation / Refusals 两个标签；三个限额开关默认关闭。发布细节见 `docs/reports/2026-09-12-ultra-runtime-2026.09.12.1-release.md`。
+
 1. attestation 目前是**只报告**；要真正拦住改包客户端，需在面板把 `attestation_state=mismatch`
    接到租约签发（灰度：先只对 ultra 新会话生效）。
 2. 面板白名单现在是 env 列表；更稳的做法是直接读 `artifacts/versions.json` 的 `sha256`，
