@@ -14,6 +14,21 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
 {
     private sealed record RuntimeState(string Directory, string SocketDirectory, string SocketPath, string StatusPath);
 
+    /// <summary>
+    /// Budget for delivering the lease batch over the control socket.
+    /// <para>
+    /// The runtime answers the delivery only after its selection window closes:
+    /// probe duration + datagram association budget + response grace, which is
+    /// roughly 45-50 seconds with the shipped contract. The Windows host waits
+    /// without an explicit deadline (it relies on
+    /// <see cref="UnixUltraLeaseClient.BatchTimeout"/>); a hard 20 second cap
+    /// here cancelled every multi-candidate delivery on macOS and made all
+    /// forwards report "forward start failed". Keep this strictly above the
+    /// lease client's own budget so the inner timeout always decides.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan LeaseDeliveryTimeout = TimeSpan.FromSeconds(90);
+
     private readonly AgentConfig _config;
     private readonly IProcessSupervisor _supervisor;
     private readonly StateManager _stateManager;
@@ -147,7 +162,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
-            using var deliveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var deliveryTimeout = new CancellationTokenSource(LeaseDeliveryTimeout);
             var leaseDelivered = (leases.Count == 1
                 ? _leaseSender(socketPath, forward.ForwardId, leases[0], deliveryTimeout.Token)
                 : _leaseBatchSender(socketPath, forward.ForwardId, leases, deliveryTimeout.Token))
