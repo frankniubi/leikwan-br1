@@ -93,6 +93,18 @@ $relapse2 = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-
 assertUltraCandidateReputation(($relapse2['state'] ?? '') === 'quarantined', 'third offence must quarantine on the first failure');
 assertUltraCandidateReputation(($relapse2['quarantine_until'] ?? 0) === $now + 14400, 'third quarantine must keep doubling');
 
+// A full clean day buys one rung back. The clock is only advanced past the
+// quarantine, so the elapsed time since the last recorded failure is what
+// decides the decay; three clean days take the ladder back to its base rung.
+$now += 86401;
+$decayedOnce = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-6');
+assertUltraCandidateReputation(($decayedOnce['quarantine_until'] ?? 0) === $now + 14400, 'a clean day must decay exactly one rung');
+
+$now += (3 * 86400) + 1;
+$decayedFully = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-7');
+assertUltraCandidateReputation(($decayedFully['quarantine_until'] ?? 0) === $now + 3600, 'three clean days must decay the ladder back to the base rung');
+assertUltraCandidateReputation(($decayedFully['backoff_level'] ?? 0) === 1, 'a fully decayed candidate re-enters the ladder at the bottom');
+
 $fingerprintService = new UltraCandidateReputationService(null, static function () use (&$now): int {
     return $now;
 });

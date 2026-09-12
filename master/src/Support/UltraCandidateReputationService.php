@@ -27,6 +27,10 @@ final class UltraCandidateReputationService
     // time out of rotation instead of being retried every 30 minutes.
     public const DEFAULT_QUARANTINE_SECONDS = 3600;
     public const DEFAULT_MAX_BACKOFF_SECONDS = 86400;
+    // Serve a rung off the ladder for every clean day: a line that was really
+    // fixed works its way back to a normal quarantine instead of carrying a
+    // permanent record.
+    public const DEFAULT_BACKOFF_DECAY_SECONDS = 86400;
     public const DEFAULT_RECOVERY_SUCCESSES = 3;
     public const MAX_FEEDBACK = 32;
 
@@ -51,12 +55,16 @@ final class UltraCandidateReputationService
     /** @var array<string, array<string, true>> */
     private array $memoryObservers = [];
 
+    /** @var array<string, int> */
+    private array $memoryLastFailure = [];
+
     private int $probationFailures;
     private int $quarantineFailures;
     private int $minimumObservers;
     private int $quarantineSeconds;
     private int $maxBackoffSeconds;
     private int $recoverySuccesses;
+    private int $backoffDecaySeconds;
 
     /**
      * @param object|null $db Existing Database wrapper; null is an in-memory
@@ -80,6 +88,7 @@ final class UltraCandidateReputationService
         $this->quarantineSeconds = self::boundedOption($options, 'quarantine_seconds', self::DEFAULT_QUARANTINE_SECONDS, 60, 86400);
         $this->maxBackoffSeconds = self::boundedOption($options, 'max_backoff_seconds', self::DEFAULT_MAX_BACKOFF_SECONDS, $this->quarantineSeconds, 604800);
         $this->recoverySuccesses = self::boundedOption($options, 'recovery_successes', self::DEFAULT_RECOVERY_SUCCESSES, 1, 32);
+        $this->backoffDecaySeconds = self::boundedOption($options, 'backoff_decay_seconds', self::DEFAULT_BACKOFF_DECAY_SECONDS, 3600, 604800);
     }
 
     /** @param array<string, mixed> $scope */
@@ -303,6 +312,10 @@ final class UltraCandidateReputationService
             // least one behind it is a repeat offender: the next corroborated
             // failure puts it straight back into quarantine instead of walking
             // the probation ramp again, and it resumes on the same ladder.
+            // A full clean day buys one rung back, evaluated here because this
+            // is the only place the level is consumed and the write path is
+            // rare - stateFor() runs for every candidate on every resolution.
+            $row = $this->decayBackoff($row);
             $previousQuarantines = (int) ($row['backoff_level'] ?? 0);
             if ($row['consecutive_failures'] >= $this->probationFailures) {
                 $row['state'] = self::STATE_PROBATION;
@@ -591,6 +604,9 @@ final class UltraCandidateReputationService
     {
         $candidateHash = (string) ($row['candidate_key_hash'] ?? '');
         $eventKey = $candidateHash . ':' . $evidenceHash;
+        if ($eventType === 'failure') {
+            $this->memoryLastFailure[$candidateHash] = $this->now();
+        }
         if ($this->db === null || $this->usesFakeTables()) {
             $this->memoryEvidence[$eventKey] = true;
             return;
@@ -634,6 +650,52 @@ final class UltraCandidateReputationService
         $this->memoryObservers[$candidateHash][$observerHash] = true;
     }
 
+    /** @param array<string, mixed> $row @return array<string, mixed> */
+    private function decayBackoff(array $row): array
+    {
+        $level = (int) ($row['backoff_level'] ?? 0);
+        if ($level <= 0) {
+            return $row;
+        }
+        $lastFailure = $this->lastFailureAt((string) ($row['candidate_key_hash'] ?? ''));
+        if ($lastFailure <= 0) {
+            return $row;
+        }
+        $elapsed = $this->now() - $lastFailure;
+        if ($elapsed < $this->backoffDecaySeconds) {
+            return $row;
+        }
+        $row['backoff_level'] = max(0, $level - intdiv($elapsed, $this->backoffDecaySeconds));
+        return $row;
+    }
+
+    private function lastFailureAt(string $candidateHash): int
+    {
+        if ($candidateHash === '') {
+            return 0;
+        }
+        if ($this->db === null || $this->usesFakeTables()) {
+            return (int) ($this->memoryLastFailure[$candidateHash] ?? 0);
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT MAX(observed_at) AS last_failure_at
+                   FROM ultra_candidate_reputation_events
+                  WHERE candidate_key_hash = :candidate_key_hash
+                    AND event_type = \'failure\'',
+                ['candidate_key_hash' => $candidateHash]
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+        $value = $row['last_failure_at'] ?? null;
+        if (!is_string($value) || trim($value) === '') {
+            return 0;
+        }
+        // observed_at is written with gmdate(), so read it back as UTC.
+        return (int) (strtotime(trim($value) . ' UTC') ?: 0);
+    }
+
     private function observerCount(string $candidateHash, string $observerHash): int
     {
         $this->memoryObservers[$candidateHash][$observerHash] = true;
@@ -641,13 +703,23 @@ final class UltraCandidateReputationService
             return count($this->memoryObservers[$candidateHash] ?? []);
         }
         $row = $this->db->fetchOne(
-            'SELECT COUNT(DISTINCT observer_hash) AS observer_count
+            'SELECT COUNT(DISTINCT observer_hash) AS observer_count,
+                    SUM(CASE WHEN observer_hash = :observer_hash THEN 1 ELSE 0 END) AS observer_seen
              FROM ultra_candidate_reputation_events
              WHERE candidate_key_hash = :candidate_key_hash
                AND event_type = \'failure\'',
-            ['candidate_key_hash' => $candidateHash]
+            ['candidate_key_hash' => $candidateHash, 'observer_hash' => $observerHash]
         );
-        return max(1, (int) ($row['observer_count'] ?? 0));
+        $count = (int) ($row['observer_count'] ?? 0);
+        // This runs before the current failure is persisted, so the reporting
+        // observer is never in the table yet. Counting it here keeps the
+        // database path in step with the in-memory one, which counts it through
+        // $memoryObservers; without it production needed one failure more than
+        // the contract test to reach the same state.
+        if ((int) ($row['observer_seen'] ?? 0) === 0) {
+            $count++;
+        }
+        return max(1, $count);
     }
 
     private function backoffSeconds(int $level): int
