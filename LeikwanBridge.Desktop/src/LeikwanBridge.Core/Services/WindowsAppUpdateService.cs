@@ -86,6 +86,68 @@ public sealed class WindowsAppUpdateService : IDisposable
         return Path.Combine(installRoot, "updates", $"leikwan-bridge-setup-{version}.exe");
     }
 
+    /// <summary>
+    /// Keeps the installer cache down to the builds the client can still act
+    /// on. Every release drops a ~70 MB setup in this folder and nothing ever
+    /// removed them, so the cache grew without bound on every machine.
+    /// Never throws: failing to prune must not affect an update.
+    /// </summary>
+    public static IReadOnlyList<string> PruneCachedInstallers(
+        string installRoot,
+        string currentVersion,
+        string? pendingInstallerPath = null)
+    {
+        var removed = new List<string>();
+        try
+        {
+            var updatesDir = Path.Combine(installRoot, "updates");
+            if (!Directory.Exists(updatesDir))
+                return removed;
+
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                Path.GetFullPath(BuildCachedInstallerPath(installRoot, currentVersion)),
+            };
+            if (!string.IsNullOrWhiteSpace(pendingInstallerPath))
+            {
+                try
+                {
+                    keep.Add(Path.GetFullPath(pendingInstallerPath.Trim()));
+                }
+                catch (Exception)
+                {
+                    // A malformed pending path simply is not protected.
+                }
+            }
+
+            foreach (var file in Directory.EnumerateFiles(updatesDir, "leikwan-bridge-setup-*.exe"))
+            {
+                string fullPath;
+                try
+                {
+                    fullPath = Path.GetFullPath(file);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (keep.Contains(fullPath))
+                    continue;
+
+                TryDeleteFile(fullPath);
+                if (!File.Exists(fullPath))
+                    removed.Add(fullPath);
+            }
+        }
+        catch (Exception)
+        {
+            // Best effort only.
+        }
+
+        return removed;
+    }
+
     public static string BuildInstallStatePath(string installRoot)
     {
         return Path.Combine(installRoot, "install-state.json");
