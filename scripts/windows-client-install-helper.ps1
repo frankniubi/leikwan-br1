@@ -710,6 +710,46 @@ function Get-UninstallEntryTargetPath {
     return ""
 }
 
+# %ProgramData%\Leikwan is shared by the client and its installer. A file that
+# an elevated process creates there can inherit the ProgramData root ACL
+# (Administrators full control, Users read-only) instead of the folder ACL, and
+# the client then dies writing its own config on startup - before it logs
+# anything - until somebody starts it as administrator. Re-apply the intended
+# rights to everything the client has to write on every install and update so
+# machines that already carry the broken ACL heal themselves.
+function Repair-SharedDataAcl {
+    param([string]$TargetDir)
+
+    $programData = [Environment]::GetEnvironmentVariable("ProgramData")
+    if ([string]::IsNullOrWhiteSpace($programData)) { return 0 }
+
+    $clientAgentDir = Join-Path $programData "Leikwan\ClientAgent"
+    if (-not (Test-Path -LiteralPath $clientAgentDir)) { return 0 }
+
+    $usersSid = "*S-1-5-32-545"
+    $writablePaths = @(
+        (Join-Path $clientAgentDir "config.json"),
+        (Join-Path $clientAgentDir "state"),
+        (Join-Path $clientAgentDir "logs")
+    )
+
+    $repaired = 0
+    foreach ($path in $writablePaths) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $item = Get-Item -LiteralPath $path -Force
+        $arguments = @($path, "/grant", ($usersSid + $(if ($item.PSIsContainer) { ":(OI)(CI)M" } else { ":M" })), "/C", "/Q")
+        if ($item.PSIsContainer) { $arguments += "/T" }
+        $output = & icacls.exe @arguments 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "failed to repair ACL on $path : $($output -join " ")"
+            continue
+        }
+        $repaired++
+    }
+
+    if ($repaired -gt 0) { Write-Host "repaired $repaired shared client data path(s) under $clientAgentDir" }
+    return $repaired
+}
 function Test-RealInstall {
     param([string]$DirectoryPath)
 
@@ -946,6 +986,14 @@ function Invoke-DuplicateInstallSweep {
     $snapshot = New-InstallSnapshot -TargetDir $InstallDir
     try {
         Stop-InstalledProcesses -TargetDir $InstallDir
+        # Repair before copying: a client whose shared config is read-only
+        # cannot start at all, and that must be fixed even if this install
+        # later fails and rolls back.
+        try {
+            Repair-SharedDataAcl -TargetDir $InstallDir | Out-Null
+        } catch {
+            Write-Warning "shared data ACL repair failed: $($_.Exception.Message)"
+        }
         Remove-ClientBackupDirectories -TargetDir $InstallDir
         # Client updates replace installer-owned files in place. Development-side
         # artifacts may keep backups, but the installed client must not create them.

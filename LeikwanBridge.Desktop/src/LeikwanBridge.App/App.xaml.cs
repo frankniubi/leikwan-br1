@@ -69,18 +69,37 @@ public partial class App : System.Windows.Application
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
         if (Config.MigrateLegacyUltraBin(AppDefaults.GetInstallRoot()))
-            stateManager.SaveConfig(ConfigPath, Config);
+            TrySaveConfig(stateManager, Config);
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(Config.MasterUrl);
         if (!string.Equals(normalizedMasterUrl, Config.MasterUrl, StringComparison.Ordinal))
         {
             Config.MasterUrl = normalizedMasterUrl;
-            stateManager.SaveConfig(ConfigPath, Config);
+            TrySaveConfig(stateManager, Config);
         }
 
         // Apply language
         SwitchLanguage(Config.Language);
 
         base.OnStartup(e);
+    }
+
+    // The shared config lives under %ProgramData%\Leikwan\ClientAgent, so a
+    // single elevated run is enough to leave config.json owned by
+    // BUILTIN\Administrators with the interactive user read-only. An
+    // unhandled failure here killed the process before it wrote a single log
+    // line, which is indistinguishable from "the app will not start any more"
+    // and only "fixed" by running the client as administrator. The tunnel only
+    // needs the in-memory copy, so a read-only config must never be fatal.
+    private static void TrySaveConfig(StateManager stateManager, AgentConfig config)
+    {
+        try
+        {
+            stateManager.SaveConfig(ConfigPath, config);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "config could not be persisted; continuing with the in-memory config");
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)

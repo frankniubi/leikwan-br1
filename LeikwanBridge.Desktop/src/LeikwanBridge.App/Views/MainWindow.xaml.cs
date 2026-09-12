@@ -1616,8 +1616,17 @@ public partial class MainWindow : Window
 
     private void SaveCurrentConfig()
     {
-        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, App.Config);
+        try
+        {
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, App.Config);
+        }
+        catch (Exception ex)
+        {
+            // See App.TrySaveConfig: a shared config that cannot be written must
+            // degrade to "this change is not persisted", never to a crash.
+            Log.Warning(ex, "config could not be persisted");
+        }
     }
 
     private static string GetCurrentAppVersion()
