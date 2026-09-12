@@ -271,9 +271,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-        "sha256": "9a4f2f6dc616c3fcc54ef214f57ea69093ac5f209a828e7de08561afadc6440c",
-        "size_bytes": 68903814,
-        "version": "1.0.28"
+        "sha256": "83aff2bdba7d03bd2e7babcf87e3fe5c7551c462ca2b98d45fa80e6112bcddc0",
+        "size_bytes": 68940349,
+        "version": "1.0.29"
     },
     "macos_client_app_x64": {
         "architecture": "x86_64",
@@ -285,9 +285,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-        "sha256": "60b8db5ed92906e220e23a631664404c5921ce19173a3ebc4d8b26cd9a7ea3f6",
-        "size_bytes": 72856446,
-        "version": "1.0.28"
+        "sha256": "35eeff98d0eb3d2d5449a394bd5fc53c0f8089750a3638309c0dbfc5a62cac3a",
+        "size_bytes": 72938970,
+        "version": "1.0.29"
     },
     "macos_client_update_arm64": {
         "architecture": "arm64",
@@ -299,8 +299,8 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-        "sha256": "4ee31747b6bf46275770de183aed5b625630f11845b7fbafd01612322162beaa",
-        "size_bytes": 68859895,
+        "sha256": "694ebf369f8b644491c846122ab05e9d6c08520740476a9094a081a2d9ee1d61",
+        "size_bytes": 68918537,
         "runtime_sha256": {
             "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
             "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
@@ -309,7 +309,7 @@
             "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
             "bin/ultra-client": "04a22d295a0b2674e5cb7fb74e074d8e7d61b5c8a86e912a24d5bcfb61922884"
         },
-        "version": "1.0.28"
+        "version": "1.0.29"
     },
     "macos_client_update_x64": {
         "architecture": "x86_64",
@@ -321,8 +321,8 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-        "sha256": "4fcc52f5f438d53bdac2da96523a14974e28ae5a4224020d01622c5f06fdecdb",
-        "size_bytes": 72866649,
+        "sha256": "b84f18dd2350ea421eb7b4d2af6188fa4cb660e7ea799b5c5a32d5875fc9a0ff",
+        "size_bytes": 72927841,
         "runtime_sha256": {
             "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
             "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
@@ -331,7 +331,7 @@
             "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
             "bin/ultra-client": "1373d771ab88277a10845f0bf54e31eb271c0fc5e20f8a2a744d1243ae92d02e"
         },
-        "version": "1.0.28"
+        "version": "1.0.29"
     },
     "mptcp_client_runtime": {
         "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -500,28 +500,28 @@
         "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
         "path": "artifacts/ultra/ultra-client_macos_amd64",
         "architecture": "x86_64",
-        "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
+        "build": "go1.26.5 darwin, garble-v0.17.0, bundle-signed ad-hoc (rcodesign 0.29.0), path-mtu-2026.09.12.1",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "7d7a5399a10faea83942310922700245721172568a9dd9fb644696361b4d02f9",
-        "size_bytes": 15015440,
+        "sha256": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91",
+        "size_bytes": 15138320,
         "version": "2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
-            "self_sha256": "7d7a5399a10faea83942310922700245721172568a9dd9fb644696361b4d02f9"
+            "self_sha256": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91"
         }
     },
     "ultra_client_runtime_macos_arm64": {
         "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
         "path": "artifacts/ultra/ultra-client_macos_arm64",
         "architecture": "arm64",
-        "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
+        "build": "go1.26.5 darwin, garble-v0.17.0, bundle-signed ad-hoc (rcodesign 0.29.0), path-mtu-2026.09.12.1",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "a765183421379ca2ebc873182517e51d08cdf293326f3f3cc2383d07d4300195",
-        "size_bytes": 13467730,
+        "sha256": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f",
+        "size_bytes": 13472768,
         "version": "2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
-            "self_sha256": "a765183421379ca2ebc873182517e51d08cdf293326f3f3cc2383d07d4300195"
+            "self_sha256": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f"
         }
     },
     "uot_bond_runtime": {
