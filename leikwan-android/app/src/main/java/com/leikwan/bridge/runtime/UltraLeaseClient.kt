@@ -12,7 +12,13 @@ import java.nio.ByteOrder
 
 private const val MAX_ULTRA_CONTROL_PAYLOAD = 64 * 1024
 private const val ULTRA_CONTROL_TIMEOUT_MS = 2_000
-private const val ULTRA_NATIVE_BATCH_TIMEOUT_MS = 30_000
+// The runtime answers a multi-candidate delivery only after its selection
+// window closes: probe duration + datagram association budget + response
+// grace. The 30s probe profile (UltraForwardRunner) needs roughly 45-50s, so a
+// 30s cap cancelled valid deliveries and surfaced as "forward start failed".
+// Keep this strictly above the runtime's window (desktop hosts use 70s for the
+// same reason; the macOS host had the identical bug with a 20s cap).
+private const val ULTRA_NATIVE_BATCH_TIMEOUT_MS = 70_000
 private const val ULTRA_CONTROL_CONNECT_ATTEMPTS = 20
 private const val ULTRA_NATIVE_CONNECT_ATTEMPTS = 3
 private const val MAX_NATIVE_LEASE_CANDIDATES = 4
