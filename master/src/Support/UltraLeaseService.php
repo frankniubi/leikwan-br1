@@ -37,6 +37,25 @@ final class UltraLeaseService
 
     public const RATE_WINDOW_SECONDS = 60;
 
+    /**
+     * Runtime attestation enforcement. "report" (the default) never denies;
+     * "enforce" denies a lease when the device reported a RELEASED build
+     * fingerprint together with a binary hash that does not match the released
+     * artifact for that fingerprint - i.e. the client was repackaged while still
+     * claiming a released build. An unknown fingerprint (older builds, local
+     * "development" builds) is reported but never denied, so switching this on
+     * cannot lock out a client we have never published.
+     */
+    public const ATTESTATION_ENFORCEMENT_KEY = 'ULTRA_ATTESTATION_ENFORCEMENT';
+    /**
+     * Platform prefixes the check applies to. Defaults to "linux" only: the
+     * Linux artifact served by the panel IS the shipped binary, while the macOS
+     * bundle ships a re-signed runtime whose hash legitimately differs from the
+     * published artifact, and the Windows runtime is embedded in the installer.
+     */
+    public const ATTESTATION_ENFORCE_PLATFORMS_KEY = 'ULTRA_ATTESTATION_ENFORCE_PLATFORMS';
+    public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
+
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
     private $candidateResolver;
 
@@ -57,6 +76,9 @@ final class UltraLeaseService
 
     /** @var array<string, list<int>> "client:device" => issue stamps (DB-less mode) */
     private array $memoryIssues = [];
+
+    /** @var array<string, list<string>>|null fingerprint => released binary hashes */
+    private ?array $releasedRuntimeHashes = null;
 
     public function __construct(
         private Config $config,
@@ -180,6 +202,14 @@ final class UltraLeaseService
             $this->recordLeaseRefusal($clientId, $deviceHash, $forwardId, $abuseRefusal);
             return ['ok' => false, 'error' => $abuseRefusal];
         }
+        // Repackaged-build check, also before the nonce is consumed. It only ever
+        // fires for a device that claims a published fingerprint with a hash the
+        // published artifact does not have.
+        $attestationRefusal = $this->attestationRefusal($clientId, $deviceHash);
+        if ($attestationRefusal !== null) {
+            $this->recordLeaseRefusal($clientId, $deviceHash, $forwardId, $attestationRefusal);
+            return ['ok' => false, 'error' => $attestationRefusal];
+        }
 
         $candidate = ($this->candidateResolver)($normalized, $clientId, trim($deviceId));
         if (!is_array($candidate) || !$this->candidateIsValid($candidate)
@@ -280,6 +310,132 @@ final class UltraLeaseService
                 'updated_at' => $now,
             ]
         );
+    }
+
+    /**
+     * Repackaged-build check. Returns ERROR_RUNTIME_UNATTESTED only when the
+     * device's last session claims a fingerprint the panel published AND its
+     * reported binary hash matches none of that release's published hashes.
+     *
+     * Everything else - no session row, no attestation, an unknown fingerprint,
+     * a platform outside the enforced list, an unreadable manifest - fails open
+     * and is left to the report-only admin view.
+     */
+    private function attestationRefusal(int $clientId, string $deviceHash): ?string
+    {
+        if ($this->db === null || $clientId <= 0 || $deviceHash === '') {
+            return null;
+        }
+        if (strtolower(trim((string) $this->config->get(self::ATTESTATION_ENFORCEMENT_KEY, 'report'))) !== 'enforce') {
+            return null;
+        }
+        $expected = $this->releasedRuntimeHashes();
+        if ($expected === []) {
+            return null;
+        }
+        try {
+            $session = $this->db->fetchOne(
+                'SELECT platform, ultra_runtime_fingerprint, ultra_runtime_self_sha256
+                   FROM client_device_sessions
+                  WHERE client_id = :client_id AND SHA2(device_id, 256) = :device_hash
+                  LIMIT 1',
+                ['client_id' => $clientId, 'device_hash' => $deviceHash]
+            );
+        } catch (Throwable $throwable) {
+            error_log('ultra_attestation_lookup_failed ' . $throwable->getMessage());
+            return null;
+        }
+        if (!is_array($session)) {
+            return null;
+        }
+        $fingerprint = strtolower(trim((string) ($session['ultra_runtime_fingerprint'] ?? '')));
+        $reported = strtolower(trim((string) ($session['ultra_runtime_self_sha256'] ?? '')));
+        if ($fingerprint === '' || $reported === '' || !isset($expected[$fingerprint])) {
+            return null;
+        }
+        if (!$this->platformIsEnforced((string) ($session['platform'] ?? ''))) {
+            return null;
+        }
+        foreach ($expected[$fingerprint] as $allowed) {
+            if (hash_equals($allowed, $reported)) {
+                return null;
+            }
+        }
+        error_log(sprintf(
+            'ultra_attestation_mismatch client=%d device=%s fingerprint=%s reported=%s',
+            $clientId,
+            substr($deviceHash, 0, 16),
+            $fingerprint,
+            substr($reported, 0, 16)
+        ));
+        return self::ERROR_RUNTIME_UNATTESTED;
+    }
+
+    /** Platform prefixes the attestation check applies to ("linux" by default). */
+    private function platformIsEnforced(string $platform): bool
+    {
+        $configured = strtolower(trim((string) $this->config->get(self::ATTESTATION_ENFORCE_PLATFORMS_KEY, 'linux')));
+        if ($configured === '') {
+            return false;
+        }
+        $platform = strtolower(trim($platform));
+        if ($platform === '') {
+            return false;
+        }
+        foreach (explode(',', $configured) as $prefix) {
+            $prefix = trim($prefix);
+            if ($prefix !== '' && str_starts_with($platform, $prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * fingerprint => every binary hash the panel has published for it, straight
+     * from artifacts/versions.json (written by the release publisher). Reading
+     * the live manifest keeps this in step with releases instead of duplicating
+     * hashes in configuration.
+     *
+     * @return array<string, list<string>>
+     */
+    private function releasedRuntimeHashes(): array
+    {
+        if ($this->releasedRuntimeHashes !== null) {
+            return $this->releasedRuntimeHashes;
+        }
+        $this->releasedRuntimeHashes = [];
+        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
+        if (!is_file($path)) {
+            return $this->releasedRuntimeHashes;
+        }
+        $decoded = json_decode((string) @file_get_contents($path), true);
+        if (!is_array($decoded)) {
+            return $this->releasedRuntimeHashes;
+        }
+        foreach ($decoded as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $attestation = $entry['attestation'] ?? null;
+            if (!is_array($attestation)) {
+                continue;
+            }
+            $fingerprint = strtolower(trim((string) ($attestation['fingerprint'] ?? '')));
+            $hash = strtolower(trim((string) ($attestation['self_sha256'] ?? '')));
+            if ($fingerprint === '' || preg_match('/^[a-f0-9]{64}$/', $hash) !== 1) {
+                continue;
+            }
+            if (!isset($this->releasedRuntimeHashes[$fingerprint])) {
+                $this->releasedRuntimeHashes[$fingerprint] = [];
+            }
+            if (!in_array($hash, $this->releasedRuntimeHashes[$fingerprint], true)) {
+                $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+            }
+        }
+        // One fingerprint can ship several platform binaries; a client only ever
+        // reports one of them, so every published hash for the fingerprint counts.
+        return $this->releasedRuntimeHashes;
     }
 
     /**

@@ -14,6 +14,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
 {
     public const string EmailPasswordAuthentication = "Email + Password";
     public const string ClientIdTokenAuthentication = "Client ID + Token";
+
+    /// <summary>
+    /// How often a live native session re-reads the relay's measured payload ceiling. The
+    /// runtime republishes its status file while the tunnel runs and nothing here is
+    /// event-driven, so the MTU watcher polls instead of waiting for the next refresh.
+    /// </summary>
+    public static readonly TimeSpan DefaultNativeTunMtuWatchInterval = TimeSpan.FromSeconds(5);
     public IReadOnlyList<PanelEndpointOption> PanelEndpointOptions => PanelEndpoints.Options;
 
     private readonly IDesktopClientController _controller;
@@ -29,7 +36,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private string _updateFailureStage = "check";
     private bool _endpointPersistenceReady;
     private readonly Action<Action> _dispatch;
+    private readonly TimeSpan _nativeTunMtuWatchInterval;
     private int _nativeRefreshInProgress;
+    private int _nativeTunMtuWatchRunning;
     private MacConnectionMode _nativeActiveMode = MacConnectionMode.Vpn;
     private int _nativeActiveForwardId;
     private string _nativeActiveRouteScope = "global";
@@ -63,7 +72,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         string? savedAgentToken = null,
         Action<bool>? rememberLoginInfoChanged = null,
         Func<IProgress<UpdateProgress>?, CancellationToken, Task>? checkForUpdatesWithProgress = null,
-        Func<IProgress<UpdateProgress>?, CancellationToken, Task>? installUpdateWithProgress = null)
+        Func<IProgress<UpdateProgress>?, CancellationToken, Task>? installUpdateWithProgress = null,
+        TimeSpan? nativeTunMtuWatchInterval = null)
     {
         _controller = controller;
         _connections = connections;
@@ -76,6 +86,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _installUpdateWithProgress = installUpdateWithProgress;
         _rememberLoginInfoChanged = rememberLoginInfoChanged;
         _dispatch = dispatch ?? Dispatch;
+        _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
         CloseToTray = closeToTray;
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
         PanelUrl = controller.Snapshot.PanelUrl;
@@ -1421,6 +1432,57 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (_connections?.IsNativeOutboundActive != true)
             return;
         _ = Task.Run(RefreshNativeLeaseIfNeededAsync);
+        EnsureNativeTunMtuWatch();
+    }
+
+    private void EnsureNativeTunMtuWatch()
+    {
+        if (Interlocked.CompareExchange(ref _nativeTunMtuWatchRunning, 1, 0) != 0)
+            return;
+        _ = Task.Run(WatchNativeTunMtuAsync);
+    }
+
+    /// <summary>
+    /// A live relay re-measures its payload ceiling and republishes the status file with no
+    /// event to hang the reaction on. The watcher watches <see cref="IMacConnectionService.IsNativeTunMtuPending"/>
+    /// for the flip and hot-applies the new TUN MTU to the running tunnel, so the user no
+    /// longer has to reconnect or wait for the next refresh for it to take effect.
+    /// </summary>
+    private async Task WatchNativeTunMtuAsync()
+    {
+        try
+        {
+            while (_connections?.IsNativeOutboundActive == true)
+            {
+                await Task.Delay(_nativeTunMtuWatchInterval).ConfigureAwait(false);
+                if (_connections?.IsNativeOutboundActive != true)
+                    return;
+                if (_connections.IsNativeTunMtuPending)
+                    await ApplyPendingNativeTunMtuAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nativeTunMtuWatchRunning, 0);
+        }
+    }
+
+    private async Task ApplyPendingNativeTunMtuAsync()
+    {
+        try
+        {
+            if (await _connections!.ApplyPendingNativeTunMtuAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                Log.Information("mac_native_tun_mtu_applied forward={ForwardId}", _nativeActiveForwardId);
+                return;
+            }
+            // Debounced or not yet proven: the flag stays set and the watcher retries.
+            Log.Information("mac_native_tun_mtu_apply_pending forward={ForwardId}", _nativeActiveForwardId);
+        }
+        catch (Exception exception)
+        {
+            _dispatch(() => AddLog($"native_tun_mtu_apply_failed:{exception.GetType().Name}"));
+        }
     }
 
     private async Task RefreshNativeLeaseIfNeededAsync()
@@ -1438,14 +1500,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 await StopRevokedNativeAsync().ConfigureAwait(false);
                 return;
             }
-            // A re-measured payload ceiling changes the TUN MTU, which sing-box only reads
-            // at startup: force the existing refresh/restart cycle even while the lease is
-            // still valid so the live tunnel is rebuilt with the new MTU.
-            var tunMtuPending = _connections.IsNativeTunMtuPending;
-            if (!tunMtuPending && expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
+            // A re-measured payload ceiling changes the TUN MTU. sing-box re-reads its
+            // config on reload, so the MTU no longer forces a restart cycle: apply it to the
+            // live tunnel, and keep the restart path below as the fallback for the case the
+            // reload cannot be proven (it runs anyway once the lease has to be renewed).
+            if (_connections.IsNativeTunMtuPending
+                && await _connections.ApplyPendingNativeTunMtuAsync(CancellationToken.None).ConfigureAwait(false))
                 return;
-            if (tunMtuPending)
-                Log.Information("mac_native_tun_mtu_reapply forward={ForwardId}", _nativeActiveForwardId);
+            if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
+                return;
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 _nativeActiveForwardId,
                 _nativeActiveRouteScope,

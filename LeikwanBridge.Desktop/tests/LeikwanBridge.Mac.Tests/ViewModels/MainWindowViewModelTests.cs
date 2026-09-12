@@ -606,6 +606,117 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task PendingTunMtuIsAppliedToTheLiveTunnelWithoutWaitingForTheNextRefresh()
+    {
+        const int forwardId = 158;
+        const string direction = "Hong Kong -> China Mainland";
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(forwardId, direction, "a", "tcp+udp", ["cn_only"], "cn_only"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability })
+        {
+            NativeLease = new NativeOutboundLease(
+                forwardId,
+                "native-lease",
+                new string('a', 64),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                "tcp+udp",
+                direction,
+                "cn_only",
+                NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+                "203.0.113.20",
+                5438,
+                System.Text.Encoding.UTF8.GetBytes("user"),
+                System.Text.Encoding.UTF8.GetBytes("password")),
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(
+            controller,
+            connections,
+            dispatch: action => action(),
+            nativeTunMtuWatchInterval: TimeSpan.FromMilliseconds(50));
+        vm.SelectedNativeForwardId = forwardId;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await Task.Delay(150);
+
+        // The relay re-measured a ceiling whose TUN MTU differs from the live one.
+        connections.IsNativeTunMtuPending = true;
+
+        for (var attempt = 0; attempt < 100 && connections.ApplyPendingNativeTunMtuCalls == 0; attempt++)
+            await Task.Delay(20);
+
+        Assert.Equal(1, connections.ApplyPendingNativeTunMtuCalls);
+        Assert.False(connections.IsNativeTunMtuPending);
+        // Applying it in place never restarted the tunnel.
+        Assert.Equal(1, connections.NativeStartCalls);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
+    public async Task FailedTunMtuApplyKeepsTheFlagPendingAndRetriesWithoutRestarting()
+    {
+        const int forwardId = 158;
+        const string direction = "Hong Kong -> China Mainland";
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(forwardId, direction, "a", "tcp+udp", ["cn_only"], "cn_only"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability })
+        {
+            NativeLease = new NativeOutboundLease(
+                forwardId,
+                "native-lease",
+                new string('a', 64),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                "tcp+udp",
+                direction,
+                "cn_only",
+                NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+                "203.0.113.20",
+                5438,
+                System.Text.Encoding.UTF8.GetBytes("user"),
+                System.Text.Encoding.UTF8.GetBytes("password")),
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(
+            controller,
+            connections,
+            dispatch: action => action(),
+            nativeTunMtuWatchInterval: TimeSpan.FromMilliseconds(50));
+        vm.SelectedNativeForwardId = forwardId;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await Task.Delay(150);
+
+        connections.ApplyPendingNativeTunMtuResult = false;
+        connections.IsNativeTunMtuPending = true;
+
+        for (var attempt = 0; attempt < 100 && connections.ApplyPendingNativeTunMtuCalls < 2; attempt++)
+            await Task.Delay(20);
+
+        Assert.True(connections.ApplyPendingNativeTunMtuCalls >= 2);
+        Assert.True(connections.IsNativeTunMtuPending);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
     public void NativeOutboundDrawerCollapsesWhenCapabilityIsRevoked()
     {
         var capability = new NativeOutboundCapability
@@ -1089,6 +1200,10 @@ public sealed class MainWindowViewModelTests
         public string? ActiveNativeLeasePolicyGeneration { get; private set; }
         public bool IsNativeOutboundActive { get; private set; }
         public string? LastNativeRoutePolicy { get; private set; }
+        public int NativeStartCalls { get; private set; }
+        public bool IsNativeTunMtuPending { get; set; }
+        public int ApplyPendingNativeTunMtuCalls { get; private set; }
+        public bool ApplyPendingNativeTunMtuResult { get; set; } = true;
 
         public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task SaveProfileAsync(LeikwanBridge.Mac.Services.MacConnectionProfile profile, CancellationToken ct = default)
@@ -1149,6 +1264,7 @@ public sealed class MainWindowViewModelTests
             CancellationToken ct = default)
         {
             LastNativeRoutePolicy = nativeRoutePolicy;
+            NativeStartCalls++;
             IsNativeOutboundActive = true;
             ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
             ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
@@ -1167,6 +1283,13 @@ public sealed class MainWindowViewModelTests
             ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
             ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
             return Task.FromResult(true);
+        }
+        public Task<bool> ApplyPendingNativeTunMtuAsync(CancellationToken ct = default)
+        {
+            ApplyPendingNativeTunMtuCalls++;
+            if (ApplyPendingNativeTunMtuResult)
+                IsNativeTunMtuPending = false;
+            return Task.FromResult(ApplyPendingNativeTunMtuResult);
         }
         public Task StopAsync(CancellationToken ct = default)
         {

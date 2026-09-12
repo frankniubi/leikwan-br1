@@ -55,6 +55,49 @@ public sealed class UltraRuntimeStatusTests
         Assert.Null(attestation.Instrumented);
     }
 
+    [Fact]
+    public void ReleasedVersionFingerprintIsAccepted()
+    {
+        // The build scripts inject main.runtimeBuildVersion=<version>.<shortsha>,
+        // which is what every shipped runtime reports.
+        using var temp = new TempStateDirectory();
+        var statusPath = Path.Combine(temp.Path, "status.json");
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 180,
+          "runtime_attestation": {
+            "fingerprint": "2026.09.12.1.4b106b02",
+            "self_sha256": "{{new string('a', 64)}}",
+            "debugger": false,
+            "instrumented": false
+          }
+        }
+        """);
+
+        var attestation = UltraRuntimeStatus.ReadAttestation(statusPath);
+
+        Assert.NotNull(attestation);
+        Assert.Equal("2026.09.12.1.4b106b02", attestation.Fingerprint);
+        Assert.Equal(new string('a', 64), attestation.SelfSha256);
+    }
+
+    [Theory]
+    [InlineData("2026.09.12.1.4B106B02")]   // fingerprints are lowercased at build time
+    [InlineData("2026.09.12.1.zz")]         // the short sha must be hex
+    [InlineData("2026.09.12.1.4b106b")]     // 6 hex characters is too short (released short shas are 7+)
+    [InlineData("not-a-fingerprint")]
+    [InlineData("0f3a91c")]                 // hex build ids are 8..64 characters
+    public void MalformedFingerprintsAreRejected(string fingerprint)
+    {
+        using var temp = new TempStateDirectory();
+        var statusPath = Path.Combine(temp.Path, "status.json");
+        File.WriteAllText(statusPath, $$"""
+        { "forward_id": 180, "runtime_attestation": { "fingerprint": "{{fingerprint}}" } }
+        """);
+
+        Assert.Null(UltraRuntimeStatus.ReadAttestation(statusPath));
+    }
+
     [Theory]
     [InlineData("""{"forward_id": 180}""")]
     [InlineData("""{"forward_id": 180, "udp_payload_ceiling": 0, "udp_oversize_drops": 0}""")]

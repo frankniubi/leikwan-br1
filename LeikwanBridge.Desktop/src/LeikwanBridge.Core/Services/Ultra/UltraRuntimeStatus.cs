@@ -69,13 +69,15 @@ public static class UltraRuntimeStatus
             || attestation.ValueKind != JsonValueKind.Object)
             return null;
 
-        // fingerprint is ^[a-f0-9]{8,64}$ or the development literal; a snapshot
-        // without one cannot be compared against a release and is dropped.
+        // A released runtime stamps itself "<version>.<shortsha>" (the build
+        // scripts inject main.runtimeBuildVersion); an older or third-party build
+        // may report a bare hex build id. Both are identities; anything else
+        // cannot be compared against a release and is dropped.
         if (!attestation.TryGetProperty("fingerprint", out var fingerprintElement)
             || fingerprintElement.ValueKind != JsonValueKind.String)
             return null;
         var fingerprint = fingerprintElement.GetString() ?? "";
-        if (fingerprint != DevelopmentFingerprint && !IsLowerHex(fingerprint, 8, 64))
+        if (fingerprint != DevelopmentFingerprint && !IsBuildFingerprint(fingerprint))
             return null;
 
         var result = new RuntimeAttestationSnapshot { Fingerprint = fingerprint };
@@ -208,4 +210,24 @@ public static class UltraRuntimeStatus
     private static bool IsLowerHex(string value, int minimum, int maximum)
         => value.Length >= minimum && value.Length <= maximum
             && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    /// <summary>
+    /// Accepts the released build fingerprint shape "2026.09.12.1.4b106b02" (the
+    /// value the build scripts inject) as well as a bare hex build id used by
+    /// older builds. Nothing else is treated as an identity.
+    /// </summary>
+    private static bool IsBuildFingerprint(string value)
+    {
+        if (IsLowerHex(value, 8, 64))
+            return true;
+        var segments = value.Split('.');
+        if (segments.Length is not (4 or 5))
+            return false;
+        for (var index = 0; index < 4; index++)
+        {
+            if (segments[index].Length == 0 || !segments[index].All(character => character is >= '0' and <= '9'))
+                return false;
+        }
+        return segments.Length == 4 || IsLowerHex(segments[4], 7, 40);
+    }
 }

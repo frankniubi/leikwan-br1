@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Ultra;
@@ -756,6 +757,348 @@ public sealed class WindowsProxyConnectionServiceTests
         Assert.False(service.MtuUpdatePending);
     }
 
+    [Fact]
+    public async Task PendingTunMtuIsAppliedByRestartingSingBoxWithTheSameConfig()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+        Assert.Equal(1456, service.AppliedTunMtu);
+        Assert.Equal(1456, reader.ReadTunMtu());
+        var startedConfig = process.LastConfigJson;
+
+        // The relay failed over and the runtime re-measured a narrower ceiling.
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(service.MtuUpdatePending);
+
+        Assert.True(await service.ApplyPendingTunMtuAsync());
+
+        Assert.Equal(2, process.StartCalls);
+        Assert.Equal(1316, service.AppliedTunMtu);
+        Assert.Equal(1316, service.PendingTunMtu);
+        Assert.Equal(1316, TunMtuOf(process.LastConfigJson));
+        Assert.Equal(1316, reader.ReadTunMtu());
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+
+        // Nothing but the MTU may change: the native relay port allocated for the
+        // running session is not re-allocated by the resize.
+        var original = JsonNode.Parse(startedConfig)!;
+        var updated = JsonNode.Parse(process.LastConfigJson)!;
+        original["inbounds"]![0]!["mtu"] = updated["inbounds"]![0]!["mtu"]!.GetValue<int>();
+        Assert.True(JsonNode.DeepEquals(original, updated));
+
+        // A ceiling that resolves to the MTU already live is a no-op again.
+        Assert.True(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(2, process.StartCalls);
+    }
+
+    [Fact]
+    public async Task MtuLadderWobbleInsideTheLiveMtuNeverRestartsSingBox()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1280,
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile
+        {
+            Name = "saved",
+            Server = "198.51.100.7",
+            Method = "aes-256-gcm",
+            Password = "secret",
+        });
+
+        await service.StartAsync(WindowsProxyMode.Tun, 1);
+        Assert.Equal(1280, service.AppliedTunMtu);
+
+        // Every raw ceiling above the configured MTU resolves to that same MTU.
+        Assert.True(service.ObserveMeasuredPayloadCeiling(158, 1500));
+        Assert.True(service.ObserveMeasuredPayloadCeiling(158, 1430));
+        Assert.True(service.ObserveMeasuredPayloadCeiling(158, 1324));
+        Assert.False(service.MtuUpdatePending);
+
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(1, process.StartCalls);
+        Assert.Equal(1280, service.AppliedTunMtu);
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task MtuUpdatePendingStaysWhenTheInPlaceRestartFails()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+        Assert.Equal(1456, service.AppliedTunMtu);
+
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        process.FailStartCalls.Add(2);
+
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+
+        Assert.True(service.MtuUpdatePending);
+        Assert.Equal(1456, service.AppliedTunMtu);
+        // The failed resize rolled the data plane back to the previous config.
+        Assert.Equal(3, process.StartCalls);
+        Assert.True(process.IsRunning);
+        Assert.Equal(1456, TunMtuOf(process.LastConfigJson));
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task FailedResizeThatCannotBeRolledBackReportsAnErrorSnapshot()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        process.FailStartCalls.Add(2);
+        process.FailStartCalls.Add(3);
+
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+
+        Assert.True(service.MtuUpdatePending);
+        Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
+        Assert.Equal("proxy_mtu_apply_failed", service.Snapshot.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ThePendingFlagSurvivesAnAdapterThatKeptItsOldMtu()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+
+        // The driver re-opens the existing adapter and keeps its size.
+        reader.FixedMtu = 1456;
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+
+        Assert.True(service.MtuUpdatePending);
+        Assert.Equal(1456, service.AppliedTunMtu);
+        // The process is alive, so the failed resize must not tear it down.
+        Assert.True(process.IsRunning);
+        Assert.Equal(2, process.StartCalls);
+        Assert.True(reader.Reads > 0);
+    }
+
+    [Fact]
+    public async Task ASecondResizeInsideTheDebounceWindowIsRefused()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(1316, service.AppliedTunMtu);
+        Assert.NotNull(service.LastMtuApplyAttemptAt);
+
+        // A second, narrower ceiling arrives inside the debounce window.
+        WriteRuntimeCeiling(temp.Path, 158, 1300);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(service.MtuUpdatePending);
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(2, process.StartCalls);
+        Assert.Equal(1316, service.AppliedTunMtu);
+        Assert.True(service.MtuUpdatePending);
+    }
+
+    [Fact]
+    public async Task ResizeIsAllowedAgainOnceTheDebounceWindowIsEmpty()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader,
+            mtuApplyMinInterval: TimeSpan.Zero);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+        await service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+
+        WriteRuntimeCeiling(temp.Path, 158, 1360);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(1316, service.AppliedTunMtu);
+
+        // Same window, but the caller opted out of the debounce.
+        WriteRuntimeCeiling(temp.Path, 158, 1300);
+        Assert.False(service.RefreshMeasuredPayloadCeiling(158));
+        Assert.True(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(3, process.StartCalls);
+        Assert.Equal(1280, service.AppliedTunMtu);
+        Assert.Equal(1280, TunMtuOf(process.LastConfigJson));
+        Assert.False(service.MtuUpdatePending);
+    }
+
+    [Fact]
+    public async Task ApplyCannotRunWhileAStartTransitionIsInFlight()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var reader = new FakeTunMtuReader(process);
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            nativeRelayHost: new FakeNativeRelayHost(),
+            tunMtuReader: reader);
+        await service.InitializeAsync();
+        WriteRuntimeCeiling(temp.Path, 158, 1500);
+
+        process.StartRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var starting = service.StartNativeAsync(WindowsProxyMode.Tun, CreateMtuLease(158));
+        await process.StartEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var apply = service.ApplyPendingTunMtuAsync();
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        // The resize waits for the transition instead of yanking the process.
+        Assert.False(apply.IsCompleted);
+        Assert.Equal(1, process.StartCalls);
+
+        process.StartRelease.SetResult();
+        await starting;
+        Assert.False(await apply);
+        Assert.Equal(1, process.StartCalls);
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task ApplyIsRefusedWhileNoTunIsLive()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            temp.Path,
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            tunMtu: 1500,
+            tunMtuReader: new FakeTunMtuReader(process));
+        await service.InitializeAsync();
+
+        Assert.False(await service.ApplyPendingTunMtuAsync());
+        Assert.Equal(0, process.StartCalls);
+        Assert.Equal(WindowsProxyConnectionState.Disconnected, service.Snapshot.State);
+    }
+
     private static void WriteRuntimeCeiling(string runtimeDirectory, int forwardId, int ceiling)
     {
         var statusPath = Path.Combine(runtimeDirectory, "native-usage", $"native-{forwardId}-mtu", "status.json");
@@ -769,6 +1112,18 @@ public sealed class WindowsProxyConnectionServiceTests
     {
         using var document = JsonDocument.Parse(configJson);
         return document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32();
+    }
+
+    private static int TryTunMtuOf(string configJson)
+    {
+        try
+        {
+            return string.IsNullOrWhiteSpace(configJson) ? 0 : TunMtuOf(configJson);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException)
+        {
+            return 0;
+        }
     }
 
     private static NativeOutboundLease CreateMtuLease(int forwardId)
@@ -804,12 +1159,35 @@ public sealed class WindowsProxyConnectionServiceTests
         public int TunReadinessCalls { get; private set; }
         public bool ListenerReady { get; set; } = true;
         public Queue<bool> TunReadinessResults { get; } = new();
-        public Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
+
+        /// <summary>1-based start call numbers that must fail, like a refused TUN.</summary>
+        public HashSet<int> FailStartCalls { get; } = [];
+
+        /// <summary>Holds a start open so a transition can be observed mid-flight.</summary>
+        public TaskCompletionSource? StartRelease { get; set; }
+        public TaskCompletionSource StartEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>
+        /// MTU the adapter would carry: a TUN interface only changes size when
+        /// the process that created it is (re)started.
+        /// </summary>
+        public int CurrentTunMtu { get; private set; }
+
+        public async Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
         {
             StartCalls++;
+            StartEntered.TrySetResult();
+            if (StartRelease is not null)
+                await StartRelease.Task.WaitAsync(ct);
+            if (FailStartCalls.Contains(StartCalls))
+            {
+                IsRunning = false;
+                throw new InvalidOperationException("proxy_process_start_failed");
+            }
             LastConfigJson = File.ReadAllText(configPath);
+            CurrentTunMtu = TryTunMtuOf(LastConfigJson);
             IsRunning = true;
-            return Task.CompletedTask;
+            IsTunReady = true;
         }
         public Task<bool> WaitForTunReadyAsync(CancellationToken ct = default)
         {
@@ -825,6 +1203,22 @@ public sealed class WindowsProxyConnectionServiceTests
         }
         public void SetRunning(bool value) => IsRunning = value;
         public ValueTask DisposeAsync() { IsRunning = false; return ValueTask.CompletedTask; }
+    }
+
+    /// <summary>
+    /// Stands in for the OS adapter: reports the MTU of the config the process
+    /// host last started, optionally pinned to simulate a driver that kept the
+    /// old interface size.
+    /// </summary>
+    private sealed class FakeTunMtuReader(FakeProcessHost host) : IWindowsTunMtuReader
+    {
+        public int? FixedMtu { get; set; }
+        public int Reads { get; private set; }
+        public int ReadTunMtu()
+        {
+            Reads++;
+            return FixedMtu ?? host.CurrentTunMtu;
+        }
     }
 
     private static NativeOutboundLease CreateNativeLease(byte[] user, byte[] password)

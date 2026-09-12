@@ -45,9 +45,9 @@
     "client_agent": {
         "artifact_url": "/artifacts/client-agent.py",
         "path": "client-agent/client_agent.py",
-        "sha256": "c8eaae57d16a7956403deec0eaa1c3c2488cb60f4de85c3449aaec882836e455",
-        "size": 337360,
-        "size_bytes": 337360,
+        "sha256": "478dd70e8bf9e908d96506916134cd8a78b1695826c910b5a6fdd9c82308a979",
+        "size": 337707,
+        "size_bytes": 337707,
         "version": "2026.09.12.1"
     },
     "client_agent_installer": {
@@ -625,8 +625,13 @@
         "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_android_x86_64",
-        "sha256": "abfb38956c08d8c3beb221ee10555255388dc0e39e1fce105161490b58af247f",
-        "size_bytes": 16239072,
-        "version": "2026.09.11.4"
+        "sha256": "cc954df15b1ccab29a03578366d6b0a1342ca9c8352c9a1354395c6a5621553a",
+        "size_bytes": 16348096,
+        "version": "2026.09.12.1",
+        "build": "go1.26.5, android/amd64, NDK r27b external linking, garble-v0.17.0, path-mtu-2026.09.12.1",
+        "attestation": {
+            "fingerprint": "2026.09.12.1.4b106b02",
+            "self_sha256": "cc954df15b1ccab29a03578366d6b0a1342ca9c8352c9a1354395c6a5621553a"
+        }
     }
 }

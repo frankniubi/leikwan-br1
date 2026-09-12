@@ -16,17 +16,31 @@ public interface IMacConnectionProcessHost : IAsyncDisposable
     bool IsRunning { get; }
     event Action<MacConnectionProcessExit>? UnexpectedExit;
     Task StartAsync(string executablePath, string configPath, MacConnectionMode mode, CancellationToken ct);
+
+    /// <summary>
+    /// Ask the live helper to rebuild itself from the config file at its startup path
+    /// (sing-box reloads on SIGHUP) and, for TUN modes, confirm the interface came back
+    /// with the MTU that config asks for. False means the running service was not proven
+    /// to have picked the rewritten config up.
+    /// </summary>
+    Task<bool> ReloadAsync(CancellationToken ct);
+
     Task StopAsync(CancellationToken ct);
 }
 
 public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
 {
+    private const int Sighup = 1;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<ProcessStartInfo, Process> _processStarter;
     private readonly Func<string, MacConnectionMode, CancellationToken, Task<bool>>? _readinessProbe;
     private readonly Func<IMacCommandRunner> _commandRunnerFactory;
     private readonly Func<bool> _isMacOs;
     private readonly TimeSpan _startupTimeout;
+    private readonly Func<int, bool> _signalReload;
+    private readonly Func<CancellationToken, Task<int>> _tunMtuProbe;
+    private readonly TimeSpan _reloadTimeout;
     private Run? _run;
 
     public MacConnectionProcessHost(
@@ -34,7 +48,10 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         Func<string, MacConnectionMode, CancellationToken, Task<bool>>? readinessProbe = null,
         TimeSpan? startupTimeout = null,
         Func<IMacCommandRunner>? commandRunnerFactory = null,
-        Func<bool>? isMacOs = null)
+        Func<bool>? isMacOs = null,
+        Func<int, bool>? signalReload = null,
+        Func<CancellationToken, Task<int>>? tunMtuProbe = null,
+        TimeSpan? reloadTimeout = null)
     {
         _processStarter = processStarter ?? (info => Process.Start(info)
             ?? throw new InvalidOperationException("connection_process_start_failed"));
@@ -42,6 +59,9 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         _commandRunnerFactory = commandRunnerFactory ?? (() => new MacCommandRunner());
         _isMacOs = isMacOs ?? OperatingSystem.IsMacOS;
         _startupTimeout = startupTimeout ?? TimeSpan.FromSeconds(90);
+        _signalReload = signalReload ?? (pid => OperatingSystem.IsMacOS() && kill(pid, Sighup) == 0);
+        _tunMtuProbe = tunMtuProbe ?? CreateTunMtuProbe(_commandRunnerFactory);
+        _reloadTimeout = reloadTimeout ?? TimeSpan.FromSeconds(12);
     }
 
     public bool IsRunning => _run is { } run && IsAlive(run.Process);
@@ -84,6 +104,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
             var lifetime = privileged ? configPath + ".keep" : null;
             var errorPath = privileged ? configPath + ".stderr" : null;
             var dnsPath = privileged ? configPath + ".dns" : null;
+            var reloadPath = MacConnectionReload.MarkerPath(configPath);
             try
             {
                 if (privileged)
@@ -92,8 +113,10 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                     CreatePrivateFile(errorPath!);
                     CreatePrivateFile(dnsPath!);
                 }
+                // A request left behind by a previous session must not reload this one.
+                DeleteFile(reloadPath);
                 var info = privileged
-                    ? BuildPrivilegedStartInfo(executablePath, configPath, lifetime!, errorPath!, dnsPath!)
+                    ? BuildPrivilegedStartInfo(executablePath, configPath, lifetime!, errorPath!, dnsPath!, reloadPath)
                     : BuildDirectStartInfo(executablePath, configPath);
                 var process = _processStarter(info);
                 var run = new Run(process, configPath, mode, lifetime, errorPath, managesSystemProxy ? port : 0, dnsPath);
@@ -138,6 +161,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                 DeleteFile(lifetime);
                 DeleteFile(errorPath);
                 DeleteFile(dnsPath);
+                DeleteFile(reloadPath);
                 throw;
             }
         }
@@ -157,6 +181,86 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         Log.Warning("mac connection data plane exited mode={Mode} exit={ExitCode} error={ErrorCode}",
             run.Mode, run.Process.ExitCode, run.ErrorCode);
         UnexpectedExit?.Invoke(new MacConnectionProcessExit(run.ConfigPath, run.ErrorCode));
+    }
+
+    public async Task<bool> ReloadAsync(CancellationToken ct)
+    {
+        Run? run;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try { run = _run is { } current && IsAlive(current.Process) ? current : null; }
+        finally { _gate.Release(); }
+        if (run is null)
+            return false;
+        // A TUN helper only proves the reload once the live interface reports the MTU the
+        // rewritten config asks for; a proxy helper has no interface to wait for.
+        var expectedMtu = run.Mode == MacConnectionMode.Vpn ? ReadConfiguredTunMtu(run.ConfigPath) : 0;
+        var requested = run.Lifetime is null
+            ? _signalReload(run.Process.Id)
+            : await MacConnectionReload.RequestAsync(
+                MacConnectionReload.MarkerPath(run.ConfigPath),
+                _reloadTimeout,
+                ct).ConfigureAwait(false);
+        if (!requested || !IsAlive(run.Process))
+            return false;
+        return expectedMtu <= 0 || await WaitForTunMtuAsync(run, expectedMtu, ct).ConfigureAwait(false);
+    }
+
+    private async Task<bool> WaitForTunMtuAsync(Run run, int expectedMtu, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(_reloadTimeout);
+        try
+        {
+            while (true)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                if (!IsAlive(run.Process))
+                    return false;
+                if (await _tunMtuProbe(timeout.Token).ConfigureAwait(false) == expectedMtu)
+                    return true;
+                await Task.Delay(200, timeout.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The reload was requested but the interface never reported the new MTU:
+            // report failure so the caller keeps the MTU pending and retries.
+            return false;
+        }
+    }
+
+    private static Func<CancellationToken, Task<int>> CreateTunMtuProbe(Func<IMacCommandRunner> commandRunnerFactory)
+        => async ct =>
+        {
+            // Reading the interface MTU needs no privilege and only ever looks at our TUN.
+            var info = NewStartInfo("/sbin/ifconfig");
+            var result = await commandRunnerFactory().RunAsync(info, ct).ConfigureAwait(false);
+            return result.ExitCode == 0
+                ? MacTunMtuProbe.Parse(result.StandardOutput, MacConnectionConfigBuilder.TunAddress.Split('/')[0])
+                : 0;
+        };
+
+    private static int ReadConfiguredTunMtu(string configPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(configPath));
+            if (document.RootElement.TryGetProperty("inbounds", out var inbounds)
+                && inbounds.ValueKind == JsonValueKind.Array
+                && inbounds.GetArrayLength() > 0)
+            {
+                var inbound = inbounds[0];
+                if (inbound.TryGetProperty("type", out var type)
+                    && string.Equals(type.GetString(), "tun", StringComparison.Ordinal)
+                    && inbound.TryGetProperty("mtu", out var mtu)
+                    && mtu.TryGetInt32(out var value))
+                    return value;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+        }
+        return 0;
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -199,6 +303,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
             run.Process.Dispose();
             DeleteFile(run.ErrorPath);
             DeleteFile(run.DnsPath);
+            DeleteFile(MacConnectionReload.MarkerPath(run.ConfigPath));
             if (_isMacOs() && run.ManagedProxyPort > 0)
             {
                 try { await ClearOwnedSystemProxyAsync(run.ManagedProxyPort, _commandRunnerFactory()).ConfigureAwait(false); }
@@ -283,7 +388,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
         return info;
     }
 
-    private static ProcessStartInfo BuildPrivilegedStartInfo(string executablePath, string configPath, string lifetime, string errorPath, string dnsPath)
+    private static ProcessStartInfo BuildPrivilegedStartInfo(string executablePath, string configPath, string lifetime, string errorPath, string dnsPath, string reloadPath)
     {
         var dnsCommands = MacTunDnsSession.BuildCommands(Guid.NewGuid().ToString("N"));
         var command = $"umask 077; if [ ! -f {ShellQuote(lifetime)} ]; then exit 1; fi; "
@@ -292,6 +397,10 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
             + $"while kill -0 \"$child\" 2>/dev/null; do if [ ! -f {ShellQuote(lifetime)} ] || ! kill -0 {Environment.ProcessId} 2>/dev/null; then "
             + "kill -TERM \"$child\" 2>/dev/null; n=0; while kill -0 \"$child\" 2>/dev/null && [ \"$n\" -lt 30 ]; do sleep 0.1; n=$((n+1)); done; "
             + "kill -KILL \"$child\" 2>/dev/null; break; fi; "
+            // The GUI cannot signal a root child, so it drops a marker here and the
+            // privileged shell (which already owns and polls the lifetime marker) asks
+            // sing-box to rebuild itself from the rewritten config in place.
+            + MacConnectionReload.ShellProbe(reloadPath)
             + $"if [ -z \"$dns_pid\" ] && /sbin/ifconfig -a | /usr/bin/grep -q 'inet {MacConnectionConfigBuilder.TunAddress.Split('/')[0]} '; then "
             + $"( {{ printf '%s' {ShellQuote(dnsCommands)}; while [ -f {ShellQuote(lifetime)} ] && kill -0 \"$child\" 2>/dev/null && kill -0 {Environment.ProcessId} 2>/dev/null; do sleep 0.2; done; printf 'quit\\n'; }} | /usr/sbin/scutil >{ShellQuote(dnsPath)} 2>>{ShellQuote(errorPath)} ) & dns_pid=$!; /usr/bin/dscacheutil -flushcache >/dev/null 2>&1; fi; "
             + $"if [ -n \"$dns_pid\" ] && ! kill -0 \"$dns_pid\" 2>/dev/null; then printf 'vpn_dns_unavailable\\n' >>{ShellQuote(errorPath)}; kill -TERM \"$child\" 2>/dev/null; fi; "

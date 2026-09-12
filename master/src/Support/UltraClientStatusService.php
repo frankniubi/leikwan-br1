@@ -17,7 +17,13 @@ final class UltraClientStatusService
      * reported as unknown and nothing is ever denied.
      */
     public const RUNTIME_FINGERPRINTS_KEY = 'ULTRA_RUNTIME_FINGERPRINTS';
-    public const RUNTIME_FINGERPRINT_PATTERN = '/^[a-f0-9]{8,64}$/';
+    /**
+     * A released runtime stamps itself "<version>.<shortsha>" at link time
+     * (e.g. 2026.09.12.1.4b106b02, see scripts/build-ultra-*.ps1); an older or
+     * third-party build may report a bare hex build id instead. Both shapes are
+     * accepted — anything else is dropped as unknown rather than persisted.
+     */
+    public const RUNTIME_FINGERPRINT_PATTERN = '/^(?:[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(?:\.[0-9a-f]{7,40})?|[a-f0-9]{8,64})$/';
     public const RUNTIME_SELF_SHA256_PATTERN = '/^[a-f0-9]{64}$/';
 
     public const ATTESTATION_STATE_KNOWN = 'known';
@@ -465,7 +471,7 @@ final class UltraClientStatusService
         $rows = [];
         foreach ($sessions as $session) {
             $clientId = (int) ($session['client_id'] ?? 0);
-            $lastSeen = strtotime((string) ($session['last_seen_at'] ?? '')) ?: 0;
+            $lastSeen = self::utcTimestamp($session['last_seen_at'] ?? null);
             $state = $this->sessionState($lastSeen);
             if ($stateFilter !== '' && $stateFilter !== strtolower($state)) {
                 continue;
@@ -568,7 +574,7 @@ final class UltraClientStatusService
             'attestation_mismatch' => 0,
         ];
         foreach ($rows as $row) {
-            $state = strtolower($this->sessionState(strtotime((string) ($row['last_seen_at'] ?? '')) ?: 0));
+            $state = strtolower($this->sessionState(self::utcTimestamp($row['last_seen_at'] ?? null)));
             if (isset($counts[$state])) {
                 $counts[$state]++;
             }
@@ -674,6 +680,25 @@ final class UltraClientStatusService
     {
         $reference = trim((string) $value);
         return preg_match('/^[A-Za-z0-9_-]{16,128}$/', $reference) === 1 ? $reference : '';
+    }
+
+    /**
+     * Panel timestamps are written in UTC (gmdate), so they must be parsed as UTC.
+     * strtotime() would read them in date.timezone instead, which on a panel with
+     * a non-UTC timezone (the production boxes run PRC) shifts every session by
+     * the UTC offset and reports healthy sessions as stale hours early.
+     */
+    private static function utcTimestamp(mixed $value): int
+    {
+        $text = trim((string) $value);
+        if ($text === '') {
+            return 0;
+        }
+        try {
+            return (new \DateTimeImmutable($text, new \DateTimeZone('UTC')))->getTimestamp();
+        } catch (\Throwable) {
+            return 0;
+        }
     }
 
     private function sessionState(int $lastSeen): string

@@ -5,6 +5,7 @@ using Xunit;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Text.Json;
 
 namespace LeikwanBridge.App.Tests.ViewModels;
 
@@ -481,7 +482,89 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         Assert.False(host.IsRunning);
     }
 
+    [Fact]
+    public async Task HeartbeatTickResizesALiveTunWhenTheMeasuredPathShrinks()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host, tunMtu: 1500, tunMtuReader: new MtuMirrorReader(host));
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("node.example.test", 30526);
+
+        await _vm.StartProxyAsync(WindowsProxyMode.Tun, _vm.SelectedProxyProfileId);
+        var service = InstalledProxyService!;
+        // Nothing had been measured when the TUN was created, so it kept the
+        // configured MTU the association cannot carry.
+        Assert.Equal(1500, service.AppliedTunMtu);
+        Assert.Equal(1, host.StartCalls);
+
+        // The runtime measured the narrower path and the next tick resizes it.
+        WriteRuntimeCeiling(runtime.Forward.ForwardId, 1360);
+        await RunHeartbeatTickAsync(runtime.Forward);
+
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(1316, service.AppliedTunMtu);
+        Assert.Equal(2, host.StartCalls);
+        using var document = JsonDocument.Parse(host.LastConfig);
+        Assert.Equal(1316, document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+        Assert.Equal(WindowsProxyConnectionState.Connected, service.Snapshot.State);
+
+        // A second tick with the same measurement must not restart anything.
+        await RunHeartbeatTickAsync(runtime.Forward);
+        Assert.Equal(2, host.StartCalls);
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(1316, service.AppliedTunMtu);
+    }
+
+    [Fact]
+    public async Task HeartbeatTickLeavesTheLiveTunAloneWhenTheResolvedMtuIsUnchanged()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host, tunMtu: 1280, tunMtuReader: new MtuMirrorReader(host));
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("node.example.test", 30526);
+
+        await _vm.StartProxyAsync(WindowsProxyMode.Tun, _vm.SelectedProxyProfileId);
+        var service = InstalledProxyService!;
+        Assert.Equal(1280, service.AppliedTunMtu);
+
+        // Every measured ceiling still resolves to the MTU that is already live.
+        WriteRuntimeCeiling(runtime.Forward.ForwardId, 1500);
+        await RunHeartbeatTickAsync(runtime.Forward);
+        WriteRuntimeCeiling(runtime.Forward.ForwardId, 1324);
+        await RunHeartbeatTickAsync(runtime.Forward);
+
+        Assert.False(service.MtuUpdatePending);
+        Assert.Equal(1280, service.AppliedTunMtu);
+        Assert.Equal(1, host.StartCalls);
+    }
+
+    private async Task RunHeartbeatTickAsync(ForwardConfig forward)
+    {
+        // Same two steps the heartbeat tick runs, through the real tick handler.
+        typeof(MainViewModel)
+            .GetMethod("OnForwardsUpdated", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(_vm, [new List<ForwardConfig> { forward }]);
+        var heartbeat = (Task?)typeof(MainViewModel)
+            .GetField("_heartbeatTask", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(_vm);
+        Assert.NotNull(heartbeat);
+        await heartbeat!.WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
+    private sealed class MtuMirrorReader(ProxyProcessHost host) : IWindowsTunMtuReader
+    {
+        public int ReadTunMtu() => host.CurrentTunMtu;
+    }
+
     private ListenerRuntime InstallRuntime(ProxyProcessHost host)
+        => InstallRuntime(host, WindowsProxyConfigBuilder.DefaultTunMtu, null);
+
+    private ListenerRuntime InstallRuntime(
+        ProxyProcessHost host,
+        int tunMtu,
+        IWindowsTunMtuReader? tunMtuReader)
     {
         var runtime = new ListenerRuntime(_vm.Config, new StateManager(_stateDir));
         host.ForwardReady = () => runtime.Running;
@@ -489,13 +572,26 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         File.WriteAllText(executable, "test");
         var service = new WindowsProxyConnectionService(
             new WindowsProxyProfileStore(Path.Combine(_stateDir, "proxy-profiles.json")), executable,
-            Path.Combine(_stateDir, "runtime"), host, new SystemProxy(), new ProcessAdapter());
+            Path.Combine(_stateDir, "runtime"), host, new SystemProxy(), new ProcessAdapter(),
+            tunMtu: tunMtu,
+            tunMtuReader: tunMtuReader);
         service.SnapshotChanged += snapshot => typeof(MainViewModel)
             .GetMethod("HandleProxySnapshotChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(_vm, [snapshot]);
         typeof(MainViewModel).GetField("_runtimeManager", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(_vm, runtime);
         typeof(MainViewModel).GetField("_proxyService", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(_vm, service);
+        InstalledProxyService = service;
         return runtime;
+    }
+
+    private WindowsProxyConnectionService? InstalledProxyService { get; set; }
+
+    private void WriteRuntimeCeiling(int forwardId, int ceiling)
+    {
+        var statusPath = Path.Combine(
+            _stateDir, "runtime", "native-usage", $"native-{forwardId}-mtu", "status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""{"forward_id": {{forwardId}}, "udp_payload_ceiling": {{ceiling}}}""");
     }
 
     private async Task SaveNodeAsync(string server, int port)
@@ -566,10 +662,25 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         public Exception? StartFailure { get; init; }
         public Task? StartRelease { get; init; }
         public TaskCompletionSource StartEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int StartCalls { get; private set; }
+
+        /// <summary>MTU the adapter carries for the config it was last started with.</summary>
+        public int CurrentTunMtu { get; private set; }
+
         public async Task StartAsync(string executablePath, string configPath, WindowsProxyMode mode, CancellationToken ct = default)
         {
+            StartCalls++;
             SawForwardReady = ForwardReady();
             LastConfig = File.ReadAllText(configPath);
+            using (var document = JsonDocument.Parse(LastConfig))
+            {
+                CurrentTunMtu = document.RootElement.TryGetProperty("inbounds", out var inbounds)
+                    && inbounds.ValueKind == JsonValueKind.Array
+                    && inbounds.GetArrayLength() > 0
+                    && inbounds[0].TryGetProperty("mtu", out var mtu)
+                        ? mtu.GetInt32()
+                        : 0;
+            }
             IsRunning = true;
             StartEntered.TrySetResult();
             if (StartRelease is not null) await StartRelease.WaitAsync(ct);
