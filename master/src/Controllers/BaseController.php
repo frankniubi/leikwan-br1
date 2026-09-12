@@ -294,6 +294,49 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('windows_client_app', '/artifacts/leikwan-bridge-setup.exe');
     }
 
+    /**
+     * Monochrome platform marks for the download panels. Inline SVG with
+     * currentColor so they follow the surrounding text colour in both the light
+     * and the dark operator theme, and need no asset pipeline.
+     */
+    protected function platformIcon(string $kind): string
+    {
+        $open = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">';
+        $icons = [
+            'windows' => '<rect x="2" y="2.5" width="9" height="9"/><rect x="12.6" y="2.5" width="9.4" height="9"/><rect x="2" y="13.1" width="9" height="9"/><rect x="12.6" y="13.1" width="9.4" height="9"/>',
+            'macos' => '<path d="M12 7.6c-3 0-5.2 2.4-5.2 5.6 0 3.2 2.3 5.9 5.2 5.9s5.2-2.7 5.2-5.9c0-3.2-2.2-5.6-5.2-5.6z"/><ellipse cx="14.6" cy="4.7" rx="2.6" ry="1.2" transform="rotate(-32 14.6 4.7)"/><rect x="11.6" y="5.4" width="1" height="2.6" rx="0.5"/>',
+            'linux' => '<circle cx="12" cy="7.2" r="4.3"/><ellipse cx="12" cy="16" rx="5.6" ry="6.4"/><path d="M10 9.2h4L12 11.9z"/><ellipse cx="6.4" cy="20.4" rx="2.6" ry="1.1"/><ellipse cx="17.6" cy="20.4" rx="2.6" ry="1.1"/>',
+            'android' => '<path d="M5.6 10.4h12.8v6.8a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2z"/><path d="M5.6 9.6a6.4 6.4 0 0 1 12.8 0z"/><path d="M8.2 3.4 6.9 1.8M15.8 3.4l1.3-1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="3.1" y="10.6" width="1.7" height="5.6" rx="0.85"/><rect x="19.2" y="10.6" width="1.7" height="5.6" rx="0.85"/>',
+            'helper' => '<path d="M12 4.6a7.4 7.4 0 1 0 7.1 9.4l-2.1-.6A5.2 5.2 0 1 1 12 6.8z"/><path d="M12 2.2l4 3-4 3z"/>',
+        ];
+        if (!isset($icons[$kind])) {
+            return '';
+        }
+
+        return '<span class="command-card-icon" style="display:inline-flex;vertical-align:-4px;margin-right:8px;">'
+            . $open . $icons[$kind] . '</svg></span>';
+    }
+    /**
+     * The repair/update helper rendered inside the Windows App panel. A host on
+     * an older build needs the app and the helper together, and a second panel
+     * for the same platform only splits the attention of whoever is installing.
+     */
+    protected function renderWindowsUpdateHelperBlock(): string
+    {
+        $url = $this->windowsUpdateHelperUrl();
+        $command = $this->windowsUpdateHelperCommand();
+
+        return '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(127,127,127,0.25);">'
+            . '<div class="command-card-title">' . $this->platformIcon('helper')
+            . $this->escape($this->clientAppReleaseLabel('Windows Update Helper', 'windows_update_helper')) . '</div>'
+            . '<div class="muted command-card-note">老版本或卡住的客户端用它：一键修复共享权限并更新到当前版本，需以管理员身份运行；安装包里也带一份。</div>'
+            . '<pre class="command-pre">' . $this->escape($command) . '</pre>'
+            . '<div class="actions command-card-actions">'
+            . $this->renderCommandLink('Download Update Helper', $url)
+            . $this->renderCopyButton('Copy Update Command', $command)
+            . '</div></div>';
+    }
+
     protected function windowsUpdateHelperUrl(): string
     {
         return $this->clientAppArtifactUrl('windows_update_helper', '/artifacts/leikwan-bridge-repair.cmd');
@@ -509,8 +552,14 @@ abstract class BaseController
     /**
      * @param array<int, string> $actions
      */
-    protected function renderCommandPanel(string $title, string $command, array $actions = [], string $description = ''): string
-    {
+    protected function renderCommandPanel(
+        string $title,
+        string $command,
+        array $actions = [],
+        string $description = '',
+        string $icon = '',
+        string $extraHtml = ''
+    ): string {
         $actionsHtml = $actions !== []
             ? '<div class="actions command-card-actions">' . implode('', $actions) . '</div>'
             : '';
@@ -520,10 +569,11 @@ abstract class BaseController
 
         return '<section class="command-card">'
             . '<div class="command-card-header">'
-            . '<div><div class="command-card-title">' . $this->escape($title) . '</div>' . $descriptionHtml . '</div>'
+            . '<div><div class="command-card-title">' . $this->platformIcon($icon) . $this->escape($title) . '</div>' . $descriptionHtml . '</div>'
             . $actionsHtml
             . '</div>'
             . '<pre class="command-pre">' . $this->escape($command) . '</pre>'
+            . $extraHtml
             . '</section>';
     }
 
@@ -613,15 +663,9 @@ abstract class BaseController
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
                 'Download the current LeiKwan Bridge desktop app for this client.'
-            )
-            . $this->renderCommandPanel(
-                $this->clientAppReleaseLabel('Windows Update Helper', 'windows_update_helper'),
-                $this->windowsUpdateHelperCommand(),
-                [
-                    $this->renderCommandLink('Download Update Helper', $this->windowsUpdateHelperUrl()),
-                    $this->renderCopyButton('Copy Update Command', $this->windowsUpdateHelperCommand()),
-                ],
-                'For a Windows host stuck on an older build: the helper repairs the shared client permissions and then updates the client to the published release. Run it as administrator. It is also installed next to the client.'
+                ,
+                'windows',
+                $this->renderWindowsUpdateHelperBlock()
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -631,13 +675,15 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Download the Android app for this client or use the Android import string from a client card below.'
+                'Download the Android app for this client or use the Android import string from a client card below.',
+                'android'
             )
             . $this->renderCommandPanel(
                 $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
                 $linuxInstall,
                 $linuxActions,
-                $linuxDescription
+                $linuxDescription,
+                'linux'
             )
             . '</section>';
     }
@@ -660,7 +706,8 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $windowsManagerUrl),
                 $this->renderCopyButton('Copy Install Command', $windowsManagerCommand),
             ],
-            'Secondary tool for hosts that still use the Windows PowerShell manager to pick and control local forward tasks.'
+            'Secondary tool for hosts that still use the Windows PowerShell manager to pick and control local forward tasks.',
+            'windows'
         );
         if ($windowsManagerUrl === $this->clientWindowsManagerUrl()) {
             $windowsInstallPanels .= $this->renderCommandPanel(
@@ -670,7 +717,8 @@ abstract class BaseController
                     $this->renderCommandLink('Open Install Link', $windowsInstallerUrl),
                     $this->renderCopyButton('Copy Install Link', $windowsInstallerUrl),
                 ],
-                'Legacy bootstrap script. Use the Windows app above as the primary install path.'
+                'Legacy bootstrap script. Use the Windows app above as the primary install path.',
+                'windows'
             );
         }
 
@@ -684,7 +732,9 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Install the LeiKwan Bridge desktop app for this client.'
+                'Install the LeiKwan Bridge desktop app for this client.',
+                'windows',
+                $this->renderWindowsUpdateHelperBlock()
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -694,7 +744,8 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Install the Android app for this client.'
+                'Install the Android app for this client.',
+                'android'
             )
             . $this->renderCommandPanel(
                 $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
@@ -739,7 +790,8 @@ abstract class BaseController
                 $this->renderCommandLink('Download Apple Silicon', $arm64Url),
                 $this->renderCopyButton('Copy Download Link', $arm64Url),
             ],
-            $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。'
+            $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。',
+            'macos'
         )
         . $this->renderCommandPanel(
             $this->clientAppReleaseLabel('macOS App - Intel', 'macos_client_app_x64'),
@@ -748,7 +800,8 @@ abstract class BaseController
                 $this->renderCommandLink('Download Intel', $x64Url),
                 $this->renderCopyButton('Copy Download Link', $x64Url),
             ],
-            'For Intel Macs (x86_64). 适用于 Intel Mac。'
+            'For Intel Macs (x86_64). 适用于 Intel Mac。',
+            'macos'
         );
     }
 
@@ -762,8 +815,9 @@ abstract class BaseController
 
         $version = $this->macosClientReleaseVersion();
 
-        return '<section class="tenant-client-install__platform"><strong>macOS'
-            . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
+        return '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('macos')
+            . 'macOS' . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
             . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
