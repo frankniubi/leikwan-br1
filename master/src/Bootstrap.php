@@ -35,6 +35,7 @@ use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\UltraCandidateReviewService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -166,7 +167,8 @@ final class Bootstrap
             $ultraLeases,
             accessPolicy: $accessPolicy,
         );
-        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
+        $ultraReviews = new UltraCandidateReviewService($this->db);
+        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory, $ultraReviews);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
         $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
@@ -373,6 +375,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);
         $this->router->add('POST', '/api/ultra/source/inventory', [$ultraSource, 'inventory']);
+        $this->router->add('POST', '/api/ultra/source/review', [$ultraSource, 'review']);
         $this->router->add('POST', '/api/sidecar/heartbeat', [$sidecarAgent, 'heartbeat']);
 
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
