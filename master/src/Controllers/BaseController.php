@@ -353,7 +353,7 @@ abstract class BaseController
         return $base . ($pairs === [] ? '' : '?' . implode('&', $pairs)) . $fragment;
     }
 
-    private function clientAppReleaseLabel(string $label, string $artifactKey): string
+    protected function clientAppReleaseLabel(string $label, string $artifactKey): string
     {
         $version = trim((string) ($this->artifactMetadata($artifactKey)['version'] ?? ''));
         return $version === '' ? $label : $label . ' ' . $version;
@@ -564,7 +564,6 @@ abstract class BaseController
     {
         $windowsAppUrl = $this->windowsClientAppUrl();
         $androidApkUrl = $this->androidClientApkUrl();
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $hasClient = $clientId > 0 && $agentToken !== '';
@@ -580,8 +579,8 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
             ];
         $linuxDescription = $hasClient
-            ? 'Example shown for the current client. Each client card below includes its own exact install details and Linux install command.'
-            : 'Windows, Android, and macOS use the app install flow. Linux remains a local/manual install on the host that will run the client-agent.';
+            ? 'One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
+            : 'One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
@@ -606,19 +605,10 @@ abstract class BaseController
                 'Download the Android app for this client or use the Android import string from a client card below.'
             )
             . $this->renderCommandPanel(
-                'Linux Install',
+                $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
                 $linuxInstall,
                 $linuxActions,
                 $linuxDescription
-            )
-            . $this->renderCommandPanel(
-                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
-                $linuxArm64InstallerUrl,
-                [
-                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
-                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
-                ],
-                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
             )
             . '</section>';
     }
@@ -626,7 +616,6 @@ abstract class BaseController
     protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string
     {
         $installCommand = $this->clientAgentInstallCommand($client);
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $windowsInstallerUrl = $this->clientWindowsInstallerUrl();
         $windowsManagerCommand = $this->clientWindowsManagerCommand($client);
         $windowsManagerUrl = $this->clientWindowsManagerUrlForClient($client);
@@ -636,7 +625,7 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $windowsInstallPanels = $this->renderCommandPanel(
-            'Windows Forward Selector',
+            $this->clientAppReleaseLabel('Windows Forward Selector', 'client_manager_windows'),
             $windowsManagerCommand,
             [
                 $this->renderCommandLink('Open Install Link', $windowsManagerUrl),
@@ -646,7 +635,7 @@ abstract class BaseController
         );
         if ($windowsManagerUrl === $this->clientWindowsManagerUrl()) {
             $windowsInstallPanels .= $this->renderCommandPanel(
-                'Windows PowerShell (Admin)',
+                $this->clientAppReleaseLabel('Windows PowerShell (Admin)', 'client_installer_windows'),
                 $windowsInstallerUrl,
                 [
                     $this->renderCommandLink('Open Install Link', $windowsInstallerUrl),
@@ -679,22 +668,13 @@ abstract class BaseController
                 'Install the Android app for this client.'
             )
             . $this->renderCommandPanel(
-                'Linux Install',
+                $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
                 $installCommand,
                 [
                     $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
                     $this->renderCopyButton('Copy Install Command', $installCommand),
                 ],
-                'Manual/local install for this client on the Linux host that will run the client-agent.'
-            )
-            . $this->renderCommandPanel(
-                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
-                $linuxArm64InstallerUrl,
-                [
-                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
-                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
-                ],
-                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
+                'Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest.'
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
@@ -751,7 +731,10 @@ abstract class BaseController
 
         $releaseNotice = $this->macosClientReleaseNotice();
 
-        return '<section class="tenant-client-install__platform"><strong>macOS</strong>'
+        $version = $this->macosClientReleaseVersion();
+
+        return '<section class="tenant-client-install__platform"><strong>macOS'
+            . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
             . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
