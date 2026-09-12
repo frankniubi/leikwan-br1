@@ -151,7 +151,10 @@ public static class MacAppBootstrap
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5 * 1024 * 1024,
                 rollOnFileSizeLimit: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}")
+                // {Exception} matters here: a caught update/lease failure is useless
+                // to diagnose without the exception text (it is the only place the
+                // macOS client records why an operation failed).
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
     }
 }

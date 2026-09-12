@@ -330,9 +330,12 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             || artifact.SizeBytes is <= 0 or > MaximumPackageBytes
             || !Regex.IsMatch(artifact.Sha256 ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
             || !string.Equals(artifact.Format, format, StringComparison.OrdinalIgnoreCase)
+            // NormalizeArchitecture() maps x64 -> "x86_64" while _architecture keeps
+            // the process name ("x64"), so comparing a normalized manifest value with a
+            // raw runtime value made every Intel/Rosetta Mac fail this check outright.
             || !string.Equals(
                 MacBundleValidator.NormalizeArchitecture(artifact.Architecture),
-                _architecture,
+                MacBundleValidator.NormalizeArchitecture(_architecture),
                 StringComparison.Ordinal))
             throw new InvalidDataException("update_artifact_invalid");
         var url = ResolveAndValidateUrl(artifact.ArtifactUrl, panelOrigin);
