@@ -1855,9 +1855,22 @@ public partial class MainViewModel : ObservableObject
             try
             {
                 RefreshMeasuredPayloadCeilings(forwards);
-                if (IsShuttingDown || _heartbeatService is null)
-                    return;
-                await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
+                if (!IsShuttingDown && _heartbeatService is not null)
+                {
+                    // A failed heartbeat must not suppress the resize below.
+                    try
+                    {
+                        await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex) { Log.Error(ex, "heartbeat failed"); }
+                }
+                // Run after the heartbeat so a rare in-place TUN resize can never
+                // delay the liveness signal.
+                await ApplyPendingTunMtuAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
             {
@@ -1874,9 +1887,7 @@ public partial class MainViewModel : ObservableObject
     /// Feeds the payload ceiling each running runtime published for its own
     /// association into the proxy service, so a TUN that is started later (a
     /// failover, a lease rotation, the next connect) uses the MTU that matches
-    /// the path. A live TUN is never resized here: the service records the
-    /// value, surfaces <c>MtuUpdatePending</c> and the existing restart paths
-    /// apply it. Ceilings rotate with the relay, so this must run on every tick.
+    /// the path. Ceilings rotate with the relay, so this must run on every tick.
     /// </summary>
     private void RefreshMeasuredPayloadCeilings(IReadOnlyList<ForwardConfig> forwards)
     {
@@ -1895,6 +1906,42 @@ public partial class MainViewModel : ObservableObject
             {
                 Log.Debug(ex, "payload ceiling refresh failed forward={ForwardId}", forward.ForwardId);
             }
+        }
+    }
+
+    /// <summary>
+    /// Resizes a live TUN when the path it is measured against can no longer
+    /// carry it. sing-box 1.13 cannot reload inbounds, so the service restarts
+    /// its own sing-box process in place from the same config; the restart is
+    /// debounced to one attempt per minute and is skipped entirely unless
+    /// <c>MtuUpdatePending</c> is set, so a ceiling that merely wobbles inside
+    /// the MTU that is already live stays free of charge.
+    /// </summary>
+    private async Task ApplyPendingTunMtuAsync()
+    {
+        var proxyService = _proxyService;
+        if (IsShuttingDown || proxyService?.MtuUpdatePending != true)
+            return;
+        bool applied;
+        try
+        {
+            applied = await proxyService.ApplyPendingTunMtuAsync(_lifecycleCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "live TUN MTU apply failed");
+            return;
+        }
+
+        if (applied)
+        {
+            var mtu = proxyService.AppliedTunMtu;
+            Log.Information("live TUN MTU applied mtu={Mtu}", mtu);
+            InvokeOnUiThread(() => AddLog($"TUN MTU updated to {mtu} to match the measured path."));
         }
     }
 

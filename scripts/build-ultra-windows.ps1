@@ -3,6 +3,9 @@ param(
     [string]$Version = "2026.09.12.1",
     [string]$OutputPath = "",
     [switch]$SkipReproducibilityCheck
+    # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
+    [string]$ShortSha = "",
+    [switch]$SkipReproducibilityCheck
 )
 
 # Windows runtime build. Mirrors build-ultra-linux.ps1: same garble obfuscation,
@@ -13,7 +16,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
 # Same fingerprint convention as build-ultra-macos.ps1: <version>.<shortsha>.
-$shortSha = git -C $repoRoot rev-parse --short HEAD
+$shortSha = $ShortSha
+if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = git -C $repoRoot rev-parse --short HEAD }
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
 $FullVersion = "$Version.$shortSha"
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {

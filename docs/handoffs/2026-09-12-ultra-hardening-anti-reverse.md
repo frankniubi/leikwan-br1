@@ -92,3 +92,63 @@ runtime 在 status JSON 里额外发布：
    发布即生效（避免两处维护）。
 3. macOS 的调试器检测只有 DYLD 注入这一条弱信号（原因见 2.2）。
 4. 二进制层的进一步加固（控制流平坦化、反模拟）属于另一个量级的投入，暂不做。
+
+---
+
+## 6. 第二轮：把"只报告"变成"能拦"（2026-09-12 晚）
+
+### 6.1 先修一个会让整个功能失效的 bug
+
+构建脚本注入的指纹是 `2026.09.12.1.4b106b02`（版本.短 sha），但**三处校验都只接受纯 hex**
+（面板 `RUNTIME_FINGERPRINT_PATTERN`、agent `re.fullmatch(r"[a-f0-9]{8,64}")`、C# `IsLowerHex`）。
+结果是：真实指纹会被当作"格式非法"丢掉，attestation 永远停在 `unknown`——功能等于没上线。
+三处已统一为：接受 `<version>.<shortsha>`（4~5 段，最后一段 7~40 位 hex）或旧的纯 hex build id。
+
+### 6.2 真正能拦的策略（不是"白名单一刀切"）
+
+`ULTRA_ATTESTATION_ENFORCEMENT=enforce` 时，只有**同时满足**这三条才拒绝租约：
+
+1. 设备上报了指纹，且该指纹**确实是面板发布过的**（从 `artifacts/versions.json` 的
+   `attestation.fingerprint` / `attestation.self_sha256` 读取，发布即生效，不在配置里重复维护）；
+2. 上报的 `self_sha256` 与该指纹已发布的哈希**都不匹配**（= 用着我们的版本号、装着别人的二进制 = 改包）；
+3. 设备平台命中 `ULTRA_ATTESTATION_ENFORCE_PLATFORMS`（默认 `linux`）。
+
+不满足就放行。**旧客户端 / 未发布版本 / 干脆不报 attestation 的，一律不会因此被拒**，所以打开它
+不会误伤任何存量用户；能拦住的是"拿我们的 released 指纹配改过的二进制"。拒绝码
+`lease_runtime_unattested`，写入 `ultra_lease_refusals` 并记日志。
+
+macOS 暂不纳入：bundle 里是**重签名后**的 runtime，哈希天然与发布制品不同，纳入就会误杀。
+Windows 的 runtime 嵌在安装包里，同理待补。要纳入它们，需要先把"签名后哈希"也写进
+`attestation.self_sha256`（发布脚本已支持一个指纹对应多个哈希）。
+
+现状：已开启（`enforce` + `linux`），线上拒绝数 0。
+
+### 6.3 顺手抓到的时区 bug（真实影响，非测试问题）
+
+面板 PHP 的 `date.timezone=PRC`，而库里时间戳都是 UTC（gmdate 写入）。原代码用
+`strtotime("2026-09-12 10:00:00")` 解析 → 被当成东八区 → **每个设备会话在管理页里提前 8 小时**
+变成 Stale/Offline。已改为显式 UTC 解析（`utcTimestamp()`），线上契约测试从 fail 转 ok。
+这个 bug 与本次功能无关，是既有代码的隐患。
+
+### 6.4 审计与限额已开启（按真实分布取值）
+
+先查了 30 天真实分布：单客户最多 **9** 台设备、单设备最多 **200** 条有效租约、单客户+设备
+每分钟最多 **96** 次签发。据此设置（约为观测峰值的 3~5 倍，留足余量）：
+
+| 开关 | 值 | 观测峰值 |
+|---|---|---|
+| `ULTRA_MAX_DEVICES_PER_CLIENT` | 32 | 9 |
+| `ULTRA_MAX_LIVE_LEASES_PER_DEVICE` | 512 | 200 |
+| `ULTRA_LEASE_ISSUE_RATE_PER_MINUTE` | 600 | 96 |
+
+`ultra_lease_refusals` 增加保留策略：`master/cli/cleanup-tasks.php` 新增
+`--ultra-refusal-retention-days`（默认 30 天，分批删除）。
+
+### 6.5 仍然做不到的
+
+- **不报 attestation 就不受约束**：改包者只要把 `runtime_attestation` 从 status 里删掉，
+  就回到 `unknown` 放行。要堵这一步得让面板"强制要求 attestation"，但那会打断所有
+  还没升级的存量客户端，只能等新 runtime 铺开后再开。
+- macOS / Windows 未纳入（原因见 6.2）。
+- 管理页目前只读；没有"一键封禁某设备"的按钮（用既有的 revokeDevice 走后台即可）。
+

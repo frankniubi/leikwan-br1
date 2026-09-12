@@ -26,6 +26,9 @@ namespace Leikwan\Master\Database {
         public static int $recentIssues = 0;
         public static bool $throwOnLimitLookup = false;
 
+        /** @var array<string, mixed>|null row returned for the attestation lookup */
+        public static ?array $attestationSession = null;
+
         /** @param array<string, mixed> $params @return array<int, array<string, mixed>> */
         public function fetchAll(string $sql, array $params = []): array
         {
@@ -74,6 +77,9 @@ namespace Leikwan\Master\Database {
             }
             if (str_contains($sql, 'issued_at >= :since')) {
                 return ['total' => self::$recentIssues];
+            }
+            if (str_contains($sql, 'ultra_runtime_fingerprint, ultra_runtime_self_sha256')) {
+                return self::$attestationSession;
             }
             return null;
         }
@@ -381,8 +387,14 @@ namespace {
     $mismatchLease = ultraAttestationLeaseService($knownConfig)->issueLease(ultraAttestationRequest(), 7, 'device-a');
     assertUltraRuntimeAttestation(($mismatchLease['ok'] ?? false) === true, 'a mismatch must not deny a lease while enforcement is off');
     $leaseSource = (string) file_get_contents(__DIR__ . '/../src/Support/UltraLeaseService.php');
-    assertUltraRuntimeAttestation(!str_contains($leaseSource, 'attestation'), 'the lease service must not enforce attestation yet');
-    assertUltraRuntimeAttestation(!str_contains($leaseSource, 'runtime_fingerprint'), 'the lease service must not read runtime fingerprints yet');
+    assertUltraRuntimeAttestation(
+        str_contains($leaseSource, "get(self::ATTESTATION_ENFORCEMENT_KEY, 'report')"),
+        'attestation enforcement must exist and must default to report-only'
+    );
+    assertUltraRuntimeAttestation(
+        str_contains($leaseSource, 'releasedRuntimeHashes'),
+        'enforcement must compare against the published release hashes, not a hardcoded copy'
+    );
 
     // Empty allow-list (the default): report everything as unknown, deny nothing.
     Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = $unknownFingerprint;
@@ -687,6 +699,138 @@ namespace {
     ] as $needle) {
         assertUltraRuntimeAttestation(str_contains($migration, $needle), 'the migration is missing: ' . $needle);
     }
+    // ---------------------------------------------------------------------
+    // 6. Repackaged-build enforcement: report by default, precise when on.
+    // ---------------------------------------------------------------------
+    $releaseManifest = json_decode((string) file_get_contents(__DIR__ . '/../../artifacts/versions.json'), true);
+    $releasedFingerprint = '';
+    $releasedHash = '';
+    foreach ((array) $releaseManifest as $entry) {
+        $attestation = is_array($entry) ? ($entry['attestation'] ?? null) : null;
+        if (is_array($attestation)
+            && is_string($attestation['fingerprint'] ?? null)
+            && is_string($attestation['self_sha256'] ?? null)) {
+            $releasedFingerprint = (string) $attestation['fingerprint'];
+            $releasedHash = (string) $attestation['self_sha256'];
+            break;
+        }
+    }
+    assertUltraRuntimeAttestation(
+        $releasedFingerprint !== '' && preg_match('/^[a-f0-9]{64}$/', $releasedHash) === 1,
+        'the release manifest must publish a fingerprint + hash for enforcement to compare against'
+    );
+
+    // The published fingerprint shape must survive validation end to end.
+    assertUltraRuntimeAttestation(
+        UltraClientStatusService::runtimeFingerprintOrNull($releasedFingerprint) === $releasedFingerprint,
+        'a released version fingerprint (2026.09.12.1.<sha>) must validate'
+    );
+    assertUltraRuntimeAttestation(
+        UltraClientStatusService::runtimeFingerprintOrNull('0123456789abcdef') === '0123456789abcdef',
+        'a legacy hex build id must still validate'
+    );
+    assertUltraRuntimeAttestation(
+        UltraClientStatusService::runtimeFingerprintOrNull('not a fingerprint') === null,
+        'a malformed fingerprint must be dropped'
+    );
+
+    $enforceConfig = new Config(ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+        UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+    ]));
+    $enforceService = new UltraLeaseService(
+        $enforceConfig,
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+
+    // (a) the published binary keeps working.
+    Database::$inserts = [];
+    file_put_contents($logPath, '');
+    Database::$attestationSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => $releasedHash,
+    ];
+    $releasedLease = $enforceService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($releasedLease['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'a released binary must never be refused by the attestation check'
+    );
+
+    // (b) same fingerprint, different bytes -> a repackaged client, refused + audited.
+    Database::$inserts = [];
+    Database::$attestationSession['ultra_runtime_self_sha256'] = str_repeat('ab', 32);
+    file_put_contents($logPath, '');
+    $repackagedLease = $enforceService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($repackagedLease['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'a repackaged binary claiming a released fingerprint must be refused'
+    );
+    $attestationRefusals = array_values(array_filter(
+        Database::$inserts,
+        static fn(array $row): bool => $row['table'] === 'ultra_lease_refusals'
+            && ($row['data']['error_code'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED
+    ));
+    assertUltraRuntimeAttestation(count($attestationRefusals) === 1, 'an attestation refusal must be audited for the admin');
+    assertUltraRuntimeAttestation(
+        str_contains((string) file_get_contents($logPath), 'ultra_attestation_mismatch'),
+        'an attestation refusal must be logged'
+    );
+
+    // (c) a platform outside the gate (macOS ships a re-signed runtime) is never refused.
+    Database::$attestationSession['platform'] = 'macos-arm64';
+    $macLease = $enforceService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($macLease['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'the platform gate must keep re-signed platforms out of enforcement'
+    );
+
+    // (d) an unpublished fingerprint is reported, never denied.
+    Database::$attestationSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => '2020.01.01.1.deadbeef',
+        'ultra_runtime_self_sha256' => str_repeat('cd', 32),
+    ];
+    $unpublishedLease = $enforceService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($unpublishedLease['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'a build we never published must be reported, not locked out'
+    );
+
+    // (e) no attestation at all (an older client) keeps working.
+    Database::$attestationSession = null;
+    $legacyLease = $enforceService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($legacyLease['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'a client that reports no attestation must keep working'
+    );
+
+    // (f) report mode (the default) never denies, even on a mismatch.
+    Database::$attestationSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => str_repeat('ab', 32),
+    ];
+    $reportOnlyService = new UltraLeaseService(
+        new Config(ultraAttestationEnv(['APP_ENV' => 'test'])),
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+    $reportOnlyLease = $reportOnlyService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+    assertUltraRuntimeAttestation(
+        ($reportOnlyLease['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'report mode must never deny a lease'
+    );
+    Database::$attestationSession = null;
+
     $schema = (string) file_get_contents(__DIR__ . '/../migrations/schema.sql');
     foreach ([
         'ultra_runtime_fingerprint VARCHAR(64) NULL',

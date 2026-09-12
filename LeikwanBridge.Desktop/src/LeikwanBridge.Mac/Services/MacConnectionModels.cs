@@ -175,5 +175,14 @@ public interface IMacConnectionService : IAsyncDisposable
     Task<bool> TryRefreshNativeAsync(
         NativeOutboundLease lease,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Re-apply a re-measured TUN MTU to the live native tunnel without restarting it.
+    /// True means the live config now matches the ceiling (or already did); false leaves
+    /// <see cref="IsNativeTunMtuPending"/> set so the caller can retry or restart.
+    /// </summary>
+    Task<bool> ApplyPendingNativeTunMtuAsync(CancellationToken ct = default)
+        => Task.FromResult(false);
+
     Task StopAsync(CancellationToken ct = default);
 }

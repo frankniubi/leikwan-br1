@@ -37,6 +37,9 @@ for ($index = 1; $index < $argc; $index += 2) {
 
 $retentionDays = max(1, (int) ($args['retention-days'] ?? 7));
 $ultraLeaseRetentionDays = max(1, (int) ($args['ultra-lease-retention-days'] ?? $retentionDays));
+// Refusals are an audit trail an operator reads after the fact, so they default
+// to 30 days rather than the operational window.
+$ultraRefusalRetentionDays = max(1, (int) ($args['ultra-refusal-retention-days'] ?? 30));
 $offlineMinutes = max(5, (int) ($args['offline-minutes'] ?? 60));
 $leaseTimeoutMinutes = max(1, (int) ($args['lease-timeout'] ?? 10));
 $dryRun = isset($args['dry-run']);
@@ -47,6 +50,7 @@ $db = $app->db();
 $now = gmdate('Y-m-d H:i:s');
 $retentionCutoff = gmdate('Y-m-d H:i:s', time() - $retentionDays * 86400);
 $ultraLeaseCutoff = gmdate('Y-m-d H:i:s', time() - $ultraLeaseRetentionDays * 86400);
+$ultraRefusalCutoff = gmdate('Y-m-d H:i:s', time() - $ultraRefusalRetentionDays * 86400);
 $offlineCutoff = gmdate('Y-m-d H:i:s', time() - $offlineMinutes * 60);
 $leaseCutoff = gmdate('Y-m-d H:i:s', time() - $leaseTimeoutMinutes * 60);
 
@@ -365,6 +369,29 @@ try {
         echo "  reclaimed {$reclaimedUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
     } else {
         echo "  would reclaim {$countUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
+    }
+
+    // 11. Trim the Ultra lease refusal audit. The table only exists to explain a
+    //     refusal to an operator (admin -> Ultra -> Refusals), so it keeps a
+    //     longer window than the operational tables and is trimmed in bounded
+    //     batches to stay safe on a busy panel.
+    $countUltraRefusals = (int) ($db->fetchOne(
+        'SELECT COUNT(*) AS cnt FROM ultra_lease_refusals WHERE created_at < :cutoff',
+        ['cutoff' => $ultraRefusalCutoff]
+    )['cnt'] ?? 0);
+
+    if (!$dryRun && $countUltraRefusals > 0) {
+        $trimmedUltraRefusals = 0;
+        do {
+            $deletedUltraRefusals = $db->execute(
+                'DELETE FROM ultra_lease_refusals WHERE created_at < :cutoff ORDER BY id LIMIT 10000',
+                ['cutoff' => $ultraRefusalCutoff]
+            );
+            $trimmedUltraRefusals += $deletedUltraRefusals;
+        } while ($deletedUltraRefusals === 10000);
+        echo "  trimmed {$trimmedUltraRefusals} Ultra lease refusal rows (>{$ultraRefusalRetentionDays}d)\n";
+    } else {
+        echo "  would trim {$countUltraRefusals} Ultra lease refusal rows (>{$ultraRefusalRetentionDays}d)\n";
     }
 
     // Summary: show remaining queue depth
