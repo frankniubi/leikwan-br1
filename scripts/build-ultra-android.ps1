@@ -11,6 +11,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
+# Same fingerprint convention as build-ultra-macos.ps1: <version>.<shortsha>.
+$shortSha = git -C $repoRoot rev-parse --short HEAD
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
+$FullVersion = "$Version.$shortSha"
 if (-not [string]::IsNullOrWhiteSpace($Architectures)) {
     foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) {
         $mappedAbi = switch ($architecture) {
@@ -135,7 +139,7 @@ function Resolve-X86AndroidToolchain {
 }
 
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid=" -o $Destination .
+    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble Android $Abi build failed"
     }

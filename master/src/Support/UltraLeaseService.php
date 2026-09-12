@@ -11,6 +11,32 @@ use Throwable;
 
 final class UltraLeaseService
 {
+    /**
+     * Opt-in abuse limits. All three default to 0 = unlimited, so an
+     * unconfigured panel keeps issuing leases exactly as it does today.
+     */
+    public const MAX_DEVICES_PER_CLIENT_KEY = 'ULTRA_MAX_DEVICES_PER_CLIENT';
+    public const MAX_LIVE_LEASES_PER_DEVICE_KEY = 'ULTRA_MAX_LIVE_LEASES_PER_DEVICE';
+    public const ISSUE_RATE_PER_MINUTE_KEY = 'ULTRA_LEASE_ISSUE_RATE_PER_MINUTE';
+
+    /**
+     * Distinct refusal codes. They never reuse a generic lease error so an
+     * operator can tell an abuse limit apart from a scope/policy failure.
+     *
+     * lease_issue_rate_limited   ULTRA_LEASE_ISSUE_RATE_PER_MINUTE reached for
+     *                            this client+device inside the current minute.
+     * lease_device_live_limit    the device already holds
+     *                            ULTRA_MAX_LIVE_LEASES_PER_DEVICE unexpired,
+     *                            non-revoked leases.
+     * lease_client_device_limit  the client already holds leases on
+     *                            ULTRA_MAX_DEVICES_PER_CLIENT other devices.
+     */
+    public const ERROR_RATE_LIMITED = 'lease_issue_rate_limited';
+    public const ERROR_DEVICE_LIVE_LIMIT = 'lease_device_live_limit';
+    public const ERROR_CLIENT_DEVICE_LIMIT = 'lease_client_device_limit';
+
+    public const RATE_WINDOW_SECONDS = 60;
+
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
     private $candidateResolver;
 
@@ -25,6 +51,12 @@ final class UltraLeaseService
 
     /** @var array<string, true> */
     private array $memoryGenerations = [];
+
+    /** @var array<string, list<int>> "client:device" => live lease expiry stamps (DB-less mode) */
+    private array $memoryLiveLeases = [];
+
+    /** @var array<string, list<int>> "client:device" => issue stamps (DB-less mode) */
+    private array $memoryIssues = [];
 
     public function __construct(
         private Config $config,
@@ -139,6 +171,16 @@ final class UltraLeaseService
             return ['ok' => false, 'error' => 'quota_exhausted'];
         }
 
+        $deviceHash = hash('sha256', trim($deviceId));
+        // Abuse limits run after every scope/policy check and before the single
+        // use nonce is consumed, so a refusal never burns a nonce. With the
+        // default caps (0) this is a no-op.
+        $abuseRefusal = $this->abuseLimitRefusal($clientId, $deviceHash, $forwardId);
+        if ($abuseRefusal !== null) {
+            $this->recordLeaseRefusal($clientId, $deviceHash, $forwardId, $abuseRefusal);
+            return ['ok' => false, 'error' => $abuseRefusal];
+        }
+
         $candidate = ($this->candidateResolver)($normalized, $clientId, trim($deviceId));
         if (!is_array($candidate) || !$this->candidateIsValid($candidate)
             || ($isNative && !UltraMode::isNativeCandidateApproved($candidate))) {
@@ -154,7 +196,6 @@ final class UltraLeaseService
             $candidateKeyHash = '';
         }
 
-        $deviceHash = hash('sha256', trim($deviceId));
         $nonceHash = hash('sha256', $normalized['nonce']);
         if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt, $candidateKeyHash)) {
             return ['ok' => false, 'error' => 'lease_replayed'];
@@ -163,6 +204,7 @@ final class UltraLeaseService
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
         $leaseExpiresAt = min($expiresAt, $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS);
         $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt, $candidateKeyHash);
+        $this->rememberIssuedLease($clientId, $deviceHash, $leaseExpiresAt);
         $lease = $this->scrubLease([
             'protocol' => $isNative ? UltraMode::NATIVE_SOCKS5_PROTOCOL : UltraMode::POLICY_PROTOCOL,
             'purpose' => $normalized['purpose'],
@@ -238,6 +280,240 @@ final class UltraLeaseService
                 'updated_at' => $now,
             ]
         );
+    }
+
+    /**
+     * Evaluate the opt-in abuse limits. All lookups fail open: a limiter that
+     * cannot read its counter must never block a paying client, so the refusal
+     * is skipped and the failure is logged instead.
+     *
+     * @return string|null one of the ERROR_* codes, or null when undecided
+     */
+    private function abuseLimitRefusal(int $clientId, string $deviceHash, int $forwardId): ?string
+    {
+        $rateCap = $this->abuseLimit(self::ISSUE_RATE_PER_MINUTE_KEY, 100000);
+        if ($rateCap > 0 && $this->recentIssueCount($clientId, $deviceHash) >= $rateCap) {
+            return self::ERROR_RATE_LIMITED;
+        }
+        $liveCap = $this->abuseLimit(self::MAX_LIVE_LEASES_PER_DEVICE_KEY, 1000);
+        if ($liveCap > 0 && $this->liveLeaseCount($clientId, $deviceHash) >= $liveCap) {
+            return self::ERROR_DEVICE_LIVE_LIMIT;
+        }
+        $deviceCap = $this->abuseLimit(self::MAX_DEVICES_PER_CLIENT_KEY, 1000);
+        if ($deviceCap > 0) {
+            $devices = $this->liveDeviceHashes($clientId);
+            // A device that already holds a live lease is not a new device.
+            if (!isset($devices[$deviceHash]) && count($devices) >= $deviceCap) {
+                return self::ERROR_CLIENT_DEVICE_LIMIT;
+            }
+        }
+        return null;
+    }
+
+    private function abuseLimit(string $key, int $maximum): int
+    {
+        return max(0, min($maximum, $this->config->getInt($key, 0)));
+    }
+
+    /** Unexpired, non-revoked leases already issued to this client+device. */
+    private function liveLeaseCount(int $clientId, string $deviceHash): int
+    {
+        $key = $clientId . ':' . $deviceHash;
+        if ($this->db === null) {
+            $now = $this->now();
+            $live = 0;
+            foreach ($this->memoryLiveLeases[$key] ?? [] as $expiresAt) {
+                if ($expiresAt > $now) {
+                    $live++;
+                }
+            }
+            return $live;
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT COUNT(*) AS total FROM ultra_client_leases
+                 WHERE client_id = :client_id AND device_hash = :device_hash
+                   AND consumed_at IS NOT NULL AND revoked_at IS NULL AND expires_at > :now',
+                [
+                    'client_id' => $clientId,
+                    'device_hash' => $deviceHash,
+                    'now' => gmdate('Y-m-d H:i:s', $this->now()),
+                ]
+            );
+            return max(0, (int) ($row['total'] ?? 0));
+        } catch (Throwable $exception) {
+            $this->logAbuseLookupFailure('live_leases', $exception);
+            return 0;
+        }
+    }
+
+    /** Issues for this client+device inside the trailing rate window. */
+    private function recentIssueCount(int $clientId, string $deviceHash): int
+    {
+        $key = $clientId . ':' . $deviceHash;
+        if ($this->db === null) {
+            $since = $this->now() - self::RATE_WINDOW_SECONDS;
+            $count = 0;
+            foreach ($this->memoryIssues[$key] ?? [] as $issuedAt) {
+                if ($issuedAt >= $since) {
+                    $count++;
+                }
+            }
+            return $count;
+        }
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT COUNT(*) AS total FROM ultra_client_leases
+                 WHERE client_id = :client_id AND device_hash = :device_hash AND issued_at >= :since',
+                [
+                    'client_id' => $clientId,
+                    'device_hash' => $deviceHash,
+                    'since' => gmdate('Y-m-d H:i:s', $this->now() - self::RATE_WINDOW_SECONDS),
+                ]
+            );
+            return max(0, (int) ($row['total'] ?? 0));
+        } catch (Throwable $exception) {
+            $this->logAbuseLookupFailure('issue_rate', $exception);
+            return 0;
+        }
+    }
+
+    /** @return array<string, true> device hashes the client currently holds leases on */
+    private function liveDeviceHashes(int $clientId): array
+    {
+        if ($this->db === null) {
+            $now = $this->now();
+            $devices = [];
+            foreach ($this->memoryLiveLeases as $key => $expiries) {
+                [$owner, $deviceHash] = array_pad(explode(':', $key, 2), 2, '');
+                if ((int) $owner !== $clientId || $deviceHash === '') {
+                    continue;
+                }
+                foreach ($expiries as $expiresAt) {
+                    if ($expiresAt > $now) {
+                        $devices[$deviceHash] = true;
+                        break;
+                    }
+                }
+            }
+            return $devices;
+        }
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT DISTINCT device_hash FROM ultra_client_leases
+                 WHERE client_id = :client_id AND revoked_at IS NULL AND expires_at > :now
+                 LIMIT 1000',
+                [
+                    'client_id' => $clientId,
+                    'now' => gmdate('Y-m-d H:i:s', $this->now()),
+                ]
+            );
+        } catch (Throwable $exception) {
+            $this->logAbuseLookupFailure('devices', $exception);
+            return [];
+        }
+        $devices = [];
+        foreach ($rows as $row) {
+            $deviceHash = strtolower(trim((string) ($row['device_hash'] ?? '')));
+            if ($deviceHash !== '') {
+                $devices[$deviceHash] = true;
+            }
+        }
+        return $devices;
+    }
+
+    /** DB-less mode has no row to read back, so the local window mirrors it. */
+    private function rememberIssuedLease(int $clientId, string $deviceHash, int $expiresAt): void
+    {
+        if ($this->db !== null) {
+            return;
+        }
+        $key = $clientId . ':' . $deviceHash;
+        $now = $this->now();
+        $issues = $this->memoryIssues[$key] ?? [];
+        $issues[] = $now;
+        $this->memoryIssues[$key] = array_slice(array_values(array_filter(
+            $issues,
+            static fn(int $issuedAt): bool => $issuedAt >= $now - self::RATE_WINDOW_SECONDS
+        )), -4096);
+        $live = array_values(array_filter(
+            $this->memoryLiveLeases[$key] ?? [],
+            static fn(int $expiry): bool => $expiry > $now
+        ));
+        $live[] = $expiresAt;
+        $this->memoryLiveLeases[$key] = array_slice($live, -4096);
+    }
+
+    /**
+     * Every abuse refusal is logged with a stable prefix and, best effort,
+     * persisted so an admin can see why a client was refused. Logging can never
+     * change the lease outcome.
+     */
+    private function recordLeaseRefusal(int $clientId, string $deviceHash, int $forwardId, string $errorCode): void
+    {
+        error_log(sprintf(
+            'ultra_lease_refused code=%s client=%d device=%s forward=%d',
+            $errorCode,
+            $clientId,
+            substr($deviceHash, 0, 16),
+            $forwardId
+        ));
+        if ($this->db === null) {
+            return;
+        }
+        try {
+            $this->db->insert('ultra_lease_refusals', [
+                'client_id' => $clientId,
+                'device_hash' => $deviceHash,
+                'forward_id' => $forwardId,
+                'error_code' => $errorCode,
+                'created_at' => gmdate('Y-m-d H:i:s', $this->now()),
+            ]);
+        } catch (Throwable $exception) {
+            error_log('ultra_lease_refusal_persist_failed code=' . $errorCode . ' ' . $exception::class);
+        }
+    }
+
+    private function logAbuseLookupFailure(string $limit, Throwable $exception): void
+    {
+        error_log('ultra_lease_limit_lookup_failed limit=' . $limit . ' ' . $exception::class);
+    }
+
+    /**
+     * Refusals recorded by the abuse limits, newest first. Read-only and
+     * fail-soft so an admin page never breaks when the table is absent.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function recentRefusals(int $limit = 50): array
+    {
+        if ($this->db === null) {
+            return [];
+        }
+        $limit = max(1, min(200, $limit));
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT id, client_id, device_hash, forward_id, error_code, created_at
+                 FROM ultra_lease_refusals
+                 ORDER BY id DESC
+                 LIMIT ' . $limit
+            );
+        } catch (Throwable $exception) {
+            error_log('ultra_lease_refusal_lookup_failed ' . $exception::class);
+            return [];
+        }
+        $refusals = [];
+        foreach ($rows as $row) {
+            // Only a bounded device-hash prefix is ever surfaced in the panel.
+            $refusals[] = [
+                'client_id' => (int) ($row['client_id'] ?? 0),
+                'device_hash_prefix' => substr(strtolower(trim((string) ($row['device_hash'] ?? ''))), 0, 16),
+                'forward_id' => (int) ($row['forward_id'] ?? 0),
+                'error_code' => substr(trim((string) ($row['error_code'] ?? '')), 0, 64),
+                'created_at' => substr(trim((string) ($row['created_at'] ?? '')), 0, 40),
+            ];
+        }
+        return $refusals;
     }
 
     /** @param array<string,mixed> $request @return array<string,mixed>|null */

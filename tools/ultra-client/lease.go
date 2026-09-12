@@ -23,6 +23,9 @@ type leaseFrame struct {
 	TargetDigest        string `json:"target_digest"`
 	SelectionRef        string `json:"selection_ref"`
 	SelectionTier       string `json:"selection_tier"`
+	// RelayPayloadCeiling is an optional per-relay/per-line payload ceiling the
+	// panel measured or configured. 0 (or an absent key) means unknown.
+	RelayPayloadCeiling int    `json:"relay_payload_ceiling"`
 	CandidateKeyHash    string `json:"candidate_key_hash"`
 	NonceHash           string `json:"nonce_hash"`
 	Endpoint            struct {
@@ -78,7 +81,8 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 	lease := ProviderLease{
 		LeaseID: f.LeaseID, LeaseHash: leaseHash(f.LeaseID), PolicyGeneration: f.PolicyGeneration, ExpiresAt: expiresAt,
 		Transport: f.Transport, SelectionRef: f.SelectionRef, SelectionTier: selectionTier,
-		CandidateKeyHash: strings.ToLower(strings.TrimSpace(f.CandidateKeyHash)), NonceHash: nonceHash,
+		RelayPayloadCeiling: normalizeRelayPayloadCeiling(f.RelayPayloadCeiling),
+		CandidateKeyHash:    strings.ToLower(strings.TrimSpace(f.CandidateKeyHash)), NonceHash: nonceHash,
 		IP: net.ParseIP(strings.TrimSpace(f.Endpoint.IP)).String(), Port: f.Endpoint.Port,
 		User: []byte(f.Credential.User), Password: []byte(f.Credential.Password),
 	}
@@ -98,6 +102,17 @@ func (f leaseFrame) decode(config Config, now time.Time) (Policy, ProviderLease,
 		return Policy{}, ProviderLease{}, err
 	}
 	return policy, lease, nil
+}
+
+// normalizeRelayPayloadCeiling bounds a panel-declared ceiling to one IPv4 UDP
+// datagram minus the envelope. Anything outside that range is treated as an
+// unknown hint instead of rejecting an otherwise valid lease: a malformed
+// integer must not take a working line offline.
+func normalizeRelayPayloadCeiling(value int) int {
+	if value < 0 || value > maxPayloadCeilingHint {
+		return 0
+	}
+	return value
 }
 
 func leaseHash(leaseID string) string {

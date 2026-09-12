@@ -129,6 +129,12 @@ public interface IMacConnectionService : IAsyncDisposable
     DateTimeOffset? ActiveNativeLeaseExpiresAt { get; }
     string? ActiveNativeLeasePolicyGeneration { get; }
     bool IsNativeOutboundActive { get; }
+
+    /// <summary>Payload ceiling the native relay published for the live association (0 = unknown).</summary>
+    int ActiveNativePayloadCeiling => 0;
+
+    /// <summary>Set when the relay's re-measured ceiling changes the live TUN MTU.</summary>
+    bool IsNativeTunMtuPending => false;
     MacConnectionSelection Selection => MacConnectionSelection.Empty;
 
     Task InitializeAsync(CancellationToken ct = default);

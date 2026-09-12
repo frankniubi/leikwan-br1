@@ -955,6 +955,39 @@ def _normalize_ultra_feedback(value: object) -> list[dict]:
     return feedback
 
 
+def _normalize_optional_count(value: object) -> int | None:
+    """Runtime counters/limits pass through only when they are a real positive integer."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
+
+
+def _normalize_runtime_attestation(value: object) -> dict | None:
+    """Keep the runtime build attestation only when every field validates; never guess."""
+    if not isinstance(value, dict):
+        return None
+    fingerprint = str(value.get("fingerprint", "") or "").strip().lower()
+    if fingerprint != "development" and re.fullmatch(r"[a-f0-9]{8,64}", fingerprint) is None:
+        return None
+    self_sha256 = str(value.get("self_sha256", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", self_sha256) is None:
+        return None
+    debugger = value.get("debugger")
+    instrumented = value.get("instrumented")
+    if not isinstance(debugger, bool) or not isinstance(instrumented, bool):
+        return None
+    return {
+        "fingerprint": fingerprint,
+        "self_sha256": self_sha256,
+        "debugger": debugger,
+        "instrumented": instrumented,
+    }
+
+
 def collect_ultra_status(
     root: pathlib.Path = pathlib.Path("/run/ultra"),
     *,
@@ -1002,22 +1035,30 @@ def collect_ultra_status(
         zone = str(decoded.get("detected_ingress_zone", "unknown") or "unknown").strip().lower()
         if re.fullmatch(r"[a-z0-9-]{1,32}", zone) is None:
             zone = "unknown"
-        statuses.append(
-            {
-                "forward_id": expected_forward_id,
-                "state": state,
-                "detected_ingress_zone": zone,
-                "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
-                "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
-                "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
-                "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
-                "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
-                "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
-                "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
-                "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
-                "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
-            }
-        )
+        status_entry = {
+            "forward_id": expected_forward_id,
+            "state": state,
+            "detected_ingress_zone": zone,
+            "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
+            "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
+            "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
+            "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
+            "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
+            "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
+            "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
+            "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
+            "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
+        }
+        # Measured path ceiling / oversize drops drive the overlay MTU, and the build
+        # attestation drives runtime trust. Absent, zero or malformed values are omitted.
+        for key, value in (
+            ("udp_payload_ceiling", _normalize_optional_count(decoded.get("udp_payload_ceiling"))),
+            ("udp_oversize_drops", _normalize_optional_count(decoded.get("udp_oversize_drops"))),
+            ("runtime_attestation", _normalize_runtime_attestation(decoded.get("runtime_attestation"))),
+        ):
+            if value is not None:
+                status_entry[key] = value
+        statuses.append(status_entry)
     return statuses
 
 

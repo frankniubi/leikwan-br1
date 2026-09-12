@@ -18,6 +18,10 @@ func haErrorClass(err error) string {
 		return "eof"
 	case errors.Is(err, errUDPReceiveTimeout):
 		return "keepalive_timeout"
+	case errors.Is(err, errDatagramUnusable):
+		// A measured payload-ceiling verdict is not an I/O failure; keep the
+		// dedicated name visible in ha_events and logs.
+		return udpPayloadCeilingUnusableReason
 	case errors.Is(err, context.Canceled):
 		return "canceled"
 	case errors.Is(err, ErrPolicyExpired):

@@ -1,4 +1,5 @@
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 using System.Text.Json;
 
@@ -81,6 +82,8 @@ public sealed class HeartbeatService
         List<UltraUsageSnapshot> ultraUsage;
         if (hasPendingUltra)
         {
+            // The retained batch is resent with the runtime status it was
+            // collected with; a retry must not silently drop observations.
             ultraUsage = usage.PendingUltraUsage.Select(item => new UltraUsageSnapshot
             {
                 ForwardId = item.ForwardId,
@@ -88,6 +91,9 @@ public sealed class HeartbeatService
                 Sequence = item.Sequence,
                 BytesIn = item.BytesIn,
                 BytesOut = item.BytesOut,
+                UdpPayloadCeiling = item.UdpPayloadCeiling,
+                UdpOversizeDrops = item.UdpOversizeDrops,
+                RuntimeAttestation = item.RuntimeAttestation,
             }).ToList();
         }
         else
@@ -211,7 +217,11 @@ public sealed class HeartbeatService
             long DeltaIn,
             long DeltaOut,
             string InstanceKey,
-            bool Legacy)>();
+            bool Legacy,
+            DateTime LastWrite,
+            int PayloadCeiling,
+            long OversizeDrops,
+            RuntimeAttestationSnapshot? Attestation)>();
         foreach (var candidate in selectedCandidates)
         {
             try
@@ -246,7 +256,11 @@ public sealed class HeartbeatService
                     deltaIn,
                     deltaOut,
                     candidate.InstanceKey,
-                    candidate.Legacy));
+                    candidate.Legacy,
+                    candidate.LastWrite,
+                    UltraRuntimeStatus.ReadPayloadCeiling(root),
+                    UltraRuntimeStatus.ReadOversizeDrops(root),
+                    UltraRuntimeStatus.ReadAttestation(root)));
             }
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException or InvalidOperationException or OverflowException)
             {
@@ -292,6 +306,10 @@ public sealed class HeartbeatService
             }
             var forwardId = group.Key.ForwardId;
             sequences[forwardId] = sequences.GetValueOrDefault(forwardId) + 1;
+            // Runtime status travels with the counters it was measured next to.
+            // The freshest snapshot of the group is the instance still running;
+            // an older one only contributes historical bytes.
+            var runtime = group.OrderByDescending(observation => observation.LastWrite).First();
             result.Add(new UltraUsageSnapshot
             {
                 ForwardId = forwardId,
@@ -299,6 +317,9 @@ public sealed class HeartbeatService
                 Sequence = sequences[forwardId],
                 BytesIn = bytesIn,
                 BytesOut = bytesOut,
+                UdpPayloadCeiling = runtime.PayloadCeiling,
+                UdpOversizeDrops = runtime.OversizeDrops,
+                RuntimeAttestation = runtime.Attestation,
             });
         }
 

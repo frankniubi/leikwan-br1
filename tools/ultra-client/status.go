@@ -23,6 +23,12 @@ type SelectionStatus struct {
 	ProbeSent        int    `json:"probe_sent,omitempty"`
 	ProbeReceived    int    `json:"probe_received,omitempty"`
 	SelectedAt       string `json:"selected_at"`
+	// PayloadCeiling is the datagram payload this selection can carry, 0 when the
+	// association was measured as unable to carry a floor-sized payload.
+	// PayloadCeilingSource says whether the panel declared it or the runtime
+	// measured it, so a narrow relay is distinguishable from an unprobed one.
+	PayloadCeiling       int    `json:"payload_ceiling,omitempty"`
+	PayloadCeilingSource string `json:"payload_ceiling_source,omitempty"`
 }
 
 type RuntimeStatus struct {
@@ -50,9 +56,14 @@ type RuntimeStatus struct {
 	// measured to carry (0 = not measured yet, or the association is unusable).
 	// Hosts size the TUN MTU from this instead of guessing a fixed value.
 	UDPPayloadCeiling int `json:"udp_payload_ceiling,omitempty"`
+	// UDPPayloadCeilingSource is "declared" or "measured"; "measured" with no
+	// udp_payload_ceiling means the active association carries no real payload.
+	UDPPayloadCeilingSource string `json:"udp_payload_ceiling_source,omitempty"`
 	// UDPOversizeDrops counts datagrams refused because they exceeded that ceiling.
 	UDPOversizeDrops int64 `json:"udp_oversize_drops,omitempty"`
 	CandidateFeedback      []CandidateFeedback `json:"candidate_feedback,omitempty"`
+	// RuntimeAttestation is the identity of the running helper binary.
+	RuntimeAttestation *RuntimeAttestation `json:"runtime_attestation,omitempty"`
 }
 
 type CandidateFeedback struct {
@@ -82,6 +93,7 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	attestation := runtimeAttestation()
 	return &StatusWriter{
 		path:     path,
 		interval: interval,
@@ -89,6 +101,7 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 			ForwardID:           forwardID,
 			State:               "ready",
 			DetectedIngressZone: "unknown",
+			RuntimeAttestation:  &attestation,
 		},
 	}
 }
@@ -209,18 +222,21 @@ func (writer *StatusWriter) UpdateUDPProbeWithTierAndCandidate(selectionRef, sel
 	}
 	lossPercent := int64(lost * 100 / result.Sent)
 	writer.update(func(status *RuntimeStatus) {
+		ceiling, ceilingSource := payloadCeilingStatus(result)
 		status.ActiveUDP = &SelectionStatus{
-			SelectionRef:     boundedStatusText(selectionRef, 128),
-			SelectionTier:    normalizedSelectionTier(selectionTier),
-			CandidateKeyHash: normalizedCandidateKeyHash(candidateKeyHash),
-			LeaseHash:        normalizedLeaseHash(firstOptional(leaseHashes)),
-			RTTMillis:        maxInt64(result.MedianRTT.Milliseconds(), 0),
-			P95RTTMillis:     maxInt64(result.P95RTT.Milliseconds(), 0),
-			JitterMillis:     maxInt64(result.Jitter.Milliseconds(), 0),
-			LossPercent:      maxInt64(minInt64(lossPercent, 100), 0),
-			ProbeSent:        result.Sent,
-			ProbeReceived:    result.Received,
-			SelectedAt:       time.Now().UTC().Format(time.RFC3339),
+			SelectionRef:         boundedStatusText(selectionRef, 128),
+			SelectionTier:        normalizedSelectionTier(selectionTier),
+			CandidateKeyHash:     normalizedCandidateKeyHash(candidateKeyHash),
+			LeaseHash:            normalizedLeaseHash(firstOptional(leaseHashes)),
+			RTTMillis:            maxInt64(result.MedianRTT.Milliseconds(), 0),
+			P95RTTMillis:         maxInt64(result.P95RTT.Milliseconds(), 0),
+			JitterMillis:         maxInt64(result.Jitter.Milliseconds(), 0),
+			LossPercent:          maxInt64(minInt64(lossPercent, 100), 0),
+			ProbeSent:            result.Sent,
+			ProbeReceived:        result.Received,
+			SelectedAt:           time.Now().UTC().Format(time.RFC3339),
+			PayloadCeiling:       ceiling,
+			PayloadCeilingSource: ceilingSource,
 		}
 		status.State = "ready"
 		status.ErrorCode = ""
@@ -234,17 +250,32 @@ func (writer *StatusWriter) UpdateUDPAssociations(active, pending int) {
 	})
 }
 
-// UpdateUDPPayloadCeiling publishes the measured path payload ceiling of the active
-// association so hosts can clamp the TUN MTU (MTU = ceiling - envelope overhead).
-func (writer *StatusWriter) UpdateUDPPayloadCeiling(ceiling int) {
+// UpdateUDPPayloadCeiling publishes the payload ceiling of the active
+// association with its provenance, so hosts can clamp the TUN MTU
+// (MTU = ceiling - envelope overhead) and the panel can see which association
+// is narrow. A declared 0 means "unknown" and keeps the last verdict; a
+// measured 0 is a real verdict that the path carries no payload at all.
+func (writer *StatusWriter) UpdateUDPPayloadCeiling(ceiling int, source string) {
 	if ceiling < 0 {
 		ceiling = 0
 	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source != payloadCeilingSourceMeasured {
+		source = payloadCeilingSourceDeclared
+		if ceiling <= 0 {
+			return
+		}
+	}
 	writer.update(func(status *RuntimeStatus) {
-		if status.UDPPayloadCeiling == ceiling {
+		if status.UDPPayloadCeiling == ceiling && status.UDPPayloadCeilingSource == source {
 			return
 		}
 		status.UDPPayloadCeiling = ceiling
+		status.UDPPayloadCeilingSource = source
+		if status.ActiveUDP != nil {
+			status.ActiveUDP.PayloadCeiling = ceiling
+			status.ActiveUDP.PayloadCeilingSource = source
+		}
 	})
 }
 
@@ -404,6 +435,22 @@ func selectionStatusWithTierAndCandidate(selectionRef, selectionTier, candidateK
 		RTTMillis:        millis,
 		SelectedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+// payloadCeilingStatus describes a probe result's ceiling for status: the value
+// and whether it came from the panel declaration or a local measurement. An
+// absent ceiling publishes nothing at all.
+func payloadCeilingStatus(result udpProbeResult) (int, string) {
+	if result.PayloadCeiling <= 0 {
+		if result.PayloadCeilingMeasured {
+			return 0, payloadCeilingSourceMeasured
+		}
+		return 0, ""
+	}
+	if result.PayloadCeilingMeasured {
+		return result.PayloadCeiling, payloadCeilingSourceMeasured
+	}
+	return result.PayloadCeiling, payloadCeilingSourceDeclared
 }
 
 func firstOptional(values []string) string {

@@ -221,11 +221,21 @@ assertTrue(
     'fresh installs must create the pairing table from schema.sql'
 );
 
-// The real migration directory orders the new file after every existing one.
+// The real migration directory keeps the pairing migration in date order.
+// Later feature migrations may legitimately be appended, so the guard is
+// "nothing older sorts after it" plus "listed exactly once" rather than
+// "is the newest file in the directory".
 $available = (new MigrationRunner($config, $db))->availableMigrations();
 assertSame('schema.sql', $available[0] ?? null, 'schema.sql must stay first');
-assertSame($migrationName, $available[count($available) - 1] ?? null, 'the pairing migration must sort last by date prefix');
-assertTrue(!in_array($migrationName, array_slice($available, 0, -1), true), 'the pairing migration must be listed once');
+$pairingIndex = array_search($migrationName, $available, true);
+assertTrue($pairingIndex !== false, 'the pairing migration must be listed');
+assertSame(1, count(array_keys($available, $migrationName, true)), 'the pairing migration must be listed once');
+foreach (array_slice($available, (int) $pairingIndex + 1) as $laterMigration) {
+    assertTrue(
+        strcmp(substr($laterMigration, 0, 8), substr($migrationName, 0, 8)) >= 0,
+        'a migration older than the pairing migration must not sort after it: ' . $laterMigration
+    );
+}
 
 // A staged copy applies through the real MigrationRunner (SQLite-compatible DDL
 // with the exact columns of the migration).

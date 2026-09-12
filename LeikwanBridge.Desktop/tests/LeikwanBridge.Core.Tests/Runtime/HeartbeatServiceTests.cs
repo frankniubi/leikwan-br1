@@ -419,6 +419,166 @@ public sealed class HeartbeatServiceTests
         AssertUsage(server.LastRequestBody, 140, 280, 1);
     }
 
+    [Fact]
+    public async Task SendHeartbeatAsync_UploadsMeasuredCeilingOversizeDropsAndAttestation()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-180.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 180,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 2048,
+          "bytes_out": 4096,
+          "updated_at": "2030-01-01T00:00:01Z",
+          "udp_payload_ceiling": 1440,
+          "udp_oversize_drops": 5,
+          "runtime_attestation": {
+            "fingerprint": "0f3a91c2",
+            "self_sha256": "{{new string('b', 64)}}",
+            "debugger": true,
+            "instrumented": false
+          }
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(1440, usage.GetProperty("udp_payload_ceiling").GetInt32());
+        Assert.Equal(5, usage.GetProperty("udp_oversize_drops").GetInt64());
+        var attestation = usage.GetProperty("runtime_attestation");
+        Assert.Equal("0f3a91c2", attestation.GetProperty("fingerprint").GetString());
+        Assert.Equal(new string('b', 64), attestation.GetProperty("self_sha256").GetString());
+        Assert.True(attestation.GetProperty("debugger").GetBoolean());
+        Assert.False(attestation.GetProperty("instrumented").GetBoolean());
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_OmitsRuntimeStatusFieldsTheSnapshotNeverPublished()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-180.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 180,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 2048,
+          "bytes_out": 4096,
+          "updated_at": "2030-01-01T00:00:01Z"
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.False(usage.TryGetProperty("udp_payload_ceiling", out _));
+        Assert.False(usage.TryGetProperty("udp_oversize_drops", out _));
+        Assert.False(usage.TryGetProperty("runtime_attestation", out _));
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_DropsMalformedAttestationWithoutLosingTheCeiling()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-180.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 180,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 2048,
+          "bytes_out": 4096,
+          "udp_payload_ceiling": 1440,
+          "runtime_attestation": { "fingerprint": "NOT-A-FINGERPRINT" }
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(1440, usage.GetProperty("udp_payload_ceiling").GetInt32());
+        Assert.False(usage.TryGetProperty("runtime_attestation", out _));
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_CarriesTheFreshestInstanceRuntimeStatus()
+    {
+        using var temp = new TempStateDirectory();
+        var nativeRoot = Path.Combine(temp.Path, "proxy-runtime");
+        var stopped = Path.Combine(nativeRoot, "native-usage", "native-180-stopped", "status.json");
+        var active = Path.Combine(nativeRoot, "native-usage", "native-180-active", "status.json");
+        WriteCeilingStatus(stopped, 100, 20, 1400);
+        File.SetLastWriteTimeUtc(stopped, DateTime.UtcNow.AddMinutes(-5));
+        WriteCeilingStatus(active, 300, 40, 1440);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var service = new HeartbeatService(api, new StateManager(temp.Path), additionalRuntimeDirectories: [nativeRoot]);
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(1440, usage.GetProperty("udp_payload_ceiling").GetInt32());
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_RetryKeepsTheRuntimeStatusOfTheRetainedBatch()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-180.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 180,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 2048,
+          "bytes_out": 4096,
+          "udp_payload_ceiling": 1440,
+          "udp_oversize_drops": 5
+        }
+        """);
+        var state = new StateManager(tempDir.Path);
+        using (var failing = new HeartbeatCaptureServer(statusCode: 503))
+        using (var api = new MasterApiClient(failing.BaseUrl, "agent-token"))
+        {
+            await Assert.ThrowsAsync<HttpRequestException>(() =>
+                new HeartbeatService(api, state).SendHeartbeatAsync());
+        }
+        using var server = new HeartbeatCaptureServer();
+        using var successApi = new MasterApiClient(server.BaseUrl, "agent-token");
+
+        await new HeartbeatService(successApi, state).SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(2048, usage.GetProperty("bytes_in").GetInt64());
+        Assert.Equal(1440, usage.GetProperty("udp_payload_ceiling").GetInt32());
+        Assert.Equal(5, usage.GetProperty("udp_oversize_drops").GetInt64());
+    }
+
+    private static void WriteCeilingStatus(string path, long bytesIn, long bytesOut, int ceiling)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, $$"""
+        {
+          "forward_id": 180,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": {{bytesIn}},
+          "bytes_out": {{bytesOut}},
+          "udp_payload_ceiling": {{ceiling}}
+        }
+        """);
+    }
+
     private static void AssertUsage(string body, long bytesIn, long bytesOut, long sequence)
     {
         using var document = JsonDocument.Parse(body);

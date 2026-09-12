@@ -580,11 +580,17 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     last_heartbeat_at DATETIME NULL,
     ultra_status_json JSON NULL,
     ultra_status_updated_at DATETIME NULL,
+    ultra_runtime_fingerprint VARCHAR(64) NULL,
+    ultra_runtime_self_sha256 CHAR(64) NULL,
+    ultra_runtime_debugger TINYINT(1) NULL,
+    ultra_runtime_instrumented TINYINT(1) NULL,
+    ultra_runtime_attested_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
     UNIQUE KEY uniq_client_device (client_id, device_id),
-    INDEX idx_client_device_sessions_seen (client_id, last_seen_at)
+    INDEX idx_client_device_sessions_seen (client_id, last_seen_at),
+    INDEX idx_client_device_sessions_runtime_fingerprint (ultra_runtime_fingerprint, last_seen_at)
 );
 
 CREATE TABLE IF NOT EXISTS desktop_client_sessions (
@@ -1411,6 +1417,17 @@ CREATE TABLE IF NOT EXISTS ultra_candidate_reputation_events (
     INDEX idx_ultra_candidate_reputation_events_observed (observed_at),
     INDEX idx_ultra_candidate_reputation_events_candidate (candidate_key_hash, event_type, observed_at)
 );
+
+CREATE TABLE IF NOT EXISTS ultra_lease_refusals (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_hash CHAR(64) NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    error_code VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_ultra_lease_refusal_created (created_at),
+    INDEX idx_ultra_lease_refusal_client (client_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

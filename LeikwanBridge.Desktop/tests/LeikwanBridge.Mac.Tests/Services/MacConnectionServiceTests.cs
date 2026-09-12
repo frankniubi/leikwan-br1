@@ -406,6 +406,120 @@ public sealed class MacConnectionServiceTests
         await service.DisposeAsync();
     }
 
+
+    [Fact]
+    public async Task NativeRelayPayloadCeilingShapesTheLiveTunMtu()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var host = new CapturingProcessHost();
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: host,
+            nativeRelayHost: relay,
+            tunMtu: 1500);
+        await service.InitializeAsync();
+        WriteNativeRelayStatus(paths, 158, "previous", 1440, new DateTime(2026, 9, 12, 1, 0, 0, DateTimeKind.Utc));
+        using var lease = CreateNativeLease(158);
+
+        await service.StartNativeAsync(MacConnectionMode.Vpn, lease, "https://panel.example.test", []);
+
+        Assert.Equal(1440, service.ActiveNativePayloadCeiling);
+        Assert.Equal(1396, ReadStartedTunMtu(host));
+        Assert.False(service.IsNativeTunMtuPending);
+
+        await service.StopAsync();
+        Assert.Equal(0, service.ActiveNativePayloadCeiling);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReMeasuredCeilingIsPendingAndReAppliedByTheRestartPath()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        Directory.CreateDirectory(paths.BinDirectory);
+        File.WriteAllText(paths.SingBoxPath, "helper");
+        File.WriteAllText(Path.Combine(paths.BinDirectory, "ultra-client"), "helper");
+        var host = new CapturingProcessHost();
+        var relay = new FakeNativeRelayHost();
+        var service = new MacConnectionService(
+            paths,
+            new MacConnectionProfileStore(new MemorySecretStore()),
+            processHost: host,
+            nativeRelayHost: relay,
+            tunMtu: 1500);
+        await service.InitializeAsync();
+        WriteNativeRelayStatus(paths, 158, "previous", 1440, new DateTime(2026, 9, 12, 1, 0, 0, DateTimeKind.Utc));
+        using var previous = CreateNativeLease(158);
+        await service.StartNativeAsync(MacConnectionMode.Vpn, previous, "https://panel.example.test", []);
+        Assert.Equal(1396, ReadStartedTunMtu(host));
+
+        // The association failed over and the runtime re-measured a smaller ceiling.
+        WriteNativeRelayStatus(paths, 158, "current", 1360, new DateTime(2026, 9, 12, 2, 0, 0, DateTimeKind.Utc));
+
+        Assert.True(service.IsNativeTunMtuPending);
+        using var next = CreateNativeLease(158);
+        Assert.False(await service.TryRefreshNativeAsync(next));
+        Assert.Equal(0, relay.RefreshCalls);
+        Assert.Equal(1, relay.StartCalls);
+
+        await service.StartNativeAsync(MacConnectionMode.Vpn, next, "https://panel.example.test", []);
+
+        Assert.Equal(2, relay.StartCalls);
+        Assert.Equal(1360, service.ActiveNativePayloadCeiling);
+        Assert.Equal(1316, ReadStartedTunMtu(host));
+        Assert.False(service.IsNativeTunMtuPending);
+
+        await service.StopAsync();
+        await service.DisposeAsync();
+    }
+
+    private static void WriteNativeRelayStatus(
+        MacPlatformPaths paths,
+        int forwardId,
+        string instance,
+        int payloadCeiling,
+        DateTime writtenAtUtc)
+    {
+        var directory = Path.Combine(paths.RuntimeDirectory, "native-usage", $"native-{forwardId}-{instance}");
+        Directory.CreateDirectory(directory);
+        var statusPath = Path.Combine(directory, "status.json");
+        File.WriteAllText(
+            statusPath,
+            $"{{\"forward_id\":{forwardId},\"udp_payload_ceiling\":{payloadCeiling},\"udp_oversize_drops\":2}}");
+        File.SetLastWriteTimeUtc(statusPath, writtenAtUtc);
+    }
+
+    private static int ReadStartedTunMtu(CapturingProcessHost host)
+    {
+        using var compiled = System.Text.Json.JsonDocument.Parse(host.StartedConfigJson);
+        return compiled.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32();
+    }
+
+    private static NativeOutboundLease CreateNativeLease(int forwardId)
+    {
+        const string direction = "Hong Kong -> China Mainland";
+        return new NativeOutboundLease(
+            forwardId,
+            "native-lease",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(3),
+            "tcp+udp",
+            direction,
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("native-user"),
+            System.Text.Encoding.UTF8.GetBytes("native-password"));
+    }
+
     private sealed class CapturingProcessHost : IMacConnectionProcessHost
     {
         public bool IsRunning { get; private set; }

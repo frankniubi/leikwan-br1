@@ -1438,8 +1438,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 await StopRevokedNativeAsync().ConfigureAwait(false);
                 return;
             }
-            if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
+            // A re-measured payload ceiling changes the TUN MTU, which sing-box only reads
+            // at startup: force the existing refresh/restart cycle even while the lease is
+            // still valid so the live tunnel is rebuilt with the new MTU.
+            var tunMtuPending = _connections.IsNativeTunMtuPending;
+            if (!tunMtuPending && expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
                 return;
+            if (tunMtuPending)
+                Log.Information("mac_native_tun_mtu_reapply forward={ForwardId}", _nativeActiveForwardId);
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 _nativeActiveForwardId,
                 _nativeActiveRouteScope,

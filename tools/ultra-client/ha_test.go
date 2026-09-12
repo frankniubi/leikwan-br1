@@ -120,6 +120,68 @@ func TestHAStatusHistorySurvivesSuccessfulProbe(t *testing.T) {
 	}
 }
 
+func TestHACeilingUnusableAssociationMovesToNextCandidate(t *testing.T) {
+	config := testPolicyConfig()
+	store := NewPolicyStore(config)
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	policy.Transport = "udp"
+	leases := []ProviderLease{testLease(policy, strings.Repeat("b", 64)), testLease(policy, strings.Repeat("c", 64))}
+	leases[0].CandidateKeyHash = strings.Repeat("d", 64)
+	leases[1].CandidateKeyHash = strings.Repeat("e", 64)
+	leases[1].IP = "203.0.113.21"
+	leases[1].SelectionRef = "selection-reference-second-path"
+	if err := store.ReplaceCandidates(policy, leases[0], leases); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Revoke("") })
+
+	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	defer status.Close()
+	runtime := &nativeSocks5Runtime{
+		config: config, store: store, status: status,
+		associations: map[string]*nativeSocks5UDPAssociation{},
+	}
+	request := nativeSocks5UDPRequest{host: "1.1.1.1", port: 53, payload: make([]byte, defaultPayloadCeiling)}
+
+	// Two consecutive client datagrams, exactly as the send path sees them: the
+	// first association arms, measures no echo, and is torn down; the second
+	// verdict isolates the relay through the existing candidate failure path.
+	for attempt := 0; attempt < 2; attempt++ {
+		association := runtime.ensureAssociation("local", nil)
+		session := &DatagramSession{} // no socket: nothing echoes
+		if !association.markReady(session, leases[0]) {
+			t.Fatal("association did not accept the lease")
+		}
+		runtime.sendUDPRequest(association, session, request)
+		if runtime.associations["local"] != nil {
+			t.Fatalf("association attempt %d survived an unusable ceiling", attempt+1)
+		}
+	}
+
+	candidates := store.CandidateSnapshots("udp")
+	defer wipeSnapshots(candidates)
+	if len(candidates) != 2 {
+		t.Fatalf("candidates after migration = %d, want 2", len(candidates))
+	}
+	if candidates[0].Lease.SelectionRef != leases[1].SelectionRef {
+		t.Fatalf("HA did not migrate: first candidate = %s", candidates[0].Lease.SelectionRef)
+	}
+
+	status.mu.Lock()
+	defer status.mu.Unlock()
+	feedback := status.status.CandidateFeedback
+	if len(feedback) == 0 {
+		t.Fatal("no candidate feedback published for the unusable ceiling")
+	}
+	last := feedback[len(feedback)-1]
+	if last.Reason != udpPayloadCeilingUnusableReason || last.Outcome != "failure" {
+		t.Fatalf("feedback = %+v, want reason %q", last, udpPayloadCeilingUnusableReason)
+	}
+	if status.status.UDPOversizeDrops != 2 {
+		t.Fatalf("udp_oversize_drops = %d, want 2", status.status.UDPOversizeDrops)
+	}
+}
+
 func haStore(t *testing.T) (*PolicyStore, Policy, []ProviderLease) {
 	t.Helper()
 	s := NewPolicyStore(testPolicyConfig())

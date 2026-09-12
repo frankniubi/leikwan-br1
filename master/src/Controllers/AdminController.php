@@ -27,6 +27,7 @@ use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraCandidateReputationService;
 use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 
 final class AdminController extends BaseController
@@ -3127,7 +3128,7 @@ final class AdminController extends BaseController
         $inventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
         $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
         $view = strtolower(trim((string) $request->input('view', 'sessions')));
-        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source', 'reputation'], true)) {
+        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source', 'reputation', 'attestation', 'refusals'], true)) {
             $view = 'sessions';
         }
         $limit = min(200, max(1, (int) $request->input('limit', 50)));
@@ -3141,6 +3142,9 @@ final class AdminController extends BaseController
         foreach ([
             'Online' => (int) ($statusCounts['online'] ?? 0),
             'Stale' => (int) ($statusCounts['stale'] ?? 0),
+            'Runtime known' => (int) ($statusCounts['attestation_known'] ?? 0),
+            'Runtime unknown' => (int) ($statusCounts['attestation_unknown'] ?? 0),
+            'Runtime mismatch' => (int) ($statusCounts['attestation_mismatch'] ?? 0),
             'Available lines' => (int) ($inventoryCounts['discovered'] ?? 0),
             'Unavailable lines' => (int) ($inventoryCounts['unavailable'] ?? 0),
             'Material not required' => (int) ($inventoryCounts['not_required'] ?? 0),
@@ -3158,6 +3162,8 @@ final class AdminController extends BaseController
             ['view' => 'combinations', 'href' => '/admin/ultra?view=combinations', 'label' => 'Combinations'],
             ['view' => 'source', 'href' => '/admin/ultra?view=source', 'label' => 'Source'],
             ['view' => 'reputation', 'href' => '/admin/ultra?view=reputation', 'label' => 'Reputation'],
+            ['view' => 'attestation', 'href' => '/admin/ultra?view=attestation', 'label' => 'Attestation'],
+            ['view' => 'refusals', 'href' => '/admin/ultra?view=refusals', 'label' => 'Refusals'],
         ] as $tab) {
             $tabs .= '<a class="button ' . ($view === $tab['view'] ? '' : 'ghost') . '" href="' . $tab['href'] . '">' . $tab['label'] . '</a>';
         }
@@ -3179,6 +3185,11 @@ final class AdminController extends BaseController
                 $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
                 $tcp = trim((string) ($session['latest_tcp_selection_ref'] ?? ''));
                 $udp = trim((string) ($session['active_udp_selection_ref'] ?? ''));
+                $attestation = strtolower(trim((string) ($session['attestation_state'] ?? 'unknown')));
+                $attestationBadge = $attestation === 'known' ? 'success' : ($attestation === 'mismatch' ? 'danger' : 'info');
+                $fingerprint = trim((string) ($session['runtime_fingerprint'] ?? ''));
+                $runtimeCell = '<span class="badge ' . $attestationBadge . '">' . $this->escape($attestation) . '</span>'
+                    . ($fingerprint !== '' ? '<br><span class="muted">' . $this->escape(substr($fingerprint, 0, 16)) . '</span>' : '');
                 $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
                     . '<td>' . $this->escape($user) . '</td>'
                     . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
@@ -3188,12 +3199,65 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape((string) ($session['detected_ingress_zone'] ?? 'unknown')) . '</td>'
                     . '<td>' . $this->escape($tcp) . '</td>'
                     . '<td>' . $this->escape($udp) . '</td>'
+                    . '<td>' . $runtimeCell . '</td>'
                     . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="10" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="11" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
             }
-            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'attestation') {
+            $mismatches = $statusService->runtimeAttestationMismatches($limit);
+            $allowlistSize = count($statusService->runtimeFingerprintAllowlist());
+            $rows = '';
+            foreach ($mismatches as $session) {
+                $debugger = $session['runtime_debugger'] ?? null;
+                $instrumented = $session['runtime_instrumented'] ?? null;
+                $user = trim((string) (($session['user_name'] ?? '') ?: ($session['user_email'] ?? '')));
+                $client = '#' . (int) ($session['client_id'] ?? 0) . ' ' . trim((string) ($session['client_name'] ?? ''));
+                $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
+                $rows .= '<tr>'
+                    . '<td>' . $this->escape((string) ($session['attestation_state'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape($user) . '</td>'
+                    . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($session['client_ip'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($session['runtime_fingerprint'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($session['runtime_self_sha256'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . $this->escape($debugger === null ? 'unknown' : ($debugger ? 'yes' : 'no')) . '</td>'
+                    . '<td>' . $this->escape($instrumented === null ? 'unknown' : ($instrumented ? 'yes' : 'no')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['runtime_attested_at'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="10" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
+            }
+            $content = '<section class="card">'
+                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is report-only. These sessions report a runtime build fingerprint that is not in '
+                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (allow-list entries: ' . $allowlistSize . '); no lease is denied from this view.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th></tr></thead><tbody>'
+                . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'refusals') {
+            $refusals = (new UltraLeaseService($this->config, $this->db))->recentRefusals($limit);
+            $refusalRows = '';
+            foreach ($refusals as $refusal) {
+                $refusalRows .= '<tr>'
+                    . '<td>' . $this->escape((string) ($refusal['created_at'] ?? '')) . '</td>'
+                    . '<td>#' . (int) ($refusal['client_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($refusal['device_hash_prefix'] ?? '')) . '</td>'
+                    . '<td>#' . (int) ($refusal['forward_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($refusal['error_code'] ?? '')) . '</td></tr>';
+            }
+            if ($refusalRows === '') {
+                $refusalRows = '<tr><td colspan="5" class="muted">No lease refusals recorded.</td></tr>';
+            }
+            $content = '<section class="card">'
+                . '<div class="muted" style="margin-bottom:10px">Opt-in abuse limits '
+                . UltraLeaseService::ISSUE_RATE_PER_MINUTE_KEY . ', ' . UltraLeaseService::MAX_LIVE_LEASES_PER_DEVICE_KEY
+                . ' and ' . UltraLeaseService::MAX_DEVICES_PER_CLIENT_KEY
+                . ' default to 0 = unlimited. Refusal codes: ' . UltraLeaseService::ERROR_RATE_LIMITED . ', '
+                . UltraLeaseService::ERROR_DEVICE_LIVE_LIMIT . ', ' . UltraLeaseService::ERROR_CLIENT_DEVICE_LIMIT . '.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Client</th><th>Device hash prefix</th><th>Forward</th><th>Error code</th></tr></thead><tbody>'
+                . $refusalRows . '</tbody></table></div></section>';
         } elseif ($view === 'lines') {
             $lines = $inventory->listLinesForAdmin([
                 'ingress' => $request->input('ingress', ''),

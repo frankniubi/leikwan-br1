@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +217,103 @@ func TestSelectBestLeaseUsesProbeQualityBeforeActivating(t *testing.T) {
 	}
 	if selected.SelectionRef != leases[0].SelectionRef || result.Received != 20 {
 		t.Fatalf("selected=%+v result=%+v", selected, result)
+	}
+}
+
+// ceilingProbeResult builds a candidate with fixed quality so a table test can
+// vary only the payload ceiling.
+func ceilingProbeResult(index, ceiling int) udpProbeResult {
+	return udpProbeResult{
+		Index: index, Sent: 20, Received: 20,
+		MedianRTT: 40 * time.Millisecond, P95RTT: 50 * time.Millisecond, Jitter: 3 * time.Millisecond,
+		PayloadCeiling: ceiling,
+	}
+}
+
+func TestRankUDPProbeResultsOrdersByPayloadCeilingAtEqualLoss(t *testing.T) {
+	unusable := ceilingProbeResult(0, 0)
+	unusable.PayloadCeilingMeasured = true
+
+	tests := []struct {
+		name    string
+		results []udpProbeResult
+		want    []int
+	}{
+		{
+			name: "higher ceiling wins at equal loss",
+			results: []udpProbeResult{
+				ceilingProbeResult(0, 1400), ceilingProbeResult(1, 1472), ceilingProbeResult(2, 1440),
+			},
+			want: []int{1, 2, 0},
+		},
+		{
+			name: "unknown ceiling ranks as the conservative default",
+			results: []udpProbeResult{
+				ceilingProbeResult(0, 1360), ceilingProbeResult(1, 0), ceilingProbeResult(2, 1500),
+			},
+			want: []int{2, 1, 0},
+		},
+		{
+			name: "a measured unusable ceiling is never selected",
+			results: []udpProbeResult{
+				unusable, ceilingProbeResult(1, 1280),
+			},
+			want: []int{1, 0},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ranked := rankUDPProbeResults(test.results)
+			if len(ranked) != len(test.want) {
+				t.Fatalf("ranked count=%d", len(ranked))
+			}
+			for position, index := range test.want {
+				if ranked[position].Index != index {
+					t.Fatalf("ranking=%v, want %v", ranked, test.want)
+				}
+			}
+			if ranked[len(ranked)-1].PayloadCeilingMeasured && !ranked[len(ranked)-1].ceilingUnusable() {
+				t.Fatalf("measured ceiling 0 must stay unusable: %+v", ranked[len(ranked)-1])
+			}
+		})
+	}
+}
+
+func TestSelectBestLeaseSkipsUnusableCeilingCandidate(t *testing.T) {
+	leases := []ProviderLease{
+		{SelectionRef: "selection-reference-000-abcdefghijklmnop"},
+		{SelectionRef: "selection-reference-001-abcdefghijklmnop", RelayPayloadCeiling: 1440},
+	}
+	probe := func(_ context.Context, lease ProviderLease, _ Config, _ Policy) udpProbeResult {
+		if lease.SelectionRef == leases[0].SelectionRef {
+			// Best delivery quality, but the association was measured as unable to
+			// carry a floor-sized payload.
+			return udpProbeResult{Sent: 20, Received: 20, MedianRTT: time.Millisecond, PayloadCeilingMeasured: true}
+		}
+		return udpProbeResult{Sent: 20, Received: 18, MedianRTT: 80 * time.Millisecond}
+	}
+	selected, result, err := selectBestLeaseWithProbe(context.Background(), Config{ProbeWorkers: 2}, Policy{Transport: "udp"}, leases, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.SelectionRef != leases[1].SelectionRef {
+		t.Fatalf("selected an unusable-ceiling candidate: %+v", selected)
+	}
+	if result.PayloadCeiling != 1440 {
+		t.Fatalf("declared relay ceiling = %d, want the lease hint 1440", result.PayloadCeiling)
+	}
+}
+
+func TestSelectBestLeaseRejectsOnlyUnusableCeilingCandidates(t *testing.T) {
+	lease := ProviderLease{SelectionRef: "selection-reference-000-abcdefghijklmnop"}
+	probe := func(context.Context, ProviderLease, Config, Policy) udpProbeResult {
+		return udpProbeResult{Sent: 20, Received: 20, MedianRTT: time.Millisecond, PayloadCeilingMeasured: true}
+	}
+	_, result, err := selectBestLeaseWithProbe(context.Background(), Config{ProbeWorkers: 1}, Policy{Transport: "udp"}, []ProviderLease{lease}, probe)
+	if !errors.Is(err, errNoHealthyCandidate) {
+		t.Fatalf("err = %v, want %v", err, errNoHealthyCandidate)
+	}
+	if !result.ceilingUnusable() {
+		t.Fatalf("reported result must keep the unusable verdict: %+v", result)
 	}
 }

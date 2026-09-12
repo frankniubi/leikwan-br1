@@ -967,7 +967,11 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 		return
 	}
 	if runtime.status != nil {
+		// Publish the measured ceiling and the panel hint of this association so
+		// the panel can see which relay is narrow.
+		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
 		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
+		runtime.status.UpdateUDPPayloadCeiling(normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling), payloadCeilingSourceDeclared)
 		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
 	}
 	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
@@ -1036,6 +1040,15 @@ func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPA
 		// Refuse instead of handing the path a datagram it will silently drop.
 		if runtime.status != nil {
 			runtime.status.AddUDPOversizeDrop()
+		}
+		if session.payloadUnusable() {
+			// Nothing echoes on this association. Reuse the existing candidate
+			// failure path so the next packet arms a healthy sibling instead of
+			// black-holing every large datagram until the policy expires.
+			association.recordCandidateFailure(runtime, "udp", udpPayloadCeilingUnusableReason, errDatagramUnusable)
+			association.close()
+			runtime.removeAssociation(association)
+			return
 		}
 		if session.onRuntimeDrop != nil {
 			session.onRuntimeDrop()
