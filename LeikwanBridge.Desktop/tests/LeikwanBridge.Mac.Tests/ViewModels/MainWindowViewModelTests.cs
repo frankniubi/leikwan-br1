@@ -28,6 +28,37 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task NativeOutboundRuleRowIsLabelledAndCannotBeStartedOrStopped()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            IsSignedIn = true,
+            Forwards =
+            [
+                new DesktopForwardSnapshot(180, "Forward #180 · Mainland China -> Hong Kong", "ultra", 54544, true, "running", IsNativeOutboundRule: true),
+                new DesktopForwardSnapshot(181, "Forward #181 · -", "single", 12081, true, "running"),
+            ],
+        });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        var native = Assert.Single(vm.Forwards, forward => forward.ForwardId == 180);
+        Assert.True(native.IsNativeOutboundRule);
+        Assert.False(native.CanStart);
+        Assert.False(native.CanStop);
+
+        await native.StartCommand.ExecuteAsync(null);
+        await native.StopCommand.ExecuteAsync(null);
+
+        Assert.Empty(controller.StartedForwards);
+        Assert.Empty(controller.StoppedForwards);
+
+        var ordinary = Assert.Single(vm.Forwards, forward => forward.ForwardId == 181);
+        Assert.False(ordinary.IsNativeOutboundRule);
+        Assert.False(ordinary.CanStart);
+        Assert.True(ordinary.CanStop);
+    }
+
+    [Fact]
     public async Task UnpairedRouteNeverBorrowsThePreviouslySelectedSavedNode()
     {
         var connections = new CapturingMacConnectionService();

@@ -6,6 +6,7 @@ using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
 
+[Collection(SerilogCapture.CollectionName)]
 public sealed class ForwardRuntimeManagerTests
 {
     [Fact]
@@ -119,6 +120,85 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Empty(host.Refreshes);
         Assert.Empty(forward.RuntimeLeases);
         Assert.Null(forward.RuntimeLease);
+    }
+
+    [Fact]
+    public void NativeOutboundApply_RetiresLeftoverOrdinaryUltraRuntimeExactlyOnce()
+    {
+        const int forwardId = 9186;
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var state = new StateManager(tempDir.Path);
+        var host = new RecordingUltraRuntimeHost();
+        state.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            [forwardId.ToString()] = new AppliedForwardState { ForwardId = forwardId, Mode = "ultra", ListenPort = 54544 },
+        });
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward(forwardId, 54544);
+        forward.NativeOutboundEnabled = true;
+        forward.NativeDirection = "Mainland China -> Hong Kong";
+
+        using var logs = new LogCapture();
+        manager.ApplyForward(forward, "native-signature", "config_sync");
+
+        // Transition: the agent-owned ordinary runtime and its state are retired once.
+        Assert.Equal([forwardId], host.Stops);
+        Assert.False(state.LoadApplied().ContainsKey(forwardId.ToString()));
+        Assert.Null(forward.RuntimeLease);
+        Assert.Empty(forward.RuntimeLeases);
+        var retirement = Assert.Single(logs.ForForward(forwardId));
+        Assert.Equal(Serilog.Events.LogEventLevel.Information, retirement.Level);
+
+        // Steady state: further applies/restarts release nothing and only leave the
+        // single Debug note explaining why the agent runtime does not apply.
+        manager.ApplyForward(forward, "native-signature", "config_sync");
+        manager.RestartForward(forward, force: true, reason: "process_dead");
+
+        Assert.Equal([forwardId], host.Stops);
+        Assert.False(state.LoadApplied().ContainsKey(forwardId.ToString()));
+        var steadyState = logs.ForForward(forwardId);
+        Assert.Equal(2, steadyState.Count);
+        Assert.Equal(Serilog.Events.LogEventLevel.Debug, steadyState[1].Level);
+    }
+
+    [Fact]
+    public void NativeOutboundApply_WithoutAgentOwnedRuntime_StaysASilentNoOp()
+    {
+        using var tempDir = new TempStateDirectory();
+        var supervisor = new TestProcessSupervisor();
+        var state = new StateManager(tempDir.Path);
+        var host = new RecordingUltraRuntimeHost();
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraLeaseSender: (_, _, _) => Task.FromResult(true),
+            ultraRuntimeHost: host);
+        const int forwardId = 9187;
+        var forward = CreateUltraForward(forwardId, 54544);
+        forward.NativeOutboundEnabled = true;
+        forward.RuntimeLease = null;
+
+        using var logs = new LogCapture();
+        manager.ApplyForward(forward, "native-signature", "config_sync");
+        manager.ApplyForward(forward, "native-signature", "config_sync");
+        manager.RestartForward(forward, force: true, reason: "process_dead");
+
+        Assert.Empty(host.Stops);
+        Assert.Empty(host.Starts);
+        Assert.Empty(state.LoadApplied());
+        var notice = Assert.Single(logs.ForForward(forwardId));
+        Assert.Equal(Serilog.Events.LogEventLevel.Debug, notice.Level);
     }
 
     [Theory]

@@ -25,6 +25,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
         ListenPort = snapshot.ListenPort;
         IsRunning = snapshot.IsRunning;
         Status = snapshot.Status;
+        IsNativeOutboundRule = snapshot.IsNativeOutboundRule;
     }
 
     public int ForwardId { get; }
@@ -77,9 +78,16 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [ObservableProperty]
     private bool _isBusy;
 
+    /// <summary>
+    /// Panel-declared native outbound rule: configuration only. Its data plane
+    /// belongs to a user-initiated native outbound connection, so the row never
+    /// offers, and never honours, an agent-side start/stop action.
+    /// </summary>
+    public bool IsNativeOutboundRule { get; }
+
     public string PortText => $"127.0.0.1:{ListenPort}";
-    public bool CanStart => !IsBusy && !IsRunning;
-    public bool CanStop => !IsBusy && IsRunning;
+    public bool CanStart => !IsNativeOutboundRule && !IsBusy && !IsRunning;
+    public bool CanStop => !IsNativeOutboundRule && !IsBusy && IsRunning;
 
     partial void OnIsRunningChanged(bool value)
     {
@@ -96,7 +104,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
-        if (!CanStart)
+        if (IsNativeOutboundRule || !CanStart)
             return;
         IsBusy = true;
         try
@@ -115,7 +123,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [RelayCommand]
     private async Task StopAsync()
     {
-        if (!CanStop)
+        if (IsNativeOutboundRule || !CanStop)
             return;
         IsBusy = true;
         try

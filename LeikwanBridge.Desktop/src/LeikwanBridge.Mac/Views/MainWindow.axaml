@@ -214,6 +214,10 @@
                           <Grid ColumnDefinitions="*,100,170,100,84" ColumnSpacing="14">
                             <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
                               <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                              <!-- Native outbound rules ship configuration only: no start/stop control. -->
+                              <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontWeight="SemiBold"
+                                         FontSize="11" Foreground="{DynamicResource AccentBrush}"
+                                         IsVisible="{Binding IsNativeOutboundRule}" />
                               <TextBlock Text="Local listener" Classes="muted" FontSize="11" />
                             </StackPanel>
                             <Border Grid.Column="1" Background="{DynamicResource QuietBrush}" CornerRadius="4"

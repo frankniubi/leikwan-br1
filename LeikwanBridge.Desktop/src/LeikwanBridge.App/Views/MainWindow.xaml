@@ -325,6 +325,12 @@
                                                         </Border>
                                                     </DockPanel>
 
+                                                    <!-- Native outbound rules ship configuration only: no start/stop control. -->
+                                                    <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontSize="11"
+                                                               FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}"
+                                                               TextWrapping="Wrap" Margin="0,0,0,4"
+                                                               Visibility="{Binding Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
+
                                                     <TextBlock Text="{Binding Summary.Lifecycle}" FontSize="12"
                                                                FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"
                                                                Margin="0,0,0,4"/>
@@ -366,7 +372,14 @@
                                             </Grid.RowDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Forward"/>
-                                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedForward.DisplayName}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                            <StackPanel Grid.Row="0" Grid.Column="1">
+                                                <TextBlock Text="{Binding SelectedForward.DisplayName}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                <!-- Native outbound rules ship configuration only: no start/stop control. -->
+                                                <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontSize="11"
+                                                           FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}"
+                                                           TextWrapping="Wrap" Margin="0,2,0,0"
+                                                           Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
+                                            </StackPanel>
 
                                             <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="Status"/>
                                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.Summary.Lifecycle}" FontSize="14"/>

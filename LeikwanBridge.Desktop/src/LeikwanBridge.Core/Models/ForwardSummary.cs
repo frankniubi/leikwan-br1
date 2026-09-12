@@ -32,4 +32,12 @@ public sealed record ForwardSummary(
     bool IsBusy,
     bool CanStart,
     bool CanStop,
-    long LastTransitionAt);
+    long LastTransitionAt)
+{
+    /// <summary>
+    /// True when the panel declared a native outbound rule. Such a row is
+    /// configuration only: the data plane belongs to a user-initiated native
+    /// outbound relay connection, so no start/stop control is offered.
+    /// </summary>
+    public bool IsNativeOutboundRule { get; init; }
+}

@@ -1482,10 +1482,18 @@ public partial class MainViewModel : ObservableObject
         CurrentView = "Forwards";
     }
 
+    /// <summary>
+    /// A native outbound rule is panel-declared configuration only. Its data
+    /// plane belongs to a user-initiated native outbound relay connection, so
+    /// every start/stop entry point must stay a no-op for it.
+    /// </summary>
+    private static bool IsNativeOutboundRule(ForwardViewModel? vm)
+        => vm?.Config is { } config && ForwardRuntimeManager.IsNativeOutboundForward(config);
+
     [RelayCommand]
     private async Task ToggleForward(ForwardViewModel? vm)
     {
-        if (vm == null)
+        if (vm == null || IsNativeOutboundRule(vm))
             return;
 
         if (vm.Summary.CanStop)
@@ -1497,7 +1505,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task StartForward(ForwardViewModel? vm)
     {
-        if (vm?.Config == null || _runtimeManager == null || _busyForwards.Contains(vm.ForwardId))
+        if (vm?.Config == null || IsNativeOutboundRule(vm) || _runtimeManager == null || _busyForwards.Contains(vm.ForwardId))
             return;
 
         _busyForwards.Add(vm.ForwardId);
@@ -1535,7 +1543,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task StopForward(ForwardViewModel? vm)
     {
-        if (vm == null || _runtimeManager == null)
+        if (vm == null || IsNativeOutboundRule(vm) || _runtimeManager == null)
             return;
 
         await Task.Run(() => _runtimeManager.StopForward(vm.ForwardId));
@@ -1603,6 +1611,7 @@ public partial class MainViewModel : ObservableObject
 
     private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded)
     {
+        var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(forward);
         var lifecycle = busy ? ForwardLifecycleState.Connecting
             : running ? ForwardLifecycleState.Connected
             : userStopped ? ForwardLifecycleState.Stopped
@@ -1622,9 +1631,12 @@ public partial class MainViewModel : ObservableObject
             quality.ToString(),
             friendly,
             busy,
-            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
-            CanStop: lifecycle is ForwardLifecycleState.Connected,
-            LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
+            LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        {
+            IsNativeOutboundRule = nativeOutboundRule,
+        };
     }
 
     private static string BuildForwardDisplayName(ForwardConfig forward)
@@ -1641,6 +1653,7 @@ public partial class MainViewModel : ObservableObject
         if (vm?.Config == null)
             return;
 
+        var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(vm.Config);
         var running = lifecycle == ForwardLifecycleState.Connected;
         var busy = _busyForwards.Contains(forwardId);
         vm.Summary = new ForwardSummary(
@@ -1651,9 +1664,12 @@ public partial class MainViewModel : ObservableObject
             running ? ForwardQualityState.Good.ToString() : ForwardQualityState.Unavailable.ToString(),
             lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "",
             busy,
-            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
-            CanStop: lifecycle is ForwardLifecycleState.Connected,
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        {
+            IsNativeOutboundRule = nativeOutboundRule,
+        };
     }
 
     private static bool HasDegradedLeg(StateManager? stateManager, ForwardConfig forward)
