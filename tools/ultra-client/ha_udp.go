@@ -155,4 +155,5 @@ func configureRuntimeDatagram(s *DatagramSession, store *PolicyStore, status *St
 	}
 	s.onRuntimeACK = func() { status.RecordUDPKeepaliveACK() }
 	s.onRuntimeDrop = status.AddUDPQueueDrop
+	s.onCeilingMeasured = status.UpdateUDPPayloadCeiling
 }

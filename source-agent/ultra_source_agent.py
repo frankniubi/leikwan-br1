@@ -687,6 +687,11 @@ def build_inventory(
             "provider": _safe_inventory_text(
                 _first_value(indexed, audited, metadata, keys=("provider",)), 64
             ),
+            # The audit manifest may declare the dispatch priority: a line whose relay
+            # association drops big datagrams is dispatched last, like the Tencent ones.
+            "dispatch_class": _inventory_classification(
+                _first_value(audited, indexed, keys=("dispatch_class",))
+            ),
             "catalog_ingress": _safe_inventory_text(
                 _first_value(cataloged, audited, indexed, keys=("catalog_ingress",)), 191
             ),

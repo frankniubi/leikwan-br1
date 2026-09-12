@@ -138,6 +138,28 @@ $normalPriority = UltraInventoryService::normalizeInventoryLine([
 if (($normalPriority['dispatch_class'] ?? '') !== 'normal') {
     failUltraInventory('unmarked entries must stay normal priority');
 }
+// A source may declare the priority itself: lines whose relay association drops
+// big datagrams sit at the same table as the Tencent ones.
+$declaredLow = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 495,
+    'title' => '上海-韩国-BGP-层峰',
+    'provider' => '层峰',
+    'dispatch_class' => 'low',
+    'config_sha256' => str_repeat('5', 64),
+], $zones, 1_893_456_000);
+if (($declaredLow['dispatch_class'] ?? '') !== 'low') {
+    failUltraInventory('a source-declared low priority must survive normalization');
+}
+$declaredUnknown = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 496,
+    'title' => '北京-德国-BGP-腾讯云',
+    'provider' => '腾讯云',
+    'dispatch_class' => 'unknown',
+    'config_sha256' => str_repeat('4', 64),
+], $zones, 1_893_456_000);
+if (($declaredUnknown['dispatch_class'] ?? '') !== 'low') {
+    failUltraInventory('an unknown declaration must fall back to the provider/title rule');
+}
 
 // Direction is derived from the resolved catalog zones; an admin choice survives
 // because the upsert only fills an "unknown" value.

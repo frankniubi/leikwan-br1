@@ -1032,6 +1032,16 @@ func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPA
 		log.Printf("native UDP target resolve failed: %v", err)
 		return
 	}
+	if !session.allowsPayload(len(request.payload)) {
+		// Refuse instead of handing the path a datagram it will silently drop.
+		if runtime.status != nil {
+			runtime.status.AddUDPOversizeDrop()
+		}
+		if session.onRuntimeDrop != nil {
+			session.onRuntimeDrop()
+		}
+		return
+	}
 	packet, err := makeDatagramEnvelope(session.mode, session.sid, targetIP, request.port, request.payload)
 	if err != nil {
 		return

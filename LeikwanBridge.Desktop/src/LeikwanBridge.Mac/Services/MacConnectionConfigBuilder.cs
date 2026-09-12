@@ -255,7 +255,8 @@ public static class MacConnectionConfigBuilder
     private static JsonArray BuildInbounds(
         MacConnectionMode mode,
         int proxyPort,
-        IReadOnlyList<string>? bypassIps = null)
+        IReadOnlyList<string>? bypassIps = null,
+        int measuredPayloadCeiling = 0)
     {
         if (mode == MacConnectionMode.Vpn)
         {
@@ -276,7 +277,9 @@ public static class MacConnectionConfigBuilder
                     // Let sing-box allocate a free utunN; an app display name
                     // or the bare prefix "utun" is not a valid Darwin name.
                     ["address"] = new JsonArray(TunAddress, TunIpv6Address),
-                    ["mtu"] = DefaultTunMtu,
+                    // Clamp to the runtime-measured native-UDP payload ceiling instead of
+                    // emitting frames the relay association will drop.
+                    ["mtu"] = UltraRuntimeMtu.Resolve(DefaultTunMtu, measuredPayloadCeiling),
                     ["auto_route"] = true,
                     ["strict_route"] = true,
                     ["stack"] = "mixed",
