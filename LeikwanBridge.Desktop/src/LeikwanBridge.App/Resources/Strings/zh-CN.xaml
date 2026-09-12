@@ -81,6 +81,8 @@
     <system:String x:Key="FwdError">错误</system:String>
     <system:String x:Key="FwdEndpoints">端点</system:String>
     <system:String x:Key="FwdTransport">传输协议</system:String>
+    <!-- 面板下发的原生出站规则：仅配置，无 Agent 托管运行时 -->
+    <system:String x:Key="ForwardNativeOutboundRule">（原生出站规则）</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">启动</system:String>

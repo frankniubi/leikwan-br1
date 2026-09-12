@@ -6,4 +6,5 @@
   <x:String x:Key="SettingsLabel">Settings</x:String>
   <x:String x:Key="StartAllLabel">Start all</x:String>
   <x:String x:Key="StopAllLabel">Stop all</x:String>
+  <x:String x:Key="ForwardNativeOutboundRule">(Native Outbound Rule)</x:String>
 </ResourceDictionary>

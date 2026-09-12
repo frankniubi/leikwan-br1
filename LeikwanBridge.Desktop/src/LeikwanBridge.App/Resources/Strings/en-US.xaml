@@ -49,6 +49,8 @@
     <system:String x:Key="FwdError">Error</system:String>
     <system:String x:Key="FwdEndpoints">Endpoints</system:String>
     <system:String x:Key="FwdTransport">Transport</system:String>
+    <!-- Panel-declared native outbound rule: configuration only, no agent-managed runtime. -->
+    <system:String x:Key="ForwardNativeOutboundRule">(Native Outbound Rule)</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">Start</system:String>

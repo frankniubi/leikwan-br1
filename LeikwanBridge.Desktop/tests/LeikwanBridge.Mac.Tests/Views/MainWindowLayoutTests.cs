@@ -66,6 +66,35 @@ public sealed class MainWindowLayoutTests
     }
 
     [Fact]
+    public void NativeOutboundRuleRowIsLabelledWithoutStartStopControls()
+    {
+        var xaml = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var label = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "TextBlock"
+            && (string?)element.Attribute("Text") == "{DynamicResource ForwardNativeOutboundRule}");
+        Assert.Equal("{Binding IsNativeOutboundRule}", (string?)label.Attribute("IsVisible"));
+
+        var strings = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Resources", "Strings.axaml"));
+        var entry = Assert.Single(strings.Descendants(), element => (string?)element.Attribute(xaml) == "ForwardNativeOutboundRule");
+        Assert.Equal("(Native Outbound Rule)", entry.Value);
+
+        // Both per-row runtime actions stay gated by the row's Can flags, which
+        // are false for a native outbound rule.
+        var start = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button" && (string?)element.Attribute("Command") == "{Binding StartCommand}");
+        Assert.Equal("{Binding CanStart}", (string?)start.Attribute("IsVisible"));
+        var stop = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button" && (string?)element.Attribute("Command") == "{Binding StopCommand}");
+        Assert.Equal("{Binding CanStop}", (string?)stop.Attribute("IsVisible"));
+    }
+
+    [Fact]
     public void ConnectionErrorAndExternalHintRemainOutsideCollapsedEditor()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
