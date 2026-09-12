@@ -427,6 +427,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
+        $this->router->add('GET', '/artifacts/leikwan-bridge-repair.cmd', [$artifacts, 'windowsUpdateHelper']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-arm64.dmg', [$artifacts, 'macosClientArm64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-x64.dmg', [$artifacts, 'macosClientX64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-update-arm64.zip', [$artifacts, 'macosClientArm64Update']);

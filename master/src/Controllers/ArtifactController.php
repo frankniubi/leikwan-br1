@@ -58,6 +58,19 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-client.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    /**
+     * Standalone Windows repair/update helper.
+     *
+     * It ships inside the Windows installer too, but stays a first-class
+     * artifact so a host stuck on an older build - one that cannot repair its
+     * own shared permissions and whose updater stops after the download - can
+     * fetch and run it on its own.
+     */
+    public function windowsUpdateHelper(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('scripts/leikwan-bridge-repair.cmd', 'text/plain; charset=utf-8', $request);
+    }
+
     public function installBondSidecar(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
@@ -458,6 +471,7 @@ final class ArtifactController extends BaseController
             'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
+            'windows_update_helper',
             'macos_client_app_arm64',
             'macos_client_app_x64',
             'macos_client_update_arm64',

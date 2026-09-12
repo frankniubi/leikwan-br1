@@ -294,6 +294,26 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('windows_client_app', '/artifacts/leikwan-bridge-setup.exe');
     }
 
+    protected function windowsUpdateHelperUrl(): string
+    {
+        return $this->clientAppArtifactUrl('windows_update_helper', '/artifacts/leikwan-bridge-repair.cmd');
+    }
+
+    /**
+     * One line an operator can paste on a Windows host that is stuck on an older
+     * build: fetch the helper and start it elevated. It repairs the shared
+     * permissions and then installs the published build.
+     */
+    protected function windowsUpdateHelperCommand(): string
+    {
+        $url = $this->windowsUpdateHelperUrl();
+
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
+            . '$h = Join-Path $env:TEMP leikwan-bridge-repair.cmd; '
+            . 'Invoke-WebRequest -UseBasicParsing ' . $url . ' -OutFile $h; '
+            . 'Start-Process -FilePath $h -Verb RunAs"';
+    }
+
     protected function linuxArm64ClientInstallerUrl(): string
     {
         return $this->clientAppArtifactUrl(
@@ -579,8 +599,8 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
             ];
         $linuxDescription = $hasClient
-            ? 'One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
-            : 'One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
+            ? 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
+            : 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
@@ -593,6 +613,15 @@ abstract class BaseController
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
                 'Download the current LeiKwan Bridge desktop app for this client.'
+            )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Windows Update Helper', 'windows_update_helper'),
+                $this->windowsUpdateHelperCommand(),
+                [
+                    $this->renderCommandLink('Download Update Helper', $this->windowsUpdateHelperUrl()),
+                    $this->renderCopyButton('Copy Update Command', $this->windowsUpdateHelperCommand()),
+                ],
+                'For a Windows host stuck on an older build: the helper repairs the shared client permissions and then updates the client to the published release. Run it as administrator. It is also installed next to the client.'
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -674,7 +703,7 @@ abstract class BaseController
                     $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
                     $this->renderCopyButton('Copy Install Command', $installCommand),
                 ],
-                'Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest.'
+                'Debian 11/12/13 only. Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 (apt/dpkg/systemd) and verifies every artifact against the panel manifest.'
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
