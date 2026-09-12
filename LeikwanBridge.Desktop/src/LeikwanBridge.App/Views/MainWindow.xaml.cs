@@ -1386,8 +1386,8 @@ public partial class MainWindow : Window
         {
             var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact, CreateUpdateProgress());
             var installerArguments = BuildSilentUpdateArguments(installerPath);
-            ClearPendingUpdateState();
             LaunchInstallerAndExit(installerPath, installerArguments);
+            ClearPendingUpdateState();
         }
         catch (Exception ex)
         {
@@ -1461,8 +1461,8 @@ public partial class MainWindow : Window
             {
                 var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
                 var installerArguments = BuildSilentUpdateArguments(installerPath);
-                ClearPendingUpdateState();
                 LaunchInstallerAndExit(installerPath, installerArguments);
+                ClearPendingUpdateState();
                 return;
             }
 
@@ -1513,8 +1513,8 @@ public partial class MainWindow : Window
             }
 
             var installerArguments = BuildSilentUpdateArguments(path);
-            ClearPendingUpdateState();
             LaunchInstallerAndExit(path, installerArguments);
+            ClearPendingUpdateState();
             return Task.FromResult(true);
         }
         catch (Exception ex)
@@ -1551,12 +1551,12 @@ public partial class MainWindow : Window
         return installerPath;
     }
 
+    // ERROR_CANCELLED: the user dismissed the UAC prompt raised for the
+    // installer, which runs elevated because the client is an all-users install.
+    private const int ErrorCancelledByUser = 1223;
+
     private void LaunchInstallerAndExit(string installerPath, IReadOnlyList<string>? installerArguments = null)
     {
-        _vm.DisconnectCommand.Execute(null);
-        _trayLifecycle.RequestExit();
-        DisposeTrayIcon();
-
         var startInfo = new ProcessStartInfo
         {
             FileName = installerPath,
@@ -1569,9 +1569,31 @@ public partial class MainWindow : Window
                 startInfo.ArgumentList.Add(installerArgument);
         }
 
-        var process = Process.Start(startInfo);
+        // Start the installer before tearing the client down. Installing an
+        // all-users copy needs elevation, so a declined prompt throws right
+        // here; disconnecting and requesting exit first left the user with no
+        // client, no tunnel and no installer running - which reads as "the app
+        // broke and will not start any more".
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelledByUser)
+        {
+            Log.Information("update installer launch cancelled at the elevation prompt");
+            throw new InvalidOperationException(
+                "Update cancelled: installing LeiKwan Bridge needs administrator approval. " +
+                "The client keeps running; approve the prompt or install again as administrator.",
+                ex);
+        }
+
         if (process == null)
             throw new InvalidOperationException("failed to launch installer");
+
+        _vm.DisconnectCommand.Execute(null);
+        _trayLifecycle.RequestExit();
+        DisposeTrayIcon();
         System.Windows.Application.Current.Shutdown();
     }
 

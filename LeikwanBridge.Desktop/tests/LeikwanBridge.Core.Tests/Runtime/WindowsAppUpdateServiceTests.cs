@@ -26,6 +26,38 @@ public sealed class WindowsAppUpdateServiceTests
     }
 
     [Fact]
+    public void AgentConfig_MigrateLegacyUltraBin_MigratesManagedPerMachineRuntimePath()
+    {
+        // The legacy per-machine client agent kept its own runtime copy that no
+        // installer ever refreshed. Launching it downgraded the helper and made
+        // the update check report drift forever, so it must migrate too.
+        using var tempDir = new TempUpdateDirectory();
+        var installedBin = Path.Combine(tempDir.Path, "bin", "ultra-client.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(installedBin)!);
+        File.WriteAllText(installedBin, "runtime");
+        var config = new AgentConfig
+        {
+            UltraBin = @"C:\ProgramData\Leikwan\ClientAgent\runtime\ultra-client.exe",
+        };
+
+        Assert.True(config.MigrateLegacyUltraBin(tempDir.Path));
+        Assert.Equal(installedBin, config.UltraBin);
+    }
+
+    [Fact]
+    public void AgentConfig_MigrateLegacyUltraBin_KeepsExplicitCustomRuntimePath()
+    {
+        using var tempDir = new TempUpdateDirectory();
+        var installedBin = Path.Combine(tempDir.Path, "bin", "ultra-client.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(installedBin)!);
+        File.WriteAllText(installedBin, "runtime");
+        var config = new AgentConfig { UltraBin = @"D:\tools\ultra-client.exe" };
+
+        Assert.False(config.MigrateLegacyUltraBin(tempDir.Path));
+        Assert.Equal(@"D:\tools\ultra-client.exe", config.UltraBin);
+    }
+
+    [Fact]
     public void AgentConfig_CanStorePendingWindowsUpdateState()
     {
         var config = new AgentConfig
