@@ -182,12 +182,17 @@ reset to inherit exactly those.
 
 ### One-click repair script
 
-`scripts/leikwan-bridge-repair.cmd` (published as
-`https://v3.leikwanhost.com/artifacts/leikwan-bridge-repair.cmd`) fixes both
+`scripts/leikwan-bridge-repair.cmd` - published at
+`https://v3.leikwanhost.com/artifacts/files/leikwan-bridge-repair.cmd` - fixes both
 permission problems on a machine that is already broken. Pure batch + `icacls`,
 so it works where PowerShell scripts are blocked by execution policy; it
 elevates itself through UAC, prints the before/after ACLs, verifies the shared
 config is writable again and offers to start the client.
+
+It has to live under `master/public/artifacts/`, not `artifacts/`: the vhost sends
+every `/artifacts/*` request into PHP (`try_files
+/__leikwan_no_static_artifact_shadow__ /index.php`), which only serves artifacts
+listed in `versions.json`. `/artifacts/files/` is the static alias.
 
 ### Forward 158 - the panel hid the reason
 
