@@ -702,12 +702,19 @@ final class UltraCandidateReputationService
         if ($this->db === null || $this->usesFakeTables()) {
             return count($this->memoryObservers[$candidateHash] ?? []);
         }
+        // A device whose reports the source host has disproved stops counting as
+        // an independent observer: its failures still land in the event stream
+        // for audit, but it can no longer quarantine a line on its own. Rows
+        // without a device record (reports from before the reviews existed)
+        // keep counting, which is why the join is a LEFT JOIN on demotion alone.
         $row = $this->db->fetchOne(
-            'SELECT COUNT(DISTINCT observer_hash) AS observer_count,
-                    SUM(CASE WHEN observer_hash = :observer_hash THEN 1 ELSE 0 END) AS observer_seen
-             FROM ultra_candidate_reputation_events
-             WHERE candidate_key_hash = :candidate_key_hash
-               AND event_type = \'failure\'',
+            'SELECT COUNT(DISTINCT e.observer_hash) AS observer_count,
+                    SUM(CASE WHEN e.observer_hash = :observer_hash THEN 1 ELSE 0 END) AS observer_seen
+               FROM ultra_candidate_reputation_events e
+               LEFT JOIN ultra_observer_devices d ON d.observer_hash = e.observer_hash
+              WHERE e.candidate_key_hash = :candidate_key_hash
+                AND e.event_type = \'failure\'
+                AND d.demoted_at IS NULL',
             ['candidate_key_hash' => $candidateHash, 'observer_hash' => $observerHash]
         );
         $count = (int) ($row['observer_count'] ?? 0);

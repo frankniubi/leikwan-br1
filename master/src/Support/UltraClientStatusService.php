@@ -38,12 +38,16 @@ final class UltraClientStatusService
         private Database $db,
         private $clock = null,
         ?UltraCandidateReputationService $candidateReputation = null,
+        ?UltraCandidateReviewService $candidateReviews = null,
     ) {
         $this->clock ??= static fn(): int => time();
         $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
+        $this->candidateReviews = $candidateReviews ?? new UltraCandidateReviewService($db, $this->clock);
     }
 
     private UltraCandidateReputationService $candidateReputation;
+
+    private UltraCandidateReviewService $candidateReviews;
 
     /** @var list<string>|null */
     private ?array $runtimeFingerprints = null;
@@ -131,6 +135,9 @@ final class UltraClientStatusService
         $assignments = $this->assignmentsForClients([$clientId]);
         $allowed = $assignments[$clientId] ?? [];
         $observerHash = hash('sha256', $clientId . ':' . $deviceId);
+        // Keep the observer hash resolvable to a client device: the review flow
+        // has to name the device whose failure reports it disproved.
+        $this->candidateReviews->rememberObserver($clientId, $deviceId, $observerHash);
         $accepted = 0;
         $seen = [];
         foreach (array_slice(array_values($feedback), 0, UltraCandidateReputationService::MAX_FEEDBACK) as $item) {

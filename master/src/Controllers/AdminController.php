@@ -26,6 +26,7 @@ use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraCandidateReputationService;
+use Leikwan\Master\Support\UltraCandidateReviewService;
 use Leikwan\Master\Support\UltraInventoryService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
@@ -3432,7 +3433,52 @@ final class AdminController extends BaseController
             if ($rows === '') {
                 $rows = '<tr><td colspan="9" class="muted">No dynamic Ultra reputation observations.</td></tr>';
             }
-            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Dynamic reputation is observational and does not replace static line policy.</div><div class="table-wrap"><table><thead><tr><th>State</th><th>Source</th><th>Line</th><th>Scope</th><th>Protocol</th><th>Failures / successes</th><th>Observers</th><th>Last reason</th><th>Quarantine until</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $reviewService = new UltraCandidateReviewService($this->db);
+            try {
+                $demotedDevices = $reviewService->demotedDevices($limit);
+                $reviewRowsRaw = $reviewService->recent($limit);
+            } catch (\Throwable) {
+                $demotedDevices = [];
+                $reviewRowsRaw = [];
+            }
+            $deviceRows = '';
+            foreach ($demotedDevices as $device) {
+                $deviceDemotedAt = trim((string) ($device['demoted_at'] ?? ''));
+                $deviceRows .= '<tr><td><span class="badge ' . ($deviceDemotedAt !== '' ? 'danger' : 'info') . '">'
+                    . ($deviceDemotedAt !== '' ? 'demoted' : 'watch') . '</span></td>'
+                    . '<td>' . (int) ($device['client_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($device['device_id'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($device['observer_hash'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . (int) ($device['strikes'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape($deviceDemotedAt !== '' ? $deviceDemotedAt : '-') . '</td>'
+                    . '<td>' . $this->escape((string) ($device['last_rebuttal_at'] ?? '-')) . '</td>'
+                    . '<td>' . $this->escape((string) ($device['last_seen_at'] ?? '')) . '</td></tr>';
+            }
+            if ($deviceRows === '') {
+                $deviceRows = '<tr><td colspan="8" class="muted">No device report has been disproved by a source review yet.</td></tr>';
+            }
+            $reviewTableRows = '';
+            foreach ($reviewRowsRaw as $reviewRow) {
+                $reviewState = strtolower(trim((string) ($reviewRow['state'] ?? '')));
+                $reviewBadge = $reviewState === UltraCandidateReviewService::STATE_FAILED ? 'danger'
+                    : ($reviewState === UltraCandidateReviewService::STATE_PASSED ? 'success' : 'info');
+                $reviewTableRows .= '<tr><td>' . (int) ($reviewRow['id'] ?? 0) . '</td>'
+                    . '<td><span class="badge ' . $reviewBadge . '">' . $this->escape($reviewState) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['source_id'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($reviewRow['line_id'] ?? 0) . '</td>'
+                    . '<td>' . (int) ($reviewRow['attempts'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['requested_at'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['completed_at'] ?? '-')) . '</td>'
+                    . '<td>' . $this->escape(mb_substr((string) ($reviewRow['result_json'] ?? ''), 0, 160)) . '</td></tr>';
+            }
+            if ($reviewTableRows === '') {
+                $reviewTableRows = '<tr><td colspan="8" class="muted">No source review has run yet.</td></tr>';
+            }
+            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Dynamic reputation is observational and does not replace static line policy.</div><div class="table-wrap"><table><thead><tr><th>State</th><th>Source</th><th>Line</th><th>Scope</th><th>Protocol</th><th>Failures / successes</th><th>Observers</th><th>Last reason</th><th>Quarantine until</th></tr></thead><tbody>' . $rows . '</tbody></table></div>'
+                . '<div class="muted" style="margin:18px 0 10px">Devices whose reports a source review disproved. A demoted device still records events but no longer counts as an independent observer, so it cannot quarantine a line on its own.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>Flag</th><th>Client</th><th>Device</th><th>Observer</th><th>Strikes</th><th>Demoted at</th><th>Last rebuttal</th><th>Last seen</th></tr></thead><tbody>' . $deviceRows . '</tbody></table></div>'
+                . '<div class="muted" style="margin:18px 0 10px">Source re-reviews of quarantined lines: big-packet UDP and DNS must both stay usable for the whole window, otherwise the quarantine stands.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>ID</th><th>State</th><th>Source</th><th>Line</th><th>Attempts</th><th>Requested</th><th>Completed</th><th>Result</th></tr></thead><tbody>' . $reviewTableRows . '</tbody></table></div></section>';
         } else {
             $sources = $inventory->listSourcesForAdmin();
             $rows = '';
