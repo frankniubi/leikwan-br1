@@ -21,8 +21,12 @@ final class UltraCandidateReputationService
     public const DEFAULT_PROBATION_FAILURES = 2;
     public const DEFAULT_QUARANTINE_FAILURES = 3;
     public const DEFAULT_MIN_INDEPENDENT_OBSERVERS = 2;
-    public const DEFAULT_QUARANTINE_SECONDS = 1800;
-    public const DEFAULT_MAX_BACKOFF_SECONDS = 7200;
+    // A dead line is expensive: one client keeps re-selecting it and every
+    // connection through it fails. Start at an hour and double per repeat
+    // offence up to a day, so a chronically bad candidate spends most of its
+    // time out of rotation instead of being retried every 30 minutes.
+    public const DEFAULT_QUARANTINE_SECONDS = 3600;
+    public const DEFAULT_MAX_BACKOFF_SECONDS = 86400;
     public const DEFAULT_RECOVERY_SUCCESSES = 3;
     public const MAX_FEEDBACK = 32;
 
@@ -294,15 +298,21 @@ final class UltraCandidateReputationService
                 $this->persistEvent($row, 'failure', $reason, $observerHash, $evidenceHash);
                 return $row;
             }
+            // backoff_level counts how many times this candidate has already
+            // been quarantined, and it survives recovery. A candidate with at
+            // least one behind it is a repeat offender: the next corroborated
+            // failure puts it straight back into quarantine instead of walking
+            // the probation ramp again, and it resumes on the same ladder.
+            $previousQuarantines = (int) ($row['backoff_level'] ?? 0);
             if ($row['consecutive_failures'] >= $this->probationFailures) {
                 $row['state'] = self::STATE_PROBATION;
             }
-            if ($row['consecutive_failures'] >= $this->quarantineFailures
+            $requiredFailures = $previousQuarantines >= 1 ? 1 : $this->quarantineFailures;
+            if ($row['consecutive_failures'] >= $requiredFailures
                 && $row['independent_observers'] >= $this->minimumObservers) {
                 $row['state'] = self::STATE_QUARANTINED;
-                $ttl = $this->backoffSeconds((int) ($row['backoff_level'] ?? 0));
-                $row['quarantine_until'] = $now + $ttl;
-                $row['backoff_level'] = min(32, (int) ($row['backoff_level'] ?? 0) + 1);
+                $row['quarantine_until'] = $now + $this->backoffSeconds($previousQuarantines);
+                $row['backoff_level'] = min(32, $previousQuarantines + 1);
             }
             $this->persistRow($row);
             $this->persistEvent($row, 'failure', $reason, $observerHash, $evidenceHash);
@@ -342,7 +352,10 @@ final class UltraCandidateReputationService
             if ((string) ($row['state'] ?? self::STATE_HEALTHY) !== self::STATE_QUARANTINED
                 && (int) $row['consecutive_successes'] >= $this->recoverySuccesses) {
                 $row['state'] = self::STATE_HEALTHY;
-                $row['backoff_level'] = 0;
+                // backoff_level is deliberately NOT reset: the ladder is the
+                // record of how often this candidate has been quarantined, and
+                // a fixed line still works normally - the level only decides how
+                // long the next quarantine lasts and whether the ramp is skipped.
                 $row['quarantine_until'] = 0;
             }
             $this->persistRow($row);

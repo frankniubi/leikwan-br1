@@ -45,7 +45,7 @@ assertUltraCandidateReputation(($second['state'] ?? '') === 'probation', 'two fa
 $third = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'evidence-3');
 assertUltraCandidateReputation(($third['state'] ?? '') === 'quarantined', 'corroborated third failure must quarantine');
 assertUltraCandidateReputation(($third['independent_observers'] ?? 0) === 2, 'independent observer count missing');
-assertUltraCandidateReputation(($third['quarantine_until'] ?? 0) === $now + 1800, 'initial quarantine TTL mismatch');
+assertUltraCandidateReputation(($third['quarantine_until'] ?? 0) === $now + 3600, 'initial quarantine TTL mismatch');
 assertUltraCandidateReputation($service->isQuarantined($scope), 'quarantined candidate was reported eligible');
 
 $duplicate = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'evidence-3');
@@ -65,7 +65,7 @@ $allBad = $service->filterCandidates([$scope], 1);
 assertUltraCandidateReputation(count($allBad) === 1, 'availability floor removed the final candidate');
 assertUltraCandidateReputation(($allBad[0]['line_id'] ?? 0) === 347, 'availability floor preserved wrong candidate');
 
-$now += 1801;
+$now += 3601;
 $probation = $service->stateFor($scope);
 assertUltraCandidateReputation(($probation['state'] ?? '') === 'probation', 'expired quarantine must enter probation');
 assertUltraCandidateReputation(($probation['quarantine_until'] ?? 0) === 0, 'expired quarantine retained TTL');
@@ -76,6 +76,22 @@ $success3 = $service->observeSuccess($scope, 'observer-b', 'success-3');
 assertUltraCandidateReputation(($success1['state'] ?? '') === 'probation', 'first recovery success must remain probation');
 assertUltraCandidateReputation(($success2['state'] ?? '') === 'probation', 'second recovery success must remain probation');
 assertUltraCandidateReputation(($success3['state'] ?? '') === 'healthy', 'third recovery success must restore healthy');
+assertUltraCandidateReputation(($success3['backoff_level'] ?? 0) === 1, 'recovery must keep the quarantine history');
+
+// A candidate that has already served a quarantine is a repeat offender: the
+// next corroborated failure quarantines it immediately and on the next rung of
+// the ladder, instead of walking the probation ramp from scratch.
+$relapse = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-4');
+assertUltraCandidateReputation(($relapse['state'] ?? '') === 'quarantined', 'repeat offender must quarantine on the first failure');
+assertUltraCandidateReputation(($relapse['quarantine_until'] ?? 0) === $now + 7200, 'repeat quarantine must escalate the TTL');
+assertUltraCandidateReputation(($relapse['backoff_level'] ?? 0) === 2, 'repeat quarantine must advance the ladder');
+
+$now += 7201;
+$secondProbation = $service->stateFor($scope);
+assertUltraCandidateReputation(($secondProbation['state'] ?? '') === 'probation', 'second expiry must enter probation');
+$relapse2 = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-5');
+assertUltraCandidateReputation(($relapse2['state'] ?? '') === 'quarantined', 'third offence must quarantine on the first failure');
+assertUltraCandidateReputation(($relapse2['quarantine_until'] ?? 0) === $now + 14400, 'third quarantine must keep doubling');
 
 $fingerprintService = new UltraCandidateReputationService(null, static function () use (&$now): int {
     return $now;
