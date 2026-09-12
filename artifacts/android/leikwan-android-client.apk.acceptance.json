@@ -1,16 +1,16 @@
 ﻿{
     "status":  "ok",
-    "artifact":  "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\.worktrees\\task-android-ha-20260911\\artifacts\\android\\leikwan-android-client.apk",
-    "sha256":  "97ba83259b64b810f01d60b775a4c845041e052a0e47f8b6f7b751f1d60a10a3",
-    "size_bytes":  89424219,
+    "artifact":  "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\.worktrees\\task-android-025\\artifacts\\android\\leikwan-android-client.apk",
+    "sha256":  "8af628d2194e854e002ac77c66cc9249b65e810424f2690b5a5d5f5e43096de4",
+    "size_bytes":  89428315,
     "signature_v2_v3":  true,
     "abi_matrix":  [
                        "arm64-v8a",
                        "x86_64"
                    ],
     "runtime_version":  "2026.09.11.4",
-    "version_name":  "0.2.24",
-    "version_code":  26,
+    "version_name":  "0.2.25",
+    "version_code":  27,
     "release_contract_checked":  true,
     "retired_update_classes":  0,
     "update_manifest_unchanged":  true,
