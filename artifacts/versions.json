@@ -271,9 +271,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-        "sha256": "f13effce9de4e2885fede5db6a7163335f206ea359dc1786e684e6bbcde9b0db",
-        "size_bytes": 77414309,
-        "version": "1.0.29"
+        "sha256": "cd30c6802442fcee57e3883dd9aa6ea0b44207610f2aae26d0e18ec5dbb0efc4",
+        "size_bytes": 77412389,
+        "version": "1.0.31"
     },
     "macos_client_app_x64": {
         "architecture": "x86_64",
@@ -285,9 +285,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-        "sha256": "44e117c9d5b29d0540720ec898aa3381209338ab8bc276e2c579e4ee8b06aec0",
-        "size_bytes": 81755324,
-        "version": "1.0.29"
+        "sha256": "266f311a8b15a337db715e527be8745bba4d8f27c653598284982ccb6c2427d7",
+        "size_bytes": 81755329,
+        "version": "1.0.31"
     },
     "macos_client_update_arm64": {
         "architecture": "arm64",
@@ -299,17 +299,17 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-        "sha256": "694ebf369f8b644491c846122ab05e9d6c08520740476a9094a081a2d9ee1d61",
-        "size_bytes": 68918537,
+        "sha256": "9223b45499d0e374480eae7b50a90165d22f0bbf6e2825bb536efd20f7ab9730",
+        "size_bytes": 68918539,
         "runtime_sha256": {
             "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
             "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
             "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
             "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
             "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-            "bin/ultra-client": "04a22d295a0b2674e5cb7fb74e074d8e7d61b5c8a86e912a24d5bcfb61922884"
+            "bin/ultra-client": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f"
         },
-        "version": "1.0.29"
+        "version": "1.0.31"
     },
     "macos_client_update_x64": {
         "architecture": "x86_64",
@@ -321,17 +321,17 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-        "sha256": "b84f18dd2350ea421eb7b4d2af6188fa4cb660e7ea799b5c5a32d5875fc9a0ff",
-        "size_bytes": 72927841,
+        "sha256": "1efc39fc6a1f43220ee23f088339500e19ff7a42530ac6437dcef1cd6d8358da",
+        "size_bytes": 72927842,
         "runtime_sha256": {
             "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
             "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
             "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
             "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
             "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-            "bin/ultra-client": "1373d771ab88277a10845f0bf54e31eb271c0fc5e20f8a2a744d1243ae92d02e"
+            "bin/ultra-client": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91"
         },
-        "version": "1.0.29"
+        "version": "1.0.31"
     },
     "mptcp_client_runtime": {
         "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -542,8 +542,8 @@
     "windows_client_app": {
         "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
         "path": "artifacts/windows/leikwan-bridge-setup.exe",
-        "sha256": "1d67125327fda49770353780f188954c30382421a229a0284dbc7ff8ad77fdac",
-        "size_bytes": 72003121,
+        "sha256": "04fd83fe5ed2f0ceac8a3571f564c631caff07e3fd8980964de5045a46839231",
+        "size_bytes": 72003860,
         "runtime_sha256": {
             "ultra_client_runtime_windows": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63",
             "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -552,7 +552,7 @@
             "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
             "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1"
         },
-        "version": "0.1.20.31"
+        "version": "0.1.20.32"
     },
     "wstunnel_linux_amd64": {
         "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",

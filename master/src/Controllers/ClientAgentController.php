@@ -467,8 +467,24 @@ final class ClientAgentController extends BaseController
             }
             $ticket = trim((string) ($item['session_ticket'] ?? ''));
             if ($ticket === '' || !hash_equals($ticket, (string) ($grant['session_ticket'] ?? ''))) {
-                $lastError = 'lease_scope_invalid';
-                continue;
+                // The panel re-mints the ticket whenever the relay material rotates
+                // (~every 30 minutes) while a running forward still carries the ticket
+                // from its last config pull, so a strict comparison made every lease
+                // refresh fail with 409 lease_scope_invalid. The agent then stopped the
+                // forward and restarted it, which the user saw as an endless
+                // "Starting routes" loop. The assignment above is already validated for
+                // this exact client + device + forward, so a rotated ticket is accepted
+                // and recorded instead of failing the refresh.
+                if ($ticket === '' || (int) ($grant['forward_id'] ?? 0) !== $forwardId) {
+                    $lastError = 'lease_scope_invalid';
+                    continue;
+                }
+                error_log(sprintf(
+                    'ultra_lease_ticket_rotated client=%d forward=%d device=%s',
+                    $clientId,
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16)
+                ));
             }
             $policy = [
                 'forward_id' => $forwardId,

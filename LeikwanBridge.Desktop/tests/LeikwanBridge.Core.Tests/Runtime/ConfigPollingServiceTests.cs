@@ -358,10 +358,39 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
-    public async Task SyncOnceAsync_StopsUltraWhenLeaseEndpointFailsWithoutAbortingSync()
+    public async Task SyncOnceAsync_QueuesConfigRefreshWhenLeaseGrantRotatesWithoutAbortingSync()
     {
+        // The panel re-mints the lease ticket whenever the relay material rotates, so a
+        // 409 lease_scope_invalid must trigger a config refresh - never a teardown, which
+        // looped the forward in production (user-visible "Starting routes" flashing).
         using var tempDir = new TempStateDirectory();
         using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 409);
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+        Assert.Single(service.LatestForwards);
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_StillStopsUltraWhenTheLeaseEndpointFailsForAnotherReason()
+    {
+        // A non-grant failure (for example a 500) keeps the old, safe behaviour: the
+        // forward is stopped rather than left running against a stale lease.
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 500);
         var config = new AgentConfig
         {
             MasterUrl = server.BaseUrl,
