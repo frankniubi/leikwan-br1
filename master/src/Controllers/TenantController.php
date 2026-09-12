@@ -1296,6 +1296,7 @@ final class TenantController extends BaseController
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
             . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
             . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('linux')
             . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
             . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。</div>'
@@ -1304,19 +1305,21 @@ final class TenantController extends BaseController
             . $resetForm
             . '</div></section>'
             . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('windows')
             . $this->escape($this->clientAppReleaseLabel('Windows App', 'windows_client_app')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '</section>'
-            . '<section class="tenant-client-install__platform"><strong>'
+            . '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(127,127,127,0.25);">'
+            . '<strong>' . $this->platformIcon('helper')
             . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
             . '<div class="muted">老版本客户端卡住时用：一键修复共享权限并更新到当前版本，需以管理员身份运行。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
             . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
-            . '</div></section>'
+            . '</div></div></section>'
             . $macosInstallSection
             . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('android')
             . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
