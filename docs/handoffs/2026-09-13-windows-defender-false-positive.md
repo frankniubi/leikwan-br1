@@ -138,7 +138,77 @@ actually needs elevation.
    `2026.09.12.2.0dc69598`). 0.1.20.33/0.1.20.34/0.1.20.35 were the
    intermediate steps.
 
-## Machine maintenance performed (2026-09-13 01:32, elevated)
+## Round 2 - runtime ACL hardening, the "100% and then nothing" update, one-click repair
+
+Requested: narrow the runtime directory, ship the hardening in the installer,
+publish a new installer plus a one-click repair script, and fix the update that
+stopped after the download hit 100%.
+
+### The update reached 100% and then nothing happened
+
+`windows-client-setup.iss` has **no `[Run]` section**, and nothing else started
+the client again. A self-update exits the client first (the installer has to
+replace files it holds open), runs silently, and left the machine with no client
+at all - so the user saw the window vanish at 100% and nothing else.
+
+* `Start-InstalledClient` in the install helper restarts the client at the end of
+  a self-update (`-UpdateRequested 1` only; a fresh install must not pop a window
+  behind the wizard). It launches through `explorer.exe` on purpose: starting the
+  client from the elevated helper would hand it an administrator token and it
+  would then write config and logs the user can no longer modify - the failure
+  this whole handoff is about. Verified: the client came back as a child of
+  `explorer.exe` with no manual step.
+* `MainWindow.LaunchInstallerAndExit` now reports `UpdatePhase.Apply` ("Waiting
+  for administrator approval to install...") before launching, so the panel does
+  not sit on "download finished / 100%" while the UAC prompt is up.
+
+### Runtime directory narrowed
+
+`Repair-SharedDataAcl` now also restricts `%ProgramData%\Leikwan\ClientAgent\runtime`
+to `SYSTEM`/`Administrators` full control and `Users` read+execute, removing the
+inherited write access that let any local process replace the helper binary the
+client executes. Two steps on purpose:
+
+```
+icacls <runtime> /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /C /Q
+icacls <runtime>\* /reset /T /C /Q
+```
+
+Granting `(OI)(CI)` straight at a file while stripping inheritance with `/T`
+leaves that file with an **empty DACL** - it becomes unreadable, which is worse
+than the problem being fixed. Caught by testing the exact command on a scratch
+tree first; the directory now gets explicit inheritable ACEs and the children are
+reset to inherit exactly those.
+
+### One-click repair script
+
+`scripts/leikwan-bridge-repair.cmd` (published as
+`https://v3.leikwanhost.com/artifacts/leikwan-bridge-repair.cmd`) fixes both
+permission problems on a machine that is already broken. Pure batch + `icacls`,
+so it works where PowerShell scripts are blocked by execution policy; it
+elevates itself through UAC, prints the before/after ACLs, verifies the shared
+config is writable again and offers to start the client.
+
+### Forward 158 - the panel hid the reason
+
+One forward was down with the client logging only "lease response unavailable".
+The lease endpoint returns 200 as soon as **any** forward got a lease, so a
+single refused forward arrived with no reason attached. Panel patches now in
+`scripts/panel-patches/`:
+
+* `02-log-lease-refusals.php` - logs `ultra_lease_forward_refused ... error=<code>`
+  and fixes the rotated-ticket log line, which referenced an undefined `$clientId`
+  and always printed `client=0`.
+* `03-report-per-forward-lease-failures.php` - adds a `failures` map to both the
+  200 and 409 responses.
+
+That immediately named the cause: `policy_generation_invalid` for forward 158.
+`ConfigPollingService` queued a refresh without the forward id, and a targeted
+refresh is the only thing that bypasses the "config revision unchanged, skip"
+path, so the runtime kept the stale policy generation until the client was
+restarted by hand. Both empty-lease paths now pass the forward id.
+
+### Machine maintenance performed (2026-09-13 01:32, elevated)
 
 | item | before | after |
 | --- | --- | --- |

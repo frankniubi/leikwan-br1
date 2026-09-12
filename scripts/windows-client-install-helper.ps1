@@ -747,9 +747,71 @@ function Repair-SharedDataAcl {
         $repaired++
     }
 
+    # The legacy helper binary lives here and nothing the interactive user runs
+    # needs to write it: the client only reads and executes it, and every update
+    # replaces it from this elevated helper. Inherited write access let any local
+    # process swap the binary the client executes, so narrow it to read+execute.
+    $runtimeDir = Join-Path $clientAgentDir "runtime"
+    if (Test-Path -LiteralPath $runtimeDir) {
+        # Two steps on purpose. Granting "(OI)(CI)" straight at a file leaves the
+        # file with an empty DACL when /T is combined with /inheritance:r, so the
+        # directory gets explicit inheritable ACEs first and every child is then
+        # reset to inherit exactly those.
+        $runtimeOutput = & icacls.exe $runtimeDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /C /Q 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "failed to restrict $runtimeDir : $($runtimeOutput -join " ")"
+        } else {
+            $childOutput = & icacls.exe (Join-Path $runtimeDir "*") /reset /T /C /Q 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "failed to re-inherit children of $runtimeDir : $($childOutput -join " ")"
+            } else {
+                Write-Host "restricted $runtimeDir to read+execute for users"
+                $repaired++
+            }
+        }
+    }
+
     if ($repaired -gt 0) { Write-Host "repaired $repaired shared client data path(s) under $clientAgentDir" }
     return $repaired
 }
+
+# A silent update exits the client before the installer runs, and nothing used
+# to start it again: the download finished, the window vanished and the machine
+# was left with no client at all - "the update reaches 100% and then nothing
+# happens". Launch it through Explorer so the new process inherits the
+# interactive user token: starting it straight from this elevated helper would
+# hand the client an administrator token, and it would then write config and
+# logs that the user can no longer modify.
+function Start-InstalledClient {
+    param([string]$TargetDir)
+
+    $exePath = Join-Path $TargetDir "leikwan-client-win.exe"
+    if (-not (Test-Path -LiteralPath $exePath)) { return $false }
+
+    if (Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue) {
+        Write-Host "client already running; not starting a second instance"
+        return $false
+    }
+
+    $systemRoot = [Environment]::GetEnvironmentVariable("SystemRoot")
+    if ([string]::IsNullOrWhiteSpace($systemRoot)) { return $false }
+    $explorerPath = Join-Path $systemRoot "explorer.exe"
+    if (-not (Test-Path -LiteralPath $explorerPath)) { return $false }
+
+    Start-Process -FilePath $explorerPath -ArgumentList @($exePath) | Out-Null
+
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        if (Get-Process -Name "leikwan-client-win" -ErrorAction SilentlyContinue) {
+            Write-Host "restarted the client in the interactive session"
+            return $true
+        }
+    }
+
+    Write-Warning "the client did not come back within 15s after the update"
+    return $false
+}
+
 function Test-RealInstall {
     param([string]$DirectoryPath)
 
@@ -1029,6 +1091,17 @@ function Invoke-DuplicateInstallSweep {
         Invoke-DuplicateInstallSweep -TargetDir $InstallDir | Out-Null
     } catch {
         Write-Warning "duplicate install sweep failed: $($_.Exception.Message)"
+    }
+
+    # Only a self-update tears the client down first, so only a self-update has
+    # to bring it back. A fresh install never had one running and must not pop a
+    # window behind the wizard.
+    if ($updateRequested) {
+        try {
+            Start-InstalledClient -TargetDir $InstallDir | Out-Null
+        } catch {
+            Write-Warning "could not restart the client after the update: $($_.Exception.Message)"
+        }
     }
 }
 
