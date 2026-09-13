@@ -79,6 +79,23 @@
   gap: 14px;
 }
 
+/* One filled action per screen: the top bar stays secondary. */
+.bridge-home-page .site-actions .button {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--bridge-line-strong);
+  border-radius: 999px;
+  background: var(--bridge-paper);
+  color: var(--bridge-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bridge-home-page .site-actions .button:hover {
+  border-color: var(--bridge-sage);
+  color: var(--bridge-sage);
+}
+
 /* ---------- full-bleed helper ---------- */
 .bridge-home-hero,
 .bridge-home-closing {
@@ -100,37 +117,29 @@
 }
 
 .bridge-home-kicker {
-  margin: 0 0 20px;
+  margin: 0 0 18px;
   color: var(--bridge-sage-light);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
 .bridge-home-hero h1 {
+  max-width: 18ch;
   margin: 0;
   color: #ffffff;
-  font-size: 46px;
+  font-size: 44px;
   font-weight: 700;
-  line-height: 1.08;
-  letter-spacing: -0.025em;
-}
-
-.bridge-home-hero h1 span {
-  display: block;
-  margin-top: 10px;
-  color: var(--bridge-sage-light);
-  font-size: 20px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
 }
 
 .bridge-home-lede {
   max-width: 46ch;
   margin: 22px 0 0;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.8);
   font-size: 17px;
   line-height: 1.7;
 }
@@ -205,7 +214,7 @@
 }
 
 .bridge-home-facts span {
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.62);
   font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -300,8 +309,8 @@
 
 .bridge-home-board-note {
   margin: 16px 0 0;
-  color: rgba(255, 255, 255, 0.45);
-  font-size: 12px;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 12.5px;
   line-height: 1.6;
 }
 
@@ -372,9 +381,9 @@
 .bridge-home-step-index {
   display: block;
   margin-bottom: 18px;
-  color: var(--bridge-line-strong);
+  color: var(--bridge-sage);
   font-family: var(--bridge-mono);
-  font-size: 40px;
+  font-size: 38px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.04em;
@@ -550,6 +559,28 @@
     padding: 0 20px;
   }
 
+  .bridge-home-topbar {
+    flex-wrap: wrap;
+    row-gap: 12px;
+  }
+
+  .bridge-home-page .site-mark {
+    width: 32px;
+    height: 32px;
+  }
+
+  .bridge-home-page .site-copy strong {
+    font-size: 14px;
+  }
+
+  .bridge-home-page .site-copy span {
+    display: none;
+  }
+
+  .bridge-home-page .site-actions {
+    gap: 10px;
+  }
+
   .bridge-home-hero-inner {
     grid-template-columns: minmax(0, 1fr);
     gap: 36px;
@@ -557,11 +588,8 @@
   }
 
   .bridge-home-hero h1 {
-    font-size: 36px;
-  }
-
-  .bridge-home-hero h1 span {
-    font-size: 18px;
+    font-size: 32px;
+    max-width: none;
   }
 
   .bridge-home-board-row {
@@ -584,7 +612,7 @@
 
   .bridge-home-step-list,
   .bridge-home-path-rail,
-  .bridge-home-closing {
+  .bridge-home-closing-inner {
     grid-template-columns: minmax(0, 1fr);
     gap: 28px;
   }
@@ -605,8 +633,15 @@
     display: none;
   }
 
-  .bridge-home-closing {
-    padding: 48px 0;
+  .bridge-home-closing-inner {
+    padding: 44px 20px;
+  }
+}
+
+@media (max-width: 560px) {
+  .bridge-home-page .site-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 

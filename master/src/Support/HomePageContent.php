@@ -20,9 +20,9 @@ final class HomePageContent
     {
         $copy = [
             'en' => [
-                'kicker' => 'Control plane',
-                'title_tail' => 'Bridge control plane',
-                'lede' => 'One account, one line, a port you control. Create a forward, install the app, and play through a route that holds steady.',
+                'kicker' => 'LeiKwan Bridge',
+                'title_tail' => 'Your game, on a line that holds.',
+                'lede' => 'Create a forward, install the app, and point the game at a local port. About five minutes, and nothing else to choose.',
                 'primary' => 'Open the console',
                 'secondary' => 'Read the guides',
                 'facts' => [
@@ -32,7 +32,7 @@ final class HomePageContent
                 ],
                 'board_head' => 'Route catalog',
                 'board_origin' => 'Shanghai',
-                'board_note' => 'Pick a direction in the panel; the line stays ultra.',
+                'board_note' => 'Five directions out of Shanghai. Pick one when you create a forward.',
                 'routes' => [
                     ['TYO', 'Tokyo'],
                     ['SEL', 'Seoul'],
@@ -40,7 +40,7 @@ final class HomePageContent
                     ['MOW', 'Moscow'],
                     ['HKG', 'Hong Kong'],
                 ],
-                'steps_label' => '01 / Steps',
+                'steps_label' => 'Steps',
                 'steps_title' => 'How a line is built.',
                 'steps_lede' => 'Three steps. The panel remembers the state between them.',
                 'steps' => [
@@ -48,7 +48,7 @@ final class HomePageContent
                     ['Install the app', 'Sign in on the device you play on, then leave it running.'],
                     ['Connect and play', 'Point the game at 127.0.0.1 and the local port.'],
                 ],
-                'path_label' => '02 / Path',
+                'path_label' => 'Path',
                 'path_title' => 'Where your traffic goes.',
                 'path_lede' => 'Your device carries the line to the route you picked, and the route reaches the destination you configured.',
                 'path' => [
@@ -56,16 +56,16 @@ final class HomePageContent
                     ['Bridge route', 'The line you pick in the panel'],
                     ['Your game or service', 'The destination you configure'],
                 ],
-                'closing_label' => '03 / Start',
+                'closing_label' => 'Start',
                 'closing_title' => 'Ready when you are.',
                 'closing_lede' => 'Sign in to create your first forward, or read the five-minute guide first.',
                 'console_link' => 'Open the console',
                 'guides_link' => 'Read the guides',
             ],
             'zh-Hans' => [
-                'kicker' => '控制平面',
-                'title_tail' => '桥接控制台',
-                'lede' => '一个账号，一条线路，一个你自己掌握的端口。创建转发、安装客户端，然后走一条稳定的线路进游戏。',
+                'kicker' => '利群会聚 LeiKwan Bridge',
+                'title_tail' => '让你的游戏，走在稳定的线路上。',
+                'lede' => '创建一条转发，装上客户端，把游戏指向本机端口。大约五分钟，没有别的要选。',
                 'primary' => '进入控制台',
                 'secondary' => '阅读使用指南',
                 'facts' => [
@@ -75,7 +75,7 @@ final class HomePageContent
                 ],
                 'board_head' => '线路目录',
                 'board_origin' => '上海',
-                'board_note' => '在面板里选一个方向，线路统一走 ultra。',
+                'board_note' => '从上海出发的五个方向，创建转发时选一个。',
                 'routes' => [
                     ['TYO', '东京'],
                     ['SEL', '首尔'],
@@ -83,7 +83,7 @@ final class HomePageContent
                     ['MOW', '莫斯科'],
                     ['HKG', '香港'],
                 ],
-                'steps_label' => '01 / 三个步骤',
+                'steps_label' => '三个步骤',
                 'steps_title' => '一条线路是这样建起来的。',
                 'steps_lede' => '三步而已，中间的状态由面板替你记着。',
                 'steps' => [
@@ -91,7 +91,7 @@ final class HomePageContent
                     ['安装客户端', '在你玩游戏那台设备上登录，然后让它一直开着。'],
                     ['连接并开始游戏', '把游戏指向 127.0.0.1 和那个本机端口。'],
                 ],
-                'path_label' => '02 / 路径',
+                'path_label' => '路径',
                 'path_title' => '流量从哪里走。',
                 'path_lede' => '客户端把你设备上的线路带到选定的那条线路，再由它到达你配置的目标。',
                 'path' => [
@@ -99,16 +99,16 @@ final class HomePageContent
                     ['桥接线路', '你在面板上选的那条'],
                     ['游戏或服务', '你配置的目标'],
                 ],
-                'closing_label' => '03 / 开始',
+                'closing_label' => '开始',
                 'closing_title' => '随时可以开始。',
                 'closing_lede' => '登录后创建第一条转发，或者先花五分钟读一遍上手指南。',
                 'console_link' => '进入控制台',
                 'guides_link' => '阅读使用指南',
             ],
             'zh-TW' => [
-                'kicker' => '控制平面',
-                'title_tail' => '橋接控制台',
-                'lede' => '一個帳號，一條線路，一個你自己掌握的連接埠。建立轉發、安裝用戶端，然後走一條穩定的線路進遊戲。',
+                'kicker' => '利群會聚 LeiKwan Bridge',
+                'title_tail' => '讓你的遊戲，走在穩定的線路上。',
+                'lede' => '建立一條轉發，裝上用戶端，把遊戲指向本機連接埠。大約五分鐘，沒有別的要選。',
                 'primary' => '進入控制台',
                 'secondary' => '閱讀使用指南',
                 'facts' => [
@@ -118,7 +118,7 @@ final class HomePageContent
                 ],
                 'board_head' => '線路目錄',
                 'board_origin' => '上海',
-                'board_note' => '在面板裡選一個方向，線路統一走 ultra。',
+                'board_note' => '從上海出發的五個方向，建立轉發時選一個。',
                 'routes' => [
                     ['TYO', '東京'],
                     ['SEL', '首爾'],
@@ -126,7 +126,7 @@ final class HomePageContent
                     ['MOW', '莫斯科'],
                     ['HKG', '香港'],
                 ],
-                'steps_label' => '01 / 三個步驟',
+                'steps_label' => '三個步驟',
                 'steps_title' => '一條線路是這樣建起來的。',
                 'steps_lede' => '三步而已，中間的狀態由面板替你記著。',
                 'steps' => [
@@ -134,15 +134,15 @@ final class HomePageContent
                     ['安裝用戶端', '在你玩遊戲那台裝置上登入，然後讓它一直開著。'],
                     ['連線並開始遊戲', '把遊戲指向 127.0.0.1 和那個本機連接埠。'],
                 ],
-                'path_label' => '02 / 路徑',
+                'path_label' => '路徑',
                 'path_title' => '流量從哪裡走。',
-                'path_lede' => '用戶端把你裝置上的線路帶到選定的那條線路，再由它由它到達你設定的目標。',
+                'path_lede' => '用戶端把你裝置上的線路帶到選定的那條線路，再由它到達你設定的目標。',
                 'path' => [
                     ['你的裝置', '用戶端在這裡執行'],
                     ['橋接線路', '你在面板上選的那條'],
                     ['遊戲或服務', '你設定的目標'],
                 ],
-                'closing_label' => '03 / 開始',
+                'closing_label' => '開始',
                 'closing_title' => '隨時可以開始。',
                 'closing_lede' => '登入後建立第一條轉發，或者先花五分鐘讀一遍上手指南。',
                 'console_link' => '進入控制台',
@@ -195,8 +195,8 @@ final class HomePageContent
         return '<section class="bridge-home-hero" aria-labelledby="bridge-home-title">'
             . '<div class="bridge-home-hero-inner">'
             . '<div class="bridge-home-hero-copy">'
-            . '<p class="bridge-home-kicker">' . self::e($copy['kicker']) . '</p>'
-            . '<h1 id="bridge-home-title">' . self::e($brand) . '<span>' . self::e($copy['title_tail']) . '</span></h1>'
+            . '<p class="bridge-home-kicker">' . self::e($brand) . '</p>'
+            . '<h1 id="bridge-home-title">' . self::e($copy['title_tail']) . '</h1>'
             . '<p class="bridge-home-lede">' . self::e($copy['lede']) . '</p>'
             . '<div class="bridge-home-actions">'
             . '<a class="bridge-home-primary" href="' . $href . '">' . self::e($copy['primary']) . '<span aria-hidden="true">&rarr;</span></a>'
