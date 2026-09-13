@@ -385,6 +385,38 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_QueuesConfigRefreshWhenTheLeaseWasReplayed()
+    {
+        // lease_replayed means the panel already consumed the nonce this client
+        // presented - two refreshes raced, or the first request timed out after
+        // the panel committed it. Like the other grant rotations that is repaired
+        // by the next config pull; tearing the forward down instead left the route
+        // stopped until the client was restarted by hand.
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 409)
+        {
+            UltraLeaseErrorCode = "lease_replayed",
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+        Assert.Empty(runtimeManager.AppliedForwardIds);
+        Assert.Single(service.LatestForwards);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_StillStopsUltraWhenTheLeaseEndpointFailsForAnotherReason()
     {
         // A non-grant failure (for example a 500) keeps the old, safe behaviour: the
@@ -1285,6 +1317,8 @@ public sealed class ConfigPollingServiceTests
         public int SuccessfulUltraLeaseCount { get; set; } = 1;
 
         public int UltraLeaseStatus { get; set; }
+        /// <summary>Error code the lease endpoint answers with when it is not succeeding.</summary>
+        public string UltraLeaseErrorCode { get; set; } = "quota_exhausted";
 
         public int PullFailuresRemaining { get; set; }
 
@@ -1326,7 +1360,7 @@ public sealed class ConfigPollingServiceTests
                         ? "{\"ok\":false,\"error\":\"lease_scope_invalid\"}"
                         : SuccessfulUltraLease
                             ? BuildSuccessfulUltraLease(document, SuccessfulUltraLeaseExpiryMinutes, SuccessfulUltraLeaseCount)
-                            : "{\"ok\":false,\"error\":\"quota_exhausted\"}";
+                            : $"{{\"ok\":false,\"error\":\"{UltraLeaseErrorCode}\"}}";
                     var bytes = Encoding.UTF8.GetBytes(body);
                     context.Response.StatusCode = failing ? 409 : UltraLeaseStatus;
                     context.Response.ContentType = "application/json";

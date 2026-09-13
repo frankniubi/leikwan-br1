@@ -23,9 +23,9 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Resources\Icons\leikwan-host.ico</ApplicationIcon>
-    <Version>0.1.20.40</Version>
-    <AssemblyVersion>0.1.20.40</AssemblyVersion>
-    <FileVersion>0.1.20.40</FileVersion>
+    <Version>0.1.20.41</Version>
+    <AssemblyVersion>0.1.20.41</AssemblyVersion>
+    <FileVersion>0.1.20.41</FileVersion>
   </PropertyGroup>
 
 </Project>

@@ -36,6 +36,12 @@ final class UltraLeaseService
     public const ERROR_CLIENT_DEVICE_LIMIT = 'lease_client_device_limit';
 
     public const RATE_WINDOW_SECONDS = 60;
+    // A client can present the same nonce twice without meaning any harm: a
+    // config poll and a targeted refresh race each other, or the first request
+    // times out after the panel already committed it. Those retries mint a
+    // fresh lease instead of failing, bounded per nonce, inside this window.
+    public const REPLAY_GRACE_SECONDS = 300;
+    public const MAX_REPLAY_ATTEMPTS = 5;
 
     /**
      * Runtime attestation enforcement. "report" (the default) never denies;
@@ -228,7 +234,25 @@ final class UltraLeaseService
 
         $nonceHash = hash('sha256', $normalized['nonce']);
         if (!$this->consumeNonce($clientId, $deviceHash, $forwardId, $nonceHash, $policyGeneration, $quotaBytes, $expiresAt, $candidateKeyHash)) {
-            return ['ok' => false, 'error' => 'lease_replayed'];
+            // The nonce is already scoped to this client, device and forward, so
+            // nobody else can be replaying it - this is the same client asking
+            // again. Mint a lease for the retry under a derived nonce, which
+            // leaves the previous row (and the lease a running runtime still
+            // reports against) untouched. Only a revoked or stale nonce is a
+            // real replay and still gets refused.
+            $nonceHash = $this->consumeReplayNonce(
+                $clientId,
+                $deviceHash,
+                $forwardId,
+                $nonceHash,
+                $policyGeneration,
+                $quotaBytes,
+                $expiresAt,
+                $candidateKeyHash
+            );
+            if ($nonceHash === '') {
+                return ['ok' => false, 'error' => 'lease_replayed'];
+            }
         }
 
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
@@ -851,6 +875,71 @@ final class UltraLeaseService
             // A revocation lookup failure must fail closed for the lease.
             return true;
         }
+    }
+
+    /**
+     * Accept a bounded number of retries for a nonce that was just consumed.
+     *
+     * @return string the nonce hash the retry was recorded under, or '' when the
+     *                nonce is genuinely stale and must still be refused.
+     */
+    private function consumeReplayNonce(
+        int $clientId,
+        string $deviceHash,
+        int $forwardId,
+        string $nonceHash,
+        string $generation,
+        int $quotaBytes,
+        int $expiresAt,
+        string $candidateKeyHash,
+    ): string {
+        if (!$this->replayIsRecentRetry($clientId, $deviceHash, $forwardId, $nonceHash)) {
+            return '';
+        }
+        for ($attempt = 1; $attempt <= self::MAX_REPLAY_ATTEMPTS; $attempt++) {
+            $candidate = hash('sha256', $nonceHash . '#retry:' . $attempt);
+            if ($this->consumeNonce($clientId, $deviceHash, $forwardId, $candidate, $generation, $quotaBytes, $expiresAt, $candidateKeyHash)) {
+                error_log(sprintf(
+                    'ultra_lease_nonce_retried client=%d forward=%d attempt=%d',
+                    $clientId,
+                    $forwardId,
+                    $attempt
+                ));
+                return $candidate;
+            }
+        }
+        return '';
+    }
+
+    private function replayIsRecentRetry(int $clientId, string $deviceHash, int $forwardId, string $nonceHash): bool
+    {
+        $memoryKey = implode(':', [$clientId, $deviceHash, $forwardId, $nonceHash]);
+        if (isset($this->memoryNonces[$memoryKey])) {
+            return true;
+        }
+        if ($this->db === null) {
+            return false;
+        }
+        $row = $this->db->fetchOne(
+            'SELECT revoked_at, consumed_at, issued_at FROM ultra_client_leases
+              WHERE client_id = :client_id AND device_hash = :device_hash
+                AND forward_id = :forward_id AND nonce_hash = :nonce_hash
+              LIMIT 1',
+            [
+                'client_id' => $clientId,
+                'device_hash' => $deviceHash,
+                'forward_id' => $forwardId,
+                'nonce_hash' => $nonceHash,
+            ]
+        );
+        if (!is_array($row) || (string) ($row['revoked_at'] ?? '') !== '') {
+            return false;
+        }
+        $issuedAt = strtotime(trim((string) ($row['issued_at'] ?? '')) . ' UTC');
+        if ($issuedAt === false) {
+            return false;
+        }
+        return ($this->now() - $issuedAt) <= self::REPLAY_GRACE_SECONDS;
     }
 
     private function markConsumed(int $clientId, string $deviceHash, int $forwardId, string $nonceHash, string $leaseHash, int $expiresAt, string $candidateKeyHash = ''): void

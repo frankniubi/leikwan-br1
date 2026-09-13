@@ -611,7 +611,13 @@ public sealed class ConfigPollingService
             return false;
 
         var code = (apiException.Message ?? string.Empty).Trim().ToLowerInvariant();
+        // lease_replayed belongs here: the panel refuses a nonce it has already
+        // consumed, which happens when two refreshes race or the first request
+        // timed out after the panel committed it. The next config pull re-mints
+        // the ticket, so the forward recovers - tearing it down instead left the
+        // user's route stopped until the client was restarted by hand.
         return code is "lease_scope_invalid"
+            or "lease_replayed"
             or "policy_generation_invalid"
             or "policy_scope_invalid"
             or "policy_unavailable"
