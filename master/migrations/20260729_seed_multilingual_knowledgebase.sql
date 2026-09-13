@@ -669,51 +669,45 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'en', NULL, 'Run the Client Without a GUI', 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.', '<h2>What you will accomplish</h2>
-<p>You will run the LeiKwan Bridge client on a Windows or macOS host that has no desktop session, register it so it starts by itself, and confirm that the machine''s forwards are running and visible in the panel.</p>
+<p>You will set up a computer that keeps your line running on its own — a server, a mini PC, or any machine that stays switched on. Nobody has to log in, and you will not see a window or an icon. You install it once, check that it works, and from then on you manage it with one short command.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Have the panel <strong>Client ID</strong> and <strong>Agent Token</strong> for this machine ready; both are shown on the client card in <strong>Tenant &rarr; Clients</strong>.</li>
-  <li>macOS: install the app first (version 1.0.33 or newer), then run the installer with <code>sudo</code>.</li>
-  <li>Windows: download the no-GUI package and run the installer from an <strong>elevated</strong> PowerShell.</li>
-  <li>The windowless client is the same client as the desktop app: same tunnel, same lease handling, same runtime attestation. Only the interface is missing, so a machine never runs both at once.</li>
-  <li>Treat the Agent Token as a secret. The installer stores it in a root or SYSTEM owned file; never paste it into chat, tickets, or shared logs.</li>
+  <li>Your <strong>Client ID</strong> and <strong>Agent Token</strong> from the panel''s <strong>Clients</strong> page. They are the machine''s login — treat them like a password.</li>
+  <li>Permission to install software on that machine (an administrator on Windows, your own password on macOS).</li>
+  <li>Two minutes. The download is about 80 MB on macOS and 34 MB on Windows.</li>
 </ul>
 
 <h2>Steps</h2>
 <pre class="mermaid">flowchart TD
-accTitle: Windowless client installation
-accDescr: Pick the operating system, register the windowless client, then confirm the forwards are running in the panel.
- A[Choose host] --&gt; B{Operating system}
- B -- macOS --&gt; C[Install the app, then the LaunchDaemon]
- B -- Windows --&gt; D[Extract the package, register the service]
- C --&gt; E[Confirm the status file reports Connected]
+accTitle: Setting up a computer without a screen
+accDescr: Pick the computer, install the background client, then confirm the line is running in the panel.
+ A[Pick the computer] --&gt; B{Which system}
+ B -- macOS --&gt; C[Install the app, then run one command]
+ B -- Windows --&gt; D[Unpack the download, then run one command]
+ C --&gt; E[Check that it says running]
  D --&gt; E
- E --&gt; F[Confirm forwards show Running in the panel]</pre>
-<p>The diagram shows the only two decisions: which operating system the host runs, and whether the panel confirms the forwards afterwards.</p>
+ E --&gt; F[See the device online in the panel]</pre>
+<p>The picture is the whole job: choose the system, run one command, then confirm. Everything after that happens in the background.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view where the Windows and macOS download links and the client credentials are shown">
-  <figcaption>Demo screenshot. The same page carries the Client ID, the Agent Token, and the no-GUI download links used below.</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients page showing the download buttons and this machine''s Client ID and Agent Token">
+  <figcaption>Your Client ID and Agent Token are on this page, together with the download for your system.</figcaption>
 </figure>
 <ol>
-  <li><strong>Pick the host.</strong> Use a machine that stays powered on; it needs no monitor, no signed-in desktop user, and no tray icon.</li>
-  <li><strong>macOS:</strong> install <strong>LeiKwan Bridge</strong> into <strong>/Applications</strong> from the current disk image.</li>
-  <li>Download the LaunchDaemon installer (it registers <code>com.leikwan.bridge.headless</code>) and run it with the client identity: <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code> followed by <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>.</li>
-  <li><strong>Windows:</strong> download <strong>leikwan-bridge-headless-win-x64.zip</strong>, extract it, and from an elevated PowerShell in that folder run <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>.</li>
-  <li><strong>Confirm the registration.</strong> macOS: <code>sudo sh install-macos-headless.sh --status</code>. Windows: <code>sc query LeikwanBridgeHeadless</code>.</li>
-  <li><strong>Read the status file.</strong> macOS: <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>. Windows: <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>.</li>
-  <li>Confirm the document reports <code>"Connected": true</code> and every forward you expect reports <code>"Running": true</code>.</li>
-  <li><strong>Optional self check.</strong> Run the same program with the client identity plus <code>--headless --once</code>: it connects, waits, prints the same status document, and exits with code 0 when at least one forward is running.</li>
-  <li><strong>Day-to-day control uses the <code>leikwan</code> command</strong> the installer puts on your PATH: <code>leikwan status</code> shows the service state and every forward, <code>leikwan logs -n 50</code> prints the client log, <code>leikwan restart</code> restarts it, and <code>leikwan doctor</code> checks the service, the status file, the log and the published version. macOS asks for your password because a LaunchDaemon runs as root; on Windows run the same commands from an elevated shell.</li>
-  <li><strong>Update with <code>leikwan update</code></strong>: it reads the panel manifest, downloads the published build, verifies its SHA-256 against the manifest, replaces the payload and restarts the service. <code>leikwan update --check</code> only reports the installed and published versions and changes nothing.</li>
-  <li><strong>To remove it:</strong> macOS <code>sudo sh uninstall-macos-headless.sh</code>, Windows <code>.\uninstall-windows-headless.ps1</code>. Add <code>--purge</code> or <code>-Purge</code> to delete the stored token as well.</li>
+  <li><strong>Choose the computer.</strong> It should be one that stays on. It does not need a screen, a keyboard, or anyone logged in.</li>
+  <li><strong>Install the app first.</strong> On macOS, open the downloaded disk image and drag <strong>LeiKwan Bridge</strong> into <strong>Applications</strong>. On Windows, unpack the no-GUI download into a folder of your choice.</li>
+  <li><strong>Run the installer once.</strong> On macOS, open Terminal and paste the macOS command from the Clients page. On Windows, right-click the unpacked folder and choose <em>Open in Terminal</em> as administrator, then paste the Windows command. Both commands already contain this machine''s identity.</li>
+  <li><strong>Check it started.</strong> Type <code>leikwan status</code>. You want to see the line listed as running.</li>
+  <li><strong>Look at the panel.</strong> The device appears online on the Clients page, exactly like a computer with the normal app.</li>
+  <li><strong>Later, three commands are all you need.</strong> <code>leikwan status</code> to check, <code>leikwan restart</code> if something looks stuck, and <code>leikwan update</code> to move to the newest version, and <code>leikwan update --check</code> if you only want to know whether an update exists.</li>
+  <li><strong>To remove it:</strong> run the uninstall command from the same Clients page, or <code>leikwan stop</code> to switch it off for now.</li>
 </ol>
 
 <h2>How to know it worked</h2>
-<p><code>leikwan status</code> exits 0 when the client is connected with at least one running forward, so a monitoring script can call it directly. The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
+<p>Two simple checks. In the panel, this computer shows up as online, the same as any other device. On the computer itself, <code>leikwan status</code> prints the line as running — and it ends with a success code, so a monitoring tool can watch it for you. If you ever want the details, <code>leikwan logs -n 50</code> shows the last 50 lines and <code>leikwan doctor</code> summarises the whole setup.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before sharing the Agent Token or pasting installer commands into public places.</strong> Check the token and the client id first: a wrong token reports <code>401 Unauthorized</code> in the log and never starts a forward. On macOS confirm that <strong>/Applications</strong> holds version 1.0.33 or newer and that the plist exists under <strong>/Library/LaunchDaemons</strong>. On Windows confirm the command ran elevated and that the token file is readable by <strong>SYSTEM</strong>. If the panel shows the machine online but a forward stays stopped, compare it with the panel before changing anything: the panel owns the forward list and the client re-applies it every few seconds.</p>
+<p><strong>Stop and do not share your Agent Token with anyone — not in chat, tickets, or screenshots.</strong> The most common cause is a mistyped or expired Agent Token, which makes the panel show the device as offline while the log says the login was refused. Copy the Client ID and Agent Token again from the Clients page and run the installer command once more. If the device is online in the panel but a line still shows as stopped, wait half a minute — the panel decides which lines should run, and the computer follows within a few seconds. Still stuck? Send support the output of <code>leikwan doctor</code>, which contains no secrets.</p>
 
 <h2>Related guides</h2>
 <ul>
@@ -1268,51 +1262,45 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-Hans', NULL, '无界面运行客户端', '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。', '<h2>你将完成什么</h2>
-<p>你会在没有桌面会话的 Windows 或 macOS 主机上运行 LeiKwan Bridge 客户端，让它开机自启，并确认这台机器的转发已经在运行且面板可见。</p>
+<p>你会让一台电脑自己把线路跑起来 —— 一台服务器、一台小主机，或者任何长期开机的机器。没有人需要登录，桌面上不会出现窗口或图标。装一次、确认一次，之后用一条短命令管理它。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>准备好这台机器对应的面板 <strong>Client ID</strong> 与 <strong>Agent Token</strong>，它们显示在 <strong>租户 → 客户端</strong> 的客户端卡片上。</li>
-  <li>macOS：先安装应用（1.0.33 或更新版本），再用 <code>sudo</code> 运行安装脚本。</li>
-  <li>Windows：下载无界面版压缩包，并以<strong>管理员身份</strong>打开 PowerShell 运行安装脚本。</li>
-  <li>无界面版与图形客户端是同一个客户端：同一条隧道、同一套租约处理、同一份运行时指纹，只是没有界面，因此同一台机器不要同时运行两者。</li>
-  <li>Agent Token 属于机密。安装脚本会把它写进仅 root 或 SYSTEM 可读的文件；不要粘贴到聊天、工单或共享日志里。</li>
+  <li>面板「客户端」页面上的 <strong>Client ID</strong> 和 <strong>Agent Token</strong>，它们就是这台机器的登录凭据，请像密码一样保管。</li>
+  <li>在这台机器上安装软件的权限（Windows 需要管理员，macOS 需要你自己的密码）。</li>
+  <li>两分钟时间。macOS 下载约 80 MB，Windows 约 34 MB。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 无界面客户端安装流程
-accDescr: 选择操作系统，注册无界面客户端，然后在面板确认转发处于运行状态。
- A[选择主机] --&gt; B{操作系统}
- B -- macOS --&gt; C[先装应用，再装 LaunchDaemon]
- B -- Windows --&gt; D[解压安装包，注册系统服务]
- C --&gt; E[确认状态文件显示 Connected]
- D --&gt; E
- E --&gt; F[在面板确认转发显示 Running]</pre>
-<p>这张图只包含两个判断：主机运行哪个系统，以及面板随后是否确认转发已经运行。</p>
+accTitle: 不用屏幕的电脑设置流程
+accDescr: 选择电脑，安装后台客户端，然后在面板确认线路已经在运行。
+A[选择电脑] --&gt; B{哪个系统}
+B -- macOS --&gt; C[先装应用，再运行一条命令]
+B -- Windows --&gt; D[解压下载包，再运行一条命令]
+C --&gt; E[确认显示 running]
+D --&gt; E
+E --&gt; F[在面板看到设备在线]</pre>
+<p>整件事就是这张图：选系统、运行一条命令、确认结果。之后的一切都在后台进行。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="客户端安装页面，显示 Windows 与 macOS 下载入口以及客户端凭据">
-  <figcaption>演示截图。同一个页面提供 Client ID、Agent Token 以及下面用到的无界面版下载入口。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="客户端页面，显示下载入口以及这台机器的 Client ID 与 Agent Token">
+  <figcaption>Client ID 和 Agent Token 就在这个页面上，旁边的下载按你的系统选择。</figcaption>
 </figure>
 <ol>
-  <li><strong>选择主机。</strong>用一台长期开机的机器，不需要显示器、不需要登录桌面用户、也不会有托盘图标。</li>
-  <li><strong>macOS：</strong>从当前磁盘映像把 <strong>LeiKwan Bridge</strong> 安装到 <strong>/Applications</strong>。</li>
-  <li>下载 LaunchDaemon 安装脚本（它会注册 <code>com.leikwan.bridge.headless</code>）并带上客户端身份运行：先执行 <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code>，再执行 <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>。</li>
-  <li><strong>Windows：</strong>下载 <strong>leikwan-bridge-headless-win-x64.zip</strong> 并解压，在该目录以管理员身份运行 <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>。</li>
-  <li><strong>确认已注册。</strong>macOS 执行 <code>sudo sh install-macos-headless.sh --status</code>；Windows 执行 <code>sc query LeikwanBridgeHeadless</code>。</li>
-  <li><strong>查看状态文件。</strong>macOS 为 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 为 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
-  <li>确认文件里 <code>"Connected": true</code>，并且你期望的每条转发都是 <code>"Running": true</code>。</li>
-  <li><strong>可选自检。</strong>用同一个程序和同一客户端身份再加上 <code>--headless --once</code> 运行：它会连接、等待、打印同一份状态文档，并在至少一条转发运行时以退出码 0 结束。</li>
-  <li><strong>日常管理用安装脚本放进 PATH 的 <code>leikwan</code> 命令</strong>：<code>leikwan status</code> 显示服务状态与每条转发，<code>leikwan logs -n 50</code> 查看客户端日志，<code>leikwan restart</code> 重启，<code>leikwan doctor</code> 检查服务、状态文件、日志与线上版本。macOS 会要求输入密码（LaunchDaemon 以 root 运行）；Windows 请在管理员 PowerShell 中执行同样的命令。</li>
-  <li><strong>更新用 <code>leikwan update</code></strong>：它读取面板清单、下载已发布版本、按清单校验 SHA-256，然后替换程序并重启服务。<code>leikwan update --check</code> 只报告已安装版本与线上版本，不做任何改动。</li>
-  <li><strong>需要卸载时：</strong>macOS 执行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 执行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一并删除已保存的令牌。</li>
+  <li><strong>挑选电脑。</strong>用一台长期开机的机器，不需要显示器、不需要键盘，也不需要有人登录。</li>
+  <li><strong>先安装应用。</strong>macOS：打开下载的磁盘映像，把 <strong>LeiKwan Bridge</strong> 拖进 <strong>应用程序</strong>。Windows：把无界面版下载包解压到一个文件夹。</li>
+  <li><strong>运行一次安装命令。</strong>macOS：打开「终端」，粘贴客户端页面上的 macOS 命令。Windows：在解压出来的文件夹上右键，以管理员身份打开终端，粘贴页面上的 Windows 命令。两条命令里都已经带了这台机器的身份。</li>
+  <li><strong>确认已经启动。</strong>输入 <code>leikwan status</code>，看到转发显示为 running 就对了。</li>
+  <li><strong>回到面板看一眼。</strong>这台设备会像装了普通客户端的电脑一样显示在线。</li>
+  <li><strong>以后只需要三条命令。</strong>查看用 <code>leikwan status</code>，觉得卡住用 <code>leikwan restart</code>，升级用 <code>leikwan update</code>；如果只想看看有没有新版本，用 <code>leikwan update --check</code>。</li>
+  <li><strong>需要卸载时：</strong>运行同一个客户端页面上的卸载命令，或者先用 <code>leikwan stop</code> 暂时关掉它。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p><code>leikwan status</code> 在客户端已连接且至少一条转发运行时以退出码 0 结束，因此可以直接用在监控脚本里。服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
+<p>两个简单检查。面板里这台电脑显示在线，和其他设备一样；在电脑上运行 <code>leikwan status</code>，线路显示为 running，并且命令以成功状态结束，所以监控工具也可以直接用它。想看细节时，<code>leikwan logs -n 50</code> 显示最近 50 行日志，<code>leikwan doctor</code> 一次列清整体状态。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止对外分享 Agent Token，也不要把安装命令粘贴到公开位置。</strong>先核对令牌与 Client ID：令牌错误时日志会显示 <code>401 Unauthorized</code>，并且不会启动任何转发。macOS 请确认 <strong>/Applications</strong> 里的应用是 1.0.33 或更新版本，且 plist 已写入 <strong>/Library/LaunchDaemons</strong>。Windows 请确认是在管理员权限下执行，且令牌文件对 <strong>SYSTEM</strong> 可读。如果面板显示机器在线但某条转发仍处于停止状态，先与面板上的状态对照再动手：转发列表以面板为准，客户端每隔几秒就会重新应用一次。</p>
+<p><strong>先停止把 Agent Token 发给任何人 —— 聊天、工单、截图都不行。</strong>最常见的原因是 Agent Token 抄错或已失效：面板会显示设备离线，日志里会写着登录被拒绝。回到客户端页面重新复制 Client ID 与 Agent Token，再运行一次安装命令即可。如果面板显示设备在线、但某条转发仍是停止状态，等半分钟 —— 转发由面板决定，电脑会在几秒内跟上。仍然不通，就把 <code>leikwan doctor</code> 的输出发给客服，那份内容不含任何机密。</p>
 
 <h2>相关指南</h2>
 <ul>
@@ -1868,51 +1856,45 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-TW', NULL, '無介面執行用戶端', '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。', '<h2>你將完成什麼</h2>
-<p>你會在沒有桌面工作階段的 Windows 或 macOS 主機上執行 LeiKwan Bridge 用戶端，讓它開機自動啟動，並確認這台機器的轉發已在運作且面板可見。</p>
+<p>你會讓一台電腦自己把線路跑起來 —— 一台伺服器、一台小主機，或任何長期開機的機器。沒有人需要登入，桌面上不會出現視窗或圖示。裝一次、確認一次，之後用一條短指令管理它。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>準備好這台機器對應的面板 <strong>Client ID</strong> 與 <strong>Agent Token</strong>，它們顯示在 <strong>租戶 → 用戶端</strong> 的用戶端卡片上。</li>
-  <li>macOS：先安裝應用程式（1.0.33 或更新版本），再以 <code>sudo</code> 執行安裝腳本。</li>
-  <li>Windows：下載無介面版壓縮檔，並以<strong>系統管理員身分</strong>開啟 PowerShell 執行安裝腳本。</li>
-  <li>無介面版與圖形用戶端是同一個用戶端：同一條通道、同一套租約處理、同一份執行時指紋，只是沒有介面，因此同一台機器不要同時執行兩者。</li>
-  <li>Agent Token 屬於機密。安裝腳本會將它寫入僅 root 或 SYSTEM 可讀的檔案；不要貼到聊天、工單或共享日誌中。</li>
+  <li>面板「用戶端」頁面上的 <strong>Client ID</strong> 與 <strong>Agent Token</strong>，它們就是這台機器的登入憑證，請像密碼一樣保管。</li>
+  <li>在這台機器上安裝軟體的權限（Windows 需要系統管理員，macOS 需要你自己的密碼）。</li>
+  <li>兩分鐘時間。macOS 下載約 80 MB，Windows 約 34 MB。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 無介面用戶端安裝流程
-accDescr: 選擇作業系統，註冊無介面用戶端，然後在面板確認轉發正在運作。
- A[選擇主機] --&gt; B{作業系統}
- B -- macOS --&gt; C[先裝應用程式，再裝 LaunchDaemon]
- B -- Windows --&gt; D[解壓縮安裝包，註冊系統服務]
- C --&gt; E[確認狀態檔顯示 Connected]
- D --&gt; E
- E --&gt; F[在面板確認轉發顯示 Running]</pre>
-<p>這張圖只有兩個判斷：主機執行哪個系統，以及面板隨後是否確認轉發已經運作。</p>
+accTitle: 不用螢幕的電腦設定流程
+accDescr: 選擇電腦，安裝背景用戶端，然後在面板確認線路已經在運作。
+A[選擇電腦] --&gt; B{哪個系統}
+B -- macOS --&gt; C[先裝應用程式，再執行一條指令]
+B -- Windows --&gt; D[解壓縮下載包，再執行一條指令]
+C --&gt; E[確認顯示 running]
+D --&gt; E
+E --&gt; F[在面板看到裝置在線]</pre>
+<p>整件事就是這張圖：選系統、執行一條指令、確認結果。之後的一切都在背景進行。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="用戶端安裝頁面，顯示 Windows 與 macOS 下載入口以及用戶端憑證">
-  <figcaption>示範截圖。同一個頁面提供 Client ID、Agent Token 以及下方用到的無介面版下載入口。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="用戶端頁面，顯示下載入口以及這台機器的 Client ID 與 Agent Token">
+  <figcaption>Client ID 與 Agent Token 就在這個頁面上，旁邊的下載依你的系統選擇。</figcaption>
 </figure>
 <ol>
-  <li><strong>選擇主機。</strong>使用一台長期開機的機器，不需要螢幕、不需要登入桌面使用者、也不會有系統匣圖示。</li>
-  <li><strong>macOS：</strong>從目前的磁碟映像將 <strong>LeiKwan Bridge</strong> 安裝到 <strong>/Applications</strong>。</li>
-  <li>下載 LaunchDaemon 安裝腳本（它會註冊 <code>com.leikwan.bridge.headless</code>）並帶上用戶端身份執行：先執行 <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code>，再執行 <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>。</li>
-  <li><strong>Windows：</strong>下載 <strong>leikwan-bridge-headless-win-x64.zip</strong> 並解壓縮，在該目錄以系統管理員身分執行 <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>。</li>
-  <li><strong>確認已註冊。</strong>macOS 執行 <code>sudo sh install-macos-headless.sh --status</code>；Windows 執行 <code>sc query LeikwanBridgeHeadless</code>。</li>
-  <li><strong>查看狀態檔。</strong>macOS 為 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 為 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
-  <li>確認檔案中 <code>"Connected": true</code>，且你預期的每條轉發都是 <code>"Running": true</code>。</li>
-  <li><strong>選用自我檢查。</strong>用同一個程式與同一用戶端身份再加上 <code>--headless --once</code> 執行：它會連線、等待、印出同一份狀態文件，並在至少一條轉發運作時以退出碼 0 結束。</li>
-  <li><strong>日常管理用安裝腳本放進 PATH 的 <code>leikwan</code> 指令</strong>：<code>leikwan status</code> 顯示服務狀態與每條轉發，<code>leikwan logs -n 50</code> 查看用戶端日誌，<code>leikwan restart</code> 重新啟動，<code>leikwan doctor</code> 檢查服務、狀態檔、日誌與線上版本。macOS 會要求輸入密碼（LaunchDaemon 以 root 執行）；Windows 請在系統管理員 PowerShell 中執行相同指令。</li>
-  <li><strong>更新用 <code>leikwan update</code></strong>：它讀取面板清單、下載已發布版本、依清單驗證 SHA-256，然後替換程式並重新啟動服務。<code>leikwan update --check</code> 只回報已安裝與線上版本，不做任何變更。</li>
-  <li><strong>需要移除時：</strong>macOS 執行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 執行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一併刪除已儲存的權杖。</li>
+  <li><strong>挑選電腦。</strong>用一台長期開機的機器，不需要螢幕、不需要鍵盤，也不需要有人登入。</li>
+  <li><strong>先安裝應用程式。</strong>macOS：打開下載的磁碟映像，把 <strong>LeiKwan Bridge</strong> 拖進 <strong>應用程式</strong>。Windows：把無介面版下載包解壓縮到一個資料夾。</li>
+  <li><strong>執行一次安裝指令。</strong>macOS：打開「終端機」，貼上用戶端頁面上的 macOS 指令。Windows：在解壓縮出來的資料夾上按右鍵，以系統管理員身分開啟終端機，貼上頁面上的 Windows 指令。兩條指令裡都已經帶了這台機器的身份。</li>
+  <li><strong>確認已經啟動。</strong>輸入 <code>leikwan status</code>，看到轉發顯示為 running 就對了。</li>
+  <li><strong>回到面板看一眼。</strong>這台裝置會像裝了普通用戶端的電腦一樣顯示在線。</li>
+  <li><strong>之後只需要三條指令。</strong>查看用 <code>leikwan status</code>，覺得卡住用 <code>leikwan restart</code>，升級用 <code>leikwan update</code>；如果只想看看有沒有新版本，用 <code>leikwan update --check</code>。</li>
+  <li><strong>需要移除時：</strong>執行同一個用戶端頁面上的移除指令，或先用 <code>leikwan stop</code> 暫時關掉它。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p><code>leikwan status</code> 在用戶端已連線且至少一條轉發運作時以退出碼 0 結束，因此可直接用於監控腳本。服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
+<p>兩個簡單檢查。面板裡這台電腦顯示在線，和其他裝置一樣；在電腦上執行 <code>leikwan status</code>，線路顯示為 running，而且指令以成功狀態結束，所以監控工具也可以直接用它。想看細節時，<code>leikwan logs -n 50</code> 顯示最近 50 行日誌，<code>leikwan doctor</code> 一次列清整體狀態。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止對外分享 Agent Token，也不要將安裝指令貼到公開位置。</strong>先核對權杖與 Client ID：權杖錯誤時日誌會顯示 <code>401 Unauthorized</code>，且不會啟動任何轉發。macOS 請確認 <strong>/Applications</strong> 中的應用程式為 1.0.33 或更新版本，且 plist 已寫入 <strong>/Library/LaunchDaemons</strong>。Windows 請確認是在系統管理員權限下執行，且權杖檔案對 <strong>SYSTEM</strong> 可讀。若面板顯示機器在線但某條轉發仍為停止狀態，先與面板上的狀態對照再處理：轉發清單以面板為準，用戶端每隔幾秒就會重新套用一次。</p>
+<p><strong>請先停止把 Agent Token 發給任何人 —— 聊天、工單、截圖都不行。</strong>最常見的原因是 Agent Token 抄錯或已失效：面板會顯示裝置離線，日誌裡會寫著登入被拒絕。回到用戶端頁面重新複製 Client ID 與 Agent Token，再執行一次安裝指令即可。如果面板顯示裝置在線、但某條轉發仍是停止狀態，等半分鐘 —— 轉發由面板決定，電腦會在幾秒內跟上。仍然不通，就把 <code>leikwan doctor</code> 的輸出傳給客服，那份內容不含任何機密。</p>
 
 <h2>相關指南</h2>
 <ul>

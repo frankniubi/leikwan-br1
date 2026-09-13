@@ -1,49 +1,43 @@
 <h2>What you will accomplish</h2>
-<p>You will run the LeiKwan Bridge client on a Windows or macOS host that has no desktop session, register it so it starts by itself, and confirm that the machine's forwards are running and visible in the panel.</p>
+<p>You will set up a computer that keeps your line running on its own — a server, a mini PC, or any machine that stays switched on. Nobody has to log in, and you will not see a window or an icon. You install it once, check that it works, and from then on you manage it with one short command.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Have the panel <strong>Client ID</strong> and <strong>Agent Token</strong> for this machine ready; both are shown on the client card in <strong>Tenant &rarr; Clients</strong>.</li>
-  <li>macOS: install the app first (version 1.0.33 or newer), then run the installer with <code>sudo</code>.</li>
-  <li>Windows: download the no-GUI package and run the installer from an <strong>elevated</strong> PowerShell.</li>
-  <li>The windowless client is the same client as the desktop app: same tunnel, same lease handling, same runtime attestation. Only the interface is missing, so a machine never runs both at once.</li>
-  <li>Treat the Agent Token as a secret. The installer stores it in a root or SYSTEM owned file; never paste it into chat, tickets, or shared logs.</li>
+  <li>Your <strong>Client ID</strong> and <strong>Agent Token</strong> from the panel's <strong>Clients</strong> page. They are the machine's login — treat them like a password.</li>
+  <li>Permission to install software on that machine (an administrator on Windows, your own password on macOS).</li>
+  <li>Two minutes. The download is about 80 MB on macOS and 34 MB on Windows.</li>
 </ul>
 
 <h2>Steps</h2>
 <pre class="mermaid">flowchart TD
-accTitle: Windowless client installation
-accDescr: Pick the operating system, register the windowless client, then confirm the forwards are running in the panel.
- A[Choose host] --&gt; B{Operating system}
- B -- macOS --&gt; C[Install the app, then the LaunchDaemon]
- B -- Windows --&gt; D[Extract the package, register the service]
- C --&gt; E[Confirm the status file reports Connected]
+accTitle: Setting up a computer without a screen
+accDescr: Pick the computer, install the background client, then confirm the line is running in the panel.
+ A[Pick the computer] --&gt; B{Which system}
+ B -- macOS --&gt; C[Install the app, then run one command]
+ B -- Windows --&gt; D[Unpack the download, then run one command]
+ C --&gt; E[Check that it says running]
  D --&gt; E
- E --&gt; F[Confirm forwards show Running in the panel]</pre>
-<p>The diagram shows the only two decisions: which operating system the host runs, and whether the panel confirms the forwards afterwards.</p>
+ E --&gt; F[See the device online in the panel]</pre>
+<p>The picture is the whole job: choose the system, run one command, then confirm. Everything after that happens in the background.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view where the Windows and macOS download links and the client credentials are shown">
-  <figcaption>Demo screenshot. The same page carries the Client ID, the Agent Token, and the no-GUI download links used below.</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients page showing the download buttons and this machine's Client ID and Agent Token">
+  <figcaption>Your Client ID and Agent Token are on this page, together with the download for your system.</figcaption>
 </figure>
 <ol>
-  <li><strong>Pick the host.</strong> Use a machine that stays powered on; it needs no monitor, no signed-in desktop user, and no tray icon.</li>
-  <li><strong>macOS:</strong> install <strong>LeiKwan Bridge</strong> into <strong>/Applications</strong> from the current disk image.</li>
-  <li>Download the LaunchDaemon installer (it registers <code>com.leikwan.bridge.headless</code>) and run it with the client identity: <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code> followed by <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>.</li>
-  <li><strong>Windows:</strong> download <strong>leikwan-bridge-headless-win-x64.zip</strong>, extract it, and from an elevated PowerShell in that folder run <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>.</li>
-  <li><strong>Confirm the registration.</strong> macOS: <code>sudo sh install-macos-headless.sh --status</code>. Windows: <code>sc query LeikwanBridgeHeadless</code>.</li>
-  <li><strong>Read the status file.</strong> macOS: <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>. Windows: <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>.</li>
-  <li>Confirm the document reports <code>"Connected": true</code> and every forward you expect reports <code>"Running": true</code>.</li>
-  <li><strong>Optional self check.</strong> Run the same program with the client identity plus <code>--headless --once</code>: it connects, waits, prints the same status document, and exits with code 0 when at least one forward is running.</li>
-  <li><strong>Day-to-day control uses the <code>leikwan</code> command</strong> the installer puts on your PATH: <code>leikwan status</code> shows the service state and every forward, <code>leikwan logs -n 50</code> prints the client log, <code>leikwan restart</code> restarts it, and <code>leikwan doctor</code> checks the service, the status file, the log and the published version. macOS asks for your password because a LaunchDaemon runs as root; on Windows run the same commands from an elevated shell.</li>
-  <li><strong>Update with <code>leikwan update</code></strong>: it reads the panel manifest, downloads the published build, verifies its SHA-256 against the manifest, replaces the payload and restarts the service. <code>leikwan update --check</code> only reports the installed and published versions and changes nothing.</li>
-  <li><strong>To remove it:</strong> macOS <code>sudo sh uninstall-macos-headless.sh</code>, Windows <code>.\uninstall-windows-headless.ps1</code>. Add <code>--purge</code> or <code>-Purge</code> to delete the stored token as well.</li>
+  <li><strong>Choose the computer.</strong> It should be one that stays on. It does not need a screen, a keyboard, or anyone logged in.</li>
+  <li><strong>Install the app first.</strong> On macOS, open the downloaded disk image and drag <strong>LeiKwan Bridge</strong> into <strong>Applications</strong>. On Windows, unpack the no-GUI download into a folder of your choice.</li>
+  <li><strong>Run the installer once.</strong> On macOS, open Terminal and paste the macOS command from the Clients page. On Windows, right-click the unpacked folder and choose <em>Open in Terminal</em> as administrator, then paste the Windows command. Both commands already contain this machine's identity.</li>
+  <li><strong>Check it started.</strong> Type <code>leikwan status</code>. You want to see the line listed as running.</li>
+  <li><strong>Look at the panel.</strong> The device appears online on the Clients page, exactly like a computer with the normal app.</li>
+  <li><strong>Later, three commands are all you need.</strong> <code>leikwan status</code> to check, <code>leikwan restart</code> if something looks stuck, and <code>leikwan update</code> to move to the newest version, and <code>leikwan update --check</code> if you only want to know whether an update exists.</li>
+  <li><strong>To remove it:</strong> run the uninstall command from the same Clients page, or <code>leikwan stop</code> to switch it off for now.</li>
 </ol>
 
 <h2>How to know it worked</h2>
-<p><code>leikwan status</code> exits 0 when the client is connected with at least one running forward, so a monitoring script can call it directly. The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
+<p>Two simple checks. In the panel, this computer shows up as online, the same as any other device. On the computer itself, <code>leikwan status</code> prints the line as running — and it ends with a success code, so a monitoring tool can watch it for you. If you ever want the details, <code>leikwan logs -n 50</code> shows the last 50 lines and <code>leikwan doctor</code> summarises the whole setup.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before sharing the Agent Token or pasting installer commands into public places.</strong> Check the token and the client id first: a wrong token reports <code>401 Unauthorized</code> in the log and never starts a forward. On macOS confirm that <strong>/Applications</strong> holds version 1.0.33 or newer and that the plist exists under <strong>/Library/LaunchDaemons</strong>. On Windows confirm the command ran elevated and that the token file is readable by <strong>SYSTEM</strong>. If the panel shows the machine online but a forward stays stopped, compare it with the panel before changing anything: the panel owns the forward list and the client re-applies it every few seconds.</p>
+<p><strong>Stop and do not share your Agent Token with anyone — not in chat, tickets, or screenshots.</strong> The most common cause is a mistyped or expired Agent Token, which makes the panel show the device as offline while the log says the login was refused. Copy the Client ID and Agent Token again from the Clients page and run the installer command once more. If the device is online in the panel but a line still shows as stopped, wait half a minute — the panel decides which lines should run, and the computer follows within a few seconds. Still stuck? Send support the output of <code>leikwan doctor</code>, which contains no secrets.</p>
 
 <h2>Related guides</h2>
 <ul>
