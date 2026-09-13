@@ -27,13 +27,14 @@ foreach ([
     "'zh-Hans' => [",
     "'zh-TW' => [",
     'class="bridge-home-hero"',
-    'class="bridge-home-board"',
-    'class="bridge-home-steps"',
-    'class="bridge-home-step-list"',
-    'class="bridge-home-path"',
-    'class="bridge-home-path-rail"',
+    'class="bridge-home-map"',
+    'class="bridge-home-network"',
+    'class="bridge-home-chips"',
+    'class="bridge-home-line-list"',
+    'class="bridge-home-carriers"',
     'class="bridge-home-closing"',
-    '127.0.0.1',
+    'rk-hub',
+    'BGP',
 ] as $snippet) {
     if (!str_contains($home, $snippet)) {
         fail('missing localized homepage snippet: ' . $snippet);
@@ -80,16 +81,16 @@ foreach (['SELECT COUNT(*) AS total FROM nodes', 'sidecar_points', 'COUNT(DISTIN
 foreach ([
     '.bridge-home-page',
     '.bridge-home-hero',
-    '.bridge-home-board',
-    '.bridge-home-steps',
-    '.bridge-home-step',
-    '.bridge-home-path',
-    '.bridge-home-stop',
+    '.bridge-home-map',
+    '.bridge-home-network',
+    '.bridge-home-chip',
+    '.bridge-home-line-card',
+    '.bridge-home-carrier',
     '.bridge-home-closing',
     '.bridge-home-page .site-mark',
     '--bridge-paper: #ffffff',
     'border-radius: 999px',
-    '@media (max-width: 820px)',
+    '@media (max-width: 900px)',
 ] as $selector) {
     if (!str_contains($css, $selector)) {
         fail('missing bridge home style selector: ' . $selector);

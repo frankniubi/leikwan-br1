@@ -6,10 +6,9 @@ namespace Leikwan\Master\Support;
 /**
  * Homepage copy, written once per locale and rendered server-side.
  *
- * The page is localized before it reaches the browser, so it reads correctly in the
- * visitor's language without waiting for the client-side patch, and the document
- * language matches the text. Every locale carries the same shape: a dark route
- * board hero, the three setup steps, the path, and one closing call to action.
+ * The page leads with a drawing rather than prose: a route map of the departure
+ * cities, the line types (single carrier or BGP), and the carriers behind them.
+ * Text is kept to short labels so the page survives a glance.
  */
 final class HomePageContent
 {
@@ -20,131 +19,86 @@ final class HomePageContent
     {
         $copy = [
             'en' => [
-                'kicker' => 'LeiKwan Bridge',
-                'title_tail' => 'Your game, on a line that holds.',
-                'lede' => 'Create a forward, install the app, and point the game at a local port. About five minutes, and nothing else to choose.',
+                'title' => 'Leave from six cities. Land where you play.',
+                'lede' => 'Single-carrier or BGP lines, one app on your device.',
                 'primary' => 'Open the console',
                 'secondary' => 'Read the guides',
-                'facts' => [
-                    ['3', 'platforms'],
-                    ['1', 'line type'],
-                    ['~5 min', 'setup'],
+                'map_label' => 'Departure cities reaching six regions',
+                'map_hub' => 'Bridge',
+                'map_hub_sub' => 'BGP / SINGLE',
+                'origins_label' => 'Departure cities',
+                'origins' => ['Shanghai', 'Beijing', 'Guangzhou', 'Fuzhou', 'Guiyang', 'Hong Kong'],
+                'destinations' => ['Tokyo', 'Singapore', 'Frankfurt', 'Los Angeles', 'Moscow', 'Hong Kong'],
+                'lines_label' => 'Line types',
+                'lines' => [
+                    ['single', 'Single line', 'One carrier end to end: Telecom, Unicom, or Mobile.'],
+                    ['bgp', 'BGP multi-line', 'Every carrier at once, routed by BGP.'],
                 ],
-                'board_head' => 'Route catalog',
-                'board_origin' => 'Shanghai',
-                'board_note' => 'Five directions out of Shanghai. Pick one when you create a forward.',
-                'routes' => [
-                    ['TYO', 'Tokyo'],
-                    ['SEL', 'Seoul'],
-                    ['FRA', 'Frankfurt'],
-                    ['MOW', 'Moscow'],
-                    ['HKG', 'Hong Kong'],
+                'carriers_label' => 'Carriers',
+                'carriers' => [
+                    ['ct', 'CT', 'China Telecom'],
+                    ['cu', 'CU', 'China Unicom'],
+                    ['cm', 'CM', 'China Mobile'],
+                    ['bgp', 'BGP', 'Multi-line'],
                 ],
-                'steps_label' => 'Steps',
-                'steps_title' => 'How a line is built.',
-                'steps_lede' => 'Three steps. The panel remembers the state between them.',
-                'steps' => [
-                    ['Create a forward', 'Choose a route, enter the address your game connects to, and note the local port.'],
-                    ['Install the app', 'Sign in on the device you play on, then leave it running.'],
-                    ['Connect and play', 'Point the game at 127.0.0.1 and the local port.'],
-                ],
-                'path_label' => 'Path',
-                'path_title' => 'Where your traffic goes.',
-                'path_lede' => 'Your device carries the line to the route you picked, and the route reaches the destination you configured.',
-                'path' => [
-                    ['Your device', 'The app runs here'],
-                    ['Bridge route', 'The line you pick in the panel'],
-                    ['Your game or service', 'The destination you configure'],
-                ],
-                'closing_label' => 'Start',
                 'closing_title' => 'Ready when you are.',
-                'closing_lede' => 'Sign in to create your first forward, or read the five-minute guide first.',
+                'closing_lede' => 'Create a forward in the panel, install the app, and play.',
                 'console_link' => 'Open the console',
                 'guides_link' => 'Read the guides',
             ],
             'zh-Hans' => [
-                'kicker' => '利群会聚 LeiKwan Bridge',
-                'title_tail' => '让你的游戏，走在稳定的线路上。',
-                'lede' => '创建一条转发，装上客户端，把游戏指向本机端口。大约五分钟，没有别的要选。',
+                'title' => '六个出发地，直达你要去的服务器。',
+                'lede' => '单线或 BGP 多线，客户端一个就够。',
                 'primary' => '进入控制台',
                 'secondary' => '阅读使用指南',
-                'facts' => [
-                    ['3', '个平台'],
-                    ['1', '种线路'],
-                    ['约 5 分钟', '完成设置'],
+                'map_label' => '六个出发地连接六个方向',
+                'map_hub' => '桥接',
+                'map_hub_sub' => 'BGP / 单线',
+                'origins_label' => '出发地',
+                'origins' => ['上海', '北京', '广州', '福州', '贵阳', '香港'],
+                'destinations' => ['东京', '新加坡', '法兰克福', '洛杉矶', '莫斯科', '香港'],
+                'lines_label' => '线路类型',
+                'lines' => [
+                    ['single', '单线', '全程一家运营商：电信、联通或移动。'],
+                    ['bgp', 'BGP 多线', '三网合一，由 BGP 选路。'],
                 ],
-                'board_head' => '线路目录',
-                'board_origin' => '上海',
-                'board_note' => '从上海出发的五个方向，创建转发时选一个。',
-                'routes' => [
-                    ['TYO', '东京'],
-                    ['SEL', '首尔'],
-                    ['FRA', '法兰克福'],
-                    ['MOW', '莫斯科'],
-                    ['HKG', '香港'],
+                'carriers_label' => '运营商',
+                'carriers' => [
+                    ['ct', '电', '中国电信'],
+                    ['cu', '联', '中国联通'],
+                    ['cm', '移', '中国移动'],
+                    ['bgp', 'BGP', '多线'],
                 ],
-                'steps_label' => '三个步骤',
-                'steps_title' => '一条线路是这样建起来的。',
-                'steps_lede' => '三步而已，中间的状态由面板替你记着。',
-                'steps' => [
-                    ['创建一条转发', '选线路，填游戏连接的地址，记下面板分配的本机端口。'],
-                    ['安装客户端', '在你玩游戏那台设备上登录，然后让它一直开着。'],
-                    ['连接并开始游戏', '把游戏指向 127.0.0.1 和那个本机端口。'],
-                ],
-                'path_label' => '路径',
-                'path_title' => '流量从哪里走。',
-                'path_lede' => '客户端把你设备上的线路带到选定的那条线路，再由它到达你配置的目标。',
-                'path' => [
-                    ['你的设备', '客户端在这里运行'],
-                    ['桥接线路', '你在面板上选的那条'],
-                    ['游戏或服务', '你配置的目标'],
-                ],
-                'closing_label' => '开始',
                 'closing_title' => '随时可以开始。',
-                'closing_lede' => '登录后创建第一条转发，或者先花五分钟读一遍上手指南。',
+                'closing_lede' => '在面板里创建一条转发，装上客户端就能用。',
                 'console_link' => '进入控制台',
                 'guides_link' => '阅读使用指南',
             ],
             'zh-TW' => [
-                'kicker' => '利群會聚 LeiKwan Bridge',
-                'title_tail' => '讓你的遊戲，走在穩定的線路上。',
-                'lede' => '建立一條轉發，裝上用戶端，把遊戲指向本機連接埠。大約五分鐘，沒有別的要選。',
+                'title' => '六個出發地，直達你要去的伺服器。',
+                'lede' => '單線或 BGP 多線，用戶端一個就夠。',
                 'primary' => '進入控制台',
                 'secondary' => '閱讀使用指南',
-                'facts' => [
-                    ['3', '個平台'],
-                    ['1', '種線路'],
-                    ['約 5 分鐘', '完成設定'],
+                'map_label' => '六個出發地連接六個方向',
+                'map_hub' => '橋接',
+                'map_hub_sub' => 'BGP / 單線',
+                'origins_label' => '出發地',
+                'origins' => ['上海', '北京', '廣州', '福州', '貴陽', '香港'],
+                'destinations' => ['東京', '新加坡', '法蘭克福', '洛杉磯', '莫斯科', '香港'],
+                'lines_label' => '線路類型',
+                'lines' => [
+                    ['single', '單線', '全程一家電信商：電信、聯通或移動。'],
+                    ['bgp', 'BGP 多線', '三網合一，由 BGP 選路。'],
                 ],
-                'board_head' => '線路目錄',
-                'board_origin' => '上海',
-                'board_note' => '從上海出發的五個方向，建立轉發時選一個。',
-                'routes' => [
-                    ['TYO', '東京'],
-                    ['SEL', '首爾'],
-                    ['FRA', '法蘭克福'],
-                    ['MOW', '莫斯科'],
-                    ['HKG', '香港'],
+                'carriers_label' => '電信商',
+                'carriers' => [
+                    ['ct', '電', '中國電信'],
+                    ['cu', '聯', '中國聯通'],
+                    ['cm', '移', '中國移動'],
+                    ['bgp', 'BGP', '多線'],
                 ],
-                'steps_label' => '三個步驟',
-                'steps_title' => '一條線路是這樣建起來的。',
-                'steps_lede' => '三步而已，中間的狀態由面板替你記著。',
-                'steps' => [
-                    ['建立一條轉發', '選線路，填遊戲連的位址，記下面板分配的本機連接埠。'],
-                    ['安裝用戶端', '在你玩遊戲那台裝置上登入，然後讓它一直開著。'],
-                    ['連線並開始遊戲', '把遊戲指向 127.0.0.1 和那個本機連接埠。'],
-                ],
-                'path_label' => '路徑',
-                'path_title' => '流量從哪裡走。',
-                'path_lede' => '用戶端把你裝置上的線路帶到選定的那條線路，再由它到達你設定的目標。',
-                'path' => [
-                    ['你的裝置', '用戶端在這裡執行'],
-                    ['橋接線路', '你在面板上選的那條'],
-                    ['遊戲或服務', '你設定的目標'],
-                ],
-                'closing_label' => '開始',
                 'closing_title' => '隨時可以開始。',
-                'closing_lede' => '登入後建立第一條轉發，或者先花五分鐘讀一遍上手指南。',
+                'closing_lede' => '在面板裡建立一條轉發，裝上用戶端就能用。',
                 'console_link' => '進入控制台',
                 'guides_link' => '閱讀使用指南',
             ],
@@ -153,42 +107,75 @@ final class HomePageContent
         return $copy[$locale] ?? $copy['en'];
     }
 
+    /**
+     * The hero drawing: departure cities on the left, destinations on the right,
+     * joined through the bridge hub in the middle.
+     *
+     * @param array<int, string> $origins
+     * @param array<int, string> $destinations
+     */
+    private static function routeMap(array $origins, array $destinations, string $hub, string $hubSub, string $label): string
+    {
+        $count = max(count($origins), count($destinations));
+        $top = 34;
+        $step = $count > 1 ? 232 / ($count - 1) : 0;
+        $middle = 150;
+
+        $stems = '';
+        $nodes = '';
+
+        foreach ($origins as $index => $city) {
+            $y = round($top + $step * $index, 1);
+            $nodes .= '<circle class="rk-dot" cx="8" cy="' . $y . '" r="3.4"></circle>'
+                . '<text class="rk-label" x="20" y="' . ($y + 4) . '">' . self::e($city) . '</text>';
+            $stems .= '<path class="rk-link" d="M142 ' . $y
+                . ' C 168 ' . $y . ', 178 ' . $middle . ', 194 ' . $middle . '"></path>';
+        }
+
+        foreach ($destinations as $index => $city) {
+            $y = round($top + $step * $index, 1);
+            $nodes .= '<circle class="rk-dot rk-dot-end" cx="394" cy="' . $y . '" r="3.4"></circle>'
+                . '<text class="rk-label" x="406" y="' . ($y + 4) . '">' . self::e($city) . '</text>';
+            $stems .= '<path class="rk-link" d="M326 ' . $middle
+                . ' C 352 ' . $middle . ', 372 ' . $y . ', 394 ' . $y . '"></path>';
+        }
+
+        return '<svg class="bridge-home-map" viewBox="0 0 560 300" role="img" aria-label="' . self::e($label) . '">'
+            . '<g class="rk-links">' . $stems . '</g>'
+            . '<rect class="rk-hub" x="194" y="118" width="132" height="64" rx="14"></rect>'
+            . '<text class="rk-hub-label" x="260" y="146">' . self::e($hub) . '</text>'
+            . '<text class="rk-hub-sub" x="260" y="164">' . self::e($hubSub) . '</text>'
+            . '<g class="rk-nodes">' . $nodes . '</g>'
+            . '</svg>';
+    }
+
     public static function render(string $brand, string $consoleHref, ?string $locale = null): string
     {
         $current = LocaleResolver::normalize((string) $locale) ?? LocaleResolver::DEFAULT_LOCALE;
         $copy = self::strings($current);
         $href = self::e($consoleHref);
 
-        $facts = '';
-        foreach ($copy['facts'] as [$value, $label]) {
-            $facts .= '<li><strong>' . self::e($value) . '</strong><span>' . self::e($label) . '</span></li>';
+        $origins = '';
+        foreach ($copy['origins'] as $city) {
+            $origins .= '<li class="bridge-home-chip">' . self::e($city) . '</li>';
         }
 
-        $routes = '';
-        foreach ($copy['routes'] as $index => [$code, $city]) {
-            $routes .= '<li class="bridge-home-board-row">'
-                . '<span class="bridge-home-board-code">' . self::e($code) . '</span>'
-                . '<span class="bridge-home-board-city">' . self::e($city) . '</span>'
-                . '<span class="bridge-home-board-line" aria-hidden="true"></span>'
-                . '<span class="bridge-home-board-dot" aria-hidden="true"></span>'
+        $lines = '';
+        foreach ($copy['lines'] as [$kind, $name, $detail]) {
+            $glyph = $kind === 'bgp'
+                ? '<span class="bridge-home-diagram bridge-home-diagram--bgp" aria-hidden="true"><i></i><i></i><i></i></span>'
+                : '<span class="bridge-home-diagram" aria-hidden="true"><i></i></span>';
+            $lines .= '<li class="bridge-home-line-card">'
+                . $glyph
+                . '<div><strong>' . self::e($name) . '</strong><p>' . self::e($detail) . '</p></div>'
                 . '</li>';
         }
 
-        $steps = '';
-        foreach ($copy['steps'] as $index => [$title, $detail]) {
-            $steps .= '<li class="bridge-home-step">'
-                . '<span class="bridge-home-step-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
-                . '<h3>' . self::e($title) . '</h3>'
-                . '<p>' . self::e($detail) . '</p>'
-                . '</li>';
-        }
-
-        $path = '';
-        foreach ($copy['path'] as $index => [$title, $detail]) {
-            $path .= '<li class="bridge-home-stop">'
-                . '<span class="bridge-home-stop-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
-                . '<strong>' . self::e($title) . '</strong>'
-                . '<small>' . self::e($detail) . '</small>'
+        $carriers = '';
+        foreach ($copy['carriers'] as [$code, $glyph, $name]) {
+            $carriers .= '<li class="bridge-home-carrier bridge-home-carrier--' . $code . '">'
+                . '<span class="bridge-home-carrier-mark" aria-hidden="true">' . self::e($glyph) . '</span>'
+                . '<span class="bridge-home-carrier-name">' . self::e($name) . '</span>'
                 . '</li>';
         }
 
@@ -196,42 +183,35 @@ final class HomePageContent
             . '<div class="bridge-home-hero-inner">'
             . '<div class="bridge-home-hero-copy">'
             . '<p class="bridge-home-kicker">' . self::e($brand) . '</p>'
-            . '<h1 id="bridge-home-title">' . self::e($copy['title_tail']) . '</h1>'
+            . '<h1 id="bridge-home-title">' . self::e($copy['title']) . '</h1>'
             . '<p class="bridge-home-lede">' . self::e($copy['lede']) . '</p>'
             . '<div class="bridge-home-actions">'
             . '<a class="bridge-home-primary" href="' . $href . '">' . self::e($copy['primary']) . '<span aria-hidden="true">&rarr;</span></a>'
             . '<a class="bridge-home-link" href="/knowledgebase">' . self::e($copy['secondary']) . '</a>'
             . '</div>'
-            . '<ul class="bridge-home-facts">' . $facts . '</ul>'
             . '</div>'
-            . '<aside class="bridge-home-board" aria-label="' . self::e($copy['board_head']) . '">'
-            . '<div class="bridge-home-board-head"><span>' . self::e($copy['board_head']) . '</span><span class="bridge-home-board-pulse" aria-hidden="true"></span></div>'
-            . '<p class="bridge-home-board-origin">' . self::e($copy['board_origin']) . '</p>'
-            . '<ul class="bridge-home-board-list">' . $routes . '</ul>'
-            . '<p class="bridge-home-board-note">' . self::e($copy['board_note']) . '</p>'
-            . '</aside>'
+            . '<div class="bridge-home-hero-art">'
+            . self::routeMap($copy['origins'], $copy['destinations'], $copy['map_hub'], $copy['map_hub_sub'], $copy['map_label'])
+            . '</div>'
             . '</div>'
             . '</section>'
-            . '<section class="bridge-home-steps" aria-labelledby="bridge-home-steps-title">'
-            . '<header class="bridge-home-section-head">'
-            . '<span>' . self::e($copy['steps_label']) . '</span>'
-            . '<h2 id="bridge-home-steps-title">' . self::e($copy['steps_title']) . '</h2>'
-            . '<p>' . self::e($copy['steps_lede']) . '</p>'
-            . '</header>'
-            . '<ol class="bridge-home-step-list">' . $steps . '</ol>'
-            . '</section>'
-            . '<section id="network" class="bridge-home-path" aria-labelledby="bridge-home-path-title">'
-            . '<header class="bridge-home-section-head">'
-            . '<span>' . self::e($copy['path_label']) . '</span>'
-            . '<h2 id="bridge-home-path-title">' . self::e($copy['path_title']) . '</h2>'
-            . '<p>' . self::e($copy['path_lede']) . '</p>'
-            . '</header>'
-            . '<ol class="bridge-home-path-rail">' . $path . '</ol>'
+            . '<section class="bridge-home-network" aria-label="' . self::e($copy['origins_label']) . '">'
+            . '<div class="bridge-home-network-block">'
+            . '<p class="bridge-home-label">' . self::e($copy['origins_label']) . '</p>'
+            . '<ul class="bridge-home-chips">' . $origins . '</ul>'
+            . '</div>'
+            . '<div class="bridge-home-network-block">'
+            . '<p class="bridge-home-label">' . self::e($copy['lines_label']) . '</p>'
+            . '<ul class="bridge-home-line-list">' . $lines . '</ul>'
+            . '</div>'
+            . '<div class="bridge-home-network-block">'
+            . '<p class="bridge-home-label">' . self::e($copy['carriers_label']) . '</p>'
+            . '<ul class="bridge-home-carriers">' . $carriers . '</ul>'
+            . '</div>'
             . '</section>'
             . '<section class="bridge-home-closing">'
             . '<div class="bridge-home-closing-inner">'
             . '<div class="bridge-home-closing-copy">'
-            . '<span>' . self::e($copy['closing_label']) . '</span>'
             . '<h2>' . self::e($copy['closing_title']) . '</h2>'
             . '<p>' . self::e($copy['closing_lede']) . '</p>'
             . '</div>'

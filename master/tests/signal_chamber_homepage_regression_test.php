@@ -12,9 +12,9 @@ $js = is_file($jsPath) ? (string) file_get_contents($jsPath) : '';
 
 foreach ([
     'class="bridge-home-hero"',
-    'class="bridge-home-board"',
-    'class="bridge-home-steps"',
-    'class="bridge-home-path"',
+    'class="bridge-home-map"',
+    'class="bridge-home-network"',
+    'class="bridge-home-carriers"',
 ] as $required) {
     if (!str_contains($home, $required)) {
         throw new RuntimeException('bridge homepage markup missing ' . $required);
@@ -39,7 +39,7 @@ foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT 
 foreach ([
     'publicPage(string $title, string $body, ?array $viewer = null, string $variant = \'default\')',
     "'bridge-home'",
-    '/assets/bridge-home.css?v=20260914c',
+    '/assets/bridge-home.css?v=20260914d',
     '/assets/signal-chamber.css?v=20260725',
     '/assets/signal-chamber.js?v=20260725',
     '$script = $isBridgeHome ? \'\' :',
@@ -49,7 +49,7 @@ foreach ([
     }
 }
 
-foreach (['.bridge-home-page', '.bridge-home-hero', '.bridge-home-board', '.bridge-home-path-rail', '@media (max-width: 820px)'] as $selector) {
+foreach (['.bridge-home-page', '.bridge-home-hero', '.bridge-home-map', '.bridge-home-network', '@media (max-width: 900px)'] as $selector) {
     if (!str_contains($bridgeCss, $selector)) {
         throw new RuntimeException('bridge home selector missing ' . $selector);
     }
