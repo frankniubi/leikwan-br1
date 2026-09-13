@@ -55,8 +55,8 @@
         "install_url": "/artifacts/install-client-agent.sh",
         "path": "install/install-client-agent.sh",
         "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-        "sha256": "5dcc452aa432a94812a771bcb6c56f4c9809cd855338af2c658e9639658c06d4",
-        "size_bytes": 35590,
+        "sha256": "2f9c6c02f6932160bd7bfe362f8f66c982fd538647c683f58375f2f82cb47e1b",
+        "size_bytes": 35933,
         "version": "2026.09.13.1",
         "size": 35590
     },
@@ -691,5 +691,12 @@
         "version": "0.1.20.48",
         "sha256": "13100350f85bc191db8866f643d5fb0d83251a78f6435a8300e6f2cda5f7bdb1",
         "size_bytes": 1429
+    },
+    "leikwan_cli_linux": {
+        "install_url": "/artifacts/leikwan-linux.sh",
+        "path": "install/leikwan-linux.sh",
+        "version": "2026.09.13.3",
+        "sha256": "301578bea73e48a789f6cb51643de3b9dd863c99e2e92f29f2b7632161479620",
+        "size_bytes": 5676
     }
 }

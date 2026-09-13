@@ -1,4 +1,14 @@
-# No-GUI clients (macOS and Windows)
+# No-GUI clients (macOS, Windows, Linux)
+
+> **Linux already is a no-GUI client.** The Linux client has always been the
+> windowless Python `client-agent` under systemd
+> (`leikwan-client-agent.service`), installed by the panel's Linux command. The
+> same `leikwan` operator command now exists there too
+> (`/usr/local/bin/leikwan`, installed by `install-client-agent.sh`, served as
+> the verified `leikwan_cli_linux` artifact). On Linux every subcommand needs
+> root, and `leikwan update` runs the published updater
+> (`/usr/local/bin/leikwan-client-agent-update`), which verifies the installer
+> and agent hashes against the manifest before reinstalling.
 
 > The same guide is published in the panel knowledge base as
 > **Run the Client Without a GUI** (`/knowledgebase?thread=no-gui-clients`, in
