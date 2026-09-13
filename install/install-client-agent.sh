@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.11.3"
+INSTALLER_VERSION="2026.09.13.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -912,7 +912,7 @@ EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5
-WatchdogSec=90
+WatchdogSec=180
 NotifyAccess=main
 
 [Install]
