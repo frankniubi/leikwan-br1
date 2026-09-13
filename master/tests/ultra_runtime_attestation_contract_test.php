@@ -720,6 +720,37 @@ namespace {
         'the release manifest must publish a fingerprint + hash for enforcement to compare against'
     );
 
+    // A current runtime entry must describe the bytes the panel actually serves.
+    // With enforcement on, a device whose fingerprint is in this map but whose
+    // reported binary hash is not gets refused: a stale attestation block (the
+    // fingerprint updated, the hash left behind from an earlier build) would
+    // lock out paying clients that run exactly the binary we published.
+    $currentRuntimeEntries = 0;
+    foreach ((array) $releaseManifest as $entryKey => $entry) {
+        if (!is_array($entry) || !str_starts_with((string) $entryKey, 'ultra_client_runtime')) {
+            continue;
+        }
+        $attestation = $entry['attestation'] ?? null;
+        $version = (string) ($entry['version'] ?? '');
+        if (!is_array($attestation) || $version === '') {
+            continue;
+        }
+        $fingerprint = (string) ($attestation['fingerprint'] ?? '');
+        if (preg_match('/^' . preg_quote($version, '/') . '\.[0-9a-f]{7,40}$/', $fingerprint) !== 1) {
+            // A block carried over from an older release cannot be checked here.
+            continue;
+        }
+        $currentRuntimeEntries++;
+        assertUltraRuntimeAttestation(
+            strtolower((string) ($attestation['self_sha256'] ?? '')) === strtolower((string) ($entry['sha256'] ?? '')),
+            $entryKey . ': attestation.self_sha256 must equal the published artifact sha256'
+        );
+    }
+    assertUltraRuntimeAttestation(
+        $currentRuntimeEntries >= 1,
+        'at least one current runtime entry must publish a verifiable attestation'
+    );
+
     // The published fingerprint shape must survive validation end to end.
     assertUltraRuntimeAttestation(
         UltraClientStatusService::runtimeFingerprintOrNull($releasedFingerprint) === $releasedFingerprint,
