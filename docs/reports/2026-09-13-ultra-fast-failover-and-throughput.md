@@ -111,3 +111,56 @@
 5. **bytes_in/bytes_out 不能用于 UDP 计费**（用户本机 600 s：bytes_out +13.8 KB，实际发出 ~1.4 MB）。
 6. agent watchdog 被杀（48h 内 158 次）本轮未动；--collect 只解决了失败单元堆积。
 7. 4 个 client-agent 安装器测试在 HEAD 上依然红（断言「不应再装 tcp-accel」与 installer 实际行为矛盾），需要产品决策。
+## 7. 目标轮次追加（attestation 闭环 + watchdog + enforce 开启）
+
+### 7.1 attestation 链最后一处断裂：agent 把整个 attestation 丢掉了
+
+面板接线修好后，桌面客户端立刻上报成功（DB 里出现 windows 会话的指纹），但 **agent 管理的 Linux 主机仍然一个都没有**。
+在 jstc 上直接调用 agent 的 `collect_ultra_status()` 看到真相：5 个 forward 的状态条目里**根本没有 `runtime_attestation` 键**。
+
+根因在 `_normalize_runtime_attestation()`：它要求 `debugger` 与 `instrumented` **必须存在且是 bool**，
+而 Go runtime 的 `RuntimeAttestation` 对这两个字段用了 `json:",omitempty"` —— 运行健康时它们**根本不出现**。
+于是每一个健康 runtime 的 attestation 都被整体丢弃，agent 主机从未上报过指纹。
+
+修复：缺失即「未上报」（面板侧同样按 null 处理），非 bool 仍然拒绝；新增 3 个单测。发布 agent **2026.09.13.2**，jstc 自行更新。
+
+### 7.2 端到端验证（两条路径都通了）
+
+| 路径 | device | 指纹 | self_sha256 | attested_at |
+| --- | --- | --- | --- | --- |
+| 桌面客户端（`ultra_usage[].runtime_attestation`） | windows-client-3-205f0cb1… | `2026.09.13.2.452c8fe8` | `226cc3aac2c7…` | 15:02:15 |
+| agent（`ultra_status[].runtime_attestation`） | legacy-ad82589d…（jstc） | `2026.09.13.3.452c8fe8` | `835ffd941596…` | 15:13:44 |
+
+### 7.3 agent watchdog：ping 移到独立线程
+
+`_systemd_watchdog_notify()` 只在主循环末尾调用，而一次 `sync_once()` 里单个租约批次就可能合法地占用 70 s，
+于是慢同步会饿死 ping，systemd 直接 SIGABRT 掉一个完全健康的 agent（jstc 48 h 内 158 次）。
+修复：ping 放到独立守护线程（只有进程真卡死才触发），并把 `WatchdogSec` 90 → 180（「卡死」判据而不是「忙」判据），
+安装器版本 2026.09.13.1 一并发布。收敛后 jstc：agent 2026.09.13.3、`WatchdogUSec=3min`、0 failed units、20 分钟内 0 次 watchdog kill。
+
+### 7.4 enforce 已开启（附安全性证据）
+
+开启前逐个扫描了**每个平台已发布二进制的实际 stamp**：
+
+| 制品 | 实际上报指纹 | 是否在判定表内 |
+| --- | --- | --- |
+| linux amd64 2026.09.13.3 | `2026.09.13.3.452c8fe8` | 命中（sha 一致） |
+| windows 2026.09.13.2 | `2026.09.13.2.452c8fe8` | 命中 |
+| macOS x64/arm64 2026.09.13.1 | `2026.09.13.1.4811e3ed` | 不在表内 → fail open |
+| linux arm64 / android ×2 | `2026.09.13.1.unknown` | 不在表内 → fail open |
+
+也就是说：**没有任何客户端会因为 enforce 而被误拒**（要么命中且哈希一致，要么不在表内直接放行），
+被拒的只可能是「声称已发布指纹但字节不符」的改装包 —— 正是这道闸门的目的。
+开启后观察：`ultra_lease_refusals` 0 行、`ultra_attestation_mismatch` 0 行、260 条在线租约正常。
+
+### 7.5 测试漂移
+
+- client-agent 套件 **442/442 通过**。修掉的漂移：客户端角色**确实**要装 tcp-accel 助手（它的 split-TCP 单元会 exec 它）、
+  产物 URL 现在来自 `--download-base`、runtime 键/路径改由 arch matrix 解析。
+- 面板侧本轮的 2 个既有红测（nonce 重放契约、runtime attestation 契约）已修，并新增「陈旧 attestation 块必须删除」的硬断言。
+
+### 7.6 仍未做
+
+macOS / Android / linux-arm64 runtime 尚未用新指纹重建。它们目前**不在判定表内 → fail open**，
+所以对 enforce 的安全性没有影响；重建应当随各自的 app 发版一起做（mac 客户端会从面板拉取
+`ultra_client_runtime_macos_*`，若无配套 app 版本可能引入运行时漂移提示）。
