@@ -164,3 +164,49 @@
 macOS / Android / linux-arm64 runtime 尚未用新指纹重建。它们目前**不在判定表内 → fail open**，
 所以对 enforce 的安全性没有影响；重建应当随各自的 app 发版一起做（mac 客户端会从面板拉取
 `ultra_client_runtime_macos_*`，若无配套 app 版本可能引入运行时漂移提示）。
+## 8. 目标轮次追加之二（全平台 runtime 重建 + 桌面 0.1.20.46）
+
+### 8.1 七个平台全部用正确指纹重建
+
+| 制品 | 版本 | sha256（前 16） | 实际 stamp |
+| --- | --- | --- | --- |
+| linux amd64 | 2026.09.13.3 | `835ffd941596…` | `2026.09.13.3.452c8fe8` |
+| linux arm64 | 2026.09.13.3 | `40126dd50982…` | 同上 |
+| macOS x64 | 2026.09.13.3 | `925088871d36…` | 同上 |
+| macOS arm64 | 2026.09.13.3 | `daca5e69a237…` | 同上 |
+| Android arm64 | 2026.09.13.3 | `1598f5cacefc…` | 同上 |
+| Android x86_64 | 2026.09.13.3 | `3b09eb7c741d…` | 同上 |
+| Windows amd64 | 2026.09.13.3 | `8344be91e910…` | 同上 |
+
+构件脚本里 `build-ultra-android.ps1` 也有和 linux/windows 一模一样的 `$LASTEXITCODE` 陷阱，一并修掉并纳入回归断言。
+每个清单条目现在都带 `attestation {fingerprint: 2026.09.13.3.452c8fe8, self_sha256: <服务字节的 sha>}`，
+面板判定表因此变成「一个指纹 → 7 个已发布哈希」，任一平台跑已发布二进制都命中，改装包被拒；不再需要 fail open。
+发布后逐个核对：7 个制品的服务字节 == 清单 sha，全部 OK。
+
+### 8.2 桌面客户端 0.1.20.46
+
+- 内嵌 **Windows runtime 2026.09.13.3**（含"静默候选快速隔离"修复）；
+- 带上一轮那条 **空闲也上报 attestation** 的 C# 修复；
+- 安装器构建脚本自带断言：内嵌 runtime 的 sha 必须等于清单里 `ultra_client_runtime_windows` 的 sha —— 正是这条
+  在顺序错误时直接拦住了我（先构建后改清单会报 `Ultra Windows binary sha256 does not match manifest`），
+  从机制上避免了历史上那类 `HasRuntimeDrift` 死循环。
+- 服务字节核对：setup 69,543,961 B / `f0b7314db9c6…` == 清单，`windows_client_app.runtime_sha256` 的 pin 与 runtime 条目一致。
+
+### 8.3 收尾核验
+
+- `ultra_lease_refusals` 0 行、`ultra_attestation_mismatch` 0 行、236 条在线租约、200 个 session 中 2 个已带指纹；
+- jstc：agent 2026.09.13.3、runtime 2026.09.13.3、`WatchdogUSec=3min`、0 failed units、0 watchdog kill；
+- 面板 `master/tests/ultra_client_artifact_distribution_test.php` 与 `ultra_runtime_attestation_contract_test.php` 均 ok。
+
+### 8.4 目标清单对照
+
+| 目标项 | 状态 |
+| --- | --- |
+| 修复"钉在已死候选"并现场验证切换时间 | ✅ 130.9 s → 6.8 s（A/B，握手级假中继注入） |
+| 测出隧道吞吐与丢包曲线 | ✅ TCP 157–189 Mbit/s；UDP 50 Mbit/s 内 <0.75% 丢包，100 Mbit/s 4.59% |
+| attestation：客户端空闲上报 | ✅ 代码 + 单测，随 0.1.20.46 发布 |
+| attestation：面板侧 | ✅ 接线修复（桌面 + agent 两种形状都读），并用两条真实指纹端到端验证 |
+| attestation：各平台 runtime 重建 + 切回 enforce | ✅ 七平台重建、判定表覆盖全部平台，enforce 已开且 0 拒绝 |
+| 发布 client-agent（--collect） | ✅ 2026.09.13.1 → .3（含 attestation 归一化与 watchdog 线程），jstc 已收敛 |
+| 消除 agent watchdog 被杀 | ✅ 独立线程 ping + WatchdogSec 180，收敛后 0 次 |
+| 消除测试漂移 | ✅ client-agent 442/442；面板侧本轮修掉 3 处并加硬断言 |
