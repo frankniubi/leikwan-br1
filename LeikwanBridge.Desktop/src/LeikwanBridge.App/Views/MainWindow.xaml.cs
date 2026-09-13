@@ -1547,7 +1547,7 @@ public partial class MainWindow : Window
         // the user's chosen download source.
         var artifactUrl = WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl);
         artifactUrl = WindowsAppUpdateService.BuildArtifactDownloadUrl(artifactUrl, artifact.Version, artifact.Sha256);
-        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath, progress, artifact.Sha256);
+        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath, progress, artifact.Sha256, artifact.SizeBytes);
         return installerPath;
     }
 
