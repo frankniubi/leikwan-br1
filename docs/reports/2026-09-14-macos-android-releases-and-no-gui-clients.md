@@ -163,6 +163,49 @@ runtime lives or which panel they talk to.
   panel contract tests green (headless, macos artifact/install surface, android,
   windows manifest, distribution, attestation).
 
+## No-GUI end-to-end on the test Mac (1.0.33)
+
+Installed 1.0.33 into /Applications (user-writable on the test VM, no sudo
+needed), strict codesign 0, runtime 173a794c.
+
+--print-plist (added while validating) produces a LaunchDaemon that
+plutil -lint accepts, with the right label, arguments and restart policy:
+
+    label: com.leikwan.bridge.headless
+    ProgramArguments: .../LeikwanBridge.Mac --headless --panel https://v3.leikwanhost.com
+                     --client-id 3 --agent-token-file .../agent-token
+                     --status-file .../headless-status.json --log-file .../headless-.log
+    keepalive: false (SuccessfulExit)   throttle: 15
+
+Supervised run using the machine's stored identity (no token on the command
+line), then the launchd stop path:
+
+    status: {"Version":"1.0.33","Connected":true,...,"Forwards":[
+      158 CAN -> HKG :30522 running, 159 SHA -> TYO :32469 running,
+      170 SHA -> TYO :10001 running, 171 SHA -> TYO :32502 running, 180 ... stopped]}
+    headless pid alive: yes        (4 ultra-client children)
+    kill -TERM -> still running: no, stdout "headless_signal: SIGTERM"
+
+### Two defects this test found
+
+1. --log-file was ignored. MacAppBootstrap installs the windowed client's own
+   file sink, so the headless sink was replaced right after startup and only
+   the first line ever reached the requested file. Fixed by re-applying the
+   headless configuration after the bootstrap (and closing the previous sink
+   first, otherwise the file cannot be reopened). Ships in 1.0.34.
+2. macOS clients never report the runtime attestation. The runtime does
+   publish it - <state>/runtime/ultra-159-.../status.json contains
+   {"fingerprint":"2026.09.13.3.452c8fe8","self_sha256":"173a794c..."} - and the
+   panel did see the client itself (macos-client-a2dd23ea..., platform
+   macos-desktop, updated during the headless run), but
+   ultra_runtime_fingerprint / ultra_runtime_self_sha256 stay NULL: 3 of 201
+   device rows carry a fingerprint and NONE of the 17 macOS rows do (the
+   Windows and Linux paths do). The client-side data is present, so the gap is
+   in how the heartbeat payload is read for the macOS platform; the next round
+   needs one instrumented heartbeat from a Mac to close it. Until then macOS is
+   fail-open in the enforcement map: unaffected functionally, but invisible to
+   attestation-based reporting.
+
 ## Follow-ups
 
 * macOS/Windows no-GUI clients do not apply updates themselves yet: re-run the

@@ -44,6 +44,10 @@ public static class MacHeadlessHost
         try
         {
             client = await deps.Bootstrap(paths, shutdown.Token).ConfigureAwait(false);
+            // The bootstrap installs the windowed client's own file sink; in
+            // headless mode the operator asked for --log-file, so re-establish
+            // it last (Serilog keeps the final configuration).
+            ConfigureLogging(paths, options, deps);
             await ApplyIdentityAsync(client, options, shutdown.Token).ConfigureAwait(false);
             var controller = client.Controller;
             var selection = HeadlessClientOptions.ParseForwardSelection(options.Forwards);
@@ -382,6 +386,10 @@ public static class MacHeadlessHost
         HeadlessClientOptions options,
         MacHeadlessDependencies deps)
     {
+        // Reconfiguration: release the previous sink first, otherwise the file
+        // sink cannot reopen the same path (and a rolling restart would fail the
+        // same way).
+        Log.CloseAndFlush();
         var defaultLogFile = paths.LogDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             + Path.DirectorySeparatorChar + "headless-.log";
         var logDirectory = Path.GetDirectoryName(
