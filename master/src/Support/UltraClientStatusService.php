@@ -140,6 +140,7 @@ final class UltraClientStatusService
         $this->candidateReviews->rememberObserver($clientId, $deviceId, $observerHash);
         $accepted = 0;
         $seen = [];
+        $transport = [];
         foreach (array_slice(array_values($feedback), 0, UltraCandidateReputationService::MAX_FEEDBACK) as $item) {
             if (!is_array($item)) {
                 continue;
@@ -180,6 +181,13 @@ final class UltraClientStatusService
             if (!in_array($outcome, ['failure', 'success'], true) || $reason === 'process_stderr') {
                 continue;
             }
+            if ($outcome === 'failure' && UltraCandidateReputationService::isTransportReason($reason)) {
+                // A candidate that was never armed is not evidence about the
+                // line, and the runtime emits one of these every few seconds
+                // per forward. Count it for the log, keep it out of reputation.
+                $transport[$reason] = (int) ($transport[$reason] ?? 0) + 1;
+                continue;
+            }
             if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))
                 || ($outcome === 'success' && $reason !== 'canary_probe_ok')) {
                 continue;
@@ -195,6 +203,16 @@ final class UltraClientStatusService
                 $seen[$forwardId . ':' . $candidateHash] = true;
                 $accepted++;
             }
+        }
+        if ($transport !== []) {
+            $parts = [];
+            foreach ($transport as $reason => $count) {
+                $parts[] = $reason . '=' . $count;
+            }
+            error_log(
+                'ultra_candidate_transport_feedback client=' . $clientId
+                . ' device=' . substr($deviceId, 0, 24) . ' ' . implode(' ', $parts)
+            );
         }
         return $accepted;
     }

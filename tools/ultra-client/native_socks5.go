@@ -937,7 +937,7 @@ func armNativeAssociationCandidates(
 		}
 		store.MarkCandidateFailure(key)
 		if status != nil {
-			status.RecordCandidateFailure(key, "udp", "udp_association_failed", snapshot.Lease.LeaseHash)
+			status.RecordCandidateFailure(key, "udp", udpArmFailureReason(err), snapshot.Lease.LeaseHash)
 			status.RecordHAEvent("udp", haErrorClass(err), snapshot.Policy.PolicyGeneration)
 		}
 		log.Printf("native udp candidate failed forward_id=%d selection_ref=%s attempt=%d reason=%s",

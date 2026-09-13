@@ -45,7 +45,7 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 			}, nil
 		}
 		store.FailCandidate("udp", ss.Lease)
-		status.RecordCandidateFailure(ss.Lease.CandidateKeyHash, "udp", "udp_association_failed", ss.Lease.LeaseHash)
+		status.RecordCandidateFailure(ss.Lease.CandidateKeyHash, "udp", udpArmFailureReason(err), ss.Lease.LeaseHash)
 		status.RecordHAEvent("udp", haErrorClass(err), ss.Policy.PolicyGeneration)
 		log.Printf("udp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(err))
 		last = err
@@ -155,6 +155,22 @@ func udpRuntimeFailureReason(err error) string {
 		return udpPayloadCeilingUnusableReason
 	}
 	return "udp_association_failed"
+}
+
+// udpArmFailureReason labels a candidate that never produced a session.
+//
+// Losing a session that was established is evidence about the line. Failing to
+// establish one is not: the relay accepts the control connection and then closes
+// it without a reply, or the reply never arrives, and the very next attempt
+// usually succeeds. Reporting those as line failures let a single broken local
+// path manufacture a quarantine of a healthy line, because every retry carried a
+// fresh evidence id. An endpoint that cannot be reached at all is different -
+// nothing about the line can work through it - so that keeps counting.
+func udpArmFailureReason(err error) string {
+	if errors.Is(err, errProviderDial) {
+		return "udp_endpoint_unreachable"
+	}
+	return "udp_arm_failed"
 }
 
 func configureRuntimeDatagram(s *DatagramSession, store *PolicyStore, status *StatusWriter, lease ProviderLease) {

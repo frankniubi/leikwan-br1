@@ -18,6 +18,8 @@ namespace Leikwan\Master\Database {
     {
         /** @var array<int, array<string, mixed>> */
         public array $reviews = [];
+        /** @var array<int, array<string, mixed>> */
+        public array $observers = [];
         /** @var array<int, string> */
         public array $statements = [];
 
@@ -83,6 +85,27 @@ namespace Leikwan\Master\Database {
                         $this->reviews[$index]['result_json'] = $params['result_json'];
                         $touched++;
                     }
+                }
+                return $touched;
+            }
+            if (str_contains($sql, 'SET demoted_at = CASE WHEN strikes - 1 < :threshold')) {
+                $touched = 0;
+                foreach ($this->observers as $index => $row) {
+                    if ((int) $row['strikes'] <= 0) {
+                        continue;
+                    }
+                    if ($row['last_decay_at'] !== null && (string) $row['last_decay_at'] >= (string) $params['cutoff']) {
+                        continue;
+                    }
+                    if ($row['last_rebuttal_at'] !== null && (string) $row['last_rebuttal_at'] >= (string) $params['cutoff']) {
+                        continue;
+                    }
+                    $this->observers[$index]['strikes'] = (int) $row['strikes'] - 1;
+                    if ($this->observers[$index]['strikes'] < (int) $params['threshold']) {
+                        $this->observers[$index]['demoted_at'] = null;
+                    }
+                    $this->observers[$index]['last_decay_at'] = $params['now'];
+                    $touched++;
                 }
                 return $touched;
             }
@@ -169,12 +192,12 @@ namespace {
 
     $touchedOthers = array_filter(
         $db->statements,
-        static fn(string $sql): bool => str_contains($sql, 'ultra_observer_devices')
+        static fn(string $sql): bool => str_contains($sql, 'strikes = strikes + 1')
             || str_contains($sql, 'last_reason')
     );
     assertReviewQueue(
         $touchedOthers === [],
-        'a review nobody reported back on must not touch reputation or device standing'
+        'a review nobody reported back on must not strike a device or move reputation'
     );
 
     // 2. A stale review that still has budget is retried.
@@ -237,6 +260,34 @@ namespace {
             && (int) $db->reviews[0]['attempts'] === 0,
         'a review nobody was handed must keep its attempts'
     );
+
+
+    // 5. A strike decays once the device stops being disproved, so a client bug
+    //    cannot demote a device for good.
+    $db = new Database();
+    $db->observers[] = [
+        'observer_hash' => str_repeat('e', 64),
+        'client_id' => 3,
+        'device_id' => 'windows-client-3',
+        'strikes' => 2,
+        'demoted_at' => gmdate('Y-m-d H:i:s', $now - 40 * 86400),
+        'last_rebuttal_at' => gmdate('Y-m-d H:i:s', $now - 30 * 86400),
+        'last_decay_at' => null,
+    ];
+    $db->observers[] = [
+        'observer_hash' => str_repeat('f', 64),
+        'client_id' => 3,
+        'device_id' => 'windows-client-3-fresh',
+        'strikes' => 1,
+        'demoted_at' => null,
+        'last_rebuttal_at' => gmdate('Y-m-d H:i:s', $now - 60),
+        'last_decay_at' => null,
+    ];
+    $service = new UltraCandidateReviewService($db, $clock);
+    $service->requestForSource('source-a', 0);
+    assertReviewQueue((int) $db->observers[0]['strikes'] === 1, 'a stale strike must decay');
+    assertReviewQueue($db->observers[0]['demoted_at'] === null, 'a decayed device must get its standing back');
+    assertReviewQueue((int) $db->observers[1]['strikes'] === 1, 'a fresh rebuttal must protect the strike');
 
     echo "ultra_candidate_review_queue_test: OK" . PHP_EOL;
 }

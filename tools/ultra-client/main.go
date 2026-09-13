@@ -379,6 +379,10 @@ var (
 	errStreamPreludeRejected          = errors.New("stream prelude rejected")
 	errDatagramControlReplyIncomplete = errors.New("datagram control reply incomplete")
 	errDatagramAssociationFailed      = errors.New("datagram association failed")
+	// The provider endpoint could not be reached at all. That is a verdict on
+	// the endpoint; a connection that is established and then refused is not,
+	// and the two are told apart by this sentinel.
+	errProviderDial = errors.New("provider connect")
 )
 
 // Test-only observation hooks. The production runtime never assigns these;
@@ -445,7 +449,7 @@ func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetP
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
 	if err != nil {
-		return nil, fmt.Errorf("provider connect: %w", err)
+		return nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
 	handshake, err := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 1, targetHost, targetPort, greeting)
 	defer clearBytes(handshake)
@@ -1169,7 +1173,7 @@ func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting 
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
 	conn, err := net.DialTimeout("tcp", address, remaining)
 	if err != nil {
-		return nil, nil, fmt.Errorf("provider connect: %w", err)
+		return nil, nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
 	control := conn.(*net.TCPConn)
 	handshake, buildErr := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port, greeting)

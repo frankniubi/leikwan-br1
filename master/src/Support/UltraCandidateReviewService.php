@@ -39,6 +39,11 @@ final class UltraCandidateReviewService
     public const MAX_ATTEMPTS = 5;
     /** How long a closed review keeps a still-quarantined candidate from being re-queued. */
     public const REENQUEUE_COOLDOWN_SECONDS = 21600;
+    // A strike is not a life sentence. A device that stops being disproved gets
+    // one strike back per window and regains its standing as an independent
+    // observer once it is below the demotion threshold, so a client bug cannot
+    // demote a device for good.
+    public const STRIKE_DECAY_SECONDS = 604800;
     public const MAX_RECENT = 200;
 
     /** @var callable():int */
@@ -64,6 +69,7 @@ final class UltraCandidateReviewService
             return [];
         }
         $this->expireStaleRunning();
+        $this->decayDeviceStrikes();
         $limit = max(0, min(8, $limit));
         if ($limit === 0) {
             // A source whose agent does not run reviews must not be handed any: it
@@ -350,6 +356,31 @@ final class UltraCandidateReviewService
                     ['abandoned' => true, 'note' => 'source host did not report back'],
                     JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
                 ),
+            ]
+        );
+    }
+
+    /**
+     * Give a strike back to every device that has not been disproved recently.
+     *
+     * demoted_at is assigned before strikes so the comparison sees the value the
+     * device had when the statement ran.
+     */
+    private function decayDeviceStrikes(): void
+    {
+        $cutoff = gmdate('Y-m-d H:i:s', $this->now() - self::STRIKE_DECAY_SECONDS);
+        $this->db->execute(
+            'UPDATE ultra_observer_devices
+                SET demoted_at = CASE WHEN strikes - 1 < :threshold THEN NULL ELSE demoted_at END,
+                    strikes = strikes - 1,
+                    last_decay_at = :now
+              WHERE strikes > 0
+                AND (last_decay_at IS NULL OR last_decay_at < :cutoff)
+                AND (last_rebuttal_at IS NULL OR last_rebuttal_at < :cutoff)',
+            [
+                'threshold' => self::DEMOTION_STRIKES,
+                'now' => gmdate('Y-m-d H:i:s', $this->now()),
+                'cutoff' => $cutoff,
             ]
         );
     }

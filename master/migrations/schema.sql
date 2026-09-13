@@ -1442,6 +1442,7 @@ CREATE TABLE IF NOT EXISTS ultra_observer_devices (
     strikes INT UNSIGNED NOT NULL DEFAULT 0,
     demoted_at DATETIME NULL,
     last_rebuttal_at DATETIME NULL,
+    last_decay_at DATETIME NULL,
     last_seen_at DATETIME NOT NULL,
     created_at DATETIME NOT NULL,
     INDEX idx_ultra_observer_devices_client (client_id, last_seen_at),
