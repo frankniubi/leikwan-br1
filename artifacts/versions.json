@@ -2,10 +2,10 @@
     "android_client_apk": {
         "artifact_url": "/artifacts/leikwan-android-client.apk",
         "path": "artifacts/android/leikwan-android-client.apk",
-        "version_code": 27,
-        "sha256": "8af628d2194e854e002ac77c66cc9249b65e810424f2690b5a5d5f5e43096de4",
-        "size_bytes": 89428315,
-        "version": "0.2.25"
+        "version_code": 28,
+        "sha256": "83728e913911b9030856830cbfa13da3fef78e08406d852687db5d4ec69d0113",
+        "size_bytes": 89170267,
+        "version": "0.2.26"
     },
     "bond_sidecar_installer": {
         "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -299,15 +299,15 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-        "sha256": "9223b45499d0e374480eae7b50a90165d22f0bbf6e2825bb536efd20f7ab9730",
-        "size_bytes": 68918539,
+        "sha256": "91f6280e745def5dc01eb93394a87aefe756b1312fe54f3270a9cc829026a4ba",
+        "size_bytes": 68815921,
         "runtime_sha256": {
             "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
             "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
             "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
             "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
             "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-            "bin/ultra-client": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f"
+            "bin/ultra-client": "c49718f7b373f214288a42bb74172711647f7545e4cb3588fcacc46c99fd16a2"
         },
         "version": "1.0.31"
     },
@@ -321,15 +321,15 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-        "sha256": "1efc39fc6a1f43220ee23f088339500e19ff7a42530ac6437dcef1cd6d8358da",
-        "size_bytes": 72927842,
+        "sha256": "8b050a862f46e693666205808f508846c057a3f1357b9f7f93c8575f64d3640e",
+        "size_bytes": 72811882,
         "runtime_sha256": {
             "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
             "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
             "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
             "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
             "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-            "bin/ultra-client": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91"
+            "bin/ultra-client": "0fba8582928392bafa3e8475ea6d2537dd0af5a56c9a460b4ea64e641b8a9220"
         },
         "version": "1.0.31"
     },
@@ -450,9 +450,9 @@
         ],
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_linux_amd64",
-        "sha256": "1a09539d1d266222ef346a5d8f212cf464a161957a7effd5dbad1fcb663c78b5",
-        "size_bytes": 16318730,
-        "version": "2026.09.12.1",
+        "sha256": "33ac5e4c66a072da9c45a08874e416aea2519099c1d7964a75dfdc3a6e64e2d3",
+        "size_bytes": 16040202,
+        "version": "2026.09.13.1",
         "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
@@ -475,9 +475,9 @@
         ],
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_linux_arm64",
-        "sha256": "95060935dc25330909075fca33e157c92d26cb678be5440430352131e697d183",
-        "size_bytes": 14745866,
-        "version": "2026.09.12.1",
+        "sha256": "9043dc592d5935a5d94deb078e1f8092d5ca7674e7dcd9bdcd5bf768090950a5",
+        "size_bytes": 14483722,
+        "version": "2026.09.13.1",
         "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
@@ -503,9 +503,9 @@
         "architecture": "x86_64",
         "build": "go1.26.5 darwin, garble-v0.17.0, bundle-signed ad-hoc (rcodesign 0.29.0), path-mtu-2026.09.12.1",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91",
-        "size_bytes": 15138320,
-        "version": "2026.09.12.1",
+        "sha256": "0fba8582928392bafa3e8475ea6d2537dd0af5a56c9a460b4ea64e641b8a9220",
+        "size_bytes": 14846800,
+        "version": "2026.09.13.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
             "self_sha256": "74c3f2206d21ecedfda57710119f6488d3460e0fd853776974171d0716869f91"
@@ -517,9 +517,9 @@
         "architecture": "arm64",
         "build": "go1.26.5 darwin, garble-v0.17.0, bundle-signed ad-hoc (rcodesign 0.29.0), path-mtu-2026.09.12.1",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f",
-        "size_bytes": 13472768,
-        "version": "2026.09.12.1",
+        "sha256": "c49718f7b373f214288a42bb74172711647f7545e4cb3588fcacc46c99fd16a2",
+        "size_bytes": 13201632,
+        "version": "2026.09.13.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
             "self_sha256": "5efe1108f3dbd4ac50a5a8998002adfa2393312f9a8b63e241962d4a60a0ce6f"
@@ -609,9 +609,9 @@
         ],
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_android_arm64",
-        "sha256": "bb78b25d3cc7d9ed150aa731ac552a6fd95b6e18896ec11b4aefd98a07a1fdbb",
-        "size_bytes": 14745860,
-        "version": "2026.09.12.1",
+        "sha256": "46ead3d9edbd66fdc72dedb46484ef85db0dd3a95c9e36d67328b22c956280c6",
+        "size_bytes": 14418180,
+        "version": "2026.09.13.1",
         "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
@@ -635,9 +635,9 @@
         "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_android_x86_64",
-        "sha256": "cc954df15b1ccab29a03578366d6b0a1342ca9c8352c9a1354395c6a5621553a",
-        "size_bytes": 16348096,
-        "version": "2026.09.12.1",
+        "sha256": "ff8781ff7e12f6bea68d421ed58f198cee770db6a40e0f503696756d34c8f2a9",
+        "size_bytes": 16069728,
+        "version": "2026.09.13.1",
         "build": "go1.26.5, android/amd64, NDK r27b external linking, garble-v0.17.0, path-mtu-2026.09.12.1",
         "attestation": {
             "fingerprint": "2026.09.12.1.4b106b02",
