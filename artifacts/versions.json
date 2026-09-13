@@ -2,10 +2,10 @@
     "android_client_apk": {
         "artifact_url": "/artifacts/leikwan-android-client.apk",
         "path": "artifacts/android/leikwan-android-client.apk",
-        "version_code": 28,
-        "sha256": "83728e913911b9030856830cbfa13da3fef78e08406d852687db5d4ec69d0113",
-        "size_bytes": 89170267,
-        "version": "0.2.26"
+        "version_code": 29,
+        "sha256": "29fa4495991b5168a28434af23db9f022b7f0de5626546241a4dbbe3e5613ba7",
+        "size_bytes": 90284379,
+        "version": "0.2.27"
     },
     "bond_sidecar_installer": {
         "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -272,9 +272,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-        "sha256": "cd30c6802442fcee57e3883dd9aa6ea0b44207610f2aae26d0e18ec5dbb0efc4",
-        "size_bytes": 77412389,
-        "version": "1.0.31"
+        "sha256": "1d98d9943fd389cde26e6f17c09fbf1d02932eecb4a836c930de864a4e8f8f10",
+        "size_bytes": 78364643,
+        "version": "1.0.33"
     },
     "macos_client_app_x64": {
         "architecture": "x86_64",
@@ -286,9 +286,9 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-        "sha256": "266f311a8b15a337db715e527be8745bba4d8f27c653598284982ccb6c2427d7",
-        "size_bytes": 81755329,
-        "version": "1.0.31"
+        "sha256": "120b6d7257f31a9b3f89a7a43f74dba82fc18d2de339fe169cd088f838025e59",
+        "size_bytes": 82067867,
+        "version": "1.0.33"
     },
     "macos_client_update_arm64": {
         "architecture": "arm64",
@@ -300,17 +300,17 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-        "sha256": "91f6280e745def5dc01eb93394a87aefe756b1312fe54f3270a9cc829026a4ba",
-        "size_bytes": 68815921,
+        "sha256": "58a66f923507f9a8c1e4cb60f9ef0a5ff7ee1cc8fe1df0489d8b83f73548f1bd",
+        "size_bytes": 69071717,
         "runtime_sha256": {
             "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
             "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
             "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
             "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
             "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-            "bin/ultra-client": "c49718f7b373f214288a42bb74172711647f7545e4cb3588fcacc46c99fd16a2"
+            "bin/ultra-client": "173a794c1b67ad779a8fa33ca66ce4f55da7672b782e65fe2c34bb665196f7ed"
         },
-        "version": "1.0.31"
+        "version": "1.0.33"
     },
     "macos_client_update_x64": {
         "architecture": "x86_64",
@@ -322,17 +322,17 @@
             "ultra_client": "garble-v0.17.0-literals-tiny"
         },
         "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-        "sha256": "8b050a862f46e693666205808f508846c057a3f1357b9f7f93c8575f64d3640e",
-        "size_bytes": 72811882,
+        "sha256": "d35089249794f979b2141c87b830158e2eea2d13aeed7a95934d458cf10d0071",
+        "size_bytes": 73093533,
         "runtime_sha256": {
             "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
             "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
             "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
             "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
             "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-            "bin/ultra-client": "0fba8582928392bafa3e8475ea6d2537dd0af5a56c9a460b4ea64e641b8a9220"
+            "bin/ultra-client": "580cbb4892246ece97578e8913980452eb53a8b8acf2f8c5b50ca6584d944f8f"
         },
-        "version": "1.0.31"
+        "version": "1.0.33"
     },
     "mptcp_client_runtime": {
         "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -504,12 +504,12 @@
         "architecture": "x86_64",
         "build": "go1.26.5, garble-v0.17.0, fast-path-failover-2026.09.13.3",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "925088871d3618a75102f02828d679b1287600c433d8db3fee2a5c2bed676065",
-        "size_bytes": 15307024,
+        "sha256": "580cbb4892246ece97578e8913980452eb53a8b8acf2f8c5b50ca6584d944f8f",
+        "size_bytes": 15431952,
         "version": "2026.09.13.3",
         "attestation": {
             "fingerprint": "2026.09.13.3.452c8fe8",
-            "self_sha256": "925088871d3618a75102f02828d679b1287600c433d8db3fee2a5c2bed676065"
+            "self_sha256": "580cbb4892246ece97578e8913980452eb53a8b8acf2f8c5b50ca6584d944f8f"
         }
     },
     "ultra_client_runtime_macos_arm64": {
@@ -518,12 +518,12 @@
         "architecture": "arm64",
         "build": "go1.26.5, garble-v0.17.0, fast-path-failover-2026.09.13.3",
         "obfuscator": "garble-v0.17.0",
-        "sha256": "daca5e69a237aaca3c5280be119aa1031e39152baa0a69c09ed424fc7a877ecd",
-        "size_bytes": 13576338,
+        "sha256": "173a794c1b67ad779a8fa33ca66ce4f55da7672b782e65fe2c34bb665196f7ed",
+        "size_bytes": 13581568,
         "version": "2026.09.13.3",
         "attestation": {
             "fingerprint": "2026.09.13.3.452c8fe8",
-            "self_sha256": "daca5e69a237aaca3c5280be119aa1031e39152baa0a69c09ed424fc7a877ecd"
+            "self_sha256": "173a794c1b67ad779a8fa33ca66ce4f55da7672b782e65fe2c34bb665196f7ed"
         }
     },
     "uot_bond_runtime": {
@@ -653,5 +653,43 @@
             "fingerprint": "2026.09.12.1.4b106b02",
             "self_sha256": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63"
         }
+    },
+    "windows_headless_client": {
+        "artifact_url": "/artifacts/windows/leikwan-bridge-headless-win-x64.zip",
+        "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
+        "format": "zip",
+        "version": "0.1.20.47",
+        "architecture": "x86_64",
+        "platform": "windows",
+        "sha256": "a722911a77b0a1a51fb905fea9271eb86ff4b4a86f2e13813e55895aef5d9323",
+        "size_bytes": 33821040
+    },
+    "macos_headless_installer": {
+        "install_url": "/artifacts/install-macos-headless.sh",
+        "path": "install/install-macos-headless.sh",
+        "version": "1.0.33",
+        "sha256": "5e254c9a3a73531d4abe62529a2b14ce2eeb383fb148b9bea6388ce8d46a8554",
+        "size_bytes": 5398
+    },
+    "macos_headless_uninstaller": {
+        "install_url": "/artifacts/uninstall-macos-headless.sh",
+        "path": "install/uninstall-macos-headless.sh",
+        "version": "1.0.33",
+        "sha256": "cc33d63fb46e91090911284b2350b23ae3dea4a53b039919393435d4b06ecd56",
+        "size_bytes": 577
+    },
+    "windows_headless_installer": {
+        "install_url": "/artifacts/install-windows-headless.ps1",
+        "path": "install/install-windows-headless.ps1",
+        "version": "0.1.20.47",
+        "sha256": "da1c0dae3410d590cf7d27eff7b05162913c8252f20834623873208a49ac629b",
+        "size_bytes": 3700
+    },
+    "windows_headless_uninstaller": {
+        "install_url": "/artifacts/uninstall-windows-headless.ps1",
+        "path": "install/uninstall-windows-headless.ps1",
+        "version": "0.1.20.47",
+        "sha256": "13100350f85bc191db8866f643d5fb0d83251a78f6435a8300e6f2cda5f7bdb1",
+        "size_bytes": 1429
     }
 }

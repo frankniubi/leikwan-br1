@@ -72,11 +72,18 @@ public static class ResumableArtifactDownloader
         long received = 0;
         long? total = authoritativeLength;
         Exception? lastError = null;
+        // A body that ends early because the transport died is resumable, but a
+        // server that keeps answering with the same short body is serving a
+        // different (shorter) artifact than the manifest describes. Counting
+        // completed-but-unproductive attempts turns that into a fast, honest
+        // answer instead of 64 requests at the panel.
+        var unproductiveAttempts = 0;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             received = File.Exists(partialPath) ? new FileInfo(partialPath).Length : 0;
+            var attemptStart = received;
             if (total is > 0 && received >= total.Value)
             {
                 Promote(partialPath, destinationPath);
@@ -141,6 +148,24 @@ public static class ResumableArtifactDownloader
                 {
                     // The stream ended early (server closed, timeout mid-body).
                     progress?.Invoke(received, total);
+                    if (received <= attemptStart)
+                    {
+                        unproductiveAttempts++;
+                        if (unproductiveAttempts >= 2)
+                        {
+                            // Two complete responses in a row that delivered no
+                            // new bytes: this is the artifact, not the link.
+                            // Hand the short result back so the caller can fail
+                            // with update_size_mismatch.
+                            Promote(partialPath, destinationPath);
+                            return received;
+                        }
+                    }
+                    else
+                    {
+                        unproductiveAttempts = 0;
+                    }
+
                     continue;
                 }
 

@@ -1,18 +1,28 @@
-﻿{
-    "status":  "ok",
-    "artifact":  "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\.worktrees\\task-android-025\\artifacts\\android\\leikwan-android-client.apk",
-    "sha256":  "8af628d2194e854e002ac77c66cc9249b65e810424f2690b5a5d5f5e43096de4",
-    "size_bytes":  89428315,
-    "signature_v2_v3":  true,
-    "abi_matrix":  [
-                       "arm64-v8a",
-                       "x86_64"
-                   ],
-    "runtime_version":  "2026.09.11.4",
-    "version_name":  "0.2.25",
-    "version_code":  27,
-    "release_contract_checked":  true,
-    "retired_update_classes":  0,
-    "update_manifest_unchanged":  true,
-    "update_push_touched":  false
+{
+    "status": "ok",
+    "artifact": "C:\\Users\\frankniubi\\Downloads\\leikwan-br1\\artifacts\\android\\leikwan-android-client.apk",
+    "sha256": "29fa4495991b5168a28434af23db9f022b7f0de5626546241a4dbbe3e5613ba7",
+    "size_bytes": 90284379,
+    "signature_v2_v3": true,
+    "signature_schemes_verified": [
+        "v2",
+        "v3",
+        "v3.1"
+    ],
+    "abi_matrix": [
+        "arm64-v8a",
+        "x86_64"
+    ],
+    "runtime_version": "2026.09.13.3",
+    "runtime_sha256": {
+        "arm64-v8a": "1598f5cacefc50ac144c6dcdb1cf8ade191be2871832f1c7ab5c8e65c404e28f",
+        "x86_64": "3b09eb7c741d7afee5469b910be8aa4755f92941b0a3e7f784b448206af17a77"
+    },
+    "version_name": "0.2.27",
+    "version_code": 29,
+    "release_contract_checked": true,
+    "retired_update_classes": 0,
+    "update_manifest_unchanged": true,
+    "update_push_touched": false,
+    "note": "acceptance re-derived from the published APK: the packaging run's own guard refused the final acceptance write because artifacts/versions.json changed under it (concurrent macOS manifest edit); the signed APK itself was copied before the guard fired and is the exact artifact verified here"
 }

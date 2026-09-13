@@ -19,6 +19,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LeikwanBridge.Mac", "src\Le
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LeikwanBridge.Mac.Tests", "tests\LeikwanBridge.Mac.Tests\LeikwanBridge.Mac.Tests.csproj", "{EA1A0BD5-3E0D-45B6-B68C-423971955BDA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LeikwanBridge.Headless", "src\LeikwanBridge.Headless\LeikwanBridge.Headless.csproj", "{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -52,6 +54,10 @@ Global
 		{EA1A0BD5-3E0D-45B6-B68C-423971955BDA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EA1A0BD5-3E0D-45B6-B68C-423971955BDA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EA1A0BD5-3E0D-45B6-B68C-423971955BDA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{DE4D5A42-86CF-4844-B20B-6F53ECBC748C} = {DD851043-E432-40EA-9A10-9CA43AC34CD4}
@@ -60,5 +66,6 @@ Global
 		{0466D763-5208-45A6-BFD8-F83DF338BD0B} = {32F2C546-0497-41B2-AEAF-1EFB8D3B97DD}
 		{BE33DB8F-FC0C-4944-8561-E45A47C6B1B0} = {DD851043-E432-40EA-9A10-9CA43AC34CD4}
 		{EA1A0BD5-3E0D-45B6-B68C-423971955BDA} = {32F2C546-0497-41B2-AEAF-1EFB8D3B97DD}
+		{A855D2D6-58E3-4B7C-87A1-3988D6DB5B70} = {DD851043-E432-40EA-9A10-9CA43AC34CD4}
 	EndGlobalSection
 EndGlobal

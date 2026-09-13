@@ -17,6 +17,12 @@ internal static class Program
             ShowUnsupportedOsNotice();
             return 1;
         }
+        // The windowless client is a lifecycle variant of the same payload: it
+        // never initialises Avalonia, so launchd can run it without a GUI
+        // session while the Core services, lease handling and update pinning
+        // stay byte-identical to the windowed application.
+        if (args.Any(argument => string.Equals(argument, LeikwanBridge.Core.Services.HeadlessClientOptions.Flag, StringComparison.Ordinal)))
+            return Services.MacHeadlessHost.RunAsync(args).GetAwaiter().GetResult();
         if (args.Length > 0 && string.Equals(args[0], "--ultra-leak-fixture", StringComparison.Ordinal))
             return Services.MacUltraLeakFixture.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (TryConfigureUiFixture(args))

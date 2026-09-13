@@ -395,6 +395,91 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('macos_client_app_x64', '/artifacts/macos/leikwan-bridge-x64.dmg');
     }
 
+    // No-GUI surface. The Windows payload is its own artifact; macOS reuses the
+    // shipped app bundle in its --headless lifecycle, so it only needs the
+    // installers. Every URL carries the manifest version/hash like the GUI
+    // downloads, so an operator can verify what they fetched.
+    protected function windowsHeadlessClientUrl(): string
+    {
+        return $this->clientAppArtifactUrl(
+            'windows_headless_client',
+            '/artifacts/windows/leikwan-bridge-headless-win-x64.zip'
+        );
+    }
+
+    protected function macosHeadlessInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('macos_headless_installer', '/artifacts/install-macos-headless.sh');
+    }
+
+    protected function windowsHeadlessInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('windows_headless_installer', '/artifacts/install-windows-headless.ps1');
+    }
+
+    protected function installerScriptUrl(string $artifactKey, string $fallbackPath): string
+    {
+        $metadata = $this->artifactMetadata($artifactKey);
+        $configuredPath = trim((string) ($metadata['install_url'] ?? ''));
+        $path = $configuredPath !== '' ? $configuredPath : $fallbackPath;
+        if (preg_match('#^https?://#i', $path) === 1) {
+            return $path;
+        }
+
+        return $this->artifactBaseUrl() . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * One-line installers for the no-GUI clients. Both carry the same client id
+     * and agent token the Linux installer uses; neither embeds a credential in
+     * a URL query, so the command can be copied out of the page safely.
+     *
+     * @param array<string, mixed> $client
+     */
+    protected function macosHeadlessInstallCommand(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-macos-headless.sh')
+            . ' | sudo sh -s -- --panel ' . $this->shellQuote($masterUrl)
+            . ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     */
+    protected function windowsHeadlessInstallCommand(array $client): string
+    {
+        $zipUrl = $this->windowsHeadlessClientUrl();
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return '$z="$env:TEMP\lkb-headless.zip"; '
+            . 'iwr \'' . $zipUrl . '\' -OutFile $z; '
+            . 'Expand-Archive $z "$env:TEMP\lkb-headless" -Force; '
+            . 'cd "$env:TEMP\lkb-headless\leikwan-bridge-headless"; '
+            . '.\install-windows-headless.ps1 -Panel ' . $masterUrl
+            . ' -ClientId ' . $clientId
+            . ' -AgentToken \'' . $agentToken . '\'';
+    }
+
+    protected function headlessClientReleaseVersion(): string
+    {
+        foreach (['windows_headless_client', 'macos_headless_installer'] as $key) {
+            $version = trim((string) ($this->artifactMetadata($key)['version'] ?? ''));
+            if ($version !== '') {
+                return $version;
+            }
+        }
+
+        return '';
+    }
+
     private function clientAppArtifactUrl(string $artifactKey, string $fallbackPath): string
     {
         $metadata = $this->artifactMetadata($artifactKey);

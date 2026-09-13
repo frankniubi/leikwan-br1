@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LeikwanBridge.App\LeikwanBridge.App.csproj" />
+    <ProjectReference Include="..\..\src\LeikwanBridge.Headless\LeikwanBridge.Headless.csproj" />
   </ItemGroup>
 
 </Project>
