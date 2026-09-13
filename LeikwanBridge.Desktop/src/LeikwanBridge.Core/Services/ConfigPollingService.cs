@@ -581,6 +581,14 @@ public sealed class ConfigPollingService
             if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
                 return false;
 
+            // Native outbound forwards have no UltraAccess policy by design: the
+            // entitlement is the NativeOutbound capability and their grants are
+            // minted by the native path. Reading their absent policy as "policy
+            // expired" forced a full config pull on every single poll (the field
+            // log shows one every ~16 s, ~39k pulls per 200k panel requests).
+            if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
+                return false;
+
             var policy = forward.UltraAccess;
             if (policy is null
                 || !string.Equals(policy.ProtocolValue, UltraPolicy.Protocol, StringComparison.Ordinal)
