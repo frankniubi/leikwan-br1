@@ -684,7 +684,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	}
 	done := make(chan struct{}, 2)
 	go func() {
-		err := copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
+		_, err := copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
 		if err == nil || errors.Is(err, io.EOF) {
 			// A SOCKS client may half-close after sending an HTTP request. Keep
 			// the reverse direction alive so the response can still drain.
@@ -696,7 +696,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		done <- struct{}{}
 	}()
 	go func() {
-		err := copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
+		_, err := copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
 		if err == nil || errors.Is(err, io.EOF) {
 			closeNativeWrite(local)
 		} else {
