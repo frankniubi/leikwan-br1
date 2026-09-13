@@ -5,7 +5,6 @@ param(
     # amd64 (default) or arm64; the artifact name follows the arch.
     [ValidateSet("amd64", "arm64")]
     [string]$Arch = "amd64",
-    [switch]$SkipReproducibilityCheck
     # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
     [string]$ShortSha = "",
     [switch]$SkipReproducibilityCheck

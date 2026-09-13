@@ -5,7 +5,6 @@ param(
     [ValidateSet("arm64-v8a", "x86_64")]
     [string]$Abi = "arm64-v8a",
     [string]$Architectures = "",
-    [switch]$SkipReproducibilityCheck
     # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
     [string]$ShortSha = "",
     [switch]$SkipReproducibilityCheck
