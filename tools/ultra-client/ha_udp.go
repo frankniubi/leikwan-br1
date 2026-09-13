@@ -182,7 +182,13 @@ func configureRuntimeDatagram(s *DatagramSession, store *PolicyStore, status *St
 		status.RecordHAEvent("udp", haErrorClass(err), generation)
 		log.Printf("udp session failed forward_id=%d reason=%s generation=%s", store.config.ForwardID, haErrorClass(err), generation)
 	}
-	s.onRuntimeACK = func() { status.RecordUDPKeepaliveACK() }
+	s.onRuntimeACK = func() {
+		status.RecordUDPKeepaliveACK()
+		// A keepalive ACK is proof the path currently carries traffic: forget
+		// the strikes so a later, unrelated failure starts short again instead of
+		// inheriting an escalated isolation window.
+		store.ClearPathFailure("udp", key)
+	}
 	s.onRuntimeDrop = status.AddUDPQueueDrop
 	s.onCeilingMeasured = status.UpdateUDPPayloadCeiling
 }

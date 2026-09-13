@@ -295,7 +295,7 @@ func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		relayTCP(context.Background(), local, remote, limiter, st, 42, "generation", "selection")
+		relayTCP(context.Background(), local, remote, limiter, st, nil, relayIdentity{forward: 42, generation: "generation", selection: "selection"})
 		close(done)
 	}()
 	client.Write([]byte("request"))
@@ -320,6 +320,57 @@ func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("relay leaked")
+	}
+}
+
+// A relay that takes the connection and answers with nothing is the failure
+// mode that kept a dead candidate selected for minutes: the dial succeeds and
+// EOF looks like a normal close. Two such streams must quarantine the path.
+func TestHATCPRelayQuarantinesSilentRelay(t *testing.T) {
+	now := time.Now()
+	policy := testPolicy(now, strings.Repeat("a", 64))
+	lease := testLease(policy, strings.Repeat("b", 64))
+	lease.CandidateKeyHash = strings.Repeat("c", 64)
+	lease.LeaseHash = strings.Repeat("d", 64)
+	store := NewPolicyStore(testPolicyConfig())
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	defer st.Close()
+	limiter := NewPolicyLimiter()
+	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {
+		t.Fatal(err)
+	}
+	ident := relayIdentity{
+		forward: 42, generation: policy.PolicyGeneration, selection: lease.SelectionRef,
+		pathKey: haPathKey(lease), candidateKey: lease.CandidateKeyHash, leaseHash: lease.LeaseHash,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		client, local := tcpPair(t)
+		remote, provider := tcpPair(t)
+		done := make(chan struct{})
+		go func() {
+			relayTCP(context.Background(), local, remote, limiter, st, store, ident)
+			close(done)
+		}()
+		if _, err := client.Write([]byte("request")); err != nil {
+			t.Fatal(err)
+		}
+		// Accept the connection, then close it without sending a single byte.
+		provider.Close()
+		client.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("relay did not finish after the provider closed")
+		}
+	}
+	store.mu.RLock()
+	until, isolated := store.isolated["tcp:"+ident.pathKey]
+	store.mu.RUnlock()
+	if !isolated || !until.After(time.Now()) {
+		t.Fatal("two silent relay streams did not quarantine the path")
 	}
 }
 

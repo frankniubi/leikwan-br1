@@ -596,40 +596,48 @@ func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, ti
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
 
-func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
+// copyOutbound and copyInbound report how many bytes they moved: the relay
+// health decision needs to tell "the far end answered and closed" apart from
+// "the far end took the connection and returned nothing", and only the byte
+// count separates those two EOFs.
+func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
 	buffer := make([]byte, 32*1024)
+	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
 			if err := limiter.Consume(count); err != nil {
-				return err
+				return total, err
 			}
 			status.AddUsage(0, count)
 			if err := writeXor(destination, buffer[:count]); err != nil {
-				return err
+				return total, err
 			}
+			total += int64(count)
 		}
 		if readErr != nil {
-			return readErr
+			return total, readErr
 		}
 	}
 }
 
-func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
+func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
 	buffer := make([]byte, 32*1024)
+	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
 			if err := limiter.Consume(count); err != nil {
-				return err
+				return total, err
 			}
 			status.AddUsage(count, 0)
 			if _, err := destination.Write(buffer[:count]); err != nil {
-				return err
+				return total, err
 			}
+			total += int64(count)
 		}
 		if readErr != nil {
-			return readErr
+			return total, readErr
 		}
 	}
 }
@@ -676,7 +684,14 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				}
 				defer snapshot.Lease.wipe()
 				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
-				relayTCP(ctx, local, remote, store.Limiter(), status, config.ForwardID, snapshot.Policy.PolicyGeneration, snapshot.Lease.SelectionRef)
+				relayTCP(ctx, local, remote, store.Limiter(), status, store, relayIdentity{
+					forward:      config.ForwardID,
+					generation:   snapshot.Policy.PolicyGeneration,
+					selection:    snapshot.Lease.SelectionRef,
+					pathKey:      haPathKey(snapshot.Lease),
+					candidateKey: snapshot.Lease.CandidateKeyHash,
+					leaseHash:    snapshot.Lease.LeaseHash,
+				})
 
 			}()
 		default:
