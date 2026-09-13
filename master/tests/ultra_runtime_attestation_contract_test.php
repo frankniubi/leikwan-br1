@@ -649,6 +649,28 @@ namespace {
         !str_contains(json_encode(Database::$lastUpdate) ?: '', 'BAD FINGERPRINT'),
         'the raw rejected fingerprint must never be persisted'
     );
+    // The heartbeat handler must hand the attestation to the ingest call. The
+    // desktop client carries it inside its usage snapshots and the agent inside
+    // its status entries; reading only the explicit argument meant no session
+    // row ever stored a fingerprint.
+    $agentControllerSource = (string) file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
+    foreach ([
+        '$runtimeAttestation = $request->input(\'runtime_attestation\')',
+        '$usageEntry[\'runtime_attestation\']',
+    ] as $needle) {
+        assertUltraRuntimeAttestation(
+            str_contains($agentControllerSource, $needle),
+            'the client heartbeat handler does not collect the runtime attestation: ' . $needle
+        );
+    }
+    assertUltraRuntimeAttestation(
+        preg_match(
+            '/->ingest\(\s*\(int\) \$client\[.id.\],\s*\$deviceId,\s*\$ultraStatuses,\s*is_array\(\$runtimeAttestation\)/',
+            $agentControllerSource
+        ) === 1,
+        'the client heartbeat handler must pass the runtime attestation to the status ingest'
+    );
+
     assertUltraRuntimeAttestation(
         $statusService->ingest(7, 'device-a', [ultraAttestationStatus()], ['fingerprint' => $validFingerprint, 'self_sha256' => $validSha256]) === 1,
         'a session-level attestation argument must be accepted as well'

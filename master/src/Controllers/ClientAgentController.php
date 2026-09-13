@@ -1019,9 +1019,29 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'heartbeat');
         $ultraStatuses = $request->input('ultra_status', []);
+        // The runtime build identity reaches the panel in two shapes: the
+        // desktop client puts it inside each per-forward usage snapshot, the
+        // Linux/macOS agent puts it inside each per-forward status entry. Only
+        // the explicit argument used to be read, so no session row ever stored a
+        // fingerprint and the (already enabled) attestation enforcement had
+        // nothing to compare against.
+        $runtimeAttestation = $request->input('runtime_attestation');
+        if (!is_array($runtimeAttestation)) {
+            foreach ((array) $request->input('ultra_usage', []) as $usageEntry) {
+                if (is_array($usageEntry) && is_array($usageEntry['runtime_attestation'] ?? null)) {
+                    $runtimeAttestation = $usageEntry['runtime_attestation'];
+                    break;
+                }
+            }
+        }
         if (is_array($ultraStatuses)) {
             try {
-                $this->ultraClientStatus->ingest((int) $client['id'], $deviceId, $ultraStatuses);
+                $this->ultraClientStatus->ingest(
+                    (int) $client['id'],
+                    $deviceId,
+                    $ultraStatuses,
+                    is_array($runtimeAttestation) ? $runtimeAttestation : null
+                );
             } catch (\Throwable) {
                 // Runtime status is observational and must not interrupt the data-plane heartbeat.
             }
