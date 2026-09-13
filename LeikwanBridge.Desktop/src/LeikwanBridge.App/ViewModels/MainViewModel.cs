@@ -39,6 +39,19 @@ public partial class MainViewModel : ObservableObject
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly object _shutdownGate = new();
     private readonly NativeLeaseRenewalLoop _nativeLeaseRenewalLoop = new();
+
+    /// <summary>
+    /// Expiry of the candidate batch this client last minted for the active
+    /// native session.
+    /// WindowsProxyConnectionService only knows a lease expiry when the data
+    /// plane runs inside this process. With the direct runtime the leases live
+    /// in a child process and ActiveNativeLeaseExpiresAt stays null, and a null
+    /// expiry reads as "due now" (see NativeLeaseRenewalLoop.IsRefreshDue), so
+    /// every config poll - one roughly every 16 seconds - minted a fresh
+    /// candidate batch for every forward. The panel measured 1.05 grant rows
+    /// per second from that alone, against a five minute TTL.
+    /// </summary>
+    private DateTimeOffset? _nativeLeaseBatchExpiresAt;
     private Task? _shutdownTask;
     private Task? _heartbeatTask;
     private CancellationTokenSource? _nativeLeaseRenewalCts;
@@ -2027,6 +2040,9 @@ public partial class MainViewModel : ObservableObject
 
     private Task? CancelNativeLeaseRenewalLoop()
     {
+        // The batch belongs to the session that is going away; a restart inside
+        // the old window must fetch a fresh batch instead of inheriting it.
+        _nativeLeaseBatchExpiresAt = null;
         CancellationTokenSource? cancellation;
         Task? task;
         lock (_shutdownGate)
@@ -2067,9 +2083,14 @@ public partial class MainViewModel : ObservableObject
                 return;
             var proxyService = _proxyService;
             var now = DateTimeOffset.UtcNow;
-            var expiresAt = proxyService.ActiveNativeLeaseExpiresAt;
+            // Prefer the in-process lease, then the batch this client minted
+            // itself. A config poll or health tick must never re-lease while the
+            // batch the active session is running with is still inside its
+            // renewal window: that check is the only thing standing between a
+            // 16 second poll and a fresh candidate batch per forward.
+            var expiresAt = proxyService.ActiveNativeLeaseExpiresAt ?? _nativeLeaseBatchExpiresAt;
             var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
-            if (dataPlaneRunning
+            if (expiresAt is not null
                 && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 
@@ -2102,6 +2123,7 @@ public partial class MainViewModel : ObservableObject
                 DisposeNativeLeases(leases);
                 return;
             }
+            var batchExpiresAt = leases.Max(lease => lease.ExpiresAt);
             var game = ResolveProxyGame(gameId);
             var rules = (game?.ProcessNames ?? [])
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -2158,10 +2180,11 @@ public partial class MainViewModel : ObservableObject
                     return;
                 }
             }
+            _nativeLeaseBatchExpiresAt = batchExpiresAt;
             Log.Information(
                 "native outbound lease refreshed for forward {ForwardId} (expires={ExpiresAt:O})",
                 forwardId,
-                proxyService.ActiveNativeLeaseExpiresAt);
+                proxyService.ActiveNativeLeaseExpiresAt ?? batchExpiresAt);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
