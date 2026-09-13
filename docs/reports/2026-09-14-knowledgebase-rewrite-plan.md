@@ -1,6 +1,15 @@
 # Knowledge base rewrite: ultra-only, user language
 
-Status: planned (spec agreed 2026-09-14). Nothing in this document is published yet.
+Status: **retirement done, rewrite pending** (2026-09-14).
+
+Done: the two retired guides are archived on the live panel - all six rows
+(2 topics x 3 locales) set to `status='draft'`, so they disappear from the
+knowledge base list while any bookmarked direct link still resolves. Published
+topics went 9 -> 7 and the list is now exactly the target set below. Before/after
+dump: `/root/leikwan-br1-backups/kb-archive-before.txt`.
+
+Pending: the 18 body rewrites (6 topics x 3 locales) plus the repo mechanics
+listed at the end of this document, published in one batch.
 
 ## Why
 
