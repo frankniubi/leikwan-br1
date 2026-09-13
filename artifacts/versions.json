@@ -661,8 +661,8 @@
         "version": "0.1.20.47",
         "architecture": "x86_64",
         "platform": "windows",
-        "sha256": "a722911a77b0a1a51fb905fea9271eb86ff4b4a86f2e13813e55895aef5d9323",
-        "size_bytes": 33821040
+        "sha256": "979d4959ff946c2606a8090764f24c17992e3c7e7717b51d65e3774cd6a44170",
+        "size_bytes": 33821044
     },
     "macos_headless_installer": {
         "install_url": "/artifacts/install-macos-headless.sh",
