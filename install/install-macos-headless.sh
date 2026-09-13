@@ -180,6 +180,30 @@ launchctl bootstrap system "$PLIST"
 launchctl enable "system/$LABEL" 2>/dev/null || true
 launchctl kickstart -k "system/$LABEL"
 
+# `leikwan` is the operator surface for this daemon: status/start/stop/restart/
+# logs/doctor/update, implemented by the same binary so it cannot drift from the
+# client it controls.
+mkdir -p /usr/local/bin
+cat > /usr/local/bin/leikwan <<'LEIKWAN'
+#!/bin/sh
+set -eu
+APP="${LEIKWAN_APP:-/Applications/LeiKwan Bridge.app}"
+EXE="$APP/Contents/MacOS/LeikwanBridge.Mac"
+if [ ! -x "$EXE" ]; then
+  echo "leikwan: client bundle not found at $APP" >&2
+  exit 1
+fi
+case "${1:-}" in
+  start|stop|restart|update)
+    if [ "$(id -u)" = "0" ]; then exec "$EXE" --cli "$@"; fi
+    exec sudo "$EXE" --cli "$@"
+    ;;
+  *) exec "$EXE" --cli "$@" ;;
+esac
+LEIKWAN
+chmod 755 /usr/local/bin/leikwan
+echo "cli: /usr/local/bin/leikwan (try: leikwan status)"
+
 echo "installed $LABEL"
 echo "status file: $STATUS_FILE"
 echo "log: $LOG_DIR/headless-*.log"

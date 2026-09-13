@@ -206,6 +206,52 @@ line), then the launchd stop path:
    fail-open in the enforcement map: unaffected functionally, but invisible to
    attestation-based reporting.
 
+## The `leikwan` command (2026-09-14, follow-up)
+
+A no-GUI install now ends with a single operator surface instead of a pile of
+installer flags. The installer puts `leikwan` on the PATH (macOS
+`/usr/local/bin/leikwan`, Windows the install directory added to the machine
+PATH), and both wrappers call the same binary with `--cli`, so the command
+surface cannot drift from the client it controls.
+
+| command | behaviour |
+|---|---|
+| `leikwan status` | service state, client state, every forward; exit 0 only when connected with a running forward (usable from monitoring) |
+| `leikwan start` / `stop` / `restart` | SCM on Windows, launchctl on macOS; macOS elevates through the wrapper |
+| `leikwan logs -n 50 [-f]` | prefers the client's own `headless-*.log` over the GUI log in the shared directory |
+| `leikwan doctor` | service, status file, log and the published version |
+| `leikwan version` | four-part product version on Windows (0.1.20.48), three-part on macOS (1.0.34) - the same shapes the manifest publishes, so the update comparison is exact |
+| `leikwan update [--check]` | reads `/artifacts/versions.json`, downloads through the resumable+hash-checked downloader, refuses a hash mismatch, then swaps the payload and restarts |
+
+Windows applies the swap through a detached copy of the new executable
+(`--cli apply-update`): a running service cannot overwrite its own install
+directory, so the staged build stops the service, waits for the old process to
+exit, copies the payload and starts the service again. macOS reuses the
+windowed client's verified update path and then kickstarts the daemon.
+
+Verified:
+
+* Windows (0.1.20.48, this machine): `version` -> 0.1.20.48, `help`, `status`
+  (reports "not installed" plus the exact SCM error line, exit 1), `logs -n 3`
+  (picks the headless log), `doctor` (reads the live manifest:
+  `published : 0.1.20.48`), `update --check`, and `stop` without a service
+  failing cleanly.
+* macOS (1.0.34, test VM): `version` -> 1.0.34, `help`, `status`, `doctor`
+  (`published : 1.0.34 (current)`), `update --check` -> `already current`, and
+  `logs` on an empty directory reporting no file.
+* 12 new CLI unit tests (Core 521/521, Mac 222/222, App 113/113).
+
+Not verified end to end on these two hosts: `start`/`stop`/`restart` and the
+apply half of `update`. Both need root (macOS) or an installed service
+(Windows) on the target, and the test Mac's sudo password is not available to
+this session; the applied code paths are the ones the GUI already uses
+(SCM start/stop, `MacAppUpdateService`).
+
+Published artifacts: macOS 1.0.34 (zips `cbda2ef1`/`9d32631f`, DMGs
+`219e1cf4`/`4b2268a3`), Windows headless 0.1.20.48 (`c49be59f`), installers and
+wrappers refreshed, and the knowledgebase guide now documents the CLI
+(refreshed in place with a hash-guarded UPDATE and a before/after dump).
+
 ## Follow-ups
 
 * macOS/Windows no-GUI clients do not apply updates themselves yet: re-run the

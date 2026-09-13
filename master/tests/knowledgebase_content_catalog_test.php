@@ -404,6 +404,12 @@ $requiredArticleText = [
         '/Library/LaunchDaemons',
         'uninstall-macos-headless.sh',
         'uninstall-windows-headless.ps1',
+        'leikwan status',
+        'leikwan logs',
+        'leikwan restart',
+        'leikwan doctor',
+        'leikwan update --check',
+        'PATH',
     ],
 ];
 
@@ -422,7 +428,7 @@ $requiredLocalizedArticleText = [
         'bond-sidecar-setup' => ['Sidecar', '目标侧的中间传输组件', '不是目标应用', '已发布的线路约定', 'Target Endpoints', 'Create Transport Endpoint', 'Transport Listen Port', 'Save Transport Endpoint', 'Last Heartbeat', '后端监听服务', '仅有心跳不能证明后端健康', '令牌', '密码', '命令', '密钥', '会话', '线路材料'],
         'troubleshooting-common-mistakes' => ['最近同步', '地址是否正确', '端口已放行', '转发和线路', '从目标服务自己的主机测试目标服务', 'View Diagnostics', '支持', '随机修改拓扑', '实际应用协议'],
         'glossary' => ['有效套餐', '转发', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', '客户端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '应用验证', '不是带宽聚合', '不保证速度翻倍'],
-        'no-gui-clients' => ['无界面版', 'Client ID', 'Agent Token', '管理员身份', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '开机'],
+        'no-gui-clients' => ['无界面版', 'Client ID', 'Agent Token', '管理员身份', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '开机', 'leikwan status', 'leikwan logs', 'leikwan restart', 'leikwan doctor', 'leikwan update --check', 'PATH'],
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
@@ -433,7 +439,7 @@ $requiredLocalizedArticleText = [
         'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', 'Sidecar 主機', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '代理版本', '最後狀態', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
         'troubleshooting-common-mistakes' => ['最近同步', '位址是否正確', '連接埠已開放', '轉發和線路', '從目標服務所在主機測試目標服務', '查看診斷', '支援', '隨意變更拓撲', '實際應用協定'],
         'glossary' => ['有效方案', '轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '用戶端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '應用程式驗證', '不是頻寬聚合', '不保證速度加倍'],
-        'no-gui-clients' => ['無介面版', 'Client ID', 'Agent Token', '系統管理員身分', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '開機'],
+        'no-gui-clients' => ['無介面版', 'Client ID', 'Agent Token', '系統管理員身分', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '開機', 'leikwan status', 'leikwan logs', 'leikwan restart', 'leikwan doctor', 'leikwan update --check', 'PATH'],
     ],
 ];
 $forbiddenLocalizedArticleText = [

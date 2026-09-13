@@ -87,6 +87,28 @@ authenticated user can read `sc qc`); the installer writes
 `%ProgramData%\Leikwan\ClientAgent\agent-token` with an ACL that grants
 SYSTEM and Administrators only, and passes `--agent-token-file` to the service.
 
+## Managing an installed client: `leikwan`
+
+The installer puts a `leikwan` command on the PATH (macOS: `/usr/local/bin/leikwan`;
+Windows: the install directory, added to the machine PATH):
+
+| command | what it does |
+|---|---|
+| `leikwan status` | service state, client state and every forward; exit 0 only when connected with a running forward |
+| `leikwan start` / `stop` / `restart` | control the daemon/service (macOS asks for your password, Windows needs an elevated shell) |
+| `leikwan logs -n 50 [-f]` | tail the client log |
+| `leikwan doctor` | service, status file, log and the published version |
+| `leikwan version` | installed client version |
+| `leikwan update [--check]` | update from the panel manifest: download, SHA-256 check against the manifest, replace the payload, restart the service |
+
+`leikwan update` is the no-GUI replacement for the GUI's update button: it reads
+`/artifacts/versions.json`, refuses bytes that do not match the published hash,
+and only then swaps the payload and restarts. `--check` reports the installed and
+published versions without touching anything, so it is safe in monitoring.
+
+Both wrappers call the same binary with `--cli`, so the command surface cannot
+drift from the client it controls.
+
 ## Command line
 
 Both surfaces accept the same options:

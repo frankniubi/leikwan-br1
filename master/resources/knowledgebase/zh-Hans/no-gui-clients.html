@@ -34,11 +34,13 @@ accDescr: 选择操作系统，注册无界面客户端，然后在面板确认�
   <li><strong>查看状态文件。</strong>macOS 为 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 为 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
   <li>确认文件里 <code>"Connected": true</code>，并且你期望的每条转发都是 <code>"Running": true</code>。</li>
   <li><strong>可选自检。</strong>用同一个程序和同一客户端身份再加上 <code>--headless --once</code> 运行：它会连接、等待、打印同一份状态文档，并在至少一条转发运行时以退出码 0 结束。</li>
+  <li><strong>日常管理用安装脚本放进 PATH 的 <code>leikwan</code> 命令</strong>：<code>leikwan status</code> 显示服务状态与每条转发，<code>leikwan logs -n 50</code> 查看客户端日志，<code>leikwan restart</code> 重启，<code>leikwan doctor</code> 检查服务、状态文件、日志与线上版本。macOS 会要求输入密码（LaunchDaemon 以 root 运行）；Windows 请在管理员 PowerShell 中执行同样的命令。</li>
+  <li><strong>更新用 <code>leikwan update</code></strong>：它读取面板清单、下载已发布版本、按清单校验 SHA-256，然后替换程序并重启服务。<code>leikwan update --check</code> 只报告已安装版本与线上版本，不做任何改动。</li>
   <li><strong>需要卸载时：</strong>macOS 执行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 执行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一并删除已保存的令牌。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
+<p><code>leikwan status</code> 在客户端已连接且至少一条转发运行时以退出码 0 结束，因此可以直接用在监控脚本里。服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
 
 <h2>如果没有成功</h2>
 <p><strong>先停止对外分享 Agent Token，也不要把安装命令粘贴到公开位置。</strong>先核对令牌与 Client ID：令牌错误时日志会显示 <code>401 Unauthorized</code>，并且不会启动任何转发。macOS 请确认 <strong>/Applications</strong> 里的应用是 1.0.33 或更新版本，且 plist 已写入 <strong>/Library/LaunchDaemons</strong>。Windows 请确认是在管理员权限下执行，且令牌文件对 <strong>SYSTEM</strong> 可读。如果面板显示机器在线但某条转发仍处于停止状态，先与面板上的状态对照再动手：转发列表以面板为准，客户端每隔几秒就会重新应用一次。</p>

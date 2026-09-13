@@ -78,10 +78,19 @@ if ($LASTEXITCODE -ne 0) {
     throw "service registration failed with exit code $LASTEXITCODE"
 }
 
+# Make "leikwan" usable from any shell: the wrapper next to the payload calls
+# this binary with --cli.
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+if ($machinePath -notlike "*$InstallDir*") {
+    [Environment]::SetEnvironmentVariable("Path", ($machinePath.TrimEnd(';') + ';' + $InstallDir), "Machine")
+    Write-Host "cli:          added $InstallDir to the machine PATH (open a new shell to pick it up)"
+}
+
 Write-Host ""
 Write-Host "service:      $ServiceName"
 Write-Host "binary:       $exe"
 Write-Host "status file:  $statusPath"
 Write-Host "log:          $logDir\headless-*.log"
+Write-Host "cli:          leikwan status | start | stop | restart | logs | doctor | update"
 Write-Host "check with:   sc query $ServiceName; Get-Content '$statusPath'"
 Write-Host "remove with:  .\uninstall-windows-headless.ps1 -ServiceName $ServiceName"
