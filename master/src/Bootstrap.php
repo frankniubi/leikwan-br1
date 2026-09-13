@@ -430,6 +430,11 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
+        $this->router->add('GET', '/artifacts/windows/leikwan-bridge-headless-win-x64.zip', [$artifacts, 'windowsHeadlessClient']);
+        $this->router->add('GET', '/artifacts/install-macos-headless.sh', [$artifacts, 'installMacosHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-macos-headless.sh', [$artifacts, 'uninstallMacosHeadless']);
+        $this->router->add('GET', '/artifacts/install-windows-headless.ps1', [$artifacts, 'installWindowsHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-windows-headless.ps1', [$artifacts, 'uninstallWindowsHeadless']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-repair.cmd', [$artifacts, 'windowsUpdateHelper']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-arm64.dmg', [$artifacts, 'macosClientArm64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-x64.dmg', [$artifacts, 'macosClientX64Dmg']);

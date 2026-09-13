@@ -1291,6 +1291,26 @@ final class TenantController extends BaseController
         // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
         $macosInstallSection = $this->renderMacClientInstallSection();
 
+        // No-GUI clients: same client, started by launchd (macOS) or the Windows
+        // service manager instead of a desktop session.
+        $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
+        $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
+        $headlessInstallSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('helper')
+            . $this->escape($this->clientAppReleaseLabel('无界面版 No-GUI (macOS / Windows)', 'windows_headless_client'))
+            . '</strong>'
+            . '<div class="muted">没有桌面会话也能跑：macOS 注册为 launchd 守护进程，Windows 注册为系统服务。与图形客户端共用同一套内核、同一份运行时指纹与更新校验，令牌保存在仅服务可读的文件里。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . '</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
+            . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '</div></section>';
+
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
@@ -1318,6 +1338,7 @@ final class TenantController extends BaseController
             . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
             . '</div></div></section>'
             . $macosInstallSection
+            . $headlessInstallSection
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
             . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'

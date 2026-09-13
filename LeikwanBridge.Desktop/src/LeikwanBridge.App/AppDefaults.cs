@@ -3,11 +3,13 @@ using LeikwanBridge.Core.Services;
 
 namespace LeikwanBridge.App;
 
+// The GUI shell keeps its own endpoint list, but every value that must match
+// the windowless client and the installers comes from ClientDefaults.
 public static class AppDefaults
 {
-    public const string DefaultMasterUrl = "https://v3.leikwanhost.com";
-    public const string MainlandMasterUrl = "https://api-leikwanbridge.nbwly.com";
-    public const string LegacyMasterUrl = "https://v3-mirror.leikwanhost.com";
+    public const string DefaultMasterUrl = ClientDefaults.DefaultMasterUrl;
+    public const string MainlandMasterUrl = ClientDefaults.MainlandMasterUrl;
+    public const string LegacyMasterUrl = ClientDefaults.LegacyMasterUrl;
 
     public const string CloudflareEndpointKey = "cloudflare";
     public const string AliyunEndpointKey = "aliyun";
@@ -20,13 +22,7 @@ public static class AppDefaults
         new(AliyunEndpointKey, "會聚中國内地 (Aliyun CDN)", MainlandMasterUrl),
     ];
 
-    public static string NormalizeMasterUrl(string? value)
-    {
-        var normalized = (value ?? string.Empty).Trim().TrimEnd('/');
-        return string.Equals(normalized, LegacyMasterUrl, StringComparison.OrdinalIgnoreCase)
-            ? DefaultMasterUrl
-            : normalized;
-    }
+    public static string NormalizeMasterUrl(string? value) => ClientDefaults.NormalizeMasterUrl(value);
 
     public static string ResolveConnectionEndpoint(string? key)
     {
@@ -44,28 +40,8 @@ public static class AppDefaults
                ?? CloudflareEndpointKey;
     }
 
-    public static string GetInstallRoot()
-    {
-        return ResolveInstallRoot();
-    }
+    public static string GetInstallRoot() => ClientDefaults.ResolveInstallRoot();
 
     public static string ResolveInstallRoot(string? installStatePathOverride = null)
-    {
-        var overridePath = Environment.GetEnvironmentVariable("LEIKWAN_INSTALL_DIR");
-        if (!string.IsNullOrWhiteSpace(overridePath))
-            return overridePath.Trim();
-
-        var installStatePath = installStatePathOverride
-            ?? Path.Combine(AppContext.BaseDirectory, "install-state.json");
-        var installRoot = Path.GetDirectoryName(installStatePath);
-        if (!string.IsNullOrWhiteSpace(installRoot))
-        {
-            var state = WindowsAppUpdateService.LoadInstallState(installRoot);
-            if (state is not null && !string.IsNullOrWhiteSpace(state.InstallDir))
-                return state.InstallDir.Trim();
-        }
-
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        return Path.Combine(programFiles, "LeiKwan Bridge");
-    }
+        => ClientDefaults.ResolveInstallRoot(installStatePathOverride);
 }

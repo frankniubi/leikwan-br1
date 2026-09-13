@@ -340,6 +340,39 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
     }
 
+    // Windowless (no-GUI) clients. The Windows payload is its own small
+    // self-contained build of the same Core stack; macOS runs the shipped app
+    // bundle in its --headless lifecycle, so it only needs the installers.
+    public function windowsHeadlessClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/windows/leikwan-bridge-headless-win-x64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-headless-win-x64.zip"']
+        );
+    }
+
+    public function installMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
+    }
+
     public function macosClientArm64Dmg(Request $request, array $params): Response
     {
         return $this->serveRepoFile(
