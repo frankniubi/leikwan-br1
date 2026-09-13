@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.13.1"
+AGENT_VERSION = "2026.09.13.2"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -984,9 +984,15 @@ def _normalize_runtime_attestation(value: object) -> dict | None:
     self_sha256 = str(value.get("self_sha256", "") or "").strip().lower()
     if re.fullmatch(r"[a-f0-9]{64}", self_sha256) is None:
         return None
+    # The runtime omits these when they are false (json omitempty on the Go
+    # side), so "absent" means "not reported" and must stay absent - requiring a
+    # bool here dropped the whole attestation for every healthy runtime and the
+    # panel therefore never learned which build an agent-managed host runs.
     debugger = value.get("debugger")
     instrumented = value.get("instrumented")
-    if not isinstance(debugger, bool) or not isinstance(instrumented, bool):
+    if debugger is not None and not isinstance(debugger, bool):
+        return None
+    if instrumented is not None and not isinstance(instrumented, bool):
         return None
     return {
         "fingerprint": fingerprint,
