@@ -346,15 +346,35 @@ abstract class BaseController
      * One line an operator can paste on a Windows host that is stuck on an older
      * build: fetch the helper and start it elevated. It repairs the shared
      * permissions and then installs the published build.
+     *
+     * This line is parsed twice - once by the shell it is pasted into, once by
+     * the child powershell that parses the -Command payload - so it has to be
+     * valid under both. Two rules make that true in cmd, Windows PowerShell and
+     * pwsh alike:
+     *
+     *   1. No $ in the payload. Inside the outer double quotes a PowerShell
+     *      parent expands $h/$env:TEMP before the child ever runs, so the child
+     *      received " = Join-Path C:\...\Temp ..." and the line could not work
+     *      in PowerShell at all.
+     *   2. The artifact URL is single quoted. It always carries
+     *      "?v=<version>&sha256=<hash>", and once the outer quotes are consumed
+     *      the child's parser met a bare & and refused the whole line with
+     *      "The ampersand (&) character is not allowed".
      */
     protected function windowsUpdateHelperCommand(): string
     {
-        $url = $this->windowsUpdateHelperUrl();
+        $target = '(Join-Path ([System.IO.Path]::GetTempPath()) leikwan-bridge-repair.cmd)';
+        $payload = 'Invoke-WebRequest -UseBasicParsing ' . $this->powershellSingleQuote($this->windowsUpdateHelperUrl())
+            . ' -OutFile ' . $target
+            . '; Start-Process -FilePath ' . $target . ' -Verb RunAs';
 
-        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "'
-            . '$h = Join-Path $env:TEMP leikwan-bridge-repair.cmd; '
-            . 'Invoke-WebRequest -UseBasicParsing ' . $url . ' -OutFile $h; '
-            . 'Start-Process -FilePath $h -Verb RunAs"';
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' . $payload . '"';
+    }
+
+    /** Single quoted PowerShell literal: quotes are escaped by doubling them. */
+    protected function powershellSingleQuote(string $value): string
+    {
+        return "'" . str_replace("'", "''", $value) . "'";
     }
 
     protected function linuxArm64ClientInstallerUrl(): string
