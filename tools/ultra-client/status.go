@@ -167,6 +167,25 @@ func (writer *StatusWriter) RecordCandidateFailure(candidateKeyHash, protocol, r
 	writer.recordCandidateFeedback(candidateKeyHash, protocol, "failure", reason, leaseHashes...)
 }
 
+// RecordProbeFailure turns a candidate the selection probe rejected into
+// evidence the Panel can act on.
+//
+// Until this existed, a relay that accepted the TCP connection and then closed
+// the datagram handshake ("datagram handshake: EOF") produced no feedback at
+// all: the runtime dropped it locally, selected another candidate, and probed
+// the same relay again on the next batch. The reason strings are the same ones
+// the control channel reports (probe_udp_failed / probe_tcp_failed), and both
+// halves are recorded when both failed, so a relay that carries neither
+// protocol is still visible.
+func (writer *StatusWriter) RecordProbeFailure(lease ProviderLease, result udpProbeResult) {
+	if result.Err != nil {
+		writer.RecordCandidateFailure(lease.CandidateKeyHash, "udp", errProbeUDPFailed.Error(), lease.LeaseHash)
+	}
+	if result.TCPError != nil {
+		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", errProbeTCPFailed.Error(), lease.LeaseHash)
+	}
+}
+
 func (writer *StatusWriter) RecordCandidateSuccess(candidateKeyHash, protocol string, leaseHashes ...string) {
 	writer.recordCandidateFeedback(candidateKeyHash, protocol, "success", "canary_probe_ok", leaseHashes...)
 }

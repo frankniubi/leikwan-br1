@@ -224,7 +224,7 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 				err = context.DeadlineExceeded
 			} else {
 				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
-				selected, probeResult, err = selectBestLease(selectionContext, server.config, policy, leases)
+				selected, probeResult, err = selectBestLeaseReporting(selectionContext, server.config, policy, leases, server.status.RecordProbeFailure)
 				cancel()
 			}
 		} else {
