@@ -170,4 +170,25 @@ return [
             ],
         ],
     ],
+    'no-gui-clients' => [
+        'is_pinned' => 0,
+        'sort_order' => 90,
+        'articles' => [
+            'en' => [
+                'title' => 'Run the Client Without a GUI',
+                'excerpt' => 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.',
+                'body' => 'en/no-gui-clients.html',
+            ],
+            'zh-Hans' => [
+                'title' => '无界面运行客户端',
+                'excerpt' => '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。',
+                'body' => 'zh-Hans/no-gui-clients.html',
+            ],
+            'zh-TW' => [
+                'title' => '無介面執行用戶端',
+                'excerpt' => '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。',
+                'body' => 'zh-TW/no-gui-clients.html',
+            ],
+        ],
+    ],
 ];

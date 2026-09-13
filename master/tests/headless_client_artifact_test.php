@@ -108,4 +108,98 @@ if (!str_contains($winInstaller, 'Set-Content -LiteralPath $tokenPath')) {
     failHeadless('Windows headless installer must store the token in a file');
 }
 
+// ---- knowledgebase guide and download-centre links -------------------------
+
+$topics = require $root . '/master/resources/knowledgebase/topics.php';
+$guideKey = 'no-gui-clients';
+if (!isset($topics[$guideKey]['articles'])) {
+    failHeadless('knowledgebase is missing the ' . $guideKey . ' guide');
+}
+foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
+    $article = $topics[$guideKey]['articles'][$locale] ?? null;
+    if (!is_array($article) || ($article['title'] ?? '') === '' || ($article['excerpt'] ?? '') === '') {
+        failHeadless('knowledgebase guide metadata missing for ' . $locale);
+    }
+    $bodyPath = $root . '/master/resources/knowledgebase/' . (string) $article['body'];
+    if (!is_file($bodyPath) || filesize($bodyPath) <= 0) {
+        failHeadless('knowledgebase guide body missing for ' . $locale);
+    }
+}
+
+$seed = (string) file_get_contents($root . '/master/migrations/20260729_seed_multilingual_knowledgebase.sql');
+if (substr_count($seed, "'" . $guideKey . "'") < 4) {
+    failHeadless('regenerated knowledgebase seed does not carry the no-GUI guide');
+}
+
+$guideHref = '/knowledgebase?thread=' . $guideKey;
+$tenantPage = (string) file_get_contents($root . '/master/src/Controllers/TenantController.php');
+if (!str_contains($tenantPage, $guideHref)) {
+    failHeadless('tenant client page must link the no-GUI guide');
+}
+
+spl_autoload_register(static function (string $class) use ($root): void {
+    $prefix = 'Leikwan\\Master\\';
+    if (!str_starts_with($class, $prefix)) {
+        return;
+    }
+    $path = $root . '/master/src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+    if (is_file($path)) {
+        require_once $path;
+    }
+});
+
+$envPath = tempnam(sys_get_temp_dir(), 'leikwan-headless-');
+if ($envPath === false) {
+    failHeadless('failed to create the test config');
+}
+file_put_contents($envPath, "APP_URL=https://panel.example.test\nARTIFACT_BASE_URL=https://panel.example.test\nDB_DRIVER=sqlite\nDB_NAME=:memory:\n");
+try {
+    $config = new \Leikwan\Master\Config($envPath);
+    $db = new \Leikwan\Master\Database\Database($config);
+    $probe = new class($config, $db) extends \Leikwan\Master\Controllers\BaseController {
+        /** @param array<string, mixed>|null $client */
+        public function headlessPanel(?array $client): string
+        {
+            return $this->renderHeadlessClientDownloadPanel($client);
+        }
+
+        /** @param array<string, mixed>|null $client */
+        public function downloadOverview(?array $client): string
+        {
+            return $this->renderClientAppDownloadOverview($client);
+        }
+    };
+
+    $anonymousPanel = $probe->headlessPanel(null);
+    if (!str_contains($anonymousPanel, $guideHref)) {
+        failHeadless('no-GUI download panel must link the guide');
+    }
+    if (str_contains($anonymousPanel, 'agent-token ')) {
+        failHeadless('no-GUI panel must not print a command without a client identity');
+    }
+
+    $client = ['id' => 42, 'agent_token' => 'test-agent-token'];
+    $clientPanel = $probe->headlessPanel($client);
+    foreach ([
+        $guideHref,
+        '/artifacts/windows/leikwan-bridge-headless-win-x64.zip',
+        'install-windows-headless.ps1',
+        '-ClientId 42',
+        'test-agent-token',
+    ] as $required) {
+        if (!str_contains($clientPanel, $required)) {
+            failHeadless('no-GUI panel with a client is missing ' . $required);
+        }
+    }
+
+    $overview = $probe->downloadOverview($client);
+    foreach (['App Download', $guideHref, 'No-GUI Client'] as $required) {
+        if (!str_contains($overview, $required)) {
+            failHeadless('app download centre is missing ' . $required);
+        }
+    }
+} finally {
+    unlink($envPath);
+}
+
 echo "ok\n";

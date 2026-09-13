@@ -1309,6 +1309,7 @@ final class TenantController extends BaseController
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
             . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明 / Install guide</a>'
             . '</div></section>';
 
         $body = '<div class="tenant-client-install">'

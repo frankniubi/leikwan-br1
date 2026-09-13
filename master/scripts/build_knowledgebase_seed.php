@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const EXPECTED_TOPIC_COUNT = 8;
+const EXPECTED_TOPIC_COUNT = 9;
 
 /** @return never */
 function failSeed(string $message): never
@@ -24,7 +24,7 @@ function loadCatalog(string $manifestPath, string $contentRoot): array
 
     $topics = require $manifestPath;
     if (!is_array($topics) || count($topics) !== EXPECTED_TOPIC_COUNT) {
-        failSeed('generation requires exactly 8 topics');
+        failSeed('generation requires exactly 9 topics');
     }
 
     $requiredLocales = ['en', 'zh-Hans', 'zh-TW'];
