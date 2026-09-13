@@ -49,6 +49,9 @@ Repos: `leikwan-br1`（runtime + panel）
   与 `.../20260913T044230Z/`（三个 PHP 文件）。
 - 本地产物：`artifacts/ultra/ultra-client_windows_amd64.exe`、`artifacts/windows/leikwan-bridge-setup.exe`。
 - 客户端仍持旧 runtime 时会看到 app 0.1.20.40 → 装上即得新 runtime，pin 与产物一致，不再报漂移。
+- **灰度期不会停服**（已核对 `UltraLeaseService::attestationRefusal`）：面板只在设备**声称某个已发布指纹**
+  却给出与该指纹产物不符的二进制哈希时拒发租约（防重新打包冒充）；**未知指纹（旧版本）一律放行**。
+  因此旧 runtime 在升级前照常拿租约，新 runtime 哈希与 manifest 一致，防逆向边界不回退。
 
 ## 遗留
 
