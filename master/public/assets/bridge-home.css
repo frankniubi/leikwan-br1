@@ -1,38 +1,44 @@
-/* Homepage skin. Deliberately flat: no gradients, no oversized type tricks. */
+/* Homepage skin: a dark route board hero over an editorial body. Flat by design. */
 .bridge-home-page {
   --bridge-paper: #ffffff;
   --bridge-surface: #f5f8f5;
   --bridge-surface-strong: #edf3ee;
-  --bridge-ink: #15221c;
+  --bridge-ink: #101b16;
+  --bridge-ink-panel: #17251e;
+  --bridge-ink-line: rgba(255, 255, 255, 0.12);
   --bridge-ink-soft: #3c4a43;
   --bridge-muted: #64736a;
   --bridge-line: #dfe7e1;
   --bridge-line-strong: #b5c3b8;
   --bridge-accent: #e05b45;
   --bridge-sage: #4c806b;
+  --bridge-sage-light: #8fc0a9;
   --bridge-mono: "Spline Sans Mono", "SFMono-Regular", Consolas, monospace;
   background: var(--bridge-paper);
+  overflow-x: clip;
 }
 
 .bridge-home-page .public-shell {
   width: min(1200px, 100%);
   margin: 0 auto;
-  padding: 0 32px 72px;
-}
-
-.bridge-home-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+  padding: 0 32px 0;
 }
 
 /* ---------- top bar ---------- */
+.bridge-home-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 0;
+}
+
 .bridge-home-page .site-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   border-radius: 10px;
   background: var(--bridge-surface);
 }
@@ -40,15 +46,6 @@
 .bridge-home-page .site-mark img {
   max-width: 100%;
   max-height: 100%;
-}
-
-.bridge-home-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 20px 0;
-  border-bottom: 1px solid var(--bridge-line);
 }
 
 .bridge-home-page .site-brand {
@@ -82,48 +79,58 @@
   gap: 14px;
 }
 
+/* ---------- full-bleed helper ---------- */
+.bridge-home-hero,
+.bridge-home-closing {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  background: var(--bridge-ink);
+  color: #ffffff;
+}
+
 /* ---------- hero ---------- */
-.bridge-home-hero {
+.bridge-home-hero-inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 1.32fr) minmax(300px, 0.86fr);
   gap: 56px;
-  align-items: start;
-  padding: 64px 0 56px;
-  border-bottom: 1px solid var(--bridge-line);
+  align-items: center;
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: 68px 32px 76px;
 }
 
 .bridge-home-kicker {
-  margin: 0 0 18px;
-  color: var(--bridge-sage);
+  margin: 0 0 20px;
+  color: var(--bridge-sage-light);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
 }
 
 .bridge-home-hero h1 {
   margin: 0;
-  color: var(--bridge-ink);
-  font-size: 42px;
-  font-weight: 680;
-  line-height: 1.14;
-  letter-spacing: -0.02em;
+  color: #ffffff;
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
 }
 
 .bridge-home-hero h1 span {
   display: block;
-  margin-top: 6px;
-  color: var(--bridge-muted);
-  font-size: 22px;
+  margin-top: 10px;
+  color: var(--bridge-sage-light);
+  font-size: 20px;
   font-weight: 500;
-  letter-spacing: 0;
+  letter-spacing: -0.01em;
 }
 
 .bridge-home-lede {
-  max-width: 52ch;
-  margin: 20px 0 0;
-  color: var(--bridge-ink-soft);
+  max-width: 46ch;
+  margin: 22px 0 0;
+  color: rgba(255, 255, 255, 0.72);
   font-size: 17px;
   line-height: 1.7;
 }
@@ -132,282 +139,381 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
-  margin-top: 30px;
+  gap: 18px;
+  margin-top: 34px;
 }
 
-.bridge-home-page .bridge-home-primary {
+.bridge-home-primary,
+.bridge-home-link,
+.bridge-home-ghost {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 46px;
-  padding: 0 20px;
-  border: 1px solid var(--bridge-ink);
-  border-radius: 10px;
-  background: var(--bridge-ink);
-  color: #ffffff;
-  font-weight: 600;
+  gap: 10px;
   text-decoration: none;
 }
 
-.bridge-home-page .bridge-home-primary:hover {
-  background: var(--bridge-sage);
-  border-color: var(--bridge-sage);
+.bridge-home-primary {
+  min-height: 52px;
+  padding: 0 24px;
+  border-radius: 10px;
+  background: var(--bridge-accent);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 650;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-primary:hover {
+  background: #c94b37;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
 }
 
 .bridge-home-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 46px;
-  padding: 0 4px;
-  border-bottom: 1px solid var(--bridge-line-strong);
-  color: var(--bridge-ink);
+  min-height: 52px;
+  color: #ffffff;
+  font-size: 15px;
   font-weight: 600;
-  text-decoration: none;
+  border-bottom: 1px solid var(--bridge-ink-line);
 }
 
 .bridge-home-link:hover {
-  border-bottom-color: var(--bridge-sage);
-  color: var(--bridge-sage);
+  border-bottom-color: var(--bridge-sage-light);
+  color: var(--bridge-sage-light);
 }
 
-/* ---------- at a glance ---------- */
-.bridge-home-status {
-  position: relative;
-  padding: 26px 26px 24px;
-  border: 1px solid var(--bridge-line);
-  border-radius: 16px;
-  background: var(--bridge-surface);
-}
-
-.bridge-home-page .bridge-home-status::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 26px;
-  width: 44px;
-  height: 3px;
-  background: var(--bridge-accent);
-}
-
-.bridge-home-page .bridge-home-status::after {
-  content: "";
-  position: absolute;
-  right: 26px;
-  bottom: 24px;
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--bridge-line-strong);
-}
-
-.bridge-home-status-head {
-  margin: 6px 0 16px;
-  color: var(--bridge-muted);
-  font-family: var(--bridge-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.bridge-home-status-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.bridge-home-facts {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 34px;
+  margin: 44px 0 0;
+  padding: 22px 0 0;
+  border-top: 1px solid var(--bridge-ink-line);
+  list-style: none;
 }
 
-.bridge-home-status-list li {
+.bridge-home-facts li {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--bridge-line);
 }
 
-.bridge-home-status-list li:last-child {
-  padding-bottom: 0;
-  border-bottom: 0;
+.bridge-home-facts strong {
+  color: #ffffff;
+  font-family: var(--bridge-mono);
+  font-size: 20px;
+  font-weight: 600;
 }
 
-.bridge-home-status-list strong {
-  color: var(--bridge-ink);
-  font-size: 15px;
+.bridge-home-facts span {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ---------- route board ---------- */
+.bridge-home-board {
+  padding: 22px 22px 20px;
+  border: 1px solid var(--bridge-ink-line);
+  border-radius: 18px;
+  background: var(--bridge-ink-panel);
+}
+
+.bridge-home-board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--bridge-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.bridge-home-board-pulse {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--bridge-accent);
+}
+
+.bridge-home-page .bridge-home-board-pulse::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px solid var(--bridge-accent);
+  border-radius: 999px;
+  opacity: 0.4;
+}
+
+.bridge-home-board-origin {
+  margin: 16px 0 4px;
+  color: #ffffff;
+  font-size: 21px;
   font-weight: 650;
 }
 
-.bridge-home-status-list span {
-  color: var(--bridge-muted);
-  font-size: 13px;
+.bridge-home-board-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--bridge-ink-line);
+}
+
+.bridge-home-board-row {
+  display: grid;
+  grid-template-columns: 42px 1fr 1fr 8px;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--bridge-ink-line);
+}
+
+.bridge-home-board-code {
+  color: var(--bridge-sage-light);
+  font-family: var(--bridge-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.bridge-home-board-city {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.bridge-home-board-line {
+  height: 1px;
+  background: var(--bridge-ink-line);
+}
+
+.bridge-home-board-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.bridge-home-board-note {
+  margin: 16px 0 0;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 12px;
   line-height: 1.6;
 }
 
-/* ---------- sections ---------- */
-.bridge-home-route-catalog,
-.bridge-home-route {
-  padding: 56px 0;
+/* ---------- body sections ---------- */
+.bridge-home-steps,
+.bridge-home-path {
+  padding: 72px 0;
   border-bottom: 1px solid var(--bridge-line);
 }
 
-.bridge-home-catalog-heading,
-.bridge-home-section-heading {
-  max-width: 62ch;
-  margin-bottom: 30px;
+.bridge-home-section-head {
+  max-width: 58ch;
+  margin-bottom: 40px;
 }
 
-.bridge-home-catalog-heading > span,
-.bridge-home-section-heading > span,
-.bridge-home-footer-copy > span {
+.bridge-home-section-head > span,
+.bridge-home-closing-copy > span {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   color: var(--bridge-sage);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
-.bridge-home-catalog-heading h2,
-.bridge-home-section-heading h2,
-.bridge-home-footer-copy h2 {
+.bridge-home-section-head h2,
+.bridge-home-closing-copy h2 {
   margin: 0;
   color: var(--bridge-ink);
-  font-size: 27px;
-  font-weight: 660;
-  line-height: 1.25;
-  letter-spacing: -0.01em;
+  font-size: 34px;
+  font-weight: 680;
+  line-height: 1.18;
+  letter-spacing: -0.02em;
 }
 
-.bridge-home-catalog-heading p,
-.bridge-home-section-heading p,
-.bridge-home-footer-copy p {
-  margin: 12px 0 0;
+.bridge-home-section-head p {
+  margin: 14px 0 0;
   color: var(--bridge-muted);
   font-size: 16px;
   line-height: 1.7;
 }
 
-/* ---------- step cards ---------- */
-.bridge-home-route-grid {
+/* ---------- steps ---------- */
+.bridge-home-step-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.bridge-home-route-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 24px;
-  border: 1px solid var(--bridge-line);
-  border-radius: 16px;
+.bridge-home-step {
+  padding: 4px 32px 4px 0;
+  border-right: 1px solid var(--bridge-line);
+}
+
+.bridge-home-step + .bridge-home-step {
+  padding-left: 32px;
+}
+
+.bridge-home-step:last-child {
+  border-right: 0;
+}
+
+.bridge-home-step-index {
+  display: block;
+  margin-bottom: 18px;
+  color: var(--bridge-line-strong);
+  font-family: var(--bridge-mono);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.bridge-home-step h3 {
+  margin: 0 0 10px;
+  color: var(--bridge-ink);
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.bridge-home-step p {
+  margin: 0;
+  color: var(--bridge-muted);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+/* ---------- path rail ---------- */
+.bridge-home-path-rail {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-stop {
+  position: relative;
+  padding-top: 30px;
+}
+
+.bridge-home-page .bridge-home-stop::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--bridge-sage);
+  border-radius: 999px;
   background: var(--bridge-paper);
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
 
-.bridge-home-page .bridge-home-route-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--bridge-line-strong);
-  background: var(--bridge-surface);
-  box-shadow: 0 14px 30px rgba(21, 34, 28, 0.06);
+.bridge-home-page .bridge-home-stop::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: 13px;
+  right: -28px;
+  height: 1px;
+  background: var(--bridge-line-strong);
 }
 
-.bridge-home-route-index {
+.bridge-home-page .bridge-home-stop:last-child::after {
+  display: none;
+}
+
+.bridge-home-stop-index {
+  display: block;
+  margin-bottom: 8px;
   color: var(--bridge-muted);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
 }
 
-.bridge-home-route-card strong {
+.bridge-home-stop strong {
+  display: block;
   color: var(--bridge-ink);
   font-size: 17px;
   font-weight: 650;
 }
 
-.bridge-home-route-card p {
-  margin: 0;
+.bridge-home-stop small {
+  display: block;
+  margin-top: 6px;
   color: var(--bridge-muted);
   font-size: 14px;
   line-height: 1.65;
 }
 
-/* ---------- path ---------- */
-.bridge-home-route-flow {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.bridge-home-route-node {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 20px 22px;
-  border: 1px solid var(--bridge-line);
-  border-radius: 16px;
-  background: var(--bridge-surface);
-}
-
-.bridge-home-route-node > span:last-child {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.bridge-home-route-node strong {
-  color: var(--bridge-ink);
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.bridge-home-route-node small {
-  color: var(--bridge-muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
 /* ---------- closing ---------- */
-.bridge-home-footer-grid {
+.bridge-home-closing-inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(240px, 1fr);
-  gap: 40px;
-  align-items: start;
-  padding: 56px 0 0;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 1fr);
+  gap: 48px;
+  align-items: center;
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: 64px 32px;
 }
 
-.bridge-home-footer-links {
+.bridge-home-closing-copy > span {
+  color: var(--bridge-sage-light);
+}
+
+.bridge-home-closing-copy h2 {
+  color: #ffffff;
+}
+
+.bridge-home-closing-copy p {
+  max-width: 46ch;
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.bridge-home-closing-actions {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--bridge-line);
+  gap: 12px;
+  align-items: flex-start;
 }
 
-.bridge-home-footer-links a {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 2px;
-  border-bottom: 1px solid var(--bridge-line);
-  color: var(--bridge-ink);
+.bridge-home-ghost {
+  min-height: 52px;
+  padding: 0 24px;
+  border: 1px solid var(--bridge-ink-line);
+  border-radius: 10px;
+  color: #ffffff;
   font-size: 15px;
   font-weight: 600;
-  text-decoration: none;
 }
 
-.bridge-home-footer-links a:hover {
-  color: var(--bridge-sage);
+.bridge-home-ghost:hover {
+  border-color: var(--bridge-sage-light);
+  color: var(--bridge-sage-light);
 }
 
+/* ---------- focus ---------- */
 .bridge-home-page :is(a, button, select):focus-visible {
-  outline: 2px solid var(--bridge-sage);
-  outline-offset: 2px;
+  outline: 2px solid var(--bridge-accent);
+  outline-offset: 3px;
 }
 
 /* ---------- language control ---------- */
@@ -441,52 +547,77 @@
 /* ---------- small screens ---------- */
 @media (max-width: 820px) {
   .bridge-home-page .public-shell {
-    padding: 0 20px 56px;
+    padding: 0 20px;
   }
 
-  .bridge-home-hero,
-  .bridge-home-footer-grid {
+  .bridge-home-hero-inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 36px;
+    padding: 44px 20px 52px;
+  }
+
+  .bridge-home-hero h1 {
+    font-size: 36px;
+  }
+
+  .bridge-home-hero h1 span {
+    font-size: 18px;
+  }
+
+  .bridge-home-board-row {
+    grid-template-columns: 38px 1fr auto;
+  }
+
+  .bridge-home-board-line {
+    display: none;
+  }
+
+  .bridge-home-steps,
+  .bridge-home-path {
+    padding: 48px 0;
+  }
+
+  .bridge-home-section-head h2,
+  .bridge-home-closing-copy h2 {
+    font-size: 25px;
+  }
+
+  .bridge-home-step-list,
+  .bridge-home-path-rail,
+  .bridge-home-closing {
     grid-template-columns: minmax(0, 1fr);
     gap: 28px;
   }
 
-  .bridge-home-hero {
-    padding: 44px 0 40px;
+  .bridge-home-step,
+  .bridge-home-step + .bridge-home-step {
+    padding: 0 0 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--bridge-line);
   }
 
-  .bridge-home-hero h1 {
-    font-size: 32px;
+  .bridge-home-step:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
   }
 
-  .bridge-home-hero h1 span {
-    font-size: 19px;
+  .bridge-home-page .bridge-home-stop::after {
+    display: none;
   }
 
-  .bridge-home-route-grid,
-  .bridge-home-route-flow {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .bridge-home-route-catalog,
-  .bridge-home-route {
-    padding: 40px 0;
-  }
-
-  .bridge-home-catalog-heading h2,
-  .bridge-home-section-heading h2,
-  .bridge-home-footer-copy h2 {
-    font-size: 23px;
+  .bridge-home-closing {
+    padding: 48px 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bridge-home-page .bridge-home-route-card,
   .bridge-home-page .bridge-home-primary,
+  .bridge-home-page .bridge-home-ghost,
   .bridge-home-page .bridge-home-link {
     transition: none;
   }
 
-  .bridge-home-page .bridge-home-route-card:hover {
+  .bridge-home-page .bridge-home-primary:hover {
     transform: none;
   }
 }

@@ -5,9 +5,10 @@ $root = dirname(__DIR__);
 $css = (string) file_get_contents($root . '/public/assets/bridge-home.css');
 
 foreach ([
-    '.bridge-home-page .bridge-home-status::before',
-    '.bridge-home-page .bridge-home-status::after',
-    '.bridge-home-page .bridge-home-route-card:hover',
+    '.bridge-home-page .bridge-home-board-pulse::before',
+    '.bridge-home-page .bridge-home-stop::before',
+    '.bridge-home-page .bridge-home-stop::after',
+    '.bridge-home-page .bridge-home-primary:hover',
     '.bridge-home-page :is(a, button, select):focus-visible',
     'transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease',
     '@media (prefers-reduced-motion: reduce)',

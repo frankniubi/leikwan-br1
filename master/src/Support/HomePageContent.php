@@ -8,9 +8,8 @@ namespace Leikwan\Master\Support;
  *
  * The page is localized before it reaches the browser, so it reads correctly in the
  * visitor's language without waiting for the client-side patch, and the document
- * language matches the text. The copy stays in the same shape in every locale:
- * a hero, an at-a-glance panel, the three setup steps, the path, and one call to
- * action.
+ * language matches the text. Every locale carries the same shape: a dark route
+ * board hero, the three setup steps, the path, and one closing call to action.
  */
 final class HomePageContent
 {
@@ -23,15 +22,23 @@ final class HomePageContent
             'en' => [
                 'kicker' => 'Control plane',
                 'title_tail' => 'Bridge control plane',
-                'lede' => 'One account, one line, and a port you control. Create a forward, install the app, and play through a route that stays steady.',
+                'lede' => 'One account, one line, a port you control. Create a forward, install the app, and play through a route that holds steady.',
                 'primary' => 'Open the console',
                 'secondary' => 'Read the guides',
-                'status_label' => 'Service at a glance',
-                'status_head' => 'At a glance',
-                'status' => [
-                    ['Every line uses ultra', 'Nothing to choose. The route stays steady while you play.'],
-                    ['Windows, Android, Linux', 'The same account signs in on every device you play on.'],
-                    ['About five minutes', 'From an active plan to a line you can use.'],
+                'facts' => [
+                    ['3', 'platforms'],
+                    ['1', 'line type'],
+                    ['~5 min', 'setup'],
+                ],
+                'board_head' => 'Route catalog',
+                'board_origin' => 'Shanghai',
+                'board_note' => 'Pick a direction in the panel; the line stays ultra.',
+                'routes' => [
+                    ['TYO', 'Tokyo'],
+                    ['SEL', 'Seoul'],
+                    ['FRA', 'Frankfurt'],
+                    ['MOW', 'Moscow'],
+                    ['HKG', 'Hong Kong'],
                 ],
                 'steps_label' => '01 / Steps',
                 'steps_title' => 'How a line is built.',
@@ -43,7 +50,7 @@ final class HomePageContent
                 ],
                 'path_label' => '02 / Path',
                 'path_title' => 'Where your traffic goes.',
-                'path_lede' => 'The app carries the line from your device to the route you picked, and the route reaches the destination you configured.',
+                'path_lede' => 'Your device carries the line to the route you picked, and the route reaches the destination you configured.',
                 'path' => [
                     ['Your device', 'The app runs here'],
                     ['Bridge route', 'The line you pick in the panel'],
@@ -61,12 +68,20 @@ final class HomePageContent
                 'lede' => '一个账号，一条线路，一个你自己掌握的端口。创建转发、安装客户端，然后走一条稳定的线路进游戏。',
                 'primary' => '进入控制台',
                 'secondary' => '阅读使用指南',
-                'status_label' => '服务概览',
-                'status_head' => '一眼看完',
-                'status' => [
-                    ['所有线路都用 ultra', '不需要选模式，打游戏时线路保持稳定。'],
-                    ['Windows、Android、Linux', '同一个账号，每台设备都能登录。'],
-                    ['大约五分钟', '从有效套餐到一条能用的线路。'],
+                'facts' => [
+                    ['3', '个平台'],
+                    ['1', '种线路'],
+                    ['约 5 分钟', '完成设置'],
+                ],
+                'board_head' => '线路目录',
+                'board_origin' => '上海',
+                'board_note' => '在面板里选一个方向，线路统一走 ultra。',
+                'routes' => [
+                    ['TYO', '东京'],
+                    ['SEL', '首尔'],
+                    ['FRA', '法兰克福'],
+                    ['MOW', '莫斯科'],
+                    ['HKG', '香港'],
                 ],
                 'steps_label' => '01 / 三个步骤',
                 'steps_title' => '一条线路是这样建起来的。',
@@ -96,12 +111,20 @@ final class HomePageContent
                 'lede' => '一個帳號，一條線路，一個你自己掌握的連接埠。建立轉發、安裝用戶端，然後走一條穩定的線路進遊戲。',
                 'primary' => '進入控制台',
                 'secondary' => '閱讀使用指南',
-                'status_label' => '服務概覽',
-                'status_head' => '一眼看完',
-                'status' => [
-                    ['所有線路都用 ultra', '不需要選模式，玩遊戲時線路保持穩定。'],
-                    ['Windows、Android、Linux', '同一個帳號，每台裝置都能登入。'],
-                    ['大約五分鐘', '從有效方案到一條能用的線路。'],
+                'facts' => [
+                    ['3', '個平台'],
+                    ['1', '種線路'],
+                    ['約 5 分鐘', '完成設定'],
+                ],
+                'board_head' => '線路目錄',
+                'board_origin' => '上海',
+                'board_note' => '在面板裡選一個方向，線路統一走 ultra。',
+                'routes' => [
+                    ['TYO', '東京'],
+                    ['SEL', '首爾'],
+                    ['FRA', '法蘭克福'],
+                    ['MOW', '莫斯科'],
+                    ['HKG', '香港'],
                 ],
                 'steps_label' => '01 / 三個步驟',
                 'steps_title' => '一條線路是這樣建起來的。',
@@ -113,7 +136,7 @@ final class HomePageContent
                 ],
                 'path_label' => '02 / 路徑',
                 'path_title' => '流量從哪裡走。',
-                'path_lede' => '用戶端把你裝置上的線路帶到選定的那條線路，再由它到達你設定的目標。',
+                'path_lede' => '用戶端把你裝置上的線路帶到選定的那條線路，再由它由它到達你設定的目標。',
                 'path' => [
                     ['你的裝置', '用戶端在這裡執行'],
                     ['橋接線路', '你在面板上選的那條'],
@@ -134,71 +157,88 @@ final class HomePageContent
     {
         $current = LocaleResolver::normalize((string) $locale) ?? LocaleResolver::DEFAULT_LOCALE;
         $copy = self::strings($current);
-
-        $statusItems = '';
-        foreach ($copy['status'] as [$headline, $detail]) {
-            $statusItems .= '<li><strong>' . self::e($headline) . '</strong><span>' . self::e($detail) . '</span></li>';
-        }
-
-        $stepCards = '';
-        foreach ($copy['steps'] as $index => [$title, $detail]) {
-            $stepCards .= '<article class="bridge-home-route-card">'
-                . '<span class="bridge-home-route-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
-                . '<strong>' . self::e($title) . '</strong>'
-                . '<p>' . self::e($detail) . '</p>'
-                . '</article>';
-        }
-
-        $pathNodes = '';
-        foreach ($copy['path'] as $index => [$title, $detail]) {
-            $pathNodes .= '<div class="bridge-home-route-node">'
-                . '<span class="bridge-home-route-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
-                . '<span><strong>' . self::e($title) . '</strong><small>' . self::e($detail) . '</small></span>'
-                . '</div>';
-        }
-
         $href = self::e($consoleHref);
 
+        $facts = '';
+        foreach ($copy['facts'] as [$value, $label]) {
+            $facts .= '<li><strong>' . self::e($value) . '</strong><span>' . self::e($label) . '</span></li>';
+        }
+
+        $routes = '';
+        foreach ($copy['routes'] as $index => [$code, $city]) {
+            $routes .= '<li class="bridge-home-board-row">'
+                . '<span class="bridge-home-board-code">' . self::e($code) . '</span>'
+                . '<span class="bridge-home-board-city">' . self::e($city) . '</span>'
+                . '<span class="bridge-home-board-line" aria-hidden="true"></span>'
+                . '<span class="bridge-home-board-dot" aria-hidden="true"></span>'
+                . '</li>';
+        }
+
+        $steps = '';
+        foreach ($copy['steps'] as $index => [$title, $detail]) {
+            $steps .= '<li class="bridge-home-step">'
+                . '<span class="bridge-home-step-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
+                . '<h3>' . self::e($title) . '</h3>'
+                . '<p>' . self::e($detail) . '</p>'
+                . '</li>';
+        }
+
+        $path = '';
+        foreach ($copy['path'] as $index => [$title, $detail]) {
+            $path .= '<li class="bridge-home-stop">'
+                . '<span class="bridge-home-stop-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
+                . '<strong>' . self::e($title) . '</strong>'
+                . '<small>' . self::e($detail) . '</small>'
+                . '</li>';
+        }
+
         return '<section class="bridge-home-hero" aria-labelledby="bridge-home-title">'
+            . '<div class="bridge-home-hero-inner">'
             . '<div class="bridge-home-hero-copy">'
             . '<p class="bridge-home-kicker">' . self::e($copy['kicker']) . '</p>'
-            . '<h1 id="bridge-home-title">' . self::e($brand) . ' <span>' . self::e($copy['title_tail']) . '</span></h1>'
+            . '<h1 id="bridge-home-title">' . self::e($brand) . '<span>' . self::e($copy['title_tail']) . '</span></h1>'
             . '<p class="bridge-home-lede">' . self::e($copy['lede']) . '</p>'
             . '<div class="bridge-home-actions">'
-            . '<a class="button bridge-home-primary" href="' . $href . '">' . self::e($copy['primary']) . ' <span aria-hidden="true">&rarr;</span></a>'
+            . '<a class="bridge-home-primary" href="' . $href . '">' . self::e($copy['primary']) . '<span aria-hidden="true">&rarr;</span></a>'
             . '<a class="bridge-home-link" href="/knowledgebase">' . self::e($copy['secondary']) . '</a>'
             . '</div>'
+            . '<ul class="bridge-home-facts">' . $facts . '</ul>'
             . '</div>'
-            . '<aside class="bridge-home-status" aria-label="' . self::e($copy['status_label']) . '">'
-            . '<p class="bridge-home-status-head">' . self::e($copy['status_head']) . '</p>'
-            . '<ul class="bridge-home-status-list">' . $statusItems . '</ul>'
+            . '<aside class="bridge-home-board" aria-label="' . self::e($copy['board_head']) . '">'
+            . '<div class="bridge-home-board-head"><span>' . self::e($copy['board_head']) . '</span><span class="bridge-home-board-pulse" aria-hidden="true"></span></div>'
+            . '<p class="bridge-home-board-origin">' . self::e($copy['board_origin']) . '</p>'
+            . '<ul class="bridge-home-board-list">' . $routes . '</ul>'
+            . '<p class="bridge-home-board-note">' . self::e($copy['board_note']) . '</p>'
             . '</aside>'
+            . '</div>'
             . '</section>'
-            . '<section class="bridge-home-route-catalog" aria-labelledby="bridge-home-steps-title">'
-            . '<header class="bridge-home-catalog-heading">'
+            . '<section class="bridge-home-steps" aria-labelledby="bridge-home-steps-title">'
+            . '<header class="bridge-home-section-head">'
             . '<span>' . self::e($copy['steps_label']) . '</span>'
             . '<h2 id="bridge-home-steps-title">' . self::e($copy['steps_title']) . '</h2>'
             . '<p>' . self::e($copy['steps_lede']) . '</p>'
             . '</header>'
-            . '<div class="bridge-home-route-grid">' . $stepCards . '</div>'
+            . '<ol class="bridge-home-step-list">' . $steps . '</ol>'
             . '</section>'
-            . '<section id="network" class="bridge-home-route" aria-labelledby="bridge-home-path-title">'
-            . '<header class="bridge-home-section-heading">'
+            . '<section id="network" class="bridge-home-path" aria-labelledby="bridge-home-path-title">'
+            . '<header class="bridge-home-section-head">'
             . '<span>' . self::e($copy['path_label']) . '</span>'
             . '<h2 id="bridge-home-path-title">' . self::e($copy['path_title']) . '</h2>'
             . '<p>' . self::e($copy['path_lede']) . '</p>'
             . '</header>'
-            . '<div class="bridge-home-route-flow">' . $pathNodes . '</div>'
+            . '<ol class="bridge-home-path-rail">' . $path . '</ol>'
             . '</section>'
-            . '<section class="bridge-home-footer-grid">'
-            . '<div class="bridge-home-footer-copy">'
+            . '<section class="bridge-home-closing">'
+            . '<div class="bridge-home-closing-inner">'
+            . '<div class="bridge-home-closing-copy">'
             . '<span>' . self::e($copy['closing_label']) . '</span>'
             . '<h2>' . self::e($copy['closing_title']) . '</h2>'
             . '<p>' . self::e($copy['closing_lede']) . '</p>'
             . '</div>'
-            . '<div class="bridge-home-footer-links">'
-            . '<a href="' . $href . '"><span>' . self::e($copy['console_link']) . '</span><span aria-hidden="true">&rarr;</span></a>'
-            . '<a href="/knowledgebase"><span>' . self::e($copy['guides_link']) . '</span><span aria-hidden="true">&rarr;</span></a>'
+            . '<div class="bridge-home-closing-actions">'
+            . '<a class="bridge-home-primary" href="' . $href . '">' . self::e($copy['console_link']) . '<span aria-hidden="true">&rarr;</span></a>'
+            . '<a class="bridge-home-ghost" href="/knowledgebase">' . self::e($copy['guides_link']) . '<span aria-hidden="true">&rarr;</span></a>'
+            . '</div>'
             . '</div>'
             . '</section>';
     }
