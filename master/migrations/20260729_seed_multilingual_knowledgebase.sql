@@ -135,54 +135,50 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'en', NULL, 'Get Connected in Five Minutes', 'Follow the shortest path from an active package to a verified connection.', '<h2>What you will accomplish</h2>
-<p>You will go from an active package to one verified Forward without changing advanced settings. The goal is not merely to save a configuration. The goal is to send a real request through the assigned local port and receive the expected response.</p>
+<p>You will go from an active plan to a working line: add one forward in the panel, install the app, connect, and see the line running. About five minutes, and you never have to choose a connection type - every line uses ultra, which keeps the route steady while you play.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Confirm that your package or service is marked <strong>Active</strong>.</li>
-  <li>Know the destination host, destination port, and whether the application uses TCP, UDP, or both.</li>
-  <li>Have a supported Windows, Android, or Linux device ready for the Client.</li>
-  <li>Never share passwords, tokens, copied install commands, private keys, or route material.</li>
+  <li>An active plan, so the panel lets you create a forward.</li>
+  <li>The game or program you want to speed up, and the address it connects to (the game''s server list usually shows it).</li>
+  <li>Windows, Android, or Linux on the device you play on. A phone works as well as a computer.</li>
+  <li>Your panel login, and about five minutes.</li>
 </ul>
 
 <h2>Steps</h2>
 <pre class="mermaid">flowchart TD
-accTitle: Five-minute connection path
-accDescr: Start with an active package, create one Forward, install and sign in to the Client, test the assigned local port, then either finish or open troubleshooting.
-A[Active package] --&gt; B[Create one Forward]
-B --&gt; C[Install and sign in]
-C --&gt; D[Test assigned local port]
-D --&gt; E{Works?}
-E -- Yes --&gt; F[Setup complete]
-E -- No --&gt; G[Open troubleshooting]</pre>
-<p>The shortest safe path has one decision: if an application request succeeds through the local listener, setup is complete; if it fails, keep the saved Forward and troubleshoot the visible symptom.</p>
+accTitle: From a plan to a working line
+accDescr: Create a forward, install the app, connect it, then point the game at the local port.
+A[Open the panel] --&gt; B[Create a forward]
+B --&gt; C[Install the app]
+C --&gt; D[Sign in and connect]
+D --&gt; E[Point the game at the local port]
+E --&gt; F[Play]</pre>
+<p>Five steps, each one covered in a few lines below. Nothing here needs a technical decision.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Tenant overview showing the three setup steps and the Create a forward action">
-  <figcaption>Demo screenshot. The package, counts, and IDs shown here are demonstration values.</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Panel overview showing the active plan and the list of forwards">
+  <figcaption>Your starting point: the plan and the forward list, both on the panel''s first page.</figcaption>
 </figure>
 <ol>
-  <li>Open the active service in the tenant panel.</li>
-  <li>Select <strong>Create Forward</strong>.</li>
-  <li>Choose the offered route package and enter the destination.</li>
-  <li>Save the Forward and record its assigned local port.</li>
-  <li>Install the Client and sign in.</li>
-  <li>Wait for a recent client sync.</li>
-  <li>Point your application at the local listener.</li>
-  <li>Test with the actual application protocol, such as an HTTP request, SSH connection, or game connection.</li>
+  <li><strong>Open the panel and check the plan is active.</strong> If it shows as expired or unpaid, the forward form stays locked.</li>
+  <li><strong>Create a forward.</strong> Pick the line closest to the game''s server, type the address and port the game connects to, keep the suggested local port, and save. Note that local port down - the game needs it in step 5.</li>
+  <li><strong>Install the app</strong> on the device you play on: Windows or Android from the Clients page, or the one-line Linux command. Sign in with your panel account.</li>
+  <li><strong>Connect.</strong> The app lists your forward; press connect and wait until it reads running.</li>
+  <li><strong>Point the game at the client.</strong> Wherever the game asks for a server address, use <code>127.0.0.1</code> and the local port from step 2, then start the game.</li>
+  <li><strong>Play, and glance at the panel afterwards.</strong> The forward shows traffic while you play.</li>
 </ol>
 
 <h2>How to know it worked</h2>
-<p>The panel shows an active endpoint after provisioning, the Client shows a recent sync, and the Forward reaches <strong>Connected</strong> or <strong>Running</strong>. Those signals are different from final proof. Final proof is that the application request succeeds and returns the expected result. If you control the target, its logs should also show the request arriving.</p>
+<p>Three signs, in this order: the app shows the line as running, the forward in the panel shows incoming traffic while you play, and the game itself stays steady instead of spiking in the middle of a match. If the game starts but the traffic numbers stay at zero, the local port is almost always the reason - check step 5 again.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before changing route details at random.</strong> Keep the first Forward, note the exact error and time, then open the troubleshooting guide. A saved configuration, completed provisioning, recent sync, running process, and successful application request are separate checkpoints.</p>
+<p><strong>Stop and check the plan first</strong> if the panel refuses to save the forward: an expired plan is the most common reason on day one. The next most common is the wrong destination - use the address the game really connects to, not the address of the site you downloaded it from. Third is the local port: the game has to use exactly the port the panel assigned. Everything else - the app will not stay connected, the line keeps dropping, the game cannot reach the server - is covered in the troubleshooting guide below.</p>
 
 <h2>Related guides</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create Your First Forward</a></li>
   <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
   <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
 </ul>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -732,54 +728,50 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-Hans', NULL, '五分钟完成首次连接', '按最短路径完成套餐、转发、客户端安装和连接验证。', '<h2>你将完成什么</h2>
-<p>你将从已生效的套餐或服务出发，创建一条转发，安装并登录客户端，再用真实应用协议完成首次连接验证。保存配置只是起点，最终目标是应用收到预期响应。</p>
+<p>你会从"套餐已生效"走到"线路可用"：在面板建一条转发、装上客户端、连接，然后看到线路在运行。大约五分钟，而且你不需要选择任何连接类型 —— 所有线路都用 ultra，它做的就是在你打游戏时把线路保持稳定。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>确认套餐或服务状态为<strong>有效</strong>。</li>
-  <li>准备目标主机、目标端口，以及应用所需的 TCP、UDP 或两者。</li>
-  <li>准备一台支持的 Windows、Android 或 Linux 设备。</li>
-  <li>不要向任何人展示密码、令牌、复制的安装命令、密钥、会话或线路材料。</li>
+  <li>一个有效套餐，面板才会允许你创建转发。</li>
+  <li>想加速的游戏或程序，以及它连接的地址（游戏里的服务器列表通常能看到）。</li>
+  <li>运行客户端的设备：Windows、Android 或 Linux 都可以，手机和电脑一样能用。</li>
+  <li>你的面板账号，以及大约五分钟。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 五分钟首次连接路径
-accDescr: 从有效套餐开始，创建一条转发，安装并登录客户端，测试系统分配的本地端口，成功后结束，失败时进入问题排查。
-A[有效套餐] --&gt; B[创建一条转发]
-B --&gt; C[安装并登录客户端]
-C --&gt; D[测试分配的本地端口]
-D --&gt; E{连接成功吗}
-E -- 是 --&gt; F[首次设置完成]
-E -- 否 --&gt; G[开始排查问题]</pre>
-<p>最短且安全的路径只有一次判断：真实应用请求通过本地监听端口并获得正确结果，就算完成；否则先保留现有转发，再从可见症状着手排查。</p>
+accTitle: 从套餐到可用线路
+accDescr: 先创建一条转发，装上客户端并连接，再把游戏指向本机端口。
+A[打开面板] --&gt; B[创建一条转发]
+B --&gt; C[安装应用]
+C --&gt; D[登录并连接]
+D --&gt; E[把游戏指向本机端口]
+E --&gt; F[开始游戏]</pre>
+<p>五步，下面每步都只有几行说明。这里没有任何需要你判断的技术选项。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租户概览页显示三步设置流程和 Create a forward 操作">
-  <figcaption>演示截图：套餐、数量和 ID 都是演示值，请以你自己的面板为准。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="面板首页，显示有效套餐与转发列表">
+  <figcaption>起点就在这里：套餐和转发列表都在面板首页。</figcaption>
 </figure>
 <ol>
-  <li>在租户面板中打开已生效的服务。</li>
-  <li>选择 <strong>Create Forward</strong>。</li>
-  <li>选择系统提供的线路方案，并填写目标地址和端口。</li>
-  <li>保存转发，记下系统分配的本地端口。</li>
-  <li>安装客户端并登录。</li>
-  <li>等待客户端出现最近同步记录。</li>
-  <li>让应用连接本地监听地址和端口。</li>
-  <li>使用实际应用协议验证，例如发出 HTTP 请求、建立 SSH 连接或启动游戏连接。</li>
+  <li><strong>打开面板，确认套餐有效。</strong>如果显示已过期或未付款，转发表单会一直是锁住的。</li>
+  <li><strong>创建一条转发。</strong>选择离游戏服务器最近的线路，填入游戏连接的地址和端口，本机端口用默认值即可，然后保存。把这个本机端口记下来 —— 第 5 步要用。</li>
+  <li><strong>安装应用</strong>到你玩游戏的设备上：Windows 和 Android 在「客户端」页面下载，Linux 用那一条安装命令。用面板账号登录。</li>
+  <li><strong>连接。</strong>应用里会列出你刚建的转发，点连接，等到显示 running。</li>
+  <li><strong>把游戏指向客户端。</strong>游戏里凡是要填服务器地址的地方，填 <code>127.0.0.1</code> 和第 2 步记下的本机端口，然后启动游戏。</li>
+  <li><strong>开始游戏，之后再回面板看一眼。</strong>你玩的时候，那条转发会显示有流量。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>保存后已完成配置记录，预配完成后端点可用，最近同步表示配置已送达，<strong>Connected</strong> 或 <strong>Running</strong> 表示运行状态正常；这些检查点彼此独立。最终证据仍是应用请求成功，并在可查看时由目标日志确认请求到达。</p>
+<p>按顺序看三个地方：应用里线路显示为 running；你游戏时面板上那条转发有流量数字；游戏本身稳定，不会在一局中途突然卡顿。如果游戏能进但流量一直是 0，几乎都是本机端口填错了 —— 回到第 5 步检查。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止随意更改线路或端口。</strong>保留第一条转发，记录错误内容和发生时间，再按排查指南逐项检查。不要把保存、预配、最近同步、运行连接和应用成功混为一谈。</p>
+<p><strong>先停止</strong>反复提交表单，先确认套餐状态 —— 面板不让你保存转发，最常见的原因就是套餐过期。第二常见的是目标填错：要填游戏真正连接的地址，不是你下载游戏的网站地址。第三是本机端口：游戏必须使用面板分配的那个端口。其它情况（应用连不上、线路老是掉、游戏进不去服务器）都写在下面的排查指南里。</p>
 
 <h2>相关指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a></li>
   <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">连接与验证</a></li>
 </ul>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -1325,54 +1317,50 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-TW', NULL, '五分鐘完成首次連線', '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。', '<h2>你將完成什麼</h2>
-<p>你會從有效方案開始，完成一條轉發，安裝用戶端，並用真實應用程式確認首次連線。重點不只是把設定儲存起來，而是透過系統分配的本機連接埠送出要求，收到預期回應。</p>
+<p>你會從「方案已生效」走到「線路可用」：在面板建立一條轉發、裝上用戶端、連線，然後看到線路在運作。大約五分鐘，而且你不需要選擇任何連線類型 —— 所有線路都用 ultra，它做的就是在你打遊戲時把線路保持穩定。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>確認方案或服務標示為<strong>有效</strong>。</li>
-  <li>準備目標位址、目標連接埠，以及應用程式使用 TCP、UDP 或兩者的資訊。</li>
-  <li>準備一台支援的 Windows、Android 或 Linux 裝置安裝用戶端。</li>
-  <li>不要分享密碼、權杖、複製的安裝指令、私密金鑰或線路資料。</li>
+  <li>一個有效方案，面板才會允許你建立轉發。</li>
+  <li>想加速的遊戲或程式，以及它連線的位址（遊戲裡的伺服器清單通常看得到）。</li>
+  <li>執行用戶端的裝置：Windows、Android 或 Linux 都可以，手機和電腦一樣能用。</li>
+  <li>你的面板帳號，以及大約五分鐘。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 五分鐘首次連線流程
-accDescr: 從有效方案開始，建立一條轉發，安裝並登入用戶端，測試分配的本機連接埠，再依連線是否成功完成設定或開始排查問題。
-A[有效方案] --&gt; B[建立一條轉發]
-B --&gt; C[安裝並登入用戶端]
-C --&gt; D[測試分配的本機連接埠]
-D --&gt; E{連線成功嗎}
-E -- 是 --&gt; F[首次設定完成]
-E -- 否 --&gt; G[開始排查問題]</pre>
-<p>最短且安全的流程只有一個判斷點：應用程式要求成功，就代表首次設定完成；若失敗，保留已儲存的轉發，從看得見的症狀開始排查。</p>
+accTitle: 從方案到可用線路
+accDescr: 先建立一條轉發，裝上用戶端並連線，再把遊戲指向本機連接埠。
+A[打開面板] --&gt; B[建立一條轉發]
+B --&gt; C[安裝應用程式]
+C --&gt; D[登入並連線]
+D --&gt; E[把遊戲指向本機連接埠]
+E --&gt; F[開始遊戲]</pre>
+<p>五步，下面每步都只有幾行說明。這裡沒有任何需要你判斷的技術選項。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租戶概覽頁顯示三步設定流程和 Create a forward 操作">
-  <figcaption>示範截圖：方案、數量和 ID 都是示範值，請以自己的面板為準。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="面板首頁，顯示有效方案與轉發清單">
+  <figcaption>起點就在這裡：方案和轉發清單都在面板首頁。</figcaption>
 </figure>
 <ol>
-  <li>在租戶面板開啟有效服務。</li>
-  <li>選擇<strong>建立轉發</strong>。</li>
-  <li>選擇面板提供的線路方案，填入目標位址和連接埠。</li>
-  <li>儲存轉發，記下系統分配的本機連接埠。</li>
-  <li>安裝用戶端並登入。</li>
-  <li>等待面板出現最近同步。</li>
-  <li>讓應用程式連到本機監聽位址與連接埠。</li>
-  <li>使用實際應用協定測試，例如 HTTP 要求、SSH 連線或遊戲連線。</li>
+  <li><strong>打開面板，確認方案有效。</strong>如果顯示已過期或未付款，轉發表單會一直是鎖住的。</li>
+  <li><strong>建立一條轉發。</strong>選擇離遊戲伺服器最近的線路，填入遊戲連線的位址和連接埠，本機連接埠用預設值即可，然後儲存。把這個本機連接埠記下來 —— 第 5 步要用。</li>
+  <li><strong>安裝應用程式</strong>到你玩遊戲的裝置上：Windows 和 Android 在「用戶端」頁面下載，Linux 用那一條安裝指令。用面板帳號登入。</li>
+  <li><strong>連線。</strong>應用程式裡會列出你剛建立的轉發，點連線，等到顯示 running。</li>
+  <li><strong>把遊戲指向用戶端。</strong>遊戲裡凡是要填伺服器位址的地方，填 <code>127.0.0.1</code> 和第 2 步記下的本機連接埠，然後啟動遊戲。</li>
+  <li><strong>開始遊戲，之後再回面板看一眼。</strong>你玩的時候，那條轉發會顯示有流量。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>佈建完成後，面板會顯示有效端點，用戶端有最近同步，轉發則顯示 <strong>Connected</strong> 或 <strong>Running</strong>。這些是不同階段的狀態；完整證明仍是應用程式要求成功並取得預期結果。若你管理目標服務，也應能在記錄中看到要求抵達。</p>
+<p>按順序看三個地方：應用程式裡線路顯示為 running；你遊戲時面板上那條轉發有流量數字；遊戲本身穩定，不會在一局中途突然卡頓。如果遊戲能進但流量一直是 0，幾乎都是本機連接埠填錯了 —— 回到第 5 步檢查。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止隨意調整線路細節。</strong>保留第一條轉發，記下確切錯誤和時間，再開啟排查指南。設定已儲存、佈建完成、最近同步、程序執行中，以及應用程式成功，是五個不同的檢查點。</p>
+<p><strong>請先停止</strong>反覆提交表單，先確認方案狀態 —— 面板不讓你儲存轉發，最常見的原因就是方案過期。第二常見的是目標填錯：要填遊戲真正連線的位址，不是你下載遊戲的網站位址。第三是本機連接埠：遊戲必須使用面板分配的那個連接埠。其他情況（應用程式連不上、線路老是掉、遊戲進不去伺服器）都寫在下面的排查指南裡。</p>
 
 <h2>相關指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a></li>
   <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">連線與驗證</a></li>
 </ul>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP

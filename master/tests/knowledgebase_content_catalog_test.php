@@ -281,11 +281,12 @@ assertCatalogSame(9, count($topics), 'catalog must contain exactly nine topics')
 
 $requiredArticleText = [
     'getting-started-five-minute-overview' => [
-        'active package',
-        'Create Forward',
-        'assigned local port',
-        'actual application protocol',
-        'application request succeeds',
+        'ultra',
+        'local port',
+        '127.0.0.1',
+        'running',
+        'active plan',
+        'Clients page',
     ],
     'install-client' => [
         'Download Windows App',
@@ -412,7 +413,7 @@ $forbiddenFirstForwardText = [
 ];
 $requiredLocalizedArticleText = [
     'zh-Hans' => [
-        'getting-started-five-minute-overview' => ['有效套餐', 'Create Forward', '系统分配的本地端口', '实际应用协议', '应用请求成功', '保存', '预配', '最近同步', 'Running'],
+        'getting-started-five-minute-overview' => ['ultra', '线路', '转发', '客户端', '本机端口', '127.0.0.1', 'running', '套餐'],
         'install-client' => ['Download Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '受支持 LeiGod 服务', 'Linux Install', 'Copy Install Command', 'systemd', 'Python 3', '相当于 root', '身份验证的令牌', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', 'Linux ARM64 单文件安装包', 'Debian 11、12、13', 'Linux ARM64 Installer', '不要据此承诺 Android 支持 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', 'Create Forward', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', 'Transport', 'TCP', 'TCP + UDP', 'UDP', '保存', '预配', '最近同步', 'Running', '应用成功'],
         'connect-and-verify' => ['127.0.0.1', '可访问的 Windows 或 Linux 客户端主机地址', '防火墙', '安全组', 'NAT', 'Android', '仅监听回环地址', '实际应用协议', '目标日志', '公网 IP'],
@@ -423,7 +424,7 @@ $requiredLocalizedArticleText = [
         'no-gui-clients' => ['Client ID', 'Agent Token', '长期开机', '应用程序', 'leikwan status', 'leikwan restart', 'leikwan update --check', 'leikwan logs -n 50', 'leikwan doctor', 'leikwan stop', '在线'],
     ],
     'zh-TW' => [
-        'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
+        'getting-started-five-minute-overview' => ['ultra', '線路', '轉發', '用戶端', '本機連接埠', '127.0.0.1', 'running', '方案'],
         'install-client' => ['下載 Windows App', '租戶 → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', 'Linux ARM64 單檔安裝包', 'Debian 11、12、13', 'Linux ARM64 Installer', '不能因此承諾 Android 支援 Race 或 MPTCP'],
         'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
         'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
@@ -450,7 +451,7 @@ $forbiddenLocalizedArticleText = [
 ];
 $localizedDiagramRequirements = [
     'zh-Hans' => [
-        'getting-started-five-minute-overview' => ['五分钟首次连接路径', '从有效套餐开始', '有效套餐', '创建一条转发', '安装并登录客户端', '测试分配的本地端口', '连接成功吗', '首次设置完成', '开始排查问题', '是', '否'],
+        'getting-started-five-minute-overview' => ['从套餐到可用线路', '打开面板', '创建一条转发', '安装应用', '登录并连接', '把游戏指向本机端口', '开始游戏'],
         'install-client' => ['客户端安装路径', '按设备系统选择', '选择设备', '操作系统', '下载 Windows 应用', '安装 arm64 Android 应用', '复制 Linux 安装命令', '确认最近同步'],
         'getting-started-first-forward-checklist' => ['第一条转发表单路径', '打开有效套餐', '选择转发线路', '填写目标和传输方式', '打开有效套餐', '选择 Forward Route', '填写 Target Host 和 Target Port', '选择 Transport', '保存', '等待转发可用', '记下分配的本地端口'],
         'connect-and-verify' => ['选择客户端连接地址', '应用与客户端同机时', '确认应用所在设备', '与客户端同机吗', '使用 127.0.0.1 和本地端口', '客户端平台', '使用可达主机地址和端口', '按需允许防火墙安全组或 NAT', '保持仅回环监听', '测试实际应用协议', '是', '否'],
@@ -460,7 +461,7 @@ $localizedDiagramRequirements = [
         'no-gui-clients' => ['不用屏幕的电脑设置流程', '选择电脑', '哪个系统', '先装应用，再运行一条命令', '解压下载包，再运行一条命令', '确认显示 running', '在面板看到设备在线'],
     ],
     'zh-TW' => [
-        'getting-started-five-minute-overview' => ['五分鐘首次連線流程', '從有效方案開始', '有效方案', '建立一條轉發', '安裝並登入用戶端', '測試分配的本機連接埠', '連線成功嗎', '首次設定完成', '開始排查問題', '是', '否'],
+        'getting-started-five-minute-overview' => ['從方案到可用線路', '打開面板', '建立一條轉發', '安裝應用程式', '登入並連線', '把遊戲指向本機連接埠', '開始遊戲'],
         'install-client' => ['用戶端安裝流程', '依裝置的作業系統選擇', '選擇裝置', '作業系統', '下載 Windows App', '安裝 arm64 Android App', '複製 Linux 安裝指令', '確認最近同步'],
         'getting-started-first-forward-checklist' => ['第一條轉發的表單流程', '開啟有效方案', '選擇轉發路由', '填寫目標與傳輸方式', '開啟有效方案', '選擇轉發路由', '填寫目標主機和目標連接埠', '選擇傳輸方式', '儲存', '等待轉發可用', '記下分配的本機連接埠'],
         'connect-and-verify' => ['選擇用戶端連線位址', '應用程式與用戶端在同一台裝置時', '確認應用程式所在裝置', '與用戶端在同一台裝置嗎', '使用 127.0.0.1 和本機連接埠', '用戶端平台', '使用可連到的主機位址與連接埠', '視需要開放防火牆安全群組或 NAT', '保持只監聽迴送位址', '測試實際應用協定', '是', '否'],
