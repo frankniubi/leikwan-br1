@@ -37,7 +37,12 @@ public sealed class WireGuardManager
 
         if (!File.Exists(_wgBin))
         {
-            Log.Warning("wg binary not found at {Path}, skipping WireGuard identity", _wgBin);
+            // Expected: the Windows installer ships no wg.exe (it is not in the
+            // setup inputs), so the WireGuard identity is simply absent on a fresh
+            // install. This used to log a warning that reads like a fault on every
+            // start; the identity is optional and the panel treats a missing key as
+            // unknown.
+            Log.Debug("wg binary not present at {Path}; no WireGuard identity on this host", _wgBin);
             return;
         }
 
