@@ -35,6 +35,26 @@ final class LocaleResolver
         return self::DEFAULT_LOCALE;
     }
 
+    /**
+     * The locale a page should render in before JavaScript runs.
+     *
+     * Page shells and the language control need this outside a routed request,
+     * so it reads the same query parameter and cookie the router resolves.
+     */
+    public static function fromGlobals(): string
+    {
+        if (isset($_GET['lang']) && is_scalar($_GET['lang'])) {
+            return self::normalize((string) $_GET['lang']) ?? self::DEFAULT_LOCALE;
+        }
+
+        $cookie = $_COOKIE[self::COOKIE_NAME] ?? null;
+        if (is_string($cookie)) {
+            return self::normalize($cookie) ?? self::DEFAULT_LOCALE;
+        }
+
+        return self::DEFAULT_LOCALE;
+    }
+
     public static function normalize(string $locale): ?string
     {
         return in_array($locale, self::SUPPORTED, true) ? $locale : null;
