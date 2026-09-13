@@ -9,6 +9,8 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\LocaleResolver;
+use Leikwan\Master\Support\LocaleSwitcher;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\PrecisionGridUi;
 
@@ -1502,16 +1504,7 @@ abstract class BaseController
 
     protected function localeSwitcherHtml(): string
     {
-        return <<<HTML
-            <div class="locale-switch">
-                <label for="locale-switcher" class="locale-label">Language</label>
-                <select id="locale-switcher" class="locale-select">
-                    <option value="en">English</option>
-                    <option value="zh-Hans">Simplified Chinese</option>
-                    <option value="zh-TW">Traditional Chinese</option>
-                </select>
-            </div>
-        HTML;
+        return LocaleSwitcher::html(LocaleResolver::fromGlobals());
     }
 
     protected function flashHtml(): string
@@ -1562,7 +1555,9 @@ HTML;
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $flashHtml = $this->flashHtml();
+        $currentLocale = LocaleResolver::fromGlobals();
         $languageSwitcher = $this->localeSwitcherHtml();
+        $htmlLang = $this->escape($currentLocale);
         $csrfToken = $this->escape(SessionAuth::csrfToken());
         $bodyLayoutClass = $isBridgeHome ? 'bridge-home-body' : 'pg-auth-layout';
         $pageClass = $isBridgeHome ? ' bridge-home-page' : '';
@@ -1570,7 +1565,7 @@ HTML;
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260829a">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260914a">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
@@ -1595,7 +1590,7 @@ HTML;
 
         $html = <<<HTML
 <!doctype html>
-<html lang="en">
+<html lang="{$htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1621,11 +1616,6 @@ HTML;
       {$flashHtml}
       {$body}
     </main>
-    <footer class="page-footer">
-      <div class="footer-tools">
-        <span class="muted">Language can also be changed from the top bar.</span>
-      </div>
-    </footer>
   </div>
 {$this->i18nBootstrapHtml()}
   {$script}
@@ -1649,7 +1639,9 @@ HTML;
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $csrfToken = $this->escape(SessionAuth::csrfToken());
+        $currentLocale = LocaleResolver::fromGlobals();
         $languageSwitcher = $this->localeSwitcherHtml();
+        $htmlLang = $this->escape($currentLocale);
 
         $activeGroup = 'Workspace';
         foreach ($nav as $item) {
@@ -1701,7 +1693,7 @@ HTML;
 
         $html = <<<HTML
 <!doctype html>
-<html lang="en">
+<html lang="{$htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1740,11 +1732,6 @@ HTML;
         {$body}
       </main>
     </div>
-    <footer class="page-footer">
-      <div class="footer-tools">
-        <span class="muted">Language can also be changed from the top bar.</span>
-      </div>
-    </footer>
   </div>
 {$this->i18nBootstrapHtml()}
 <script>

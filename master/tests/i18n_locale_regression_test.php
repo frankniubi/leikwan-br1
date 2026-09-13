@@ -484,6 +484,7 @@ JS;
 
 $base = file_get_contents(__DIR__ . '/../src/Controllers/BaseController.php');
 $install = file_get_contents(__DIR__ . '/../public/install.php');
+$switcher = file_get_contents(__DIR__ . '/../src/Support/LocaleSwitcher.php');
 $patchPath = __DIR__ . '/../public/i18n/patch.js';
 $patch = file_get_contents($patchPath);
 $zhTwPath = __DIR__ . '/../public/i18n/zh-TW.json';
@@ -492,12 +493,31 @@ $zhHansPath = __DIR__ . '/../public/i18n/zh-Hans.json';
 foreach ([
     "supported: ['en', 'zh-TW', 'zh-Hans']",
     "cookieName: 'leikwan_locale'",
-    '<option value="zh-Hans">Simplified Chinese</option>',
-    '<option value="zh-TW">Traditional Chinese</option>',
+    'LocaleSwitcher::html(',
 ] as $snippet) {
     if (!str_contains((string) $base . (string) $install, $snippet)) {
         fail('missing locale snippet: ' . $snippet);
     }
+}
+
+// The language control is language-invariant: endonyms only, never translated copy.
+foreach ([
+    "'en' => 'English'",
+    "'zh-Hans' => '简体中文'",
+    "'zh-TW' => '繁體中文'",
+    "'en' => 'Language'",
+] as $snippet) {
+    if (!str_contains((string) $switcher, $snippet)) {
+        fail('language control must spell each language in its own script: ' . $snippet);
+    }
+}
+foreach (['Simplified Chinese', 'Traditional Chinese'] as $forbiddenLabel) {
+    if (str_contains((string) $switcher, $forbiddenLabel)) {
+        fail('language control must not describe a language in another language: ' . $forbiddenLabel);
+    }
+}
+if (!str_contains((string) $patch, 'insideLocaleSwitcher')) {
+    fail('the patch runtime must leave the language control untouched');
 }
 
 foreach ([

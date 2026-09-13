@@ -7,6 +7,7 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\HomePageContent;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebaseOutline;
 use Leikwan\Master\Support\KnowledgebaseService;
@@ -37,81 +38,15 @@ final class AuthController extends BaseController
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
-        $routeCatalog = [
-            ['index' => '01', 'label' => '沪日', 'destination' => 'TOKYO', 'note' => '东亚 · 东京'],
-            ['index' => '02', 'label' => '沪韩', 'destination' => 'SEOUL', 'note' => '东亚 · 首尔'],
-            ['index' => '03', 'label' => '沪德', 'destination' => 'FRANKFURT', 'note' => '欧洲 · 法兰克福'],
-            ['index' => '04', 'label' => '沪俄', 'destination' => 'MOSCOW', 'note' => '欧亚 · 莫斯科'],
-            ['index' => '05', 'label' => '沪港', 'destination' => 'HONG KONG', 'note' => '大湾区 · 香港'],
-        ];
-        $routeCards = '';
-        foreach ($routeCatalog as $route) {
-            $routeCards .= '<div class="bridge-home-route-card">'
-                . '<span class="bridge-home-route-index">' . $this->escape($route['index']) . '</span>'
-                . '<strong>' . $this->escape($route['label']) . '</strong>'
-                . '<span class="bridge-home-route-destination">SHANGHAI &rarr; ' . $this->escape($route['destination']) . '</span>'
-                . '<small>' . $this->escape($route['note']) . '</small>'
-                . '</div>';
-        }
-
         $consoleHref = $user === null
             ? '/login'
-            : $this->escape($this->dashboardPathForUser($user));
+            : $this->dashboardPathForUser($user);
 
-        $body = '
-            <section class="bridge-home-hero" aria-labelledby="bridge-home-title">
-              <div class="bridge-home-hero-copy">
-                <div class="bridge-home-kicker"><span>BRIDGE CONTROL</span><span>控制平面 / 01</span></div>
-                <h1 id="bridge-home-title">利群會聚 <span>Bridge Control</span></h1>
-                <p class="bridge-home-lede">分布式传输，清晰可控。<span>让每一条可用路径，都能被看见、管理和验证。</span></p>
-                <div class="bridge-home-actions">
-                  <a class="button bridge-home-primary" href="' . $consoleHref . '">进入控制台 <span aria-hidden="true">&rarr;</span></a>
-                  <a class="bridge-home-link" href="#network">查看网络路径 <span aria-hidden="true">&darr;</span></a>
-                </div>
-                <div class="bridge-home-path-note" aria-label="服务路径">
-                  <span>CLIENT</span><i aria-hidden="true">/</i><span>SLAVE</span><i aria-hidden="true">/</i><span>SIDECAR</span><i aria-hidden="true">/</i><span>TARGET</span>
-                </div>
-              </div>
-              <aside class="bridge-home-status" aria-label="固定路线目录">
-                <div class="bridge-home-status-head"><span>ROUTE CATALOG</span><span class="bridge-home-status-mark" aria-hidden="true"></span></div>
-                <strong>上海出发</strong>
-                <p>沪日、沪韩、沪德、沪俄、沪港</p>
-                <div class="bridge-home-status-rule"></div>
-                <div class="bridge-home-status-meta"><span>ROUTE SET</span><span>CURATED</span></div>
-              </aside>
-            </section>
-            <section class="bridge-home-route-catalog" aria-labelledby="route-catalog-title">
-              <header class="bridge-home-catalog-heading">
-                <span>01 / ROUTE CATALOG</span>
-                <h2 id="route-catalog-title">从上海出发，连接五个方向。</h2>
-                <p>按目的地整理基础线路，让每个方向都清晰、易读、可进入控制台继续配置。</p>
-              </header>
-              <div class="bridge-home-route-grid" aria-label="沪日、沪韩、沪德、沪俄、沪港固定线路目录">' . $routeCards . '</div>
-            </section>
-            <section id="network" class="bridge-home-network" aria-labelledby="network-title">
-              <header class="bridge-home-section-heading">
-                <span>02 / 传输路径</span>
-                <h2 id="network-title">一条服务，多条路径。</h2>
-                <p>客户端在本地选择方向，控制平面负责路径编排、聚合端点和目标服务的可见性。</p>
-              </header>
-              <div class="bridge-home-route" role="img" aria-label="客户端、Slave 节点、Sidecar、目标服务的传输路径">
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">01</span><span><strong>客户端</strong><small>本地选择路径</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">02</span><span><strong>Slave 节点</strong><small>分布式接入</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">03</span><span><strong>Sidecar</strong><small>聚合与转发</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">04</span><span><strong>目标服务</strong><small>最终目的地</small></span></div>
-              </div>
-            </section>
-            <section class="bridge-home-footer-grid">
-              <div class="bridge-home-footer-copy">
-                <span>03 / 运行原则</span>
-                <h2>每条路径都应该能被解释。</h2>
-                <p>节点状态、端点配置和服务拓扑集中在一个控制平面内，方便排查、调整和复核。</p>
-              </div>
-              <div class="bridge-home-footer-links">
-                <a href="' . $consoleHref . '"><span>进入控制台</span><span aria-hidden="true">&rarr;</span></a>
-                <a href="/knowledgebase"><span>打开知识库</span><span aria-hidden="true">&rarr;</span></a>
-              </div>
-            </section>';
+        $body = HomePageContent::render(
+            $this->displayBrandName(),
+            $consoleHref,
+            LocaleResolver::resolve($request)
+        );
 
         return $this->publicPage($this->displayBrandName(), $body, $user, 'bridge-home');
     }
