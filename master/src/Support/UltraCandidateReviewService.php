@@ -63,8 +63,13 @@ final class UltraCandidateReviewService
         if ($sourceId === '' || $this->db === null) {
             return [];
         }
-        $limit = max(1, min(8, $limit));
         $this->expireStaleRunning();
+        $limit = max(0, min(8, $limit));
+        if ($limit === 0) {
+            // A source whose agent does not run reviews must not be handed any: it
+            // would never report back, and the row would burn its attempts out.
+            return [];
+        }
         $this->enqueueQuarantined($sourceId, $limit);
         return $this->claimPending($sourceId, $limit);
     }
@@ -99,7 +104,7 @@ final class UltraCandidateReviewService
             $this->adjustObserverStrikes($observers, $passed);
             $payload = [
                 'passed' => $passed,
-                'note' => mb_substr(trim($note), 0, 240),
+                'note' => $this->clip(trim($note), 240),
                 'detail' => $detail,
                 'observers' => count($observers),
                 'completed_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
@@ -183,11 +188,23 @@ final class UltraCandidateReviewService
             [
                 'observer_hash' => $observerHash,
                 'client_id' => $clientId,
-                'device_id' => mb_substr($deviceId, 0, 191),
+                'device_id' => $this->clip($deviceId, 191),
                 'last_seen_at' => $now,
                 'created_at' => $now,
             ]
         );
+    }
+
+    /**
+     * mbstring is not built into every PHP the panel serves requests with, and the
+     * CLI that runs migrations is a different build than the FPM pool - an
+     * unguarded mb_substr() here is a fatal error on the source jobs endpoint.
+     */
+    private function clip(string $value, int $limit): string
+    {
+        return function_exists('mb_substr')
+            ? mb_substr($value, 0, $limit, 'UTF-8')
+            : substr($value, 0, $limit);
     }
 
     /** Queue one review per quarantined candidate of this source that has none open. */
@@ -236,7 +253,7 @@ final class UltraCandidateReviewService
                     'candidate_key_hash' => $hash,
                     'source_id' => (string) ($row['source_id'] ?? $sourceId),
                     'line_id' => max(0, (int) ($row['line_id'] ?? 0)),
-                    'protocol' => mb_substr((string) ($row['protocol'] ?? 'tcp+udp'), 0, 16),
+                    'protocol' => $this->clip((string) ($row['protocol'] ?? 'tcp+udp'), 16),
                     'state' => self::STATE_PENDING,
                     'requested_at' => $requestedAt,
                 ]

@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.09.01.1"
+AGENT_VERSION = "2026.09.13.1"
 MAX_INVENTORY_BYTES = 256 * 1024
 INVENTORY_SCHEMA_VERSION = 3
 MAX_INVENTORY_RECORDS = 1024
@@ -60,10 +60,13 @@ def signed_headers(
 ) -> dict[str, str]:
     issued = int(time.time()) if timestamp is None else int(timestamp)
     request_nonce = nonce or secrets.token_hex(16)
+    # The panel signs the request path without its query string, so a parameter
+    # added to the URL must not leak into the canonical request.
+    signed_path = path.split("?", 1)[0]
     canonical = "\n".join(
         [
             method.upper(),
-            path,
+            signed_path,
             source_id,
             str(issued),
             request_nonce,
@@ -990,7 +993,7 @@ class SourceAgent:
             self.source_id,
             self.source_secret,
             "GET",
-            "/api/ultra/source/jobs",
+            "/api/ultra/source/jobs?reviews_capacity=" + str(max(0, self.max_reviews_per_cycle)),
             None,
             self.timeout,
             attempts=3,

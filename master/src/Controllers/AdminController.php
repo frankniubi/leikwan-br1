@@ -3469,7 +3469,7 @@ final class AdminController extends BaseController
                     . '<td>' . (int) ($reviewRow['attempts'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($reviewRow['requested_at'] ?? '')) . '</td>'
                     . '<td>' . $this->escape((string) ($reviewRow['completed_at'] ?? '-')) . '</td>'
-                    . '<td>' . $this->escape(mb_substr((string) ($reviewRow['result_json'] ?? ''), 0, 160)) . '</td></tr>';
+                    . '<td>' . $this->escape((function_exists('mb_substr') ? mb_substr((string) ($reviewRow['result_json'] ?? ''), 0, 160) : substr((string) ($reviewRow['result_json'] ?? ''), 0, 160))) . '</td></tr>';
             }
             if ($reviewTableRows === '') {
                 $reviewTableRows = '<tr><td colspan="8" class="muted">No source review has run yet.</td></tr>';

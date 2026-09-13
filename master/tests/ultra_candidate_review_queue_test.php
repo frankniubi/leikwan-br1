@@ -216,5 +216,27 @@ namespace {
         'a review still inside its window must keep its claim'
     );
 
+// 4. A source that runs no reviews is handed none.
+    $db = new Database();
+    $db->reviews[] = [
+        'id' => 13,
+        'candidate_key_hash' => str_repeat('d', 64),
+        'source_id' => 'source-a',
+        'line_id' => 689,
+        'protocol' => 'tcp+udp',
+        'state' => UltraCandidateReviewService::STATE_PENDING,
+        'attempts' => 0,
+        'started_at' => null,
+        'requested_at' => gmdate('Y-m-d H:i:s', $now - 60),
+    ];
+    $service = new UltraCandidateReviewService($db, $clock);
+    $claimed = $service->requestForSource('source-a', 0);
+    assertReviewQueue($claimed === [], 'a source that runs no reviews must not be handed one');
+    assertReviewQueue(
+        $db->reviews[0]['state'] === UltraCandidateReviewService::STATE_PENDING
+            && (int) $db->reviews[0]['attempts'] === 0,
+        'a review nobody was handed must keep its attempts'
+    );
+
     echo "ultra_candidate_review_queue_test: OK" . PHP_EOL;
 }
