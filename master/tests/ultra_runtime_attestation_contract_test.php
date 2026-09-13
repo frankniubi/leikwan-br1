@@ -758,9 +758,19 @@ namespace {
             continue;
         }
         $fingerprint = (string) ($attestation['fingerprint'] ?? '');
-        if (preg_match('/^' . preg_quote($version, '/') . '\.[0-9a-f]{7,40}$/', $fingerprint) !== 1) {
-            // A block carried over from an older release cannot be checked here.
+        if (($entry['sha256'] ?? '') === '') {
+            // A pointer entry (for example the retired-runtime allowance) has no
+            // artifact of its own; only its shape can be checked.
             continue;
+        }
+        if (preg_match('/^' . preg_quote($version, '/') . '\.[0-9a-f]{7,40}$/', $fingerprint) !== 1) {
+            // A block carried over from an older release must not be left in
+            // place: enforcement would compare a client running the published
+            // bytes against a hash from a different build and refuse it.
+            assertUltraRuntimeAttestation(
+                false,
+                $entryKey . ': a stale attestation block must be removed or republished'
+            );
         }
         $currentRuntimeEntries++;
         assertUltraRuntimeAttestation(
