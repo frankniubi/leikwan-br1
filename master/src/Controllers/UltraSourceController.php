@@ -29,7 +29,13 @@ final class UltraSourceController extends BaseController
         // A quarantined line can have been condemned by a client whose own
         // network is broken. The source host is the only vantage point that can
         // disprove that, so it is handed the review alongside its material work.
-        $reviews = $this->reviews->requestForSource($sourceId);
+        // An agent tells us how many reviews it will actually run this cycle.
+        // Ones that do not ask for any must not be handed one: it would sit in
+        // "running" until it went stale and burn an attempt for nothing.
+        $reviews = $this->reviews->requestForSource(
+            $sourceId,
+            max(0, min(8, (int) $request->input('reviews_capacity', 0)))
+        );
         $this->inventory->markSourceContact($sourceId, 'jobs', [
             'requested' => count($lineIds),
             'reviews' => count($reviews),
