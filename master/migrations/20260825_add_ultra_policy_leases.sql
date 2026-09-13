@@ -15,7 +15,14 @@ CREATE TABLE IF NOT EXISTS ultra_client_leases (
     updated_at DATETIME NOT NULL,
     UNIQUE KEY uniq_ultra_lease_nonce (client_id, device_hash, forward_id, nonce_hash),
     INDEX idx_ultra_lease_expiry (forward_id, expires_at),
-    INDEX idx_ultra_lease_generation (policy_generation, revoked_at)
+    INDEX idx_ultra_lease_generation (policy_generation, revoked_at),
+    -- Lookup indexes for the hot lease paths (see
+    -- 20260913_add_ultra_lease_lookup_indexes.sql). Kept here as well so a
+    -- fresh install never has to survive a full-scan window before the later
+    -- migration lands.
+    INDEX idx_ultra_lease_client_live (client_id, expires_at, revoked_at, device_hash),
+    INDEX idx_ultra_lease_client_device_expiry (client_id, device_hash, expires_at),
+    INDEX idx_ultra_lease_client_device_issued (client_id, device_hash, issued_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ultra_usage_events (
