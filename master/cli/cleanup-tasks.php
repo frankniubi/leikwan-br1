@@ -36,7 +36,18 @@ for ($index = 1; $index < $argc; $index += 2) {
 }
 
 $retentionDays = max(1, (int) ($args['retention-days'] ?? 7));
-$ultraLeaseRetentionDays = max(1, (int) ($args['ultra-lease-retention-days'] ?? $retentionDays));
+// Ultra grant rows are one-shot nonces that die with the five minute policy
+// TTL. The only reasons to keep one are the replay grace window (300 s) and the
+// abuse rate windows (60 s), so this is an hours-scale table, not a days-scale
+// one. Inheriting --retention-days (7d) let it reach 364k rows / 328 MB, of
+// which 198 were live: every lease issue ended up full-scanning the table
+// (0.20-1.23 s per query, 1.1M rows/s, 15.9k disk page reads/s) because no
+// index could answer client_id + time from the index alone.
+$ultraLeaseRetentionHours = max(1, (int) ($args['ultra-lease-retention-hours'] ?? 6));
+if (isset($args['ultra-lease-retention-days'])) {
+    // Legacy knob, still honoured as days for any operator runbook that passes it.
+    $ultraLeaseRetentionHours = max(1, (int) $args['ultra-lease-retention-days'] * 24);
+}
 // Refusals are an audit trail an operator reads after the fact, so they default
 // to 30 days rather than the operational window.
 $ultraRefusalRetentionDays = max(1, (int) ($args['ultra-refusal-retention-days'] ?? 30));
@@ -49,12 +60,12 @@ $db = $app->db();
 
 $now = gmdate('Y-m-d H:i:s');
 $retentionCutoff = gmdate('Y-m-d H:i:s', time() - $retentionDays * 86400);
-$ultraLeaseCutoff = gmdate('Y-m-d H:i:s', time() - $ultraLeaseRetentionDays * 86400);
+$ultraLeaseCutoff = gmdate('Y-m-d H:i:s', time() - $ultraLeaseRetentionHours * 3600);
 $ultraRefusalCutoff = gmdate('Y-m-d H:i:s', time() - $ultraRefusalRetentionDays * 86400);
 $offlineCutoff = gmdate('Y-m-d H:i:s', time() - $offlineMinutes * 60);
 $leaseCutoff = gmdate('Y-m-d H:i:s', time() - $leaseTimeoutMinutes * 60);
 
-echo "[cleanup-tasks] " . ($dryRun ? '(DRY RUN) ' : '') . "retention={$retentionDays}d ultra-lease-retention={$ultraLeaseRetentionDays}d offline={$offlineMinutes}m lease-timeout={$leaseTimeoutMinutes}m\n";
+echo "[cleanup-tasks] " . ($dryRun ? '(DRY RUN) ' : '') . "retention={$retentionDays}d ultra-lease-retention={$ultraLeaseRetentionHours}h offline={$offlineMinutes}m lease-timeout={$leaseTimeoutMinutes}m\n";
 
 try {
     // 1. Delete completed/failed provision_tasks older than retention period
@@ -366,9 +377,9 @@ try {
             );
             $reclaimedUltraLeases += $deletedUltraLeases;
         } while ($deletedUltraLeases === 10000);
-        echo "  reclaimed {$reclaimedUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
+        echo "  reclaimed {$reclaimedUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionHours}h)\n";
     } else {
-        echo "  would reclaim {$countUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionDays}d)\n";
+        echo "  would reclaim {$countUltraLeases} expired unrevoked Ultra lease rows (>{$ultraLeaseRetentionHours}h)\n";
     }
 
     // 11. Trim the Ultra lease refusal audit. The table only exists to explain a

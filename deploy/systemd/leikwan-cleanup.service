@@ -5,4 +5,7 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=/www/wwwroot/v3.leikwanhost.com/leikwan-v3/master
-ExecStart=/usr/bin/php /www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/cli/cleanup-tasks.php --retention-days 7 --offline-minutes 60 --lease-timeout 10
+# --ultra-lease-retention-hours 6: Ultra grant rows are five minute nonces;
+# keeping days of them let ultra_client_leases reach 364k rows / 328 MB and
+# turned every lease issue into a full table scan on the production panel.
+ExecStart=/usr/bin/php /www/wwwroot/v3.leikwanhost.com/leikwan-v3/master/cli/cleanup-tasks.php --retention-days 7 --ultra-lease-retention-hours 6 --offline-minutes 60 --lease-timeout 10
