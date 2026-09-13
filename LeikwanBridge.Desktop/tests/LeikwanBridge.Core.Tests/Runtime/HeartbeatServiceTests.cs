@@ -11,6 +11,44 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class HeartbeatServiceTests
 {
     [Fact]
+    public async Task SendHeartbeatAsync_ReportsRuntimeAttestationWhileTheForwardIsIdle()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-42.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 42,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 0,
+          "bytes_out": 0,
+          "runtime_attestation": {
+            "fingerprint": "2026.09.13.3.452c8fe8",
+            "self_sha256": "{{new string('b', 64)}}"
+          }
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var service = new HeartbeatService(api, new StateManager(tempDir.Path));
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var usage = Assert.Single(document.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Equal(42, usage.GetProperty("forward_id").GetInt32());
+        Assert.Equal(
+            "2026.09.13.3.452c8fe8",
+            usage.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+
+        // The identity is reported once per change and at a slow cadence, not on
+        // every heartbeat.
+        await service.SendHeartbeatAsync();
+        using var second = JsonDocument.Parse(server.LastRequestBody);
+        Assert.Empty(second.RootElement.GetProperty("ultra_usage").EnumerateArray());
+    }
+
+    [Fact]
     public async Task SendHeartbeatAsync_ReportsPortableWindowsMptcpSupport()
     {
         using var tempDir = new TempStateDirectory();
