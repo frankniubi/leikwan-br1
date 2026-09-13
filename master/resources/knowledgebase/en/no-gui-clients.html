@@ -1,0 +1,51 @@
+<h2>What you will accomplish</h2>
+<p>You will run the LeiKwan Bridge client on a Windows or macOS host that has no desktop session, register it so it starts by itself, and confirm that the machine's forwards are running and visible in the panel.</p>
+
+<h2>Before you begin</h2>
+<ul>
+  <li>Have the panel <strong>Client ID</strong> and <strong>Agent Token</strong> for this machine ready; both are shown on the client card in <strong>Tenant &rarr; Clients</strong>.</li>
+  <li>macOS: install the app first (version 1.0.33 or newer), then run the installer with <code>sudo</code>.</li>
+  <li>Windows: download the no-GUI package and run the installer from an <strong>elevated</strong> PowerShell.</li>
+  <li>The windowless client is the same client as the desktop app: same tunnel, same lease handling, same runtime attestation. Only the interface is missing, so a machine never runs both at once.</li>
+  <li>Treat the Agent Token as a secret. The installer stores it in a root or SYSTEM owned file; never paste it into chat, tickets, or shared logs.</li>
+</ul>
+
+<h2>Steps</h2>
+<pre class="mermaid">flowchart TD
+accTitle: Windowless client installation
+accDescr: Pick the operating system, register the windowless client, then confirm the forwards are running in the panel.
+ A[Choose host] --&gt; B{Operating system}
+ B -- macOS --&gt; C[Install the app, then the LaunchDaemon]
+ B -- Windows --&gt; D[Extract the package, register the service]
+ C --&gt; E[Confirm the status file reports Connected]
+ D --&gt; E
+ E --&gt; F[Confirm forwards show Running in the panel]</pre>
+<p>The diagram shows the only two decisions: which operating system the host runs, and whether the panel confirms the forwards afterwards.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view where the Windows and macOS download links and the client credentials are shown">
+  <figcaption>Demo screenshot. The same page carries the Client ID, the Agent Token, and the no-GUI download links used below.</figcaption>
+</figure>
+<ol>
+  <li><strong>Pick the host.</strong> Use a machine that stays powered on; it needs no monitor, no signed-in desktop user, and no tray icon.</li>
+  <li><strong>macOS:</strong> install <strong>LeiKwan Bridge</strong> into <strong>/Applications</strong> from the current disk image.</li>
+  <li>Download the LaunchDaemon installer (it registers <code>com.leikwan.bridge.headless</code>) and run it with the client identity: <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code> followed by <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>.</li>
+  <li><strong>Windows:</strong> download <strong>leikwan-bridge-headless-win-x64.zip</strong>, extract it, and from an elevated PowerShell in that folder run <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>.</li>
+  <li><strong>Confirm the registration.</strong> macOS: <code>sudo sh install-macos-headless.sh --status</code>. Windows: <code>sc query LeikwanBridgeHeadless</code>.</li>
+  <li><strong>Read the status file.</strong> macOS: <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>. Windows: <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>.</li>
+  <li>Confirm the document reports <code>"Connected": true</code> and every forward you expect reports <code>"Running": true</code>.</li>
+  <li><strong>Optional self check.</strong> Run the same program with the client identity plus <code>--headless --once</code>: it connects, waits, prints the same status document, and exits with code 0 when at least one forward is running.</li>
+  <li><strong>To remove it:</strong> macOS <code>sudo sh uninstall-macos-headless.sh</code>, Windows <code>.\uninstall-windows-headless.ps1</code>. Add <code>--purge</code> or <code>-Purge</code> to delete the stored token as well.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
+
+<h2>If it did not work</h2>
+<p><strong>Stop before sharing the Agent Token or pasting installer commands into public places.</strong> Check the token and the client id first: a wrong token reports <code>401 Unauthorized</code> in the log and never starts a forward. On macOS confirm that <strong>/Applications</strong> holds version 1.0.33 or newer and that the plist exists under <strong>/Library/LaunchDaemons</strong>. On Windows confirm the command ran elevated and that the token file is readable by <strong>SYSTEM</strong>. If the panel shows the machine online but a forward stays stopped, compare it with the panel before changing anything: the panel owns the forward list and the client re-applies it every few seconds.</p>
+
+<h2>Related guides</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
+</ul>

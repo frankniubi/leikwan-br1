@@ -790,7 +790,46 @@ abstract class BaseController
                 $linuxDescription,
                 'linux'
             )
+            . $this->renderHeadlessClientDownloadPanel($client)
             . '</section>';
+    }
+
+    /**
+     * No-GUI clients: the same client without a desktop session. The panel links
+     * the payload, the installer, and the knowledgebase guide that documents the
+     * exact commands, so an operator never has to guess a flag.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    protected function renderHeadlessClientDownloadPanel(?array $client = null): string
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        $hasClient = $clientId > 0 && $agentToken !== '';
+        $zipUrl = $this->windowsHeadlessClientUrl();
+        $guideUrl = '/knowledgebase?thread=no-gui-clients';
+        $guideLink = '<a class="button secondary" href="' . $this->escape($guideUrl) . '">使用说明 / Install guide</a>';
+        $description = 'Windows 与 macOS 都可以没有桌面会话地运行：macOS 注册为 launchd 守护进程，Windows 注册为系统服务。与图形客户端同一套内核、同一份运行时指纹与更新校验，令牌保存在仅服务可读的文件里。'
+            . ($hasClient
+                ? ' 下面的命令已带好当前客户端的身份。'
+                : ' 先在下方创建客户端，再复制带身份的安装命令。');
+
+        $actions = [
+            $this->renderCommandLink('下载 Windows 无界面版', $zipUrl),
+            $this->renderCopyButton('复制下载链接', $zipUrl),
+            $guideLink,
+        ];
+        $command = $hasClient
+            ? $this->windowsHeadlessInstallCommand($client)
+            : $zipUrl;
+
+        return $this->renderCommandPanel(
+            $this->clientAppReleaseLabel('No-GUI Client (Windows / macOS)', 'windows_headless_client'),
+            $command,
+            $actions,
+            $description,
+            'helper'
+        );
     }
 
     protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string

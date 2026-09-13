@@ -1,5 +1,10 @@
 # No-GUI clients (macOS and Windows)
 
+> The same guide is published in the panel knowledge base as
+> **Run the Client Without a GUI** (`/knowledgebase?thread=no-gui-clients`, in
+> English, 简体中文 and 繁體中文), and the client app download centre links it
+> next to the Windows payload and the macOS installer.
+
 The windowless client keeps this machine's panel forwards running with no
 window, no tray and no desktop session. It is **the same client**: same managed
 payload, same Core services, same lease/attestation code, same update pinning.

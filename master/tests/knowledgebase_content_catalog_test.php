@@ -258,10 +258,26 @@ $expectedTopics = [
             'excerpt' => '用淺白語言解釋指南中出現的產品和網路術語。',
         ],
     ],
+    'no-gui-clients' => [
+        'is_pinned' => 0,
+        'sort_order' => 90,
+        'en' => [
+            'title' => 'Run the Client Without a GUI',
+            'excerpt' => 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.',
+        ],
+        'zh-Hans' => [
+            'title' => '无界面运行客户端',
+            'excerpt' => '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。',
+        ],
+        'zh-TW' => [
+            'title' => '無介面執行用戶端',
+            'excerpt' => '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。',
+        ],
+    ],
 ];
 
 assertCatalogSame(array_keys($expectedTopics), array_keys($topics), 'topic keys and order must be exact');
-assertCatalogSame(8, count($topics), 'catalog must contain exactly eight topics');
+assertCatalogSame(9, count($topics), 'catalog must contain exactly nine topics');
 
 $requiredArticleText = [
     'getting-started-five-minute-overview' => [
@@ -373,6 +389,22 @@ $requiredArticleText = [
         'Running',
         'Application verification',
     ],
+    'no-gui-clients' => [
+        'no desktop session',
+        'Client ID',
+        'Agent Token',
+        'elevated',
+        'install-macos-headless.sh',
+        'install-windows-headless.ps1',
+        'com.leikwan.bridge.headless',
+        'LeikwanBridgeHeadless',
+        'headless-status.json',
+        '--headless --once',
+        '401 Unauthorized',
+        '/Library/LaunchDaemons',
+        'uninstall-macos-headless.sh',
+        'uninstall-windows-headless.ps1',
+    ],
 ];
 
 $forbiddenFirstForwardText = [
@@ -390,6 +422,7 @@ $requiredLocalizedArticleText = [
         'bond-sidecar-setup' => ['Sidecar', '目标侧的中间传输组件', '不是目标应用', '已发布的线路约定', 'Target Endpoints', 'Create Transport Endpoint', 'Transport Listen Port', 'Save Transport Endpoint', 'Last Heartbeat', '后端监听服务', '仅有心跳不能证明后端健康', '令牌', '密码', '命令', '密钥', '会话', '线路材料'],
         'troubleshooting-common-mistakes' => ['最近同步', '地址是否正确', '端口已放行', '转发和线路', '从目标服务自己的主机测试目标服务', 'View Diagnostics', '支持', '随机修改拓扑', '实际应用协议'],
         'glossary' => ['有效套餐', '转发', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', '客户端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '应用验证', '不是带宽聚合', '不保证速度翻倍'],
+        'no-gui-clients' => ['无界面版', 'Client ID', 'Agent Token', '管理员身份', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '开机'],
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
@@ -400,6 +433,7 @@ $requiredLocalizedArticleText = [
         'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', 'Sidecar 主機', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '代理版本', '最後狀態', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
         'troubleshooting-common-mistakes' => ['最近同步', '位址是否正確', '連接埠已開放', '轉發和線路', '從目標服務所在主機測試目標服務', '查看診斷', '支援', '隨意變更拓撲', '實際應用協定'],
         'glossary' => ['有效方案', '轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '用戶端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '應用程式驗證', '不是頻寬聚合', '不保證速度加倍'],
+        'no-gui-clients' => ['無介面版', 'Client ID', 'Agent Token', '系統管理員身分', 'install-macos-headless.sh', 'install-windows-headless.ps1', 'com.leikwan.bridge.headless', 'LeikwanBridgeHeadless', 'headless-status.json', '--headless --once', '401 Unauthorized', '/Library/LaunchDaemons', 'uninstall-macos-headless.sh', 'uninstall-windows-headless.ps1', '開機'],
     ],
 ];
 $forbiddenLocalizedArticleText = [
@@ -425,6 +459,7 @@ $localizedDiagramRequirements = [
         'connection-modes-single-race-bond' => ['连接模式选择路径', '需要最简单的稳定路径时', '你需要什么结果', '最简单的稳定路径吗', '选择 Single', '需要非聚合容错吗', '选择 Race', '方案明确支持 Bond 吗', '选择 Bond 并核对要求', '咨询管理员', '是', '否'],
         'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 线路', '客户端经过托管的 Slave 路径', '客户端', '托管 Slave 路径', 'Sidecar', '目标服务'],
         'troubleshooting-common-mistakes' => ['从症状开始排查连接', '请求失败后依次检查', '应用请求失败', '最近同步正常吗', '恢复客户端同步', '地址正确吗', '使用回环或可达客户端主机', '端口已放行吗', '只放行所需端口', '转发和线路健康吗', '打开 View Diagnostics', '从目标主机测试服务', '重试应用', '整理诊断并联系支持', '是', '否'],
+        'no-gui-clients' => ['无界面客户端安装流程', '选择操作系统', '选择主机', '操作系统', '先装应用', '解压安装包', '确认状态文件显示 Connected', '在面板确认转发显示 Running'],
     ],
     'zh-TW' => [
         'getting-started-five-minute-overview' => ['五分鐘首次連線流程', '從有效方案開始', '有效方案', '建立一條轉發', '安裝並登入用戶端', '測試分配的本機連接埠', '連線成功嗎', '首次設定完成', '開始排查問題', '是', '否'],
@@ -434,6 +469,7 @@ $localizedDiagramRequirements = [
         'connection-modes-single-race-bond' => ['連線模式選擇流程', '需要最簡單的穩定路徑時', '你需要什麼結果', '最簡單的穩定路徑嗎', '選擇 Single', '需要非聚合容錯嗎', '選擇 Race', '方案明確支援 Bond 嗎', '選擇 Bond 並核對要求', '詢問管理員', '是', '否'],
         'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 線路', '用戶端經過受管理的 Slave 路徑', '用戶端', '受管理的 Slave 路徑', 'Sidecar', '目標服務'],
         'troubleshooting-common-mistakes' => ['從症狀開始排查連線', '要求失敗後依序檢查', '應用程式要求失敗', '最近同步正常嗎', '恢復用戶端同步', '位址正確嗎', '使用迴送位址或可連到的用戶端主機', '連接埠已開放嗎', '只開放必要連接埠', '轉發和線路健康嗎', '開啟查看診斷', '從目標主機測試服務', '重試應用程式', '整理診斷後聯絡支援', '是', '否'],
+        'no-gui-clients' => ['無介面用戶端安裝流程', '選擇作業系統', '選擇主機', '作業系統', '先裝應用程式', '解壓縮安裝包', '確認狀態檔顯示 Connected', '在面板確認轉發顯示 Running'],
     ],
 ];
 $allTopicKeys = array_keys($expectedTopics);
@@ -568,13 +604,13 @@ foreach ($topics as $topicKey => $topic) {
     }
 }
 
-assertCatalogSame(24, count($topics) * count($expectedLocales), 'catalog must contain 24 localized articles');
-assertCatalogSame(21, $totalDiagrams, 'catalog must preserve exactly 21 Mermaid diagrams across 24 articles');
+assertCatalogSame(27, count($topics) * count($expectedLocales), 'catalog must contain 27 localized articles');
+assertCatalogSame(24, $totalDiagrams, 'catalog must preserve exactly 24 Mermaid diagrams across 27 articles');
 foreach ($expectedLocales as $locale) {
-    assertCatalogSame(7, count(array_filter(
+    assertCatalogSame(8, count(array_filter(
         $diagramGraphs,
         static fn (array $localizedGraphs): bool => isset($localizedGraphs[$locale])
-    )), 'catalog must preserve seven Mermaid diagrams for ' . $locale);
+    )), 'catalog must preserve eight Mermaid diagrams for ' . $locale);
     $glossaryBody = file_get_contents(__DIR__ . '/../resources/knowledgebase/' . $locale . '/glossary.html');
     assertCatalog(is_string($glossaryBody), $locale . ' glossary body must be readable');
     assertCatalogSame(0, count(MermaidSourcePolicy::extract($glossaryBody)), $locale . ' glossary must not contain a Mermaid diagram');
@@ -596,7 +632,7 @@ $generator = file_get_contents($generatorPath);
 assertCatalog(is_string($generator) && trim($generator) !== '', 'knowledgebase seed generator is empty');
 foreach ([
     "['en', 'zh-Hans', 'zh-TW']",
-    'exactly 8 topics',
+    'exactly 9 topics',
     'all required locale metadata and body files',
     '--output=',
     '20260729_seed_multilingual_knowledgebase.sql',

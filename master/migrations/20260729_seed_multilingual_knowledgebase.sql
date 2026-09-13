@@ -118,6 +118,17 @@ WHERE NOT EXISTS (
     WHERE existing_topic.topic_key = 'glossary'
 );
 
+INSERT INTO knowledgebase_topics (
+    topic_key, is_pinned, sort_order, created_at, updated_at
+)
+SELECT
+    'no-gui-clients', 0, 90, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM knowledgebase_topics AS existing_topic
+    WHERE existing_topic.topic_key = 'no-gui-clients'
+);
+
 INSERT INTO knowledgebase_articles (
     topic_id, locale, author_user_id, title, excerpt, body_html,
     status, published_at, created_at, updated_at
@@ -197,6 +208,7 @@ SELECT
   <li>Have your panel <strong>Master URL</strong>, account <strong>Email</strong>, and <strong>Password</strong> ready for Windows.</li>
   <li>For Android, use an arm64 device running Android 8.0+ and be ready to approve the VPN request.</li>
   <li>For Linux, use a machine with systemd, Python 3, network access, and root-equivalent permission.</li>
+  <li><strong>The Linux arm64 single-file installer supports Debian 11, 12, and 13 only.</strong> Use the regular Linux install command for amd64 or another supported flow.</li>
   <li>Treat credentials and copied commands as secrets. A Linux installer command contains a bearer agent token.</li>
 </ul>
 
@@ -227,6 +239,7 @@ E --&gt; F</pre>
   <li>Select one of the supported LeiGod services offered by the app. Use only a service that the app lets you select.</li>
   <li>Watch the visible state move from <strong>Ready to connect</strong> to <strong>Connecting...</strong> and then <strong>Connected</strong>.</li>
   <li><strong>Linux:</strong> Open <strong>Tenant → Clients</strong>, expand <strong>Linux Install</strong>, and select <strong>Copy Install Command</strong>.</li>
+  <li>For <strong>Linux ARM64 Installer</strong>, confirm that the host is arm64/aarch64 and runs Debian 11, 12, or 13.</li>
   <li>Run the copied command once with root-equivalent permission. Do not paste it into chat, tickets, logs, or shared shell history.</li>
   <li>Confirm the installer prints <code>installed leikwan-client-agent</code>.</li>
   <li>Return to the panel and confirm a recent sync. On the Linux host, you may also confirm that <code>config_pull_state.json</code> reports <code>status</code> as <code>ok</code>.</li>
@@ -655,6 +668,73 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
+    topic.id, 'en', NULL, 'Run the Client Without a GUI', 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.', '<h2>What you will accomplish</h2>
+<p>You will run the LeiKwan Bridge client on a Windows or macOS host that has no desktop session, register it so it starts by itself, and confirm that the machine''s forwards are running and visible in the panel.</p>
+
+<h2>Before you begin</h2>
+<ul>
+  <li>Have the panel <strong>Client ID</strong> and <strong>Agent Token</strong> for this machine ready; both are shown on the client card in <strong>Tenant &rarr; Clients</strong>.</li>
+  <li>macOS: install the app first (version 1.0.33 or newer), then run the installer with <code>sudo</code>.</li>
+  <li>Windows: download the no-GUI package and run the installer from an <strong>elevated</strong> PowerShell.</li>
+  <li>The windowless client is the same client as the desktop app: same tunnel, same lease handling, same runtime attestation. Only the interface is missing, so a machine never runs both at once.</li>
+  <li>Treat the Agent Token as a secret. The installer stores it in a root or SYSTEM owned file; never paste it into chat, tickets, or shared logs.</li>
+</ul>
+
+<h2>Steps</h2>
+<pre class="mermaid">flowchart TD
+accTitle: Windowless client installation
+accDescr: Pick the operating system, register the windowless client, then confirm the forwards are running in the panel.
+ A[Choose host] --&gt; B{Operating system}
+ B -- macOS --&gt; C[Install the app, then the LaunchDaemon]
+ B -- Windows --&gt; D[Extract the package, register the service]
+ C --&gt; E[Confirm the status file reports Connected]
+ D --&gt; E
+ E --&gt; F[Confirm forwards show Running in the panel]</pre>
+<p>The diagram shows the only two decisions: which operating system the host runs, and whether the panel confirms the forwards afterwards.</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view where the Windows and macOS download links and the client credentials are shown">
+  <figcaption>Demo screenshot. The same page carries the Client ID, the Agent Token, and the no-GUI download links used below.</figcaption>
+</figure>
+<ol>
+  <li><strong>Pick the host.</strong> Use a machine that stays powered on; it needs no monitor, no signed-in desktop user, and no tray icon.</li>
+  <li><strong>macOS:</strong> install <strong>LeiKwan Bridge</strong> into <strong>/Applications</strong> from the current disk image.</li>
+  <li>Download the LaunchDaemon installer (it registers <code>com.leikwan.bridge.headless</code>) and run it with the client identity: <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code> followed by <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>.</li>
+  <li><strong>Windows:</strong> download <strong>leikwan-bridge-headless-win-x64.zip</strong>, extract it, and from an elevated PowerShell in that folder run <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>.</li>
+  <li><strong>Confirm the registration.</strong> macOS: <code>sudo sh install-macos-headless.sh --status</code>. Windows: <code>sc query LeikwanBridgeHeadless</code>.</li>
+  <li><strong>Read the status file.</strong> macOS: <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>. Windows: <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>.</li>
+  <li>Confirm the document reports <code>"Connected": true</code> and every forward you expect reports <code>"Running": true</code>.</li>
+  <li><strong>Optional self check.</strong> Run the same program with the client identity plus <code>--headless --once</code>: it connects, waits, prints the same status document, and exits with code 0 when at least one forward is running.</li>
+  <li><strong>To remove it:</strong> macOS <code>sudo sh uninstall-macos-headless.sh</code>, Windows <code>.\uninstall-windows-headless.ps1</code>. Add <code>--purge</code> or <code>-Purge</code> to delete the stored token as well.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
+
+<h2>If it did not work</h2>
+<p><strong>Stop before sharing the Agent Token or pasting installer commands into public places.</strong> Check the token and the client id first: a wrong token reports <code>401 Unauthorized</code> in the log and never starts a forward. On macOS confirm that <strong>/Applications</strong> holds version 1.0.33 or newer and that the plist exists under <strong>/Library/LaunchDaemons</strong>. On Windows confirm the command ran elevated and that the token file is readable by <strong>SYSTEM</strong>. If the panel shows the machine online but a forward stays stopped, compare it with the panel before changing anything: the panel owns the forward list and the client re-applies it every few seconds.</p>
+
+<h2>Related guides</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
+</ul>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'no-gui-clients'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'en'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
     topic.id, 'zh-Hans', NULL, '五分钟完成首次连接', '按最短路径完成套餐、转发、客户端安装和连接验证。', '<h2>你将完成什么</h2>
 <p>你将从已生效的套餐或服务出发，创建一条转发，安装并登录客户端，再用真实应用协议完成首次连接验证。保存配置只是起点，最终目标是应用收到预期响应。</p>
 
@@ -729,6 +809,7 @@ SELECT
   <li>Windows 登录需要面板提供的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
   <li>Android 需要 arm64、Android 8.0+ 设备，并允许系统建立 VPN 连接。</li>
   <li>Linux 主机需要 systemd、Python 3、网络访问能力和相当于 root 的权限。</li>
+  <li><strong>Linux ARM64 单文件安装包仅支持 Debian 11、12、13。</strong>其他发行版或 amd64 主机请使用对应的 Linux 安装命令。</li>
   <li>登录信息和复制的命令都属于秘密；Linux 安装命令包含可直接用于代理身份验证的令牌。</li>
 </ul>
 
@@ -756,6 +837,7 @@ E --&gt; F</pre>
   <li>同意 Android 的 VPN 授权，只选择应用列出的受支持 LeiGod 服务。</li>
   <li>观察状态从 <strong>Ready to connect</strong> 经过 <strong>Connecting...</strong> 变为 <strong>Connected</strong>。不要据此承诺 Android 支持 Race 或 MPTCP。</li>
   <li><strong>Linux：</strong>打开 <strong>Tenant → Clients</strong>，展开 <strong>Linux Install</strong>，选择 <strong>Copy Install Command</strong>。</li>
+  <li>如果使用 <strong>Linux ARM64 Installer</strong>，请确认主机是 arm64/aarch64，并且操作系统为 Debian 11、12 或 13。</li>
   <li>以相当于 root 的权限运行一次复制的命令；不要把它粘贴到聊天、工单、日志或共享历史记录。</li>
   <li>确认安装器输出 <code>installed leikwan-client-agent</code>。</li>
   <li>回到面板查看最近同步；也可在主机上确认 <code>config_pull_state.json</code> 的 <code>status</code> 为 <code>ok</code>。</li>
@@ -1183,6 +1265,73 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
+    topic.id, 'zh-Hans', NULL, '无界面运行客户端', '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。', '<h2>你将完成什么</h2>
+<p>你会在没有桌面会话的 Windows 或 macOS 主机上运行 LeiKwan Bridge 客户端，让它开机自启，并确认这台机器的转发已经在运行且面板可见。</p>
+
+<h2>开始前准备</h2>
+<ul>
+  <li>准备好这台机器对应的面板 <strong>Client ID</strong> 与 <strong>Agent Token</strong>，它们显示在 <strong>租户 → 客户端</strong> 的客户端卡片上。</li>
+  <li>macOS：先安装应用（1.0.33 或更新版本），再用 <code>sudo</code> 运行安装脚本。</li>
+  <li>Windows：下载无界面版压缩包，并以<strong>管理员身份</strong>打开 PowerShell 运行安装脚本。</li>
+  <li>无界面版与图形客户端是同一个客户端：同一条隧道、同一套租约处理、同一份运行时指纹，只是没有界面，因此同一台机器不要同时运行两者。</li>
+  <li>Agent Token 属于机密。安装脚本会把它写进仅 root 或 SYSTEM 可读的文件；不要粘贴到聊天、工单或共享日志里。</li>
+</ul>
+
+<h2>操作步骤</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 无界面客户端安装流程
+accDescr: 选择操作系统，注册无界面客户端，然后在面板确认转发处于运行状态。
+ A[选择主机] --&gt; B{操作系统}
+ B -- macOS --&gt; C[先装应用，再装 LaunchDaemon]
+ B -- Windows --&gt; D[解压安装包，注册系统服务]
+ C --&gt; E[确认状态文件显示 Connected]
+ D --&gt; E
+ E --&gt; F[在面板确认转发显示 Running]</pre>
+<p>这张图只包含两个判断：主机运行哪个系统，以及面板随后是否确认转发已经运行。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="客户端安装页面，显示 Windows 与 macOS 下载入口以及客户端凭据">
+  <figcaption>演示截图。同一个页面提供 Client ID、Agent Token 以及下面用到的无界面版下载入口。</figcaption>
+</figure>
+<ol>
+  <li><strong>选择主机。</strong>用一台长期开机的机器，不需要显示器、不需要登录桌面用户、也不会有托盘图标。</li>
+  <li><strong>macOS：</strong>从当前磁盘映像把 <strong>LeiKwan Bridge</strong> 安装到 <strong>/Applications</strong>。</li>
+  <li>下载 LaunchDaemon 安装脚本（它会注册 <code>com.leikwan.bridge.headless</code>）并带上客户端身份运行：先执行 <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code>，再执行 <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>。</li>
+  <li><strong>Windows：</strong>下载 <strong>leikwan-bridge-headless-win-x64.zip</strong> 并解压，在该目录以管理员身份运行 <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>。</li>
+  <li><strong>确认已注册。</strong>macOS 执行 <code>sudo sh install-macos-headless.sh --status</code>；Windows 执行 <code>sc query LeikwanBridgeHeadless</code>。</li>
+  <li><strong>查看状态文件。</strong>macOS 为 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 为 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
+  <li>确认文件里 <code>"Connected": true</code>，并且你期望的每条转发都是 <code>"Running": true</code>。</li>
+  <li><strong>可选自检。</strong>用同一个程序和同一客户端身份再加上 <code>--headless --once</code> 运行：它会连接、等待、打印同一份状态文档，并在至少一条转发运行时以退出码 0 结束。</li>
+  <li><strong>需要卸载时：</strong>macOS 执行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 执行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一并删除已保存的令牌。</li>
+</ol>
+
+<h2>如何确认成功</h2>
+<p>服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
+
+<h2>如果没有成功</h2>
+<p><strong>先停止对外分享 Agent Token，也不要把安装命令粘贴到公开位置。</strong>先核对令牌与 Client ID：令牌错误时日志会显示 <code>401 Unauthorized</code>，并且不会启动任何转发。macOS 请确认 <strong>/Applications</strong> 里的应用是 1.0.33 或更新版本，且 plist 已写入 <strong>/Library/LaunchDaemons</strong>。Windows 请确认是在管理员权限下执行，且令牌文件对 <strong>SYSTEM</strong> 可读。如果面板显示机器在线但某条转发仍处于停止状态，先与面板上的状态对照再动手：转发列表以面板为准，客户端每隔几秒就会重新应用一次。</p>
+
+<h2>相关指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">连接与验证</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">常见问题排查</a></li>
+</ul>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'no-gui-clients'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'zh-Hans'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
     topic.id, 'zh-TW', NULL, '五分鐘完成首次連線', '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。', '<h2>你將完成什麼</h2>
 <p>你會從有效方案開始，完成一條轉發，安裝用戶端，並用真實應用程式確認首次連線。重點不只是把設定儲存起來，而是透過系統分配的本機連接埠送出要求，收到預期回應。</p>
 
@@ -1257,6 +1406,7 @@ SELECT
   <li>Windows 登入需要 App 顯示的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
   <li>Android 需要 arm64、Android 8.0+ 裝置，並準備允許系統建立 VPN 連線。</li>
   <li>Linux 主機需要 systemd、Python 3、可用的網路，以及等同 root 的權限。</li>
+  <li><strong>Linux ARM64 單檔安裝包僅支援 Debian 11、12、13。</strong>其他發行版或 amd64 主機請使用對應的 Linux 安裝指令。</li>
   <li>登入資訊和複製的指令都屬於機密；Linux 安裝指令內含用於 Agent 身分驗證權杖。</li>
 </ul>
 
@@ -1284,6 +1434,7 @@ E --&gt; F</pre>
   <li>允許 Android 的 VPN 要求，只選擇 App 列出的支援的 LeiGod 服務。</li>
   <li>觀察狀態從 <strong>Ready to connect</strong>，經過 <strong>Connecting...</strong>，最後成為 <strong>Connected</strong>。不能因此承諾 Android 支援 Race 或 MPTCP。</li>
   <li><strong>Linux：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），展開 <strong>Linux Install</strong>（Linux 安裝），選擇 <strong>Copy Install Command</strong>（複製安裝指令）。</li>
+  <li>如果使用 <strong>Linux ARM64 Installer</strong>，請確認主機是 arm64/aarch64，且作業系統為 Debian 11、12 或 13。</li>
   <li>以等同 root 的權限執行一次複製的指令；不要貼到聊天、工單、記錄或共用的 Shell 歷程。</li>
   <li>確認安裝程式輸出 <code>installed leikwan-client-agent</code>。</li>
   <li>回到面板查看最近同步；也可在主機確認 <code>config_pull_state.json</code> 的 <code>status</code> 為 <code>ok</code>。</li>
@@ -1700,6 +1851,73 @@ SELECT
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
 WHERE topic.topic_key = 'glossary'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'zh-TW'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
+    topic.id, 'zh-TW', NULL, '無介面執行用戶端', '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。', '<h2>你將完成什麼</h2>
+<p>你會在沒有桌面工作階段的 Windows 或 macOS 主機上執行 LeiKwan Bridge 用戶端，讓它開機自動啟動，並確認這台機器的轉發已在運作且面板可見。</p>
+
+<h2>開始前準備</h2>
+<ul>
+  <li>準備好這台機器對應的面板 <strong>Client ID</strong> 與 <strong>Agent Token</strong>，它們顯示在 <strong>租戶 → 用戶端</strong> 的用戶端卡片上。</li>
+  <li>macOS：先安裝應用程式（1.0.33 或更新版本），再以 <code>sudo</code> 執行安裝腳本。</li>
+  <li>Windows：下載無介面版壓縮檔，並以<strong>系統管理員身分</strong>開啟 PowerShell 執行安裝腳本。</li>
+  <li>無介面版與圖形用戶端是同一個用戶端：同一條通道、同一套租約處理、同一份執行時指紋，只是沒有介面，因此同一台機器不要同時執行兩者。</li>
+  <li>Agent Token 屬於機密。安裝腳本會將它寫入僅 root 或 SYSTEM 可讀的檔案；不要貼到聊天、工單或共享日誌中。</li>
+</ul>
+
+<h2>操作步驟</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 無介面用戶端安裝流程
+accDescr: 選擇作業系統，註冊無介面用戶端，然後在面板確認轉發正在運作。
+ A[選擇主機] --&gt; B{作業系統}
+ B -- macOS --&gt; C[先裝應用程式，再裝 LaunchDaemon]
+ B -- Windows --&gt; D[解壓縮安裝包，註冊系統服務]
+ C --&gt; E[確認狀態檔顯示 Connected]
+ D --&gt; E
+ E --&gt; F[在面板確認轉發顯示 Running]</pre>
+<p>這張圖只有兩個判斷：主機執行哪個系統，以及面板隨後是否確認轉發已經運作。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="用戶端安裝頁面，顯示 Windows 與 macOS 下載入口以及用戶端憑證">
+  <figcaption>示範截圖。同一個頁面提供 Client ID、Agent Token 以及下方用到的無介面版下載入口。</figcaption>
+</figure>
+<ol>
+  <li><strong>選擇主機。</strong>使用一台長期開機的機器，不需要螢幕、不需要登入桌面使用者、也不會有系統匣圖示。</li>
+  <li><strong>macOS：</strong>從目前的磁碟映像將 <strong>LeiKwan Bridge</strong> 安裝到 <strong>/Applications</strong>。</li>
+  <li>下載 LaunchDaemon 安裝腳本（它會註冊 <code>com.leikwan.bridge.headless</code>）並帶上用戶端身份執行：先執行 <code>curl -fsSL https://v3.leikwanhost.com/artifacts/install-macos-headless.sh -o install-macos-headless.sh</code>，再執行 <code>sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com --client-id CLIENT_ID --agent-token AGENT_TOKEN</code>。</li>
+  <li><strong>Windows：</strong>下載 <strong>leikwan-bridge-headless-win-x64.zip</strong> 並解壓縮，在該目錄以系統管理員身分執行 <code>.\install-windows-headless.ps1 -Panel https://v3.leikwanhost.com -ClientId CLIENT_ID -AgentToken AGENT_TOKEN</code>。</li>
+  <li><strong>確認已註冊。</strong>macOS 執行 <code>sudo sh install-macos-headless.sh --status</code>；Windows 執行 <code>sc query LeikwanBridgeHeadless</code>。</li>
+  <li><strong>查看狀態檔。</strong>macOS 為 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 為 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
+  <li>確認檔案中 <code>"Connected": true</code>，且你預期的每條轉發都是 <code>"Running": true</code>。</li>
+  <li><strong>選用自我檢查。</strong>用同一個程式與同一用戶端身份再加上 <code>--headless --once</code> 執行：它會連線、等待、印出同一份狀態文件，並在至少一條轉發運作時以退出碼 0 結束。</li>
+  <li><strong>需要移除時：</strong>macOS 執行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 執行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一併刪除已儲存的權杖。</li>
+</ol>
+
+<h2>如何確認成功</h2>
+<p>服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
+
+<h2>如果沒有成功</h2>
+<p><strong>請先停止對外分享 Agent Token，也不要將安裝指令貼到公開位置。</strong>先核對權杖與 Client ID：權杖錯誤時日誌會顯示 <code>401 Unauthorized</code>，且不會啟動任何轉發。macOS 請確認 <strong>/Applications</strong> 中的應用程式為 1.0.33 或更新版本，且 plist 已寫入 <strong>/Library/LaunchDaemons</strong>。Windows 請確認是在系統管理員權限下執行，且權杖檔案對 <strong>SYSTEM</strong> 可讀。若面板顯示機器在線但某條轉發仍為停止狀態，先與面板上的狀態對照再處理：轉發清單以面板為準，用戶端每隔幾秒就會重新套用一次。</p>
+
+<h2>相關指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">連線與驗證</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">常見問題排查</a></li>
+</ul>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'no-gui-clients'
   AND NOT EXISTS (
       SELECT 1
       FROM knowledgebase_articles AS existing_article
