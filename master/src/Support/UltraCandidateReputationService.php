@@ -56,6 +56,19 @@ final class UltraCandidateReputationService
     // udp_association_failed, which is how healthy lines were quarantined.
     public const TRANSPORT_REASONS = [
         'udp_arm_failed',
+        // Selection probes the whole candidate batch before it arms anything, so
+        // a rejected candidate is not yet a claim about the line - it is a claim
+        // that this endpoint did not answer the probe from this host. Recorded,
+        // never counted as a failure strike, exactly like udp_arm_failed.
+        //
+        // These two closed a real blind spot: a relay that accepted the TCP
+        // control connection and then closed the datagram handshake
+        // ("datagram handshake: EOF") produced no feedback at all, because the
+        // runtime only reported the batch-level error and rejected the candidate
+        // locally. Nothing could demote such an endpoint, so every batch probed
+        // it again.
+        'probe_udp_failed',
+        'probe_tcp_failed',
     ];
 
     /** @var callable():int */

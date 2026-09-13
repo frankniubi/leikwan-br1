@@ -583,6 +583,29 @@ func selectBestLease(ctx context.Context, config Config, policy Policy, leases [
 	return selectBestLeaseWithProbe(ctx, config, policy, leases, probeLease)
 }
 
+// probeFailureSink receives every candidate that failed its probe in a batch.
+//
+// A relay that answers TCP and then closes the datagram handshake ("datagram
+// handshake: EOF") used to leave no trace anywhere: the runtime rejected it
+// locally, picked another candidate and re-probed the same relay on the next
+// batch, forever. The Panel never learned that the endpoint cannot carry UDP,
+// so nothing could demote it. This is the hook that turns those local
+// rejections into candidate evidence.
+type probeFailureSink func(lease ProviderLease, result udpProbeResult)
+
+// selectBestLeaseReporting is selectBestLease plus the per-candidate failure
+// callback. Both production callers use it; the plain version stays for the
+// tests and for callers that only want a winner.
+func selectBestLeaseReporting(
+	ctx context.Context,
+	config Config,
+	policy Policy,
+	leases []ProviderLease,
+	onFailure probeFailureSink,
+) (ProviderLease, udpProbeResult, error) {
+	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probeLease, onFailure)
+}
+
 type leaseProbe func(context.Context, ProviderLease, Config, Policy) udpProbeResult
 
 func selectBestLeaseWithProbe(
@@ -591,6 +614,17 @@ func selectBestLeaseWithProbe(
 	policy Policy,
 	leases []ProviderLease,
 	probe leaseProbe,
+) (ProviderLease, udpProbeResult, error) {
+	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probe, nil)
+}
+
+func selectBestLeaseWithProbeReporting(
+	ctx context.Context,
+	config Config,
+	policy Policy,
+	leases []ProviderLease,
+	probe leaseProbe,
+	onFailure probeFailureSink,
 ) (ProviderLease, udpProbeResult, error) {
 	if len(leases) == 0 {
 		return ProviderLease{}, udpProbeResult{}, errProbeUnavailable
@@ -669,9 +703,12 @@ dispatch:
 	wait.Wait()
 	ranked := rankProbeResults(results, policy.Transport)
 	for index, result := range results {
+		lease := unique[index]
 		if result.Err != nil {
-			lease := unique[index]
 			log.Printf("ultra UDP candidate probe failed endpoint=%s:%d selection_ref=%s error=%v", lease.IP, lease.Port, lease.SelectionRef, result.Err)
+		}
+		if onFailure != nil && (result.Err != nil || result.TCPError != nil) {
+			onFailure(lease, result)
 		}
 	}
 	if ctx.Err() != nil {
