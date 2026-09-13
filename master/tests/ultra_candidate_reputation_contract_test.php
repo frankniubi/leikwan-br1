@@ -39,6 +39,16 @@ $first = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a',
 assertUltraCandidateReputation(($first['state'] ?? '') === 'healthy', 'one failure must remain healthy');
 assertUltraCandidateReputation(($first['consecutive_failures'] ?? 0) === 1, 'first failure count missing');
 
+// One observer counts once per evidence window. A client that cannot arm a
+// candidate retries it every few seconds with a fresh evidence id, and that
+// retry loop must not be able to walk a healthy line up the ramp by itself.
+$retry = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-1-retry');
+assertUltraCandidateReputation(
+    ($retry['consecutive_failures'] ?? 0) === 1,
+    'a retry inside the same window must not add a failure'
+);
+
+$now += UltraCandidateReputationService::FAILURE_EVIDENCE_WINDOW_SECONDS + 1;
 $second = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-2');
 assertUltraCandidateReputation(($second['state'] ?? '') === 'probation', 'two failures must enter probation');
 
@@ -109,8 +119,10 @@ $fingerprintService = new UltraCandidateReputationService(null, static function 
     return $now;
 });
 $fingerprintBefore = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
+// Two observers, because the fingerprint covers state and one failure from one
+// observer no longer moves it.
 $fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'fingerprint-1');
-$fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'fingerprint-2');
+$fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'fingerprint-2');
 $fingerprintAfter = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
 assertUltraCandidateReputation($fingerprintBefore !== $fingerprintAfter, 'reputation state change did not rotate snapshot fingerprint');
 assertUltraCandidateReputation(preg_match('/^[a-f0-9]{64}$/', $fingerprintAfter) === 1, 'snapshot fingerprint is not sha256');

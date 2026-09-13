@@ -84,13 +84,16 @@ $scope = [
     'destination_zone' => 'hong-kong',
     'protocol' => 'tcp',
 ];
+// Three failures from three devices. A single device now counts once per
+// evidence window however often it retries, so a retry loop cannot quarantine
+// a healthy line by itself.
 $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'failure-1');
-$reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'failure-2');
+$reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'failure-2');
 $fingerprintBefore = $materials->candidateReputationFingerprint([
     ['source_id' => 'source-a', 'line_id' => 347, 'ingress_zone' => 'guangzhou', 'destination_zone' => 'hong-kong'],
     ['source_id' => 'source-a', 'line_id' => 197, 'ingress_zone' => 'guangzhou', 'destination_zone' => 'hong-kong'],
 ], 'tcp');
-$quarantined = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'failure-3');
+$quarantined = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-c', 'failure-3');
 assertUltraCandidateResolution(($quarantined['state'] ?? '') === 'quarantined', 'test candidate did not quarantine');
 $fingerprintAfter = $materials->candidateReputationFingerprint([
     ['source_id' => 'source-a', 'line_id' => 347, 'ingress_zone' => 'guangzhou', 'destination_zone' => 'hong-kong'],

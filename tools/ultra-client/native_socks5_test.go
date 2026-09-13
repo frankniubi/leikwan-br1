@@ -167,8 +167,25 @@ func TestNativeAssociationCandidatesRetrySiblingAndReportFailure(t *testing.T) {
 		t.Fatalf("candidate feedback=%d, want one failure", len(status.status.CandidateFeedback))
 	}
 	feedback := status.status.CandidateFeedback[0]
-	if feedback.CandidateKeyHash != first.CandidateKeyHash || feedback.Protocol != "udp" || feedback.Reason != "udp_association_failed" {
+	// A candidate that was never armed is a transport outcome, not a verdict on
+	// the line: the same relay usually answers the next attempt.
+	if feedback.CandidateKeyHash != first.CandidateKeyHash || feedback.Protocol != "udp" || feedback.Reason != "udp_arm_failed" {
 		t.Fatalf("candidate feedback=%+v", feedback)
+	}
+}
+
+func TestUDPArmFailureReasonSeparatesUnreachableFromRefused(t *testing.T) {
+	unreachable := fmt.Errorf("%w: %w", errProviderDial, errors.New("dial tcp 1.2.3.4:5438: connect: connection refused"))
+	if got := udpArmFailureReason(unreachable); got != "udp_endpoint_unreachable" {
+		t.Fatalf("dial failure reason=%q, want udp_endpoint_unreachable", got)
+	}
+	refused := fmt.Errorf("datagram handshake failed after greeting fallback: %w", io.EOF)
+	if got := udpArmFailureReason(refused); got != "udp_arm_failed" {
+		t.Fatalf("refused session reason=%q, want udp_arm_failed", got)
+	}
+	// The established-then-broken path keeps the line-facing label.
+	if got := udpRuntimeFailureReason(io.EOF); got != "udp_association_failed" {
+		t.Fatalf("runtime failure reason=%q, want udp_association_failed", got)
 	}
 }
 

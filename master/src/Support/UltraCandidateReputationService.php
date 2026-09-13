@@ -33,6 +33,11 @@ final class UltraCandidateReputationService
     public const DEFAULT_BACKOFF_DECAY_SECONDS = 86400;
     public const DEFAULT_RECOVERY_SUCCESSES = 3;
     public const MAX_FEEDBACK = 32;
+    // One observer counts for one failure per window, however many times it
+    // retried inside it. The client retries a candidate every few seconds, and
+    // each attempt carries a fresh evidence id, so an unbounded window let a
+    // single device manufacture a quarantine out of one broken local path.
+    public const FAILURE_EVIDENCE_WINDOW_SECONDS = 600;
 
     /** @var array<int, string> */
     private const FAILURE_REASONS = [
@@ -41,6 +46,16 @@ final class UltraCandidateReputationService
         'relay_connect_timeout',
         'stream_reset',
         'data_plane_no_reply',
+        // The relay could not be reached at all. That is evidence about the line.
+        'udp_endpoint_unreachable',
+    ];
+    // Deliberately not failure reasons: a candidate that was never armed says
+    // nothing about the line. The relay accepted the control connection and then
+    // refused the session ('udp_arm_failed'), which the very next attempt from
+    // the same host usually disproves. Clients used to report these as
+    // udp_association_failed, which is how healthy lines were quarantined.
+    public const TRANSPORT_REASONS = [
+        'udp_arm_failed',
     ];
 
     /** @var callable():int */
@@ -214,6 +229,12 @@ final class UltraCandidateReputationService
     public static function isFailureReason(string $reason): bool
     {
         return in_array(strtolower(trim($reason)), self::FAILURE_REASONS, true);
+    }
+
+    /** A transport hiccup that must not be read as evidence about the line. */
+    public static function isTransportReason(string $reason): bool
+    {
+        return in_array(strtolower(trim($reason)), self::TRANSPORT_REASONS, true);
     }
 
     /** @param array<string, mixed> $scope @return array<string, mixed> */
@@ -424,7 +445,11 @@ final class UltraCandidateReputationService
     private function evidenceHash(string $candidateHash, string $type, string $observerHash, string $reason, string $evidenceId): string
     {
         $evidenceId = trim($evidenceId);
-        if ($evidenceId === '') {
+        if ($type === 'failure') {
+            // Ignore the client's id on purpose: it is per attempt, not per
+            // observation, and the retry loop made it a failure amplifier.
+            $evidenceId = 'window:' . (string) intdiv($this->now(), self::FAILURE_EVIDENCE_WINDOW_SECONDS);
+        } elseif ($evidenceId === '') {
             $evidenceId = (string) intdiv($this->now(), 60);
         }
         return hash('sha256', implode('|', [$candidateHash, $type, $observerHash, $reason, $evidenceId]));
