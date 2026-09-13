@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.11.2"
+AGENT_VERSION = "2026.09.13.1"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -966,12 +966,20 @@ def _normalize_optional_count(value: object) -> int | None:
     return count if count > 0 else None
 
 
+# A released runtime stamps itself "<version>.<shortsha>" at link time
+# (scripts/build-ultra-*.ps1); an older or third-party build may report a bare
+# hex build id. Both shapes are forwarded; anything else is dropped.
+_RUNTIME_FINGERPRINT_RE = re.compile(
+    r"(?:[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(?:\.[0-9a-f]{7,40})?|[a-f0-9]{8,64})"
+)
+
+
 def _normalize_runtime_attestation(value: object) -> dict | None:
     """Keep the runtime build attestation only when every field validates; never guess."""
     if not isinstance(value, dict):
         return None
     fingerprint = str(value.get("fingerprint", "") or "").strip().lower()
-    if fingerprint != "development" and re.fullmatch(r"[a-f0-9]{8,64}", fingerprint) is None:
+    if fingerprint != "development" and _RUNTIME_FINGERPRINT_RE.fullmatch(fingerprint) is None:
         return None
     self_sha256 = str(value.get("self_sha256", "") or "").strip().lower()
     if re.fullmatch(r"[a-f0-9]{64}", self_sha256) is None:
@@ -3194,6 +3202,12 @@ class ClientAgent:
                     "systemd-run",
                     "--quiet",
                     "--no-block",
+                    # A failed transient update unit stays in systemd's failed
+                    # table forever without --collect. The update is retried
+                    # every UPDATE_RETRY_SECONDS while the token is unchanged, so
+                    # a struggling release accumulated one failed unit per retry
+                    # (440 on the canary host) until the table was unusable.
+                    "--collect",
                     "--unit",
                     unit_name,
                     "/usr/bin/env",

@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.11.2"
+AGENT_VERSION = "2026.09.13.1"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -3202,6 +3202,12 @@ class ClientAgent:
                     "systemd-run",
                     "--quiet",
                     "--no-block",
+                    # A failed transient update unit stays in systemd's failed
+                    # table forever without --collect. The update is retried
+                    # every UPDATE_RETRY_SECONDS while the token is unchanged, so
+                    # a struggling release accumulated one failed unit per retry
+                    # (440 on the canary host) until the table was unusable.
+                    "--collect",
                     "--unit",
                     unit_name,
                     "/usr/bin/env",

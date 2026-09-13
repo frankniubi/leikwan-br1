@@ -25,8 +25,16 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
 # Same fingerprint convention as build-ultra-macos.ps1: <version>.<shortsha>.
 $shortSha = $ShortSha
-if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = git -C $repoRoot rev-parse --short HEAD }
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
+if ([string]::IsNullOrWhiteSpace($shortSha)) {
+    # $LASTEXITCODE is only meaningful immediately after git ran: an explicit
+    # -ShortSha used to be clobbered to "unknown" because a fresh PowerShell
+    # session reports $null there, which is -ne 0. The stamped fingerprint then
+    # never matched the release manifest, so the panel's attestation check
+    # could not recognise a released Linux/Windows runtime at all.
+    $shortSha = git -C $repoRoot rev-parse --short HEAD
+    if ($LASTEXITCODE -ne 0) { $shortSha = "" }
+}
+if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
 $FullVersion = "$Version.$shortSha"
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "artifacts\ultra\ultra-client_windows_amd64.exe"
