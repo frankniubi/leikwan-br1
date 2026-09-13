@@ -202,4 +202,33 @@ try {
     unlink($envPath);
 }
 
+// ---- linux: the windowless client that has always shipped ----
+
+$linuxCli = (string) file_get_contents($root . '/install/leikwan-linux.sh');
+foreach (['status', 'start', 'stop', 'restart', 'logs', 'doctor', 'version', 'update', '--check', 'leikwan-client-agent.service', 'journalctl', 'leikwan-client-agent-update'] as $needle) {
+    if (!str_contains($linuxCli, $needle)) {
+        failHeadless('linux leikwan CLI missing: ' . $needle);
+    }
+}
+if (str_contains($linuxCli, 'agent-token ') || str_contains($linuxCli, 'token=')) {
+    failHeadless('linux leikwan CLI must not print credentials');
+}
+$linuxEntry = $versions['leikwan_cli_linux'] ?? null;
+if (!is_array($linuxEntry)
+    || ($linuxEntry['install_url'] ?? '') !== '/artifacts/leikwan-linux.sh'
+    || ($linuxEntry['path'] ?? '') !== 'install/leikwan-linux.sh'
+    || ($linuxEntry['sha256'] ?? '') !== hash_file('sha256', $root . '/install/leikwan-linux.sh')) {
+    failHeadless('leikwan_cli_linux manifest entry is missing or stale');
+}
+if (!str_contains($bootstrap, "'/artifacts/leikwan-linux.sh'")
+    || !str_contains($controller, 'public function leikwanLinuxCli')) {
+    failHeadless('linux leikwan CLI is not served');
+}
+$agentInstaller = (string) file_get_contents($root . '/install/install-client-agent.sh');
+foreach (['leikwan_cli_linux', '"$BIN_DIR/leikwan"', 'chmod 0755 "$BIN_DIR/leikwan"'] as $needle) {
+    if (!str_contains($agentInstaller, $needle)) {
+        failHeadless('client-agent installer does not install the leikwan CLI: ' . $needle);
+    }
+}
+
 echo "ok\n";

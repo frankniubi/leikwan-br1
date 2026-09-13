@@ -252,6 +252,36 @@ Published artifacts: macOS 1.0.34 (zips `cbda2ef1`/`9d32631f`, DMGs
 wrappers refreshed, and the knowledgebase guide now documents the CLI
 (refreshed in place with a hash-guarded UPDATE and a before/after dump).
 
+## Linux: the same `leikwan` surface (2026-09-14)
+
+Linux never needed a no-GUI port - the client-agent *is* the windowless client,
+and it is the most feature-complete one (netns, tc, MPTCP, UoT). What it lacked
+was the operator command, so the same surface now ships there:
+`install/leikwan-linux.sh`, published as the manifest-verified
+`leikwan_cli_linux` artifact and installed to `/usr/local/bin/leikwan` by
+`install-client-agent.sh`.
+
+`status` reads the agent's own `/run/ultra/forward-<id>.status.json` files, so
+it reports exactly what the runtime publishes (and exits 0 only when the unit is
+active and a forward is running). `logs` uses journald, `doctor` checks the unit,
+config, state directory, updater and the published version, and `update` runs the
+existing manifest-verified updater instead of reimplementing it.
+
+Verified on the jstc Linux client (Debian 12, production forwards):
+
+    leikwan version        -> 2026.09.13.3
+    leikwan status         -> service running, 5/5 forwards running, exit 0
+    leikwan logs -n 4      -> journald tail (lease renewals, watchdog)
+    leikwan doctor         -> service/config/state/updater present, published 2026.09.13.3
+    leikwan update --check -> already current
+    leikwan bogus          -> usage, exit 2
+
+Panel side: new `/artifacts/leikwan-linux.sh` route (Bootstrap patched by
+anchor), `ArtifactController::leikwanLinuxCli`, and the refreshed
+`client_agent_installer` hash (`5dcc452a` -> `2f9c6c02`) - the installer script
+itself is verified against the manifest by the updater, so publishing both
+together is what keeps an in-flight update honest.
+
 ## Follow-ups
 
 * macOS/Windows no-GUI clients do not apply updates themselves yet: re-run the

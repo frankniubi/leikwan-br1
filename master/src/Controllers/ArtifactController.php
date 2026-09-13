@@ -353,6 +353,14 @@ final class ArtifactController extends BaseController
         );
     }
 
+    // Linux has had a windowless client (the systemd client-agent) from the
+    // start; this is the same `leikwan` command surface the macOS and Windows
+    // no-GUI installs use.
+    public function leikwanLinuxCli(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/leikwan-linux.sh', 'text/plain; charset=utf-8', $request);
+    }
+
     public function installMacosHeadless(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-macos-headless.sh', 'text/plain; charset=utf-8', $request);

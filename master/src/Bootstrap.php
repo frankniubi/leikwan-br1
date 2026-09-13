@@ -424,6 +424,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
+        $this->router->add('GET', '/artifacts/leikwan-linux.sh', [$artifacts, 'leikwanLinuxCli']);
         $this->router->add('GET', '/artifacts/install-client-agent-linux-arm64', [$artifacts, 'installClientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/client-agent-update.sh', [$artifacts, 'clientAgentUpdate']);
         $this->router->add('GET', '/artifacts/sidecar-agent-update.sh', [$artifacts, 'sidecarAgentUpdate']);
