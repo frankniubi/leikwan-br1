@@ -35,7 +35,7 @@ try {
     assertSeedRegression(is_file($manifestPath), 'topic manifest is missing');
     $topics = require $manifestPath;
     assertSeedRegression(is_array($topics), 'topic manifest must return an array');
-    assertSeedRegression(count($topics) === 9, 'manifest must define exactly nine topics');
+    assertSeedRegression(count($topics) === 7, 'manifest must define exactly seven topics');
 
     $locales = ['en', 'zh-Hans', 'zh-TW'];
     $articleCount = 0;
@@ -45,7 +45,7 @@ try {
         assertSeedRegression(array_keys($topic['articles']) === $locales, $topicKey . ': manifest locales must be exact');
         $articleCount += count($topic['articles']);
     }
-    assertSeedRegression($articleCount === 27, 'manifest must define exactly 27 localized articles');
+    assertSeedRegression($articleCount === 21, 'manifest must define exactly 21 localized articles');
 
     assertSeedRegression(is_file($builderPath), 'seed builder is missing');
     $command = escapeshellarg(PHP_BINARY)
@@ -100,7 +100,7 @@ try {
         }
     }
 
-    assertSeedRegression(count($defaultTopicInserts) === 9, 'generated migration must contain exactly nine default topic inserts');
+    assertSeedRegression(count($defaultTopicInserts) === 7, 'generated migration must contain exactly seven default topic inserts');
     foreach ($defaultTopicInserts as $statement) {
         assertSeedRegression(
             preg_match('/INSERT\s+INTO\s+knowledgebase_topics[\s\S]*SELECT[\s\S]*WHERE\s+NOT\s+EXISTS/is', $statement) === 1,
@@ -108,7 +108,7 @@ try {
         );
     }
 
-    assertSeedRegression(count($defaultArticleInserts) === 27, 'generated migration must contain exactly 27 guarded default article inserts');
+    assertSeedRegression(count($defaultArticleInserts) === 21, 'generated migration must contain exactly 21 guarded default article inserts');
     foreach ($defaultArticleInserts as $statement) {
         assertSeedRegression(
             preg_match('/INSERT\s+INTO\s+knowledgebase_articles[\s\S]*SELECT[\s\S]*WHERE[\s\S]*NOT\s+EXISTS/is', $statement) === 1,

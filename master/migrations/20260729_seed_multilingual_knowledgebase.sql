@@ -78,29 +78,7 @@ INSERT INTO knowledgebase_topics (
     topic_key, is_pinned, sort_order, created_at, updated_at
 )
 SELECT
-    'connection-modes-single-race-bond', 0, 50, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM knowledgebase_topics AS existing_topic
-    WHERE existing_topic.topic_key = 'connection-modes-single-race-bond'
-);
-
-INSERT INTO knowledgebase_topics (
-    topic_key, is_pinned, sort_order, created_at, updated_at
-)
-SELECT
-    'bond-sidecar-setup', 0, 60, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM knowledgebase_topics AS existing_topic
-    WHERE existing_topic.topic_key = 'bond-sidecar-setup'
-);
-
-INSERT INTO knowledgebase_topics (
-    topic_key, is_pinned, sort_order, created_at, updated_at
-)
-SELECT
-    'troubleshooting-common-mistakes', 0, 70, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    'troubleshooting-common-mistakes', 0, 50, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 WHERE NOT EXISTS (
     SELECT 1
     FROM knowledgebase_topics AS existing_topic
@@ -111,7 +89,7 @@ INSERT INTO knowledgebase_topics (
     topic_key, is_pinned, sort_order, created_at, updated_at
 )
 SELECT
-    'glossary', 0, 80, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    'glossary', 0, 60, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 WHERE NOT EXISTS (
     SELECT 1
     FROM knowledgebase_topics AS existing_topic
@@ -122,7 +100,7 @@ INSERT INTO knowledgebase_topics (
     topic_key, is_pinned, sort_order, created_at, updated_at
 )
 SELECT
-    'no-gui-clients', 0, 90, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    'no-gui-clients', 0, 70, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 WHERE NOT EXISTS (
     SELECT 1
     FROM knowledgebase_topics AS existing_topic
@@ -196,63 +174,50 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'en', NULL, 'Install the Client', 'Install and sign in on Windows, Android, or Linux, then confirm the client is online.', '<h2>What you will accomplish</h2>
-<p>You will install the Client on Windows, Android, or Linux, sign in safely, and confirm that the device has received a recent configuration sync.</p>
+    topic.id, 'en', NULL, 'Install the Client', 'Install and sign in on Windows, Android, or Linux, then confirm the client is online.', '<p>Install the app once on the device you play on, sign in, and leave it running. After that you only open it to check that the line is still up.</p>
+
+<h2>What you will accomplish</h2>
+<p>The app installed on your device, signed in with your panel account, and shown as online in the panel.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Have your panel <strong>Master URL</strong>, account <strong>Email</strong>, and <strong>Password</strong> ready for Windows.</li>
-  <li>For Android, use an arm64 device running Android 8.0+ and be ready to approve the VPN request.</li>
-  <li>For Linux, use a machine with systemd, Python 3, network access, and root-equivalent permission.</li>
-  <li><strong>The Linux arm64 single-file installer supports Debian 11, 12, and 13 only.</strong> Use the regular Linux install command for amd64 or another supported flow.</li>
-  <li>Treat credentials and copied commands as secrets. A Linux installer command contains a bearer agent token.</li>
+<li>Your panel email and password.</li>
+<li>The device you play on. The app runs on Windows, Android, and Linux.</li>
+<li>Android 8.0+ for phones and tablets.</li>
+<li>On Linux, a 64-bit ARM machine and one root command.</li>
 </ul>
 
 <h2>Steps</h2>
-<pre class="mermaid">flowchart TD
-accTitle: Client installation choices
-accDescr: Choose the device operating system, follow its installation path, and finish by confirming a recent sync.
-A[Choose device] --&gt; B{Operating system}
-B -- Windows --&gt; C[Download Windows App]
-B -- Android --&gt; D[Install arm64 Android app]
-B -- Linux --&gt; E[Copy Linux install command]
-C --&gt; F[Confirm recent sync]
-D --&gt; F
-E --&gt; F</pre>
-<p>Each operating system has a different sign-in or installation path, but all three finish at the same observable result: the panel reports a recent client sync.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients Install view showing Windows, Android, and Linux installation choices">
-  <figcaption>Demo screenshot. The download buttons and sync time show where to check your own session.</figcaption>
-</figure>
 <ol>
-  <li><strong>Windows:</strong> Open <strong>Tenant → Clients</strong> and select <strong>Download Windows App</strong>.</li>
-  <li>Install and open the app.</li>
-  <li>Enter <strong>Master URL</strong>, <strong>Email</strong>, and <strong>Password</strong>.</li>
-  <li>Select <strong>Connect</strong>.</li>
-  <li>Confirm <strong>Connection successful!</strong>, the global state <strong>Connected</strong>, and each ready Forward marked <strong>Running</strong>.</li>
-  <li><strong>Android:</strong> Download and install the arm64 Android app on Android 8.0+.</li>
-  <li>Sign in and approve the Android VPN request.</li>
-  <li>Select one of the supported LeiGod services offered by the app. Use only a service that the app lets you select.</li>
-  <li>Watch the visible state move from <strong>Ready to connect</strong> to <strong>Connecting...</strong> and then <strong>Connected</strong>.</li>
-  <li><strong>Linux:</strong> Open <strong>Tenant → Clients</strong>, expand <strong>Linux Install</strong>, and select <strong>Copy Install Command</strong>.</li>
-  <li>For <strong>Linux ARM64 Installer</strong>, confirm that the host is arm64/aarch64 and runs Debian 11, 12, or 13.</li>
-  <li>Run the copied command once with root-equivalent permission. Do not paste it into chat, tickets, logs, or shared shell history.</li>
-  <li>Confirm the installer prints <code>installed leikwan-client-agent</code>.</li>
-  <li>Return to the panel and confirm a recent sync. On the Linux host, you may also confirm that <code>config_pull_state.json</code> reports <code>status</code> as <code>ok</code>.</li>
+<li><strong>Open the Clients page.</strong> Everything you need sits on that one page.</li>
+<li><strong>Install the app.</strong> On Windows click <strong>Download Windows App</strong>. On a phone install the arm64 Android app. On Linux click <strong>Copy Install Command</strong> and run it.</li>
+<li><strong>Sign in</strong> with your panel email and password. The app answers <strong>Connection successful!</strong> when it is in.</li>
+<li><strong>Leave it running.</strong> The app shows <strong>Connected</strong> and the switch reads <strong>Running</strong>.</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: Client install path
+accDescr: Pick your device, install the app, sign in, then confirm the client is online
+A[Pick your device] --> B[Operating system]
+B --> C[Download Windows App]
+B --> D[Install arm64 Android app]
+B --> E[Copy Linux install command]
+C --> F[Sign in]
+D --> F
+E --> F
+F --> G[Client reads Connected and Running]
+</pre>
+<p>All three devices finish in the same place: the app is signed in and the panel shows a recent sync for it.</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients page showing the Windows download button and the Linux install command"><figcaption>The Clients page holds every download and the Linux install command.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The panel shows a recent sync from the expected device. Windows also shows <strong>Connection successful!</strong>, global <strong>Connected</strong>, and a ready Forward as <strong>Running</strong>. Android reaches <strong>Connected</strong>. Linux reports the completed installer line and a successful pull state.</p>
+<p>Two checks. The app shows <strong>Connected</strong>, and the Clients page lists your device with a recent sync time.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before sharing credentials or rerunning secret commands in public places.</strong> Check the Master URL, device clock, internet access, required permissions, and the exact visible error. On Android, confirm the VPN approval was granted. On Linux, confirm systemd and Python 3 are available, then collect diagnostics without copying the bearer agent token.</p>
+<p><strong>Stop</strong> and sign in again if the app never leaves <strong>Connecting...</strong>. Most likely first: the password is wrong or the account is not active yet. Then: Android put the app to sleep in the background. Then: the Linux command was run without root.</p>
 
 <h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">Get Connected in Five Minutes</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
-</ul>
+<p>Next, <a href="/knowledgebase?thread=connect-and-verify">connect and verify</a>. If something is off, <a href="/knowledgebase?thread=troubleshooting-common-mistakes">troubleshoot common problems</a>. For a machine with no screen, <a href="/knowledgebase?thread=no-gui-clients">run the client without a GUI</a>.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -269,57 +234,49 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'en', NULL, 'Create Your First Forward', 'Choose a route package, enter the destination, save, and identify the assigned local port.', '<h2>What you will accomplish</h2>
-<p>You will create one Forward from an active package, save only the visible destination settings, and record the assigned local port that your application will use.</p>
+    topic.id, 'en', NULL, 'Create Your First Forward', 'Choose a route package, enter the destination, save, and identify the assigned local port.', '<p>A forward is one line you draw on the panel: where your game or service lives, and which local port your device should use to reach it.</p>
+
+<h2>What you will accomplish</h2>
+<p>One saved forward with an assigned local port. The next guide needs that port, so write it down.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Confirm that the package or service is <strong>Active</strong>.</li>
-  <li>Know the destination hostname or IP address.</li>
-  <li>Know the destination port.</li>
-  <li>Know whether the application needs TCP, UDP, or both.</li>
+<li>An active plan, so the panel lets you save a forward.</li>
+<li>The address and port your game or service really listens on.</li>
+<li>Which transport it needs: TCP, UDP, or both. Games are usually UDP.</li>
 </ul>
 
 <h2>Steps</h2>
-<pre class="mermaid">flowchart TD
-accTitle: First Forward form path
-accDescr: Open an active package, choose a route, enter the destination and transport, save, and record the local port when the Forward is ready.
-A[Open active package] --&gt; B[Choose Forward Route]
-B --&gt; C[Enter Target Host and Target Port]
-C --&gt; D[Choose Transport]
-D --&gt; E[Save]
-E --&gt; F[Forward ready]
-F --&gt; G[Record assigned local port]</pre>
-<p>The form asks only for the route package, destination, local port preference, and transport. Saving starts setup; the assigned local port is the value you need for the next guide.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward form showing Forward Route, Target Host, Target Port, Local Listen Port, and Transport">
-  <figcaption>Demo screenshot. Leave Local Listen Port empty when the panel should allocate it.</figcaption>
-</figure>
 <ol>
-  <li>Open the active service and select <strong>Create Forward</strong>.</li>
-  <li>Choose the offered package under <strong>Forward Route</strong>.</li>
-  <li>Enter the destination in <strong>Target Host</strong>.</li>
-  <li>Enter the service port in <strong>Target Port</strong>.</li>
-  <li>Leave <strong>Local Listen Port</strong> blank to accept an assigned local port, unless you were given a specific safe port.</li>
-  <li>Under <strong>Transport</strong>, choose <strong>TCP</strong> for TCP-only applications.</li>
-  <li>Choose <strong>TCP + UDP</strong> when the application needs both.</li>
-  <li>Choose <strong>UDP</strong> only for a UDP-only application.</li>
-  <li>Select <strong>Create Forward</strong> to Save.</li>
-  <li>Wait for provisioning to finish, then record the assigned local port shown on the Forward card.</li>
+<li><strong>Open Forwards and click Create Forward.</strong></li>
+<li><strong>Pick a Forward Route.</strong> Take the line closest to the destination. Every line uses ultra, so there is nothing else to decide.</li>
+<li><strong>Fill in Target Host and Target Port.</strong> This is the address the game itself connects to, not the address of the site you downloaded it from.</li>
+<li><strong>Choose the Transport</strong> your service needs: TCP, UDP, or TCP + UDP.</li>
+<li><strong>Save.</strong> Keep the suggested Local Listen Port unless you have a reason to change it.</li>
+<li><strong>Write down the assigned local port.</strong> It shows up on the row within a few seconds.</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: First forward form path
+accDescr: Open an active plan, pick the forward route, fill in the destination, save, then note the assigned local port
+A[Open an active plan] --> B[Pick a Forward Route]
+B --> C[Fill in Target Host and Target Port]
+C --> D[Choose the Transport]
+D --> E[Save]
+E --> F[Wait until the forward is ready]
+F --> G[Note the assigned local port]
+</pre>
+<p>The form only asks for the route, the destination, the transport, and the local port. The rest is filled in for you.</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward form with the route, target host, target port and transport fields"><figcaption>The Create Forward form. Only four fields need your attention.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The new Forward appears with the destination and assigned local port you expect. A saved record is only the first checkpoint. Wait for active setup, then a recent client sync, and later confirm <strong>Running</strong> plus a successful application request.</p>
+<p>The row stays saved instead of flipping through provisioning, and the assigned local port is filled in. The Clients page then shows a recent client sync for the device that will carry this forward.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop if no Forward Route is offered or the destination is uncertain.</strong> Do not guess at hidden settings. Check that the package is active, correct only the visible fields above, and ask your administrator to publish an appropriate route package when none is available.</p>
+<p><strong>Stop</strong> if the panel refuses to save. Three usual reasons: the plan is not active any more, the target host or port is not right, or the local port you typed is already in use - clear it and let the panel suggest one again.</p>
 
 <h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
-</ul>
+<p>Next, <a href="/knowledgebase?thread=connect-and-verify">connect and verify</a>. If the app is not installed yet, start with <a href="/knowledgebase?thread=install-client">install the client</a>.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -336,58 +293,45 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'en', NULL, 'Connect and Verify', 'Choose the correct client address, test the service, and confirm that the route is working.', '<h2>What you will accomplish</h2>
-<p>You will choose the address that matches where your application runs, send a request through the Forward, and separate a panel status from proof that the target application received traffic.</p>
+    topic.id, 'en', NULL, 'Connect and Verify', 'Choose the correct client address, test the service, and confirm that the route is working.', '<p>The forward is saved and the app is online. The last step is telling the game where to connect.</p>
+
+<h2>What you will accomplish</h2>
+<p>The game pointed at the client, plus proof that traffic is really flowing.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Record the Forward''s local port.</li>
-  <li>Confirm that the Client has a recent sync and the Forward shows <strong>Running</strong>.</li>
-  <li>Know whether the application runs on the Client device or on another device.</li>
-  <li>Use a protocol-aware test. A TCP port check alone does not prove an HTTP, SSH, database, or game request works correctly.</li>
+<li>A saved forward and the local port the panel assigned to it.</li>
+<li>The app installed and signed in on the device that runs the client.</li>
+<li>A few minutes to test while the game is open.</li>
 </ul>
 
 <h2>Steps</h2>
-<pre class="mermaid">flowchart TD
-accTitle: Choose the client connection address
-accDescr: Use loopback on the same Client device, use a reachable Windows or Linux client-host address for another device with network controls as needed, and keep Android loopback-only.
-A[Locate the application] --&gt; B{Same Client device?}
-B -- Yes --&gt; C[Use 127.0.0.1 and local port]
-B -- No --&gt; D{Client platform}
-D -- Windows or Linux --&gt; E[Use reachable client-host address and port]
-E --&gt; F[Allow firewall security group or NAT as needed]
-D -- Android --&gt; G[Keep listener loopback-only]
-C --&gt; H[Test application protocol]
-F --&gt; H
-G --&gt; H</pre>
-<p>The deciding fact is where the application runs. Same-device traffic uses loopback. Cross-device traffic is possible only through a reachable Windows or Linux Client host and may need network access rules; Android remains loopback-only unless it is separately exposed by another supported setup.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the local listen address, target, transport, and Running status">
-  <figcaption>Demo screenshot. Use the local listen value from your own Forward card, not the demonstration value.</figcaption>
-</figure>
 <ol>
-  <li>If the application is on the Client device, enter <code>127.0.0.1</code> and the Forward''s local port.</li>
-  <li>If another device uses a Windows or Linux Client, enter a reachable Windows or Linux client-host address and the same local port.</li>
-  <li>For cross-device access, allow that port in the host firewall.</li>
-  <li>If applicable, allow it in the cloud security group.</li>
-  <li>If the Client is behind a router, configure NAT only when your network owner approves it.</li>
-  <li>Do not present Android as a cross-device listener. Its listener stays loopback-only unless separately exposed through an approved design.</li>
-  <li>Send a request with the actual application protocol.</li>
-  <li>Check the response and, when available, confirm receipt in the target logs.</li>
+<li><strong>Ask one question: does the game run on the same device as the client?</strong> The answer decides the address you type.</li>
+<li><strong>Same device:</strong> use <code>127.0.0.1</code> and the assigned local port. This is the common case, and it stays loopback-only, so nothing else on your network can reach it.</li>
+<li><strong>Another device:</strong> use a reachable Windows or Linux client-host address with the same port, and allow that port through the firewall, security group, or NAT between the two.</li>
+<li><strong>Start the game and connect.</strong> Then look at the forward row while you play.</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: Choosing the client address
+accDescr: Check where the game runs, then use loopback or the client host address
+A[Where does the game run?] -- Same device as the client --> B[Use 127.0.0.1 and the local port]
+A -- Another device --> C[Use the client host address]
+B --> D[Start the game]
+C --> D
+</pre>
+<p>Same device keeps the port on loopback only. Another device needs one allowed path through the network in between.</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward row showing the assigned local port and live traffic"><figcaption>The forward row shows the local port and the traffic it carries.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>Your application receives the expected response through the Client address and local port. The strongest confirmation is a matching request in the target logs. <strong>Connected</strong>, <strong>Running</strong>, and an open local port are useful checkpoints, but none alone proves the destination application handled the request.</p>
+<p>Two checks. The app shows the line as running, and the forward row shows incoming traffic while you play. On Android the client runs on the phone itself, so the game there always uses <code>127.0.0.1</code> too.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before opening broad firewall ranges or assuming a public IP always works.</strong> Recheck same-device versus cross-device addressing, confirm the exact local port, and test the destination service from its own host. Then use diagnostics or ask support with the error, time, Client platform, and Forward name, but no secrets.</p>
+<p><strong>Stop</strong> and check the address first. In order of likelihood: the port does not match the assigned local port; a firewall or NAT rule blocks the another-device case; the target service is down - test the target service from its own host and read the target logs. Test the actual application protocol, not a ping.</p>
 
 <h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
-  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
-</ul>
+<p>Something still off? <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot common problems</a>. Need the port again? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a>.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -404,198 +348,48 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'en', NULL, 'Choose a Connection Mode', 'Understand Single, Race, and Bond by the outcome you need rather than internal topology.', '<h2>What you will accomplish</h2>
-<p>You will choose among Single, Race, and Bond by the result you need, while avoiding promises that the selected mode or platform cannot guarantee.</p>
+    topic.id, 'en', NULL, 'Troubleshoot Common Problems', 'Start from the symptom you can see and follow the shortest safe recovery path.', '<p>When a game cannot connect, it is almost always one of three things. Check them in this order and you are usually back in a minute or two.</p>
+
+<h2>What you will accomplish</h2>
+<p>Find which of the three usual causes is yours, fix it, and get back into the game.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Start with a working basic Forward when possible.</li>
-  <li>Read the published route contract for your package and Client platform.</li>
-  <li>Identify whether you need simplicity, path redundancy, or an explicitly supported Bond design.</li>
-  <li>Do not choose a mode only because its name sounds faster.</li>
+<li>The panel open, and the app running on the device you play on.</li>
+<li>The guide you followed, in case you need the local port again.</li>
 </ul>
 
 <h2>Steps</h2>
-<pre class="mermaid">flowchart TD
-accTitle: Connection mode decision
-accDescr: Choose Single for the simplest stable path, Race for supported path redundancy without aggregation, and Bond only when the plan explicitly supports it and its requirements are verified.
-A[What outcome do you need?] --&gt; B{Simplest stable path?}
-B -- Yes --&gt; C[Choose Single]
-B -- No --&gt; D{Redundancy without aggregation?}
-D -- Yes --&gt; E[Choose Race]
-D -- No --&gt; F{Plan explicitly supports Bond?}
-F -- Yes --&gt; G[Choose Bond and verify requirements]
-F -- No --&gt; H[Ask your administrator]</pre>
-<p>The safe default is Single. Race is for supported path selection or redundancy, not combined bandwidth. Bond is an advanced choice only when the published route contract says the package and platform support it.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward result showing the user-facing route result instead of internal Single, Race, or Bond wiring">
-  <figcaption>Demo screenshot. The tenant checks the resulting route and status; internal topology stays managed by the plan.</figcaption>
-</figure>
 <ol>
-  <li>Choose <strong>Single</strong> for the simplest stable setup.</li>
-  <li>Choose <strong>Race</strong> when the contract offers multiple usable paths and you want redundancy without aggregation.</li>
-  <li>Remember that Race is not bandwidth aggregation.</li>
-  <li>On Linux TCP Race, expect one winner per connection.</li>
-  <li>On Linux UDP Race, the Client may fan out datagrams across usable paths.</li>
-  <li>Use Race only with at least two usable endpoints. Exact behavior differs by platform.</li>
-  <li>Choose <strong>Bond</strong> only when the published route contract explicitly supports it.</li>
-  <li>Verify every listed Bond requirement before testing. Not every Bond route requires a Sidecar.</li>
-  <li>If support is unclear, ask your administrator instead of guessing.</li>
+<li><strong>Is the client in sync?</strong> The Clients page should show a recent sync. If it does not, restart the app and give it a few seconds.</li>
+<li><strong>Is the address correct?</strong> Same device as the client means 127.0.0.1 plus the local port; another device means the client host address.</li>
+<li><strong>Is the port allowed?</strong> Only the port you actually use has to be open through the firewall, security group, or NAT.</li>
+<li><strong>Are the forward and route healthy?</strong> The row must not sit in provisioning, and the target service should answer when you test it from its own host.</li>
+<li><strong>Still stuck?</strong> Open View Diagnostics and send the result to support with the name of the forward.</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: Working from the symptom
+accDescr: Start from the failing game and check the client sync, the address, then the target service
+A[The game cannot connect] --> B[Is the client in sync?]
+B -- No --> C[Restart the app and try again]
+B -- Yes --> D[Is the address and port correct?]
+D -- No --> E[Use 127.0.0.1 or the client host address]
+E --> C
+D -- Yes --> F[Test the target service from its own host]
+F --> G[Open View Diagnostics and contact support]
+</pre>
+<p>Work down the list once, in order. Skipping a step usually means coming back to it later.</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="Diagnostics page with the client sync state and the forward health summary"><figcaption>View Diagnostics collects the client sync, the forward state, and the last error in one place.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The selected mode is allowed by the package, supported by the Client platform, and the application succeeds under the intended conditions. For Race, test that supported requests continue when one usable path is unavailable. For Bond, verify the published requirements and actual application result rather than inferring performance from status alone.</p>
+<p>The app shows the line as running, and the forward row shows traffic again while you play.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before promising speed doubling, full configured bandwidth, or use of every path.</strong> Return to Single if it is available and stable, record the failing platform and route package, then ask your administrator whether the contract supports the desired Race or Bond behavior.</p>
+<p><strong>Stop</strong> before changing anything else. Do not make random topology changes - they hide the real cause and make the next round slower. If all four checks are clean, send support the diagnostics output; that is the fastest path from there.</p>
 
 <h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=bond-sidecar-setup">Configure a Sidecar</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
-  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'connection-modes-single-race-bond'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'en'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'en', NULL, 'Configure a Sidecar', 'Create and verify a Sidecar only when your Bond route package requires one.', '<h2>What you will accomplish</h2>
-<p>You will create and verify a Sidecar only when a Bond package''s published route contract requires one. A Sidecar is intermediate target-side transport. It is not the target application.</p>
-
-<h2>Before you begin</h2>
-<ul>
-  <li>Confirm that the selected Bond package explicitly requires a Sidecar.</li>
-  <li>Have a target-side machine that can reach the backend service.</li>
-  <li>Know the approved <strong>Sidecar Host</strong> and Bond transport port.</li>
-  <li>Have root-equivalent permission on the Sidecar machine.</li>
-  <li>Keep the panel-provided install command and all credentials secret.</li>
-</ul>
-
-<h2>Steps</h2>
-<pre class="mermaid">flowchart LR
-accTitle: Bond route with a Sidecar
-accDescr: The Client reaches the target service through a managed Slave path and an intermediate Sidecar.
-A[Client] --&gt; B[Managed Slave path]
-B --&gt; C[Sidecar]
-C --&gt; D[Target service]</pre>
-<p>The Sidecar sits between the managed path and the target service. It must be online and able to reach the backend, but users still verify the target application separately.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints form showing the host and all three listen port fields">
-  <figcaption>Demo screenshot. Only create a tenant-owned endpoint when the published route contract requires it.</figcaption>
-</figure>
-<ol>
-  <li>Open <strong>Target Endpoints</strong> under <strong>Advanced</strong>.</li>
-  <li>Select the <strong>Create</strong> tab.</li>
-  <li>In <strong>Create Transport Endpoint</strong>, enter a recognizable <strong>Name</strong>.</li>
-  <li>Enter the approved <strong>Sidecar Host</strong>.</li>
-  <li>Enter the approved Bond transport port in <strong>Transport Listen Port</strong>.</li>
-  <li>Select <strong>Save Transport Endpoint</strong>.</li>
-  <li>On its card, open <strong>Install Command</strong> and copy it without exposing its contents.</li>
-  <li>Run it on the Sidecar machine with root-equivalent permission.</li>
-  <li>Return to the panel and wait for <strong>Last Heartbeat</strong>, <strong>Agent Version</strong>, and <strong>Last Status</strong> to update.</li>
-  <li>From the Sidecar machine, test the backend listener at the configured target host and port.</li>
-  <li>Create or refresh the Bond Forward as directed by the published route contract.</li>
-</ol>
-
-<h2>How to know it worked</h2>
-<p>The Sidecar reports a recent <strong>Last Heartbeat</strong>, the expected agent status, and the Bond Forward can carry a real application request to the target. A heartbeat alone does not prove backend health. Separately test the backend listener and, if possible, confirm the request in target logs.</p>
-
-<h2>If it did not work</h2>
-<p><strong>Stop before changing ports, addresses, or route settings at random.</strong> If heartbeat is missing, check the Sidecar service and outbound access. If heartbeat is current but the application fails, test the backend from the Sidecar host. Share diagnostics with support, but never share the generated install command, tokens, passwords, route keys, private keys, or internal line or session material.</p>
-
-<h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=connection-modes-single-race-bond">Choose a Connection Mode</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'bond-sidecar-setup'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'en'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'en', NULL, 'Troubleshoot Common Problems', 'Start from the symptom you can see and follow the shortest safe recovery path.', '<h2>What you will accomplish</h2>
-<p>You will start with the symptom you can see, check one boundary at a time, and stop before broad or random changes make the original problem harder to identify.</p>
-
-<h2>Before you begin</h2>
-<ul>
-  <li>Write down the exact error, time, Client platform, Forward name, and local port.</li>
-  <li>Keep the saved Forward unchanged while you check its current state.</li>
-  <li>Do not include passwords, tokens, generated commands, route keys, private keys, or internal session material in screenshots or support messages.</li>
-  <li>Use the real application protocol for the final test.</li>
-</ul>
-
-<h2>Steps</h2>
-<pre class="mermaid">flowchart TD
-accTitle: Symptom-first troubleshooting
-accDescr: After a failed request, check recent sync, the address, network access to the port, Forward and route health, and the target service before using diagnostics and support.
-A[Application request failed] --&gt; B{Recent sync?}
-B -- No --&gt; C[Restore Client sync]
-B -- Yes --&gt; D{Correct address?}
-D -- No --&gt; E[Use loopback or reachable client host]
-D -- Yes --&gt; F{Port allowed?}
-F -- No --&gt; G[Allow only the required port]
-F -- Yes --&gt; H{Forward and route healthy?}
-H -- No --&gt; I[Open View Diagnostics]
-H -- Yes --&gt; J[Test target from its own host]
-C --&gt; K[Retry application]
-E --&gt; K
-G --&gt; K
-I --&gt; L[Diagnostics and support]
-J --&gt; L</pre>
-<p>The checks move from the Client toward the target. Fix the first failed boundary, retry once, and preserve evidence instead of making random topology changes.</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="Client diagnostics view showing Run Diagnostics before View Diagnostics and a healthy result">
-  <figcaption>Demo screenshot. Run a fresh check first, then open View Diagnostics for the details.</figcaption>
-</figure>
-<ol>
-  <li>Confirm a recent sync for the expected Client.</li>
-  <li>Confirm the Forward shows <strong>Running</strong>.</li>
-  <li>Check the correct address: use <code>127.0.0.1</code> on the same Client device.</li>
-  <li>For another device, use a reachable Windows or Linux Client-host address. Do not treat Android as a cross-device listener.</li>
-  <li>Confirm the local port matches the Forward card.</li>
-  <li>For cross-device use, confirm that only the required port is allowed by the firewall, security group, and NAT as applicable.</li>
-  <li>Check that the forward and route are healthy in <strong>View Diagnostics</strong>.</li>
-  <li>Test the target service from its own host and port.</li>
-  <li>Retry with the actual application protocol.</li>
-  <li>If it still fails, collect diagnostics and contact support with the symptom and time.</li>
-</ol>
-
-<h2>How to know it worked</h2>
-<p>The first failing boundary becomes healthy and the real application request succeeds. A recent sync proves configuration delivery, <strong>Running</strong> proves a local process state, and a successful target response proves the complete request path.</p>
-
-<h2>If it did not work</h2>
-<p><strong>Stop before reinstalling everything, opening broad port ranges, or making random topology changes.</strong> Preserve the error and diagnostics. Contact support with the Forward name, Client platform, test time, address type, local port, and sanitized results. Never send secrets.</p>
-
-<h2>Related guides</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=glossary">Glossary</a></li>
-</ul>
+<p><a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a>, or <a href="/knowledgebase?thread=getting-started-first-forward-checklist">create your first forward</a> if the row itself looks wrong.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -612,42 +406,51 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'en', NULL, 'Glossary', 'Plain-language definitions for the product and network terms used in the guides.', '<h2>What you will accomplish</h2>
-<p>You will understand the product and network terms used throughout the beginner guides, without needing to learn the internal implementation.</p>
+    topic.id, 'en', NULL, 'Glossary', 'Plain-language definitions for the product and network terms used in the guides.', '<p>One short line for each word the other guides use. Open this page whenever a word is unclear, and close it again.</p>
+
+<h2>What you will accomplish</h2>
+<p>You will know what each word in the guides means, without reading anything technical.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Keep the relevant guide open so you can match each term to a visible field or status.</li>
-  <li>Remember that similar-looking status words can prove different checkpoints.</li>
-  <li>Do not copy secret values while asking what a term means.</li>
+<li>Nothing to prepare. This page is meant to sit in a second tab.</li>
+<li>If a word you need is missing, ask support and it gets added.</li>
 </ul>
 
 <h2>Steps</h2>
 <ol>
-  <li><strong>Active package:</strong> A purchased package or service that currently allows you to create and use a Forward.</li>
-  <li><strong>Forward:</strong> A saved instruction that sends traffic from a Client listener to a target host and port through an offered route.</li>
-  <li><strong>Forward Route:</strong> The route package offered in the first Forward form. Choose the published option that matches your service.</li>
-  <li><strong>Target Host:</strong> The hostname or IP address of the destination service.</li>
-  <li><strong>Target Port:</strong> The destination service''s port.</li>
-  <li><strong>Local Listen Port:</strong> The port on the Client side that your application connects to.</li>
-  <li><strong>Client:</strong> The Windows, Android, or Linux software that receives your Forward configuration and creates the local listener.</li>
-  <li><strong>Recent sync:</strong> Evidence that the Client recently pulled configuration from the panel. It does not prove the target application responded.</li>
-  <li><strong>Running:</strong> A Client status showing that the Forward process is active. It is not final application proof.</li>
-  <li><strong>Single:</strong> The simplest supported connection mode, using one route path for a request.</li>
-  <li><strong>Race:</strong> A redundancy or path-selection mode. It is not bandwidth aggregation, and behavior depends on platform and transport.</li>
-  <li><strong>Bond:</strong> An advanced mode used only when the package and platform explicitly support its published requirements. It does not guarantee doubled speed or use of every path.</li>
-  <li><strong>Sidecar:</strong> Optional intermediate target-side transport required by some Bond routes. It is not the target application.</li>
-  <li><strong>Application verification:</strong> A real request made with the intended protocol that receives the expected response, ideally confirmed in target logs.</li>
+<li><strong>Find the word</strong> in the table below.</li>
+<li><strong>Read the one-line meaning.</strong> Stop there if it already makes sense.</li>
+<li><strong>Open the guide named next to it</strong> when you want to use the word, not just read it.</li>
 </ol>
+<table>
+<thead>
+<tr><th>Word</th><th>What it means</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Active plan</strong></td><td>The plan you paid for that is still valid. Forwards only run while a plan is active.</td></tr>
+<tr><td><strong>Forward</strong></td><td>One line you draw on the panel: a destination goes in, a local port comes out.</td></tr>
+<tr><td><strong>Forward Route</strong></td><td>The line your traffic leaves from. Pick the one closest to the destination.</td></tr>
+<tr><td><strong>Target Host</strong></td><td>The address of the game or service you want to reach.</td></tr>
+<tr><td><strong>Target Port</strong></td><td>The port that address listens on.</td></tr>
+<tr><td><strong>Local Listen Port</strong></td><td>The port on your own device that the panel hands you. Your game uses this one.</td></tr>
+<tr><td><strong>Transport</strong></td><td>Whether the traffic is TCP, UDP, or both. Games are usually UDP.</td></tr>
+<tr><td><strong>Client</strong></td><td>The app that carries the line on your device.</td></tr>
+<tr><td><strong>Running</strong></td><td>The state the app shows when the line is up.</td></tr>
+<tr><td><strong>Recent sync</strong></td><td>The last time the app talked to the panel. A fresh time means the client is healthy.</td></tr>
+<tr><td><strong>Ultra</strong></td><td>How every line is carried. It keeps the route steady while you play.</td></tr>
+<tr><td><strong>Application verification</strong></td><td>Testing the game itself, not a ping.</td></tr>
+</tbody>
+</table>
 
 <h2>How to know it worked</h2>
-<p>You can identify which value belongs in each visible field, distinguish delivery and process states from application success, and choose the correct guide without guessing.</p>
+<p>You read a guide and no word stopped you.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before guessing a value or sharing a secret.</strong> Use the plain cross-references below, then ask your administrator or support to explain the visible label in context.</p>
+<p><strong>Stop</strong> and ask support when two guides seem to disagree. Do not guess at settings - a wrong guess costs more time than the question.</p>
 
 <h2>Related guides</h2>
-<p>Start with “Get Connected in Five Minutes.” Use “Create Your First Forward” for form fields, “Connect and Verify” for addresses and proof, “Choose a Connection Mode” for Single, Race, and Bond, and “Configure a Sidecar” only when the published route requires one.</p>
+<p>Start at <a href="/knowledgebase?thread=getting-started-five-minute-overview">get connected in five minutes</a>, and keep <a href="/knowledgebase?thread=troubleshooting-common-mistakes">troubleshoot common problems</a> nearby.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -789,60 +592,50 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '安装客户端', '在 Windows、Android 或 Linux 上安装并登录，然后确认客户端在线。', '<h2>你将完成什么</h2>
-<p>你将在 Windows、Android 或 Linux 上安装并登录客户端，随后确认设备在线且已经收到最近的转发配置。</p>
+    topic.id, 'zh-Hans', NULL, '安装客户端', '在 Windows、Android 或 Linux 上安装并登录，然后确认客户端在线。', '<p>在你玩游戏的那台设备上装一次客户端，登录之后让它一直开着就行。以后只要偶尔看一眼线路还在不在。</p>
+
+<h2>你将完成什么</h2>
+<p>客户端装好、用面板账号登录，并且在面板里显示为在线。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>Windows 登录需要面板提供的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
-  <li>Android 需要 arm64、Android 8.0+ 设备，并允许系统建立 VPN 连接。</li>
-  <li>Linux 主机需要 systemd、Python 3、网络访问能力和相当于 root 的权限。</li>
-  <li><strong>Linux ARM64 单文件安装包仅支持 Debian 11、12、13。</strong>其他发行版或 amd64 主机请使用对应的 Linux 安装命令。</li>
-  <li>登录信息和复制的命令都属于秘密；Linux 安装命令包含可直接用于代理身份验证的令牌。</li>
+<li>你的面板邮箱和密码。</li>
+<li>你玩游戏用的设备。客户端支持 Windows、Android 和 Linux。</li>
+<li>手机或平板需要 Android 8.0 以上。</li>
+<li>Linux 需要 64 位 ARM（arm64）机器，并且能执行一条 root 命令。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 客户端安装路径
-accDescr: 按设备系统选择 Windows、Android 或 Linux 安装流程，完成后都要确认客户端最近同步。
-A[选择设备] --&gt; B{操作系统}
-B -- Windows --&gt; C[下载 Windows 应用]
-B -- Android --&gt; D[安装 arm64 Android 应用]
-B -- Linux --&gt; E[复制 Linux 安装命令]
-C --&gt; F[确认最近同步]
-D --&gt; F
-E --&gt; F</pre>
-<p>三个平台的安装入口和状态名称不同，但结束条件一致：目标设备上的客户端已连接，并且面板显示最近同步。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 页面显示 Windows、Android 和 Linux 安装入口">
-  <figcaption>演示截图：按钮和同步时间用于说明位置，不代表你的设备状态。</figcaption>
-</figure>
 <ol>
-  <li><strong>Windows：</strong>打开 <strong>Tenant → Clients</strong>，选择 <strong>Download Windows App</strong>。</li>
-  <li>安装并打开应用，填写 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
-  <li>选择 <strong>Connect</strong>，确认出现 <strong>Connection successful!</strong>，全局状态为 <strong>Connected</strong>，可用转发显示 <strong>Running</strong>。</li>
-  <li><strong>Android：</strong>在 arm64、Android 8.0+ 设备上安装应用并登录。</li>
-  <li>同意 Android 的 VPN 授权，只选择应用列出的受支持 LeiGod 服务。</li>
-  <li>观察状态从 <strong>Ready to connect</strong> 经过 <strong>Connecting...</strong> 变为 <strong>Connected</strong>。不要据此承诺 Android 支持 Race 或 MPTCP。</li>
-  <li><strong>Linux：</strong>打开 <strong>Tenant → Clients</strong>，展开 <strong>Linux Install</strong>，选择 <strong>Copy Install Command</strong>。</li>
-  <li>如果使用 <strong>Linux ARM64 Installer</strong>，请确认主机是 arm64/aarch64，并且操作系统为 Debian 11、12 或 13。</li>
-  <li>以相当于 root 的权限运行一次复制的命令；不要把它粘贴到聊天、工单、日志或共享历史记录。</li>
-  <li>确认安装器输出 <code>installed leikwan-client-agent</code>。</li>
-  <li>回到面板查看最近同步；也可在主机上确认 <code>config_pull_state.json</code> 的 <code>status</code> 为 <code>ok</code>。</li>
+<li><strong>打开 Clients 页面。</strong>需要的东西都在这一页。</li>
+<li><strong>安装客户端。</strong>Windows 点 <strong>Download Windows App</strong>；手机装 arm64 安装包；Linux 点 <strong>Copy Install Command</strong>，再执行这条命令。</li>
+<li><strong>登录。</strong>用面板的邮箱和密码。进去之后客户端会显示 <strong>Connection successful!</strong>。</li>
+<li><strong>让它一直开着。</strong>客户端显示 <strong>Connected</strong>，开关显示 <strong>Running</strong>。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 客户端安装路径
+accDescr: 按设备系统选择安装方式，登录后确认客户端在线
+A[选择设备] --> B[操作系统]
+B --> C[下载 Windows 应用]
+B --> D[安装 arm64 Android 应用]
+B --> E[复制 Linux 安装命令]
+C --> F[登录]
+D --> F
+E --> F
+F --> G[客户端显示 Connected 和 Running]
+</pre>
+<p>三种设备最后都停在同一处：客户端已经登录，面板里能看到它最近同步过。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 页面上的 Windows 下载按钮和 Linux 安装命令"><figcaption>下载入口和 Linux 安装命令都在 Clients 页面上。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>面板应显示预期客户端的最近同步。Windows 同时显示 <strong>Connection successful!</strong>、<strong>Connected</strong> 和转发的 <strong>Running</strong>；Android 到达 <strong>Connected</strong>；Linux 安装完成且拉取状态正常。之后仍需单独验证真实应用连接。</p>
+<p>看两处。客户端显示 <strong>Connected</strong>，Clients 页面里这台设备有最近同步时间。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止公开凭据或反复运行秘密命令。</strong>核对 Master URL、设备时间、网络和权限。Android 要确认 VPN 授权；Linux 要确认 systemd 与 Python 3 可用。收集错误时删除代理身份验证令牌等秘密内容。</p>
+<p>如果一直停在 <strong>Connecting...</strong>，<strong>先停止</strong>，重新登录一次。按可能性排：密码不对，或者账号还没生效；Android 把客户端在后台休眠了；Linux 命令没有用 root 执行。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
-</ul>
+<p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。装好还没有转发，先看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。有问题可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>；没有屏幕的机器看<a href="/knowledgebase?thread=no-gui-clients">无界面运行客户端</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -859,56 +652,49 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '创建第一条转发', '选择线路方案、填写目标地址并记下系统分配的本地端口。', '<h2>你将完成什么</h2>
-<p>你将从已生效的套餐创建第一条转发，只填写表单中看得见的目标和传输选项，并记下应用后续连接所需的本地端口。</p>
+    topic.id, 'zh-Hans', NULL, '创建第一条转发', '选择线路方案、填写目标地址并记下系统分配的本地端口。', '<p>一条转发就是你在面板上画的一条线：你的游戏或服务在哪里，以及本机用哪个端口去连它。</p>
+
+<h2>你将完成什么</h2>
+<p>一条保存好的转发，加上一个分配给你的本地端口。下一条指南要用这个端口，先记下来。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>确认套餐或服务状态为<strong>有效</strong>。</li>
-  <li>准备目标服务的主机名或 IP 地址。</li>
-  <li>确认目标端口，以及应用使用 TCP、UDP 还是两者。</li>
-  <li>不要猜测表单之外的内部设置。</li>
+<li>一个有效套餐，面板才允许保存转发。</li>
+<li>你的游戏或服务真正监听的地址和端口。</li>
+<li>它需要哪种传输方式：TCP、UDP 还是两者都要。游戏一般是 UDP。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 第一条转发表单路径
-accDescr: 打开有效套餐，选择转发线路，填写目标和传输方式，保存后等待预配完成并记下系统分配的本地端口。
-A[打开有效套餐] --&gt; B[选择 Forward Route]
-B --&gt; C[填写 Target Host 和 Target Port]
-C --&gt; D[选择 Transport]
-D --&gt; E[保存]
-E --&gt; F[等待转发可用]
-F --&gt; G[记下分配的本地端口]</pre>
-<p>第一张表单只需要线路方案、目标地址、目标端口、本地端口偏好和传输类型。保存会启动预配流程，系统分配的本地端口是下一步连接客户端时要使用的值。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单显示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
-  <figcaption>演示截图：如果没有指定端口，把 Local Listen Port 留空，让面板分配。</figcaption>
-</figure>
 <ol>
-  <li>打开已生效的服务，选择 <strong>Create Forward</strong>。</li>
-  <li>在 <strong>Forward Route</strong> 中选择系统提供的线路方案。</li>
-  <li>在 <strong>Target Host</strong> 填写目标主机名或 IP。</li>
-  <li>在 <strong>Target Port</strong> 填写目标服务端口。</li>
-  <li>没有指定安全端口时，将 <strong>Local Listen Port</strong> 留空，让系统分配本地端口。</li>
-  <li>在 <strong>Transport</strong> 中为仅使用 TCP 的应用选择 <strong>TCP</strong>。</li>
-  <li>应用同时需要两种传输时选择 <strong>TCP + UDP</strong>，仅使用 UDP 时才选择 <strong>UDP</strong>。</li>
-  <li>选择 <strong>Create Forward</strong> 完成保存。</li>
-  <li>等待预配完成，再从转发卡片记下系统分配的本地端口。</li>
+<li><strong>打开 Forwards，点 Create Forward。</strong></li>
+<li><strong>选择 Forward Route。</strong>挑离目标最近的那条线路。所有线路都用 ultra，这里不需要再决定别的。</li>
+<li><strong>填写 Target Host 和 Target Port。</strong>这里要填游戏自己连的地址，不是你下载游戏的网站地址。</li>
+<li><strong>选择 Transport</strong>，也就是你的服务需要的传输方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>保存。</strong>Local Listen Port 用默认建议值就行，除非你有特别的理由要改。</li>
+<li><strong>记下分配给你的本地端口。</strong>几秒后它会显示在这一行上。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 第一条转发的表单路径
+accDescr: 打开有效套餐，选择转发线路，填写目标和传输方式，保存后记下分配的本地端口
+A[打开有效套餐] --> B[选择 Forward Route]
+B --> C[填写 Target Host 和 Target Port]
+C --> D[选择 Transport]
+D --> E[保存]
+E --> F[等待转发可用]
+F --> G[记下分配的本地端口]
+</pre>
+<p>表单只问线路、目标、传输方式和本地端口，其余都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单，包含线路、目标地址、目标端口和传输方式"><figcaption>Create Forward 表单，真正要你决定的只有四个字段。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>新转发卡片应显示预期的目标和本地端口。保存记录、预配完成、客户端最近同步、显示 <strong>Running</strong> 和应用成功是五个不同检查点；先等待配置可用，再在客户端同步后验证真实请求。</p>
+<p>这一行会稳定停在已保存状态，而不是反复显示预配中，并且本地端口已经填好。接着去 Clients 页面，能看到准备承载这条转发的设备有最近同步时间。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止猜测隐藏选项。</strong>如果没有可选的 Forward Route，或目标地址不确定，请确认套餐有效，只修正上述可见字段，并联系管理员发布合适的线路方案。</p>
+<p>面板不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经失效；目标地址或端口填错；你填的本地端口已经被占用——清空它，让面板重新分配一个。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
+<p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。客户端还没装的话，先看<a href="/knowledgebase?thread=install-client">安装客户端</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -925,58 +711,45 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '连接并验证', '选择正确的客户端地址，测试服务并确认转发已经工作。', '<h2>你将完成什么</h2>
-<p>你将根据应用所在设备选择正确的客户端地址，通过转发发出真实请求，并区分面板状态、运行连接和目标应用成功这几类证据。</p>
+    topic.id, 'zh-Hans', NULL, '连接并验证', '选择正确的客户端地址，测试服务并确认转发已经工作。', '<p>转发已经保存，客户端也在线了。最后一步是告诉游戏该连哪里。</p>
+
+<h2>你将完成什么</h2>
+<p>让游戏指向客户端，并且确认流量真的在走。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>记下转发的本地端口。</li>
-  <li>确认客户端有最近同步，转发显示 <strong>Running</strong>。</li>
-  <li>确认应用与客户端在同一台设备上，还是位于另一台设备。</li>
-  <li>准备符合应用协议的测试；仅检查 TCP 端口不能证明 HTTP、SSH、数据库或游戏请求可用。</li>
+<li>一条保存好的转发，以及面板分配的本地端口。</li>
+<li>运行客户端的那台设备上，客户端已经装好并登录。</li>
+<li>游戏开着的时候留几分钟做测试。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 选择客户端连接地址
-accDescr: 应用与客户端同机时使用回环地址，跨设备时仅使用可达的 Windows 或 Linux 客户端主机地址并按需配置网络规则，Android 保持仅回环监听。
-A[确认应用所在设备] --&gt; B{与客户端同机吗}
-B -- 是 --&gt; C[使用 127.0.0.1 和本地端口]
-B -- 否 --&gt; D{客户端平台}
-D -- Windows 或 Linux --&gt; E[使用可达主机地址和端口]
-E --&gt; F[按需允许防火墙安全组或 NAT]
-D -- Android --&gt; G[保持仅回环监听]
-C --&gt; H[测试实际应用协议]
-F --&gt; H
-G --&gt; H</pre>
-<p>地址选择取决于应用在哪里运行。同机连接使用回环地址；跨设备只能通过网络可达的 Windows 或 Linux 客户端主机，并可能需要有限的网络放行；Android 的监听默认仅限回环，除非另有受支持的暴露方案。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果卡片显示本地监听地址、目标、传输类型和 Running 状态">
-  <figcaption>演示截图：连接应用时使用你自己的 Forward 卡片中的本地监听值。</figcaption>
-</figure>
 <ol>
-  <li>应用与客户端同机时，填写 <code>127.0.0.1</code> 和转发的本地端口。</li>
-  <li>另一台设备需要访问 Windows 或 Linux 客户端时，填写可访问的 Windows 或 Linux 客户端主机地址和相同端口。</li>
-  <li>只在主机防火墙中放行所需端口。</li>
-  <li>云主机按需在安全组中放行该端口。</li>
-  <li>客户端位于路由器后方时，仅在网络负责人批准后配置 NAT。</li>
-  <li>不要把 Android 当作跨设备监听器；没有单独暴露方案时，它仅监听回环地址。</li>
-  <li>使用实际应用协议发出请求。</li>
-  <li>检查应用响应；可查看目标端时，再核对目标日志。</li>
+<li><strong>先问一个问题：游戏和客户端在同一台设备上吗？</strong>答案决定你要填哪个地址。</li>
+<li><strong>同一台设备：</strong>用 <code>127.0.0.1</code> 加分配的本地端口。这是最常见的情况，而且只监听回环地址，局域网里其他设备碰不到它。</li>
+<li><strong>不同设备：</strong>用可访问的 Windows 或 Linux 客户端主机地址加同一个端口，并在两台设备之间的防火墙、安全组或 NAT 上放行这个端口。</li>
+<li><strong>启动游戏并连接。</strong>玩的时候看一眼那条转发。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 选择客户端连接地址
+accDescr: 先确认游戏在哪台设备上运行，再决定用回环地址还是客户端主机地址
+A[游戏在哪台设备上运行？] -- 与客户端同机 --> B[使用 127.0.0.1 和本地端口]
+A -- 另一台设备 --> C[使用客户端主机地址]
+B --> D[启动游戏]
+C --> D
+</pre>
+<p>同一台设备时端口只留在回环地址上；跨设备时需要在中间的网络里放行一条路径。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发列表显示分配的本地端口和实时流量"><figcaption>转发列表上能看到本地端口和它承载的流量。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>应用通过所选客户端地址和本地端口获得预期响应，目标日志也能对应到该请求时，连接才真正通过。<strong>Connected</strong>、<strong>Running</strong> 和开放的本地端口都是中间状态，不能单独证明目标应用已处理请求。</p>
+<p>看两处。客户端显示这条线路 running，转发列表在你玩的时候有进来的流量。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止开放大范围端口；公网 IP 并非默认连接入口。</strong>重新核对同机或跨设备地址、本地端口和目标服务；先从目标主机测试后端，再提交已去除秘密的错误、时间、客户端平台和转发名称。</p>
+<p><strong>先停止</strong>，先核对地址。按可能性排：端口和分配的本地端口不一致；跨设备时被防火墙或 NAT 挡住了；目标服务本身没起来——从目标服务自己的主机测试目标服务，再看目标日志。测试时要测实际应用协议，不要只 ping。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
+<p>还是不通就看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>。忘了端口是多少，回<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>看一眼。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -993,198 +766,48 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '选择连接模式', '按稳定、容错或多路径需求理解 Single、Race 和 Bond。', '<h2>你将完成什么</h2>
-<p>你将按稳定、容错和多路径需求理解 Single、Race 与 Bond，为转发选择已被线路方案和客户端平台支持的连接模式，并避开无法保证的性能承诺。</p>
+    topic.id, 'zh-Hans', NULL, '排查常见问题', '从看得见的症状开始，按最短且安全的顺序恢复连接。', '<p>游戏连不上的时候，几乎都是这三个原因之一。按顺序查一遍，通常一两分钟就能回到游戏里。</p>
+
+<h2>你将完成什么</h2>
+<p>找出这三个常见原因里属于你的那一个，修好它，重新进游戏。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>如果条件允许，先让一条基础转发稳定工作。</li>
-  <li>阅读套餐发布的线路约定，并确认客户端平台。</li>
-  <li>分清自己需要的是简单稳定、路径容错，还是明确受支持的 Bond 方案。</li>
-  <li>不要只因为名称听起来更快就更改模式。</li>
+<li>打开面板，并且保证你玩游戏那台设备上的客户端在运行。</li>
+<li>你之前跟着做的那篇指南，万一要再查一次本地端口。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 连接模式选择路径
-accDescr: 需要最简单的稳定路径时选择 Single，需要受支持的非聚合容错时选择 Race，只有方案明确支持且要求均已核实时才选择 Bond。
-A[你需要什么结果] --&gt; B{最简单的稳定路径吗}
-B -- 是 --&gt; C[选择 Single]
-B -- 否 --&gt; D{需要非聚合容错吗}
-D -- 是 --&gt; E[选择 Race]
-D -- 否 --&gt; F{方案明确支持 Bond 吗}
-F -- 是 --&gt; G[选择 Bond 并核对要求]
-F -- 否 --&gt; H[咨询管理员]</pre>
-<p>安全默认选项是 Single。Race 用于受支持的路径选择或容错，不会合并带宽；Bond 只适用于发布的线路约定明确支持该套餐和平台的情况。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果页显示用户可见的线路结果，而不是内部 Single、Race 或 Bond 组合">
-  <figcaption>演示截图：租户检查线路结果和状态，内部拓扑由方案管理。</figcaption>
-</figure>
 <ol>
-  <li>需要最简单、稳定的连接时选择 <strong>Single</strong>。</li>
-  <li>线路约定提供至少两个可用端点，且需要不聚合带宽的容错时选择 <strong>Race</strong>。</li>
-  <li>Race 不是带宽聚合。</li>
-  <li>Linux 的 TCP Race 通常每条连接选择一个胜出路径。</li>
-  <li>Linux 的 UDP Race 可能把数据报发送到多个可用路径。</li>
-  <li>Race 的具体行为因客户端平台而异，Android 不承诺 Race 或 MPTCP。</li>
-  <li>只有已发布的线路约定明确支持时才选择 <strong>Bond</strong>。</li>
-  <li>逐项核对 Bond 要求；仅在线路约定要求时使用 Sidecar。</li>
-  <li>支持范围不清楚时咨询管理员，不要猜测。</li>
+<li><strong>客户端同步正常吗？</strong>Clients 页面应该显示最近同步。没有的话，重启客户端，等几秒。</li>
+<li><strong>地址是否正确？</strong>和客户端同一台设备就用 127.0.0.1 加本地端口；不同设备就用客户端主机地址。</li>
+<li><strong>端口已放行吗？</strong>只需要放行你真正用的那个端口，防火墙、安全组或 NAT 上放行一条就够。</li>
+<li><strong>转发和线路健康吗？</strong>这一行不应该停在预配中，并且从目标服务自己的主机测试目标服务时应该有回应。</li>
+<li><strong>还是不行？</strong>打开 View Diagnostics，把结果和转发名称一起发给支持。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 从症状开始排查
+accDescr: 从游戏连不上开始，依次检查客户端同步、地址，最后检查目标服务
+A[游戏连不上] --> B[客户端同步正常吗？]
+B -- 否 --> C[重启客户端再试]
+B -- 是 --> D[地址和端口正确吗？]
+D -- 否 --> E[改用 127.0.0.1 或客户端主机地址]
+E --> C
+D -- 是 --> F[从目标服务自己的主机测试目标服务]
+F --> G[打开 View Diagnostics 并联系支持]
+</pre>
+<p>从头到尾走一遍，别跳步。跳过的步骤通常最后还要回来补。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="诊断页面显示客户端同步状态和转发健康摘要"><figcaption>View Diagnostics 会把客户端同步、转发状态和最后一次错误放在一起。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>连接模式必须同时符合套餐约定和客户端平台能力，真实应用也要在预期条件下成功。Race 应验证一个可用路径失效后受支持的请求仍能继续；Bond 应核对约定和实际结果，不能根据状态推断速度翻倍、跑满带宽或所有路径都被使用。</p>
+<p>客户端显示这条线路 running，你玩的时候转发列表又出现流量。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止承诺加速倍数或所有路径同时工作。</strong>如果 Single 可用且稳定，先恢复 Single，记录失败的平台和线路方案，再请管理员确认所需的 Race 或 Bond 行为是否受支持。</p>
+<p>在改别的东西之前，<strong>先停止</strong>。不要随机修改拓扑——那样只会盖住真正的原因，让下一次排查更慢。上面四项都干净的话，把诊断结果发给支持，这是从这里出发最快的路。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=bond-sidecar-setup">配置 Sidecar</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'connection-modes-single-race-bond'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'zh-Hans'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'zh-Hans', NULL, '配置 Sidecar', '仅在线路方案明确需要时创建并验证 Sidecar。', '<h2>你将完成什么</h2>
-<p>你将仅在线路方案明确要求时创建并验证 Sidecar。Sidecar 是目标侧的中间传输组件，不是目标应用，也不是 Bond 转发的通用必备组件。</p>
-
-<h2>开始前准备</h2>
-<ul>
-  <li>确认所选 Bond 套餐已发布的线路约定明确要求 Sidecar。</li>
-  <li>准备一台可以访问后端服务的目标侧主机。</li>
-  <li>向管理员确认 <strong>Sidecar Host</strong> 和 Bond 传输端口。</li>
-  <li>准备 Sidecar 主机上相当于 root 的权限。</li>
-  <li>面板生成的安装命令和所有凭据都必须保密。</li>
-</ul>
-
-<h2>操作步骤</h2>
-<pre class="mermaid">flowchart LR
-accTitle: 使用 Sidecar 的 Bond 线路
-accDescr: 客户端经过托管的 Slave 路径到达中间 Sidecar，再由 Sidecar 连接目标服务。
-A[客户端] --&gt; B[托管 Slave 路径]
-B --&gt; C[Sidecar]
-C --&gt; D[目标服务]</pre>
-<p>Sidecar 位于托管路径与目标服务之间。它既要在线，也要能访问后端监听；但最终仍需通过真实应用请求单独验证目标服务。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints 表单显示主机和三个监听端口字段">
-  <figcaption>演示截图：只有已发布线路约定要求时，才创建租户自有 endpoint。</figcaption>
-</figure>
-<ol>
-  <li>在 <strong>Advanced</strong> 下打开 <strong>Target Endpoints</strong>。</li>
-  <li>选择 <strong>Create</strong> 标签页。</li>
-  <li>在 <strong>Create Transport Endpoint</strong> 中填写容易识别的 <strong>Name</strong>。</li>
-  <li>填写管理员确认的 <strong>Sidecar Host</strong>。</li>
-  <li>在 <strong>Transport Listen Port</strong> 填写获准的 Bond 传输端口。</li>
-  <li>选择 <strong>Save Transport Endpoint</strong>。</li>
-  <li>在卡片中打开 <strong>Install Command</strong> 并复制，但不要展示命令内容。</li>
-  <li>以相当于 root 的权限在 Sidecar 主机上运行命令。</li>
-  <li>回到面板，等待 <strong>Last Heartbeat</strong>、<strong>Agent Version</strong> 和 <strong>Last Status</strong> 更新。</li>
-  <li>从 Sidecar 主机直接测试配置目标地址和端口上的后端监听服务。</li>
-  <li>根据已发布线路约定创建或刷新 Bond 转发，并验证客户端连接。</li>
-</ol>
-
-<h2>如何确认成功</h2>
-<p>Sidecar 应报告最近心跳和预期代理状态，Bond 转发也应能把真实应用请求送到目标。仅有心跳不能证明后端健康；必须另行测试后端监听服务，并尽可能在目标日志中确认请求。</p>
-
-<h2>如果没有成功</h2>
-<p><strong>先停止随意更改端口、地址或线路设置。</strong>没有心跳时检查 Sidecar 服务与出站网络；心跳正常但应用失败时，从 Sidecar 主机测试后端。联系支持时不要提交令牌、密码、命令、密钥、会话或线路材料。</p>
-
-<h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=connection-modes-single-race-bond">选择连接模式</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'bond-sidecar-setup'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'zh-Hans'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'zh-Hans', NULL, '排查常见问题', '从看得见的症状开始，按最短且安全的顺序恢复连接。', '<h2>你将完成什么</h2>
-<p>你将从看得见的连接症状开始，沿客户端、转发、线路和目标服务逐段检查，修复第一个失败边界，而不是用随机改动掩盖原问题。</p>
-
-<h2>开始前准备</h2>
-<ul>
-  <li>记下准确错误、发生时间、客户端平台、转发名称和本地端口。</li>
-  <li>检查期间保留已保存的转发，不要先改线路拓扑。</li>
-  <li>截图和支持消息中不得包含密码、令牌、生成命令、密钥、会话或线路材料。</li>
-  <li>最终重试必须使用真实应用协议。</li>
-</ul>
-
-<h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 从症状开始排查连接
-accDescr: 请求失败后依次检查最近同步、客户端地址、端口访问、转发与线路健康和目标服务，最后再使用诊断与支持。
-A[应用请求失败] --&gt; B{最近同步正常吗}
-B -- 否 --&gt; C[恢复客户端同步]
-B -- 是 --&gt; D{地址正确吗}
-D -- 否 --&gt; E[使用回环或可达客户端主机]
-D -- 是 --&gt; F{端口已放行吗}
-F -- 否 --&gt; G[只放行所需端口]
-F -- 是 --&gt; H{转发和线路健康吗}
-H -- 否 --&gt; I[打开 View Diagnostics]
-H -- 是 --&gt; J[从目标主机测试服务]
-C --&gt; K[重试应用]
-E --&gt; K
-G --&gt; K
-I --&gt; L[整理诊断并联系支持]
-J --&gt; L</pre>
-<p>排查顺序从客户端逐步走向目标端。发现第一个失败边界后只修复该处，再重试一次，同时保存错误证据，避免随机修改拓扑。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="客户端诊断页面显示先 Run Diagnostics 再 View Diagnostics，并显示健康结果">
-  <figcaption>演示截图：先运行一次新诊断，再打开 View Diagnostics 查看详情。</figcaption>
-</figure>
-<ol>
-  <li>确认预期客户端有最近同步。</li>
-  <li>确认转发显示 <strong>Running</strong>。</li>
-  <li>检查地址是否正确：应用同机时使用 <code>127.0.0.1</code>。</li>
-  <li>跨设备时只能使用可达的 Windows 或 Linux 客户端主机地址，Android 不作为跨设备监听器。</li>
-  <li>确认本地端口与转发卡片一致。</li>
-  <li>跨设备连接时确认端口已放行，并只在适用的防火墙、安全组和 NAT 中开放该端口。</li>
-  <li>在 <strong>View Diagnostics</strong> 检查转发和线路是否健康。</li>
-  <li>先从目标服务自己的主机测试目标服务。</li>
-  <li>使用实际应用协议重新测试。</li>
-  <li>仍然失败时，整理已脱敏的诊断信息并联系支持人员。</li>
-</ol>
-
-<h2>如何确认成功</h2>
-<p>第一个失败边界恢复后，真实应用请求应成功。最近同步只证明配置送达，<strong>Running</strong> 只证明本地进程运行，目标应用返回正确结果才证明整条连接完成。</p>
-
-<h2>如果没有成功</h2>
-<p><strong>先停止全部重装、开放大范围端口或随机更改拓扑。</strong>保存错误与诊断，向支持提供转发名称、客户端平台、测试时间、地址类型、本地端口和脱敏结果，绝不发送秘密。</p>
-
-<h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1201,42 +824,51 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '名词解释', '用通俗语言解释指南中出现的产品和网络术语。', '<h2>你将完成什么</h2>
-<p>你将用通俗语言理解入门指南中的产品和网络术语，从而知道转发该填什么、客户端状态代表什么，以及连接何时才算真正验证成功。</p>
+    topic.id, 'zh-Hans', NULL, '名词解释', '用通俗语言解释指南中出现的产品和网络术语。', '<p>其他指南里出现的词，这里每个用一句话说清楚。遇到看不懂的词就打开这一页，看完再关掉。</p>
+
+<h2>你将完成什么</h2>
+<p>指南里的每个词你都能看懂，不需要读任何技术资料。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>打开正在阅读的指南，把术语与页面中的字段或状态对应起来。</li>
-  <li>外观相似的状态可能代表不同检查点，不要互相替代。</li>
-  <li>询问术语含义时，不要复制任何密码、令牌、命令、密钥或内部材料。</li>
+<li>不用准备什么。这一页适合一直开在另一个标签页里。</li>
+<li>少了你要查的词，告诉支持，我们会补上。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-  <li><strong>有效套餐：</strong>当前允许创建并使用转发的已购买套餐或服务。</li>
-  <li><strong>转发：</strong>把客户端监听收到的流量，经系统提供的线路送到目标主机和端口的一条已保存规则。</li>
-  <li><strong>Forward Route：</strong>第一张转发表单提供的线路方案，应选择与当前服务相符的已发布选项。</li>
-  <li><strong>Target Host：</strong>目标服务的主机名或 IP 地址。</li>
-  <li><strong>Target Port：</strong>目标服务监听的端口。</li>
-  <li><strong>Local Listen Port：</strong>应用连接客户端时使用的本地监听端口。</li>
-  <li><strong>客户端：</strong>在 Windows、Android 或 Linux 上接收转发配置并建立本地监听的软件。</li>
-  <li><strong>最近同步：</strong>证明客户端最近从面板拉取了配置，但不能证明目标应用已经响应。</li>
-  <li><strong>Running：</strong>表示客户端中的转发进程正在运行，不等于应用连接成功。</li>
-  <li><strong>Single：</strong>使用一条受支持路径处理请求的简单连接模式。</li>
-  <li><strong>Race：</strong>用于路径选择或容错，不是带宽聚合；行为因平台和传输类型而异。</li>
-  <li><strong>Bond：</strong>只有套餐与平台明确支持发布要求时才使用的高级模式；不保证速度翻倍、跑满带宽或每条路径都参与。</li>
-  <li><strong>Sidecar：</strong>某些 Bond 线路要求的可选目标侧中间传输，不是目标应用。</li>
-  <li><strong>应用验证：</strong>使用预定协议发出真实请求并获得正确响应，最好还能在目标日志中确认。</li>
+<li><strong>在下面的表里找到那个词。</strong></li>
+<li><strong>读那一句话的解释。</strong>看懂就可以停下了。</li>
+<li><strong>想真正用起来，就去打开旁边对应的指南。</strong></li>
 </ol>
+<table>
+<thead>
+<tr><th>词</th><th>意思</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>有效套餐</strong></td><td>你付过钱而且还在有效期内的套餐。只有套餐有效时转发才会运行。</td></tr>
+<tr><td><strong>转发</strong></td><td>你在面板上画的一条线：一头是目标，另一头是本机端口。</td></tr>
+<tr><td><strong>Forward Route</strong></td><td>流量从哪条线路出去。挑离目标最近的那条。</td></tr>
+<tr><td><strong>Target Host</strong></td><td>你要连接的游戏或服务的地址。</td></tr>
+<tr><td><strong>Target Port</strong></td><td>那个地址监听的端口。</td></tr>
+<tr><td><strong>Local Listen Port</strong></td><td>面板分给你自己设备的端口。游戏用这个。</td></tr>
+<tr><td><strong>Transport</strong></td><td>流量是 TCP、UDP 还是两者都要。游戏一般是 UDP。</td></tr>
+<tr><td><strong>客户端</strong></td><td>在你设备上承载这条线路的应用。</td></tr>
+<tr><td><strong>Running</strong></td><td>线路通了以后客户端显示的状态。</td></tr>
+<tr><td><strong>最近同步</strong></td><td>客户端最后一次和面板通信的时间。时间很新说明客户端正常。</td></tr>
+<tr><td><strong>ultra</strong></td><td>所有线路都用它承载。它让你玩的时候线路保持稳定。</td></tr>
+<tr><td><strong>应用验证</strong></td><td>用游戏本身去测，而不是只 ping 一下。</td></tr>
+</tbody>
+</table>
 
 <h2>如何确认成功</h2>
-<p>你能够为可见字段选择正确的值，区分配置送达、进程运行和应用成功，并根据问题跳转到合适的指南，而不是猜测内部设置。</p>
+<p>你读完一篇指南，中途没有被任何词卡住。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止猜值或分享秘密。</strong>使用下方链接回到对应操作场景；仍不清楚时，请管理员或支持人员结合页面上的可见标签解释。</p>
+<p>两篇指南看起来说法不一致时，<strong>先停止</strong>，直接问支持。设置不要靠猜——猜错花的时间比问一句多得多。</p>
 
 <h2>相关指南</h2>
-<p>首次使用请阅读<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a>；填写表单请看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>；地址与成功证据请看<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；模式选择请看<a href="/knowledgebase?thread=connection-modes-single-race-bond">选择连接模式</a>；仅在线路明确要求时阅读<a href="/knowledgebase?thread=bond-sidecar-setup">配置 Sidecar</a>。</p>
+<p>先从<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a>开始，再把<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>放在手边。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1378,60 +1010,50 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '安裝用戶端', '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。', '<h2>你將完成什麼</h2>
-<p>你會在 Windows、Android 或 Linux 上安裝並登入用戶端，接著確認裝置已在線，並收到最近的轉發設定。</p>
+    topic.id, 'zh-TW', NULL, '安裝用戶端', '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。', '<p>在你玩遊戲的那台裝置上裝一次用戶端，登入之後讓它一直開著就好。之後只要偶爾看一眼線路還在不在。</p>
+
+<h2>你將完成什麼</h2>
+<p>用戶端裝好、用面板帳號登入，並且在面板裡顯示為在線。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>Windows 登入需要 App 顯示的 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
-  <li>Android 需要 arm64、Android 8.0+ 裝置，並準備允許系統建立 VPN 連線。</li>
-  <li>Linux 主機需要 systemd、Python 3、可用的網路，以及等同 root 的權限。</li>
-  <li><strong>Linux ARM64 單檔安裝包僅支援 Debian 11、12、13。</strong>其他發行版或 amd64 主機請使用對應的 Linux 安裝指令。</li>
-  <li>登入資訊和複製的指令都屬於機密；Linux 安裝指令內含用於 Agent 身分驗證權杖。</li>
+<li>你的面板電子郵件和密碼。</li>
+<li>你玩遊戲用的裝置。用戶端支援 Windows、Android 和 Linux。</li>
+<li>手機或平板需要 Android 8.0 以上。</li>
+<li>Linux 需要 64 位元 ARM（arm64）機器，並且能執行一條 root 指令。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 用戶端安裝流程
-accDescr: 依裝置的作業系統選擇 Windows、Android 或 Linux 安裝流程，完成後都要確認用戶端最近同步。
-A[選擇裝置] --&gt; B{作業系統}
-B -- Windows --&gt; C[下載 Windows App]
-B -- Android --&gt; D[安裝 arm64 Android App]
-B -- Linux --&gt; E[複製 Linux 安裝指令]
-C --&gt; F[確認最近同步]
-D --&gt; F
-E --&gt; F</pre>
-<p>三個平台的安裝入口和畫面狀態不同，但完成條件一致：目標裝置上的用戶端已連線，面板也顯示最近同步。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 的 Install 頁面顯示 Windows、Android 和 Linux 安裝入口">
-  <figcaption>示範截圖：按鈕和同步時間只用來說明位置，不代表你的裝置狀態。</figcaption>
-</figure>
 <ol>
-  <li><strong>Windows：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），選擇 <strong>Download Windows App</strong>（下載 Windows App）。</li>
-  <li>安裝並開啟 App，填入 <strong>Master URL</strong>、<strong>Email</strong> 和 <strong>Password</strong>。</li>
-  <li>選擇 <strong>Connect</strong>，確認出現 <strong>Connection successful!</strong>，整體狀態為 <strong>Connected</strong>，可用轉發顯示 <strong>Running</strong>。</li>
-  <li><strong>Android：</strong>在 arm64、Android 8.0+ 裝置安裝 App 並登入。</li>
-  <li>允許 Android 的 VPN 要求，只選擇 App 列出的支援的 LeiGod 服務。</li>
-  <li>觀察狀態從 <strong>Ready to connect</strong>，經過 <strong>Connecting...</strong>，最後成為 <strong>Connected</strong>。不能因此承諾 Android 支援 Race 或 MPTCP。</li>
-  <li><strong>Linux：</strong>開啟 <strong>Tenant → Clients → Install</strong>（租戶 → 線路 → Install），展開 <strong>Linux Install</strong>（Linux 安裝），選擇 <strong>Copy Install Command</strong>（複製安裝指令）。</li>
-  <li>如果使用 <strong>Linux ARM64 Installer</strong>，請確認主機是 arm64/aarch64，且作業系統為 Debian 11、12 或 13。</li>
-  <li>以等同 root 的權限執行一次複製的指令；不要貼到聊天、工單、記錄或共用的 Shell 歷程。</li>
-  <li>確認安裝程式輸出 <code>installed leikwan-client-agent</code>。</li>
-  <li>回到面板查看最近同步；也可在主機確認 <code>config_pull_state.json</code> 的 <code>status</code> 為 <code>ok</code>。</li>
+<li><strong>打開 Clients 頁面。</strong>需要的東西都在這一頁。</li>
+<li><strong>安裝用戶端。</strong>Windows 點 <strong>Download Windows App</strong>；手機裝 arm64 安裝包；Linux 點 <strong>Copy Install Command</strong>，再執行這條指令。</li>
+<li><strong>登入。</strong>用面板的電子郵件和密碼。進去之後用戶端會顯示 <strong>Connection successful!</strong>。</li>
+<li><strong>讓它一直開著。</strong>用戶端顯示 <strong>Connected</strong>，開關顯示 <strong>Running</strong>。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 用戶端安裝路徑
+accDescr: 依裝置的作業系統選擇安裝方式，登入後確認用戶端在線
+A[選擇裝置] --> B[作業系統]
+B --> C[下載 Windows App]
+B --> D[安裝 arm64 Android App]
+B --> E[複製 Linux 安裝指令]
+C --> F[登入]
+D --> F
+E --> F
+F --> G[用戶端顯示 Connected 和 Running]
+</pre>
+<p>三種裝置最後都停在同一處：用戶端已經登入，面板裡能看到它最近同步過。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 頁面上的 Windows 下載按鈕和 Linux 安裝指令"><figcaption>下載入口和 Linux 安裝指令都在 Clients 頁面上。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>面板會顯示預期用戶端的最近同步。Windows 也會出現 <strong>Connection successful!</strong>、整體 <strong>Connected</strong> 和轉發 <strong>Running</strong>；Android 到達 <strong>Connected</strong>；Linux 則完成安裝並成功拉取設定。之後仍要另外驗證真實應用程式連線。</p>
+<p>看兩處。用戶端顯示 <strong>Connected</strong>，Clients 頁面裡這台裝置有最近同步時間。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止公開登入資料或重複執行含機密的指令。</strong>核對 Master URL、裝置時間、網路和必要權限。Android 要確認已允許 VPN；Linux 要確認 systemd 與 Python 3 可用。收集診斷時，請移除 Agent 身分驗證權杖等機密內容。</p>
+<p>如果一直停在 <strong>Connecting...</strong>，<strong>請先停止</strong>，重新登入一次。依可能性排：密碼不對，或者帳號還沒生效；Android 把用戶端在背景休眠了；Linux 指令沒有用 root 執行。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
-</ul>
+<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。裝好還沒有轉發，先看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。有問題可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>；沒有螢幕的機器看<a href="/knowledgebase?thread=no-gui-clients">無介面執行用戶端</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1448,57 +1070,49 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '建立第一條轉發', '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。', '<h2>你將完成什麼</h2>
-<p>你會從有效方案建立一條轉發，只填寫畫面上看得到的目標設定，並記下應用程式之後要使用的本機連接埠。</p>
+    topic.id, 'zh-TW', NULL, '建立第一條轉發', '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。', '<p>一條轉發就是你在面板上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
+
+<h2>你將完成什麼</h2>
+<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一條指南要用這個連接埠，先記下來。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>確認方案或服務狀態為<strong>有效</strong>。</li>
-  <li>準備目標服務的主機名稱或 IP 位址。</li>
-  <li>準備目標服務使用的連接埠。</li>
-  <li>確認應用程式需要 TCP、UDP，或兩者都需要。</li>
+<li>一個有效方案，面板才允許儲存轉發。</li>
+<li>你的遊戲或服務真正監聽的位址和連接埠。</li>
+<li>它需要哪種傳輸方式：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 第一條轉發的表單流程
-accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後等待轉發可用，再記下分配的本機連接埠。
-A[開啟有效方案] --&gt; B[選擇轉發路由]
-B --&gt; C[填寫目標主機和目標連接埠]
-C --&gt; D[選擇傳輸方式]
-D --&gt; E[儲存]
-E --&gt; F[等待轉發可用]
-F --&gt; G[記下分配的本機連接埠]</pre>
-<p>表單只需要線路方案、目標、偏好的本地連接埠和傳輸方式。儲存後會開始佈建；下一篇指南真正需要的是分配的本機連接埠。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單顯示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
-  <figcaption>示範截圖：沒有指定連接埠時，把 Local Listen Port 留空，讓面板分配。</figcaption>
-</figure>
 <ol>
-  <li>開啟有效服務，選擇<strong>建立轉發</strong>。</li>
-  <li>在 <strong>Forward Route</strong>（轉發路由）選擇面板提供的線路方案。</li>
-  <li>在 <strong>Target Host</strong>（目標主機）填入目標位址。</li>
-  <li>在 <strong>Target Port</strong>（目標連接埠）填入服務連接埠。</li>
-  <li>除非已取得特定且安全的連接埠，否則將 <strong>Local Listen Port</strong>（本地監聽連接埠）留空，接受系統分配。</li>
-  <li>在 <strong>Transport</strong>（傳輸）選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
-  <li>應用程式同時需要兩種協定時，選擇 <strong>TCP + UDP</strong>。</li>
-  <li>只有完全使用 UDP 的應用程式才選擇 <strong>UDP</strong>。</li>
-  <li>選擇 <strong>Create Forward</strong>（建立轉發）以儲存。</li>
-  <li>等待佈建完成，再從轉發卡片記下系統分配的本機連接埠。</li>
+<li><strong>打開 Forwards，點 Create Forward。</strong></li>
+<li><strong>選擇 Forward Route。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
+<li><strong>填寫 Target Host 和 Target Port。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
+<li><strong>選擇 Transport</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>儲存。</strong>Local Listen Port 用預設建議值就好，除非你有特別的理由要改。</li>
+<li><strong>記下分配給你的本機連接埠。</strong>幾秒後它會顯示在這一列上。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 第一條轉發的表單路徑
+accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後記下分配的本機連接埠
+A[開啟有效方案] --> B[選擇 Forward Route]
+B --> C[填寫 Target Host 和 Target Port]
+C --> D[選擇 Transport]
+D --> E[儲存]
+E --> F[等待轉發可用]
+F --> G[記下分配的本機連接埠]
+</pre>
+<p>表單只問線路、目標、傳輸方式和本機連接埠，其餘都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單，包含線路、目標主機、目標連接埠和傳輸方式"><figcaption>Create Forward 表單，真正要你決定的只有四個欄位。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>新的轉發會顯示預期的目標和本機連接埠。資料已儲存只是第一個檢查點；接著要等設定啟用、用戶端最近同步，最後看到 <strong>Running</strong> 且應用程式成功收到回應。</p>
+<p>這一列會穩定停在已儲存狀態，而不是反覆顯示佈建中，並且本機連接埠已經填好。接著去 Clients 頁面，能看到準備承載這條轉發的裝置有最近同步時間。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止操作，特別是沒有可選的轉發路由，或目標資訊不確定時。</strong>不要猜測隱藏設定。先確認方案有效，只修正上述可見欄位；若沒有合適線路，請管理員發布可用的方案。</p>
+<p>面板不讓儲存時，<strong>請先停止</strong>，別反覆點。三個常見原因：方案已經失效；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓面板重新分配一個。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
+<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1515,58 +1129,45 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '連線並驗證', '選擇正確的用戶端位址，測試服務並確認轉發已經運作。', '<h2>你將完成什麼</h2>
-<p>你會依應用程式所在位置選擇正確的用戶端位址，透過轉發送出要求，並分清面板狀態和目標應用程式確實收到流量的證明。</p>
+    topic.id, 'zh-TW', NULL, '連線並驗證', '選擇正確的用戶端位址，測試服務並確認轉發已經運作。', '<p>轉發已經儲存，用戶端也在線了。最後一步是告訴遊戲該連哪裡。</p>
+
+<h2>你將完成什麼</h2>
+<p>讓遊戲指向用戶端，並且確認流量真的在走。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>記下轉發的本機連接埠。</li>
-  <li>確認用戶端有最近同步，轉發顯示 <strong>Running</strong>。</li>
-  <li>確認應用程式是在用戶端裝置，還是在另一台裝置執行。</li>
-  <li>使用能理解協定的測試；只確認 TCP 連接埠開啟，不代表 HTTP、SSH、資料庫或遊戲要求能正確運作。</li>
+<li>一條儲存好的轉發，以及面板分配的本機連接埠。</li>
+<li>執行用戶端的那台裝置上，用戶端已經裝好並登入。</li>
+<li>遊戲開著的時候留幾分鐘做測試。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 選擇用戶端連線位址
-accDescr: 應用程式與用戶端在同一台裝置時使用迴送位址；不同裝置使用可連到的 Windows 或 Linux 用戶端主機位址並視需要調整網路規則；Android 保持只監聽迴送位址。
-A[確認應用程式所在裝置] --&gt; B{與用戶端在同一台裝置嗎}
-B -- 是 --&gt; C[使用 127.0.0.1 和本機連接埠]
-B -- 否 --&gt; D{用戶端平台}
-D -- Windows 或 Linux --&gt; E[使用可連到的主機位址與連接埠]
-E --&gt; F[視需要開放防火牆安全群組或 NAT]
-D -- Android --&gt; G[保持只監聽迴送位址]
-C --&gt; H[測試實際應用協定]
-F --&gt; H
-G --&gt; H</pre>
-<p>決定使用哪個位址的關鍵，是應用程式在哪裡執行。同一台裝置使用迴送位址；跨裝置只能透過可連到的 Windows 或 Linux 用戶端主機，且可能需要調整網路存取規則。Android 仍維持只監聽迴送位址，除非另有核准且支援的架構。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果卡片顯示本機監聽位址、目標、傳輸方式和 Running 狀態">
-  <figcaption>示範截圖：連線應用程式時，使用自己 Forward 卡片上的本機監聽值。</figcaption>
-</figure>
 <ol>
-  <li>應用程式在用戶端裝置時，填入 <code>127.0.0.1</code> 和轉發的本機連接埠。</li>
-  <li>其他裝置要透過 Windows 或 Linux 用戶端連線時，填入可連到的 Windows 或 Linux 用戶端主機位址和相同連接埠。</li>
-  <li>跨裝置使用時，只在主機防火牆開放該連接埠。</li>
-  <li>若使用雲端主機，也要在安全群組開放相同連接埠。</li>
-  <li>用戶端位於路由器後方時，只有在網路管理者核准後才設定 NAT。</li>
-  <li>不要把 Android 描述成跨裝置監聽服務；除非有核准的支援設計，否則它只監聽迴送位址。</li>
-  <li>用實際應用協定送出要求。</li>
-  <li>檢查回應；若能查看目標服務記錄，也要確認要求確實抵達。</li>
+<li><strong>先問一個問題：遊戲和用戶端在同一台裝置上嗎？</strong>答案決定你要填哪個位址。</li>
+<li><strong>同一台裝置：</strong>用 <code>127.0.0.1</code> 加分配的本機連接埠。這是最常見的情況，而且只監聽迴送位址，區域網路裡其他裝置碰不到它。</li>
+<li><strong>不同裝置：</strong>用可連到的 Windows 或 Linux 用戶端主機位址加同一個連接埠，並在兩台裝置之間的防火牆、安全群組或 NAT 上開放這個連接埠。</li>
+<li><strong>啟動遊戲並連線。</strong>玩的時候看一眼那一列轉發。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 選擇用戶端連線位址
+accDescr: 先確認遊戲在哪台裝置上執行，再決定用迴送位址還是用戶端主機位址
+A[遊戲在哪台裝置上執行？] -- 與用戶端同機 --> B[使用 127.0.0.1 和本機連接埠]
+A -- 另一台裝置 --> C[使用用戶端主機位址]
+B --> D[啟動遊戲]
+C --> D
+</pre>
+<p>同一台裝置時連接埠只留在迴送位址上；跨裝置時需要在中間的網路裡開放一條路徑。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發列表顯示分配的本機連接埠和即時流量"><figcaption>轉發列表上能看到本機連接埠和它承載的流量。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>應用程式透過用戶端位址和本機連接埠取得預期回應。最有力的證明是目標服務記錄中有對應要求。<strong>Connected</strong>、<strong>Running</strong> 和本機連接埠開啟都很有用，但任何一項都不能單獨證明目標應用程式已處理要求。</p>
+<p>看兩處。用戶端顯示這條線路 running，轉發列表在你玩的時候有進來的流量。Android 上用戶端就跑在手機裡，所以那邊的遊戲同樣用 <code>127.0.0.1</code>。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止開放大範圍防火牆規則，也不要假設任何公用 IP 都能使用。</strong>重新確認是同裝置或跨裝置、核對本機連接埠，並從目標服務所在主機測試服務。接著查看診斷，或向支援提供錯誤、時間、用戶端平台和轉發名稱，但不要附上機密。</p>
+<p><strong>請先停止</strong>，先核對位址。依可能性排：連接埠和分配的本機連接埠不一致；跨裝置時被防火牆或 NAT 擋住了；目標服務本身沒起來——從目標服務所在主機測試目標服務，再看目標服務記錄。測試時要測實際應用協定，不要只 ping。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
+<p>還是不通就看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>。忘了連接埠是多少，回<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>看一眼。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1583,198 +1184,48 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '選擇連線模式', '按穩定、容錯或多路徑需求理解 Single、Race 和 Bond。', '<h2>你將完成什麼</h2>
-<p>你會按照穩定、容錯與多路徑需求理解 Single、Race 和 Bond，為轉發選擇線路方案及用戶端平台支援的連線模式，同時避開無法保證的效能承諾。</p>
+    topic.id, 'zh-TW', NULL, '排查常見問題', '從看得見的症狀開始，按最短且安全的順序恢復連線。', '<p>遊戲連不上的時候，幾乎都是這三個原因之一。依序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
+
+<h2>你將完成什麼</h2>
+<p>找出這三個常見原因裡屬於你的那一個，修好它，重新進遊戲。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>如果可以，先讓一條基本轉發穩定運作。</li>
-  <li>閱讀方案已發布的線路約定，並確認用戶端平台。</li>
-  <li>分清楚你需要的是簡單穩定、路徑容錯，或明確支援的 Bond 架構。</li>
-  <li>不要只因模式名稱聽起來比較快就更換設定。</li>
+<li>打開面板，並且保證你玩遊戲那台裝置上的用戶端在執行。</li>
+<li>你之前跟著做的那篇指南，萬一要再查一次本機連接埠。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 連線模式選擇流程
-accDescr: 需要最簡單的穩定路徑時選擇 Single，需要支援的非聚合容錯時選擇 Race，只有方案明確支援且要求都已核對時才選擇 Bond。
-A[你需要什麼結果] --&gt; B{最簡單的穩定路徑嗎}
-B -- 是 --&gt; C[選擇 Single]
-B -- 否 --&gt; D{需要非聚合容錯嗎}
-D -- 是 --&gt; E[選擇 Race]
-D -- 否 --&gt; F{方案明確支援 Bond 嗎}
-F -- 是 --&gt; G[選擇 Bond 並核對要求]
-F -- 否 --&gt; H[詢問管理員]</pre>
-<p>安全的預設值是 Single。Race 用於支援的路徑選擇或容錯，不會合併頻寬；Bond 只有在線路約定明確支援該方案與平台時，才是合適的進階選項。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發結果頁顯示使用者可見的線路結果，而不是內部 Single、Race 或 Bond 組合">
-  <figcaption>示範截圖：租戶檢查線路結果和狀態，內部拓撲由方案管理。</figcaption>
-</figure>
 <ol>
-  <li>需要最簡單且穩定的連線時，選擇 <strong>Single</strong>。</li>
-  <li>線路約定提供至少兩個可用端點，而且需要不聚合頻寬的容錯時，選擇 <strong>Race</strong>。</li>
-  <li>Race 不是頻寬聚合。</li>
-  <li>Linux 的 TCP Race 通常會為每條連線選出一條勝出路徑。</li>
-  <li>Linux 的 UDP Race 可能把資料包送往多條可用路徑。</li>
-  <li>Race 的實際行為依用戶端平台而異；Android 不承諾 Race 或 MPTCP。</li>
-  <li>只有已發布的線路約定明確支援時，才選擇 <strong>Bond</strong>。</li>
-  <li>逐項核對 Bond 的要求；僅在線路約定要求時使用 Sidecar。</li>
-  <li>支援範圍不清楚時詢問管理員，不要自行猜測。</li>
+<li><strong>用戶端同步正常嗎？</strong>Clients 頁面應該顯示最近同步。沒有的話，重新啟動用戶端，等幾秒。</li>
+<li><strong>位址是否正確？</strong>和用戶端同一台裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
+<li><strong>連接埠已開放嗎？</strong>只需要開放你真正用的那個連接埠，防火牆、安全群組或 NAT 上開放一條就夠。</li>
+<li><strong>轉發和線路健康嗎？</strong>這一列不應該停在佈建中，並且從目標服務所在主機測試目標服務時應該有回應。</li>
+<li><strong>還是不行？</strong>打開 View Diagnostics，把結果和轉發名稱一起送給支援。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 從症狀開始排查
+accDescr: 從遊戲連不上開始，依序檢查用戶端同步、位址，最後檢查目標服務
+A[遊戲連不上] --> B[用戶端同步正常嗎？]
+B -- 否 --> C[重新啟動用戶端再試]
+B -- 是 --> D[位址和連接埠正確嗎？]
+D -- 否 --> E[改用 127.0.0.1 或用戶端主機位址]
+E --> C
+D -- 是 --> F[從目標服務所在主機測試目標服務]
+F --> G[開啟 View Diagnostics 並聯絡支援]
+</pre>
+<p>從頭到尾走一遍，別跳步。跳過的步驟通常最後還要回來補。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="診斷頁面顯示用戶端同步狀態和轉發健康摘要"><figcaption>View Diagnostics 會把用戶端同步、轉發狀態和最後一次錯誤放在一起。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>連線模式必須同時符合方案約定和用戶端平台能力，真實應用程式也要在預期條件下成功。Race 應驗證一條可用路徑失效後，受支援的要求仍可繼續；Bond 應核對約定與實際結果，不能只從狀態推論速度加倍、跑滿頻寬或使用所有路徑。</p>
+<p>用戶端顯示這條線路 running，你玩的時候轉發列表又出現流量。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止承諾加速倍數或所有路徑會同時運作。</strong>若 Single 可用且穩定，先改回 Single，記下失敗的平台和線路方案，再請管理員確認需要的 Race 或 Bond 行為是否受支援。</p>
+<p>在改別的東西之前，<strong>請先停止</strong>。不要隨意變更拓撲——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都乾淨的話，把診斷結果送給支援，這是從這裡出發最快的路。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=bond-sidecar-setup">設定 Sidecar</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'connection-modes-single-race-bond'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'zh-TW'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'zh-TW', NULL, '設定 Sidecar', '僅在線路方案明確需要時建立並驗證 Sidecar。', '<h2>你將完成什麼</h2>
-<p>只有 Bond 方案已發布的線路約定明確要求時，你才會建立並驗證 Sidecar。Sidecar 是目標端的中介傳輸元件，不是目標應用程式。</p>
-
-<h2>開始前準備</h2>
-<ul>
-  <li>確認所選 Bond 方案明確要求 Sidecar。</li>
-  <li>準備一台可以連到後端服務的目標端主機。</li>
-  <li>確認核准的 <strong>Sidecar 主機</strong> 與 Bond 傳輸連接埠。</li>
-  <li>準備 Sidecar 主機上等同 root 的權限。</li>
-  <li>面板產生的安裝指令與所有憑證都必須保密。</li>
-</ul>
-
-<h2>操作步驟</h2>
-<pre class="mermaid">flowchart LR
-accTitle: 使用 Sidecar 的 Bond 線路
-accDescr: 用戶端經過受管理的 Slave 路徑與中介 Sidecar，最後連到目標服務。
-A[用戶端] --&gt; B[受管理的 Slave 路徑]
-B --&gt; C[Sidecar]
-C --&gt; D[目標服務]</pre>
-<p>Sidecar 位於受管理路徑與目標服務之間。它必須在線，也要能連到後端；但目標應用程式是否成功，仍需另外驗證。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/06-target-endpoint.png" width="1440" height="960" alt="Target Endpoints 表單顯示主機和三個監聽連接埠欄位">
-  <figcaption>示範截圖：只有已發佈線路約定要求時，才建立租戶自有 endpoint。</figcaption>
-</figure>
-<ol>
-  <li>在<strong>進階</strong>下開啟<strong>目標端點</strong>。</li>
-  <li>選擇<strong>建立</strong>分頁。</li>
-  <li>在<strong>建立傳輸端點</strong>填入容易辨識的<strong>名稱</strong>。</li>
-  <li>填入核准的 <strong>Sidecar 主機</strong>。</li>
-  <li>在<strong>傳輸監聽連接埠</strong>填入核准的 Bond 傳輸連接埠。</li>
-  <li>選擇<strong>儲存傳輸端點</strong>。</li>
-  <li>在端點卡片開啟<strong>安裝指令</strong>並複製，過程中不要暴露內容。</li>
-  <li>以等同 root 的權限在 Sidecar 主機執行指令。</li>
-  <li>回到面板，等待<strong>最後一次心跳</strong>、<strong>代理版本</strong>和<strong>最後狀態</strong>更新。</li>
-  <li>從 Sidecar 主機測試設定的目標位址和連接埠上，後端監聽服務是否可連線。</li>
-  <li>依已發布的線路約定建立或重新整理 Bond 轉發。</li>
-</ol>
-
-<h2>如何確認成功</h2>
-<p>Sidecar 會回報最近的<strong>最後一次心跳</strong>和預期的 Agent 狀態，Bond 轉發也能把真實應用程式要求送到目標。只有心跳不能證明後端健康；請另外測試後端監聽服務，若可以，也在目標服務記錄中確認要求。</p>
-
-<h2>如果沒有成功</h2>
-<p><strong>請先停止隨意更改連接埠、位址或線路設定。</strong>沒有心跳時，檢查 Sidecar 服務和對外網路；心跳正常但應用程式失敗時，從 Sidecar 主機測試後端。向支援提供已清除機密的診斷，但不要分享產生的安裝指令、權杖、密碼、線路金鑰、私密金鑰、內部工作階段或線路資料。</p>
-
-<h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=connection-modes-single-race-bond">選擇連線模式</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
-</ul>
-',
-    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-FROM knowledgebase_topics AS topic
-WHERE topic.topic_key = 'bond-sidecar-setup'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM knowledgebase_articles AS existing_article
-      WHERE existing_article.topic_id = topic.id
-        AND existing_article.locale = 'zh-TW'
-  );
-
-INSERT INTO knowledgebase_articles (
-    topic_id, locale, author_user_id, title, excerpt, body_html,
-    status, published_at, created_at, updated_at
-)
-SELECT
-    topic.id, 'zh-TW', NULL, '排查常見問題', '從看得見的症狀開始，按最短且安全的順序恢復連線。', '<h2>你將完成什麼</h2>
-<p>你會從看得見的症狀開始，一次檢查一個邊界，並在大範圍或隨意變更讓原始問題更難辨認前停下來。</p>
-
-<h2>開始前準備</h2>
-<ul>
-  <li>記下確切錯誤、時間、用戶端平台、轉發名稱和本機連接埠。</li>
-  <li>檢查目前狀態時，先不要更動已儲存的轉發。</li>
-  <li>截圖或聯絡支援時，不要包含密碼、權杖、產生的指令、線路金鑰、私密金鑰或內部工作階段資料。</li>
-  <li>最後一步必須使用實際應用協定測試。</li>
-</ul>
-
-<h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 從症狀開始排查連線
-accDescr: 應用程式要求失敗後依序檢查最近同步、位址、連接埠的網路存取、轉發與線路健康，以及目標服務，再使用診斷與支援。
-A[應用程式要求失敗] --&gt; B{最近同步正常嗎}
-B -- 否 --&gt; C[恢復用戶端同步]
-B -- 是 --&gt; D{位址正確嗎}
-D -- 否 --&gt; E[使用迴送位址或可連到的用戶端主機]
-D -- 是 --&gt; F{連接埠已開放嗎}
-F -- 否 --&gt; G[只開放必要連接埠]
-F -- 是 --&gt; H{轉發和線路健康嗎}
-H -- 否 --&gt; I[開啟查看診斷]
-H -- 是 --&gt; J[從目標主機測試服務]
-C --&gt; K[重試應用程式]
-E --&gt; K
-G --&gt; K
-I --&gt; L[整理診斷後聯絡支援]
-J --&gt; L</pre>
-<p>檢查順序從用戶端一路走向目標。修正第一個失敗的邊界後重試一次，保留證據，不要隨意變更拓撲。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="用戶端診斷頁面顯示先 Run Diagnostics 再 View Diagnostics，並顯示健康結果">
-  <figcaption>示範截圖：先執行一次新的診斷，再開啟 View Diagnostics 查看詳情。</figcaption>
-</figure>
-<ol>
-  <li>確認預期的用戶端有最近同步。</li>
-  <li>確認轉發顯示 <strong>Running</strong>。</li>
-  <li>檢查位址是否正確：同一台用戶端裝置使用 <code>127.0.0.1</code>。</li>
-  <li>其他裝置要連線時，使用可連到的 Windows 或 Linux 用戶端主機位址；不要把 Android 當成跨裝置監聽服務。</li>
-  <li>確認本機連接埠和轉發卡片一致。</li>
-  <li>跨裝置使用時，依實際環境確認防火牆、安全群組和 NAT 只讓必要的連接埠已開放。</li>
-  <li>在<strong>查看診斷</strong>確認轉發和線路健康。</li>
-  <li>從目標服務所在主機測試目標服務和連接埠。</li>
-  <li>用實際應用協定重試。</li>
-  <li>若仍然失敗，收集已清除機密的診斷，附上症狀和時間聯絡支援。</li>
-</ol>
-
-<h2>如何確認成功</h2>
-<p>第一個失敗的邊界恢復正常，真實應用程式要求也成功。最近同步證明設定已送達，<strong>Running</strong> 證明本機程序狀態，目標成功回應才證明整段連線完成。</p>
-
-<h2>如果沒有成功</h2>
-<p><strong>請先停止重新安裝所有元件、開放大範圍連接埠或隨意變更拓撲。</strong>保留錯誤與診斷，向支援提供轉發名稱、用戶端平台、測試時間、位址類型、本機連接埠和已清理的結果，絕對不要傳送機密。</p>
-
-<h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一列本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1791,42 +1242,51 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '名詞解釋', '用淺白語言解釋指南中出現的產品和網路術語。', '<h2>你將完成什麼</h2>
-<p>你會看懂入門指南使用的產品與網路術語，不必先理解內部實作，也能分辨欄位、狀態與驗證結果。</p>
+    topic.id, 'zh-TW', NULL, '名詞解釋', '用淺白語言解釋指南中出現的產品和網路術語。', '<p>其他指南裡出現的詞，這裡每個用一句話說清楚。遇到看不懂的詞就打開這一頁，看完再關掉。</p>
+
+<h2>你將完成什麼</h2>
+<p>指南裡的每個詞你都能看懂，不需要讀任何技術資料。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>保留正在閱讀的指南，方便把每個名詞對照到畫面上的欄位或狀態。</li>
-  <li>外觀看起來相近的狀態，可能代表不同的檢查點。</li>
-  <li>詢問名詞時，不要連同機密數值一起複製。</li>
+<li>不用準備什麼。這一頁適合一直開在另一個分頁裡。</li>
+<li>少了你要查的詞，告訴支援，我們會補上。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-  <li><strong>有效方案：</strong>目前允許你建立並使用轉發的已購買方案或服務。</li>
-  <li><strong>轉發：</strong>一項已儲存的規則，讓流量從用戶端監聽服務，經過面板提供的線路，送到目標位址與連接埠。</li>
-  <li><strong>轉發路由：</strong>建立第一條轉發時可選的線路方案。選擇符合目前服務的已發布項目。</li>
-  <li><strong>目標主機：</strong>目標服務的主機名稱或 IP 位址。</li>
-  <li><strong>目標連接埠：</strong>目標服務使用的連接埠。</li>
-  <li><strong>本地監聽連接埠：</strong>應用程式在用戶端這一側連線的連接埠。</li>
-  <li><strong>用戶端：</strong>Windows、Android 或 Linux 軟體，負責取得轉發設定並建立本機監聽服務。</li>
-  <li><strong>最近同步：</strong>表示用戶端最近從面板取得設定；它不能證明目標應用程式已回應。</li>
-  <li><strong>Running：</strong>表示轉發程序正在用戶端執行；它不是應用程式成功的最終證明。</li>
-  <li><strong>Single：</strong>最簡單的支援連線模式，讓一個要求使用一條線路路徑。</li>
-  <li><strong>Race：</strong>用於容錯或路徑選擇的模式。它不是頻寬聚合，實際行為會因平台和傳輸方式而異。</li>
-  <li><strong>Bond：</strong>只有方案與平台明確支援已發布要求時才使用的進階模式；它不保證速度加倍，也不保證每次都使用所有路徑。</li>
-  <li><strong>Sidecar：</strong>部分 Bond 線路需要的選用目標端中介傳輸元件，不是目標應用程式。</li>
-  <li><strong>應用程式驗證：</strong>使用預定協定送出真實要求並取得預期回應；最好也能在目標服務記錄中確認。</li>
+<li><strong>在下面的表裡找到那個詞。</strong></li>
+<li><strong>讀那一句話的解釋。</strong>看懂就可以停下了。</li>
+<li><strong>想真正用起來，就去打開旁邊對應的指南。</strong></li>
 </ol>
+<table>
+<thead>
+<tr><th>詞</th><th>意思</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>有效方案</strong></td><td>你付過錢而且還在有效期內的方案。只有方案有效時轉發才會運作。</td></tr>
+<tr><td><strong>轉發</strong></td><td>你在面板上畫的一條線：一頭是目標，另一頭是本機連接埠。</td></tr>
+<tr><td><strong>Forward Route</strong></td><td>流量從哪條線路出去。挑離目標最近的那條。</td></tr>
+<tr><td><strong>Target Host</strong></td><td>你要連線的遊戲或服務的位址。</td></tr>
+<tr><td><strong>Target Port</strong></td><td>那個位址監聽的連接埠。</td></tr>
+<tr><td><strong>Local Listen Port</strong></td><td>面板分給你自己裝置的連接埠。遊戲用這個。</td></tr>
+<tr><td><strong>Transport</strong></td><td>流量是 TCP、UDP 還是兩者都要。遊戲一般是 UDP。</td></tr>
+<tr><td><strong>用戶端</strong></td><td>在你裝置上承載這條線路的應用程式。</td></tr>
+<tr><td><strong>Running</strong></td><td>線路通了以後用戶端顯示的狀態。</td></tr>
+<tr><td><strong>最近同步</strong></td><td>用戶端最後一次和面板通訊的時間。時間很新說明用戶端正常。</td></tr>
+<tr><td><strong>ultra</strong></td><td>所有線路都用它承載。它讓你玩的時候線路保持穩定。</td></tr>
+<tr><td><strong>應用程式驗證</strong></td><td>用遊戲本身去測，而不是只 ping 一下。</td></tr>
+</tbody>
+</table>
 
 <h2>如何確認成功</h2>
-<p>你能判斷畫面上每個欄位該填什麼，能區分設定送達、程序執行和應用程式成功，也能在不猜測的情況下選到正確指南。</p>
+<p>你讀完一篇指南，中途沒有被任何詞卡住。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止猜測欄位內容或分享機密。</strong>使用下方相關指南，仍不清楚時，請管理員或支援依畫面上的實際標籤說明。</p>
+<p>兩篇指南看起來說法不一致時，<strong>請先停止</strong>，直接問支援。設定不要靠猜——猜錯花的時間比問一句多得多。</p>
 
 <h2>相關指南</h2>
-<p>先閱讀<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a>。表單欄位請看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>；位址與成功證明請看<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；Single、Race 和 Bond 請看<a href="/knowledgebase?thread=connection-modes-single-race-bond">選擇連線模式</a>；只有已發布的線路明確要求時，才使用<a href="/knowledgebase?thread=bond-sidecar-setup">設定 Sidecar</a>。</p>
+<p>先從<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a>開始，再把<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>放在手邊。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic

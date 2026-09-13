@@ -186,7 +186,7 @@ try {
     assertContains('<img src="/uploads/knowledgebase/safe.png" alt="Safe" width="320" height="180">', $plain->body(), 'safe image attributes must remain');
     assertContains('Preview — not published', $plain->body(), 'English preview banner');
     assertNotContains('/assets/vendor/mermaid/mermaid.min.js?v=11.12.0', $plain->body(), 'plain preview must not load Mermaid');
-    assertNotContains('/assets/knowledgebase-mermaid.js?v=20260729', $plain->body(), 'plain preview must not load Mermaid runtime');
+    assertNotContains('/assets/knowledgebase-mermaid.js?v=20260914a', $plain->body(), 'plain preview must not load Mermaid runtime');
 
     loginAdmin($csrf);
     $diagramSource = "flowchart TD\naccTitle: Safe preview\naccDescr: Safe diagram\nA--&gt;B";
@@ -200,7 +200,7 @@ try {
     assertSameValue(200, $diagram->status(), 'diagram preview status');
     assertContains('预览 — 尚未发布', $diagram->body(), 'Simplified Chinese preview banner');
     assertContains('/assets/vendor/mermaid/mermaid.min.js?v=11.12.0', $diagram->body(), 'diagram preview must load local Mermaid');
-    assertContains('/assets/knowledgebase-mermaid.js?v=20260729', $diagram->body(), 'diagram preview must load local Mermaid runtime');
+    assertContains('/assets/knowledgebase-mermaid.js?v=20260914a', $diagram->body(), 'diagram preview must load local Mermaid runtime');
     assertNotContains('cdn.jsdelivr.net', $diagram->body(), 'diagram preview must not use a CDN');
 
     loginAdmin($csrf);

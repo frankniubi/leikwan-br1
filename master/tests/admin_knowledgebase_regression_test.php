@@ -97,10 +97,7 @@ foreach ([
     'Response::html(200,',
     'Preview request expired. Reload the editor and try again.',
     'Preview could not be rendered. Check the article and diagrams.',
-    'Preview — not published',
-    '预览 — 尚未发布',
-    '預覽 — 尚未發佈',
-    '/assets/knowledgebase-mermaid.js?v=20260729',
+    '(new KnowledgebasePreviewDocument())->render(',
     'id="kb-topic-delete-confirm">Delete this topic and all three language versions?</span>',
     'id="kb-article-delete-confirm">Delete this language version?</span>',
     '.textContent',
@@ -114,6 +111,33 @@ foreach ([
     "'mermaid_validation_digest' => \$request->input('mermaid_validation_digest', '')",
 ] as $required) {
     requireSnippet($admin, $required, 'admin knowledgebase snippet');
+}
+
+$previewDocumentPath = __DIR__ . '/../src/Support/KnowledgebasePreviewDocument.php';
+if (!is_file($previewDocumentPath)) {
+    fail('knowledgebase preview document renderer is missing');
+}
+$previewDocument = file_get_contents($previewDocumentPath);
+if (!is_string($previewDocument) || trim($previewDocument) === '') {
+    fail('knowledgebase preview document renderer is empty');
+}
+foreach ([
+    'Preview — not published',
+    '预览 — 尚未发布',
+    '預覽 — 尚未發佈',
+    '/assets/knowledgebase-docs.css?v=20260914a',
+    '/assets/knowledgebase-mermaid.js?v=20260914a',
+    '/assets/vendor/mermaid/mermaid.min.js?v=11.12.0',
+    'class="kb-preview-page"',
+    'class="kb-article-body"',
+    'ENT_QUOTES | ENT_SUBSTITUTE',
+] as $requiredPreviewSnippet) {
+    requireSnippet($previewDocument, $requiredPreviewSnippet, 'knowledgebase preview document snippet');
+}
+foreach (['cdn.jsdelivr.net', 'unpkg.com', 'http://'] as $forbiddenPreviewSnippet) {
+    if (str_contains($previewDocument, $forbiddenPreviewSnippet)) {
+        fail('preview document must stay offline and relative: ' . $forbiddenPreviewSnippet);
+    }
 }
 
 foreach ([

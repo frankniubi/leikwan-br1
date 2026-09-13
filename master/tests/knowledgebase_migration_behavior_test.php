@@ -201,7 +201,7 @@ try {
     );
 
     assertMigrationBehaviorSame(10, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'first run must produce ten topics');
-    assertMigrationBehaviorSame(28, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'first run must produce twenty-eight articles');
+    assertMigrationBehaviorSame(22, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'first run must produce twenty-two articles');
 
     $firstForward = $pdo->query(
         "SELECT topic.is_pinned, topic.sort_order, article.body_html
@@ -243,7 +243,7 @@ try {
         'rerun after history removal must execute the generated seed'
     );
     assertMigrationBehaviorSame(10, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'rerun must not add topics');
-    assertMigrationBehaviorSame(28, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'rerun must not add articles');
+    assertMigrationBehaviorSame(22, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'rerun must not add articles');
     assertMigrationBehaviorSame(
         '<p>Administrator edited after migration.</p>',
         $pdo->query(
@@ -257,15 +257,13 @@ try {
 
     $service = new Leikwan\Master\Support\KnowledgebaseService($db);
     $topics = $service->listPublishedTopics('zh-Hans');
-    assertMigrationBehaviorSame(10, count($topics), 'reader service must expose the migrated custom plus default topics');
+    assertMigrationBehaviorSame(8, count($topics), 'reader service must expose the migrated custom plus default topics');
     $customResolved = $service->findPublishedTopicByKey('administrator-custom-guide', 'zh-Hans');
     assertMigrationBehavior(is_array($customResolved), 'reader service must expose the custom English article');
     assertMigrationBehaviorSame('en', $customResolved['locale_resolved'] ?? '', 'custom English article must resolve as English');
     assertMigrationBehavior((bool) ($customResolved['used_fallback'] ?? false), 'custom English article must expose the visible fallback contract');
     foreach ([
         'getting-started-first-forward-checklist',
-        'connection-modes-single-race-bond',
-        'bond-sidecar-setup',
         'troubleshooting-common-mistakes',
     ] as $legacyKey) {
         assertMigrationBehavior(

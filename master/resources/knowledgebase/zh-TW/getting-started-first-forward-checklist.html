@@ -1,51 +1,43 @@
+<p>一條轉發就是你在面板上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
+
 <h2>你將完成什麼</h2>
-<p>你會從有效方案建立一條轉發，只填寫畫面上看得到的目標設定，並記下應用程式之後要使用的本機連接埠。</p>
+<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一條指南要用這個連接埠，先記下來。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>確認方案或服務狀態為<strong>有效</strong>。</li>
-  <li>準備目標服務的主機名稱或 IP 位址。</li>
-  <li>準備目標服務使用的連接埠。</li>
-  <li>確認應用程式需要 TCP、UDP，或兩者都需要。</li>
+<li>一個有效方案，面板才允許儲存轉發。</li>
+<li>你的遊戲或服務真正監聽的位址和連接埠。</li>
+<li>它需要哪種傳輸方式：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 第一條轉發的表單流程
-accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後等待轉發可用，再記下分配的本機連接埠。
-A[開啟有效方案] --&gt; B[選擇轉發路由]
-B --&gt; C[填寫目標主機和目標連接埠]
-C --&gt; D[選擇傳輸方式]
-D --&gt; E[儲存]
-E --&gt; F[等待轉發可用]
-F --&gt; G[記下分配的本機連接埠]</pre>
-<p>表單只需要線路方案、目標、偏好的本地連接埠和傳輸方式。儲存後會開始佈建；下一篇指南真正需要的是分配的本機連接埠。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單顯示 Forward Route、Target Host、Target Port、Local Listen Port 和 Transport">
-  <figcaption>示範截圖：沒有指定連接埠時，把 Local Listen Port 留空，讓面板分配。</figcaption>
-</figure>
 <ol>
-  <li>開啟有效服務，選擇<strong>建立轉發</strong>。</li>
-  <li>在 <strong>Forward Route</strong>（轉發路由）選擇面板提供的線路方案。</li>
-  <li>在 <strong>Target Host</strong>（目標主機）填入目標位址。</li>
-  <li>在 <strong>Target Port</strong>（目標連接埠）填入服務連接埠。</li>
-  <li>除非已取得特定且安全的連接埠，否則將 <strong>Local Listen Port</strong>（本地監聽連接埠）留空，接受系統分配。</li>
-  <li>在 <strong>Transport</strong>（傳輸）選擇 <strong>TCP</strong>，供只使用 TCP 的應用程式使用。</li>
-  <li>應用程式同時需要兩種協定時，選擇 <strong>TCP + UDP</strong>。</li>
-  <li>只有完全使用 UDP 的應用程式才選擇 <strong>UDP</strong>。</li>
-  <li>選擇 <strong>Create Forward</strong>（建立轉發）以儲存。</li>
-  <li>等待佈建完成，再從轉發卡片記下系統分配的本機連接埠。</li>
+<li><strong>打開 Forwards，點 Create Forward。</strong></li>
+<li><strong>選擇 Forward Route。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
+<li><strong>填寫 Target Host 和 Target Port。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
+<li><strong>選擇 Transport</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>儲存。</strong>Local Listen Port 用預設建議值就好，除非你有特別的理由要改。</li>
+<li><strong>記下分配給你的本機連接埠。</strong>幾秒後它會顯示在這一列上。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 第一條轉發的表單路徑
+accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後記下分配的本機連接埠
+A[開啟有效方案] --> B[選擇 Forward Route]
+B --> C[填寫 Target Host 和 Target Port]
+C --> D[選擇 Transport]
+D --> E[儲存]
+E --> F[等待轉發可用]
+F --> G[記下分配的本機連接埠]
+</pre>
+<p>表單只問線路、目標、傳輸方式和本機連接埠，其餘都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單，包含線路、目標主機、目標連接埠和傳輸方式"><figcaption>Create Forward 表單，真正要你決定的只有四個欄位。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>新的轉發會顯示預期的目標和本機連接埠。資料已儲存只是第一個檢查點；接著要等設定啟用、用戶端最近同步，最後看到 <strong>Running</strong> 且應用程式成功收到回應。</p>
+<p>這一列會穩定停在已儲存狀態，而不是反覆顯示佈建中，並且本機連接埠已經填好。接著去 Clients 頁面，能看到準備承載這條轉發的裝置有最近同步時間。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止操作，特別是沒有可選的轉發路由，或目標資訊不確定時。</strong>不要猜測隱藏設定。先確認方案有效，只修正上述可見欄位；若沒有合適線路，請管理員發布可用的方案。</p>
+<p>面板不讓儲存時，<strong>請先停止</strong>，別反覆點。三個常見原因：方案已經失效；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓面板重新分配一個。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
+<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。</p>

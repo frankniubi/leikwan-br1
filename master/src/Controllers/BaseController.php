@@ -1571,7 +1571,7 @@ HTML;
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
                 ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260829a">'
-                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">');
+                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
@@ -1708,7 +1708,7 @@ HTML;
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
 </head>
 <body class="pg-app">
   <div class="shell">

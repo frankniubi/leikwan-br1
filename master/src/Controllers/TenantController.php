@@ -2097,7 +2097,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Create Forward</h3>
                 <p class="muted">Choose one route package, then fill your backend target on the dedicated create page.</p>
-                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connection-modes-single-race-bond">Choose a connection mode</a> &middot; <a href="/knowledgebase?thread=bond-sidecar-setup">Set up Bond and Sidecar</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
+                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">
