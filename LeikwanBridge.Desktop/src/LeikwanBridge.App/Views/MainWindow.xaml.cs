@@ -1029,11 +1029,26 @@ public partial class MainWindow : Window
 
     private void UpdateProxyModeVisibility()
     {
-        if (ProxyGameCard == null)
+        if (ProxyGameCard == null || ProxyModeCombo == null)
             return;
-        ProxyGameCard.Visibility = GetSelectedProxyMode() == WindowsProxyMode.Process
+        // The mode combo legitimately has no selection until the saved config has
+        // been applied, and this runs while the window is still being built. That
+        // is a normal state, not a fault: asking for the selected mode here used
+        // to throw proxy_mode_required out of PopulateProxyUi, which abandoned the
+        // rest of the local-proxy setup and logged "local proxy initialization
+        // failed" on every single start.
+        ProxyGameCard.Visibility = TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Process
             ? Visibility.Visible
             : Visibility.Collapsed;
+    }
+
+    private bool TryGetSelectedProxyMode(out WindowsProxyMode mode)
+    {
+        if (ProxyModeCombo.SelectedItem is ComboBoxItem item
+            && Enum.TryParse(item.Tag?.ToString(), true, out mode))
+            return true;
+        mode = default;
+        return false;
     }
 
     private void UpdateNativeOutboundUi()
@@ -1101,8 +1116,7 @@ public partial class MainWindow : Window
 
     private WindowsProxyMode GetSelectedProxyMode()
     {
-        if (ProxyModeCombo.SelectedItem is ComboBoxItem item
-            && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var mode))
+        if (TryGetSelectedProxyMode(out var mode))
             return mode;
         throw new InvalidOperationException("proxy_mode_required");
     }
