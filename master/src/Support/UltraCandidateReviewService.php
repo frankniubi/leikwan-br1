@@ -35,6 +35,10 @@ final class UltraCandidateReviewService
     public const DEMOTION_STRIKES = 2;
     /** A running review that stops reporting is retried after this long. */
     public const STALE_RUNNING_SECONDS = 1800;
+    /** Claims one review may use before it is closed as abandoned. */
+    public const MAX_ATTEMPTS = 5;
+    /** How long a closed review keeps a still-quarantined candidate from being re-queued. */
+    public const REENQUEUE_COOLDOWN_SECONDS = 21600;
     public const MAX_RECENT = 200;
 
     /** @var callable():int */
@@ -194,7 +198,10 @@ final class UltraCandidateReviewService
                FROM ultra_candidate_reputation_current c
                LEFT JOIN ultra_candidate_reviews r
                       ON r.candidate_key_hash = c.candidate_key_hash
-                     AND r.state IN (:pending, :running)
+                     AND (r.state IN (:pending, :running)
+                          OR (r.state = :failed
+                              AND r.completed_at IS NOT NULL
+                              AND r.completed_at > :retry_after))
               WHERE c.state = :quarantined
                 AND c.source_id = :source_id
                 AND c.quarantine_until IS NOT NULL
@@ -205,6 +212,8 @@ final class UltraCandidateReviewService
             [
                 'pending' => self::STATE_PENDING,
                 'running' => self::STATE_RUNNING,
+                'failed' => self::STATE_FAILED,
+                'retry_after' => gmdate('Y-m-d H:i:s', $this->now() - self::REENQUEUE_COOLDOWN_SECONDS),
                 'quarantined' => 'quarantined',
                 'source_id' => $sourceId,
                 'now' => gmdate('Y-m-d H:i:s', $this->now()),
@@ -279,20 +288,51 @@ final class UltraCandidateReviewService
         return $claimed;
     }
 
-    /** A source that took a review and never reported back gets another chance. */
+    /**
+     * A source that took a review and never reported back gets another chance -
+     * but only up to MAX_ATTEMPTS. Past that the row is closed as abandoned.
+     *
+     * Leaving it in "running" would leak in two directions: the row would never
+     * be handed out again, and enqueueQuarantined() treats an open review as a
+     * reason not to queue another, so a still-quarantined candidate would sit
+     * there with no way back for as long as the quarantine holds. Closing it
+     * costs the line nothing: no probe ever disproved it, so neither the
+     * quarantine nor any device's standing is touched.
+     */
     private function expireStaleRunning(): void
     {
+        $cutoff = gmdate('Y-m-d H:i:s', $this->now() - self::STALE_RUNNING_SECONDS);
         $this->db->execute(
             'UPDATE ultra_candidate_reviews
                 SET state = :pending, started_at = NULL
               WHERE state = :running
                 AND started_at IS NOT NULL
                 AND started_at < :cutoff
-                AND attempts < 5',
+                AND attempts < :max_attempts',
             [
                 'pending' => self::STATE_PENDING,
                 'running' => self::STATE_RUNNING,
-                'cutoff' => gmdate('Y-m-d H:i:s', $this->now() - self::STALE_RUNNING_SECONDS),
+                'cutoff' => $cutoff,
+                'max_attempts' => self::MAX_ATTEMPTS,
+            ]
+        );
+        $this->db->execute(
+            'UPDATE ultra_candidate_reviews
+                SET state = :failed, completed_at = :completed_at, result_json = :result_json
+              WHERE state = :running
+                AND started_at IS NOT NULL
+                AND started_at < :cutoff
+                AND attempts >= :max_attempts',
+            [
+                'failed' => self::STATE_FAILED,
+                'running' => self::STATE_RUNNING,
+                'cutoff' => $cutoff,
+                'max_attempts' => self::MAX_ATTEMPTS,
+                'completed_at' => gmdate('Y-m-d H:i:s', $this->now()),
+                'result_json' => json_encode(
+                    ['abandoned' => true, 'note' => 'source host did not report back'],
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                ),
             ]
         );
     }

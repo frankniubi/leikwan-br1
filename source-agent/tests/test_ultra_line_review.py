@@ -61,3 +61,52 @@ def test_review_reports_rounds_and_counters():
                   "max_echo_bytes", "last_error"):
         assert field in result, field
     assert result["passed"] is False
+
+class _FakeSession:
+    """A relay that stays live and answers keep echoes, but drops large payloads."""
+
+    def __init__(self, *args, **kwargs):
+        self.arm_ms = 1.0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def arm(self, auth_timeout=5.0):
+        return None
+
+    def latency_ms(self, count=1):
+        return 1.0
+
+
+def test_big_packet_failures_only_sink_the_review_when_required(monkeypatch):
+    monkeypatch.setattr(probe.N, "NativeSession", _FakeSession)
+    monkeypatch.setattr(probe, "probe_udp_big", lambda session, size, timeout: (False, 0))
+    monkeypatch.setattr(probe, "probe_dns", lambda session, timeout: True)
+
+    lenient = probe.review(("127.0.0.1", 1), "USER1", "PASS1", 3, interval=1.0, big_bytes=1400,
+                           require_big_packet=False, auth_timeout=1.0)
+    assert lenient["udp_failed"] == 0, "a dropped large payload is not a liveness failure"
+    assert lenient["big_failed"] > 0
+    assert lenient["passed"] is True, "a large payload may be dropped by the provider path"
+
+    strict = probe.review(("127.0.0.1", 1), "USER1", "PASS1", 3, interval=1.0, big_bytes=1400,
+                          require_big_packet=True, auth_timeout=1.0)
+    assert strict["passed"] is False, "with require_big_packet the drop must sink the review"
+
+
+def test_keep_echo_failures_sink_the_review(monkeypatch):
+    class Dead(_FakeSession):
+        def latency_ms(self, count=1):
+            return float("nan")
+
+    monkeypatch.setattr(probe.N, "NativeSession", Dead)
+    monkeypatch.setattr(probe, "probe_udp_big", lambda session, size, timeout: (True, size))
+    monkeypatch.setattr(probe, "probe_dns", lambda session, timeout: True)
+
+    result = probe.review(("127.0.0.1", 1), "USER1", "PASS1", 3, interval=1.0, big_bytes=1400,
+                          require_big_packet=False, auth_timeout=1.0)
+    assert result["udp_failed"] > 0
+    assert result["passed"] is False, "a line that stops answering is not usable"

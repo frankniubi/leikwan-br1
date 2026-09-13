@@ -110,6 +110,8 @@ def review(
         "rounds": 0,
         "udp_ok": 0,
         "udp_failed": 0,
+        "big_ok": 0,
+        "big_failed": 0,
         "dns_ok": 0,
         "dns_failed": 0,
         "max_echo_bytes": 0,
@@ -125,17 +127,21 @@ def review(
                 result["rounds"] += 1
                 keep_rtt = session.latency_ms(1)
                 if keep_rtt == keep_rtt:  # not NaN
+                    result["udp_ok"] += 1
                     result["min_rtt_ms"] = keep_rtt if result["min_rtt_ms"] is None else min(result["min_rtt_ms"], keep_rtt)
                 else:
                     result["udp_failed"] += 1
                     result["last_error"] = result["last_error"] or "keep echo timed out"
 
+                # A large datagram is counted on its own: whether it may sink the
+                # review is the operator's call (require_big_packet), but the raw
+                # numbers always have to be reported.
                 confirmed, echo_bytes = probe_udp_big(session, big_bytes, max(1.0, interval))
                 if confirmed:
-                    result["udp_ok"] += 1
+                    result["big_ok"] += 1
                     result["max_echo_bytes"] = max(result["max_echo_bytes"], echo_bytes)
                 else:
-                    result["udp_failed"] += 1
+                    result["big_failed"] += 1
                     result["last_error"] = result["last_error"] or f"no echo for {big_bytes}B payload"
 
                 if probe_dns(session, max(1.0, interval)):
@@ -157,12 +163,14 @@ def review(
         result["last_error"] = f"net_error: {exc}"
         return result
 
-    # A large payload can legitimately be dropped by the provider path, so it
-    # only counts against the line once an operator has confirmed the relay
-    # echoes large datagrams on this deployment.
+    # The line has to hold for the whole window. Liveness (keep echo) and a real
+    # DNS answer are always required; a large payload can legitimately be dropped
+    # by the provider path, so it only sinks the review where the operator has
+    # confirmed the relay echoes large datagrams on this deployment.
     dns_clean = result["dns_failed"] == 0 and result["dns_ok"] > 0
-    udp_clean = result["udp_failed"] == 0 and (result["udp_ok"] > 0 or not require_big_packet)
-    result["passed"] = bool(dns_clean and udp_clean and result["rounds"] > 0)
+    udp_clean = result["udp_failed"] == 0 and result["udp_ok"] > 0
+    big_clean = not require_big_packet or (result["big_failed"] == 0 and result["big_ok"] > 0)
+    result["passed"] = bool(dns_clean and udp_clean and big_clean and result["rounds"] > 0)
     return result
 
 
