@@ -393,53 +393,27 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     {
         Report(progress, UpdateProgress.Downloading(0, "Downloading update..."));
         var uri = ResolveAndValidateUrl(artifact.ArtifactUrl, _panelOrigin);
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        using var response = await SendAsync(request, ct, HttpCompletionOption.ResponseHeadersRead);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength is long contentLength
-            && contentLength != artifact.SizeBytes)
-            throw new InvalidDataException("update_size_mismatch");
         var directory = Path.GetDirectoryName(destination)
             ?? throw new InvalidDataException("update_destination_invalid");
         EnsurePrivateDirectory(directory);
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var output = new FileStream(
+            // Resumable: the shared panel client caps every request at 30 s
+            // including the response body, and these packages are ~70 MB, so a
+            // single request only ever completes on a multi-MB/s link.
+            var total = await ResumableArtifactDownloader.DownloadAsync(
+                (request, token) => SendAsync(request, token, HttpCompletionOption.ResponseHeadersRead),
+                uri.ToString(),
                 temporary,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                128 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var buffer = new byte[128 * 1024];
-            long total = 0;
-            try
-            {
-                while (true)
-                {
-                    var read = await source.ReadAsync(buffer, ct);
-                    if (read == 0)
-                        break;
-                    total += read;
-                    if (total > artifact.SizeBytes)
-                        throw new InvalidDataException("update_size_mismatch");
-                    await output.WriteAsync(buffer.AsMemory(0, read), ct);
-                    Report(progress, UpdateProgress.Downloading(
-                        artifact.SizeBytes > 0
-                            ? Math.Min(99.5, total * 100.0 / artifact.SizeBytes)
-                            : 0,
-                        $"Downloading update... ({total} bytes)"));
-                }
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(buffer);
-            }
-            await output.FlushAsync(ct);
-            output.Close();
-            if (total != artifact.SizeBytes)
+                progress: (received, _) => Report(progress, UpdateProgress.Downloading(
+                    artifact.SizeBytes > 0
+                        ? Math.Min(99.5, received * 100.0 / artifact.SizeBytes)
+                        : 0,
+                    $"Downloading update... ({received} bytes)")),
+                expectedLength: artifact.SizeBytes,
+                ct: ct);
+            if (artifact.SizeBytes > 0 && total != artifact.SizeBytes)
                 throw new InvalidDataException("update_size_mismatch");
             Report(progress, UpdateProgress.Downloading(100, "Download finished."));
             Report(progress, UpdateProgress.Verifying(0, "Verifying download..."));

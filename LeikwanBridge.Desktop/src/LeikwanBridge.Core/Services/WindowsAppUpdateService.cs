@@ -307,20 +307,21 @@ public sealed class WindowsAppUpdateService : IDisposable
     }
 
     public Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)
-        => DownloadInstallerAsync(artifactUrl, destinationPath, progress: null, expectedSha256: null, ct);
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress: null, expectedSha256: null, ct: ct);
 
     public Task DownloadInstallerAsync(
         string artifactUrl,
         string destinationPath,
         IProgress<UpdateProgress>? progress,
         CancellationToken ct = default)
-        => DownloadInstallerAsync(artifactUrl, destinationPath, progress, expectedSha256: null, ct);
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress, expectedSha256: null, ct: ct);
 
     public async Task DownloadInstallerAsync(
         string artifactUrl,
         string destinationPath,
         IProgress<UpdateProgress>? progress,
         string? expectedSha256,
+        long? expectedLength = null,
         CancellationToken ct = default)
     {
         var dir = Path.GetDirectoryName(destinationPath);
@@ -330,29 +331,21 @@ public sealed class WindowsAppUpdateService : IDisposable
         try
         {
             Report(progress, UpdateProgress.Downloading(0, "Downloading update..."));
-            using var request = new HttpRequestMessage(HttpMethod.Get, artifactUrl);
-            using var response = await SendAsync(request, ct);
-            response.EnsureSuccessStatusCode();
-            var contentLength = response.Content.Headers.ContentLength;
-            await using (var stream = await response.Content.ReadAsStreamAsync(ct))
-            await using (var file = File.Create(destinationPath))
-            {
-                var buffer = new byte[128 * 1024];
-                long total = 0;
-                while (true)
-                {
-                    var read = await stream.ReadAsync(buffer, ct);
-                    if (read == 0)
-                        break;
-                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
-                    total += read;
-                    Report(progress, UpdateProgress.Downloading(
-                        contentLength is > 0
-                            ? Math.Min(99.5, total * 100.0 / contentLength.Value)
-                            : 0,
-                        $"Downloading update... ({total} bytes)"));
-                }
-            }
+            // Resumable: the shared panel client caps every request at 30 s
+            // including the body, and this artifact is ~70 MB, so a single
+            // request only ever completes on a >2.3 MB/s link. The downloader
+            // keeps a .part file and continues from the last byte received.
+            await ResumableArtifactDownloader.DownloadAsync(
+                SendAsync,
+                artifactUrl,
+                destinationPath,
+                progress: (received, total) => Report(progress, UpdateProgress.Downloading(
+                    total is > 0
+                        ? Math.Min(99.5, received * 100.0 / total.Value)
+                        : 0,
+                    $"Downloading update... ({received} bytes)")),
+                expectedLength: expectedLength,
+                ct: ct);
             Report(progress, UpdateProgress.Downloading(100, "Download finished."));
 
             if (string.IsNullOrWhiteSpace(expectedSha256))
