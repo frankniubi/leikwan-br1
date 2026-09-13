@@ -49,9 +49,11 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
                 self.assertIn(download_snippet, source)
                 self.assertIn(exec_snippet, source)
 
+        # The client role installs the same helper: its split-TCP forwards render
+        # leikwan-client-<id>-tcp-accel units that exec it.
         client_agent = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
-        self.assertNotIn("tcp_accel_installer", client_agent)
-        self.assertNotIn('install-tcp-accel.sh" client', client_agent)
+        self.assertIn("download_manifest_artifact tcp_accel_installer", client_agent)
+        self.assertIn('install-tcp-accel.sh" client', client_agent)
 
     def test_repo_local_tcp_accel_installer_uses_br1_bridge_helper(self) -> None:
         source = (REPO_ROOT / "tools" / "tcp-accel" / "install_debian12.sh").read_text(encoding="utf-8")

@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.13.2"
+AGENT_VERSION = "2026.09.13.3"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -2514,10 +2514,23 @@ class ClientAgent:
             except Exception as exc:  # noqa: BLE001
                 logging.warning("independent Ultra renewal failed (%s); retrying", type(exc).__name__)
 
+    def _systemd_watchdog_loop(self, stop: threading.Event, interval_seconds: float = 20.0) -> None:
+        # systemd's WatchdogSec is there to catch a wedged process, not a busy
+        # one. Pinging only from the main loop meant a single slow sync (a lease
+        # batch may legitimately spend up to 70 s on the runtime control socket)
+        # starved the ping and systemd SIGABRT'd a perfectly healthy agent: 158
+        # times in 48 h on the canary. Ping from its own thread instead.
+        while not stop.wait(interval_seconds):
+            self._systemd_watchdog_notify()
+
     def run(self) -> None:
         stop = threading.Event()
         renewal = threading.Thread(target=self._ultra_renewal_loop, args=(stop,), name="ultra-renewal", daemon=True)
         renewal.start()
+        watchdog = threading.Thread(
+            target=self._systemd_watchdog_loop, args=(stop,), name="systemd-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             next_sync = 0.0
             next_health = 0.0
