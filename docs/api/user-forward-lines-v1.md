@@ -4,6 +4,11 @@ This is the versioned integration surface for an authenticated tenant to manage
 that tenant's active forward rules. All IDs and hostnames in this document are
 illustrative values, not production identifiers.
 
+A forward may also be created as a **native outbound** forward, whose carrier runs
+on the client device instead of the panel ingress. The shared fields are described
+here; the full interface and behaviour reference for that type is in
+[native-outbound.md](native-outbound.md).
+
 ## Authentication
 
 Every route requires an active tenant user authenticated with:
@@ -88,6 +93,8 @@ The list, detail, create, and patch responses use this representation:
   },
   "listen_port": 11024,
   "transport": "tcp",
+  "native_outbound": false,
+  "native_direction": null,
   "target": {
     "source": "manual",
     "host": "192.0.2.10",
@@ -107,11 +114,17 @@ The list, detail, create, and patch responses use this representation:
 }
 ```
 
+`native_outbound` is `true` when the carrier runs on the client device, and
+`native_direction` is the direction identity the panel derived for that forward.
+Both are read-only: the direction comes from the assigned route, never from the
+request. Every other forward reports `"native_outbound": false` and
+`"native_direction": null`.
+
 The resource never contains provider line IDs, combination IDs, active
-combination IDs, node IDs or addresses, Sidecar fields, client placement,
-backend mode, path prefixes, SNI, configuration material, client tokens, or
-health error text. Runtime client configuration remains behind its separate
-existing endpoint and authorization flow.
+combination IDs, node IDs or addresses, transport endpoint fields, client
+placement, backend mode, path prefixes, SNI, configuration material, client
+tokens, or health error text. Runtime client configuration remains behind its
+separate existing endpoint and authorization flow.
 
 ## Create
 
@@ -158,6 +171,12 @@ a manual host:
   }
 }
 ```
+
+Set `"native_outbound": true` to create a forward whose carrier runs on the
+client device. A native forward ignores any `target` object, requires the ultra
+runtime with `tcp+udp`, and derives its `native_direction` from the route; see
+[native-outbound.md](native-outbound.md) for the availability rules, the
+server-assigned target, and the direction conflict contract.
 
 On success the response is `201`, includes `Location` and an ETag such as
 `"forward-123-r1"`, and contains the safe forward resource under `forward`.
@@ -228,6 +247,14 @@ A partial target patch keeps the current source. A manual target cannot accept
 Changing from `manual` to `service_ip` requires `source` and `service_id` in the
 same patch. Changing back requires `source` and `host` in the same patch; stale
 fields from the previous target type are cleared server-side.
+
+`native_outbound` can be switched off through a patch. Turning it off requires a
+complete manual target in the same patch, and the request then takes the
+structural provisioning path. Turning native outbound on for an existing forward
+is not a v1 patch operation: a patch that carries target fields together with
+`native_outbound: true` fails with `422 validation_failed` and
+`fields: {"target": "forbidden_for_native_outbound"}`. Use the panel's forward
+form or create a new native forward; see [native-outbound.md](native-outbound.md).
 
 ## Delete
 
@@ -300,11 +327,12 @@ Expected codes include:
 | --- | --- |
 | `401` | `user_auth_failed` |
 | `404` | `service_not_found`, `forward_not_found` |
-| `409` | `service_inactive`, `forward_quota_exceeded`, `forward_storage_quota_exceeded`, `idempotency_conflict`, `idempotency_resource_inactive`, `route_unavailable` |
+| `403` | `native_outbound_not_allowed` |
+| `409` | `service_inactive`, `forward_quota_exceeded`, `forward_storage_quota_exceeded`, `idempotency_conflict`, `idempotency_resource_inactive`, `route_unavailable`, `native_direction_conflict` |
 | `412` | `forward_version_conflict` |
 | `413` | `request_too_large` |
 | `415` | `unsupported_media_type` |
-| `422` | `validation_failed`, `unknown_fields`, `idempotency_key_invalid`, `forward_route_not_allowed`, `forward_route_has_no_enabled_combination` |
+| `422` | `validation_failed`, `unknown_fields`, `idempotency_key_invalid`, `forward_route_not_allowed`, `forward_route_has_no_enabled_combination`, `native_outbound_requires_ultra_tcp_udp`, `native_outbound_direction_missing` |
 | `428` | `idempotency_key_required`, `precondition_required` |
 | `500` | `operation_failed` |
 
@@ -318,14 +346,17 @@ codes rather than exposed.
 
 The tenant resource is the existing `forwards` row reached through
 `forwards.service_id -> services.user_id`. The tenant never manages the
-administrator-owned `leigod_lines` catalog. Nodes, Sidecars, forward
+administrator-owned `leigod_lines` catalog. Nodes, transport endpoints, forward
 combinations, provider placement, CDN hosts, public ports, path prefixes, and
 runtime configuration are not tenant resources or writable API fields.
 
-The client-to-slave-to-sidecar topology and the existing 7000-9000 MPTCP/bond
-ingress constraints are unchanged. A tenant selects only a public route ID;
-the server resolves its internal combination and endpoint placement after the
-service-plan allowlist, target ownership, health, and port checks succeed.
+The internal ingress topology is operator-owned and unchanged, including its
+7000-9000 port window. A tenant selects only a public route ID; the server
+resolves the internal combination and endpoint placement after the service-plan
+allowlist, target ownership, health, and port checks succeed. A native outbound
+forward is the one case where the carrier does not run on that ingress, and the
+client is told so explicitly rather than being asked to infer it from a target or
+a port range.
 
 ## Legacy Compatibility
 
