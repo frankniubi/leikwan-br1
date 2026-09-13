@@ -1,0 +1,30 @@
+#!/bin/sh
+# leikwan — control the windowless LeiKwan Bridge client.
+#
+#   leikwan status | start | stop | restart | logs [-n N] [-f] | doctor | version
+#   leikwan update [--check]
+#
+# Read-only commands run as you; service control and updates need root, so this
+# wrapper elevates exactly those four.
+set -eu
+
+APP="${LEIKWAN_APP:-/Applications/LeiKwan Bridge.app}"
+EXE="$APP/Contents/MacOS/LeikwanBridge.Mac"
+
+if [ ! -x "$EXE" ]; then
+  echo "leikwan: client bundle not found at $APP" >&2
+  echo "leikwan: install the macOS app (1.0.34 or newer) first" >&2
+  exit 1
+fi
+
+case "${1:-}" in
+  start|stop|restart|update)
+    if [ "$(id -u)" = "0" ]; then
+      exec "$EXE" --cli "$@"
+    fi
+    exec sudo "$EXE" --cli "$@"
+    ;;
+  *)
+    exec "$EXE" --cli "$@"
+    ;;
+esac

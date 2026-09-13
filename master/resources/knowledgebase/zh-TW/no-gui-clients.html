@@ -34,11 +34,13 @@ accDescr: 選擇作業系統，註冊無介面用戶端，然後在面板確認�
   <li><strong>查看狀態檔。</strong>macOS 為 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 為 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
   <li>確認檔案中 <code>"Connected": true</code>，且你預期的每條轉發都是 <code>"Running": true</code>。</li>
   <li><strong>選用自我檢查。</strong>用同一個程式與同一用戶端身份再加上 <code>--headless --once</code> 執行：它會連線、等待、印出同一份狀態文件，並在至少一條轉發運作時以退出碼 0 結束。</li>
+  <li><strong>日常管理用安裝腳本放進 PATH 的 <code>leikwan</code> 指令</strong>：<code>leikwan status</code> 顯示服務狀態與每條轉發，<code>leikwan logs -n 50</code> 查看用戶端日誌，<code>leikwan restart</code> 重新啟動，<code>leikwan doctor</code> 檢查服務、狀態檔、日誌與線上版本。macOS 會要求輸入密碼（LaunchDaemon 以 root 執行）；Windows 請在系統管理員 PowerShell 中執行相同指令。</li>
+  <li><strong>更新用 <code>leikwan update</code></strong>：它讀取面板清單、下載已發布版本、依清單驗證 SHA-256，然後替換程式並重新啟動服務。<code>leikwan update --check</code> 只回報已安裝與線上版本，不做任何變更。</li>
   <li><strong>需要移除時：</strong>macOS 執行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 執行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一併刪除已儲存的權杖。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
+<p><code>leikwan status</code> 在用戶端已連線且至少一條轉發運作時以退出碼 0 結束，因此可直接用於監控腳本。服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
 
 <h2>如果沒有成功</h2>
 <p><strong>請先停止對外分享 Agent Token，也不要將安裝指令貼到公開位置。</strong>先核對權杖與 Client ID：權杖錯誤時日誌會顯示 <code>401 Unauthorized</code>，且不會啟動任何轉發。macOS 請確認 <strong>/Applications</strong> 中的應用程式為 1.0.33 或更新版本，且 plist 已寫入 <strong>/Library/LaunchDaemons</strong>。Windows 請確認是在系統管理員權限下執行，且權杖檔案對 <strong>SYSTEM</strong> 可讀。若面板顯示機器在線但某條轉發仍為停止狀態，先與面板上的狀態對照再處理：轉發清單以面板為準，用戶端每隔幾秒就會重新套用一次。</p>

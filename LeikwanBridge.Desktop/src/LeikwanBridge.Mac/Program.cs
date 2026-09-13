@@ -1,6 +1,7 @@
 using Avalonia;
 using Serilog;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace LeikwanBridge.Mac;
 
@@ -16,6 +17,29 @@ internal static class Program
         {
             ShowUnsupportedOsNotice();
             return 1;
+        }
+        // `leikwan <command>` — the operator surface for the windowless client.
+        if (args.Length > 0 && string.Equals(args[0], "--cli", StringComparison.Ordinal))
+        {
+            var cliHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var cliPaths = new Services.MacPlatformPaths(cliHome, ResolveBundleDirectory());
+            var controller = new Services.MacServiceController(cliPaths);
+            var updater = new Services.MacClientUpdateService(
+                new Services.MacAppUpdateService(
+                    cliPaths.Root.TrimEnd('/', '\\') + "/updates",
+                    cliPaths.BundleDirectory,
+                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64"),
+                controller,
+                Services.MacHeadlessCli.PanelUrl(cliPaths));
+            using var cliCts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, eventArgs) =>
+            {
+                eventArgs.Cancel = true;
+                cliCts.Cancel();
+            };
+            return LeikwanBridge.Core.Services.HeadlessCli
+                .RunAsync(args[1..], controller, updater, Console.Out, Console.Error, cliCts.Token)
+                .GetAwaiter().GetResult();
         }
         // The windowless client is a lifecycle variant of the same payload: it
         // never initialises Avalonia, so launchd can run it without a GUI

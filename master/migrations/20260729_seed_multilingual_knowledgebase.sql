@@ -704,11 +704,13 @@ accDescr: Pick the operating system, register the windowless client, then confir
   <li><strong>Read the status file.</strong> macOS: <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>. Windows: <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>.</li>
   <li>Confirm the document reports <code>"Connected": true</code> and every forward you expect reports <code>"Running": true</code>.</li>
   <li><strong>Optional self check.</strong> Run the same program with the client identity plus <code>--headless --once</code>: it connects, waits, prints the same status document, and exits with code 0 when at least one forward is running.</li>
+  <li><strong>Day-to-day control uses the <code>leikwan</code> command</strong> the installer puts on your PATH: <code>leikwan status</code> shows the service state and every forward, <code>leikwan logs -n 50</code> prints the client log, <code>leikwan restart</code> restarts it, and <code>leikwan doctor</code> checks the service, the status file, the log and the published version. macOS asks for your password because a LaunchDaemon runs as root; on Windows run the same commands from an elevated shell.</li>
+  <li><strong>Update with <code>leikwan update</code></strong>: it reads the panel manifest, downloads the published build, verifies its SHA-256 against the manifest, replaces the payload and restarts the service. <code>leikwan update --check</code> only reports the installed and published versions and changes nothing.</li>
   <li><strong>To remove it:</strong> macOS <code>sudo sh uninstall-macos-headless.sh</code>, Windows <code>.\uninstall-windows-headless.ps1</code>. Add <code>--purge</code> or <code>-Purge</code> to delete the stored token as well.</li>
 </ol>
 
 <h2>How to know it worked</h2>
-<p>The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
+<p><code>leikwan status</code> exits 0 when the client is connected with at least one running forward, so a monitoring script can call it directly. The service or daemon reports <strong>running</strong>, the status file reports <code>"Connected": true</code> with the expected forwards <code>"Running": true</code>, and the panel shows this machine online like any other client. The log next to the status file repeats the same state with timestamps. On macOS the daemon also restarts automatically at boot and after a crash; on Windows the service starts automatically and is configured to restart after a failure.</p>
 
 <h2>If it did not work</h2>
 <p><strong>Stop before sharing the Agent Token or pasting installer commands into public places.</strong> Check the token and the client id first: a wrong token reports <code>401 Unauthorized</code> in the log and never starts a forward. On macOS confirm that <strong>/Applications</strong> holds version 1.0.33 or newer and that the plist exists under <strong>/Library/LaunchDaemons</strong>. On Windows confirm the command ran elevated and that the token file is readable by <strong>SYSTEM</strong>. If the panel shows the machine online but a forward stays stopped, compare it with the panel before changing anything: the panel owns the forward list and the client re-applies it every few seconds.</p>
@@ -1301,11 +1303,13 @@ accDescr: 选择操作系统，注册无界面客户端，然后在面板确认�
   <li><strong>查看状态文件。</strong>macOS 为 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 为 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
   <li>确认文件里 <code>"Connected": true</code>，并且你期望的每条转发都是 <code>"Running": true</code>。</li>
   <li><strong>可选自检。</strong>用同一个程序和同一客户端身份再加上 <code>--headless --once</code> 运行：它会连接、等待、打印同一份状态文档，并在至少一条转发运行时以退出码 0 结束。</li>
+  <li><strong>日常管理用安装脚本放进 PATH 的 <code>leikwan</code> 命令</strong>：<code>leikwan status</code> 显示服务状态与每条转发，<code>leikwan logs -n 50</code> 查看客户端日志，<code>leikwan restart</code> 重启，<code>leikwan doctor</code> 检查服务、状态文件、日志与线上版本。macOS 会要求输入密码（LaunchDaemon 以 root 运行）；Windows 请在管理员 PowerShell 中执行同样的命令。</li>
+  <li><strong>更新用 <code>leikwan update</code></strong>：它读取面板清单、下载已发布版本、按清单校验 SHA-256，然后替换程序并重启服务。<code>leikwan update --check</code> 只报告已安装版本与线上版本，不做任何改动。</li>
   <li><strong>需要卸载时：</strong>macOS 执行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 执行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一并删除已保存的令牌。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
+<p><code>leikwan status</code> 在客户端已连接且至少一条转发运行时以退出码 0 结束，因此可以直接用在监控脚本里。服务或守护进程显示为 <strong>running</strong>，状态文件里 <code>"Connected": true</code> 且期望的转发为 <code>"Running": true</code>，面板中这台机器与其他客户端一样在线。状态文件旁边的日志会带时间戳重复同样的状态。macOS 的守护进程在开机与崩溃后都会自动重启；Windows 服务设为自动启动，并配置了失败后自动重启。</p>
 
 <h2>如果没有成功</h2>
 <p><strong>先停止对外分享 Agent Token，也不要把安装命令粘贴到公开位置。</strong>先核对令牌与 Client ID：令牌错误时日志会显示 <code>401 Unauthorized</code>，并且不会启动任何转发。macOS 请确认 <strong>/Applications</strong> 里的应用是 1.0.33 或更新版本，且 plist 已写入 <strong>/Library/LaunchDaemons</strong>。Windows 请确认是在管理员权限下执行，且令牌文件对 <strong>SYSTEM</strong> 可读。如果面板显示机器在线但某条转发仍处于停止状态，先与面板上的状态对照再动手：转发列表以面板为准，客户端每隔几秒就会重新应用一次。</p>
@@ -1899,11 +1903,13 @@ accDescr: 選擇作業系統，註冊無介面用戶端，然後在面板確認�
   <li><strong>查看狀態檔。</strong>macOS 為 <code>/Library/Application Support/Leikwan/ClientAgent/headless-status.json</code>；Windows 為 <code>%ProgramData%\Leikwan\ClientAgent\headless-status.json</code>。</li>
   <li>確認檔案中 <code>"Connected": true</code>，且你預期的每條轉發都是 <code>"Running": true</code>。</li>
   <li><strong>選用自我檢查。</strong>用同一個程式與同一用戶端身份再加上 <code>--headless --once</code> 執行：它會連線、等待、印出同一份狀態文件，並在至少一條轉發運作時以退出碼 0 結束。</li>
+  <li><strong>日常管理用安裝腳本放進 PATH 的 <code>leikwan</code> 指令</strong>：<code>leikwan status</code> 顯示服務狀態與每條轉發，<code>leikwan logs -n 50</code> 查看用戶端日誌，<code>leikwan restart</code> 重新啟動，<code>leikwan doctor</code> 檢查服務、狀態檔、日誌與線上版本。macOS 會要求輸入密碼（LaunchDaemon 以 root 執行）；Windows 請在系統管理員 PowerShell 中執行相同指令。</li>
+  <li><strong>更新用 <code>leikwan update</code></strong>：它讀取面板清單、下載已發布版本、依清單驗證 SHA-256，然後替換程式並重新啟動服務。<code>leikwan update --check</code> 只回報已安裝與線上版本，不做任何變更。</li>
   <li><strong>需要移除時：</strong>macOS 執行 <code>sudo sh uninstall-macos-headless.sh</code>，Windows 執行 <code>.\uninstall-windows-headless.ps1</code>；加上 <code>--purge</code> 或 <code>-Purge</code> 可一併刪除已儲存的權杖。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
+<p><code>leikwan status</code> 在用戶端已連線且至少一條轉發運作時以退出碼 0 結束，因此可直接用於監控腳本。服務或守護程序顯示為 <strong>running</strong>，狀態檔中 <code>"Connected": true</code> 且預期的轉發為 <code>"Running": true</code>，面板中這台機器與其他用戶端一樣在線。狀態檔旁邊的日誌會帶時間戳重複同樣的狀態。macOS 的守護程序在開機與崩潰後都會自動重啟；Windows 服務設為自動啟動，並設定失敗後自動重啟。</p>
 
 <h2>如果沒有成功</h2>
 <p><strong>請先停止對外分享 Agent Token，也不要將安裝指令貼到公開位置。</strong>先核對權杖與 Client ID：權杖錯誤時日誌會顯示 <code>401 Unauthorized</code>，且不會啟動任何轉發。macOS 請確認 <strong>/Applications</strong> 中的應用程式為 1.0.33 或更新版本，且 plist 已寫入 <strong>/Library/LaunchDaemons</strong>。Windows 請確認是在系統管理員權限下執行，且權杖檔案對 <strong>SYSTEM</strong> 可讀。若面板顯示機器在線但某條轉發仍為停止狀態，先與面板上的狀態對照再處理：轉發清單以面板為準，用戶端每隔幾秒就會重新套用一次。</p>
