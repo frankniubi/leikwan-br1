@@ -151,7 +151,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         ])->withHeaders($headers);
     }
 
-    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725"><link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a"></head><body class="pg-public"><main class="landing-stack"><div class="pg-form-section"><h1>Application Error</h1><p>'
+    $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Application Error</title><link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725"><link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a"></head><body class="pg-public"><main class="landing-stack"><div class="pg-form-section"><h1>Application Error</h1><p>'
         . htmlspecialchars($error[1], ENT_QUOTES, 'UTF-8')
         . '</p><pre>Reference: ' . htmlspecialchars($referenceId, ENT_QUOTES, 'UTF-8')
         . '</pre></div></main></body></html>';

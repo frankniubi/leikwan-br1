@@ -1,52 +1,39 @@
+<p>转发已经保存，客户端也在线了。最后一步是告诉游戏该连哪里。</p>
+
 <h2>你将完成什么</h2>
-<p>你将根据应用所在设备选择正确的客户端地址，通过转发发出真实请求，并区分面板状态、运行连接和目标应用成功这几类证据。</p>
+<p>让游戏指向客户端，并且确认流量真的在走。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>记下转发的本地端口。</li>
-  <li>确认客户端有最近同步，转发显示 <strong>Running</strong>。</li>
-  <li>确认应用与客户端在同一台设备上，还是位于另一台设备。</li>
-  <li>准备符合应用协议的测试；仅检查 TCP 端口不能证明 HTTP、SSH、数据库或游戏请求可用。</li>
+<li>一条保存好的转发，以及面板分配的本地端口。</li>
+<li>运行客户端的那台设备上，客户端已经装好并登录。</li>
+<li>游戏开着的时候留几分钟做测试。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 选择客户端连接地址
-accDescr: 应用与客户端同机时使用回环地址，跨设备时仅使用可达的 Windows 或 Linux 客户端主机地址并按需配置网络规则，Android 保持仅回环监听。
-A[确认应用所在设备] --&gt; B{与客户端同机吗}
-B -- 是 --&gt; C[使用 127.0.0.1 和本地端口]
-B -- 否 --&gt; D{客户端平台}
-D -- Windows 或 Linux --&gt; E[使用可达主机地址和端口]
-E --&gt; F[按需允许防火墙安全组或 NAT]
-D -- Android --&gt; G[保持仅回环监听]
-C --&gt; H[测试实际应用协议]
-F --&gt; H
-G --&gt; H</pre>
-<p>地址选择取决于应用在哪里运行。同机连接使用回环地址；跨设备只能通过网络可达的 Windows 或 Linux 客户端主机，并可能需要有限的网络放行；Android 的监听默认仅限回环，除非另有受支持的暴露方案。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发结果卡片显示本地监听地址、目标、传输类型和 Running 状态">
-  <figcaption>演示截图：连接应用时使用你自己的 Forward 卡片中的本地监听值。</figcaption>
-</figure>
 <ol>
-  <li>应用与客户端同机时，填写 <code>127.0.0.1</code> 和转发的本地端口。</li>
-  <li>另一台设备需要访问 Windows 或 Linux 客户端时，填写可访问的 Windows 或 Linux 客户端主机地址和相同端口。</li>
-  <li>只在主机防火墙中放行所需端口。</li>
-  <li>云主机按需在安全组中放行该端口。</li>
-  <li>客户端位于路由器后方时，仅在网络负责人批准后配置 NAT。</li>
-  <li>不要把 Android 当作跨设备监听器；没有单独暴露方案时，它仅监听回环地址。</li>
-  <li>使用实际应用协议发出请求。</li>
-  <li>检查应用响应；可查看目标端时，再核对目标日志。</li>
+<li><strong>先问一个问题：游戏和客户端在同一台设备上吗？</strong>答案决定你要填哪个地址。</li>
+<li><strong>同一台设备：</strong>用 <code>127.0.0.1</code> 加分配的本地端口。这是最常见的情况，而且只监听回环地址，局域网里其他设备碰不到它。</li>
+<li><strong>不同设备：</strong>用可访问的 Windows 或 Linux 客户端主机地址加同一个端口，并在两台设备之间的防火墙、安全组或 NAT 上放行这个端口。</li>
+<li><strong>启动游戏并连接。</strong>玩的时候看一眼那条转发。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 选择客户端连接地址
+accDescr: 先确认游戏在哪台设备上运行，再决定用回环地址还是客户端主机地址
+A[游戏在哪台设备上运行？] -- 与客户端同机 --> B[使用 127.0.0.1 和本地端口]
+A -- 另一台设备 --> C[使用客户端主机地址]
+B --> D[启动游戏]
+C --> D
+</pre>
+<p>同一台设备时端口只留在回环地址上；跨设备时需要在中间的网络里放行一条路径。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发列表显示分配的本地端口和实时流量"><figcaption>转发列表上能看到本地端口和它承载的流量。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>应用通过所选客户端地址和本地端口获得预期响应，目标日志也能对应到该请求时，连接才真正通过。<strong>Connected</strong>、<strong>Running</strong> 和开放的本地端口都是中间状态，不能单独证明目标应用已处理请求。</p>
+<p>看两处。客户端显示这条线路 running，转发列表在你玩的时候有进来的流量。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止开放大范围端口；公网 IP 并非默认连接入口。</strong>重新核对同机或跨设备地址、本地端口和目标服务；先从目标主机测试后端，再提交已去除秘密的错误、时间、客户端平台和转发名称。</p>
+<p><strong>先停止</strong>，先核对地址。按可能性排：端口和分配的本地端口不一致；跨设备时被防火墙或 NAT 挡住了；目标服务本身没起来——从目标服务自己的主机测试目标服务，再看目标日志。测试时要测实际应用协议，不要只 ping。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
+<p>还是不通就看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>。忘了端口是多少，回<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>看一眼。</p>

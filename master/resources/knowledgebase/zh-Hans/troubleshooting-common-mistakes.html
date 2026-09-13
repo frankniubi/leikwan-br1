@@ -1,59 +1,42 @@
+<p>游戏连不上的时候，几乎都是这三个原因之一。按顺序查一遍，通常一两分钟就能回到游戏里。</p>
+
 <h2>你将完成什么</h2>
-<p>你将从看得见的连接症状开始，沿客户端、转发、线路和目标服务逐段检查，修复第一个失败边界，而不是用随机改动掩盖原问题。</p>
+<p>找出这三个常见原因里属于你的那一个，修好它，重新进游戏。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>记下准确错误、发生时间、客户端平台、转发名称和本地端口。</li>
-  <li>检查期间保留已保存的转发，不要先改线路拓扑。</li>
-  <li>截图和支持消息中不得包含密码、令牌、生成命令、密钥、会话或线路材料。</li>
-  <li>最终重试必须使用真实应用协议。</li>
+<li>打开面板，并且保证你玩游戏那台设备上的客户端在运行。</li>
+<li>你之前跟着做的那篇指南，万一要再查一次本地端口。</li>
 </ul>
 
 <h2>操作步骤</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 从症状开始排查连接
-accDescr: 请求失败后依次检查最近同步、客户端地址、端口访问、转发与线路健康和目标服务，最后再使用诊断与支持。
-A[应用请求失败] --&gt; B{最近同步正常吗}
-B -- 否 --&gt; C[恢复客户端同步]
-B -- 是 --&gt; D{地址正确吗}
-D -- 否 --&gt; E[使用回环或可达客户端主机]
-D -- 是 --&gt; F{端口已放行吗}
-F -- 否 --&gt; G[只放行所需端口]
-F -- 是 --&gt; H{转发和线路健康吗}
-H -- 否 --&gt; I[打开 View Diagnostics]
-H -- 是 --&gt; J[从目标主机测试服务]
-C --&gt; K[重试应用]
-E --&gt; K
-G --&gt; K
-I --&gt; L[整理诊断并联系支持]
-J --&gt; L</pre>
-<p>排查顺序从客户端逐步走向目标端。发现第一个失败边界后只修复该处，再重试一次，同时保存错误证据，避免随机修改拓扑。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="客户端诊断页面显示先 Run Diagnostics 再 View Diagnostics，并显示健康结果">
-  <figcaption>演示截图：先运行一次新诊断，再打开 View Diagnostics 查看详情。</figcaption>
-</figure>
 <ol>
-  <li>确认预期客户端有最近同步。</li>
-  <li>确认转发显示 <strong>Running</strong>。</li>
-  <li>检查地址是否正确：应用同机时使用 <code>127.0.0.1</code>。</li>
-  <li>跨设备时只能使用可达的 Windows 或 Linux 客户端主机地址，Android 不作为跨设备监听器。</li>
-  <li>确认本地端口与转发卡片一致。</li>
-  <li>跨设备连接时确认端口已放行，并只在适用的防火墙、安全组和 NAT 中开放该端口。</li>
-  <li>在 <strong>View Diagnostics</strong> 检查转发和线路是否健康。</li>
-  <li>先从目标服务自己的主机测试目标服务。</li>
-  <li>使用实际应用协议重新测试。</li>
-  <li>仍然失败时，整理已脱敏的诊断信息并联系支持人员。</li>
+<li><strong>客户端同步正常吗？</strong>Clients 页面应该显示最近同步。没有的话，重启客户端，等几秒。</li>
+<li><strong>地址是否正确？</strong>和客户端同一台设备就用 127.0.0.1 加本地端口；不同设备就用客户端主机地址。</li>
+<li><strong>端口已放行吗？</strong>只需要放行你真正用的那个端口，防火墙、安全组或 NAT 上放行一条就够。</li>
+<li><strong>转发和线路健康吗？</strong>这一行不应该停在预配中，并且从目标服务自己的主机测试目标服务时应该有回应。</li>
+<li><strong>还是不行？</strong>打开 View Diagnostics，把结果和转发名称一起发给支持。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 从症状开始排查
+accDescr: 从游戏连不上开始，依次检查客户端同步、地址，最后检查目标服务
+A[游戏连不上] --> B[客户端同步正常吗？]
+B -- 否 --> C[重启客户端再试]
+B -- 是 --> D[地址和端口正确吗？]
+D -- 否 --> E[改用 127.0.0.1 或客户端主机地址]
+E --> C
+D -- 是 --> F[从目标服务自己的主机测试目标服务]
+F --> G[打开 View Diagnostics 并联系支持]
+</pre>
+<p>从头到尾走一遍，别跳步。跳过的步骤通常最后还要回来补。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="诊断页面显示客户端同步状态和转发健康摘要"><figcaption>View Diagnostics 会把客户端同步、转发状态和最后一次错误放在一起。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>第一个失败边界恢复后，真实应用请求应成功。最近同步只证明配置送达，<strong>Running</strong> 只证明本地进程运行，目标应用返回正确结果才证明整条连接完成。</p>
+<p>客户端显示这条线路 running，你玩的时候转发列表又出现流量。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止全部重装、开放大范围端口或随机更改拓扑。</strong>保存错误与诊断，向支持提供转发名称、客户端平台、测试时间、地址类型、本地端口和脱敏结果，绝不发送秘密。</p>
+<p>在改别的东西之前，<strong>先停止</strong>。不要随机修改拓扑——那样只会盖住真正的原因，让下一次排查更慢。上面四项都干净的话，把诊断结果发给支持，这是从这里出发最快的路。</p>
 
 <h2>相关指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名词解释</a></li>
-</ul>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。</p>

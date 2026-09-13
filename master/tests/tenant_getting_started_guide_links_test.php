@@ -88,8 +88,7 @@ $topicKeys = [
     'install-client',
     'getting-started-first-forward-checklist',
     'connect-and-verify',
-    'connection-modes-single-race-bond',
-    'bond-sidecar-setup',
+    'no-gui-clients',
     'troubleshooting-common-mistakes',
     'glossary',
 ];
@@ -124,7 +123,7 @@ foreach (['Advanced Options', 'Usage Patterns'] as $vagueLabel) {
 
 foreach ([
     'Create your first forward',
-    'Choose a connection mode',
+    'Connect and verify',
     'Troubleshoot a connection',
     'Read the glossary',
 ] as $label) {

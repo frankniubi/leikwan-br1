@@ -35,12 +35,11 @@ foreach ([
     "'Start here'",
     "'Learn as needed'",
     'KnowledgebaseHtmlSanitizer',
+    'KnowledgebaseOutline',
     "str_contains(\$articleBody, '<pre class=\"mermaid\">')",
-    '.kb-article-body figure',
-    '.kb-article-body figure img',
-    'max-width: 100%;',
+    '/assets/knowledgebase-docs.css?v=20260914a',
     '/assets/vendor/mermaid/mermaid.min.js?v=11.12.0',
-    '/assets/knowledgebase-mermaid.js?v=20260729',
+    '/assets/knowledgebase-mermaid.js?v=20260914a',
     '?thread=',
     "'<span class=\"kb-updated\"><span>Updated</span> <time>'",
     "'<span><span>Updated</span> <time>'",
@@ -81,13 +80,43 @@ foreach ([
     'install-client',
     'getting-started-first-forward-checklist',
     'connect-and-verify',
-    'connection-modes-single-race-bond',
-    'bond-sidecar-setup',
     'troubleshooting-common-mistakes',
     'glossary',
+    'no-gui-clients',
 ] as $stableThreadValue) {
     if (!str_contains($auth . $tenant, $stableThreadValue)) {
         fail('missing stable guide thread value: ' . $stableThreadValue);
+    }
+}
+
+$docsCssPath = $root . '/public/assets/knowledgebase-docs.css';
+if (!is_file($docsCssPath)) {
+    fail('missing shared documentation stylesheet: ' . $docsCssPath);
+}
+$docsCss = file_get_contents($docsCssPath);
+if (!is_string($docsCss) || trim($docsCss) === '') {
+    fail('shared documentation stylesheet is empty');
+}
+foreach ([
+    '.kb-docs .kb-layout {',
+    '.kb-docs .kb-article-body {',
+    '.kb-docs .kb-article-body figure',
+    '.kb-docs .kb-article-body figure img',
+    '.kb-docs .kb-article-body blockquote',
+    '.kb-docs .kb-article-body table',
+    '.kb-docs .kb-article-body pre.mermaid',
+    '.kb-docs .kb-mermaid-figure svg',
+    '.kb-docs .kb-toc',
+    'max-width: 100%;',
+] as $requiredRule) {
+    if (!str_contains($docsCss, $requiredRule)) {
+        fail('missing documentation stylesheet rule: ' . $requiredRule);
+    }
+}
+foreach (['!important', 'border-radius: 999px'] as $tolerated) {
+    // The stylesheet intentionally overrides the shared console skin; both markers must stay intentional.
+    if (!str_contains($docsCss, $tolerated)) {
+        fail('documentation stylesheet lost its console-skin override marker: ' . $tolerated);
     }
 }
 

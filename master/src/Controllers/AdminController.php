@@ -18,6 +18,7 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
+use Leikwan\Master\Support\KnowledgebasePreviewDocument;
 use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\MermaidSourcePolicy;
@@ -5863,48 +5864,12 @@ final class AdminController extends BaseController
             );
         }
 
-        $banners = [
-            'en' => 'Preview — not published',
-            'zh-Hans' => '预览 — 尚未发布',
-            'zh-TW' => '預覽 — 尚未發佈',
-        ];
-        $safeLocale = $this->escape($locale);
-        $safeTitle = $this->escape((string) $titleInput);
-        $safeExcerpt = $this->escape((string) $excerptInput);
-        $safeBanner = $this->escape($banners[$locale]);
-        $diagramAssets = str_contains($sanitizedBody, 'class="mermaid"')
-            ? '<script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0"></script>'
-                . '<script src="/assets/knowledgebase-mermaid.js?v=20260729"></script>'
-            : '';
-        $html = <<<HTML
-            <!doctype html>
-            <html lang="{$safeLocale}">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <title>{$safeBanner}</title>
-              <style>
-                :root{color-scheme:light dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.65}
-                body{margin:0;background:#f4f7fb;color:#172033}.kb-preview{width:min(920px,calc(100% - 32px));margin:32px auto;background:#fff;border:1px solid #dbe3ee;border-radius:18px;box-shadow:0 18px 50px rgba(23,32,51,.08);overflow:hidden}.kb-preview-banner{padding:12px 24px;background:#eef4ff;color:#244d86;font-weight:700}.kb-preview-article{padding:clamp(24px,6vw,56px)}h1{font-size:clamp(2rem,6vw,3.25rem);line-height:1.1;margin:0 0 12px}.kb-preview-excerpt{font-size:1.1rem;color:#56657a;margin:0 0 32px}.kb-preview-body{overflow-wrap:anywhere}.kb-preview-body img{max-width:100%;height:auto}.kb-preview-body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}.kb-preview-body th,.kb-preview-body td{padding:8px 12px;border:1px solid #ccd6e3}.kb-preview-body pre{max-width:100%;overflow:auto;padding:16px;border-radius:10px;background:#edf1f7}.kb-preview-locale{font-size:.85rem;color:#6b7789}@media(max-width:600px){.kb-preview{width:100%;margin:0;border:0;border-radius:0;min-height:100vh}.kb-preview-banner{padding:10px 18px}.kb-preview-article{padding:24px 18px}}
-                @media(prefers-color-scheme:dark){body{background:#111827;color:#e5e7eb}.kb-preview{background:#182131;border-color:#334155}.kb-preview-banner{background:#24324a;color:#bfdbfe}.kb-preview-excerpt,.kb-preview-locale{color:#aab7ca}.kb-preview-body pre{background:#111827}}
-              </style>
-            </head>
-            <body>
-              <main class="kb-preview">
-                <div class="kb-preview-banner">{$safeBanner}</div>
-                <article class="kb-preview-article">
-                  <div class="kb-preview-locale">{$safeLocale}</div>
-                  <h1>{$safeTitle}</h1>
-                  <p class="kb-preview-excerpt">{$safeExcerpt}</p>
-                  <div class="kb-preview-body">{$sanitizedBody}</div>
-                </article>
-              </main>
-              {$diagramAssets}
-            </body>
-            </html>
-        HTML;
-
-        return Response::html(200, $html);
+        return Response::html(200, (new KnowledgebasePreviewDocument())->render(
+            $locale,
+            (string) $titleInput,
+            (string) $excerptInput,
+            $sanitizedBody
+        ));
     }
 
     private function knowledgebasePreviewErrorPage(int $status, string $message): Response
