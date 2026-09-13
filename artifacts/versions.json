@@ -450,13 +450,13 @@
         ],
         "obfuscator": "garble-v0.17.0",
         "path": "artifacts/ultra/ultra-client_linux_amd64",
-        "sha256": "33ac5e4c66a072da9c45a08874e416aea2519099c1d7964a75dfdc3a6e64e2d3",
-        "size_bytes": 16040202,
-        "version": "2026.09.13.1",
-        "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, path-mtu-2026.09.12.1",
+        "sha256": "76055872721d9a1a12a1a9ec432423a2b38e4a7cd28d6e855e19821fc92b6c9b",
+        "size_bytes": 16535818,
+        "version": "2026.09.13.2",
+        "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, probe-failure-evidence-2026.09.13.2",
         "attestation": {
-            "fingerprint": "2026.09.12.1.4b106b02",
-            "self_sha256": "1a09539d1d266222ef346a5d8f212cf464a161957a7effd5dbad1fcb663c78b5"
+            "fingerprint": "2026.09.13.2.452c8fe8",
+            "self_sha256": "76055872721d9a1a12a1a9ec432423a2b38e4a7cd28d6e855e19821fc92b6c9b"
         }
     },
     "ultra_client_runtime_linux_arm64": {
