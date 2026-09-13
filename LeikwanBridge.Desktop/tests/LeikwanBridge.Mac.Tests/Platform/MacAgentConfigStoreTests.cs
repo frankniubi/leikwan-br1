@@ -63,6 +63,26 @@ public sealed class MacAgentConfigStoreTests
         Assert.DoesNotContain("new-token", File.ReadAllText(paths.ConfigPath));
     }
 
+    [Fact]
+    public async Task UseMacKeychainSwitchRoundTripsThroughConfigJson()
+    {
+        using var temp = new TemporaryDirectory();
+        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
+        var secrets = new InMemorySecretStore();
+        var store = new MacAgentConfigStore(paths, secrets);
+        var config = new AgentConfig
+        {
+            MasterUrl = "https://panel.example.test",
+            UseMacKeychain = true,
+        };
+
+        await store.SaveAsync(config, CancellationToken.None);
+
+        Assert.Contains("\"use_mac_keychain\": true", File.ReadAllText(paths.ConfigPath));
+        var loaded = await store.LoadAsync(CancellationToken.None);
+        Assert.True(loaded.UseMacKeychain);
+    }
+
     private sealed class InMemorySecretStore : LeikwanBridge.Core.Services.Platform.ISecretStore
     {
         private readonly Dictionary<string, string> _values = [];

@@ -129,6 +129,7 @@ function Resolve-IsccPath {
         "C:\Program Files (x86)\Inno Setup 5\ISCC.exe",
         "C:\Program Files\Inno Setup 5\ISCC.exe",
         "C:\Tools\Inno Setup 6\ISCC.exe",
+        (Join-Path $env:USERPROFILE "Tools\Inno Setup 6\ISCC.exe"),
         "C:\Tools\Inno Setup\ISCC.exe"
     )
 
@@ -148,6 +149,17 @@ $appBuildDir = [System.IO.Path]::GetFullPath($appBuildDir)
 Require-File $appExe
 if (-not (Test-Path -LiteralPath $appBuildDir)) {
     throw "required app build directory missing: $appBuildDir"
+}
+
+$publishedAppVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe).FileVersion
+$builtAppPath = Join-Path $appBuildDir "LeikwanBridge.App.exe"
+Require-File $builtAppPath
+$builtAppVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($builtAppPath).FileVersion
+if ([string]::IsNullOrWhiteSpace($publishedAppVersion) -or [string]::IsNullOrWhiteSpace($builtAppVersion)) {
+    throw "unable to read Windows app versions from publish/build outputs"
+}
+if ($publishedAppVersion -ne $builtAppVersion) {
+    throw "Windows app publish version mismatch: publish=$publishedAppVersion build=$builtAppVersion; republish before packaging"
 }
 $BondExe = Resolve-InputFile -ConfiguredPath $BondExe -WasExplicitlyProvided $PSBoundParameters.ContainsKey('BondExe') -Fallbacks @(
     "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
@@ -241,6 +253,13 @@ Copy-Item -LiteralPath $helperScript -Destination (Join-Path $StageDir "windows-
 
 Copy-Item -LiteralPath $appExe -Destination (Join-Path $appStageDir "leikwan-client-win.exe") -Force
 
+# The repair/update helper ships with the client: a machine that already has
+# the installer can then fix its own permissions and pull the current build
+# without downloading anything else.
+$repairTool = Join-Path "scripts" "leikwan-bridge-repair.cmd"
+Require-File $repairTool
+Copy-Item -LiteralPath $repairTool -Destination (Join-Path $appStageDir "leikwan-bridge-repair.cmd") -Force
+
 # The apphost is distributed under the user-facing leikwan-client-win.exe name.
 # Keep apphost sidecars under that same name so hostfxr can resolve them when
 # the renamed executable is launched from the installed directory.
@@ -295,7 +314,7 @@ if ([string]::IsNullOrWhiteSpace($outputDir)) {
     throw "output setup directory missing for $OutputSetup"
 }
 
-$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($appExe).FileVersion
+$version = $publishedAppVersion
 $compileArgs = @(
     "/DAppVersion=$version",
     "/DStageDir=$([System.IO.Path]::GetFullPath($StageDir))",

@@ -18,14 +18,18 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
+use Leikwan\Master\Support\KnowledgebasePreviewDocument;
 use Leikwan\Master\Support\KnowledgebaseService;
 use Leikwan\Master\Support\LocaleResolver;
 use Leikwan\Master\Support\MermaidSourcePolicy;
+use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\SslCertificateService;
 use Leikwan\Master\Support\TenantRegistrationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraCandidateReputationService;
+use Leikwan\Master\Support\UltraCandidateReviewService;
 use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 
 final class AdminController extends BaseController
@@ -2292,6 +2296,7 @@ final class AdminController extends BaseController
                 <form class="inline" method="post" action="/admin/republish/client/' . (int) $client['id'] . '"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Republish</button></form>
                 <form class="inline" method="post" action="/admin/clients/' . (int) $client['id'] . '/diagnose"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Run Diagnostics</button></form>
                 <form class="inline" method="post" action="/admin/clients/' . $clientId . '/request-update"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">Request Update</button></form>
+                <form class="inline" method="post" action="/admin/clients/' . $clientId . '/openwrt-pairing-code"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button type="submit">OpenWrt Pairing Code</button></form>
                 ' . $assignedForwardSummary . $installDetails . '
                 <details><summary>Diagnostics</summary><div class="muted">Status: ' . $this->escape((string) ($client['last_diag_status'] ?? '')) . '</div><div class="muted">Last Run: ' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</div><div class="muted">Error: ' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</div><div>' . $diagItems . '</div></details>
                 <details><summary>Usage Calendar</summary>' . $usagePanel . '</details>
@@ -3125,7 +3130,7 @@ final class AdminController extends BaseController
         $inventory = $this->ultraInventory ?? new UltraInventoryService($this->config, $this->db);
         $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
         $view = strtolower(trim((string) $request->input('view', 'sessions')));
-        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source', 'reputation'], true)) {
+        if (!in_array($view, ['sessions', 'lines', 'combinations', 'source', 'reputation', 'attestation', 'refusals'], true)) {
             $view = 'sessions';
         }
         $limit = min(200, max(1, (int) $request->input('limit', 50)));
@@ -3139,6 +3144,9 @@ final class AdminController extends BaseController
         foreach ([
             'Online' => (int) ($statusCounts['online'] ?? 0),
             'Stale' => (int) ($statusCounts['stale'] ?? 0),
+            'Runtime known' => (int) ($statusCounts['attestation_known'] ?? 0),
+            'Runtime unknown' => (int) ($statusCounts['attestation_unknown'] ?? 0),
+            'Runtime mismatch' => (int) ($statusCounts['attestation_mismatch'] ?? 0),
             'Available lines' => (int) ($inventoryCounts['discovered'] ?? 0),
             'Unavailable lines' => (int) ($inventoryCounts['unavailable'] ?? 0),
             'Material not required' => (int) ($inventoryCounts['not_required'] ?? 0),
@@ -3156,6 +3164,8 @@ final class AdminController extends BaseController
             ['view' => 'combinations', 'href' => '/admin/ultra?view=combinations', 'label' => 'Combinations'],
             ['view' => 'source', 'href' => '/admin/ultra?view=source', 'label' => 'Source'],
             ['view' => 'reputation', 'href' => '/admin/ultra?view=reputation', 'label' => 'Reputation'],
+            ['view' => 'attestation', 'href' => '/admin/ultra?view=attestation', 'label' => 'Attestation'],
+            ['view' => 'refusals', 'href' => '/admin/ultra?view=refusals', 'label' => 'Refusals'],
         ] as $tab) {
             $tabs .= '<a class="button ' . ($view === $tab['view'] ? '' : 'ghost') . '" href="' . $tab['href'] . '">' . $tab['label'] . '</a>';
         }
@@ -3177,6 +3187,11 @@ final class AdminController extends BaseController
                 $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
                 $tcp = trim((string) ($session['latest_tcp_selection_ref'] ?? ''));
                 $udp = trim((string) ($session['active_udp_selection_ref'] ?? ''));
+                $attestation = strtolower(trim((string) ($session['attestation_state'] ?? 'unknown')));
+                $attestationBadge = $attestation === 'known' ? 'success' : ($attestation === 'mismatch' ? 'danger' : 'info');
+                $fingerprint = trim((string) ($session['runtime_fingerprint'] ?? ''));
+                $runtimeCell = '<span class="badge ' . $attestationBadge . '">' . $this->escape($attestation) . '</span>'
+                    . ($fingerprint !== '' ? '<br><span class="muted">' . $this->escape(substr($fingerprint, 0, 16)) . '</span>' : '');
                 $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
                     . '<td>' . $this->escape($user) . '</td>'
                     . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
@@ -3186,12 +3201,65 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape((string) ($session['detected_ingress_zone'] ?? 'unknown')) . '</td>'
                     . '<td>' . $this->escape($tcp) . '</td>'
                     . '<td>' . $this->escape($udp) . '</td>'
+                    . '<td>' . $runtimeCell . '</td>'
                     . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="10" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="11" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
             }
-            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'attestation') {
+            $mismatches = $statusService->runtimeAttestationMismatches($limit);
+            $allowlistSize = count($statusService->runtimeFingerprintAllowlist());
+            $rows = '';
+            foreach ($mismatches as $session) {
+                $debugger = $session['runtime_debugger'] ?? null;
+                $instrumented = $session['runtime_instrumented'] ?? null;
+                $user = trim((string) (($session['user_name'] ?? '') ?: ($session['user_email'] ?? '')));
+                $client = '#' . (int) ($session['client_id'] ?? 0) . ' ' . trim((string) ($session['client_name'] ?? ''));
+                $device = trim((string) (($session['device_name'] ?? '') ?: ($session['device_id'] ?? '')));
+                $rows .= '<tr>'
+                    . '<td>' . $this->escape((string) ($session['attestation_state'] ?? 'unknown')) . '</td>'
+                    . '<td>' . $this->escape($user) . '</td>'
+                    . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($session['client_ip'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($session['runtime_fingerprint'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($session['runtime_self_sha256'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . $this->escape($debugger === null ? 'unknown' : ($debugger ? 'yes' : 'no')) . '</td>'
+                    . '<td>' . $this->escape($instrumented === null ? 'unknown' : ($instrumented ? 'yes' : 'no')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['runtime_attested_at'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td></tr>';
+            }
+            if ($rows === '') {
+                $rows = '<tr><td colspan="10" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
+            }
+            $content = '<section class="card">'
+                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is report-only. These sessions report a runtime build fingerprint that is not in '
+                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (allow-list entries: ' . $allowlistSize . '); no lease is denied from this view.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th></tr></thead><tbody>'
+                . $rows . '</tbody></table></div></section>';
+        } elseif ($view === 'refusals') {
+            $refusals = (new UltraLeaseService($this->config, $this->db))->recentRefusals($limit);
+            $refusalRows = '';
+            foreach ($refusals as $refusal) {
+                $refusalRows .= '<tr>'
+                    . '<td>' . $this->escape((string) ($refusal['created_at'] ?? '')) . '</td>'
+                    . '<td>#' . (int) ($refusal['client_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($refusal['device_hash_prefix'] ?? '')) . '</td>'
+                    . '<td>#' . (int) ($refusal['forward_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($refusal['error_code'] ?? '')) . '</td></tr>';
+            }
+            if ($refusalRows === '') {
+                $refusalRows = '<tr><td colspan="5" class="muted">No lease refusals recorded.</td></tr>';
+            }
+            $content = '<section class="card">'
+                . '<div class="muted" style="margin-bottom:10px">Opt-in abuse limits '
+                . UltraLeaseService::ISSUE_RATE_PER_MINUTE_KEY . ', ' . UltraLeaseService::MAX_LIVE_LEASES_PER_DEVICE_KEY
+                . ' and ' . UltraLeaseService::MAX_DEVICES_PER_CLIENT_KEY
+                . ' default to 0 = unlimited. Refusal codes: ' . UltraLeaseService::ERROR_RATE_LIMITED . ', '
+                . UltraLeaseService::ERROR_DEVICE_LIVE_LIMIT . ', ' . UltraLeaseService::ERROR_CLIENT_DEVICE_LIMIT . '.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Client</th><th>Device hash prefix</th><th>Forward</th><th>Error code</th></tr></thead><tbody>'
+                . $refusalRows . '</tbody></table></div></section>';
         } elseif ($view === 'lines') {
             $lines = $inventory->listLinesForAdmin([
                 'ingress' => $request->input('ingress', ''),
@@ -3203,6 +3271,8 @@ final class AdminController extends BaseController
                 'native_socks5_state' => $request->input('native_socks5_state', ''),
                 'direction_class' => $request->input('direction_class', ''),
                 'pricing_class' => $request->input('pricing_class', ''),
+                'isp' => $request->input('isp', ''),
+                'dispatch_class' => $request->input('dispatch_class', ''),
                 'include_absent' => $request->input('include_absent', ''),
             ], $limit, $offset);
             $ingressZones = $inventory->activeZones('ingress');
@@ -3248,8 +3318,22 @@ final class AdminController extends BaseController
                     $directionOptions .= '<option value="' . $this->escape($option) . '"' . ((string) ($line['direction_class'] ?? 'unknown') === $option ? ' selected' : '') . '>' . $this->escape($directionLabels[$option] ?? $option) . '</option>';
                 }
                 $directionLabel = $directionLabels[(string) ($line['direction_class'] ?? 'unknown')] ?? 'Unknown';
+                $carrierLabel = match ((string) ($line['isp'] ?? 'unknown')) {
+                    'telecom' => 'Telecom',
+                    'unicom' => 'Unicom',
+                    'mobile' => 'Mobile',
+                    'generic' => 'Generic / BGP',
+                    default => 'Unknown',
+                };
+                $providerLabel = trim((string) ($line['provider'] ?? ''));
+                $inLineType = $line['in_line_type'] ?? null;
+                $carrierCell = $this->escape($carrierLabel)
+                    . ($providerLabel !== '' ? '<br><span class="muted">' . $this->escape($providerLabel) . '</span>' : '')
+                    . ($inLineType !== null ? '<br><span class="muted">in_type: ' . (int) $inLineType . '</span>' : '')
+                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '');
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
+                    . '<td>' . $carrierCell . '</td>'
                     . '<td>' . $this->escape((string) ($line['access_class'] ?? 'unknown')) . '<br><span class="muted">Direction: ' . $this->escape($directionLabel) . '<br>UDP: ' . $this->escape((string) ($line['native_udp_state'] ?? 'unknown')) . '<br>SOCKS5: ' . $this->escape((string) ($line['native_socks5_state'] ?? 'unknown')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['pricing_class'] ?? 'unknown')) . '<br><span class="muted">' . $this->escape((string) ($line['pricing_evidence'] ?? '')) . '</span></td>'
                     . '<td>' . $this->escape((string) ($line['catalog_ingress_label'] ?? '')) . '</td>'
@@ -3268,7 +3352,7 @@ final class AdminController extends BaseController
                     . '<input name="notes" value="' . $this->escape((string) ($line['notes'] ?? '')) . '" placeholder="Notes"><button class="button" type="submit">Save</button></form></td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="13" class="muted">No discovered Ultra lines.</td></tr>';
+                $rows = '<tr><td colspan="14" class="muted">No discovered Ultra lines.</td></tr>';
             }
             $catalogIngressFilter = $this->escape((string) $request->input('catalog_ingress', ''));
             $catalogDestinationFilter = $this->escape((string) $request->input('catalog_destination', ''));
@@ -3276,6 +3360,17 @@ final class AdminController extends BaseController
             $nativeStateFilter = $this->escape((string) $request->input('native_udp_state', ''));
             $nativeSocks5StateFilter = $this->escape((string) $request->input('native_socks5_state', ''));
             $pricingFilter = $this->escape((string) $request->input('pricing_class', ''));
+            $dispatchRawFilter = strtolower(trim((string) $request->input('dispatch_class', '')));
+            $dispatchOptions = '<option value="">Any priority</option>';
+            foreach (['normal' => 'Normal', 'low' => 'Low priority'] as $dispatchValue => $dispatchLabel) {
+                $dispatchOptions .= '<option value="' . $dispatchValue . '"' . ($dispatchRawFilter === $dispatchValue ? ' selected' : '') . '>' . $dispatchLabel . '</option>';
+            }
+            $ispRawFilter = trim((string) $request->input('isp', ''));
+            $ispFilterValue = UltraInventoryService::normalizeIsp($ispRawFilter);
+            $ispOptions = '<option value="">Any carrier</option>';
+            foreach (['telecom' => 'Telecom', 'unicom' => 'Unicom', 'mobile' => 'Mobile', 'generic' => 'Generic / BGP', 'unknown' => 'Unknown'] as $ispValue => $ispLabel) {
+                $ispOptions .= '<option value="' . $ispValue . '"' . ($ispRawFilter !== '' && $ispFilterValue === $ispValue ? ' selected' : '') . '>' . $ispLabel . '</option>';
+            }
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
                 . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
@@ -3285,9 +3380,11 @@ final class AdminController extends BaseController
                 . '<label>SOCKS5 state <input name="native_socks5_state" value="' . $nativeSocks5StateFilter . '" maxlength="32"></label>'
                 . '<label>Direction <input name="direction_class" value="' . $this->escape((string) $request->input('direction_class', '')) . '" maxlength="32"></label>'
                 . '<label>Pricing <input name="pricing_class" value="' . $pricingFilter . '" maxlength="32"></label>'
+                . '<label>Carrier <select name="isp">' . $ispOptions . '</select></label>'
+                . '<label>Dispatch <select name="dispatch_class">' . $dispatchOptions . '</select></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';
@@ -3337,7 +3434,52 @@ final class AdminController extends BaseController
             if ($rows === '') {
                 $rows = '<tr><td colspan="9" class="muted">No dynamic Ultra reputation observations.</td></tr>';
             }
-            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Dynamic reputation is observational and does not replace static line policy.</div><div class="table-wrap"><table><thead><tr><th>State</th><th>Source</th><th>Line</th><th>Scope</th><th>Protocol</th><th>Failures / successes</th><th>Observers</th><th>Last reason</th><th>Quarantine until</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $reviewService = new UltraCandidateReviewService($this->db);
+            try {
+                $demotedDevices = $reviewService->demotedDevices($limit);
+                $reviewRowsRaw = $reviewService->recent($limit);
+            } catch (\Throwable) {
+                $demotedDevices = [];
+                $reviewRowsRaw = [];
+            }
+            $deviceRows = '';
+            foreach ($demotedDevices as $device) {
+                $deviceDemotedAt = trim((string) ($device['demoted_at'] ?? ''));
+                $deviceRows .= '<tr><td><span class="badge ' . ($deviceDemotedAt !== '' ? 'danger' : 'info') . '">'
+                    . ($deviceDemotedAt !== '' ? 'demoted' : 'watch') . '</span></td>'
+                    . '<td>' . (int) ($device['client_id'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($device['device_id'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape(substr((string) ($device['observer_hash'] ?? ''), 0, 16)) . '</td>'
+                    . '<td>' . (int) ($device['strikes'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape($deviceDemotedAt !== '' ? $deviceDemotedAt : '-') . '</td>'
+                    . '<td>' . $this->escape((string) ($device['last_rebuttal_at'] ?? '-')) . '</td>'
+                    . '<td>' . $this->escape((string) ($device['last_seen_at'] ?? '')) . '</td></tr>';
+            }
+            if ($deviceRows === '') {
+                $deviceRows = '<tr><td colspan="8" class="muted">No device report has been disproved by a source review yet.</td></tr>';
+            }
+            $reviewTableRows = '';
+            foreach ($reviewRowsRaw as $reviewRow) {
+                $reviewState = strtolower(trim((string) ($reviewRow['state'] ?? '')));
+                $reviewBadge = $reviewState === UltraCandidateReviewService::STATE_FAILED ? 'danger'
+                    : ($reviewState === UltraCandidateReviewService::STATE_PASSED ? 'success' : 'info');
+                $reviewTableRows .= '<tr><td>' . (int) ($reviewRow['id'] ?? 0) . '</td>'
+                    . '<td><span class="badge ' . $reviewBadge . '">' . $this->escape($reviewState) . '</span></td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['source_id'] ?? '')) . '</td>'
+                    . '<td>' . (int) ($reviewRow['line_id'] ?? 0) . '</td>'
+                    . '<td>' . (int) ($reviewRow['attempts'] ?? 0) . '</td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['requested_at'] ?? '')) . '</td>'
+                    . '<td>' . $this->escape((string) ($reviewRow['completed_at'] ?? '-')) . '</td>'
+                    . '<td>' . $this->escape((function_exists('mb_substr') ? mb_substr((string) ($reviewRow['result_json'] ?? ''), 0, 160) : substr((string) ($reviewRow['result_json'] ?? ''), 0, 160))) . '</td></tr>';
+            }
+            if ($reviewTableRows === '') {
+                $reviewTableRows = '<tr><td colspan="8" class="muted">No source review has run yet.</td></tr>';
+            }
+            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Dynamic reputation is observational and does not replace static line policy.</div><div class="table-wrap"><table><thead><tr><th>State</th><th>Source</th><th>Line</th><th>Scope</th><th>Protocol</th><th>Failures / successes</th><th>Observers</th><th>Last reason</th><th>Quarantine until</th></tr></thead><tbody>' . $rows . '</tbody></table></div>'
+                . '<div class="muted" style="margin:18px 0 10px">Devices whose reports a source review disproved. A demoted device still records events but no longer counts as an independent observer, so it cannot quarantine a line on its own.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>Flag</th><th>Client</th><th>Device</th><th>Observer</th><th>Strikes</th><th>Demoted at</th><th>Last rebuttal</th><th>Last seen</th></tr></thead><tbody>' . $deviceRows . '</tbody></table></div>'
+                . '<div class="muted" style="margin:18px 0 10px">Source re-reviews of quarantined lines: big-packet UDP and DNS must both stay usable for the whole window, otherwise the quarantine stands.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>ID</th><th>State</th><th>Source</th><th>Line</th><th>Attempts</th><th>Requested</th><th>Completed</th><th>Result</th></tr></thead><tbody>' . $reviewTableRows . '</tbody></table></div></section>';
         } else {
             $sources = $inventory->listSourcesForAdmin();
             $rows = '';
@@ -4558,6 +4700,37 @@ final class AdminController extends BaseController
         return Response::redirect('/admin/clients');
     }
 
+    public function createOpenWrtPairingCode(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $clientId = $this->idParam($params);
+            $client = $this->db->fetchOne('SELECT * FROM clients WHERE id = :id LIMIT 1', ['id' => $clientId]);
+            if ($client === null) {
+                throw new ApiException('client_not_found', 404);
+            }
+            $pairingCodes = new OpenWrtPairingCodeService($this->db, $this->config);
+            $pairingCodes->assertAvailable();
+            $issued = $pairingCodes->issue($clientId, (int) ($viewer['id'] ?? 0));
+            // The plaintext exists only in this flash message: the panel keeps
+            // the hash, so the code can never be shown again.
+            SessionAuth::flash(
+                'success',
+                'OpenWrt pairing code for ' . (string) ($client['name'] ?? ('client ' . $clientId))
+                . ' (single use, expires ' . (string) $issued['expires_at'] . ' UTC): ' . (string) $issued['code']
+            );
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to create OpenWrt pairing code: ' . $this->displayThrowableMessage($throwable));
+        }
+
+        return Response::redirect('/admin/clients');
+    }
+
     public function requestClientUpdate(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -5691,48 +5864,12 @@ final class AdminController extends BaseController
             );
         }
 
-        $banners = [
-            'en' => 'Preview — not published',
-            'zh-Hans' => '预览 — 尚未发布',
-            'zh-TW' => '預覽 — 尚未發佈',
-        ];
-        $safeLocale = $this->escape($locale);
-        $safeTitle = $this->escape((string) $titleInput);
-        $safeExcerpt = $this->escape((string) $excerptInput);
-        $safeBanner = $this->escape($banners[$locale]);
-        $diagramAssets = str_contains($sanitizedBody, 'class="mermaid"')
-            ? '<script src="/assets/vendor/mermaid/mermaid.min.js?v=11.12.0"></script>'
-                . '<script src="/assets/knowledgebase-mermaid.js?v=20260729"></script>'
-            : '';
-        $html = <<<HTML
-            <!doctype html>
-            <html lang="{$safeLocale}">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <title>{$safeBanner}</title>
-              <style>
-                :root{color-scheme:light dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.65}
-                body{margin:0;background:#f4f7fb;color:#172033}.kb-preview{width:min(920px,calc(100% - 32px));margin:32px auto;background:#fff;border:1px solid #dbe3ee;border-radius:18px;box-shadow:0 18px 50px rgba(23,32,51,.08);overflow:hidden}.kb-preview-banner{padding:12px 24px;background:#eef4ff;color:#244d86;font-weight:700}.kb-preview-article{padding:clamp(24px,6vw,56px)}h1{font-size:clamp(2rem,6vw,3.25rem);line-height:1.1;margin:0 0 12px}.kb-preview-excerpt{font-size:1.1rem;color:#56657a;margin:0 0 32px}.kb-preview-body{overflow-wrap:anywhere}.kb-preview-body img{max-width:100%;height:auto}.kb-preview-body table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}.kb-preview-body th,.kb-preview-body td{padding:8px 12px;border:1px solid #ccd6e3}.kb-preview-body pre{max-width:100%;overflow:auto;padding:16px;border-radius:10px;background:#edf1f7}.kb-preview-locale{font-size:.85rem;color:#6b7789}@media(max-width:600px){.kb-preview{width:100%;margin:0;border:0;border-radius:0;min-height:100vh}.kb-preview-banner{padding:10px 18px}.kb-preview-article{padding:24px 18px}}
-                @media(prefers-color-scheme:dark){body{background:#111827;color:#e5e7eb}.kb-preview{background:#182131;border-color:#334155}.kb-preview-banner{background:#24324a;color:#bfdbfe}.kb-preview-excerpt,.kb-preview-locale{color:#aab7ca}.kb-preview-body pre{background:#111827}}
-              </style>
-            </head>
-            <body>
-              <main class="kb-preview">
-                <div class="kb-preview-banner">{$safeBanner}</div>
-                <article class="kb-preview-article">
-                  <div class="kb-preview-locale">{$safeLocale}</div>
-                  <h1>{$safeTitle}</h1>
-                  <p class="kb-preview-excerpt">{$safeExcerpt}</p>
-                  <div class="kb-preview-body">{$sanitizedBody}</div>
-                </article>
-              </main>
-              {$diagramAssets}
-            </body>
-            </html>
-        HTML;
-
-        return Response::html(200, $html);
+        return Response::html(200, (new KnowledgebasePreviewDocument())->render(
+            $locale,
+            (string) $titleInput,
+            (string) $excerptInput,
+            $sanitizedBody
+        ));
     }
 
     private function knowledgebasePreviewErrorPage(int $status, string $message): Response

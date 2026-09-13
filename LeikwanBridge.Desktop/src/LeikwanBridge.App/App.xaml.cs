@@ -41,10 +41,10 @@ public partial class App : System.Windows.Application
         }
 
         // Setup logging
-        var logDir = Path.Combine(
+        var sharedLogDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "Leikwan", "ClientAgent", "logs");
-        Directory.CreateDirectory(logDir);
+        var logDir = ResolveWritableLogDirectory(sharedLogDir);
 
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
@@ -54,6 +54,14 @@ public partial class App : System.Windows.Application
             .CreateLogger();
 
         Log.Information("Leikwan Bridge GUI starting...");
+        if (!string.Equals(logDir, sharedLogDir, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Warning("shared log directory {SharedLogDir} is not writable; logging to {LogDir}", sharedLogDir, logDir);
+        }
+
+        // Panel/update traffic must egress through the physical NIC even
+        // when a third-party TUN tool holds the default route.
+        PanelDirectEgress.Initialize();
 
         // Load config
         var configDir = Path.Combine(
@@ -65,13 +73,15 @@ public partial class App : System.Windows.Application
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
         if (Config.MigrateLegacyUltraBin(AppDefaults.GetInstallRoot()))
-            stateManager.SaveConfig(ConfigPath, Config);
+            TrySaveConfig(stateManager, Config);
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(Config.MasterUrl);
         if (!string.Equals(normalizedMasterUrl, Config.MasterUrl, StringComparison.Ordinal))
         {
             Config.MasterUrl = normalizedMasterUrl;
-            stateManager.SaveConfig(ConfigPath, Config);
+            TrySaveConfig(stateManager, Config);
         }
+
+        TryPruneInstallerCache();
 
         // Apply language
         SwitchLanguage(Config.Language);
@@ -79,9 +89,102 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
     }
 
+    // Installer downloads accumulate one ~70 MB setup per release in the per-user
+    // cache; keep only what the client can still act on (the running build and a
+    // deferred update) and drop the rest.
+    private static void TryPruneInstallerCache()
+    {
+        try
+        {
+            var installRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "LeiKwan Bridge");
+            var removed = WindowsAppUpdateService.PruneCachedInstallers(
+                installRoot,
+                GetCurrentAppVersion(),
+                Config.PendingUpdateInstallerPath);
+            if (removed.Count > 0)
+            {
+                Log.Information("pruned {Count} stale cached installer(s)", removed.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "could not prune the installer cache");
+        }
+    }
+
+    private static string GetCurrentAppVersion()
+    {
+        var exePath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(exePath))
+        {
+            var fileVersion = System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).FileVersion;
+            if (!string.IsNullOrWhiteSpace(fileVersion))
+                return fileVersion;
+        }
+
+        return typeof(App).Assembly.GetName().Version?.ToString() ?? "0.0.0.0";
+    }
+
+    // A log file written by an elevated run is owned by Administrators and stays
+    // read-only for the interactive user, so the next non-elevated run cannot
+    // open it. Serilog fails silently in that case and the client runs with no
+    // log at all, which is the worst possible state to debug a startup problem
+    // from. Probe the exact file the sink will open and fall back to a per-user
+    // directory the client always owns.
+    private static string ResolveWritableLogDirectory(string preferredDirectory)
+    {
+        try
+        {
+            Directory.CreateDirectory(preferredDirectory);
+            var dayFile = Path.Combine(preferredDirectory, $"leikwan-gui-{DateTime.Now:yyyyMMdd}.log");
+            using (new FileStream(dayFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            {
+            }
+
+            return preferredDirectory;
+        }
+        catch (Exception)
+        {
+            var fallback = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "LeiKwan Bridge", "logs");
+            try
+            {
+                Directory.CreateDirectory(fallback);
+                return fallback;
+            }
+            catch (Exception)
+            {
+                return preferredDirectory;
+            }
+        }
+    }
+
+    // The shared config lives under %ProgramData%\Leikwan\ClientAgent, so a
+    // single elevated run is enough to leave config.json owned by
+    // BUILTIN\Administrators with the interactive user read-only. An
+    // unhandled failure here killed the process before it wrote a single log
+    // line, which is indistinguishable from "the app will not start any more"
+    // and only "fixed" by running the client as administrator. The tunnel only
+    // needs the in-memory copy, so a read-only config must never be fatal.
+    private static void TrySaveConfig(StateManager stateManager, AgentConfig config)
+    {
+        try
+        {
+            stateManager.SaveConfig(ConfigPath, config);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "config could not be persisted; continuing with the in-memory config");
+        }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         Log.Information("Leikwan Bridge GUI shutting down.");
+        PanelDirectEgress.Shutdown();
         Log.CloseAndFlush();
         try { _mutex?.ReleaseMutex(); }
         catch (ApplicationException) { }

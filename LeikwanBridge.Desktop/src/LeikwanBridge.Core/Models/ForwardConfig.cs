@@ -93,4 +93,14 @@ public sealed class ForwardConfig
 
     [JsonIgnore]
     public string NativeRouteScope { get; set; } = "";
+
+    /// <summary>
+    /// True for a panel-declared native outbound rule: the panel ships only the
+    /// rule, and the data plane belongs to a user-initiated native outbound
+    /// relay connection. The agent never owns an ordinary Ultra runtime for it.
+    /// Derived only; never serialized, so the JSON contract is unchanged.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsNativeOutboundRule =>
+        NativeOutboundEnabled && string.Equals(BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
 }

@@ -467,6 +467,46 @@ class UltraSourceAgentTests(unittest.TestCase):
         self.assertNotIn("session_token", encoded)
         self.assertNotIn("must-not-survive", encoded)
 
+    def test_inventory_carries_carrier_metadata_without_ports_or_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            index = lines / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "lines": [
+                            {
+                                "line_id": 327,
+                                "title": "上海-韩国-电信单线",
+                                "game_id": 6262,
+                                "area_id": 11797,
+                                "line_type": 8,
+                                "in_line_type": 3,
+                                "isp": "电信",
+                                "provider": "华为云",
+                                "speed_ip": "203.0.113.21",
+                                "pc_port": 5438,
+                                "account_token": "must-not-survive",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, index, max_lines=256)
+
+        line = inventory["lines"][0]
+        self.assertEqual("电信", line["isp"])
+        self.assertEqual("华为云", line["provider"])
+        self.assertEqual(3, line["in_line_type"])
+        encoded = json.dumps(inventory, ensure_ascii=False).lower()
+        self.assertNotIn("pc_port", encoded)
+        self.assertNotIn("5438", encoded)
+        self.assertNotIn("must-not-survive", encoded)
+
     def test_inventory_is_sorted_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             lines = Path(directory)
@@ -527,8 +567,8 @@ class UltraSourceAgentTests(unittest.TestCase):
             self.assertEqual(
                 [
                     ("POST", "/api/ultra/source/inventory"),
-                    ("GET", "/api/ultra/source/jobs"),
-                    ("GET", "/api/ultra/source/jobs"),
+                    ("GET", "/api/ultra/source/jobs?reviews_capacity=1"),
+                    ("GET", "/api/ultra/source/jobs?reviews_capacity=1"),
                 ],
                 [(method, path) for method, path, _payload in calls],
             )
@@ -577,7 +617,7 @@ class UltraSourceAgentTests(unittest.TestCase):
                     MODULE.SourceAgent(config).run_cycle()
 
             self.assertEqual(
-                ["/api/ultra/source/inventory", "/api/ultra/source/jobs", "catalog"],
+                ["/api/ultra/source/inventory", "/api/ultra/source/jobs?reviews_capacity=1", "catalog"],
                 events,
             )
 
@@ -798,3 +838,40 @@ class UltraSourceAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UltraSourceSignatureTests(unittest.TestCase):
+    """The panel signs the request path without its query string.
+
+    A parameter added to a signed URL used to change the canonical request and
+    the source answered 401 to every poll, so this is pinned from both sides:
+    the same signature with and without the query, and against the canonical
+    request the panel builds.
+    """
+
+    def _headers(self, path: str) -> dict:
+        return MODULE.signed_headers(
+            "source-a", "secret", "GET", path, b"", timestamp=1_900_000_000, nonce="ab" * 16
+        )
+
+    def test_query_string_does_not_change_the_signature(self):
+        self.assertEqual(
+            self._headers("/api/ultra/source/jobs")["X-Ultra-Signature"],
+            self._headers("/api/ultra/source/jobs?reviews_capacity=1")["X-Ultra-Signature"],
+        )
+
+    def test_signature_matches_the_canonical_request_the_panel_builds(self):
+        import hmac
+        nonce = "ab" * 16
+        headers = self._headers("/api/ultra/source/jobs?reviews_capacity=1")
+        canonical = "\n".join(
+            ["GET", "/api/ultra/source/jobs", "source-a", "1900000000", nonce, hashlib.sha256(b"").hexdigest()]
+        )
+        self.assertEqual(
+            hmac.new(b"secret", canonical.encode("utf-8"), hashlib.sha256).hexdigest(),
+            headers["X-Ultra-Signature"],
+        )
+
+    def test_review_capacity_is_advertised_in_the_jobs_request(self):
+        source = (ROOT / "source-agent" / "ultra_source_agent.py").read_text(encoding="utf-8")
+        self.assertIn("reviews_capacity=", source, "the panel hands out no review to an agent that does not ask")
+        self.assertEqual("2026.09.13.1", MODULE.AGENT_VERSION)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Diagnostics;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 using LeikwanBridge.Mac.Services;
 using Xunit;
 
@@ -489,5 +490,92 @@ public sealed class MacConnectionConfigBuilderTests
                 try { File.Delete(configPath); } catch (IOException) { }
             }
         }
+    }
+
+    [Theory]
+    [InlineData(0, 1500)]
+    [InlineData(1500, 1456)]
+    [InlineData(1472, 1428)]
+    [InlineData(1440, 1396)]
+    [InlineData(1280, 1280)]
+    public void VpnTunMtuIsClampedToTheMeasuredPayloadCeiling(int measuredPayloadCeiling, int expectedMtu)
+    {
+        var profile = new MacConnectionProfile
+        {
+            Protocol = MacConnectionProtocol.Shadowsocks,
+            Server = "198.51.100.7", Port = 443,
+            Method = "aes-256-gcm", Password = "test-secret",
+        };
+
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.Build(
+            profile,
+            MacConnectionMode.Vpn,
+            [],
+            tunMtu: 1500,
+            measuredPayloadCeiling: measuredPayloadCeiling).Json);
+
+        Assert.Equal(expectedMtu, document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+    }
+
+    [Fact]
+    public void NativeVpnTunMtuUsesTheSameCeilingClampAndProxyModeHasNoTun()
+    {
+        using var lease = new NativeOutboundLease(
+            158,
+            "native-lease",
+            new string('a', 64),
+            DateTimeOffset.UtcNow.AddMinutes(2),
+            "tcp+udp",
+            "Hong Kong -> China Mainland",
+            "cn_only",
+            NativeOutboundLease.ComputeScopeDigest(158, "Hong Kong -> China Mainland", "tcp+udp", "cn_only"),
+            "203.0.113.20",
+            5438,
+            System.Text.Encoding.UTF8.GetBytes("user"),
+            System.Text.Encoding.UTF8.GetBytes("password"));
+
+        using var vpn = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(
+            lease,
+            MacConnectionMode.Vpn,
+            [],
+            tunMtu: 1500,
+            measuredPayloadCeiling: 1360).Json);
+        Assert.Equal("tun", vpn.RootElement.GetProperty("inbounds")[0].GetProperty("type").GetString());
+        Assert.Equal(1316, vpn.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+
+        using var proxy = JsonDocument.Parse(MacConnectionConfigBuilder.BuildNative(
+            lease,
+            MacConnectionMode.Proxy,
+            [],
+            tunMtu: 1500,
+            measuredPayloadCeiling: 1360).Json);
+        Assert.Equal("mixed", proxy.RootElement.GetProperty("inbounds")[0].GetProperty("type").GetString());
+        Assert.False(proxy.RootElement.GetProperty("inbounds")[0].TryGetProperty("mtu", out _));
+    }
+
+    [Fact]
+    public void ShippedMacTunMtuAlreadySitsAtTheRuntimeFloor()
+    {
+        // The Mac TUN defaults to 1280, which is UltraRuntimeMtu.MinimumMtu, so the measured
+        // ceiling can only ever confirm the floor here: the clamp cannot lower (or raise) it
+        // until the TUN MTU is configured above the floor.
+        var profile = new MacConnectionProfile
+        {
+            Protocol = MacConnectionProtocol.Shadowsocks,
+            Server = "198.51.100.7", Port = 443,
+            Method = "aes-256-gcm", Password = "test-secret",
+        };
+
+        using var document = JsonDocument.Parse(MacConnectionConfigBuilder.Build(
+            profile,
+            MacConnectionMode.Vpn,
+            [],
+            measuredPayloadCeiling: 1500).Json);
+
+        Assert.Equal(1280, MacConnectionConfigBuilder.DefaultTunMtu);
+        Assert.Equal(UltraRuntimeMtu.MinimumMtu, MacConnectionConfigBuilder.DefaultTunMtu);
+        Assert.Equal(
+            MacConnectionConfigBuilder.DefaultTunMtu,
+            document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
     }
 }

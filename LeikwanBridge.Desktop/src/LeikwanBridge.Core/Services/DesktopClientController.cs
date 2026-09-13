@@ -476,7 +476,8 @@ public sealed class DesktopClientController : IDesktopClientController
                 : (!string.IsNullOrWhiteSpace(forward.ClientMode) ? forward.ClientMode : forward.Mode).Trim().ToLowerInvariant(),
             forward.ListenPort,
             runtime?.IsForwardRunning(forward.ForwardId) == true,
-            runtime?.IsForwardRunning(forward.ForwardId) == true ? "running" : "stopped"))
+            runtime?.IsForwardRunning(forward.ForwardId) == true ? "running" : "stopped",
+            ForwardRuntimeManager.IsNativeOutboundForward(forward)))
             .ToList();
         PublishSnapshot(Snapshot with { Forwards = publicForwards, NativeOutbound = _nativeOutbound });
         ForwardsChanged?.Invoke(publicForwards);

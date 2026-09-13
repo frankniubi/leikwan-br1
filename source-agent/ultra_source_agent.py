@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.09.01.1"
+AGENT_VERSION = "2026.09.13.1"
 MAX_INVENTORY_BYTES = 256 * 1024
 INVENTORY_SCHEMA_VERSION = 3
 MAX_INVENTORY_RECORDS = 1024
@@ -60,10 +60,13 @@ def signed_headers(
 ) -> dict[str, str]:
     issued = int(time.time()) if timestamp is None else int(timestamp)
     request_nonce = nonce or secrets.token_hex(16)
+    # The panel signs the request path without its query string, so a parameter
+    # added to the URL must not leak into the canonical request.
+    signed_path = path.split("?", 1)[0]
     canonical = "\n".join(
         [
             method.upper(),
-            path,
+            signed_path,
             source_id,
             str(issued),
             request_nonce,
@@ -675,6 +678,23 @@ def build_inventory(
             "line_type": _unsigned_int(
                 metadata.get("line_type"), audited.get("line_type"), indexed.get("line_type")
             ),
+            # Carrier metadata (2026-09-11): the sweep index is the freshest source,
+            # the audit manifest may add it later. The panel normalizes 电信/联通/移动/通用
+            # into telecom/unicom/mobile/generic.
+            "in_line_type": _unsigned_int(
+                metadata.get("in_line_type"), audited.get("in_line_type"), indexed.get("in_line_type")
+            ),
+            "isp": _safe_inventory_text(
+                _first_value(indexed, audited, metadata, keys=("isp",)), 32
+            ),
+            "provider": _safe_inventory_text(
+                _first_value(indexed, audited, metadata, keys=("provider",)), 64
+            ),
+            # The audit manifest may declare the dispatch priority: a line whose relay
+            # association drops big datagrams is dispatched last, like the Tencent ones.
+            "dispatch_class": _inventory_classification(
+                _first_value(audited, indexed, keys=("dispatch_class",))
+            ),
             "catalog_ingress": _safe_inventory_text(
                 _first_value(cataloged, audited, indexed, keys=("catalog_ingress",)), 191
             ),
@@ -894,6 +914,14 @@ class SourceAgent:
         self.source_id = str(self.config["source_id"])
         self.source_secret = str(self.config["source_secret"])
         self.binary_path = Path(self.config.get("binary_path", "/opt/ultra-source/runtime/line-client"))
+        # Panel-requested reviews of quarantined lines. The probe keeps a large
+        # UDP payload and a real DNS query alive for the whole window; a line the
+        # provider side can still carry is cleared on the panel.
+        self.review_script = Path(self.config.get("review_script", "/opt/ultra-source/runtime/ultra_line_review.py"))
+        self.review_interval = float(self.config.get("review_interval_seconds", 20))
+        self.review_big_bytes = int(self.config.get("review_big_bytes", 1400))
+        self.review_require_big_packet = bool(self.config.get("review_require_big_packet", False))
+        self.max_reviews_per_cycle = int(self.config.get("max_reviews_per_cycle", 1))
         self.lines_dir = Path(self.config.get("lines_dir", "/opt/ultra-source/lines"))
         self.state_dir = Path(self.config.get("state_dir", "/var/lib/ultra-source-agent"))
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -965,12 +993,16 @@ class SourceAgent:
             self.source_id,
             self.source_secret,
             "GET",
-            "/api/ultra/source/jobs",
+            "/api/ultra/source/jobs?reviews_capacity=" + str(max(0, self.max_reviews_per_cycle)),
             None,
             self.timeout,
             attempts=3,
         )
         ticket = str(jobs.get("upload_ticket", "") or "")
+        reviews = []
+        for raw_review in jobs.get("reviews", []) if isinstance(jobs.get("reviews"), list) else []:
+            if isinstance(raw_review, dict):
+                reviews.append(raw_review)
         line_ids = []
         for raw_line_id in jobs.get("line_ids", []) if isinstance(jobs.get("line_ids"), list) else []:
             line_id = int(raw_line_id or 0)
@@ -978,6 +1010,7 @@ class SourceAgent:
                 line_ids.append(line_id)
         line_ids = line_ids[: self.max_lines]
         if not line_ids:
+            self.process_reviews(reviews)
             self.refresh_catalog()
             return 0
         def acquire_requested(requested_ids: list[int] | None = None) -> tuple[list[dict], list[int]]:
@@ -1022,9 +1055,99 @@ class SourceAgent:
             self.timeout,
         )
         accepted = len(result.get("accepted_line_ids", [])) if isinstance(result.get("accepted_line_ids"), list) else 0
+        self.process_reviews(reviews)
         self.refresh_catalog()
         return accepted
 
+    def process_reviews(self, reviews: list[dict]) -> int:
+        """Run the reviews the panel asked for and report each outcome back.
+
+        Reviews are serial and happen after the material work, so a long review
+        window cannot delay the line acquisitions that keep forwards alive.
+        """
+        if not reviews:
+            return 0
+        completed = 0
+        for review in reviews[: max(0, self.max_reviews_per_cycle)]:
+            review_id = int(review.get("review_id", 0) or 0)
+            line_id = int(review.get("line_id", 0) or 0)
+            seconds = int(review.get("seconds", 600) or 600)
+            if review_id <= 0 or line_id <= 0:
+                continue
+            payload = self.run_review(review_id, line_id, seconds)
+            try:
+                request_json(
+                    self.base_url,
+                    self.source_id,
+                    self.source_secret,
+                    "POST",
+                    "/api/ultra/source/review",
+                    payload,
+                    self.timeout,
+                )
+                completed += 1
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("review %s could not be reported: %s", review_id, exc)
+        return completed
+
+    def run_review(self, review_id: int, line_id: int, seconds: int) -> dict:
+        """Acquire the line and run the big-packet UDP + DNS probe against it."""
+        if not self.review_script.is_file():
+            return {"review_id": review_id, "passed": False, "note": "review probe is not installed"}
+        try:
+            material = acquire_line(
+                line_id,
+                self.binary_path,
+                self.lines_dir,
+                self.state_dir / f"review-{line_id}.json.tmp",
+                session_path=self.session_path,
+                timeout=self.acquire_timeout,
+                lifetime_seconds=self.material_lifetime,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"review_id": review_id, "passed": False, "note": f"line acquisition failed: {exc}"}
+        relays = material.get("relays") if isinstance(material.get("relays"), list) else []
+        relay = relays[0] if relays and isinstance(relays[0], dict) else None
+        if not isinstance(relay, dict):
+            return {"review_id": review_id, "passed": False, "note": "line material has no relay"}
+        window = max(30, min(1800, seconds))
+        command = [
+            "python3",
+            str(self.review_script),
+            "--relay", f"{relay.get('ip', '')}:{int(relay.get('port', 0) or 0)}",
+            "--user", str(material.get("user", "")),
+            "--password", str(material.get("credential", "")),
+            "--seconds", str(window),
+            "--interval", str(max(1.0, self.review_interval)),
+            "--big-bytes", str(max(64, min(65000, self.review_big_bytes))),
+            "--json",
+        ]
+        if self.review_require_big_packet:
+            command.append("--require-big-packet")
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=window + 120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {"review_id": review_id, "passed": False, "note": "review timed out"}
+        except OSError as exc:
+            return {"review_id": review_id, "passed": False, "note": f"review could not start: {exc}"}
+        detail: dict = {}
+        for line in reversed((completed.stdout or "").strip().splitlines()):
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                detail = parsed
+                break
+        passed = bool(detail.get("passed")) and completed.returncode == 0
+        note = str(detail.get("last_error", "") or "")[:240]
+        return {"review_id": review_id, "passed": passed, "note": note, "detail": detail}
     def reauthenticate(self) -> bool:
         """Refresh the LeiGod session without destroying a working session."""
         if not self.login_mobile or not self.login_password_env or not self.login_binary_path.is_file():

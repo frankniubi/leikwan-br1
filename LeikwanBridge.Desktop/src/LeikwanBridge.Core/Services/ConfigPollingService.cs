@@ -266,6 +266,7 @@ public sealed class ConfigPollingService
             if (forward.ServiceStatus == "active")
                 forwards.Add(forward);
         }
+        RestoreLastKnownUltraPolicies(forwards);
         _latestForwards = forwards;
 
         // The fresh policy payload has now been received. A failed pull keeps
@@ -378,15 +379,24 @@ public sealed class ConfigPollingService
                     ex.GetType().Name,
                     ex is MasterApiException apiException ? apiException.StatusCode : 0,
                     BoundErrorCode(ex.Message));
+                // A rotated grant/ticket (409 lease_scope_invalid and friends) is repaired by
+                // the next config pull, never by tearing the forward down. Stopping it here
+                // produced an endless start/stop loop - the panel re-mints the lease ticket
+                // whenever the relay material rotates, and the forward was usually not yet
+                // running at refresh time, so nothing could be "preserved" and the agent
+                // restarted it over and over (the user-visible "Starting routes" flashing).
+                if (IsGrantRefreshError(ex))
+                {
+                    QueueConfigRefreshSoon(forward.ForwardId);
+                    Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                    return;
+                }
                 if (TryPreserveRunningUltra(
                         forward.ForwardId,
                         hasAppliedState,
                         isRunning,
-                        "lease refresh exception",
-                        IsGrantRefreshError(ex) ? forward.ForwardId : null))
+                        "lease refresh exception"))
                 {
-                    if (IsGrantRefreshError(ex))
-                        Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
                     return;
                 }
                 Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
@@ -395,7 +405,14 @@ public sealed class ConfigPollingService
             }
             if (leases.Count == 0)
             {
-                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable"))
+                // Name the forward in the refresh. A targeted refresh is the only
+                // thing that bypasses the "config revision unchanged, skip" path, and
+                // a forward can be refused a lease while the config revision stays
+                // put: the panel re-mints the policy generation behind the same
+                // revision. Without it the runtime kept the stale generation it was
+                // started with and the forward stayed down until someone restarted
+                // the client by hand.
+                if (TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease response unavailable", forward.ForwardId))
                     return;
                 Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
@@ -512,7 +529,7 @@ public sealed class ConfigPollingService
 
         if (leases.Count == 0)
         {
-            if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable"))
+            if (TryPreserveRunningUltra(forward.ForwardId, appliedState != null, isRunning, "lease response unavailable", forward.ForwardId))
                 return;
             Log.Warning("Ultra lease unavailable for forward {ForwardId}; stopping because no running managed runtime can be preserved", forward.ForwardId);
             _runtimeManager.StopForwardForPolicy(forward.ForwardId);
@@ -564,6 +581,14 @@ public sealed class ConfigPollingService
             if (!string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
                 return false;
 
+            // Native outbound forwards have no UltraAccess policy by design: the
+            // entitlement is the NativeOutbound capability and their grants are
+            // minted by the native path. Reading their absent policy as "policy
+            // expired" forced a full config pull on every single poll (the field
+            // log shows one every ~16 s, ~39k pulls per 200k panel requests).
+            if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
+                return false;
+
             var policy = forward.UltraAccess;
             if (policy is null
                 || !string.Equals(policy.ProtocolValue, UltraPolicy.Protocol, StringComparison.Ordinal)
@@ -594,7 +619,13 @@ public sealed class ConfigPollingService
             return false;
 
         var code = (apiException.Message ?? string.Empty).Trim().ToLowerInvariant();
+        // lease_replayed belongs here: the panel refuses a nonce it has already
+        // consumed, which happens when two refreshes race or the first request
+        // timed out after the panel committed it. The next config pull re-mints
+        // the ticket, so the forward recovers - tearing it down instead left the
+        // user's route stopped until the client was restarted by hand.
         return code is "lease_scope_invalid"
+            or "lease_replayed"
             or "policy_generation_invalid"
             or "policy_scope_invalid"
             or "policy_unavailable"
@@ -629,6 +660,38 @@ public sealed class ConfigPollingService
             forwardId,
             reason);
         return true;
+    }
+
+    private void RestoreLastKnownUltraPolicies(List<ForwardConfig> forwards)
+    {
+        if (_latestForwards.Count == 0)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        var previousById = _latestForwards
+            .Where(forward => forward.UltraAccess is not null)
+            .GroupBy(forward => forward.ForwardId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        foreach (var forward in forwards)
+        {
+            if (forward.UltraAccess is not null
+                || !string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+                || ForwardRuntimeManager.IsNativeOutboundForward(forward)
+                || !_runtimeManager.IsForwardRunning(forward.ForwardId)
+                || !previousById.TryGetValue(forward.ForwardId, out var previous)
+                || previous.UltraAccess is not { } previousPolicy
+                || !string.Equals(previousPolicy.Transport, forward.Transport, StringComparison.OrdinalIgnoreCase)
+                || previousPolicy.GetValidationFailure(forward, now) is not null)
+                continue;
+
+            forward.UltraAccess = previousPolicy;
+            QueueConfigRefreshSoon(forward.ForwardId);
+            Log.Warning(
+                "Ultra policy missing for running forward {ForwardId}; reusing last valid policy until {ExpiresAt} and forcing full config refresh",
+                forward.ForwardId,
+                previousPolicy.ExpiresAt);
+        }
     }
 
     private IReadOnlySet<int> SnapshotTargetedUltraRefreshes()

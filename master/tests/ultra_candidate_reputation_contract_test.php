@@ -39,13 +39,23 @@ $first = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a',
 assertUltraCandidateReputation(($first['state'] ?? '') === 'healthy', 'one failure must remain healthy');
 assertUltraCandidateReputation(($first['consecutive_failures'] ?? 0) === 1, 'first failure count missing');
 
+// One observer counts once per evidence window. A client that cannot arm a
+// candidate retries it every few seconds with a fresh evidence id, and that
+// retry loop must not be able to walk a healthy line up the ramp by itself.
+$retry = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-1-retry');
+assertUltraCandidateReputation(
+    ($retry['consecutive_failures'] ?? 0) === 1,
+    'a retry inside the same window must not add a failure'
+);
+
+$now += UltraCandidateReputationService::FAILURE_EVIDENCE_WINDOW_SECONDS + 1;
 $second = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-2');
 assertUltraCandidateReputation(($second['state'] ?? '') === 'probation', 'two failures must enter probation');
 
 $third = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'evidence-3');
 assertUltraCandidateReputation(($third['state'] ?? '') === 'quarantined', 'corroborated third failure must quarantine');
 assertUltraCandidateReputation(($third['independent_observers'] ?? 0) === 2, 'independent observer count missing');
-assertUltraCandidateReputation(($third['quarantine_until'] ?? 0) === $now + 1800, 'initial quarantine TTL mismatch');
+assertUltraCandidateReputation(($third['quarantine_until'] ?? 0) === $now + 3600, 'initial quarantine TTL mismatch');
 assertUltraCandidateReputation($service->isQuarantined($scope), 'quarantined candidate was reported eligible');
 
 $duplicate = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'evidence-3');
@@ -65,7 +75,7 @@ $allBad = $service->filterCandidates([$scope], 1);
 assertUltraCandidateReputation(count($allBad) === 1, 'availability floor removed the final candidate');
 assertUltraCandidateReputation(($allBad[0]['line_id'] ?? 0) === 347, 'availability floor preserved wrong candidate');
 
-$now += 1801;
+$now += 3601;
 $probation = $service->stateFor($scope);
 assertUltraCandidateReputation(($probation['state'] ?? '') === 'probation', 'expired quarantine must enter probation');
 assertUltraCandidateReputation(($probation['quarantine_until'] ?? 0) === 0, 'expired quarantine retained TTL');
@@ -76,13 +86,43 @@ $success3 = $service->observeSuccess($scope, 'observer-b', 'success-3');
 assertUltraCandidateReputation(($success1['state'] ?? '') === 'probation', 'first recovery success must remain probation');
 assertUltraCandidateReputation(($success2['state'] ?? '') === 'probation', 'second recovery success must remain probation');
 assertUltraCandidateReputation(($success3['state'] ?? '') === 'healthy', 'third recovery success must restore healthy');
+assertUltraCandidateReputation(($success3['backoff_level'] ?? 0) === 1, 'recovery must keep the quarantine history');
+
+// A candidate that has already served a quarantine is a repeat offender: the
+// next corroborated failure quarantines it immediately and on the next rung of
+// the ladder, instead of walking the probation ramp from scratch.
+$relapse = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-4');
+assertUltraCandidateReputation(($relapse['state'] ?? '') === 'quarantined', 'repeat offender must quarantine on the first failure');
+assertUltraCandidateReputation(($relapse['quarantine_until'] ?? 0) === $now + 7200, 'repeat quarantine must escalate the TTL');
+assertUltraCandidateReputation(($relapse['backoff_level'] ?? 0) === 2, 'repeat quarantine must advance the ladder');
+
+$now += 7201;
+$secondProbation = $service->stateFor($scope);
+assertUltraCandidateReputation(($secondProbation['state'] ?? '') === 'probation', 'second expiry must enter probation');
+$relapse2 = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-5');
+assertUltraCandidateReputation(($relapse2['state'] ?? '') === 'quarantined', 'third offence must quarantine on the first failure');
+assertUltraCandidateReputation(($relapse2['quarantine_until'] ?? 0) === $now + 14400, 'third quarantine must keep doubling');
+
+// A full clean day buys one rung back. The clock is only advanced past the
+// quarantine, so the elapsed time since the last recorded failure is what
+// decides the decay; three clean days take the ladder back to its base rung.
+$now += 86401;
+$decayedOnce = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-6');
+assertUltraCandidateReputation(($decayedOnce['quarantine_until'] ?? 0) === $now + 14400, 'a clean day must decay exactly one rung');
+
+$now += (3 * 86400) + 1;
+$decayedFully = $service->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'evidence-7');
+assertUltraCandidateReputation(($decayedFully['quarantine_until'] ?? 0) === $now + 3600, 'three clean days must decay the ladder back to the base rung');
+assertUltraCandidateReputation(($decayedFully['backoff_level'] ?? 0) === 1, 'a fully decayed candidate re-enters the ladder at the bottom');
 
 $fingerprintService = new UltraCandidateReputationService(null, static function () use (&$now): int {
     return $now;
 });
 $fingerprintBefore = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
+// Two observers, because the fingerprint covers state and one failure from one
+// observer no longer moves it.
 $fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'fingerprint-1');
-$fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'fingerprint-2');
+$fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'fingerprint-2');
 $fingerprintAfter = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
 assertUltraCandidateReputation($fingerprintBefore !== $fingerprintAfter, 'reputation state change did not rotate snapshot fingerprint');
 assertUltraCandidateReputation(preg_match('/^[a-f0-9]{64}$/', $fingerprintAfter) === 1, 'snapshot fingerprint is not sha256');

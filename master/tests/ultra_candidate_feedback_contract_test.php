@@ -186,6 +186,64 @@ namespace {
     ]]);
     assertUltraCandidateFeedback($unclassifiedSuccess === 0, 'unclassified success feedback was accepted');
 
+    // A relay that answers TCP and then closes the datagram handshake is
+    // rejected during selection, before anything is armed. That is transport
+    // evidence about one endpoint from one host, not a verdict on the line, so
+    // it must be counted for the log and kept out of reputation - otherwise the
+    // ~20% of candidate relays that behave this way would quarantine healthy
+    // lines, which is exactly what udp_arm_failed already taught us.
+    foreach (['probe_udp_failed', 'probe_tcp_failed'] as $probeReason) {
+        assertUltraCandidateFeedback(
+            UltraCandidateReputationService::isTransportReason($probeReason),
+            $probeReason . ' must be classified as transport evidence'
+        );
+        assertUltraCandidateFeedback(
+            !UltraCandidateReputationService::isFailureReason($probeReason),
+            $probeReason . ' must not count as a failure strike'
+        );
+    }
+
+    $before = $reputation->stateFor($scope);
+    $beforeDual = $reputation->stateFor($dualScope);
+    $probeAccepted = $status->ingestFeedback(7, 'device-a', [
+        // A dual candidate is the only place a udp-protocol row is bound to the
+        // scope, so the UDP half is exercised there.
+        [
+            'forward_id' => 42,
+            'candidate_key_hash' => $dualHash,
+            'lease_hash' => hash('sha256', 'lease-a'),
+            'protocol' => 'udp',
+            'outcome' => 'failure',
+            'reason' => 'probe_udp_failed',
+            'evidence_id' => 'feedback-probe-udp',
+            'detected_ingress_zone' => 'guangzhou',
+        ],
+        [
+            'forward_id' => 42,
+            'candidate_key_hash' => $hash,
+            'lease_hash' => hash('sha256', 'lease-a'),
+            'protocol' => 'tcp',
+            'outcome' => 'failure',
+            'reason' => 'probe_tcp_failed',
+            'evidence_id' => 'feedback-probe-tcp',
+            'detected_ingress_zone' => 'guangzhou',
+        ],
+    ]);
+    assertUltraCandidateFeedback($probeAccepted === 0, 'probe failures reached reputation');
+    $after = $reputation->stateFor($scope);
+    $afterDual = $reputation->stateFor($dualScope);
+    assertUltraCandidateFeedback(
+        ($after['consecutive_failures'] ?? 0) === ($before['consecutive_failures'] ?? 0)
+            && ($afterDual['consecutive_failures'] ?? 0) === ($beforeDual['consecutive_failures'] ?? 0),
+        'a probe failure moved a failure counter'
+    );
+    foreach (['probe_udp_failed', 'probe_tcp_failed'] as $probeReason) {
+        assertUltraCandidateFeedback(
+            ($after['last_reason'] ?? '') !== $probeReason && ($afterDual['last_reason'] ?? '') !== $probeReason,
+            $probeReason . ' became a candidate last_reason'
+        );
+    }
+
     $source = (string) file_get_contents(__DIR__ . '/../src/Support/UltraClientStatusService.php');
     foreach (['ingestFeedback', 'candidate_key_hash', 'lease_hash', 'ultra_client_leases', 'process_stderr'] as $needle) {
         assertUltraCandidateFeedback(str_contains($source, $needle), 'missing feedback boundary: ' . $needle);

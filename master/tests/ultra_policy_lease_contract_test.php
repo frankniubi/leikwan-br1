@@ -114,8 +114,23 @@ $offsetLease = $service->issueLease(
 assertUltraPolicyLease(($offsetLease['ok'] ?? false) === true, 'candidate offset lease must issue');
 assertUltraPolicyLease($candidateOffsetSeen === 2, 'candidate offset was not passed to resolver');
 
+// A config poll and a targeted refresh can race, and a request that timed out
+// after the panel committed it is retried with the same nonce. The service
+// deliberately tolerates a bounded number of those retries inside
+// REPLAY_GRACE_SECONDS (see UltraLeaseService::MAX_REPLAY_ATTEMPTS) and only
+// refuses a nonce that keeps coming back.
+for ($retryAttempt = 1; $retryAttempt <= UltraLeaseService::MAX_REPLAY_ATTEMPTS; $retryAttempt++) {
+    $retry = $service->issueLease($request, 7, 'device-a');
+    assertUltraPolicyLease(
+        ($retry['ok'] ?? false) === true,
+        'a bounded nonce retry must still issue a lease'
+    );
+}
 $replay = $service->issueLease($request, 7, 'device-a');
-assertUltraPolicyLease(($replay['error'] ?? '') === 'lease_replayed', 'nonce replay was not rejected');
+assertUltraPolicyLease(
+    ($replay['error'] ?? '') === 'lease_replayed',
+    'a nonce replayed beyond the bounded retry budget must be refused'
+);
 assertUltraPolicyLease(
     ($service->issueLease(array_merge($request, ['nonce' => 'abcdef0123456789abcdef01234530']), 7, 'wrong-device')['error'] ?? '') === 'lease_scope_invalid',
     'device scope was not rejected'

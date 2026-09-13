@@ -11,9 +11,28 @@ final class ArtifactController extends BaseController
     private const WSTUNNEL_ARTIFACT_DIR = 'artifacts/wstunnel';
     private const STREAM_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
+    /**
+     * Digest cache for GET /artifacts/versions.json.
+     *
+     * That route answers with a sha256 for every published artifact, so a naive
+     * implementation re-hashes the whole artifact tree on every request. In
+     * production that is 59 entries and 647 MB of SHA-256 (~2.7 s of CPU) per
+     * request, which also evicts the page cache on a box that is trying to keep
+     * a database in memory. The cache key is (size, mtime, ctime), so a
+     * republished artifact invalidates its own entry: a plain overwrite changes
+     * mtime and ctime, and even a `cp -p` that preserves mtime changes ctime.
+     */
+    private const DIGEST_CACHE_RELATIVE_DIR = 'storage/cache';
+    private const DIGEST_CACHE_FILE = 'artifact-digests.json';
+    private const DIGEST_CACHE_VERSION = 1;
+
     /** @var array<string, mixed>|null */
     private ?array $versions = null;
     private string $repoRoot;
+
+    /** @var array<string, array{size:int, mtime:int, ctime:int, sha256:string}>|null */
+    private static ?array $digestCache = null;
+    private bool $digestCacheDirty = false;
 
     /** @param array<string, mixed>|null $versions */
     public function __construct(\Leikwan\Master\Config $config, ?array $versions = null, ?string $repoRoot = null)
@@ -56,6 +75,19 @@ final class ArtifactController extends BaseController
     public function installClient(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-client.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    /**
+     * Standalone Windows repair/update helper.
+     *
+     * It ships inside the Windows installer too, but stays a first-class
+     * artifact so a host stuck on an older build - one that cannot repair its
+     * own shared permissions and whose updater stops after the download - can
+     * fetch and run it on its own.
+     */
+    public function windowsUpdateHelper(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('scripts/leikwan-bridge-repair.cmd', 'text/plain; charset=utf-8', $request);
     }
 
     public function installBondSidecar(Request $request, array $params): Response
@@ -143,20 +175,19 @@ final class ArtifactController extends BaseController
             }
             $normalized = $entry;
             if (isset($normalized['path']) && is_string($normalized['path']) && $normalized['path'] !== '') {
-                $absolute = $this->resolveRepoFile($normalized['path']);
-                if ($absolute !== null) {
-                    $sha = hash_file('sha256', $absolute);
-                    $size = filesize($absolute);
-                    $normalized['sha256'] = $sha;
-                    $normalized['size_bytes'] = $size;
+                $digest = $this->artifactDigest($normalized['path']);
+                if ($digest !== null) {
+                    $normalized['sha256'] = $digest['sha256'];
+                    $normalized['size_bytes'] = $digest['size'];
                     // Some consumers read the legacy 'size' alias; keep it consistent when present.
                     if (array_key_exists('size', $normalized)) {
-                        $normalized['size'] = $size;
+                        $normalized['size'] = $digest['size'];
                     }
                 }
             }
             $manifest[$key] = $normalized;
         }
+        $this->flushArtifactDigestCache();
 
         return new Response(200, [
             'Content-Type' => 'application/json; charset=utf-8',
@@ -309,6 +340,47 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
     }
 
+    // Windowless (no-GUI) clients. The Windows payload is its own small
+    // self-contained build of the same Core stack; macOS runs the shipped app
+    // bundle in its --headless lifecycle, so it only needs the installers.
+    public function windowsHeadlessClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/windows/leikwan-bridge-headless-win-x64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-headless-win-x64.zip"']
+        );
+    }
+
+    // Linux has had a windowless client (the systemd client-agent) from the
+    // start; this is the same `leikwan` command surface the macOS and Windows
+    // no-GUI installs use.
+    public function leikwanLinuxCli(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/leikwan-linux.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
+    }
+
     public function macosClientArm64Dmg(Request $request, array $params): Response
     {
         return $this->serveRepoFile(
@@ -458,6 +530,7 @@ final class ArtifactController extends BaseController
             'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
+            'windows_update_helper',
             'macos_client_app_arm64',
             'macos_client_app_x64',
             'macos_client_update_arm64',
@@ -472,6 +545,7 @@ final class ArtifactController extends BaseController
             'leikwan_bond_android_arm64',
             'leikwan_ingress_linux_amd64',
             'leikwan_ingress_linux_arm64',
+            'leikwan_ingress_windows_amd64',
             'leikwan_mptcp_relay_linux_amd64'
         );
         $macKeys = [
@@ -776,6 +850,138 @@ final class ArtifactController extends BaseController
     {
         $relativePath = trim((string) ($entry['path'] ?? ''));
         return $relativePath === '' ? null : $this->resolveRepoFile($relativePath);
+    }
+
+    /**
+     * sha256 + size for one repo-relative artifact, served from the (size,
+     * mtime, ctime) keyed cache when the file has not moved.
+     *
+     * Returns null when the file is unknown or unreadable, which keeps the
+     * previous behaviour of publishing no digest rather than a guess.
+     *
+     * @return array{sha256:string, size:int}|null
+     */
+    private function artifactDigest(string $relativePath): ?array
+    {
+        $absolute = $this->resolveRepoFile($relativePath);
+        if ($absolute === null) {
+            return null;
+        }
+        clearstatcache(true, $absolute);
+        $size = @filesize($absolute);
+        $mtime = @filemtime($absolute);
+        $ctime = @filectime($absolute);
+        if ($size === false || $mtime === false || $ctime === false) {
+            $sha = @hash_file('sha256', $absolute);
+            return is_string($sha) && $sha !== '' ? ['sha256' => $sha, 'size' => 0] : null;
+        }
+        $size = (int) $size;
+        $mtime = (int) $mtime;
+        $ctime = (int) $ctime;
+
+        $cache = $this->artifactDigestCache();
+        $cached = $cache[$relativePath] ?? null;
+        if (is_array($cached)
+            && (int) ($cached['size'] ?? -1) === $size
+            && (int) ($cached['mtime'] ?? -1) === $mtime
+            && (int) ($cached['ctime'] ?? -1) === $ctime
+            && is_string($cached['sha256'] ?? null)
+            && preg_match('/^[a-f0-9]{64}$/', $cached['sha256']) === 1) {
+            return ['sha256' => $cached['sha256'], 'size' => $size];
+        }
+
+        $sha = @hash_file('sha256', $absolute);
+        if (!is_string($sha) || $sha === '') {
+            return null;
+        }
+        self::$digestCache[$relativePath] = [
+            'size' => $size,
+            'mtime' => $mtime,
+            'ctime' => $ctime,
+            'sha256' => $sha,
+        ];
+        $this->digestCacheDirty = true;
+
+        return ['sha256' => $sha, 'size' => $size];
+    }
+
+    /** @return array<string, array{size:int, mtime:int, ctime:int, sha256:string}> */
+    private function artifactDigestCache(): array
+    {
+        if (self::$digestCache !== null) {
+            return self::$digestCache;
+        }
+        self::$digestCache = [];
+        $path = $this->artifactDigestCachePath();
+        if ($path === null || !is_file($path)) {
+            return self::$digestCache;
+        }
+        $raw = @file_get_contents($path);
+        if (!is_string($raw) || $raw === '') {
+            return self::$digestCache;
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)
+            || (int) ($decoded['version'] ?? 0) !== self::DIGEST_CACHE_VERSION
+            || !is_array($decoded['entries'] ?? null)) {
+            return self::$digestCache;
+        }
+        foreach ($decoded['entries'] as $key => $value) {
+            if (is_string($key) && is_array($value) && preg_match('/^[a-f0-9]{64}$/', (string) ($value['sha256'] ?? '')) === 1) {
+                self::$digestCache[$key] = $value;
+            }
+        }
+
+        return self::$digestCache;
+    }
+
+    /**
+     * Persist the cache once per request, and only when a digest was actually
+     * recomputed. Every failure is ignored: a cache that cannot be written must
+     * never change what the route serves.
+     */
+    private function flushArtifactDigestCache(): void
+    {
+        if (!$this->digestCacheDirty || self::$digestCache === null) {
+            return;
+        }
+        $path = $this->artifactDigestCachePath(true);
+        if ($path === null) {
+            return;
+        }
+        $payload = json_encode([
+            'version' => self::DIGEST_CACHE_VERSION,
+            'updated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+            'entries' => self::$digestCache,
+        ], JSON_UNESCAPED_SLASHES);
+        if (!is_string($payload)) {
+            return;
+        }
+        $temporary = $path . '.' . getmypid() . '.tmp';
+        if (@file_put_contents($temporary, $payload, LOCK_EX) === false) {
+            @unlink($temporary);
+            return;
+        }
+        // Rename is atomic, so a reader never sees a half-written cache.
+        @chmod($temporary, 0644);
+        if (!@rename($temporary, $path)) {
+            @unlink($temporary);
+            return;
+        }
+        $this->digestCacheDirty = false;
+    }
+
+    private function artifactDigestCachePath(bool $forWrite = false): ?string
+    {
+        $directory = $this->repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, self::DIGEST_CACHE_RELATIVE_DIR);
+        if (!is_dir($directory) && $forWrite) {
+            @mkdir($directory, 0775, true);
+        }
+        if (!is_dir($directory)) {
+            return null;
+        }
+
+        return $directory . DIRECTORY_SEPARATOR . self::DIGEST_CACHE_FILE;
     }
 
     private function resolveRepoFile(string $relativePath): ?string

@@ -28,6 +28,37 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task NativeOutboundRuleRowIsLabelledAndCannotBeStartedOrStopped()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot
+        {
+            IsSignedIn = true,
+            Forwards =
+            [
+                new DesktopForwardSnapshot(180, "Forward #180 · Mainland China -> Hong Kong", "ultra", 54544, true, "running", IsNativeOutboundRule: true),
+                new DesktopForwardSnapshot(181, "Forward #181 · -", "single", 12081, true, "running"),
+            ],
+        });
+        var vm = new MainWindowViewModel(controller, dispatch: action => action());
+
+        var native = Assert.Single(vm.Forwards, forward => forward.ForwardId == 180);
+        Assert.True(native.IsNativeOutboundRule);
+        Assert.False(native.CanStart);
+        Assert.False(native.CanStop);
+
+        await native.StartCommand.ExecuteAsync(null);
+        await native.StopCommand.ExecuteAsync(null);
+
+        Assert.Empty(controller.StartedForwards);
+        Assert.Empty(controller.StoppedForwards);
+
+        var ordinary = Assert.Single(vm.Forwards, forward => forward.ForwardId == 181);
+        Assert.False(ordinary.IsNativeOutboundRule);
+        Assert.False(ordinary.CanStart);
+        Assert.True(ordinary.CanStop);
+    }
+
+    [Fact]
     public async Task UnpairedRouteNeverBorrowsThePreviouslySelectedSavedNode()
     {
         var connections = new CapturingMacConnectionService();
@@ -322,6 +353,7 @@ public sealed class MainWindowViewModelTests
         var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var controller = new FakeController(new DesktopClientSnapshot
         {
+            IsSignedIn = true,
             Forwards = [new DesktopForwardSnapshot(123, "Route", "single", 12001, false, "stopped")],
         })
         {
@@ -339,6 +371,7 @@ public sealed class MainWindowViewModelTests
         await vm.ImportProxyUriCommand.ExecuteAsync(null);
 
         vm.SelectedConnectionForward = vm.ConnectionRoutes[0];
+        vm.SelectedConnectionProfile = connections.Profiles.Single();
         var start = vm.StartConnectionCommand.ExecuteAsync(null);
         await preparing.Task;
         await vm.StopConnectionCommand.ExecuteAsync(null);
@@ -573,6 +606,117 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public async Task PendingTunMtuIsAppliedToTheLiveTunnelWithoutWaitingForTheNextRefresh()
+    {
+        const int forwardId = 158;
+        const string direction = "Hong Kong -> China Mainland";
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(forwardId, direction, "a", "tcp+udp", ["cn_only"], "cn_only"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability })
+        {
+            NativeLease = new NativeOutboundLease(
+                forwardId,
+                "native-lease",
+                new string('a', 64),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                "tcp+udp",
+                direction,
+                "cn_only",
+                NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+                "203.0.113.20",
+                5438,
+                System.Text.Encoding.UTF8.GetBytes("user"),
+                System.Text.Encoding.UTF8.GetBytes("password")),
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(
+            controller,
+            connections,
+            dispatch: action => action(),
+            nativeTunMtuWatchInterval: TimeSpan.FromMilliseconds(50));
+        vm.SelectedNativeForwardId = forwardId;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await Task.Delay(150);
+
+        // The relay re-measured a ceiling whose TUN MTU differs from the live one.
+        connections.IsNativeTunMtuPending = true;
+
+        for (var attempt = 0; attempt < 100 && connections.ApplyPendingNativeTunMtuCalls == 0; attempt++)
+            await Task.Delay(20);
+
+        Assert.Equal(1, connections.ApplyPendingNativeTunMtuCalls);
+        Assert.False(connections.IsNativeTunMtuPending);
+        // Applying it in place never restarted the tunnel.
+        Assert.Equal(1, connections.NativeStartCalls);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
+    public async Task FailedTunMtuApplyKeepsTheFlagPendingAndRetriesWithoutRestarting()
+    {
+        const int forwardId = 158;
+        const string direction = "Hong Kong -> China Mainland";
+        var capability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(forwardId, direction, "a", "tcp+udp", ["cn_only"], "cn_only"),
+            ],
+        };
+        var controller = new FakeController(new DesktopClientSnapshot { NativeOutbound = capability })
+        {
+            NativeLease = new NativeOutboundLease(
+                forwardId,
+                "native-lease",
+                new string('a', 64),
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                "tcp+udp",
+                direction,
+                "cn_only",
+                NativeOutboundLease.ComputeScopeDigest(forwardId, direction, "tcp+udp", "cn_only"),
+                "203.0.113.20",
+                5438,
+                System.Text.Encoding.UTF8.GetBytes("user"),
+                System.Text.Encoding.UTF8.GetBytes("password")),
+        };
+        var connections = new CapturingMacConnectionService();
+        var vm = new MainWindowViewModel(
+            controller,
+            connections,
+            dispatch: action => action(),
+            nativeTunMtuWatchInterval: TimeSpan.FromMilliseconds(50));
+        vm.SelectedNativeForwardId = forwardId;
+        await vm.StartNativeConnectionCommand.ExecuteAsync(null);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await Task.Delay(150);
+
+        connections.ApplyPendingNativeTunMtuResult = false;
+        connections.IsNativeTunMtuPending = true;
+
+        for (var attempt = 0; attempt < 100 && connections.ApplyPendingNativeTunMtuCalls < 2; attempt++)
+            await Task.Delay(20);
+
+        Assert.True(connections.ApplyPendingNativeTunMtuCalls >= 2);
+        Assert.True(connections.IsNativeTunMtuPending);
+        Assert.Equal(1, connections.NativeStartCalls);
+        await vm.StopConnectionCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
     public void NativeOutboundDrawerCollapsesWhenCapabilityIsRevoked()
     {
         var capability = new NativeOutboundCapability
@@ -795,6 +939,102 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(vm.ValidationMessage, vm.NoticeText);
     }
 
+    [Fact]
+    public async Task CheckFailureShowsErrorAndRetryRerunsTheCheck()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var attempts = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    throw new InvalidOperationException("manifest unreachable");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        await vm.CheckForUpdatesCommand.ExecuteAsync(null);
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Contains("manifest unreachable", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateBannerVisible);
+        Assert.False(vm.IsUpdateInProgress);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, attempts);
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+    }
+
+    [Fact]
+    public async Task InstallFailureShowsErrorAndRetryRerunsTheInstall()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installCalls = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installCalls++;
+                if (installCalls == 1)
+                    throw new InvalidOperationException("update_hash_mismatch");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        controller.RaiseUpdate("2.0.0");
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Contains("update_hash_mismatch", vm.UpdateErrorMessage);
+        Assert.False(vm.IsUpdateInstalling);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, installCalls);
+        Assert.False(vm.ShowUpdateError);
+    }
+
+    [Fact]
+    public void UpdateProgressReportsPhasePercentAndMessage()
+    {
+        var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
+
+        vm.ReportUpdateProgress(UpdateProgress.Downloading(37, "Downloading update... (37 bytes)"));
+
+        Assert.Equal("Downloading update", vm.UpdatePhaseText);
+        Assert.Equal(37, vm.UpdatePercent);
+        Assert.Equal("Downloading update... (37 bytes)", vm.UpdateProgressMessage);
+        Assert.True(vm.IsUpdateInProgress);
+
+        vm.ReportUpdateFinished();
+        Assert.False(vm.IsUpdateInProgress);
+        Assert.Equal(0, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void EndpointSelectionPersistsImmediately()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        string? savedPanelUrl = null;
+        var vm = new MainWindowViewModel(
+            controller,
+            savePreferences: (url, _, _, _) =>
+            {
+                savedPanelUrl = url;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action());
+
+        vm.SelectedPanelEndpoint = PanelEndpoints.Options.First(option => option.Key == "aliyun-cdn");
+
+        Assert.Equal(PanelEndpoints.AliyunCdnUrl, savedPanelUrl);
+        Assert.Equal(PanelEndpoints.AliyunCdnUrl, vm.PanelUrl);
+    }
+
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;
@@ -960,6 +1200,10 @@ public sealed class MainWindowViewModelTests
         public string? ActiveNativeLeasePolicyGeneration { get; private set; }
         public bool IsNativeOutboundActive { get; private set; }
         public string? LastNativeRoutePolicy { get; private set; }
+        public int NativeStartCalls { get; private set; }
+        public bool IsNativeTunMtuPending { get; set; }
+        public int ApplyPendingNativeTunMtuCalls { get; private set; }
+        public bool ApplyPendingNativeTunMtuResult { get; set; } = true;
 
         public Task InitializeAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task SaveProfileAsync(LeikwanBridge.Mac.Services.MacConnectionProfile profile, CancellationToken ct = default)
@@ -1020,6 +1264,7 @@ public sealed class MainWindowViewModelTests
             CancellationToken ct = default)
         {
             LastNativeRoutePolicy = nativeRoutePolicy;
+            NativeStartCalls++;
             IsNativeOutboundActive = true;
             ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
             ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
@@ -1038,6 +1283,13 @@ public sealed class MainWindowViewModelTests
             ActiveNativeLeaseExpiresAt = lease.ExpiresAt;
             ActiveNativeLeasePolicyGeneration = lease.PolicyGeneration;
             return Task.FromResult(true);
+        }
+        public Task<bool> ApplyPendingNativeTunMtuAsync(CancellationToken ct = default)
+        {
+            ApplyPendingNativeTunMtuCalls++;
+            if (ApplyPendingNativeTunMtuResult)
+                IsNativeTunMtuPending = false;
+            return Task.FromResult(ApplyPendingNativeTunMtuResult);
         }
         public Task StopAsync(CancellationToken ct = default)
         {

@@ -1290,27 +1290,59 @@ final class TenantController extends BaseController
 
         // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
         $macosInstallSection = $this->renderMacClientInstallSection();
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
+
+        // No-GUI clients: same client, started by launchd (macOS) or the Windows
+        // service manager instead of a desktop session.
+        $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
+        $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
+        $headlessInstallSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('helper')
+            . $this->escape($this->clientAppReleaseLabel('无界面版 No-GUI (macOS / Windows)', 'windows_headless_client'))
+            . '</strong>'
+            . '<div class="muted">没有桌面会话也能跑：macOS 注册为 launchd 守护进程，Windows 注册为系统服务。与图形客户端共用同一套内核、同一份运行时指纹与更新校验，令牌保存在仅服务可读的文件里。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . '</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
+            . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明 / Install guide</a>'
+            . '</div></section>';
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
             . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
             . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
-            . '<section class="tenant-client-install__platform"><strong>Linux</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('linux')
+            . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
+            . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
             . '</div></section>'
-            . '<section class="tenant-client-install__platform"><strong>Linux ARM64 installer</strong>'
-            . '<div class="flash" style="margin:10px 0 0!important;color:var(--warning);">系统要求：仅支持 Debian 11/12/13（Linux ARM64）。</div>'
-            . '<div class="actions"><a class="button secondary" href="' . $this->escape($linuxArm64InstallerUrl) . '">下载 ARM64 installer</a></div>'
-            . '</section>'
-            . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('windows')
+            . $this->escape($this->clientAppReleaseLabel('Windows App', 'windows_client_app')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '</section>'
+            . '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(127,127,127,0.25);">'
+            . '<strong>' . $this->platformIcon('helper')
+            . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</strong>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
+            . '<div class="muted">老版本客户端卡住时用：一键修复共享权限并更新到当前版本，需以管理员身份运行。</div>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
+            . '</div></div></section>'
             . $macosInstallSection
-            . '<section class="tenant-client-install__platform"><strong>Android (Unstable)</strong>'
+            . $headlessInstallSection
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('android')
+            . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
@@ -2065,7 +2097,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Create Forward</h3>
                 <p class="muted">Choose one route package, then fill your backend target on the dedicated create page.</p>
-                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connection-modes-single-race-bond">Choose a connection mode</a> &middot; <a href="/knowledgebase?thread=bond-sidecar-setup">Set up Bond and Sidecar</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
+                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">

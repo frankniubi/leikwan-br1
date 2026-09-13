@@ -81,6 +81,8 @@
     <system:String x:Key="FwdError">错误</system:String>
     <system:String x:Key="FwdEndpoints">端点</system:String>
     <system:String x:Key="FwdTransport">传输协议</system:String>
+    <!-- 面板下发的原生出站规则：仅配置，无 Agent 托管运行时 -->
+    <system:String x:Key="ForwardNativeOutboundRule">（原生出站规则）</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">启动</system:String>
@@ -112,9 +114,12 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
     <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
+    <system:String x:Key="UpdateFailedTitle">更新失败</system:String>
     <system:String x:Key="ActionInstallNow">立即安装</system:String>
     <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>
     <system:String x:Key="ActionCheckUpdates">检查更新</system:String>
+    <system:String x:Key="ActionRetryUpdate">重试</system:String>
+    <system:String x:Key="ActionDismiss">关闭</system:String>
     <system:String x:Key="ActionSignOut">退出登录</system:String>
 
     <!-- Settings -->
@@ -189,7 +194,10 @@
     <system:String x:Key="ProxyExternalEndpointInvalid">请输入有效的外部 IP 地址和 1-65535 端口。</system:String>
     <system:String x:Key="ProxySavedProfileRequired">请先保存并选择节点。</system:String>
     <system:String x:Key="ProxyForwardRequired">请选择可用的转发线路。</system:String>
+    <system:String x:Key="ProxyForwardUnavailable">当前转发线路不可用，请稍后重试。</system:String>
     <system:String x:Key="ProxyForwardRuntimeUnavailable">转发服务尚未就绪，请先连接面板。</system:String>
+    <system:String x:Key="ProxyForwardPolicyUnavailable">线路策略暂时不可用，当前运行中的 runtime 已保留；面板恢复后请重试。</system:String>
+    <system:String x:Key="ProxyForwardReadinessTimeout">线路监听未能及时就绪，请稍后重试。</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>
     <system:String x:Key="ProxyImport">导入并保存</system:String>

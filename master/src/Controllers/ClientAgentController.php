@@ -10,6 +10,7 @@ use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
@@ -33,6 +34,7 @@ final class ClientAgentController extends BaseController
     private UltraClientStatusService $ultraClientStatus;
     private DeviceControlService $deviceControls;
     private AndroidEnrollmentCodeService $enrollmentCodes;
+    private OpenWrtPairingCodeService $openWrtPairingCodes;
     private AccessPolicyService $accessPolicy;
 
     public function __construct(
@@ -46,6 +48,7 @@ final class ClientAgentController extends BaseController
         ?DeviceControlService $deviceControls = null,
         ?AndroidEnrollmentCodeService $enrollmentCodes = null,
         ?AccessPolicyService $accessPolicy = null,
+        ?OpenWrtPairingCodeService $openWrtPairingCodes = null,
     ) {
         parent::__construct($config, $db);
         $this->ultraMaterials = $ultraMaterials
@@ -56,6 +59,7 @@ final class ClientAgentController extends BaseController
         $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
         $this->deviceControls = $deviceControls ?? DeviceControlService::fromConfig($config, $db);
         $this->enrollmentCodes = $enrollmentCodes ?? new AndroidEnrollmentCodeService($db);
+        $this->openWrtPairingCodes = $openWrtPairingCodes ?? new OpenWrtPairingCodeService($db, $config);
         $this->accessPolicy = $accessPolicy ?? new AccessPolicyService(
             $db,
             clientIpResolver: new TrustedClientIpResolver((string) ($config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
@@ -302,6 +306,52 @@ final class ClientAgentController extends BaseController
         ] + $enrollment);
     }
 
+    /**
+     * OpenWrt router onboarding.
+     *
+     * Deliberately separate from the Android enrolment-code flow: routers have
+     * no key attestation, so onboarding is gated by an operator-issued,
+     * single-use pairing code that is scoped to exactly one client. It never
+     * reads or consumes android_enrollment_codes.
+     */
+    public function pairOpenWrtDevice(Request $request, array $params): Response
+    {
+        $pairingCodes = $this->openWrtPairingCodes;
+        $pairingCodes->assertAvailable();
+        $code = (string) $request->input('pairing_code', '');
+        $deviceId = $this->requestDeviceIdentity($request, true, 'openwrt_pairing_device_invalid');
+        $policyClient = $this->activeClientForOpenWrtPairingCode($pairingCodes, $code);
+        $requestedClientId = (int) $request->input('client_id', 0);
+        if ($requestedClientId > 0 && $requestedClientId !== (int) ($policyClient['id'] ?? 0)) {
+            // The code scope is authoritative; a request cannot redirect the
+            // pairing to another client by naming one.
+            throw new ApiException('client_id_mismatch', 403);
+        }
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $client = $this->db->transaction(function () use ($pairingCodes, $code): array {
+            $row = $pairingCodes->findByCode($code);
+            if ($row === null || $pairingCodes->isUsed($row)) {
+                throw new ApiException('openwrt_pairing_code_invalid', 403);
+            }
+            if ($pairingCodes->isExpired($row)) {
+                throw new ApiException('openwrt_pairing_code_expired', 403);
+            }
+            $client = $this->activeClientForOpenWrtPairingCodeRow($row);
+            if ($pairingCodes->consume($code) === null) {
+                throw new ApiException('openwrt_pairing_code_invalid', 403);
+            }
+            return $client;
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'client_name' => (string) ($client['name'] ?? ''),
+            'agent_token' => (string) ($client['agent_token'] ?? ''),
+        ]);
+    }
+
     public function resolveUltraMaterials(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
@@ -417,8 +467,24 @@ final class ClientAgentController extends BaseController
             }
             $ticket = trim((string) ($item['session_ticket'] ?? ''));
             if ($ticket === '' || !hash_equals($ticket, (string) ($grant['session_ticket'] ?? ''))) {
-                $lastError = 'lease_scope_invalid';
-                continue;
+                // The panel re-mints the ticket whenever the relay material rotates
+                // (~every 30 minutes) while a running forward still carries the ticket
+                // from its last config pull, so a strict comparison made every lease
+                // refresh fail with 409 lease_scope_invalid. The agent then stopped the
+                // forward and restarted it, which the user saw as an endless
+                // "Starting routes" loop. The assignment above is already validated for
+                // this exact client + device + forward, so a rotated ticket is accepted
+                // and recorded instead of failing the refresh.
+                if ($ticket === '' || (int) ($grant['forward_id'] ?? 0) !== $forwardId) {
+                    $lastError = 'lease_scope_invalid';
+                    continue;
+                }
+                error_log(sprintf(
+                    'ultra_lease_ticket_rotated client=%d forward=%d device=%s',
+                    $clientId,
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16)
+                ));
             }
             $policy = [
                 'forward_id' => $forwardId,
@@ -953,9 +1019,29 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'heartbeat');
         $ultraStatuses = $request->input('ultra_status', []);
+        // The runtime build identity reaches the panel in two shapes: the
+        // desktop client puts it inside each per-forward usage snapshot, the
+        // Linux/macOS agent puts it inside each per-forward status entry. Only
+        // the explicit argument used to be read, so no session row ever stored a
+        // fingerprint and the (already enabled) attestation enforcement had
+        // nothing to compare against.
+        $runtimeAttestation = $request->input('runtime_attestation');
+        if (!is_array($runtimeAttestation)) {
+            foreach ((array) $request->input('ultra_usage', []) as $usageEntry) {
+                if (is_array($usageEntry) && is_array($usageEntry['runtime_attestation'] ?? null)) {
+                    $runtimeAttestation = $usageEntry['runtime_attestation'];
+                    break;
+                }
+            }
+        }
         if (is_array($ultraStatuses)) {
             try {
-                $this->ultraClientStatus->ingest((int) $client['id'], $deviceId, $ultraStatuses);
+                $this->ultraClientStatus->ingest(
+                    (int) $client['id'],
+                    $deviceId,
+                    $ultraStatuses,
+                    is_array($runtimeAttestation) ? $runtimeAttestation : null
+                );
             } catch (\Throwable) {
                 // Runtime status is observational and must not interrupt the data-plane heartbeat.
             }
@@ -1271,7 +1357,11 @@ final class ClientAgentController extends BaseController
     private function accessPolicyPlatform(Request $request): string
     {
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? $request->input('platform', ''))));
-        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)) {
+        // Routers join the location protocol through the same classifier the
+        // access policy applies, so openwrt/openwrt-* and the router form
+        // factor cannot drift between the two surfaces.
+        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)
+            && !AccessPolicyService::isRouterPlatform($platform)) {
             throw new ApiException('location_platform_invalid', 422);
         }
         return $platform;
@@ -1411,6 +1501,35 @@ final class ClientAgentController extends BaseController
         );
         if ($client === null) {
             throw new ApiException('android_enrollment_code_invalid', 403);
+        }
+        return $client;
+    }
+
+    /** @return array<string, mixed> */
+    private function activeClientForOpenWrtPairingCode(OpenWrtPairingCodeService $pairingCodes, string $code): array
+    {
+        $row = $pairingCodes->findByCode($code);
+        if ($row === null || $pairingCodes->isUsed($row)) {
+            throw new ApiException('openwrt_pairing_code_invalid', 403);
+        }
+        if ($pairingCodes->isExpired($row)) {
+            throw new ApiException('openwrt_pairing_code_expired', 403);
+        }
+        return $this->activeClientForOpenWrtPairingCodeRow($row);
+    }
+
+    /** @param array<string, mixed> $codeRow @return array<string, mixed> */
+    private function activeClientForOpenWrtPairingCodeRow(array $codeRow): array
+    {
+        $client = $this->db->fetchOne(
+            'SELECT * FROM clients WHERE id = :id AND status = :status LIMIT 1',
+            [
+                'id' => (int) ($codeRow['client_id'] ?? 0),
+                'status' => 'active',
+            ]
+        );
+        if ($client === null) {
+            throw new ApiException('openwrt_pairing_code_invalid', 403);
         }
         return $client;
     }

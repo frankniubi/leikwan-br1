@@ -318,18 +318,24 @@ func (reader *byteReader) ReadByte() (byte, error) {
 // nativeSocks5UDPAssociation carries one local UDP client to one custom Ultra
 // datagram session. A single association may address many destinations.
 type nativeSocks5UDPAssociation struct {
-	client          *net.UDPAddr
-	clientHost      string
-	controlKey      string
-	ready           chan struct{}
-	readyOnce       sync.Once
-	mu              sync.Mutex
-	writeMu         sync.Mutex
-	pending         []nativeSocks5UDPRequest
-	session         *DatagramSession
-	keepaliveCancel context.CancelFunc
-	closed          bool
-	setupStarted    bool
+	client           *net.UDPAddr
+	clientHost       string
+	controlKey       string
+	ready            chan struct{}
+	readyOnce        sync.Once
+	mu               sync.Mutex
+	writeMu          sync.Mutex
+	pending          []nativeSocks5UDPRequest
+	session          *DatagramSession
+	keepaliveCancel  context.CancelFunc
+	closed           bool
+	setupStarted     bool
+	candidateKeyHash string
+	leaseHash        string
+	selectionRef     string
+	selectionTier    string
+	policyGeneration string
+	failureOnce      sync.Once
 }
 
 type nativeSocks5UDPRequest struct {
@@ -338,7 +344,7 @@ type nativeSocks5UDPRequest struct {
 	payload []byte
 }
 
-func (association *nativeSocks5UDPAssociation) markReady(session *DatagramSession) bool {
+func (association *nativeSocks5UDPAssociation) markReady(session *DatagramSession, lease ProviderLease) bool {
 	association.mu.Lock()
 	if association.closed {
 		association.mu.Unlock()
@@ -348,6 +354,11 @@ func (association *nativeSocks5UDPAssociation) markReady(session *DatagramSessio
 		return false
 	}
 	association.session = session
+	association.candidateKeyHash = lease.CandidateKeyHash
+	association.leaseHash = lease.LeaseHash
+	association.selectionRef = lease.SelectionRef
+	association.selectionTier = lease.SelectionTier
+	association.policyGeneration = lease.PolicyGeneration
 	association.mu.Unlock()
 	association.readyOnce.Do(func() { close(association.ready) })
 	return true
@@ -409,6 +420,36 @@ func (association *nativeSocks5UDPAssociation) currentSession() *DatagramSession
 	association.mu.Lock()
 	defer association.mu.Unlock()
 	return association.session
+}
+
+func (association *nativeSocks5UDPAssociation) isClosed() bool {
+	association.mu.Lock()
+	defer association.mu.Unlock()
+	return association.closed
+}
+
+func (association *nativeSocks5UDPAssociation) recordCandidateFailure(
+	runtime *nativeSocks5Runtime,
+	protocol string,
+	reason string,
+	err error,
+) {
+	if association == nil || runtime == nil || runtime.store == nil {
+		return
+	}
+	association.failureOnce.Do(func() {
+		key := association.candidateKeyHash
+		if strings.TrimSpace(key) == "" {
+			key = association.selectionRef
+		}
+		runtime.store.MarkCandidateFailure(key)
+		if runtime.status != nil {
+			runtime.status.RecordCandidateFailure(key, protocol, reason, association.leaseHash)
+			runtime.status.RecordHAEvent(protocol, haErrorClass(err), association.policyGeneration)
+		}
+		log.Printf("native %s association failed forward_id=%d selection_ref=%s reason=%s",
+			protocol, runtime.config.ForwardID, association.selectionRef, haErrorClass(err))
+	})
 }
 
 func (association *nativeSocks5UDPAssociation) startSetup() bool {
@@ -476,6 +517,8 @@ func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, s
 	if err != nil {
 		return err
 	}
+	_ = udpConn.SetReadBuffer(4 << 20)
+	_ = udpConn.SetWriteBuffer(4 << 20)
 	defer udpConn.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status, udp: udpConn,
@@ -541,6 +584,44 @@ func (runtime *nativeSocks5Runtime) handleTCP(ctx context.Context, connection ne
 	}
 }
 
+// dialNativeStreamWithCandidates retries a native CONNECT before replying to
+// the local SOCKS client. The request header has been consumed, but no
+// application payload has been read, so changing the provider cannot replay
+// user data. Established streams remain bound to their original lease.
+func dialNativeStreamWithCandidates(
+	ctx context.Context,
+	store *PolicyStore,
+	snapshot RuntimeSnapshot,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	dial streamCandidateDial,
+	status *StatusWriter,
+) (net.Conn, ProviderLease, error) {
+	return dialStreamWithCandidates(
+		ctx,
+		store,
+		snapshot.Policy,
+		snapshot.Lease,
+		targetHost,
+		targetPort,
+		timeout,
+		dial,
+		func(failed ProviderLease, err error) {
+			key := failed.CandidateKeyHash
+			if strings.TrimSpace(key) == "" {
+				key = failed.SelectionRef
+			}
+			if status != nil {
+				status.RecordCandidateFailure(key, "tcp", "relay_connect_timeout", failed.LeaseHash)
+				status.RecordHAEvent("tcp", haErrorClass(err), snapshot.Policy.PolicyGeneration)
+			}
+			log.Printf("native tcp candidate failed forward_id=%d selection_ref=%s reason=%s",
+				snapshot.Policy.ForwardID, failed.SelectionRef, haErrorClass(err))
+		},
+	)
+}
+
 func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connection net.Conn, request nativeSocks5Request) {
 	if !nativePortAllowed(runtime.config, request.port) {
 		if runtime.status != nil {
@@ -554,23 +635,29 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
 		return
 	}
-	lease := snapshot.Lease
-	defer lease.wipe()
 	timeout := time.Duration(runtime.config.ConnectTimeoutSecs) * time.Second
 	if timeout <= 0 || timeout > 30*time.Second {
 		timeout = 5 * time.Second
 	}
 	started := time.Now()
-	remote, err := dialNativeStream(lease, request.host, request.port, timeout)
+	remote, lease, err := dialNativeStreamWithCandidates(
+		ctx,
+		runtime.store,
+		snapshot,
+		request.host,
+		request.port,
+		timeout,
+		dialNativeStream,
+		runtime.status,
+	)
 	if err != nil {
-		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
-			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", "relay_connect_timeout", lease.LeaseHash)
 			runtime.status.UpdateError("tcp_connect_failed")
 		}
 		_ = writeNativeSocks5Reply(connection, nativeSocks5ReplyGeneralErr)
 		return
 	}
+	defer lease.wipe()
 	defer remote.Close()
 	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
 	if err := writeNativeSocks5Reply(connection, nativeSocks5ReplySucceeded); err != nil {
@@ -578,6 +665,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	}
 	if runtime.status != nil {
 		runtime.status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
+		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "tcp", lease.LeaseHash)
 	}
 	local := net.Conn(connection)
 	if request.reader != nil {
@@ -596,7 +684,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	}
 	done := make(chan struct{}, 2)
 	go func() {
-		err := copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
+		_, err := copyOutbound(remote, outboundSource, runtime.store.Limiter(), runtime.status)
 		if err == nil || errors.Is(err, io.EOF) {
 			// A SOCKS client may half-close after sending an HTTP request. Keep
 			// the reverse direction alive so the response can still drain.
@@ -608,7 +696,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		done <- struct{}{}
 	}()
 	go func() {
-		err := copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
+		_, err := copyInbound(local, inboundSource, runtime.store.Limiter(), runtime.status)
 		if err == nil || errors.Is(err, io.EOF) {
 			closeNativeWrite(local)
 		} else {
@@ -793,39 +881,101 @@ func (runtime *nativeSocks5Runtime) ensureAssociation(key string, client *net.UD
 	return association
 }
 
-func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, association *nativeSocks5UDPAssociation) {
-	snapshot, ok := runtime.store.Snapshot()
-	if !ok {
-		association.close()
-		return
+// armNativeAssociationCandidates establishes a native UDP association from
+// the current candidate batch. A failed provider is marked before trying the
+// next sibling, so the next local packet also starts from the newly healthy
+// candidate. The returned lease contains metadata only after the session is
+// established and is owned by the caller.
+func armNativeAssociationCandidates(
+	ctx context.Context,
+	store *PolicyStore,
+	config Config,
+	status *StatusWriter,
+	arm func(ProviderLease, time.Duration) (*DatagramSession, error),
+) (*DatagramSession, ProviderLease, error) {
+	candidates := store.CandidateSnapshots("udp")
+	defer wipeSnapshots(candidates)
+	if len(candidates) == 0 {
+		return nil, ProviderLease{}, errHACandidatesUnavailable
 	}
-	lease := snapshot.Lease
-	defer lease.wipe()
-	timeout := time.Duration(runtime.config.ConnectTimeoutSecs) * time.Second
+	timeout := time.Duration(config.ConnectTimeoutSecs) * time.Second
 	if timeout < 5*time.Second || timeout > 30*time.Second {
 		timeout = 15 * time.Second
 	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for index, snapshot := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, ProviderLease{}, err
+		}
+		if !store.acceptsInFlight(snapshot) {
+			return nil, ProviderLease{}, ErrPolicyExpired
+		}
+		budget := time.Until(deadline) / time.Duration(len(candidates)-index)
+		if expiry := time.Until(snapshot.Lease.ExpiresAt); expiry < budget {
+			budget = expiry
+		}
+		if budget <= 0 {
+			break
+		}
+		session, err := arm(snapshot.Lease, budget)
+		if err == nil {
+			if ctx.Err() != nil || !store.acceptsInFlight(snapshot) {
+				if session != nil {
+					session.Close()
+				}
+				return nil, ProviderLease{}, ErrPolicyExpired
+			}
+			return session, cloneHALease(snapshot.Lease), nil
+		}
+		if ctx.Err() != nil {
+			return nil, ProviderLease{}, ctx.Err()
+		}
+		key := snapshot.Lease.CandidateKeyHash
+		if strings.TrimSpace(key) == "" {
+			key = snapshot.Lease.SelectionRef
+		}
+		store.MarkCandidateFailure(key)
+		if status != nil {
+			status.RecordCandidateFailure(key, "udp", udpArmFailureReason(err), snapshot.Lease.LeaseHash)
+			status.RecordHAEvent("udp", haErrorClass(err), snapshot.Policy.PolicyGeneration)
+		}
+		log.Printf("native udp candidate failed forward_id=%d selection_ref=%s attempt=%d reason=%s",
+			snapshot.Policy.ForwardID, snapshot.Lease.SelectionRef, index+1, haErrorClass(err))
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = context.DeadlineExceeded
+	}
+	return nil, ProviderLease{}, fmt.Errorf("%w: %v", errHACandidatesUnavailable, lastErr)
+}
+
+func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, association *nativeSocks5UDPAssociation) {
 	started := time.Now()
-	session, err := armDatagram(lease, timeout)
+	session, lease, err := armNativeAssociationCandidates(ctx, runtime.store, runtime.config, runtime.status, armDatagram)
 	if err != nil {
-		log.Printf("native UDP association setup failed: %v", err)
-		runtime.store.MarkCandidateFailure(lease.CandidateKeyHash)
 		if runtime.status != nil {
 			runtime.status.AddUDPSetupFailure()
-			runtime.status.RecordCandidateFailure(lease.CandidateKeyHash, "udp", "udp_association_failed", lease.LeaseHash)
 			runtime.status.UpdateError("udp_association_failed")
 		}
 		association.close()
 		runtime.removeAssociation(association)
 		return
 	}
-	if !association.markReady(session) {
+	if !association.markReady(session, lease) {
+		lease.wipe()
 		return
 	}
 	if runtime.status != nil {
+		// Publish the measured ceiling and the panel hint of this association so
+		// the panel can see which relay is narrow.
+		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
 		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
+		runtime.status.UpdateUDPPayloadCeiling(normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling), payloadCeilingSourceDeclared)
+		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
 	}
 	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
+	lease.wipe()
 	runtime.startNativeAssociationKeepalive(ctx, association)
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)
@@ -867,6 +1017,9 @@ func (runtime *nativeSocks5Runtime) startNativeAssociationKeepalive(ctx context.
 				err := sendDatagramKeepalive(session)
 				association.writeMu.Unlock()
 				if err != nil {
+					if !association.isClosed() {
+						association.recordCandidateFailure(runtime, "udp", "udp_association_failed", err)
+					}
 					association.close()
 					runtime.removeAssociation(association)
 					return
@@ -883,6 +1036,25 @@ func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPA
 		log.Printf("native UDP target resolve failed: %v", err)
 		return
 	}
+	if !session.allowsPayload(len(request.payload)) {
+		// Refuse instead of handing the path a datagram it will silently drop.
+		if runtime.status != nil {
+			runtime.status.AddUDPOversizeDrop()
+		}
+		if session.payloadUnusable() {
+			// Nothing echoes on this association. Reuse the existing candidate
+			// failure path so the next packet arms a healthy sibling instead of
+			// black-holing every large datagram until the policy expires.
+			association.recordCandidateFailure(runtime, "udp", udpPayloadCeilingUnusableReason, errDatagramUnusable)
+			association.close()
+			runtime.removeAssociation(association)
+			return
+		}
+		if session.onRuntimeDrop != nil {
+			session.onRuntimeDrop()
+		}
+		return
+	}
 	packet, err := makeDatagramEnvelope(session.mode, session.sid, targetIP, request.port, request.payload)
 	if err != nil {
 		return
@@ -893,6 +1065,9 @@ func (runtime *nativeSocks5Runtime) sendUDPRequest(association *nativeSocks5UDPA
 		return
 	}
 	if _, err := session.remote.Write(packet); err != nil {
+		if !association.isClosed() {
+			association.recordCandidateFailure(runtime, "udp", "udp_association_failed", err)
+		}
 		association.close()
 		runtime.removeAssociation(association)
 	}
@@ -903,6 +1078,9 @@ func (runtime *nativeSocks5Runtime) readUDPResponses(association *nativeSocks5UD
 	for {
 		count, err := session.remote.Read(buffer)
 		if err != nil {
+			if !association.isClosed() {
+				association.recordCandidateFailure(runtime, "udp", "udp_association_failed", err)
+			}
 			association.close()
 			runtime.removeAssociation(association)
 			return

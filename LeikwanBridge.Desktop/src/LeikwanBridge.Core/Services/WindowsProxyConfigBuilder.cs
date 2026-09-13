@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 
 namespace LeikwanBridge.Core.Services;
 
@@ -32,7 +33,8 @@ public static class WindowsProxyConfigBuilder
         bool bypassChinaMainland = false,
         string? chinaIpListPath = null,
         WindowsProxyDnsMode dnsMode = WindowsProxyDnsMode.Remote,
-        IEnumerable<string>? customDnsServers = null)
+        IEnumerable<string>? customDnsServers = null,
+        int measuredPayloadCeiling = 0)
     {
         ArgumentNullException.ThrowIfNull(profile);
         if (profile.IsExternal)
@@ -56,7 +58,7 @@ public static class WindowsProxyConfigBuilder
         {
             ["log"] = new JsonObject { ["level"] = "error" },
             ["dns"] = BuildDns(copy, bypassDomains, dnsMode, customDnsServers),
-            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
                 BuildOutbound(copy),
@@ -87,7 +89,8 @@ public static class WindowsProxyConfigBuilder
         IEnumerable<string>? customDnsServers = null,
         string? nativeProxyHost = null,
         int? nativeProxyPort = null,
-        string? nativeRoutePolicy = null)
+        string? nativeRoutePolicy = null,
+        int measuredPayloadCeiling = 0)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -141,7 +144,7 @@ public static class WindowsProxyConfigBuilder
                 customDnsServers,
                 lease.RouteScope == "cn_only" ? "direct" : "proxy",
                 lease.RouteScope),
-            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps),
+            ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
                 nativeOutbound,
@@ -323,7 +326,8 @@ public static class WindowsProxyConfigBuilder
         int proxyPort,
         int tunMtu,
         string tunStack,
-        IReadOnlyList<string> bypassIps)
+        IReadOnlyList<string> bypassIps,
+        int measuredPayloadCeiling = 0)
     {
         if (mode != WindowsProxyMode.Tun)
         {
@@ -345,7 +349,9 @@ public static class WindowsProxyConfigBuilder
             ["tag"] = "tun-in",
             ["interface_name"] = TunInterfaceName,
             ["address"] = new JsonArray(TunAddress),
-            ["mtu"] = tunMtu,
+            // The runtime measures the native-UDP payload ceiling per association; an
+            // MTU above it would only produce frames the path silently drops.
+            ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
             ["auto_route"] = true,
             ["strict_route"] = true,
             ["stack"] = tunStack,

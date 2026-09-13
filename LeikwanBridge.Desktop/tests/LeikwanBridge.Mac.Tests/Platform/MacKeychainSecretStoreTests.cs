@@ -3,6 +3,9 @@ using Xunit;
 
 namespace LeikwanBridge.Mac.Tests.Platform;
 
+// Covers the opt-in legacy keychain backend. Since the file store became
+// the default, these scenarios only exercise the explicit "use_mac_keychain"
+// mode plus its file fallback.
 public sealed class MacKeychainSecretStoreTests
 {
     [Fact]
@@ -31,49 +34,6 @@ public sealed class MacKeychainSecretStoreTests
         await store.SetAsync(MacConnectionProfileStore.SecretAccount, "[]", CancellationToken.None);
 
         Assert.Equal("[]", await store.GetAsync(MacConnectionProfileStore.SecretAccount, CancellationToken.None));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task ConnectionServiceStartsWithKeychainBackedProfileStore(bool keychainAvailable)
-    {
-        using var temp = new TemporaryDirectory();
-        var paths = new MacPlatformPaths(temp.Path, Path.Combine(temp.Path, "LeiKwan Bridge.app"));
-        var secrets = new MacKeychainSecretStore(
-            new FakeKeychainNative { Available = keychainAvailable },
-            Path.Combine(temp.Path, "fallback-secrets.json"));
-        await using var service = new MacConnectionService(paths, new MacConnectionProfileStore(secrets));
-
-        await service.InitializeAsync();
-
-        Assert.Empty(service.Profiles);
-        Assert.Equal(0, service.Selection.ForwardId);
-        Assert.Empty(service.Selection.ForwardProfiles);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task RouteSelectionRoundTripsThroughTheRealSecretStore(bool keychainAvailable)
-    {
-        using var temp = new TemporaryDirectory();
-        var fallbackPath = Path.Combine(temp.Path, "fallback-secrets.json");
-        var native = new FakeKeychainNative { Available = keychainAvailable };
-        var store = new MacConnectionProfileStore(new MacKeychainSecretStore(native, fallbackPath));
-
-        await store.SaveSelectionAsync(new MacConnectionSelection(59, 4, new Dictionary<int, int>
-        {
-            [59] = 4,
-            [60] = 5,
-        }), CancellationToken.None);
-        var reloadedStore = new MacConnectionProfileStore(new MacKeychainSecretStore(native, fallbackPath));
-        var selection = await reloadedStore.LoadSelectionAsync(CancellationToken.None);
-
-        Assert.Equal(59, selection.ForwardId);
-        Assert.Equal(4, selection.ProfileId);
-        Assert.Equal(4, selection.ForwardProfiles[59]);
-        Assert.Equal(5, selection.ForwardProfiles[60]);
     }
 
     [Fact]
@@ -165,58 +125,5 @@ public sealed class MacKeychainSecretStoreTests
             release.Set();
             await Task.WhenAny(operation, Task.Delay(TimeSpan.FromSeconds(1)));
         }
-    }
-
-    private sealed class FakeKeychainNative : IMacKeychainNative
-    {
-        private readonly Dictionary<string, byte[]> _values = [];
-        public bool Available { get; set; } = true;
-        public byte[]? LastSetBuffer { get; private set; }
-        public int ReadCount { get; private set; }
-
-        public MacKeychainReadResult Read(string service, string account)
-        {
-            ReadCount++;
-            if (!Available)
-                return new MacKeychainReadResult(MacKeychainStatus.Unavailable, []);
-            return _values.TryGetValue(account, out var value)
-                ? new MacKeychainReadResult(MacKeychainStatus.Success, value.ToArray())
-                : new MacKeychainReadResult(MacKeychainStatus.NotFound, []);
-        }
-
-        public MacKeychainStatus Set(string service, string account, byte[] secret)
-        {
-            if (!Available)
-                return MacKeychainStatus.Unavailable;
-            LastSetBuffer = secret;
-            _values[account] = secret.ToArray();
-            return MacKeychainStatus.Success;
-        }
-
-        public MacKeychainStatus Delete(string service, string account)
-        {
-            if (!Available)
-                return MacKeychainStatus.Unavailable;
-            _values.Remove(account);
-            return MacKeychainStatus.Success;
-        }
-    }
-
-    private sealed class BlockingKeychainNative(
-        ManualResetEventSlim entered,
-        ManualResetEventSlim release) : IMacKeychainNative
-    {
-        public MacKeychainReadResult Read(string service, string account)
-        {
-            entered.Set();
-            release.Wait();
-            return new MacKeychainReadResult(MacKeychainStatus.Unavailable, []);
-        }
-
-        public MacKeychainStatus Set(string service, string account, byte[] secret)
-            => MacKeychainStatus.Unavailable;
-
-        public MacKeychainStatus Delete(string service, string account)
-            => MacKeychainStatus.Unavailable;
     }
 }

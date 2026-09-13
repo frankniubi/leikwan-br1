@@ -33,6 +33,32 @@ type udpProbeResult struct {
 	TCPReceived   int
 	TCPRTT        time.Duration
 	TCPError      error
+	// PayloadCeiling is the payload size this candidate is known to carry: the
+	// panel-declared relay_payload_ceiling, or a locally measured value.
+	// 0 without PayloadCeilingMeasured means unknown, not unusable.
+	PayloadCeiling int
+	// PayloadCeilingMeasured marks PayloadCeiling as a ladder verdict, where 0
+	// means the association cannot carry a floor-sized payload at all.
+	PayloadCeilingMeasured bool
+}
+
+// ceilingUnusable reports a candidate that was measured as unable to carry a
+// floor-sized payload. It must never win selection, whatever its probe quality.
+func (result udpProbeResult) ceilingUnusable() bool {
+	return result.PayloadCeilingMeasured && result.PayloadCeiling < floorPayloadCeiling
+}
+
+// ceilingRank orders candidates by the payload size they are believed to carry.
+// An unknown ceiling is not evidence in either direction, so it ranks as the
+// conservative default that every observed relay in the sweep could carry.
+func (result udpProbeResult) ceilingRank() int {
+	if result.ceilingUnusable() {
+		return 0
+	}
+	if result.PayloadCeiling <= 0 {
+		return defaultPayloadCeiling
+	}
+	return result.PayloadCeiling
 }
 
 func (result udpProbeResult) usable() bool {
@@ -188,9 +214,11 @@ func (result udpProbeResult) lossRatio() (lost, sent int) {
 	return lost, result.Sent
 }
 
-// rankUDPProbeResults uses loss as the primary ordering key, then prefers the
-// lowest jitter before comparing tail and median latency. This keeps a fast
-// but unstable leg from winning over a slightly slower stable leg.
+// rankUDPProbeResults uses loss as the primary ordering key, then the payload
+// ceiling the candidate can carry, then the lowest jitter before comparing tail
+// and median latency. This keeps a fast but unstable leg from winning over a
+// slightly slower stable leg, and a narrow relay from winning over a wide one
+// that delivers just as reliably.
 func rankUDPProbeResults(results []udpProbeResult) []udpProbeResult {
 	return rankProbeResults(results, "udp")
 }
@@ -202,8 +230,8 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 		r := ranked[right]
 		_, lQualitySent, _, _, _ := l.qualityFor(transport)
 		_, rQualitySent, _, _, _ := r.qualityFor(transport)
-		lUsable := l.usableFor(transport) && lQualitySent > 0
-		rUsable := r.usableFor(transport) && rQualitySent > 0
+		lUsable := l.usableFor(transport) && lQualitySent > 0 && !l.ceilingUnusable()
+		rUsable := r.usableFor(transport) && rQualitySent > 0 && !r.ceilingUnusable()
 		if lUsable != rUsable {
 			return lUsable
 		}
@@ -214,6 +242,11 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 		rlost, rsent, rjitter, rp95, rmedian := r.qualityFor(transport)
 		if llost*rsent != rlost*lsent {
 			return llost*rsent < rlost*lsent
+		}
+		// Equal loss: prefer the leg that can carry the larger datagram, so HA
+		// does not settle on a relay that walls every full-MTU game packet.
+		if lCeiling, rCeiling := l.ceilingRank(), r.ceilingRank(); lCeiling != rCeiling {
+			return lCeiling > rCeiling
 		}
 		if ljitter != rjitter {
 			return ljitter < rjitter
@@ -550,6 +583,29 @@ func selectBestLease(ctx context.Context, config Config, policy Policy, leases [
 	return selectBestLeaseWithProbe(ctx, config, policy, leases, probeLease)
 }
 
+// probeFailureSink receives every candidate that failed its probe in a batch.
+//
+// A relay that answers TCP and then closes the datagram handshake ("datagram
+// handshake: EOF") used to leave no trace anywhere: the runtime rejected it
+// locally, picked another candidate and re-probed the same relay on the next
+// batch, forever. The Panel never learned that the endpoint cannot carry UDP,
+// so nothing could demote it. This is the hook that turns those local
+// rejections into candidate evidence.
+type probeFailureSink func(lease ProviderLease, result udpProbeResult)
+
+// selectBestLeaseReporting is selectBestLease plus the per-candidate failure
+// callback. Both production callers use it; the plain version stays for the
+// tests and for callers that only want a winner.
+func selectBestLeaseReporting(
+	ctx context.Context,
+	config Config,
+	policy Policy,
+	leases []ProviderLease,
+	onFailure probeFailureSink,
+) (ProviderLease, udpProbeResult, error) {
+	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probeLease, onFailure)
+}
+
 type leaseProbe func(context.Context, ProviderLease, Config, Policy) udpProbeResult
 
 func selectBestLeaseWithProbe(
@@ -558,6 +614,17 @@ func selectBestLeaseWithProbe(
 	policy Policy,
 	leases []ProviderLease,
 	probe leaseProbe,
+) (ProviderLease, udpProbeResult, error) {
+	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probe, nil)
+}
+
+func selectBestLeaseWithProbeReporting(
+	ctx context.Context,
+	config Config,
+	policy Policy,
+	leases []ProviderLease,
+	probe leaseProbe,
+	onFailure probeFailureSink,
 ) (ProviderLease, udpProbeResult, error) {
 	if len(leases) == 0 {
 		return ProviderLease{}, udpProbeResult{}, errProbeUnavailable
@@ -614,6 +681,12 @@ func selectBestLeaseWithProbe(
 				// may return quality only, so carry the candidate tier into the
 				// result used by ranking and status reporting.
 				results[index].SelectionTier = unique[index].SelectionTier
+				// The panel-declared relay ceiling is candidate metadata. Fill it
+				// in when a probe returned quality only, so ranking and
+				// pre-selection prefer relays that can carry full-MTU packets.
+				if results[index].PayloadCeiling <= 0 && !results[index].PayloadCeilingMeasured {
+					results[index].PayloadCeiling = unique[index].RelayPayloadCeiling
+				}
 				results[index].Index = index
 			}
 		}()
@@ -630,18 +703,26 @@ dispatch:
 	wait.Wait()
 	ranked := rankProbeResults(results, policy.Transport)
 	for index, result := range results {
+		lease := unique[index]
 		if result.Err != nil {
-			lease := unique[index]
 			log.Printf("ultra UDP candidate probe failed endpoint=%s:%d selection_ref=%s error=%v", lease.IP, lease.Port, lease.SelectionRef, result.Err)
+		}
+		if onFailure != nil && (result.Err != nil || result.TCPError != nil) {
+			onFailure(lease, result)
 		}
 	}
 	if ctx.Err() != nil {
 		return ProviderLease{}, udpProbeResult{}, ctx.Err()
 	}
-	if len(ranked) == 0 || !ranked[0].usableFor(policy.Transport) {
-		if len(ranked) == 0 {
-			return ProviderLease{}, udpProbeResult{}, errNoHealthyCandidate
-		}
+	if len(ranked) == 0 {
+		return ProviderLease{}, udpProbeResult{}, errNoHealthyCandidate
+	}
+	if ranked[0].ceilingUnusable() {
+		// Every candidate that survived ranking was measured as unable to carry
+		// a floor-sized payload; selecting one would silently black-hole traffic.
+		return ProviderLease{}, ranked[0], fmt.Errorf("%w: %v", errNoHealthyCandidate, errDatagramUnusable)
+	}
+	if !ranked[0].usableFor(policy.Transport) {
 		return ProviderLease{}, ranked[0], fmt.Errorf("%w: %v", errNoHealthyCandidate, ranked[0].protocolFailure(policy.Transport))
 	}
 	return leases[originalIndices[ranked[0].Index]], ranked[0], nil

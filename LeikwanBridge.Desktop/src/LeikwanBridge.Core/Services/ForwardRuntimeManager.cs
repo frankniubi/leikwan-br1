@@ -25,11 +25,28 @@ public class ForwardRuntimeManager : IDisposable
     private readonly Func<int, IReadOnlyList<PortOwner>> _proxyPortOwners;
     private readonly ConcurrentDictionary<int, object> _forwardLocks = new();
     private readonly ConcurrentDictionary<int, byte> _startingForwards = new();
+    private readonly ConcurrentDictionary<int, byte> _nativeOutboundNoticed = new();
 
     public event Action<int, string>? UltraRecoveryRequested;
 
     public Task<ProxyForwardLease> AcquireProxyForwardAsync(ForwardConfig forward, CancellationToken ct = default)
-        => ProxyForwardLease.AcquireAsync(
+    {
+        ArgumentNullException.ThrowIfNull(forward);
+        var running = IsForwardRunning(forward.ForwardId) || IsForwardStarting(forward.ForwardId);
+        if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
+            && !IsNativeOutboundForward(forward)
+            && forward.UltraAccess is null
+            && !running)
+        {
+            Log.Warning(
+                "ordinary proxy forward {ForwardId} cannot start because Ultra policy is missing (runtime_running={RuntimeRunning})",
+                forward.ForwardId,
+                running);
+            return Task.FromException<ProxyForwardLease>(
+                new InvalidOperationException("proxy_forward_policy_unavailable"));
+        }
+
+        return ProxyForwardLease.AcquireAsync(
             forward,
             () => IsForwardRunning(forward.ForwardId) || IsForwardStarting(forward.ForwardId),
             token => Task.Run(() => RestartForward(forward, force: true, reason: "manual_apply"), token),
@@ -39,6 +56,7 @@ public class ForwardRuntimeManager : IDisposable
                 && IsForwardRunning(candidate.ForwardId)
                 && HasOwnedProxyListener(candidate)
                 && await ProxyForwardLease.IsListenerReadyAsync(candidate, token).ConfigureAwait(false));
+    }
 
     private bool HasOwnedProxyListener(ForwardConfig forward)
     {
@@ -66,8 +84,7 @@ public class ForwardRuntimeManager : IDisposable
         && (forward.ListenPort <= 0 || _portListeningProbe(forward.ListenPort));
 
     public static bool IsNativeOutboundForward(ForwardConfig forward)
-        => forward.NativeOutboundEnabled
-            && string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+        => forward.IsNativeOutboundRule;
 
     public ForwardRuntimeManager(
         AgentConfig config,
@@ -464,22 +481,46 @@ public class ForwardRuntimeManager : IDisposable
             && string.Equals(sidepath.SchedulerMode, "feedback_drr", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Retires any agent-owned ordinary Ultra runtime for a native outbound rule.
+    /// The panel ships the rule only, so this is a one-shot transition cleanup:
+    /// when nothing agent-managed remains, further calls (health cycles, config
+    /// syncs, manual apply) are pure no-ops that write no log and no state.
+    /// </summary>
     private void SuppressOrdinaryUltraRuntime(ForwardConfig forward)
     {
+        var forwardId = forward.ForwardId;
         var leases = forward.RuntimeLeases.Count > 0
             ? forward.RuntimeLeases.ToList()
             : forward.RuntimeLease is null ? [] : [forward.RuntimeLease];
+        var hasAppliedState = _stateManager.LoadApplied().ContainsKey(forwardId.ToString());
+        if (leases.Count == 0 && !hasAppliedState)
+        {
+            NoteNativeOutboundRule(forwardId);
+            return;
+        }
+
+        Log.Information("skip ordinary Ultra runtime for native outbound forward {ForwardId}", forwardId);
         try
         {
-            Log.Information("skip ordinary Ultra runtime for native outbound forward {ForwardId}", forward.ForwardId);
-            _ultraRuntimeHost.Stop(forward.ForwardId);
-            _stateManager.RemoveApplied(forward.ForwardId);
+            _ultraRuntimeHost.Stop(forwardId);
+            _stateManager.RemoveApplied(forwardId);
         }
         finally
         {
             DisposeLeases(leases);
             forward.RuntimeLease = null;
             forward.RuntimeLeases.Clear();
+        }
+    }
+
+    private void NoteNativeOutboundRule(int forwardId)
+    {
+        if (_nativeOutboundNoticed.TryAdd(forwardId, 0))
+        {
+            Log.Debug(
+                "native outbound rule forward {ForwardId}: agent-managed runtime not applicable",
+                forwardId);
         }
     }
 

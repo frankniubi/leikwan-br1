@@ -30,6 +30,48 @@ public sealed class MacConnectionProcessHostTests
     }
 
     [Fact]
+    public async Task StartProxy_ClearsStaleOwnedSystemProxyBeforeStarting()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        const int port = 25842;
+        await File.WriteAllTextAsync(config, $"{{\"inbounds\":[{{\"listen_port\":{port},\"set_system_proxy\":true}}]}}");
+        var writes = new List<string>();
+        var runner = new FakeCommandRunner(info =>
+        {
+            var command = info.ArgumentList[0];
+            if (command == "-listallnetworkservices") return new MacCommandResult(0, "header\nEthernet\n", "");
+            if (command.StartsWith("-set"))
+            {
+                writes.Add(string.Join(" ", info.ArgumentList));
+                return new MacCommandResult(0, "", "");
+            }
+            return new MacCommandResult(0, $"Enabled: Yes\nServer: 127.0.0.1\nPort: {port}\n", "");
+        });
+        using var listener = new TcpListener(IPAddress.Loopback, port);
+        await using var host = new MacConnectionProcessHost(
+            processStarter: startInfo =>
+            {
+                var process = StartSleeper();
+                _ = startInfo;
+                Task.Run(async () =>
+                {
+                    await Task.Delay(100);
+                    listener.Start();
+                });
+                return process;
+            },
+            startupTimeout: TimeSpan.FromSeconds(5),
+            commandRunnerFactory: () => runner,
+            isMacOs: () => true);
+
+        await host.StartAsync("helper", config, MacConnectionMode.Proxy, CancellationToken.None);
+        Assert.Contains(writes, item => item.StartsWith("-setwebproxystate Ethernet off", StringComparison.Ordinal));
+        listener.Stop();
+        await host.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task DefaultProxyProbeDoesNotTreatElapsedTimeAsReadiness()
     {
         using var temp = new TemporaryDirectory();
@@ -110,6 +152,97 @@ public sealed class MacConnectionProcessHostTests
             host.StartAsync("helper", config, MacConnectionMode.Proxy, CancellationToken.None));
         Assert.Equal("connection_readiness_timeout", error.Message);
         Assert.False(host.IsRunning);
+    }
+
+    [Fact]
+    public async Task ReloadSignalsTheHelperAndOnlySucceedsOnceTheLiveTunMtuMatches()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        await File.WriteAllTextAsync(config, "{\"inbounds\":[{\"type\":\"tun\",\"mtu\":1316}]}");
+        var signals = 0;
+        var liveMtu = 1396;
+        await using var host = new MacConnectionProcessHost(
+            processStarter: _ => StartSleeper(),
+            readinessProbe: (_, _, _) => Task.FromResult(true),
+            signalReload: _ => { signals++; return true; },
+            tunMtuProbe: _ => Task.FromResult(liveMtu),
+            reloadTimeout: TimeSpan.FromMilliseconds(500));
+
+        await host.StartAsync("helper", config, MacConnectionMode.Vpn, CancellationToken.None);
+
+        // The signal was delivered but the interface still reports the old MTU.
+        Assert.False(await host.ReloadAsync(CancellationToken.None));
+        Assert.Equal(1, signals);
+
+        liveMtu = 1316;
+        Assert.True(await host.ReloadAsync(CancellationToken.None));
+        Assert.Equal(2, signals);
+        await host.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ReloadReportsFailureWhenTheSignalCannotBeDelivered()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        await File.WriteAllTextAsync(config, "{\"inbounds\":[{\"type\":\"tun\",\"mtu\":1316}]}");
+        var probes = 0;
+        await using var host = new MacConnectionProcessHost(
+            processStarter: _ => StartSleeper(),
+            readinessProbe: (_, _, _) => Task.FromResult(true),
+            signalReload: _ => false,
+            tunMtuProbe: _ => { probes++; return Task.FromResult(1396); },
+            reloadTimeout: TimeSpan.FromMilliseconds(500));
+
+        await host.StartAsync("helper", config, MacConnectionMode.Vpn, CancellationToken.None);
+
+        Assert.False(await host.ReloadAsync(CancellationToken.None));
+        Assert.Equal(0, probes);
+        await host.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ReloadIsRefusedWhenTheHelperIsNotRunning()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        await File.WriteAllTextAsync(config, "{\"inbounds\":[{\"listen_port\":25844}]}");
+        var signals = 0;
+        await using var host = new MacConnectionProcessHost(
+            processStarter: _ => StartSleeper(),
+            readinessProbe: (_, _, _) => Task.FromResult(true),
+            signalReload: _ => { signals++; return true; },
+            tunMtuProbe: _ => Task.FromResult(0));
+
+        Assert.False(await host.ReloadAsync(CancellationToken.None));
+        await host.StartAsync("helper", config, MacConnectionMode.Proxy, CancellationToken.None);
+        await host.StopAsync(CancellationToken.None);
+
+        Assert.False(await host.ReloadAsync(CancellationToken.None));
+        Assert.Equal(0, signals);
+    }
+
+    [Fact]
+    public async Task ProxyReloadDeliversTheSignalWithoutWaitingForATun()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = Path.Combine(temp.Path, "connection.json");
+        await File.WriteAllTextAsync(config, "{\"inbounds\":[{\"listen_port\":25845}]}");
+        var signals = 0;
+        var probes = 0;
+        await using var host = new MacConnectionProcessHost(
+            processStarter: _ => StartSleeper(),
+            readinessProbe: (_, _, _) => Task.FromResult(true),
+            signalReload: _ => { signals++; return true; },
+            tunMtuProbe: _ => { probes++; return Task.FromResult(0); });
+
+        await host.StartAsync("helper", config, MacConnectionMode.Proxy, CancellationToken.None);
+
+        Assert.True(await host.ReloadAsync(CancellationToken.None));
+        Assert.Equal(1, signals);
+        Assert.Equal(0, probes);
+        await host.StopAsync(CancellationToken.None);
     }
 
     [Theory]

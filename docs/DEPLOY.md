@@ -82,6 +82,34 @@ This places the expected files under `artifacts/wstunnel/`, and slave nodes will
 
 ## Client
 
+### Linux arm64 single-file installer
+
+The published ARM64 installer is a self-contained static ELF. It embeds the
+client-agent shell installer, Python helpers, Ultra runtime, wstunnel, bond,
+ingress, and UoT native helpers; only the control-plane API is contacted during
+installation. The configured `--artifact-base` is retained in
+`/etc/leikwan-client-agent/config.json` for later hash-verified updates.
+
+**Support boundary:** this single-file installer is **Debian 11/12/13 only** on
+Linux `arm64`/`aarch64`. Do not use it on `amd64` hosts or other distributions;
+use the regular Linux installer or the platform-specific client package instead.
+
+```bash
+curl -fsSL https://v3.leikwanhost.com/artifacts/install-client-agent-linux-arm64 \
+  -o install-client-agent-linux-arm64
+chmod 0755 install-client-agent-linux-arm64
+sudo ./install-client-agent-linux-arm64 \
+  --master https://v3.leikwanhost.com \
+  --client-id CLIENT_ID \
+  --agent-token AGENT_TOKEN
+```
+
+The binary is Linux `aarch64/arm64` only. Verify before execution with:
+
+```bash
+./install-client-agent-linux-arm64 --self-test
+```
+
 单点安装：
 
 ```bash

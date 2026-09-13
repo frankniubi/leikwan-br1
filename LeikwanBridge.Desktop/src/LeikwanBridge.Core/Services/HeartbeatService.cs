@@ -1,4 +1,5 @@
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 using System.Text.Json;
 
@@ -18,6 +19,12 @@ public sealed class HeartbeatService
     private readonly ClientPlatformIdentity _platformIdentity;
     private readonly IReadOnlyList<string> _additionalRuntimeDirectories;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+
+    // The panel reads the runtime identity out of the usage rows, so a forward
+    // that carries no traffic must still report it - once when it changes and
+    // then at a slow cadence, or an idle client never reports it at all.
+    private static readonly TimeSpan AttestationReportInterval = TimeSpan.FromMinutes(5);
+    private readonly Dictionary<int, (string Fingerprint, DateTimeOffset SentAt)> _attestationReports = new();
 
     public HeartbeatService(
         MasterApiClient api,
@@ -81,6 +88,8 @@ public sealed class HeartbeatService
         List<UltraUsageSnapshot> ultraUsage;
         if (hasPendingUltra)
         {
+            // The retained batch is resent with the runtime status it was
+            // collected with; a retry must not silently drop observations.
             ultraUsage = usage.PendingUltraUsage.Select(item => new UltraUsageSnapshot
             {
                 ForwardId = item.ForwardId,
@@ -88,6 +97,9 @@ public sealed class HeartbeatService
                 Sequence = item.Sequence,
                 BytesIn = item.BytesIn,
                 BytesOut = item.BytesOut,
+                UdpPayloadCeiling = item.UdpPayloadCeiling,
+                UdpOversizeDrops = item.UdpOversizeDrops,
+                RuntimeAttestation = item.RuntimeAttestation,
             }).ToList();
         }
         else
@@ -211,7 +223,11 @@ public sealed class HeartbeatService
             long DeltaIn,
             long DeltaOut,
             string InstanceKey,
-            bool Legacy)>();
+            bool Legacy,
+            DateTime LastWrite,
+            int PayloadCeiling,
+            long OversizeDrops,
+            RuntimeAttestationSnapshot? Attestation)>();
         foreach (var candidate in selectedCandidates)
         {
             try
@@ -246,7 +262,11 @@ public sealed class HeartbeatService
                     deltaIn,
                     deltaOut,
                     candidate.InstanceKey,
-                    candidate.Legacy));
+                    candidate.Legacy,
+                    candidate.LastWrite,
+                    UltraRuntimeStatus.ReadPayloadCeiling(root),
+                    UltraRuntimeStatus.ReadOversizeDrops(root),
+                    UltraRuntimeStatus.ReadAttestation(root)));
             }
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException or InvalidOperationException or OverflowException)
             {
@@ -258,7 +278,7 @@ public sealed class HeartbeatService
         // advance cursors for rows outside this batch: they must be retried on
         // the next heartbeat instead of being silently lost.
         var acceptedGroups = observations
-            .Where(item => item.DeltaIn > 0 || item.DeltaOut > 0)
+            .Where(item => item.DeltaIn > 0 || item.DeltaOut > 0 || ShouldReportAttestation(item.ForwardId, item.Attestation))
             .GroupBy(item => (item.ForwardId, item.Generation))
             .OrderBy(group => group.Key.ForwardId)
             .ThenBy(group => group.Key.Generation, StringComparer.Ordinal)
@@ -292,6 +312,10 @@ public sealed class HeartbeatService
             }
             var forwardId = group.Key.ForwardId;
             sequences[forwardId] = sequences.GetValueOrDefault(forwardId) + 1;
+            // Runtime status travels with the counters it was measured next to.
+            // The freshest snapshot of the group is the instance still running;
+            // an older one only contributes historical bytes.
+            var runtime = group.OrderByDescending(observation => observation.LastWrite).First();
             result.Add(new UltraUsageSnapshot
             {
                 ForwardId = forwardId,
@@ -299,11 +323,39 @@ public sealed class HeartbeatService
                 Sequence = sequences[forwardId],
                 BytesIn = bytesIn,
                 BytesOut = bytesOut,
+                UdpPayloadCeiling = runtime.PayloadCeiling,
+                UdpOversizeDrops = runtime.OversizeDrops,
+                RuntimeAttestation = runtime.Attestation,
             });
         }
 
         pending = (lastIn, lastOut, sequences, lastInByInstance, lastOutByInstance);
         return result;
+    }
+
+    /// <summary>
+    /// True when this forward's runtime identity has to ride along with a
+    /// zero-byte usage row. Without it the attestation only ever left the host
+    /// while the forward happened to move bytes, so an idle client never told
+    /// the panel which binary it was running and the repackaged-build check had
+    /// nothing to compare against.
+    /// </summary>
+    private bool ShouldReportAttestation(int forwardId, RuntimeAttestationSnapshot? attestation)
+    {
+        var fingerprint = attestation?.Fingerprint;
+        if (string.IsNullOrWhiteSpace(fingerprint))
+        {
+            return false;
+        }
+        var now = DateTimeOffset.UtcNow;
+        if (_attestationReports.TryGetValue(forwardId, out var last)
+            && string.Equals(last.Fingerprint, fingerprint, StringComparison.Ordinal)
+            && now - last.SentAt < AttestationReportInterval)
+        {
+            return false;
+        }
+        _attestationReports[forwardId] = (fingerprint, now);
+        return true;
     }
 
     private IEnumerable<(string Path, bool Legacy)> EnumerateUltraStatusFiles()

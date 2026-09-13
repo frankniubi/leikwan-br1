@@ -294,6 +294,89 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('windows_client_app', '/artifacts/leikwan-bridge-setup.exe');
     }
 
+    /**
+     * Monochrome platform marks for the download panels. Inline SVG with
+     * currentColor so they follow the surrounding text colour in both the light
+     * and the dark operator theme, and need no asset pipeline.
+     */
+    protected function platformIcon(string $kind): string
+    {
+        $open = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">';
+        $icons = [
+            'windows' => '<rect x="2" y="2.5" width="9" height="9"/><rect x="12.6" y="2.5" width="9.4" height="9"/><rect x="2" y="13.1" width="9" height="9"/><rect x="12.6" y="13.1" width="9.4" height="9"/>',
+            'macos' => '<path d="M12 7.6c-3 0-5.2 2.4-5.2 5.6 0 3.2 2.3 5.9 5.2 5.9s5.2-2.7 5.2-5.9c0-3.2-2.2-5.6-5.2-5.6z"/><ellipse cx="14.6" cy="4.7" rx="2.6" ry="1.2" transform="rotate(-32 14.6 4.7)"/><rect x="11.6" y="5.4" width="1" height="2.6" rx="0.5"/>',
+            'linux' => '<circle cx="12" cy="7.2" r="4.3"/><ellipse cx="12" cy="16" rx="5.6" ry="6.4"/><path d="M10 9.2h4L12 11.9z"/><ellipse cx="6.4" cy="20.4" rx="2.6" ry="1.1"/><ellipse cx="17.6" cy="20.4" rx="2.6" ry="1.1"/>',
+            'android' => '<path d="M5.6 10.4h12.8v6.8a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2z"/><path d="M5.6 9.6a6.4 6.4 0 0 1 12.8 0z"/><path d="M8.2 3.4 6.9 1.8M15.8 3.4l1.3-1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="3.1" y="10.6" width="1.7" height="5.6" rx="0.85"/><rect x="19.2" y="10.6" width="1.7" height="5.6" rx="0.85"/>',
+            'helper' => '<path d="M12 4.6a7.4 7.4 0 1 0 7.1 9.4l-2.1-.6A5.2 5.2 0 1 1 12 6.8z"/><path d="M12 2.2l4 3-4 3z"/>',
+        ];
+        if (!isset($icons[$kind])) {
+            return '';
+        }
+
+        return '<span class="command-card-icon" style="display:inline-flex;vertical-align:-4px;margin-right:8px;">'
+            . $open . $icons[$kind] . '</svg></span>';
+    }
+    /**
+     * The repair/update helper rendered inside the Windows App panel. A host on
+     * an older build needs the app and the helper together, and a second panel
+     * for the same platform only splits the attention of whoever is installing.
+     */
+    protected function renderWindowsUpdateHelperBlock(): string
+    {
+        $url = $this->windowsUpdateHelperUrl();
+        $command = $this->windowsUpdateHelperCommand();
+
+        return '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(127,127,127,0.25);">'
+            . '<div class="command-card-title">' . $this->platformIcon('helper')
+            . $this->escape($this->clientAppReleaseLabel('Windows Update Helper', 'windows_update_helper')) . '</div>'
+            . '<div class="muted command-card-note">老版本或卡住的客户端用它：一键修复共享权限并更新到当前版本，需以管理员身份运行；安装包里也带一份。</div>'
+            . '<pre class="command-pre">' . $this->escape($command) . '</pre>'
+            . '<div class="actions command-card-actions">'
+            . $this->renderCommandLink('Download Update Helper', $url)
+            . $this->renderCopyButton('Copy Update Command', $command)
+            . '</div></div>';
+    }
+
+    protected function windowsUpdateHelperUrl(): string
+    {
+        return $this->clientAppArtifactUrl('windows_update_helper', '/artifacts/leikwan-bridge-repair.cmd');
+    }
+
+    /**
+     * One line an operator can paste on a Windows host that is stuck on an older
+     * build: fetch the helper and start it elevated. It repairs the shared
+     * permissions and then installs the published build.
+     *
+     * This line is parsed twice - once by the shell it is pasted into, once by
+     * the child powershell that parses the -Command payload - so it has to be
+     * valid under both. Two rules make that true in cmd, Windows PowerShell and
+     * pwsh alike:
+     *
+     *   1. No $ in the payload. Inside the outer double quotes a PowerShell
+     *      parent expands $h/$env:TEMP before the child ever runs, so the child
+     *      received " = Join-Path C:\...\Temp ..." and the line could not work
+     *      in PowerShell at all.
+     *   2. The artifact URL is single quoted. It always carries
+     *      "?v=<version>&sha256=<hash>", and once the outer quotes are consumed
+     *      the child's parser met a bare & and refused the whole line with
+     *      "The ampersand (&) character is not allowed".
+     */
+    protected function windowsUpdateHelperCommand(): string
+    {
+        $target = '(Join-Path ([System.IO.Path]::GetTempPath()) leikwan-bridge-repair.cmd)';
+        $payload = 'Invoke-WebRequest -UseBasicParsing ' . $this->powershellSingleQuote($this->windowsUpdateHelperUrl())
+            . ' -OutFile ' . $target
+            . '; Start-Process -FilePath ' . $target . ' -Verb RunAs';
+
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' . $payload . '"';
+    }
+
+    /** Single quoted PowerShell literal: quotes are escaped by doubling them. */
+    protected function powershellSingleQuote(string $value): string
+    {
+        return "'" . str_replace("'", "''", $value) . "'";
+    }
+
     protected function linuxArm64ClientInstallerUrl(): string
     {
         return $this->clientAppArtifactUrl(
@@ -310,6 +393,91 @@ abstract class BaseController
     protected function macosClientX64AppUrl(): string
     {
         return $this->clientAppArtifactUrl('macos_client_app_x64', '/artifacts/macos/leikwan-bridge-x64.dmg');
+    }
+
+    // No-GUI surface. The Windows payload is its own artifact; macOS reuses the
+    // shipped app bundle in its --headless lifecycle, so it only needs the
+    // installers. Every URL carries the manifest version/hash like the GUI
+    // downloads, so an operator can verify what they fetched.
+    protected function windowsHeadlessClientUrl(): string
+    {
+        return $this->clientAppArtifactUrl(
+            'windows_headless_client',
+            '/artifacts/windows/leikwan-bridge-headless-win-x64.zip'
+        );
+    }
+
+    protected function macosHeadlessInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('macos_headless_installer', '/artifacts/install-macos-headless.sh');
+    }
+
+    protected function windowsHeadlessInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('windows_headless_installer', '/artifacts/install-windows-headless.ps1');
+    }
+
+    protected function installerScriptUrl(string $artifactKey, string $fallbackPath): string
+    {
+        $metadata = $this->artifactMetadata($artifactKey);
+        $configuredPath = trim((string) ($metadata['install_url'] ?? ''));
+        $path = $configuredPath !== '' ? $configuredPath : $fallbackPath;
+        if (preg_match('#^https?://#i', $path) === 1) {
+            return $path;
+        }
+
+        return $this->artifactBaseUrl() . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * One-line installers for the no-GUI clients. Both carry the same client id
+     * and agent token the Linux installer uses; neither embeds a credential in
+     * a URL query, so the command can be copied out of the page safely.
+     *
+     * @param array<string, mixed> $client
+     */
+    protected function macosHeadlessInstallCommand(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-macos-headless.sh')
+            . ' | sudo sh -s -- --panel ' . $this->shellQuote($masterUrl)
+            . ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     */
+    protected function windowsHeadlessInstallCommand(array $client): string
+    {
+        $zipUrl = $this->windowsHeadlessClientUrl();
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return '$z="$env:TEMP\lkb-headless.zip"; '
+            . 'iwr \'' . $zipUrl . '\' -OutFile $z; '
+            . 'Expand-Archive $z "$env:TEMP\lkb-headless" -Force; '
+            . 'cd "$env:TEMP\lkb-headless\leikwan-bridge-headless"; '
+            . '.\install-windows-headless.ps1 -Panel ' . $masterUrl
+            . ' -ClientId ' . $clientId
+            . ' -AgentToken \'' . $agentToken . '\'';
+    }
+
+    protected function headlessClientReleaseVersion(): string
+    {
+        foreach (['windows_headless_client', 'macos_headless_installer'] as $key) {
+            $version = trim((string) ($this->artifactMetadata($key)['version'] ?? ''));
+            if ($version !== '') {
+                return $version;
+            }
+        }
+
+        return '';
     }
 
     private function clientAppArtifactUrl(string $artifactKey, string $fallbackPath): string
@@ -353,7 +521,7 @@ abstract class BaseController
         return $base . ($pairs === [] ? '' : '?' . implode('&', $pairs)) . $fragment;
     }
 
-    private function clientAppReleaseLabel(string $label, string $artifactKey): string
+    protected function clientAppReleaseLabel(string $label, string $artifactKey): string
     {
         $version = trim((string) ($this->artifactMetadata($artifactKey)['version'] ?? ''));
         return $version === '' ? $label : $label . ' ' . $version;
@@ -489,8 +657,14 @@ abstract class BaseController
     /**
      * @param array<int, string> $actions
      */
-    protected function renderCommandPanel(string $title, string $command, array $actions = [], string $description = ''): string
-    {
+    protected function renderCommandPanel(
+        string $title,
+        string $command,
+        array $actions = [],
+        string $description = '',
+        string $icon = '',
+        string $extraHtml = ''
+    ): string {
         $actionsHtml = $actions !== []
             ? '<div class="actions command-card-actions">' . implode('', $actions) . '</div>'
             : '';
@@ -500,10 +674,11 @@ abstract class BaseController
 
         return '<section class="command-card">'
             . '<div class="command-card-header">'
-            . '<div><div class="command-card-title">' . $this->escape($title) . '</div>' . $descriptionHtml . '</div>'
+            . '<div><div class="command-card-title">' . $this->platformIcon($icon) . $this->escape($title) . '</div>' . $descriptionHtml . '</div>'
             . $actionsHtml
             . '</div>'
             . '<pre class="command-pre">' . $this->escape($command) . '</pre>'
+            . $extraHtml
             . '</section>';
     }
 
@@ -564,7 +739,6 @@ abstract class BaseController
     {
         $windowsAppUrl = $this->windowsClientAppUrl();
         $androidApkUrl = $this->androidClientApkUrl();
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $hasClient = $clientId > 0 && $agentToken !== '';
@@ -580,8 +754,8 @@ abstract class BaseController
                 $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
             ];
         $linuxDescription = $hasClient
-            ? 'Example shown for the current client. Each client card below includes its own exact install details and Linux install command.'
-            : 'Windows, Android, and macOS use the app install flow. Linux remains a local/manual install on the host that will run the client-agent.';
+            ? 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
+            : 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
@@ -594,6 +768,9 @@ abstract class BaseController
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
                 'Download the current LeiKwan Bridge desktop app for this client.'
+                ,
+                'windows',
+                $this->renderWindowsUpdateHelperBlock()
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -603,30 +780,61 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Download the Android app for this client or use the Android import string from a client card below.'
+                'Download the Android app for this client or use the Android import string from a client card below.',
+                'android'
             )
             . $this->renderCommandPanel(
-                'Linux Install',
+                $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
                 $linuxInstall,
                 $linuxActions,
-                $linuxDescription
+                $linuxDescription,
+                'linux'
             )
-            . $this->renderCommandPanel(
-                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
-                $linuxArm64InstallerUrl,
-                [
-                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
-                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
-                ],
-                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
-            )
+            . $this->renderHeadlessClientDownloadPanel($client)
             . '</section>';
+    }
+
+    /**
+     * No-GUI clients: the same client without a desktop session. The panel links
+     * the payload, the installer, and the knowledgebase guide that documents the
+     * exact commands, so an operator never has to guess a flag.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    protected function renderHeadlessClientDownloadPanel(?array $client = null): string
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        $hasClient = $clientId > 0 && $agentToken !== '';
+        $zipUrl = $this->windowsHeadlessClientUrl();
+        $guideUrl = '/knowledgebase?thread=no-gui-clients';
+        $guideLink = '<a class="button secondary" href="' . $this->escape($guideUrl) . '">使用说明 / Install guide</a>';
+        $description = 'Windows 与 macOS 都可以没有桌面会话地运行：macOS 注册为 launchd 守护进程，Windows 注册为系统服务。与图形客户端同一套内核、同一份运行时指纹与更新校验，令牌保存在仅服务可读的文件里。'
+            . ($hasClient
+                ? ' 下面的命令已带好当前客户端的身份。'
+                : ' 先在下方创建客户端，再复制带身份的安装命令。');
+
+        $actions = [
+            $this->renderCommandLink('下载 Windows 无界面版', $zipUrl),
+            $this->renderCopyButton('复制下载链接', $zipUrl),
+            $guideLink,
+        ];
+        $command = $hasClient
+            ? $this->windowsHeadlessInstallCommand($client)
+            : $zipUrl;
+
+        return $this->renderCommandPanel(
+            $this->clientAppReleaseLabel('No-GUI Client (Windows / macOS)', 'windows_headless_client'),
+            $command,
+            $actions,
+            $description,
+            'helper'
+        );
     }
 
     protected function renderClientAgentInstallDetails(array $client, array $forwardInstalls = []): string
     {
         $installCommand = $this->clientAgentInstallCommand($client);
-        $linuxArm64InstallerUrl = $this->linuxArm64ClientInstallerUrl();
         $windowsInstallerUrl = $this->clientWindowsInstallerUrl();
         $windowsManagerCommand = $this->clientWindowsManagerCommand($client);
         $windowsManagerUrl = $this->clientWindowsManagerUrlForClient($client);
@@ -636,23 +844,25 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
         $windowsInstallPanels = $this->renderCommandPanel(
-            'Windows Forward Selector',
+            $this->clientAppReleaseLabel('Windows Forward Selector', 'client_manager_windows'),
             $windowsManagerCommand,
             [
                 $this->renderCommandLink('Open Install Link', $windowsManagerUrl),
                 $this->renderCopyButton('Copy Install Command', $windowsManagerCommand),
             ],
-            'Secondary tool for hosts that still use the Windows PowerShell manager to pick and control local forward tasks.'
+            'Secondary tool for hosts that still use the Windows PowerShell manager to pick and control local forward tasks.',
+            'windows'
         );
         if ($windowsManagerUrl === $this->clientWindowsManagerUrl()) {
             $windowsInstallPanels .= $this->renderCommandPanel(
-                'Windows PowerShell (Admin)',
+                $this->clientAppReleaseLabel('Windows PowerShell (Admin)', 'client_installer_windows'),
                 $windowsInstallerUrl,
                 [
                     $this->renderCommandLink('Open Install Link', $windowsInstallerUrl),
                     $this->renderCopyButton('Copy Install Link', $windowsInstallerUrl),
                 ],
-                'Legacy bootstrap script. Use the Windows app above as the primary install path.'
+                'Legacy bootstrap script. Use the Windows app above as the primary install path.',
+                'windows'
             );
         }
 
@@ -666,7 +876,9 @@ abstract class BaseController
                     $this->renderCommandLink('Download Windows App', $windowsAppUrl),
                     $this->renderCopyButton('Copy Download Link', $windowsAppUrl),
                 ],
-                'Install the LeiKwan Bridge desktop app for this client.'
+                'Install the LeiKwan Bridge desktop app for this client.',
+                'windows',
+                $this->renderWindowsUpdateHelperBlock()
             )
             . $this->renderMacClientDownloadPanels()
             . $this->renderCommandPanel(
@@ -676,25 +888,17 @@ abstract class BaseController
                     $this->renderCommandLink('Download Android App', $androidApkUrl),
                     $this->renderCopyButton('Copy Download Link', $androidApkUrl),
                 ],
-                'Install the Android app for this client.'
+                'Install the Android app for this client.',
+                'android'
             )
             . $this->renderCommandPanel(
-                'Linux Install',
+                $this->clientAppReleaseLabel('Linux Install (x86_64 / arm64)', 'client_agent_installer'),
                 $installCommand,
                 [
                     $this->renderCommandLink('Open Install Link', $this->clientAgentInstallerUrl()),
                     $this->renderCopyButton('Copy Install Command', $installCommand),
                 ],
-                'Manual/local install for this client on the Linux host that will run the client-agent.'
-            )
-            . $this->renderCommandPanel(
-                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
-                $linuxArm64InstallerUrl,
-                [
-                    $this->renderCommandLink('Download ARM64 Installer', $linuxArm64InstallerUrl),
-                    $this->renderCopyButton('Copy Download Link', $linuxArm64InstallerUrl),
-                ],
-                'Debian 11/12/13 only. Single-file installer for Linux arm64/aarch64; do not use it on amd64 or other distributions.'
+                'Debian 11/12/13 only. Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 (apt/dpkg/systemd) and verifies every artifact against the panel manifest.'
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
@@ -730,7 +934,8 @@ abstract class BaseController
                 $this->renderCommandLink('Download Apple Silicon', $arm64Url),
                 $this->renderCopyButton('Copy Download Link', $arm64Url),
             ],
-            $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。'
+            $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。',
+            'macos'
         )
         . $this->renderCommandPanel(
             $this->clientAppReleaseLabel('macOS App - Intel', 'macos_client_app_x64'),
@@ -739,7 +944,8 @@ abstract class BaseController
                 $this->renderCommandLink('Download Intel', $x64Url),
                 $this->renderCopyButton('Copy Download Link', $x64Url),
             ],
-            'For Intel Macs (x86_64). 适用于 Intel Mac。'
+            'For Intel Macs (x86_64). 适用于 Intel Mac。',
+            'macos'
         );
     }
 
@@ -751,7 +957,11 @@ abstract class BaseController
 
         $releaseNotice = $this->macosClientReleaseNotice();
 
-        return '<section class="tenant-client-install__platform"><strong>macOS</strong>'
+        $version = $this->macosClientReleaseVersion();
+
+        return '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('macos')
+            . 'macOS' . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
             . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
@@ -1361,7 +1571,7 @@ HTML;
         $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
                 ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260829a">'
-                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">');
+                : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
 
@@ -1498,7 +1708,7 @@ HTML;
   <title>{$escapedTitle}</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
 </head>
 <body class="pg-app">
   <div class="shell">

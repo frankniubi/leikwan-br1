@@ -584,6 +584,66 @@ public sealed class WindowsProxyConfigBuilderTests
         }
     }
 
+    [Theory]
+    [InlineData(1500, 0, 1500)]
+    [InlineData(1500, 1472, 1428)]
+    [InlineData(1500, 1440, 1396)]
+    [InlineData(1500, 1300, 1280)]
+    [InlineData(1280, 1500, 1280)]
+    public void TunMtuFollowsTheMeasuredPayloadCeiling(
+        int tunMtu,
+        int measuredPayloadCeiling,
+        int expectedMtu)
+    {
+        var profile = new WindowsProxyProfile
+        {
+            Protocol = WindowsProxyProtocol.Shadowsocks,
+            Server = "198.51.100.7",
+            Port = 443,
+            Method = "aes-256-gcm",
+            Password = "test-secret",
+        };
+
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(
+            profile,
+            WindowsProxyMode.Tun,
+            [],
+            tunMtu: tunMtu,
+            measuredPayloadCeiling: measuredPayloadCeiling).Json);
+
+        Assert.Equal(expectedMtu, document.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+    }
+
+    [Fact]
+    public void NativeTunMtuFollowsTheMeasuredPayloadCeiling()
+    {
+        using var lease = CreateNativeLease("cn_only");
+
+        using var lowered = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            [],
+            tunMtu: 1500,
+            measuredPayloadCeiling: 1440).Json);
+        Assert.Equal(1396, lowered.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+
+        using var floored = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            [],
+            tunMtu: 1500,
+            measuredPayloadCeiling: 1300).Json);
+        Assert.Equal(1280, floored.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+
+        using var untouched = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Tun,
+            [],
+            tunMtu: 1280,
+            measuredPayloadCeiling: 1500).Json);
+        Assert.Equal(1280, untouched.RootElement.GetProperty("inbounds")[0].GetProperty("mtu").GetInt32());
+    }
+
     [Fact]
     public void NativeCnOnlyBuildUsesTunAndDirectFallback()
     {

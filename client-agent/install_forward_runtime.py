@@ -1172,7 +1172,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "control_socket": control_socket,
         "transport": transport,
         "max_tcp_connections": 512,
-        "udp_queue_packets": 64,
+        "udp_queue_packets": 256,
         "connect_timeout_seconds": 5,
         "location_cache_path": "/var/lib/ultra/location.json",
         "location_lock_path": "/run/ultra/location.lock",
@@ -1744,6 +1744,9 @@ WantedBy=multi-user.target
             "tcp_congestion_control": str(mptcp.get("tcp_congestion_control", "bbr") or "bbr"),
             "socket_buffer_bytes": int_or_default(mptcp.get("socket_buffer_bytes"), 8388608),
             "policy_mode": str(mptcp.get("policy_mode", "latency_first") or "latency_first"),
+            # Panel-supplied overlay MTU upper bound; the transit interfaces clamp it to the
+            # ultra runtime's measured payload ceiling before rendering MTU = <n>.
+            "mtu": int_or_default(mptcp.get("mtu"), 0),
             "initcwnd": int_or_default(mptcp.get("initcwnd"), 80),
             "initrwnd": int_or_default(mptcp.get("initrwnd"), 80),
             "add_addr_timeout": int_or_default(mptcp.get("add_addr_timeout"), 5),
@@ -1894,6 +1897,15 @@ WantedBy=multi-user.target
             f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || "
             f"echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2"
         )
+        # The overlay MTU follows the ultra runtime's measured payload ceiling, which rotates
+        # with the relay association. Keep a background re-apply loop running next to whichever
+        # forward runtime (Rust relay or Python client) owns this service, so a live ceiling
+        # change reaches the interface instead of waiting for the next restart.
+        if any(
+            isinstance(underlay, dict) and str(underlay.get("interface_name", "") or "").strip() != ""
+            for underlay in config_payload.get("underlays", [])
+        ):
+            lines.append(f"/usr/bin/python3 {helper_path} --config {config_path} --monitor-overlay-mtu &")
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
         lines.append(f'if [ -x "$RUST_RELAY" ] && "$RUST_RELAY" --help >/dev/null 2>&1; then')
         lines.append(f'    exec "$RUST_RELAY" client --config {config_path}')

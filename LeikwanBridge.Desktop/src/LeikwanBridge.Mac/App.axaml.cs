@@ -132,7 +132,9 @@ public sealed partial class App : Application
             rememberLoginInfo: config.RememberLoginInfo,
             savedClientId: config.ActiveClientId > 0 ? config.ActiveClientId : config.ClientId,
             savedAgentToken: config.AgentToken,
-            rememberLoginInfoChanged: value => config.RememberLoginInfo = value);
+            rememberLoginInfoChanged: value => config.RememberLoginInfo = value,
+            checkForUpdatesWithProgress: (progress, ct) => CheckForUpdatesAsync(ct, notifyWhenCurrent: true, progress),
+            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress));
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;
@@ -201,29 +203,44 @@ public sealed partial class App : Application
         _window.Activate();
     }
 
-    private async Task CheckForUpdatesAsync(CancellationToken ct, bool notifyWhenCurrent)
+    private MainWindowViewModel? UpdateViewModel
+        => _window?.DataContext as MainWindowViewModel;
+
+    private async Task CheckForUpdatesAsync(
+        CancellationToken ct,
+        bool notifyWhenCurrent,
+        IProgress<UpdateProgress>? progress = null)
     {
         if (_services is null)
             return;
         try
         {
+            // Prefer the live view-model selection so an endpoint change made
+            // moments ago applies even before the config write settles.
+            var panelUrl = string.IsNullOrWhiteSpace(UpdateViewModel?.PanelUrl)
+                ? _services.Config.MasterUrl
+                : UpdateViewModel!.PanelUrl;
             var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
             _availableUpdate = await _services.Updater.CheckAsync(
-                _services.Config.MasterUrl,
+                panelUrl,
                 currentVersion,
+                progress,
                 ct);
             if (_availableUpdate is null)
             {
                 if (notifyWhenCurrent)
                     _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                UpdateViewModel?.ReportUpdateFinished();
                 return;
             }
             _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
+            UpdateViewModel?.ReportUpdateFinished();
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Warning("update_check_failed");
+            Log.Warning(exception, "update_check_failed");
             _services.Controller.PublishNotice("The update check could not be completed.");
+            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
         }
     }
 
@@ -237,26 +254,29 @@ public sealed partial class App : Application
 
     private async Task InstallUpdateAsync(
         IClassicDesktopStyleApplicationLifetime desktop,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<UpdateProgress>? progress = null)
     {
         if (_services is null || _availableUpdate is null)
             return;
         try
         {
-            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, ct);
-            var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, ct);
+            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, progress, ct);
+            var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, progress, ct);
             if (result.RequiresManualInstall)
             {
                 _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                UpdateViewModel?.ReportUpdateFinished();
                 return;
             }
             if (result.Started)
                 await QuitAsync(desktop);
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Warning("update_install_failed");
+            Log.Warning(exception, "update_install_failed");
             _services.Controller.PublishNotice("The update could not be installed.");
+            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
         }
     }
 
@@ -277,6 +297,7 @@ public sealed partial class App : Application
             await _services.Controller.DisposeAsync();
             _services.Updater.Dispose();
         }
+        PanelDirectEgress.Shutdown();
         await Dispatcher.UIThread.InvokeAsync(() => desktop.Shutdown());
     }
 

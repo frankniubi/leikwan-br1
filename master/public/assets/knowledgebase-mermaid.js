@@ -8,7 +8,26 @@
       securityLevel: "strict",
       htmlLabels: false,
       theme: "base",
-      flowchart: { useMaxWidth: true }
+      fontFamily: "Inter, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      themeVariables: {
+        fontSize: "13px",
+        primaryColor: "#f6f9f7",
+        primaryBorderColor: "#c3d3c9",
+        primaryTextColor: "#15221c",
+        lineColor: "#8ba396",
+        secondaryColor: "#eaf3ee",
+        tertiaryColor: "#ffffff",
+        edgeLabelBackground: "#ffffff",
+        clusterBkg: "#f6f9f7",
+        clusterBorder: "#dfe7e1"
+      },
+      flowchart: {
+        useMaxWidth: false,
+        nodeSpacing: 28,
+        rankSpacing: 36,
+        padding: 8,
+        diagramPadding: 4
+      }
     });
 
     for (let index = 0; index < sources.length; index += 1) {

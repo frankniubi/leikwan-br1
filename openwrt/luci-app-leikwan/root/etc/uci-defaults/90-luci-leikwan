@@ -1,0 +1,21 @@
+#!/bin/sh
+# Defaults for luci-app-leikwan.
+#
+# Only creates the leikwan UCI section when it does not exist yet: the operator
+# settings (and everything leikwand itself maintains, such as device_id) are
+# never overwritten by a package upgrade. Secrets are not stored in UCI at all.
+
+if ! uci -q get leikwan.main >/dev/null 2>&1; then
+	uci -q batch <<-EOF
+		set leikwan.main=leikwan
+		set leikwan.main.enabled='1'
+		set leikwan.main.panel_url='https://v3.leikwanhost.com'
+		set leikwan.main.mode='forward'
+		commit leikwan
+	EOF
+fi
+
+rm -f /tmp/luci-indexcache
+rm -rf /tmp/luci-modulecache
+
+exit 0

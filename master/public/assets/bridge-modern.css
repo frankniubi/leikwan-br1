@@ -915,92 +915,12 @@ body.pg-app .pg-row-menu-panel button:hover {
   background: var(--bridge-modern-panel) !important;
 }
 
-/* Knowledgebase, whose legacy component rules are emitted inline. */
+/* The knowledge base owns its own typography, grid, and spacing in
+   /assets/knowledgebase-docs.css. Only the shared page rhythm stays here. */
 body.pg-app .kb-shell {
   display: flex;
   flex-direction: column;
-  gap: 24px;
-}
-
-body.pg-app .kb-hero,
-body.pg-app .kb-article,
-body.pg-app .kb-sidebar,
-body.pg-app .kb-thread-card {
-  border: 0 !important;
-  border-radius: var(--bridge-modern-radius) !important;
-  background: var(--bridge-modern-panel) !important;
-  box-shadow: none !important;
-}
-
-body.pg-app .kb-hero {
-  padding: 28px !important;
-}
-
-body.pg-app .kb-eyebrow {
-  display: inline-flex;
-  padding: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  color: var(--bridge-modern-coral) !important;
-  font-family: "Spline Sans Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 10px;
-}
-
-body.pg-app .kb-pill {
-  padding: 4px 9px !important;
-  border-radius: 999px !important;
-  background: rgba(76, 128, 107, 0.12) !important;
-  color: var(--bridge-modern-sage) !important;
-  font-size: 10px;
-}
-
-body.pg-app .kb-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
   gap: 28px;
-  align-items: start;
-}
-
-body.pg-app .kb-sidebar,
-body.pg-app .kb-article {
-  padding: 26px !important;
-}
-
-body.pg-app .kb-thread-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-body.pg-app .kb-thread-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px !important;
-  background: transparent !important;
-}
-
-body.pg-app .kb-thread-card:hover {
-  background: #ffffff !important;
-}
-
-body.pg-app .kb-thread-card.active {
-  border: 0 !important;
-  box-shadow: inset 3px 0 0 var(--bridge-modern-coral) !important;
-  background: #ffffff !important;
-  transform: none;
-}
-
-body.pg-app .kb-thread-card p,
-body.pg-app .kb-updated,
-body.pg-app .kb-article-meta {
-  color: var(--bridge-modern-muted) !important;
-}
-
-body.pg-app .kb-article h2,
-body.pg-app .kb-sidebar h3 {
-  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
 }
 
 body.pg-app pre,

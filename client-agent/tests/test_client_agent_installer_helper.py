@@ -41,7 +41,10 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn('"panel_mirror_urls": ["https://api-leikwanbridge.nbwly.com"]', source)
         self.assertIn('MASTER_URL="https://v3.leikwanhost.com"', source)
         self.assertIn('REQUESTED_MASTER_URL="$MASTER_URL"', source)
-        self.assertIn("WatchdogSec=90", source)
+        # A lease batch may legitimately spend up to 70 s on the runtime control
+        # socket, and the agent pings the watchdog from its own thread, so 180 s
+        # means "wedged", not "busy".
+        self.assertIn("WatchdogSec=180", source)
         self.assertIn("NotifyAccess=main", source)
 
     def test_installer_downloads_cfwg_latency_watchdog_module(self) -> None:
@@ -95,11 +98,18 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         )
         self.assertIn('mv "$TEMP_UPDATE_HELPER" /usr/local/bin/leikwan-client-agent-update', source)
 
-    def test_installer_does_not_install_retired_tcp_accel_or_mptcp_payloads(self) -> None:
+    def test_installer_ships_the_tcp_accel_helper_but_no_mptcp_payloads(self) -> None:
+        # Client-side split-TCP (install_forward_runtime.render_tcp_accel_client_unit)
+        # renders leikwan-client-<id>-tcp-accel units that exec this helper, so the
+        # client-agent role must install it from the manifest. The MPTCP client and
+        # relay payloads really are retired from this role.
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
-        self.assertNotIn("install-tcp-accel.sh\" client", source)
-        self.assertNotIn("tcp_accel_installer", source)
+        self.assertIn(
+            'download_manifest_artifact tcp_accel_installer "$DOWNLOAD_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"',
+            source,
+        )
+        self.assertIn('"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"', source)
         self.assertNotIn("mptcp_client_runtime", source)
         self.assertNotIn("mptcp-relay", source)
         self.assertIn('if [[ "$required" != "1" && "$AUTO_INSTALL_MPTCP_KERNEL" != "1" ]]; then', source)
@@ -191,18 +201,20 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
     def test_legacy_forward_installer_downloads_bond_runtimes_for_fresh_hosts(self) -> None:
         source = (REPO_ROOT / "install" / "install-client.sh").read_text(encoding="utf-8")
 
-        self.assertIn(
-            'download_verified_artifact leikwan_ingress_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-ingress_linux_amd64" "$BIN_DIR/leikwan-ingress"',
-            source,
-        )
-        self.assertIn(
-            'download_verified_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"',
-            source,
-        )
-        self.assertIn(
-            'download_verified_artifact wstunnel_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_DIR/wstunnel"',
-            source,
-        )
+        # The installer resolves every runtime key/path from an arch matrix so
+        # amd64 and arm64 hosts share one code path.
+        for key, path, binary in (
+            ("leikwan_ingress_linux_amd64", "artifacts/wstunnel/leikwan-ingress_linux_amd64", "leikwan-ingress"),
+            ("leikwan_bond_linux_amd64", "artifacts/wstunnel/leikwan-bond_linux_amd64", "leikwan-bond"),
+            ("wstunnel_linux_amd64", "artifacts/wstunnel/wstunnel_linux_amd64", "wstunnel"),
+        ):
+            with self.subTest(key=key):
+                self.assertIn('KEY="%s"' % key, source)
+                self.assertIn('PATH="%s"' % path, source)
+                self.assertIn('"$ARTIFACT_BASE/$%s_PATH" "$BIN_DIR/%s"' % (
+                    {"leikwan_ingress_linux_amd64": "INGRESS_RUNTIME",
+                     "leikwan_bond_linux_amd64": "BOND_RUNTIME",
+                     "wstunnel_linux_amd64": "WSTUNNEL_RUNTIME"}[key], binary), source)
 
     def test_update_helper_verifies_installer_against_manifest_before_execution(self) -> None:
         source = (REPO_ROOT / "install" / "client-agent-update.sh").read_text(encoding="utf-8")

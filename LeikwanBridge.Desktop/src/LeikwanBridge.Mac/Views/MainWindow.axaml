@@ -214,6 +214,10 @@
                           <Grid ColumnDefinitions="*,100,170,100,84" ColumnSpacing="14">
                             <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
                               <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                              <!-- Native outbound rules ship configuration only: no start/stop control. -->
+                              <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontWeight="SemiBold"
+                                         FontSize="11" Foreground="{DynamicResource AccentBrush}"
+                                         IsVisible="{Binding IsNativeOutboundRule}" />
                               <TextBlock Text="Local listener" Classes="muted" FontSize="11" />
                             </StackPanel>
                             <Border Grid.Column="1" Background="{DynamicResource QuietBrush}" CornerRadius="4"
@@ -648,17 +652,30 @@
         </Grid>
 
         <Border Grid.Row="1" Background="#EAF6F3" BorderBrush="#A9D8CE" BorderThickness="1,1,0,0"
-                Padding="20,12" IsVisible="{Binding IsUpdateVisible}">
+                Padding="20,12" IsVisible="{Binding IsUpdateBannerVisible}">
           <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
             <lucide:LucideIcon Kind="Download" Size="19" Foreground="{DynamicResource AccentBrush}" />
-            <StackPanel Grid.Column="1">
-              <TextBlock Text="Update available" FontWeight="SemiBold" />
-              <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" />
+            <StackPanel Grid.Column="1" Spacing="2">
+              <TextBlock Text="Update available" FontWeight="SemiBold" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Text="Update failed" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding ShowUpdateError}" />
+              <TextBlock Classes="muted" Text="{Binding UpdateErrorMessage}" TextWrapping="Wrap" IsVisible="{Binding ShowUpdateError}" />
+              <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsUpdateInProgress}">
+                <ProgressBar Minimum="0" Maximum="100" Value="{Binding UpdatePercent}" Width="160" />
+                <TextBlock Classes="muted" Text="{Binding UpdatePhaseText}" />
+              </StackPanel>
+              <TextBlock Classes="muted" Text="{Binding UpdateProgressMessage}" TextWrapping="Wrap" />
             </StackPanel>
-            <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}">
+            <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}" IsVisible="{Binding IsUpdateVisible}">
               <StackPanel Orientation="Horizontal" Spacing="7">
                 <lucide:LucideIcon Kind="Download" Size="16" />
                 <TextBlock Text="Install and restart" />
+              </StackPanel>
+            </Button>
+            <Button Grid.Column="2" Classes="primary" Command="{Binding RetryUpdateCommand}" IsVisible="{Binding ShowUpdateError}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+                <TextBlock Text="Retry" />
               </StackPanel>
             </Button>
             <Button Grid.Column="3" Classes="icon secondary" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">

@@ -11,30 +11,65 @@ final class UltraClientStatusService
     public const MAX_STATUSES = 32;
     public const MAX_STATUS_BYTES = 65536;
 
+    /**
+     * Comma-separated allow-list of known-good runtime build fingerprints.
+     * Empty (the default) means "no baseline": every attested session is
+     * reported as unknown and nothing is ever denied.
+     */
+    public const RUNTIME_FINGERPRINTS_KEY = 'ULTRA_RUNTIME_FINGERPRINTS';
+    /**
+     * A released runtime stamps itself "<version>.<shortsha>" at link time
+     * (e.g. 2026.09.12.1.4b106b02, see scripts/build-ultra-*.ps1); an older or
+     * third-party build may report a bare hex build id instead. Both shapes are
+     * accepted — anything else is dropped as unknown rather than persisted.
+     */
+    public const RUNTIME_FINGERPRINT_PATTERN = '/^(?:[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(?:\.[0-9a-f]{7,40})?|[a-f0-9]{8,64})$/';
+    public const RUNTIME_SELF_SHA256_PATTERN = '/^[a-f0-9]{64}$/';
+
+    public const ATTESTATION_STATE_KNOWN = 'known';
+    public const ATTESTATION_STATE_UNKNOWN = 'unknown';
+    public const ATTESTATION_STATE_MISMATCH = 'mismatch';
+
+    public const MAX_MISMATCH_ROWS = 200;
+
     /** @param callable():int|null $clock */
     public function __construct(
         private Config $config,
         private Database $db,
         private $clock = null,
         ?UltraCandidateReputationService $candidateReputation = null,
+        ?UltraCandidateReviewService $candidateReviews = null,
     ) {
         $this->clock ??= static fn(): int => time();
         $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
+        $this->candidateReviews = $candidateReviews ?? new UltraCandidateReviewService($db, $this->clock);
     }
 
     private UltraCandidateReputationService $candidateReputation;
 
-    /** @param array<int, mixed> $statuses */
-    public function ingest(int $clientId, string $deviceId, array $statuses): int
+    private UltraCandidateReviewService $candidateReviews;
+
+    /** @var list<string>|null */
+    private ?array $runtimeFingerprints = null;
+
+    /**
+     * @param array<int, mixed> $statuses
+     * @param mixed $runtimeAttestation Optional session-level attestation for
+     *        callers that already split it out of the status payload. An
+     *        attestation carried inside a status entry is picked up as well.
+     */
+    public function ingest(int $clientId, string $deviceId, array $statuses, mixed $runtimeAttestation = null): int
     {
         $deviceId = trim($deviceId);
         if ($clientId <= 0 || $deviceId === '' || strlen($deviceId) > 191) {
             return 0;
         }
+        $entries = array_slice(array_values($statuses), 0, self::MAX_STATUSES);
+        $attestation = $this->extractRuntimeAttestation($runtimeAttestation, $entries);
         $assignments = $this->assignmentsForClients([$clientId]);
         $allowed = $assignments[$clientId] ?? [];
         $normalized = [];
-        foreach (array_slice(array_values($statuses), 0, self::MAX_STATUSES) as $status) {
+        foreach ($entries as $status) {
             if (!is_array($status)) {
                 continue;
             }
@@ -52,20 +87,35 @@ final class UltraClientStatusService
             return 0;
         }
         $now = gmdate('Y-m-d H:i:s', $this->now());
-        $updated = $this->db->execute(
-            'UPDATE client_device_sessions
+        $params = [
+            'client_id' => $clientId,
+            'device_id' => $deviceId,
+            'ultra_status_json' => $encoded,
+            'ultra_status_updated_at' => $now,
+            'updated_at' => $now,
+        ];
+        $sql = 'UPDATE client_device_sessions
              SET ultra_status_json = :ultra_status_json,
                  ultra_status_updated_at = :ultra_status_updated_at,
-                 updated_at = :updated_at
-             WHERE client_id = :client_id AND device_id = :device_id',
-            [
-                'client_id' => $clientId,
-                'device_id' => $deviceId,
-                'ultra_status_json' => $encoded,
-                'ultra_status_updated_at' => $now,
-                'updated_at' => $now,
-            ]
-        );
+                 updated_at = :updated_at';
+        if ($attestation !== null) {
+            // Only a payload that actually carries an attestation writes these
+            // columns, so an older client never erases the last known values.
+            $sql .= ',
+                 ultra_runtime_fingerprint = :ultra_runtime_fingerprint,
+                 ultra_runtime_self_sha256 = :ultra_runtime_self_sha256,
+                 ultra_runtime_debugger = :ultra_runtime_debugger,
+                 ultra_runtime_instrumented = :ultra_runtime_instrumented,
+                 ultra_runtime_attested_at = :ultra_runtime_attested_at';
+            $params['ultra_runtime_fingerprint'] = $attestation['fingerprint'];
+            $params['ultra_runtime_self_sha256'] = $attestation['self_sha256'];
+            $params['ultra_runtime_debugger'] = $attestation['debugger'] === null ? null : ($attestation['debugger'] ? 1 : 0);
+            $params['ultra_runtime_instrumented'] = $attestation['instrumented'] === null ? null : ($attestation['instrumented'] ? 1 : 0);
+            $params['ultra_runtime_attested_at'] = $now;
+        }
+        $sql .= '
+             WHERE client_id = :client_id AND device_id = :device_id';
+        $updated = $this->db->execute($sql, $params);
         return $updated > 0 ? count($normalized) : 0;
     }
 
@@ -85,8 +135,12 @@ final class UltraClientStatusService
         $assignments = $this->assignmentsForClients([$clientId]);
         $allowed = $assignments[$clientId] ?? [];
         $observerHash = hash('sha256', $clientId . ':' . $deviceId);
+        // Keep the observer hash resolvable to a client device: the review flow
+        // has to name the device whose failure reports it disproved.
+        $this->candidateReviews->rememberObserver($clientId, $deviceId, $observerHash);
         $accepted = 0;
         $seen = [];
+        $transport = [];
         foreach (array_slice(array_values($feedback), 0, UltraCandidateReputationService::MAX_FEEDBACK) as $item) {
             if (!is_array($item)) {
                 continue;
@@ -127,6 +181,13 @@ final class UltraClientStatusService
             if (!in_array($outcome, ['failure', 'success'], true) || $reason === 'process_stderr') {
                 continue;
             }
+            if ($outcome === 'failure' && UltraCandidateReputationService::isTransportReason($reason)) {
+                // A candidate that was never armed is not evidence about the
+                // line, and the runtime emits one of these every few seconds
+                // per forward. Count it for the log, keep it out of reputation.
+                $transport[$reason] = (int) ($transport[$reason] ?? 0) + 1;
+                continue;
+            }
             if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))
                 || ($outcome === 'success' && $reason !== 'canary_probe_ok')) {
                 continue;
@@ -142,6 +203,16 @@ final class UltraClientStatusService
                 $seen[$forwardId . ':' . $candidateHash] = true;
                 $accepted++;
             }
+        }
+        if ($transport !== []) {
+            $parts = [];
+            foreach ($transport as $reason => $count) {
+                $parts[] = $reason . '=' . $count;
+            }
+            error_log(
+                'ultra_candidate_transport_feedback client=' . $clientId
+                . ' device=' . substr($deviceId, 0, 24) . ' ' . implode(' ', $parts)
+            );
         }
         return $accepted;
     }
@@ -191,6 +262,204 @@ final class UltraClientStatusService
         }
     }
 
+    /**
+     * Normalize the client runtime attestation object.
+     *
+     * Report-only contract: a missing object, a missing field, or a field that
+     * fails validation is preserved as NULL ("unknown"). Nothing here can fail
+     * an ingest and an older client that never sends the object keeps working.
+     * A malformed fingerprint/self_sha256 is never persisted.
+     *
+     * @return array{fingerprint:?string,self_sha256:?string,debugger:?bool,instrumented:?bool}|null
+     *         null when the payload carries no usable attestation at all.
+     */
+    public static function normalizeRuntimeAttestation(mixed $raw): ?array
+    {
+        if (!is_array($raw)) {
+            return null;
+        }
+        $fingerprint = self::runtimeFingerprintOrNull($raw['fingerprint'] ?? null);
+        $selfSha256 = self::runtimeSha256OrNull($raw['self_sha256'] ?? null);
+        $debugger = self::coerceAttestationFlag($raw['debugger'] ?? null);
+        $instrumented = self::coerceAttestationFlag($raw['instrumented'] ?? null);
+        if ($fingerprint === null && $selfSha256 === null && $debugger === null && $instrumented === null) {
+            return null;
+        }
+        return [
+            'fingerprint' => $fingerprint,
+            'self_sha256' => $selfSha256,
+            'debugger' => $debugger,
+            'instrumented' => $instrumented,
+        ];
+    }
+
+    /** Hex build id injected at build time; validated, never echoed back raw. */
+    public static function runtimeFingerprintOrNull(mixed $value): ?string
+    {
+        if (!is_string($value) && !is_int($value)) {
+            return null;
+        }
+        $fingerprint = strtolower(trim((string) $value));
+        return preg_match(self::RUNTIME_FINGERPRINT_PATTERN, $fingerprint) === 1 ? $fingerprint : null;
+    }
+
+    public static function runtimeSha256OrNull(mixed $value): ?string
+    {
+        if (!is_string($value) && !is_int($value)) {
+            return null;
+        }
+        $hash = strtolower(trim((string) $value));
+        return preg_match(self::RUNTIME_SELF_SHA256_PATTERN, $hash) === 1 ? $hash : null;
+    }
+
+    public static function coerceAttestationFlag(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            $number = (int) $value;
+            if ($number === 1) {
+                return true;
+            }
+            return $number === 0 ? false : null;
+        }
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+            if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+                return true;
+            }
+            if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+                return false;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Pull the attestation out of an explicit argument or, when the caller
+     * passes the raw status payload, out of the first status entry carrying one.
+     *
+     * @param array<int, mixed> $entries
+     * @return array{fingerprint:?string,self_sha256:?string,debugger:?bool,instrumented:?bool}|null
+     */
+    private function extractRuntimeAttestation(mixed $explicit, array $entries): ?array
+    {
+        $normalized = self::normalizeRuntimeAttestation($explicit);
+        if ($normalized !== null) {
+            return $normalized;
+        }
+        foreach ($entries as $entry) {
+            if (!is_array($entry) || !array_key_exists('runtime_attestation', $entry)) {
+                continue;
+            }
+            $normalized = self::normalizeRuntimeAttestation($entry['runtime_attestation']);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+        return null;
+    }
+
+    /** @return list<string> */
+    public function runtimeFingerprintAllowlist(): array
+    {
+        if ($this->runtimeFingerprints !== null) {
+            return $this->runtimeFingerprints;
+        }
+        $configured = (string) ($this->config->get(self::RUNTIME_FINGERPRINTS_KEY, '') ?? '');
+        $list = [];
+        foreach (explode(',', $configured) as $entry) {
+            $fingerprint = self::runtimeFingerprintOrNull(trim($entry));
+            if ($fingerprint !== null) {
+                $list[$fingerprint] = true;
+            }
+        }
+        return $this->runtimeFingerprints = array_keys($list);
+    }
+
+    public function isRuntimeFingerprintAllowlisted(mixed $fingerprint): bool
+    {
+        $fingerprint = self::runtimeFingerprintOrNull($fingerprint);
+        return $fingerprint !== null && in_array($fingerprint, $this->runtimeFingerprintAllowlist(), true);
+    }
+
+    /**
+     * known    -> attested fingerprint is in the operator allow-list
+     * mismatch -> attested fingerprint is not in a non-empty allow-list
+     * unknown  -> no attestation, unusable attestation, or no allow-list yet
+     */
+    public function attestationState(mixed $fingerprint): string
+    {
+        $fingerprint = self::runtimeFingerprintOrNull($fingerprint);
+        if ($fingerprint === null) {
+            return self::ATTESTATION_STATE_UNKNOWN;
+        }
+        $allowlist = $this->runtimeFingerprintAllowlist();
+        if ($allowlist === []) {
+            // Empty default: report every attested session as unknown, never as
+            // a mismatch and never as a refusal, because no baseline exists.
+            return self::ATTESTATION_STATE_UNKNOWN;
+        }
+        return in_array($fingerprint, $allowlist, true)
+            ? self::ATTESTATION_STATE_KNOWN
+            : self::ATTESTATION_STATE_MISMATCH;
+    }
+
+    /**
+     * Report-only admin list of sessions whose attested runtime fingerprint is
+     * not a known-good build. Nothing in this path changes or denies a lease.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function runtimeAttestationMismatches(int $limit = 100): array
+    {
+        $limit = max(1, min(self::MAX_MISMATCH_ROWS, $limit));
+        $allowlist = $this->runtimeFingerprintAllowlist();
+        $rows = $this->db->fetchAll(
+            'SELECT cds.client_id, cds.device_id, cds.device_name, cds.platform, cds.last_ip, cds.last_seen_at,
+                    cds.ultra_runtime_fingerprint, cds.ultra_runtime_self_sha256,
+                    cds.ultra_runtime_debugger, cds.ultra_runtime_instrumented, cds.ultra_runtime_attested_at,
+                    c.name AS client_name, u.name AS user_name, u.email AS user_email
+             FROM client_device_sessions cds
+             INNER JOIN clients c ON c.id = cds.client_id
+             LEFT JOIN users u ON u.id = c.owner_user_id
+             WHERE cds.ultra_runtime_fingerprint IS NOT NULL
+               AND cds.last_seen_at >= :since
+             ORDER BY cds.last_seen_at DESC, cds.id DESC
+             LIMIT 200',
+            ['since' => gmdate('Y-m-d H:i:s', $this->now() - 86400)]
+        );
+        $result = [];
+        foreach ($rows as $row) {
+            $fingerprint = self::runtimeFingerprintOrNull($row['ultra_runtime_fingerprint'] ?? null);
+            if ($fingerprint === null || in_array($fingerprint, $allowlist, true)) {
+                continue;
+            }
+            $result[] = [
+                'client_id' => (int) ($row['client_id'] ?? 0),
+                'client_name' => self::text($row['client_name'] ?? '', 191),
+                'user_name' => self::text($row['user_name'] ?? '', 191),
+                'user_email' => self::text($row['user_email'] ?? '', 191),
+                'device_id' => self::text($row['device_id'] ?? '', 191),
+                'device_name' => self::text($row['device_name'] ?? '', 191),
+                'platform' => self::text($row['platform'] ?? '', 64),
+                'client_ip' => self::ip($row['last_ip'] ?? ''),
+                'runtime_fingerprint' => $fingerprint,
+                'runtime_self_sha256' => (string) (self::runtimeSha256OrNull($row['ultra_runtime_self_sha256'] ?? null) ?? ''),
+                'runtime_debugger' => self::coerceAttestationFlag($row['ultra_runtime_debugger'] ?? null),
+                'runtime_instrumented' => self::coerceAttestationFlag($row['ultra_runtime_instrumented'] ?? null),
+                'runtime_attested_at' => self::text($row['ultra_runtime_attested_at'] ?? '', 40),
+                'last_seen_at' => self::text($row['last_seen_at'] ?? '', 40),
+                'attestation_state' => $this->attestationState($fingerprint),
+                'reason' => $allowlist === []
+                    ? 'no_allowlist_configured'
+                    : 'fingerprint_not_allowlisted',
+            ];
+        }
+        return array_slice($result, 0, $limit);
+    }
+
     /** @return array<int, array<string, mixed>> */
     public function sessionsForAdmin(array $filters, int $limit, int $offset): array
     {
@@ -200,6 +469,8 @@ final class UltraClientStatusService
         $sessions = $this->db->fetchAll(
             'SELECT cds.client_id, cds.device_id, cds.device_name, cds.platform, cds.last_ip,
                     cds.last_seen_at, cds.last_heartbeat_at, cds.ultra_status_json, cds.ultra_status_updated_at,
+                    cds.ultra_runtime_fingerprint, cds.ultra_runtime_self_sha256,
+                    cds.ultra_runtime_debugger, cds.ultra_runtime_instrumented, cds.ultra_runtime_attested_at,
                     c.name AS client_name, c.group_id, u.name AS user_name, u.email AS user_email
              FROM client_device_sessions cds
              INNER JOIN clients c ON c.id = cds.client_id
@@ -225,7 +496,7 @@ final class UltraClientStatusService
         $rows = [];
         foreach ($sessions as $session) {
             $clientId = (int) ($session['client_id'] ?? 0);
-            $lastSeen = strtotime((string) ($session['last_seen_at'] ?? '')) ?: 0;
+            $lastSeen = self::utcTimestamp($session['last_seen_at'] ?? null);
             $state = $this->sessionState($lastSeen);
             if ($stateFilter !== '' && $stateFilter !== strtolower($state)) {
                 continue;
@@ -241,6 +512,8 @@ final class UltraClientStatusService
             if ($search !== '' && !str_contains($haystack, $search)) {
                 continue;
             }
+            $sessionFingerprint = self::runtimeFingerprintOrNull($session['ultra_runtime_fingerprint'] ?? null);
+            $sessionSelfSha256 = self::runtimeSha256OrNull($session['ultra_runtime_self_sha256'] ?? null);
             $decoded = is_string($session['ultra_status_json'] ?? null)
                 ? json_decode((string) $session['ultra_status_json'], true)
                 : [];
@@ -289,28 +562,49 @@ final class UltraClientStatusService
                     'last_seen_at' => (string) ($session['last_seen_at'] ?? ''),
                     'status_updated_at' => (string) ($session['ultra_status_updated_at'] ?? ''),
                     'error_code' => self::text($status['error_code'] ?? '', 64),
+                    // Runtime attestation is session scoped and report-only; the
+                    // stored values are re-validated so a legacy row can never
+                    // fabricate a "known" state.
+                    'runtime_fingerprint' => (string) ($sessionFingerprint ?? ''),
+                    'runtime_self_sha256' => (string) ($sessionSelfSha256 ?? ''),
+                    'runtime_debugger' => self::coerceAttestationFlag($session['ultra_runtime_debugger'] ?? null),
+                    'runtime_instrumented' => self::coerceAttestationFlag($session['ultra_runtime_instrumented'] ?? null),
+                    'runtime_attested_at' => self::text($session['ultra_runtime_attested_at'] ?? '', 40),
+                    'attestation_state' => $this->attestationState($sessionFingerprint),
+                    'attestation_allowlisted' => $this->isRuntimeFingerprintAllowlisted($sessionFingerprint),
                 ];
             }
         }
         return array_slice($rows, $offset, $limit);
     }
 
-    /** @return array{online:int,stale:int,offline:int} */
+    /**
+     * @return array{online:int,stale:int,offline:int,attestation_known:int,attestation_unknown:int,attestation_mismatch:int}
+     */
     public function statusCounts(): array
     {
         $now = $this->now();
         $rows = $this->db->fetchAll(
-            'SELECT last_seen_at FROM client_device_sessions
+            'SELECT last_seen_at, ultra_runtime_fingerprint FROM client_device_sessions
              WHERE last_seen_at >= :since AND ultra_status_json IS NOT NULL
              ORDER BY last_seen_at DESC LIMIT 1000',
             ['since' => gmdate('Y-m-d H:i:s', $now - 86400)]
         );
-        $counts = ['online' => 0, 'stale' => 0, 'offline' => 0];
+        $counts = [
+            'online' => 0,
+            'stale' => 0,
+            'offline' => 0,
+            'attestation_known' => 0,
+            'attestation_unknown' => 0,
+            'attestation_mismatch' => 0,
+        ];
         foreach ($rows as $row) {
-            $state = strtolower($this->sessionState(strtotime((string) ($row['last_seen_at'] ?? '')) ?: 0));
+            $state = strtolower($this->sessionState(self::utcTimestamp($row['last_seen_at'] ?? null)));
             if (isset($counts[$state])) {
                 $counts[$state]++;
             }
+            // Absent or unusable attestation counts as unknown, never as a failure.
+            $counts['attestation_' . $this->attestationState($row['ultra_runtime_fingerprint'] ?? null)]++;
         }
         return $counts;
     }
@@ -411,6 +705,25 @@ final class UltraClientStatusService
     {
         $reference = trim((string) $value);
         return preg_match('/^[A-Za-z0-9_-]{16,128}$/', $reference) === 1 ? $reference : '';
+    }
+
+    /**
+     * Panel timestamps are written in UTC (gmdate), so they must be parsed as UTC.
+     * strtotime() would read them in date.timezone instead, which on a panel with
+     * a non-UTC timezone (the production boxes run PRC) shifts every session by
+     * the UTC offset and reports healthy sessions as stale hours early.
+     */
+    private static function utcTimestamp(mixed $value): int
+    {
+        $text = trim((string) $value);
+        if ($text === '') {
+            return 0;
+        }
+        try {
+            return (new \DateTimeImmutable($text, new \DateTimeZone('UTC')))->getTimestamp();
+        } catch (\Throwable) {
+            return 0;
+        }
     }
 
     private function sessionState(int $lastSeen): string

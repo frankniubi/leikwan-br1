@@ -70,6 +70,15 @@ class UltraArtifactHardeningTests(unittest.TestCase):
         for marker in ["v0.17.0", "-literals", "-tiny", "-buildmode=pie", "-trimpath", "-buildvcs=false", "-s -w -buildid="]:
             self.assertIn(marker, build_script)
 
+        # A supplied -ShortSha must survive: reading $LASTEXITCODE before git ran
+        # replaced it with "unknown" (a fresh session reports $null, which is
+        # -ne 0), so the stamped fingerprint never matched the release manifest
+        # and the panel could not recognise a released runtime.
+        for script_name in ("build-ultra-linux.ps1", "build-ultra-windows.ps1", "build-ultra-android.ps1"):
+            script = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+            self.assertIn('if ($LASTEXITCODE -ne 0) { $shortSha = "" }', script, script_name)
+            self.assertNotIn('if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shortSha))', script, script_name)
+
 
 if __name__ == "__main__":
     unittest.main()

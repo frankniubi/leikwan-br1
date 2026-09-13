@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Core.Services.Platform;
 using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
@@ -21,10 +22,25 @@ public static class MacAppBootstrap
     {
         ConfigureLogging(paths);
         Log.Information("mac_bootstrap_begin");
-        var secrets = new MacKeychainSecretStore(
-            new MacKeychainNative(),
-            paths.Root.TrimEnd('/', '\\') + "/fallback-secrets.json");
-        secrets.WarningRaised += code => Log.Warning("{WarningCode}", code);
+        // Panel/update traffic must egress through the physical interface
+        // (e.g. en0, discovered dynamically) even when a utun TUN is up.
+        PanelDirectEgress.Initialize();
+        var secretsPath = MacSecretStoreSelection.SecretsFilePath(paths);
+        MacSecretStoreSelection.MergeLegacyFallbackFile(secretsPath);
+        ISecretStore secrets;
+        if (MacSecretStoreSelection.PreferKeychain(paths.ConfigPath))
+        {
+            var keychain = new MacKeychainSecretStore(new MacKeychainNative(), secretsPath);
+            keychain.WarningRaised += code => Log.Warning("{WarningCode}", code);
+            secrets = keychain;
+        }
+        else
+        {
+            var file = new MacFileSecretStore(secretsPath, new MacKeychainNative());
+            file.WarningRaised += code => Log.Warning("{WarningCode}", code);
+            await file.MigrateLegacyAsync(ct).ConfigureAwait(false);
+            secrets = file;
+        }
         var configStore = new MacAgentConfigStore(paths, secrets);
         Log.Information("mac_bootstrap_config_load_begin");
         var config = await configStore.LoadAsync(ct).ConfigureAwait(false);
@@ -135,7 +151,10 @@ public static class MacAppBootstrap
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5 * 1024 * 1024,
                 rollOnFileSizeLimit: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}")
+                // {Exception} matters here: a caught update/lease failure is useless
+                // to diagnose without the exception text (it is the only place the
+                // macOS client records why an operation failed).
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
     }
 }

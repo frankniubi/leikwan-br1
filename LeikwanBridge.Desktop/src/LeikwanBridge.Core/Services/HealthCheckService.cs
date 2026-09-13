@@ -26,6 +26,7 @@ public sealed class HealthCheckService : IDisposable
     private readonly Dictionary<int, DateTime> _restartCooldown = [];
     private readonly Dictionary<int, ForwardConfig> _forwards = [];
     private readonly HashSet<int> _restartInProgress = [];
+    private readonly HashSet<int> _nativeOutboundNoticed = [];
 
     private CancellationTokenSource? _cts;
     private Task? _checkTask;
@@ -129,6 +130,18 @@ public sealed class HealthCheckService : IDisposable
         {
             if (forward.ServiceStatus != "active") continue;
             var fid = forward.ForwardId;
+
+            // A native outbound rule is panel-declared configuration only: its data
+            // plane belongs to a user-initiated native outbound relay connection.
+            // There is no agent-managed process to probe, restart, or record, so
+            // skip before touching supervisor or applied state. This keeps the
+            // periodic cycle both silent and side-effect free.
+            if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
+            {
+                NoteNativeOutboundRule(fid);
+                continue;
+            }
+
             if (_runtimeManager.IsForwardStarting(fid)) continue;
             var applied = _stateManager.LoadApplied();
             if (applied.TryGetValue(fid.ToString(), out var appliedState) && appliedState.UserStopped)
@@ -377,6 +390,23 @@ public sealed class HealthCheckService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Records the native outbound rule once per process so the skip is auditable
+    /// without repeating on every health cycle.
+    /// </summary>
+    private void NoteNativeOutboundRule(int forwardId)
+    {
+        lock (_nativeOutboundNoticed)
+        {
+            if (!_nativeOutboundNoticed.Add(forwardId))
+                return;
+        }
+
+        Log.Information(
+            "native outbound rule forward {ForwardId}: agent-managed runtime not applicable",
+            forwardId);
+    }
+
     private bool ShouldRestart(int forwardId)
     {
         if (!_restartCooldown.TryGetValue(forwardId, out var lastRestart))
@@ -426,10 +456,10 @@ public sealed class HealthCheckService : IDisposable
     {
         try
         {
-            using var http = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(2),
-            };
+            // Data-plane relay probe: keep OS default routing (so it still
+            // works through a TUN) but never route through an HTTP proxy.
+            using var http = LeikwanHttpClientFactory.CreatePlain();
+            http.Timeout = TimeSpan.FromSeconds(2);
             using var response = http.GetAsync($"http://{host}:{relayPort + 1}/health").GetAwaiter().GetResult();
             return response.IsSuccessStatusCode;
         }
@@ -464,6 +494,10 @@ public sealed class HealthCheckService : IDisposable
             return;
 
         if (!_forwards.TryGetValue(forwardId, out var forward))
+            return;
+
+        // Native outbound rules never own agent-managed processes.
+        if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
             return;
 
         var applied = _stateManager.LoadApplied();

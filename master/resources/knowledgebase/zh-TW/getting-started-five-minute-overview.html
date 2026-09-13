@@ -1,50 +1,46 @@
 <h2>你將完成什麼</h2>
-<p>你會從有效方案開始，完成一條轉發，安裝用戶端，並用真實應用程式確認首次連線。重點不只是把設定儲存起來，而是透過系統分配的本機連接埠送出要求，收到預期回應。</p>
+<p>你會從「方案已生效」走到「線路可用」：在面板建立一條轉發、裝上用戶端、連線，然後看到線路在運作。大約五分鐘，而且你不需要選擇任何連線類型 —— 所有線路都用 ultra，它做的就是在你打遊戲時把線路保持穩定。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>確認方案或服務標示為<strong>有效</strong>。</li>
-  <li>準備目標位址、目標連接埠，以及應用程式使用 TCP、UDP 或兩者的資訊。</li>
-  <li>準備一台支援的 Windows、Android 或 Linux 裝置安裝用戶端。</li>
-  <li>不要分享密碼、權杖、複製的安裝指令、私密金鑰或線路資料。</li>
+  <li>一個有效方案，面板才會允許你建立轉發。</li>
+  <li>想加速的遊戲或程式，以及它連線的位址（遊戲裡的伺服器清單通常看得到）。</li>
+  <li>執行用戶端的裝置：Windows、Android 或 Linux 都可以，手機和電腦一樣能用。</li>
+  <li>你的面板帳號，以及大約五分鐘。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 五分鐘首次連線流程
-accDescr: 從有效方案開始，建立一條轉發，安裝並登入用戶端，測試分配的本機連接埠，再依連線是否成功完成設定或開始排查問題。
-A[有效方案] --&gt; B[建立一條轉發]
-B --&gt; C[安裝並登入用戶端]
-C --&gt; D[測試分配的本機連接埠]
-D --&gt; E{連線成功嗎}
-E -- 是 --&gt; F[首次設定完成]
-E -- 否 --&gt; G[開始排查問題]</pre>
-<p>最短且安全的流程只有一個判斷點：應用程式要求成功，就代表首次設定完成；若失敗，保留已儲存的轉發，從看得見的症狀開始排查。</p>
+accTitle: 從方案到可用線路
+accDescr: 先建立一條轉發，裝上用戶端並連線，再把遊戲指向本機連接埠。
+A[打開面板] --&gt; B[建立一條轉發]
+B --&gt; C[安裝應用程式]
+C --&gt; D[登入並連線]
+D --&gt; E[把遊戲指向本機連接埠]
+E --&gt; F[開始遊戲]</pre>
+<p>五步，下面每步都只有幾行說明。這裡沒有任何需要你判斷的技術選項。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租戶概覽頁顯示三步設定流程和 Create a forward 操作">
-  <figcaption>示範截圖：方案、數量和 ID 都是示範值，請以自己的面板為準。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="面板首頁，顯示有效方案與轉發清單">
+  <figcaption>起點就在這裡：方案和轉發清單都在面板首頁。</figcaption>
 </figure>
 <ol>
-  <li>在租戶面板開啟有效服務。</li>
-  <li>選擇<strong>建立轉發</strong>。</li>
-  <li>選擇面板提供的線路方案，填入目標位址和連接埠。</li>
-  <li>儲存轉發，記下系統分配的本機連接埠。</li>
-  <li>安裝用戶端並登入。</li>
-  <li>等待面板出現最近同步。</li>
-  <li>讓應用程式連到本機監聽位址與連接埠。</li>
-  <li>使用實際應用協定測試，例如 HTTP 要求、SSH 連線或遊戲連線。</li>
+  <li><strong>打開面板，確認方案有效。</strong>如果顯示已過期或未付款，轉發表單會一直是鎖住的。</li>
+  <li><strong>建立一條轉發。</strong>選擇離遊戲伺服器最近的線路，填入遊戲連線的位址和連接埠，本機連接埠用預設值即可，然後儲存。把這個本機連接埠記下來 —— 第 5 步要用。</li>
+  <li><strong>安裝應用程式</strong>到你玩遊戲的裝置上：Windows 和 Android 在「用戶端」頁面下載，Linux 用那一條安裝指令。用面板帳號登入。</li>
+  <li><strong>連線。</strong>應用程式裡會列出你剛建立的轉發，點連線，等到顯示 running。</li>
+  <li><strong>把遊戲指向用戶端。</strong>遊戲裡凡是要填伺服器位址的地方，填 <code>127.0.0.1</code> 和第 2 步記下的本機連接埠，然後啟動遊戲。</li>
+  <li><strong>開始遊戲，之後再回面板看一眼。</strong>你玩的時候，那條轉發會顯示有流量。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>佈建完成後，面板會顯示有效端點，用戶端有最近同步，轉發則顯示 <strong>Connected</strong> 或 <strong>Running</strong>。這些是不同階段的狀態；完整證明仍是應用程式要求成功並取得預期結果。若你管理目標服務，也應能在記錄中看到要求抵達。</p>
+<p>按順序看三個地方：應用程式裡線路顯示為 running；你遊戲時面板上那條轉發有流量數字；遊戲本身穩定，不會在一局中途突然卡頓。如果遊戲能進但流量一直是 0，幾乎都是本機連接埠填錯了 —— 回到第 5 步檢查。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止隨意調整線路細節。</strong>保留第一條轉發，記下確切錯誤和時間，再開啟排查指南。設定已儲存、佈建完成、最近同步、程序執行中，以及應用程式成功，是五個不同的檢查點。</p>
+<p><strong>請先停止</strong>反覆提交表單，先確認方案狀態 —— 面板不讓你儲存轉發，最常見的原因就是方案過期。第二常見的是目標填錯：要填遊戲真正連線的位址，不是你下載遊戲的網站位址。第三是本機連接埠：遊戲必須使用面板分配的那個連接埠。其他情況（應用程式連不上、線路老是掉、遊戲進不去伺服器）都寫在下面的排查指南裡。</p>
 
 <h2>相關指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a></li>
   <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">連線與驗證</a></li>
 </ul>

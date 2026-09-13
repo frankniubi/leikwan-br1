@@ -2,8 +2,10 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services.Ultra;
+using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
@@ -25,16 +27,30 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private readonly string _tunStack;
     private readonly string _chinaIpListPath;
     private readonly INativeOutboundRelayHost _nativeRelayHost;
+    private readonly IWindowsTunMtuReader _tunMtuReader;
+    private readonly TimeSpan _mtuApplyMinInterval;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<WindowsProxyProfile> _profiles = [];
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
     private int _activeProfileId;
     private NativeOutboundLease? _activeNativeLease;
     private List<NativeOutboundLease> _activeNativeLeases = [];
+    private int _measuredPayloadCeiling;
+    private int _appliedTunMtu;
+    private int _pendingTunMtu;
+    private bool _mtuUpdatePending;
+    // The exact JSON the live process was started from, kept only for TUN mode.
+    // sing-box 1.13 cannot reload inbounds, so a live MTU change has to re-issue
+    // the same config; rebuilding it would re-allocate the native relay port.
+    private string _activeConfigJson = string.Empty;
+    private DateTimeOffset? _lastMtuApplyAttemptAt;
     private bool _stopCompleted;
     private bool _disposed;
 
     public const string NativeOutboundDisplayName = "原生出口";
+
+    /// <summary>Minimum spacing between two live-MTU apply attempts.</summary>
+    public static readonly TimeSpan MtuApplyDefaultInterval = TimeSpan.FromSeconds(60);
 
     public WindowsProxyConnectionService(
         WindowsProxyProfileStore store,
@@ -47,7 +63,9 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         int tunMtu = WindowsProxyConfigBuilder.DefaultTunMtu,
         string tunStack = "gvisor",
         string? chinaIpListPath = null,
-        INativeOutboundRelayHost? nativeRelayHost = null)
+        INativeOutboundRelayHost? nativeRelayHost = null,
+        IWindowsTunMtuReader? tunMtuReader = null,
+        TimeSpan? mtuApplyMinInterval = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _singBoxPath = singBoxPath ?? string.Empty;
@@ -64,9 +82,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         tunStack = WindowsProxyConfigBuilder.NormalizeTunStack(tunStack);
         _proxyPort = proxyPort;
         _tunMtu = tunMtu;
+        _appliedTunMtu = tunMtu;
+        _pendingTunMtu = tunMtu;
         _tunStack = tunStack;
         _chinaIpListPath = chinaIpListPath ?? string.Empty;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
+        _tunMtuReader = tunMtuReader ?? new WindowsTunMtuReader();
+        _mtuApplyMinInterval = mtuApplyMinInterval ?? MtuApplyDefaultInterval;
+        if (_mtuApplyMinInterval < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(mtuApplyMinInterval));
     }
 
     public event Action<WindowsProxySnapshot>? SnapshotChanged;
@@ -81,6 +105,32 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     }
 
     public WindowsProxySnapshot Snapshot => _snapshot;
+
+    /// <summary>
+    /// Payload ceiling the Ultra runtime measured for the active forward
+    /// (0 = nothing measured yet, so the configured MTU stands).
+    /// </summary>
+    public int MeasuredPayloadCeiling => _measuredPayloadCeiling;
+
+    /// <summary>TUN MTU of the running configuration.</summary>
+    public int AppliedTunMtu => _appliedTunMtu;
+
+    /// <summary>TUN MTU the last observed ceiling resolves to.</summary>
+    public int PendingTunMtu => _pendingTunMtu;
+
+    /// <summary>
+    /// True while a live TUN still runs with an MTU the runtime has since
+    /// out-measured. A TUN MTU is fixed when the interface is created, so the
+    /// value is applied by <see cref="ApplyPendingTunMtuAsync"/> (or by the next
+    /// start) and surfaced here until then.
+    /// </summary>
+    public bool MtuUpdatePending => _mtuUpdatePending;
+
+    /// <summary>Spacing this instance enforces between two live-MTU applies.</summary>
+    public TimeSpan MtuApplyMinInterval => _mtuApplyMinInterval;
+
+    /// <summary>UTC time of the last live-MTU apply attempt, if any.</summary>
+    public DateTimeOffset? LastMtuApplyAttemptAt => _lastMtuApplyAttemptAt;
 
     public DateTimeOffset? ActiveNativeLeaseExpiresAt => _activeNativeLease?.ExpiresAt;
 
@@ -125,6 +175,259 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             or WindowsProxyConnectionState.Starting)
             throw new InvalidOperationException("proxy_port_change_requires_stop");
         _proxyPort = proxyPort;
+    }
+
+    /// <summary>
+    /// Records the payload ceiling a status snapshot reported for
+    /// <paramref name="forwardId"/> and reports whether the running connection
+    /// already uses the MTU it resolves to.  Returns false while a live TUN must
+    /// be recreated; <see cref="MtuUpdatePending"/> stays true until the next
+    /// start applies it.
+    /// </summary>
+    public bool ObserveMeasuredPayloadCeiling(int forwardId, int measuredPayloadCeiling)
+    {
+        if (forwardId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(forwardId));
+        if (measuredPayloadCeiling < 0)
+            throw new ArgumentOutOfRangeException(nameof(measuredPayloadCeiling));
+        // A native connection owns exactly one forward; another forward's
+        // ceiling must not resize its TUN.
+        if (_activeNativeLease is { } active && active.ForwardId != forwardId)
+            return false;
+
+        _measuredPayloadCeiling = measuredPayloadCeiling;
+        var resolved = UltraRuntimeMtu.Resolve(_tunMtu, measuredPayloadCeiling);
+        _pendingTunMtu = resolved;
+        if (resolved == _appliedTunMtu)
+        {
+            _mtuUpdatePending = false;
+            return true;
+        }
+        if (_snapshot.State == WindowsProxyConnectionState.Connected
+            && _snapshot.Mode == WindowsProxyMode.Tun)
+        {
+            if (!_mtuUpdatePending)
+            {
+                Log.Warning(
+                    "mtu_update_pending forward={ForwardId} ceiling={Ceiling} configured_mtu={ConfiguredMtu} applied_mtu={AppliedMtu} pending_mtu={PendingMtu}",
+                    forwardId,
+                    measuredPayloadCeiling,
+                    _tunMtu,
+                    _appliedTunMtu,
+                    resolved);
+            }
+            _mtuUpdatePending = true;
+            return false;
+        }
+        _mtuUpdatePending = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Re-reads the forward's runtime status snapshot and records the ceiling it
+    /// reports.  Call this from the status/heartbeat path to let a live TUN
+    /// follow a runtime that re-measured after a failover.
+    /// </summary>
+    public bool RefreshMeasuredPayloadCeiling(int forwardId)
+        => ObserveMeasuredPayloadCeiling(
+            forwardId,
+            UltraRuntimeStatus.ReadForwardPayloadCeiling(_runtimeDirectory, forwardId));
+
+    /// <summary>
+    /// Applies the pending TUN MTU to the live connection.
+    ///
+    /// sing-box 1.13 cannot reload inbounds: its Clash API answers
+    /// <c>PUT /configs</c> with 204 but keeps the inbound that is already bound
+    /// (verified against the pinned 1.13.19 binary), and a TUN MTU is fixed when
+    /// the interface is created. The supported mechanism is therefore to
+    /// recreate the interface: the sing-box process is restarted in place from
+    /// the same config with the new MTU. Process supervision and the published
+    /// Connected snapshot are preserved; the restart is debounced to at most one
+    /// attempt per <see cref="MtuApplyMinInterval"/> and can never overlap a
+    /// start/stop transition because every transition holds the same gate.
+    ///
+    /// Returns true only when the live adapter reports the requested MTU
+    /// afterwards; <see cref="MtuUpdatePending"/> is cleared on that success only.
+    /// </summary>
+    public async Task<bool> ApplyPendingTunMtuAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_disposed || !_mtuUpdatePending || _activeConfigJson.Length == 0)
+                return false;
+            if (_snapshot.State != WindowsProxyConnectionState.Connected
+                || _snapshot.Mode != WindowsProxyMode.Tun)
+                return false;
+            var target = _pendingTunMtu;
+            if (target == _appliedTunMtu)
+            {
+                // The measured ladder wobbled inside the MTU that is already live.
+                _mtuUpdatePending = false;
+                return true;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (_lastMtuApplyAttemptAt is { } last && now - last < _mtuApplyMinInterval)
+                return false;
+            // A dead process belongs to the recovery paths, not to a resize.
+            if (!_processHost.IsRunning)
+                return false;
+            _lastMtuApplyAttemptAt = now;
+            return await ApplyTunMtuCoreAsync(target, ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<bool> ApplyTunMtuCoreAsync(int target, CancellationToken ct)
+    {
+        var previousJson = _activeConfigJson;
+        string configPath;
+        try
+        {
+            Directory.CreateDirectory(_runtimeDirectory);
+            configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
+            await WriteEphemeralConfigAsync(configPath, WithTunMtu(previousJson, target), ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Log.Error(exception, "mtu_apply_config_invalid target_mtu={TargetMtu}", target);
+            return false;
+        }
+
+        Log.Information(
+            "mtu_apply_started applied_mtu={AppliedMtu} target_mtu={TargetMtu} ceiling={Ceiling}",
+            _appliedTunMtu,
+            target,
+            _measuredPayloadCeiling);
+        try
+        {
+            // The existing supervision path: stop, start, wait for the interface,
+            // one retry on a refused TUN.
+            await _processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await StartProxyProcessAsync(configPath, WindowsProxyMode.Tun, ct).ConfigureAwait(false);
+            if (!await WaitForTunMtuAsync(target, ct).ConfigureAwait(false))
+                throw new InvalidOperationException("proxy_mtu_not_applied");
+
+            _appliedTunMtu = target;
+            _mtuUpdatePending = false;
+            Log.Information(
+                "mtu_apply_succeeded mtu={Mtu} ceiling={Ceiling}",
+                target,
+                _measuredPayloadCeiling);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(
+                exception,
+                "mtu_apply_failed target_mtu={TargetMtu} applied_mtu={AppliedMtu}",
+                target,
+                _appliedTunMtu);
+            await RecoverAfterFailedMtuApplyAsync(previousJson).ConfigureAwait(false);
+            return false;
+        }
+        finally { SecureDelete(configPath); }
+    }
+
+    /// <summary>
+    /// Puts the data plane back after a failed in-place MTU restart. A process
+    /// that is still running with a ready TUN is left alone (its MTU is simply
+    /// not the one we asked for); otherwise the previous config is started again
+    /// so a failed resize can never leave the user disconnected.
+    /// </summary>
+    private async Task RecoverAfterFailedMtuApplyAsync(string previousJson)
+    {
+        try
+        {
+            if (_processHost.IsRunning && _processHost.IsTunReady)
+                return;
+            var configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
+            var restored = false;
+            try
+            {
+                await WriteEphemeralConfigAsync(configPath, previousJson, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await _processHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await StartProxyProcessAsync(configPath, WindowsProxyMode.Tun, CancellationToken.None)
+                    .ConfigureAwait(false);
+                restored = true;
+            }
+            finally { SecureDelete(configPath); }
+            if (restored)
+            {
+                Log.Warning("mtu_apply_rolled_back applied_mtu={AppliedMtu}", _appliedTunMtu);
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Error(exception, "mtu_apply_recovery_failed applied_mtu={AppliedMtu}", _appliedTunMtu);
+        }
+
+        Publish(new WindowsProxySnapshot(
+            WindowsProxyConnectionState.Error,
+            _snapshot.Mode,
+            _snapshot.ActiveProfileName,
+            _snapshot.ProxyPort,
+            _snapshot.BypassAddressCount,
+            false,
+            false,
+            "proxy_mtu_apply_failed"));
+    }
+
+    /// <summary>
+    /// Waits for the live TUN adapter to report <paramref name="expectedMtu"/>.
+    /// The adapter is only re-sized by a (re)creation of the interface, so this is
+    /// the verification that the rewrite actually reached the data plane.
+    /// </summary>
+    private async Task<bool> WaitForTunMtuAsync(int expectedMtu, CancellationToken ct)
+    {
+        // The interface is already up when this runs; the grace only absorbs a
+        // driver that applies the new size a moment after it comes up.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var observed = _tunMtuReader.ReadTunMtu();
+            if (observed == expectedMtu)
+                return true;
+            if (DateTime.UtcNow >= deadline)
+            {
+                // Some drivers do not expose the interface MTU; a TUN that is up
+                // and was created from a config carrying the requested value is
+                // then the best available evidence.
+                if (observed == 0 && _processHost.IsRunning && _processHost.IsTunReady)
+                {
+                    Log.Warning("mtu_apply_unverified mtu={Mtu}", expectedMtu);
+                    return true;
+                }
+                Log.Error(
+                    "mtu_apply_not_verified expected_mtu={ExpectedMtu} observed_mtu={ObservedMtu}",
+                    expectedMtu,
+                    observed);
+                return false;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(100), ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Returns the live config with only the TUN inbound MTU replaced. Rebuilding
+    /// the config instead is not an option: the native relay port is allocated per
+    /// start and the profile may already point at a forward listener.
+    /// </summary>
+    private static string WithTunMtu(string configJson, int tunMtu)
+    {
+        var root = JsonNode.Parse(configJson)?.AsObject()
+            ?? throw new InvalidOperationException("proxy_config_invalid");
+        if (root["inbounds"] is not JsonArray { Count: > 0 } inbounds
+            || inbounds[0] is not JsonObject tun
+            || tun["type"]?.GetValue<string>() != "tun")
+            throw new InvalidOperationException("proxy_config_invalid");
+        tun["mtu"] = tunMtu;
+        return root.ToJsonString();
     }
 
     public async Task InitializeAsync(CancellationToken ct = default)
@@ -250,7 +553,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 bypassChinaMainland,
                 _chinaIpListPath,
                 dnsMode,
-                customDnsServers);
+                customDnsServers,
+                _measuredPayloadCeiling);
 
             // Perform all deterministic validation before tearing down an
             // existing connection.  A bad URI, missing runtime, or empty
@@ -317,6 +621,9 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 throw;
             }
 
+            RecordAppliedTunMtu();
+            // Keep the launched JSON so a live MTU change can re-issue it verbatim.
+            _activeConfigJson = mode == WindowsProxyMode.Tun ? compiled.Json : string.Empty;
             _activeProfileId = profileId;
             _stopCompleted = false;
             Publish(new WindowsProxySnapshot(
@@ -415,6 +722,12 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
             proxyPort = ResolveProxyPort(mode, previousSnapshot);
             var nativeRelayPort = AllocateLoopbackPort(proxyPort);
+            // The ceiling belongs to the relay association, and the runtime
+            // re-measures it after a failover, so read it from the status
+            // snapshot on every start instead of trusting a stale value.
+            _measuredPayloadCeiling = UltraRuntimeStatus.ReadForwardPayloadCeiling(
+                _runtimeDirectory,
+                lease.ForwardId);
             var compiled = WindowsProxyConfigBuilder.BuildNative(
                 lease,
                 mode,
@@ -427,7 +740,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 dnsMode,
                 customDnsServers,
                 nativeProxyHost: "127.0.0.1",
-                nativeProxyPort: nativeRelayPort);
+                nativeProxyPort: nativeRelayPort,
+                measuredPayloadCeiling: _measuredPayloadCeiling);
 
             Publish(new WindowsProxySnapshot(
                 WindowsProxyConnectionState.Starting,
@@ -492,6 +806,9 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 throw;
             }
 
+            RecordAppliedTunMtu();
+            // Keep the launched JSON so a live MTU change can re-issue it verbatim.
+            _activeConfigJson = mode == WindowsProxyMode.Tun ? compiled.Json : string.Empty;
             _activeProfileId = 0;
             _activeNativeLease = lease;
             _activeNativeLeases = leases.ToList();
@@ -651,6 +968,11 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
+        // Nothing live is left to resize; the next start resolves the MTU again
+        // from the ceiling that is current then.
+        _mtuUpdatePending = false;
+        _activeConfigJson = string.Empty;
+        _lastMtuApplyAttemptAt = null;
         var failures = new List<Exception>();
 
         // Stop the local target first.  If a native redirector is slow to
@@ -725,6 +1047,13 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             lease.Dispose();
         if (_activeNativeLease is not null && !leases.Any(lease => ReferenceEquals(lease, _activeNativeLease)))
             _activeNativeLease.Dispose();
+    }
+
+    private void RecordAppliedTunMtu()
+    {
+        _appliedTunMtu = UltraRuntimeMtu.Resolve(_tunMtu, _measuredPayloadCeiling);
+        _pendingTunMtu = _appliedTunMtu;
+        _mtuUpdatePending = false;
     }
 
     private int ResolveProxyPort(

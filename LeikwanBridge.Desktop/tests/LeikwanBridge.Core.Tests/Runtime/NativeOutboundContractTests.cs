@@ -9,6 +9,36 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class NativeOutboundContractTests
 {
     [Fact]
+    public void NativeOutboundRuleFlagIsDerivedAndNeverSerialized()
+    {
+        var forward = new ForwardConfig
+        {
+            ForwardId = 180,
+            BackendMode = "ultra",
+            NativeOutboundEnabled = true,
+        };
+
+        Assert.True(forward.IsNativeOutboundRule);
+        Assert.True(ForwardRuntimeManager.IsNativeOutboundForward(forward));
+
+        forward.BackendMode = "current_mode";
+        Assert.False(forward.IsNativeOutboundRule);
+
+        forward.BackendMode = "ultra";
+        forward.NativeOutboundEnabled = false;
+        Assert.False(forward.IsNativeOutboundRule);
+
+        var json = JsonSerializer.Serialize(new ForwardConfig
+        {
+            ForwardId = 180,
+            BackendMode = "ultra",
+            NativeOutboundEnabled = true,
+        });
+        Assert.DoesNotContain("IsNativeOutboundRule", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("is_native_outbound_rule", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void NativePipeNameIsIsolatedFromRegularUltraPipe()
     {
         var native = UltraLeaseClient.NativePipeName(174, "0123456789abcdef");

@@ -149,7 +149,7 @@ try {
     assertContains('.login-method-pill', $css, 'login methods must have a dedicated pill selector');
     assertContains('border-radius: 999px', $css, 'login method controls must use a pill shape');
 
-    $assetVersion = '/assets/bridge-modern.css?v=20260729a';
+    $assetVersion = '/assets/bridge-modern.css?v=20260914a';
     foreach ([
         __DIR__ . '/../src/Controllers/BaseController.php',
         __DIR__ . '/../public/index.php',

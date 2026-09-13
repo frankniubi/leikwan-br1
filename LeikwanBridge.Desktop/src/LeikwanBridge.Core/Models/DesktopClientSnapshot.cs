@@ -6,7 +6,8 @@ public sealed record DesktopForwardSnapshot(
     string Mode,
     int ListenPort,
     bool IsRunning,
-    string Status);
+    string Status,
+    bool IsNativeOutboundRule = false);
 
 public sealed record DesktopClientSnapshot
 {

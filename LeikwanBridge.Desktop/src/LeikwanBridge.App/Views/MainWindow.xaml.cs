@@ -27,6 +27,10 @@ public partial class MainWindow : Window
     private bool _trayReady;
     private bool _proxyUiReady;
     private bool _updatingNativeUi;
+    // True until the constructor finishes so XAML-time SelectedIndex changes
+    // never persist an endpoint the user did not choose.
+    private bool _suppressEndpointChangeHandling = true;
+    private bool _updateFailureWasInstall;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly ConnectionRecoverySupervisor _connectionRecovery;
@@ -66,6 +70,7 @@ public partial class MainWindow : Window
         if (!_saveLoginInfo)
             new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _vm.RetryUpdateHandler = RetryFailedUpdateAsync;
 
         // Auto-scroll log
         _vm.LogEntries.CollectionChanged += (_, _) =>
@@ -77,12 +82,15 @@ public partial class MainWindow : Window
         // Populate settings fields
         PopulateSettings();
         UpdateVisiblePanel();
-        SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
+        _suppressEndpointChangeHandling = true;
+        try { SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl); }
+        finally { _suppressEndpointChangeHandling = false; }
         TxtMasterUrl.Text = string.IsNullOrWhiteSpace(App.Config.MasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : App.Config.MasterUrl;
         SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         RestoreSetupLoginInfo();
+        _suppressEndpointChangeHandling = false;
 
         Loaded += (_, _) =>
         {
@@ -256,6 +264,19 @@ public partial class MainWindow : Window
             TxtMasterUrl.Text = url;
         else if (ReferenceEquals(combo, SettEndpointCombo) && SettMasterUrl is not null)
             SettMasterUrl.Text = url;
+
+        if (_suppressEndpointChangeHandling)
+            return;
+
+        // Persist the chosen endpoint immediately so update downloads and
+        // future sessions follow the selection without waiting for a Save.
+        var normalized = AppDefaults.NormalizeMasterUrl(url);
+        if (!string.Equals(normalized, App.Config.MasterUrl, StringComparison.Ordinal))
+        {
+            App.Config.MasterUrl = normalized;
+            SaveCurrentConfig();
+            Log.Information("update download endpoint changed to {Endpoint}", normalized);
+        }
     }
 
     private static string ResolveEndpointUrl(System.Windows.Controls.ComboBox combo)
@@ -523,6 +544,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (ex is OperationCanceledException)
+            {
+                SetProxyReady();
+                Log.Debug(ex, "paired proxy start cancelled");
+                return;
+            }
             SetProxyStatusError(ex.Message);
             Log.Warning(ex, "failed to start local proxy for selected paired forward");
         }
@@ -651,6 +678,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (ex is OperationCanceledException)
+            {
+                SetProxyReady();
+                Log.Debug(ex, "proxy start cancelled");
+                return;
+            }
             if (mode == WindowsProxyMode.Process
                 && profileId > 0
                 && string.Equals(ex.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
@@ -996,11 +1029,26 @@ public partial class MainWindow : Window
 
     private void UpdateProxyModeVisibility()
     {
-        if (ProxyGameCard == null)
+        if (ProxyGameCard == null || ProxyModeCombo == null)
             return;
-        ProxyGameCard.Visibility = GetSelectedProxyMode() == WindowsProxyMode.Process
+        // The mode combo legitimately has no selection until the saved config has
+        // been applied, and this runs while the window is still being built. That
+        // is a normal state, not a fault: asking for the selected mode here used
+        // to throw proxy_mode_required out of PopulateProxyUi, which abandoned the
+        // rest of the local-proxy setup and logged "local proxy initialization
+        // failed" on every single start.
+        ProxyGameCard.Visibility = TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Process
             ? Visibility.Visible
             : Visibility.Collapsed;
+    }
+
+    private bool TryGetSelectedProxyMode(out WindowsProxyMode mode)
+    {
+        if (ProxyModeCombo.SelectedItem is ComboBoxItem item
+            && Enum.TryParse(item.Tag?.ToString(), true, out mode))
+            return true;
+        mode = default;
+        return false;
     }
 
     private void UpdateNativeOutboundUi()
@@ -1068,8 +1116,7 @@ public partial class MainWindow : Window
 
     private WindowsProxyMode GetSelectedProxyMode()
     {
-        if (ProxyModeCombo.SelectedItem is ComboBoxItem item
-            && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var mode))
+        if (TryGetSelectedProxyMode(out var mode))
             return mode;
         throw new InvalidOperationException("proxy_mode_required");
     }
@@ -1224,7 +1271,10 @@ public partial class MainWindow : Window
             "proxy_import_shadowsocks_only" => FindResource("ProxyImportSupported") as string ?? message,
             "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
             "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
+            "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? message,
             "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? message,
+            "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? message,
+            "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? message,
             "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? message,
             "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
             "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,
@@ -1294,7 +1344,9 @@ public partial class MainWindow : Window
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(normalizedMasterUrl)
             ? AppDefaults.DefaultMasterUrl
             : normalizedMasterUrl;
-        SelectEndpoint(SettEndpointCombo, SettMasterUrl.Text);
+        _suppressEndpointChangeHandling = true;
+        try { SelectEndpoint(SettEndpointCombo, SettMasterUrl.Text); }
+        finally { _suppressEndpointChangeHandling = false; }
         _saveLoginInfo = App.Config.RememberLoginInfo;
         SettClientId.Text = (App.Config.ClientId > 0 ? App.Config.ClientId : App.Config.ActiveClientId).ToString();
         SettAgentToken.Password = App.Config.AgentToken;
@@ -1343,16 +1395,17 @@ public partial class MainWindow : Window
         if (_vm.AvailableUpdateArtifact == null)
             return;
 
+        _updateFailureWasInstall = true;
         try
         {
-            var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact);
+            var installerPath = await PrepareCachedInstallerAsync(_vm.AvailableUpdateArtifact, CreateUpdateProgress());
             var installerArguments = BuildSilentUpdateArguments(installerPath);
-            ClearPendingUpdateState();
             LaunchInstallerAndExit(installerPath, installerArguments);
+            ClearPendingUpdateState();
         }
         catch (Exception ex)
         {
-            SetupStatus.Text = ex.Message;
+            _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "install-now update flow failed");
         }
     }
@@ -1362,35 +1415,41 @@ public partial class MainWindow : Window
         if (_vm.AvailableUpdateArtifact == null)
             return;
 
+        _updateFailureWasInstall = true;
         try
         {
             var artifact = _vm.AvailableUpdateArtifact;
-            var installerPath = await PrepareCachedInstallerAsync(artifact);
+            var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
             var sha = WindowsAppUpdateService.ComputeSha256(installerPath);
             _vm.DeferUpdateForRestartForTests(artifact.Version, installerPath, sha);
             SaveCurrentConfig();
         }
         catch (Exception ex)
         {
-            SetupStatus.Text = ex.Message;
+            _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "deferred update flow failed");
         }
     }
 
     private async Task CheckForUpdatesAsync(CancellationToken ct = default)
     {
+        _updateFailureWasInstall = false;
         try
         {
             if (string.IsNullOrWhiteSpace(App.Config.MasterUrl))
                 return;
 
             ct.ThrowIfCancellationRequested();
-            var artifact = await _updateService.FetchWindowsClientArtifactAsync(App.Config.MasterUrl, ct);
+            var artifact = await _updateService.FetchWindowsClientArtifactAsync(
+                App.Config.MasterUrl,
+                CreateUpdateProgress(),
+                ct);
             ct.ThrowIfCancellationRequested();
             var localVersion = GetCurrentAppVersion();
             App.Config.LastUpdateCheckAt = DateTimeOffset.UtcNow.ToString("O");
             SaveCurrentConfig();
-            if (WindowsAppUpdateService.IsRemoteVersionNewer(artifact.Version, localVersion))
+            if (WindowsAppUpdateService.IsRemoteVersionNewer(artifact.Version, localVersion)
+                || WindowsAppUpdateService.HasRuntimeDrift(App.Config, artifact))
             {
                 _vm.PresentUpdatePrompt(artifact);
             }
@@ -1407,6 +1466,31 @@ public partial class MainWindow : Window
             Log.Warning(ex, "update check failed");
         }
     }
+
+    private async Task RetryFailedUpdateAsync()
+    {
+        try
+        {
+            if (_updateFailureWasInstall && _vm.AvailableUpdateArtifact is { } artifact)
+            {
+                var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
+                var installerArguments = BuildSilentUpdateArguments(installerPath);
+                LaunchInstallerAndExit(installerPath, installerArguments);
+                ClearPendingUpdateState();
+                return;
+            }
+
+            await CheckForUpdatesAsync(_lifecycleCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _vm.ReportUpdateFailed(ex.Message);
+            Log.Warning(ex, "update retry failed");
+        }
+    }
+
+    private Progress<UpdateProgress> CreateUpdateProgress()
+        => new(update => _vm.ReportUpdateProgress(update));
 
     private Task<bool> TryApplyPendingUpdateAsync()
     {
@@ -1443,8 +1527,8 @@ public partial class MainWindow : Window
             }
 
             var installerArguments = BuildSilentUpdateArguments(path);
-            ClearPendingUpdateState();
             LaunchInstallerAndExit(path, installerArguments);
+            ClearPendingUpdateState();
             return Task.FromResult(true);
         }
         catch (Exception ex)
@@ -1455,7 +1539,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<string> PrepareCachedInstallerAsync(WindowsClientAppArtifact artifact)
+    private async Task<string> PrepareCachedInstallerAsync(
+        WindowsClientAppArtifact artifact,
+        IProgress<UpdateProgress>? progress = null)
     {
         var installRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeiKwan Bridge");
         var installerPath = WindowsAppUpdateService.BuildCachedInstallerPath(installRoot, artifact.Version);
@@ -1464,24 +1550,31 @@ public partial class MainWindow : Window
         {
             var cachedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
             if (string.Equals(cachedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                progress?.Report(UpdateProgress.Verifying(100, "Cached installer verified."));
                 return installerPath;
+            }
         }
 
+        // ResolveArtifactUrl rebinds the selected endpoint onto the artifact
+        // URL, so manifest, installer and runtime-drift downloads all follow
+        // the user's chosen download source.
         var artifactUrl = WindowsAppUpdateService.ResolveArtifactUrl(App.Config.MasterUrl, artifact.ArtifactUrl);
         artifactUrl = WindowsAppUpdateService.BuildArtifactDownloadUrl(artifactUrl, artifact.Version, artifact.Sha256);
-        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath);
-        var downloadedSha = WindowsAppUpdateService.ComputeSha256(installerPath);
-        if (!string.Equals(downloadedSha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("downloaded installer hash mismatch");
-
+        await _updateService.DownloadInstallerAsync(artifactUrl, installerPath, progress, artifact.Sha256, artifact.SizeBytes);
         return installerPath;
     }
 
+    // ERROR_CANCELLED: the user dismissed the UAC prompt raised for the
+    // installer, which runs elevated because the client is an all-users install.
+    private const int ErrorCancelledByUser = 1223;
+
     private void LaunchInstallerAndExit(string installerPath, IReadOnlyList<string>? installerArguments = null)
     {
-        _vm.DisconnectCommand.Execute(null);
-        _trayLifecycle.RequestExit();
-        DisposeTrayIcon();
+        // Without this the panel just sat at "download finished / 100%" while
+        // the elevation prompt was on screen, which reads as the update having
+        // silently stopped.
+        _vm.ReportUpdateProgress(UpdateProgress.Applying(100, "Waiting for administrator approval to install..."));
 
         var startInfo = new ProcessStartInfo
         {
@@ -1495,9 +1588,31 @@ public partial class MainWindow : Window
                 startInfo.ArgumentList.Add(installerArgument);
         }
 
-        var process = Process.Start(startInfo);
+        // Start the installer before tearing the client down. Installing an
+        // all-users copy needs elevation, so a declined prompt throws right
+        // here; disconnecting and requesting exit first left the user with no
+        // client, no tunnel and no installer running - which reads as "the app
+        // broke and will not start any more".
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelledByUser)
+        {
+            Log.Information("update installer launch cancelled at the elevation prompt");
+            throw new InvalidOperationException(
+                "Update cancelled: installing LeiKwan Bridge needs administrator approval. " +
+                "The client keeps running; approve the prompt or install again as administrator.",
+                ex);
+        }
+
         if (process == null)
             throw new InvalidOperationException("failed to launch installer");
+
+        _vm.DisconnectCommand.Execute(null);
+        _trayLifecycle.RequestExit();
+        DisposeTrayIcon();
         System.Windows.Application.Current.Shutdown();
     }
 
@@ -1520,8 +1635,17 @@ public partial class MainWindow : Window
 
     private void SaveCurrentConfig()
     {
-        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, App.Config);
+        try
+        {
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, App.Config);
+        }
+        catch (Exception ex)
+        {
+            // See App.TrySaveConfig: a shared config that cannot be written must
+            // degrade to "this change is not persisted", never to a crash.
+            Log.Warning(ex, "config could not be persisted");
+        }
     }
 
     private static string GetCurrentAppVersion()
@@ -1716,8 +1840,13 @@ public partial class MainWindow : Window
             stateManager.SaveConfig(App.ConfigPath, App.Config);
             TxtMasterUrl.Text = App.Config.MasterUrl;
             SettMasterUrl.Text = App.Config.MasterUrl;
-            SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
-            SelectEndpoint(SettEndpointCombo, App.Config.MasterUrl);
+            _suppressEndpointChangeHandling = true;
+            try
+            {
+                SelectEndpoint(SetupEndpointCombo, App.Config.MasterUrl);
+                SelectEndpoint(SettEndpointCombo, App.Config.MasterUrl);
+            }
+            finally { _suppressEndpointChangeHandling = false; }
         }
 
         if (!_vm.ShouldAutoConnectOnStartup)

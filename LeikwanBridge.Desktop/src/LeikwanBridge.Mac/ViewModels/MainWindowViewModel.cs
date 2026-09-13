@@ -14,6 +14,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
 {
     public const string EmailPasswordAuthentication = "Email + Password";
     public const string ClientIdTokenAuthentication = "Client ID + Token";
+
+    /// <summary>
+    /// How often a live native session re-reads the relay's measured payload ceiling. The
+    /// runtime republishes its status file while the tunnel runs and nothing here is
+    /// event-driven, so the MTU watcher polls instead of waiting for the next refresh.
+    /// </summary>
+    public static readonly TimeSpan DefaultNativeTunMtuWatchInterval = TimeSpan.FromSeconds(5);
     public IReadOnlyList<PanelEndpointOption> PanelEndpointOptions => PanelEndpoints.Options;
 
     private readonly IDesktopClientController _controller;
@@ -23,9 +30,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly Func<string, string, bool, CancellationToken, Task>? _savePreferences;
     private readonly Func<CancellationToken, Task>? _checkForUpdates;
     private readonly Func<CancellationToken, Task>? _installUpdate;
+    private readonly Func<IProgress<UpdateProgress>?, CancellationToken, Task>? _checkForUpdatesWithProgress;
+    private readonly Func<IProgress<UpdateProgress>?, CancellationToken, Task>? _installUpdateWithProgress;
     private readonly Action<bool>? _rememberLoginInfoChanged;
+    private string _updateFailureStage = "check";
+    private bool _endpointPersistenceReady;
     private readonly Action<Action> _dispatch;
+    private readonly TimeSpan _nativeTunMtuWatchInterval;
     private int _nativeRefreshInProgress;
+    private int _nativeTunMtuWatchRunning;
     private MacConnectionMode _nativeActiveMode = MacConnectionMode.Vpn;
     private int _nativeActiveForwardId;
     private string _nativeActiveRouteScope = "global";
@@ -57,7 +70,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         bool rememberLoginInfo = true,
         int savedClientId = 0,
         string? savedAgentToken = null,
-        Action<bool>? rememberLoginInfoChanged = null)
+        Action<bool>? rememberLoginInfoChanged = null,
+        Func<IProgress<UpdateProgress>?, CancellationToken, Task>? checkForUpdatesWithProgress = null,
+        Func<IProgress<UpdateProgress>?, CancellationToken, Task>? installUpdateWithProgress = null,
+        TimeSpan? nativeTunMtuWatchInterval = null)
     {
         _controller = controller;
         _connections = connections;
@@ -66,8 +82,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _savePreferences = savePreferences;
         _checkForUpdates = checkForUpdates;
         _installUpdate = installUpdate;
+        _checkForUpdatesWithProgress = checkForUpdatesWithProgress;
+        _installUpdateWithProgress = installUpdateWithProgress;
         _rememberLoginInfoChanged = rememberLoginInfoChanged;
         _dispatch = dispatch ?? Dispatch;
+        _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
         CloseToTray = closeToTray;
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
         PanelUrl = controller.Snapshot.PanelUrl;
@@ -107,6 +126,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             _ = LoadConnectionsAsync();
         }
         _ = LoadAutostartAsync();
+        _endpointPersistenceReady = true;
     }
 
     public ObservableCollection<DesktopClientChoice> Clients { get; } = [];
@@ -147,6 +167,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private bool _isUpdateVisible;
     [ObservableProperty] private string _updateVersion = string.Empty;
     [ObservableProperty] private bool _isUpdateInstalling;
+    [ObservableProperty] private string _updatePhaseText = string.Empty;
+    [ObservableProperty] private double _updatePercent;
+    [ObservableProperty] private string _updateProgressMessage = string.Empty;
+    [ObservableProperty] private string _updateErrorMessage = string.Empty;
+    [ObservableProperty] private bool _isUpdateInProgress;
+    [ObservableProperty] private bool _showUpdateError;
     [ObservableProperty] private bool _closeToTray;
     [ObservableProperty] private bool _autoStartEnabled;
     [ObservableProperty] private string _language = "en-US";
@@ -173,6 +199,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _proxyImportError = string.Empty;
 
     public bool HasForwards => Forwards.Count > 0;
+    public bool IsUpdateBannerVisible => IsUpdateVisible || ShowUpdateError;
     public bool IsConnectionWorkspaceVisible => IsConnectionsVisible || IsPairingVisible;
     public string ConnectionWorkspaceTitle => IsPairingVisible ? "线路配对" : "代理";
     public IReadOnlyList<ForwardRowViewModel> ConnectionRoutes => Forwards;
@@ -249,12 +276,36 @@ public sealed partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(ConnectionLabel));
     }
 
+    partial void OnIsUpdateVisibleChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateBannerVisible));
+
+    partial void OnShowUpdateErrorChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateBannerVisible));
+
     partial void OnIsLoginVisibleChanged(bool value) => OnPropertyChanged(nameof(IsSignedIn));
 
     partial void OnSelectedPanelEndpointChanged(PanelEndpointOption value)
     {
         if (!string.Equals(PanelUrl, value.Url, StringComparison.OrdinalIgnoreCase))
             PanelUrl = value.Url;
+        // Persist immediately so update downloads (manifest, package,
+        // runtime-drift repair and installer) follow the chosen endpoint
+        // without waiting for "Save preferences".
+        _ = PersistSelectedEndpointAsync(value.Url);
+    }
+
+    private async Task PersistSelectedEndpointAsync(string url)
+    {
+        if (_savePreferences is null || !_endpointPersistenceReady)
+            return;
+        try
+        {
+            await _savePreferences(url, Language, CloseToTray, CancellationToken.None);
+        }
+        catch
+        {
+            // Persistence failures must not break the login/selection flow.
+        }
     }
 
     partial void OnPanelUrlChanged(string value)
@@ -976,30 +1027,107 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         IsUpdateVisible = false;
         UpdateVersion = string.Empty;
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        IsUpdateInProgress = false;
     }
 
     [RelayCommand]
     private async Task CheckForUpdatesAsync()
     {
-        if (_checkForUpdates is not null)
-            await _checkForUpdates(CancellationToken.None);
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        _updateFailureStage = "check";
+        try
+        {
+            if (_checkForUpdatesWithProgress is not null)
+                await _checkForUpdatesWithProgress(CreateUpdateProgress(), CancellationToken.None);
+            else if (_checkForUpdates is not null)
+                await _checkForUpdates(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            ReportUpdateFailure(BoundErrorCode(exception));
+        }
     }
 
     [RelayCommand]
     private async Task InstallUpdateAsync()
     {
-        if (_installUpdate is null || IsUpdateInstalling)
+        if ((_installUpdate is null && _installUpdateWithProgress is null) || IsUpdateInstalling)
             return;
         IsUpdateInstalling = true;
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        _updateFailureStage = "install";
         try
         {
-            await _installUpdate(CancellationToken.None);
+            if (_installUpdateWithProgress is not null)
+                await _installUpdateWithProgress(CreateUpdateProgress(), CancellationToken.None);
+            else
+                await _installUpdate!(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            ReportUpdateFailure(BoundErrorCode(exception));
         }
         finally
         {
             IsUpdateInstalling = false;
         }
     }
+
+    [RelayCommand]
+    private Task RetryUpdateAsync()
+        => string.Equals(_updateFailureStage, "install", StringComparison.Ordinal)
+            ? InstallUpdateAsync()
+            : CheckForUpdatesAsync();
+
+    /// <summary>Applies a progress update reported by the update service.</summary>
+    public void ReportUpdateProgress(UpdateProgress progress)
+        => _dispatch(() =>
+        {
+            UpdatePhaseText = PhaseLabel(progress.Phase);
+            UpdatePercent = progress.Percent;
+            UpdateProgressMessage = progress.Message;
+            IsUpdateInProgress = true;
+        });
+
+    /// <summary>Shows a failed update step with details and a retry action.</summary>
+    public void ReportUpdateFailure(string message, string? stage = null)
+        => _dispatch(() =>
+        {
+            if (!string.IsNullOrWhiteSpace(stage))
+                _updateFailureStage = stage;
+            IsUpdateInProgress = false;
+            UpdateErrorMessage = message;
+            ShowUpdateError = true;
+        });
+
+    /// <summary>Clears progress/error state after an update flow completes.</summary>
+    public void ReportUpdateFinished(string? message = null)
+        => _dispatch(() =>
+        {
+            IsUpdateInProgress = false;
+            UpdatePhaseText = string.Empty;
+            UpdatePercent = 0;
+            UpdateProgressMessage = message ?? string.Empty;
+            UpdateErrorMessage = string.Empty;
+            ShowUpdateError = false;
+        });
+
+    private static string PhaseLabel(UpdatePhase phase) => phase switch
+    {
+        UpdatePhase.Check => "Checking for updates",
+        UpdatePhase.Download => "Downloading update",
+        UpdatePhase.Verify => "Verifying download",
+        UpdatePhase.Stage => "Preparing update",
+        UpdatePhase.Apply => "Applying update",
+        _ => string.Empty,
+    };
+
+    private IProgress<UpdateProgress> CreateUpdateProgress()
+        => new Progress<UpdateProgress>(ReportUpdateProgress);
 
     [RelayCommand]
     private async Task ToggleAutostartAsync()
@@ -1304,6 +1432,57 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (_connections?.IsNativeOutboundActive != true)
             return;
         _ = Task.Run(RefreshNativeLeaseIfNeededAsync);
+        EnsureNativeTunMtuWatch();
+    }
+
+    private void EnsureNativeTunMtuWatch()
+    {
+        if (Interlocked.CompareExchange(ref _nativeTunMtuWatchRunning, 1, 0) != 0)
+            return;
+        _ = Task.Run(WatchNativeTunMtuAsync);
+    }
+
+    /// <summary>
+    /// A live relay re-measures its payload ceiling and republishes the status file with no
+    /// event to hang the reaction on. The watcher watches <see cref="IMacConnectionService.IsNativeTunMtuPending"/>
+    /// for the flip and hot-applies the new TUN MTU to the running tunnel, so the user no
+    /// longer has to reconnect or wait for the next refresh for it to take effect.
+    /// </summary>
+    private async Task WatchNativeTunMtuAsync()
+    {
+        try
+        {
+            while (_connections?.IsNativeOutboundActive == true)
+            {
+                await Task.Delay(_nativeTunMtuWatchInterval).ConfigureAwait(false);
+                if (_connections?.IsNativeOutboundActive != true)
+                    return;
+                if (_connections.IsNativeTunMtuPending)
+                    await ApplyPendingNativeTunMtuAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nativeTunMtuWatchRunning, 0);
+        }
+    }
+
+    private async Task ApplyPendingNativeTunMtuAsync()
+    {
+        try
+        {
+            if (await _connections!.ApplyPendingNativeTunMtuAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                Log.Information("mac_native_tun_mtu_applied forward={ForwardId}", _nativeActiveForwardId);
+                return;
+            }
+            // Debounced or not yet proven: the flag stays set and the watcher retries.
+            Log.Information("mac_native_tun_mtu_apply_pending forward={ForwardId}", _nativeActiveForwardId);
+        }
+        catch (Exception exception)
+        {
+            _dispatch(() => AddLog($"native_tun_mtu_apply_failed:{exception.GetType().Name}"));
+        }
     }
 
     private async Task RefreshNativeLeaseIfNeededAsync()
@@ -1321,6 +1500,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 await StopRevokedNativeAsync().ConfigureAwait(false);
                 return;
             }
+            // A re-measured payload ceiling changes the TUN MTU. sing-box re-reads its
+            // config on reload, so the MTU no longer forces a restart cycle: apply it to the
+            // live tunnel, and keep the restart path below as the fallback for the case the
+            // reload cannot be proven (it runs anyway once the lease has to be renewed).
+            if (_connections.IsNativeTunMtuPending
+                && await _connections.ApplyPendingNativeTunMtuAsync(CancellationToken.None).ConfigureAwait(false))
+                return;
             if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
                 return;
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
@@ -1399,6 +1585,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         UpdateVersion = version;
         IsUpdateVisible = true;
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        IsUpdateInProgress = false;
     }
 
     private void AddLog(string message)

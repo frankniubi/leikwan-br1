@@ -35,6 +35,7 @@ use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\UltraCandidateReviewService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -166,7 +167,8 @@ final class Bootstrap
             $ultraLeases,
             accessPolicy: $accessPolicy,
         );
-        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
+        $ultraReviews = new UltraCandidateReviewService($this->db);
+        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory, $ultraReviews);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
         $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
@@ -253,6 +255,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
+        $this->router->add('POST', '/admin/clients/{id}/openwrt-pairing-code', [$admin, 'createOpenWrtPairingCode']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
         $this->router->add('POST', '/admin/node-groups', [$admin, 'saveNodeGroup']);
         $this->router->add('GET', '/admin/chains', [$admin, 'chainsPage']);
@@ -362,6 +365,7 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/devices/code/challenge', [$clientAgent, 'enrollmentCodeChallenge']);
         $this->router->add('POST', '/api/client/devices/code/enroll', [$clientAgent, 'enrollmentCodeEnroll']);
         $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
+        $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
@@ -371,6 +375,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);
         $this->router->add('POST', '/api/ultra/source/inventory', [$ultraSource, 'inventory']);
+        $this->router->add('POST', '/api/ultra/source/review', [$ultraSource, 'review']);
         $this->router->add('POST', '/api/sidecar/heartbeat', [$sidecarAgent, 'heartbeat']);
 
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
@@ -419,12 +424,19 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
+        $this->router->add('GET', '/artifacts/leikwan-linux.sh', [$artifacts, 'leikwanLinuxCli']);
         $this->router->add('GET', '/artifacts/install-client-agent-linux-arm64', [$artifacts, 'installClientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/client-agent-update.sh', [$artifacts, 'clientAgentUpdate']);
         $this->router->add('GET', '/artifacts/sidecar-agent-update.sh', [$artifacts, 'sidecarAgentUpdate']);
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
+        $this->router->add('GET', '/artifacts/windows/leikwan-bridge-headless-win-x64.zip', [$artifacts, 'windowsHeadlessClient']);
+        $this->router->add('GET', '/artifacts/install-macos-headless.sh', [$artifacts, 'installMacosHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-macos-headless.sh', [$artifacts, 'uninstallMacosHeadless']);
+        $this->router->add('GET', '/artifacts/install-windows-headless.ps1', [$artifacts, 'installWindowsHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-windows-headless.ps1', [$artifacts, 'uninstallWindowsHeadless']);
+        $this->router->add('GET', '/artifacts/leikwan-bridge-repair.cmd', [$artifacts, 'windowsUpdateHelper']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-arm64.dmg', [$artifacts, 'macosClientArm64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-x64.dmg', [$artifacts, 'macosClientX64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-update-arm64.zip', [$artifacts, 'macosClientArm64Update']);

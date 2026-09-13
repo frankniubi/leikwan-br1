@@ -49,6 +49,8 @@
     <system:String x:Key="FwdError">Error</system:String>
     <system:String x:Key="FwdEndpoints">Endpoints</system:String>
     <system:String x:Key="FwdTransport">Transport</system:String>
+    <!-- Panel-declared native outbound rule: configuration only, no agent-managed runtime. -->
+    <system:String x:Key="ForwardNativeOutboundRule">(Native Outbound Rule)</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">Start</system:String>
@@ -80,9 +82,12 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">Update Available</system:String>
     <system:String x:Key="UpdateVersionReady">Version {0} is ready to install.</system:String>
+    <system:String x:Key="UpdateFailedTitle">Update Failed</system:String>
     <system:String x:Key="ActionInstallNow">Install now</system:String>
     <system:String x:Key="ActionDeferUpdate">Wait until next restart</system:String>
     <system:String x:Key="ActionCheckUpdates">Check for Updates</system:String>
+    <system:String x:Key="ActionRetryUpdate">Retry</system:String>
+    <system:String x:Key="ActionDismiss">Dismiss</system:String>
     <system:String x:Key="ActionSignOut">Sign Out</system:String>
 
     <!-- Settings -->
@@ -160,7 +165,10 @@
     <system:String x:Key="ProxyExternalEndpointInvalid">Enter a valid external IP address and a port from 1 to 65535.</system:String>
     <system:String x:Key="ProxySavedProfileRequired">Save and select a node first.</system:String>
     <system:String x:Key="ProxyForwardRequired">Select an available forward.</system:String>
+    <system:String x:Key="ProxyForwardUnavailable">The selected forward is currently unavailable. Please try again shortly.</system:String>
     <system:String x:Key="ProxyForwardRuntimeUnavailable">The forward service is not ready. Connect to the panel first.</system:String>
+    <system:String x:Key="ProxyForwardPolicyUnavailable">The forward policy is temporarily unavailable. The existing runtime was preserved; retry after the panel recovers.</system:String>
+    <system:String x:Key="ProxyForwardReadinessTimeout">The forward listener did not become ready in time. Please retry.</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">External tools can connect to the forward listening port. On this computer use 127.0.0.1 with the same port; from your LAN or another network use this computer's address.</system:String>
     <system:String x:Key="ProxyNew">New profile</system:String>
     <system:String x:Key="ProxyImport">Import and save</system:String>

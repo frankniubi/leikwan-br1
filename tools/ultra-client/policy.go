@@ -241,10 +241,13 @@ type ProviderLease struct {
 	NonceHash        string
 	IP               string
 	Port             int
-	User             []byte
-	Password         []byte
-	userLocked       bool
-	passwordLocked   bool
+	// RelayPayloadCeiling is the panel-declared payload ceiling of this relay or
+	// line. 0 means the panel did not declare one and the runtime must measure.
+	RelayPayloadCeiling int
+	User                []byte
+	Password            []byte
+	userLocked          bool
+	passwordLocked      bool
 }
 
 func (l *ProviderLease) wipe() {
@@ -305,6 +308,7 @@ type RuntimeSnapshot struct {
 
 type PolicyStore struct {
 	isolated              map[string]time.Time
+	pathFailures          map[string]int
 	mu                    sync.RWMutex
 	config                Config
 	policy                *Policy
@@ -322,7 +326,8 @@ type PolicyStore struct {
 func NewPolicyStore(config Config) *PolicyStore {
 	return &PolicyStore{
 		config: config, candidateFailures: make(map[string]int), candidateIsolatedTill: make(map[string]time.Time),
-		seenNonces: make(map[string]struct{}), seenGens: make(map[string]struct{}), revoked: make(map[string]struct{}),
+		pathFailures: make(map[string]int),
+		seenNonces:   make(map[string]struct{}), seenGens: make(map[string]struct{}), revoked: make(map[string]struct{}),
 		limiter: NewPolicyLimiter(), updates: make(chan struct{}, 1),
 	}
 }
@@ -380,8 +385,11 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 		return ErrPolicyRollback
 	}
 	oldFailures, oldIsolation := s.candidateFailures, s.candidateIsolatedTill
+	oldPathFailures := s.pathFailures
 	s.wipeCandidatesLocked()
 	s.candidateFailures, s.candidateIsolatedTill = oldFailures, oldIsolation
+	// Path health is keyed by endpoint+user, so it survives a lease rotation.
+	s.pathFailures = oldPathFailures
 	for key, until := range s.isolated {
 		if !until.After(now) {
 			delete(s.isolated, key)

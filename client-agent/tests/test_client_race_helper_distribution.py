@@ -10,6 +10,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 class ClientRaceHelperDistributionTests(unittest.TestCase):
     def test_client_installer_downloads_both_helpers_atomically(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        # Artifact URLs are resolved from --artifact-base/--download-base; both
+        # spellings describe the same fetch from the artifact base.
+        source = source.replace("$DOWNLOAD_BASE", "$ARTIFACT_BASE")
         for remote, local in [
             ("leikwan-tcp-race.py", "leikwan-tcp-race.py"),
             ("leikwan-udp-fanout.py", "leikwan-udp-fanout.py"),

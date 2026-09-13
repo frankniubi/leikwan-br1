@@ -33,7 +33,7 @@
 推荐同时启用：
 
 1. WHMCS webhook 推送到 `/api/whmcs/*`
-2. 定时执行 [whmcs_sync.php](C:\Users\frankniubi\Downloads\leikwan-v3\master\scripts\whmcs_sync.php) 做兜底对账
+2. 定时执行 [whmcs_sync.php](scripts/whmcs_sync.php) 做兜底对账
 
 ## Web 入口
 
@@ -47,7 +47,12 @@
 The versioned tenant forward resource API is documented in
 [docs/api/user-forward-lines-v1.md](../docs/api/user-forward-lines-v1.md).
 It is the supported integration surface for tenant-owned forwards; internal
-line, node, Sidecar, and provider placement records are not tenant resources.
+line, node, transport-endpoint, and provider placement records are not tenant
+resources.
+
+Native outbound forwards, whose carrier runs on the client device instead of the
+panel ingress, are specified in
+[docs/api/native-outbound.md](../docs/api/native-outbound.md).
 
 ## Artifact And Update Endpoints
 

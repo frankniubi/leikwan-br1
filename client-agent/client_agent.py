@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.11.2"
+AGENT_VERSION = "2026.09.13.3"
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -955,6 +955,53 @@ def _normalize_ultra_feedback(value: object) -> list[dict]:
     return feedback
 
 
+def _normalize_optional_count(value: object) -> int | None:
+    """Runtime counters/limits pass through only when they are a real positive integer."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
+
+
+# A released runtime stamps itself "<version>.<shortsha>" at link time
+# (scripts/build-ultra-*.ps1); an older or third-party build may report a bare
+# hex build id. Both shapes are forwarded; anything else is dropped.
+_RUNTIME_FINGERPRINT_RE = re.compile(
+    r"(?:[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(?:\.[0-9a-f]{7,40})?|[a-f0-9]{8,64})"
+)
+
+
+def _normalize_runtime_attestation(value: object) -> dict | None:
+    """Keep the runtime build attestation only when every field validates; never guess."""
+    if not isinstance(value, dict):
+        return None
+    fingerprint = str(value.get("fingerprint", "") or "").strip().lower()
+    if fingerprint != "development" and _RUNTIME_FINGERPRINT_RE.fullmatch(fingerprint) is None:
+        return None
+    self_sha256 = str(value.get("self_sha256", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", self_sha256) is None:
+        return None
+    # The runtime omits these when they are false (json omitempty on the Go
+    # side), so "absent" means "not reported" and must stay absent - requiring a
+    # bool here dropped the whole attestation for every healthy runtime and the
+    # panel therefore never learned which build an agent-managed host runs.
+    debugger = value.get("debugger")
+    instrumented = value.get("instrumented")
+    if debugger is not None and not isinstance(debugger, bool):
+        return None
+    if instrumented is not None and not isinstance(instrumented, bool):
+        return None
+    return {
+        "fingerprint": fingerprint,
+        "self_sha256": self_sha256,
+        "debugger": debugger,
+        "instrumented": instrumented,
+    }
+
+
 def collect_ultra_status(
     root: pathlib.Path = pathlib.Path("/run/ultra"),
     *,
@@ -1002,22 +1049,30 @@ def collect_ultra_status(
         zone = str(decoded.get("detected_ingress_zone", "unknown") or "unknown").strip().lower()
         if re.fullmatch(r"[a-z0-9-]{1,32}", zone) is None:
             zone = "unknown"
-        statuses.append(
-            {
-                "forward_id": expected_forward_id,
-                "state": state,
-                "detected_ingress_zone": zone,
-                "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
-                "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
-                "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
-                "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
-                "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
-                "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
-                "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
-                "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
-                "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
-            }
-        )
+        status_entry = {
+            "forward_id": expected_forward_id,
+            "state": state,
+            "detected_ingress_zone": zone,
+            "location_source": str(decoded.get("location_source", "") or "").strip()[:32],
+            "latest_tcp": _normalize_ultra_selection(decoded.get("latest_tcp")),
+            "active_udp": _normalize_ultra_selection(decoded.get("active_udp")),
+            "candidate_feedback": _normalize_ultra_feedback(decoded.get("candidate_feedback")),
+            "updated_at": str(decoded.get("updated_at", "") or "").strip()[:40],
+            "error_code": str(decoded.get("error_code", "") or "").strip()[:64],
+            "policy_generation": str(decoded.get("policy_generation", "") or "").strip().lower()[:64],
+            "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
+            "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
+        }
+        # Measured path ceiling / oversize drops drive the overlay MTU, and the build
+        # attestation drives runtime trust. Absent, zero or malformed values are omitted.
+        for key, value in (
+            ("udp_payload_ceiling", _normalize_optional_count(decoded.get("udp_payload_ceiling"))),
+            ("udp_oversize_drops", _normalize_optional_count(decoded.get("udp_oversize_drops"))),
+            ("runtime_attestation", _normalize_runtime_attestation(decoded.get("runtime_attestation"))),
+        ):
+            if value is not None:
+                status_entry[key] = value
+        statuses.append(status_entry)
     return statuses
 
 
@@ -2459,10 +2514,23 @@ class ClientAgent:
             except Exception as exc:  # noqa: BLE001
                 logging.warning("independent Ultra renewal failed (%s); retrying", type(exc).__name__)
 
+    def _systemd_watchdog_loop(self, stop: threading.Event, interval_seconds: float = 20.0) -> None:
+        # systemd's WatchdogSec is there to catch a wedged process, not a busy
+        # one. Pinging only from the main loop meant a single slow sync (a lease
+        # batch may legitimately spend up to 70 s on the runtime control socket)
+        # starved the ping and systemd SIGABRT'd a perfectly healthy agent: 158
+        # times in 48 h on the canary. Ping from its own thread instead.
+        while not stop.wait(interval_seconds):
+            self._systemd_watchdog_notify()
+
     def run(self) -> None:
         stop = threading.Event()
         renewal = threading.Thread(target=self._ultra_renewal_loop, args=(stop,), name="ultra-renewal", daemon=True)
         renewal.start()
+        watchdog = threading.Thread(
+            target=self._systemd_watchdog_loop, args=(stop,), name="systemd-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             next_sync = 0.0
             next_health = 0.0
@@ -3153,6 +3221,12 @@ class ClientAgent:
                     "systemd-run",
                     "--quiet",
                     "--no-block",
+                    # A failed transient update unit stays in systemd's failed
+                    # table forever without --collect. The update is retried
+                    # every UPDATE_RETRY_SECONDS while the token is unchanged, so
+                    # a struggling release accumulated one failed unit per retry
+                    # (440 on the canary host) until the table was unusable.
+                    "--collect",
                     "--unit",
                     unit_name,
                     "/usr/bin/env",

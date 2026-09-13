@@ -577,6 +577,85 @@ public sealed class MainViewModelTests
         Assert.False(vm.ShowUpdatePrompt);
     }
 
+    [Fact]
+    public void ReportUpdateProgress_SetsPhasePercentAndBusyState()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateProgress(UpdateProgress.Downloading(42.5, "Downloading update... (12345 bytes)"));
+
+        Assert.Equal("Downloading update", vm.UpdatePhaseText);
+        Assert.Equal(42.5, vm.UpdatePercent);
+        Assert.Equal("Downloading update... (12345 bytes)", vm.UpdateProgressMessage);
+        Assert.True(vm.IsUpdateInProgress);
+
+        vm.ReportUpdateProgress(UpdateProgress.Verifying(100, "Download verified."));
+        Assert.Equal("Verifying download", vm.UpdatePhaseText);
+        Assert.Equal(100, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void ReportUpdateFailed_SetsErrorDetailsAndRetrySurface()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateFailed("downloaded installer hash mismatch");
+
+        Assert.False(vm.IsUpdateInProgress);
+        Assert.True(vm.ShowUpdateError);
+        Assert.Equal("downloaded installer hash mismatch", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateOverlayVisible);
+
+        vm.ReportUpdateFinished();
+        Assert.False(vm.ShowUpdateError);
+        Assert.False(vm.IsUpdateOverlayVisible);
+        Assert.Equal(0, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void ReportUpdateCheckFailed_ExposesErrorAndRetrySurface()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateCheckFailedForTests("manifest unreachable");
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Equal("manifest unreachable", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateOverlayVisible);
+    }
+
+    [Fact]
+    public async Task RetryUpdateCommand_InvokesInjectedHandler()
+    {
+        var vm = new MainViewModel();
+        var attempts = 0;
+        vm.RetryUpdateHandler = () =>
+        {
+            attempts++;
+            return Task.CompletedTask;
+        };
+        vm.ReportUpdateFailed("boom");
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, attempts);
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+    }
+
+    [Fact]
+    public void DismissUpdateErrorCommand_HidesErrorSurface()
+    {
+        var vm = new MainViewModel();
+        vm.ReportUpdateFailed("boom");
+
+        vm.DismissUpdateErrorCommand.Execute(null);
+
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+        Assert.False(vm.IsUpdateOverlayVisible);
+    }
+
 
     [Fact]
     public void ApplyForwardSnapshot_BuildsConnectionQualityOverviewForMptcpWireGuardLegs()

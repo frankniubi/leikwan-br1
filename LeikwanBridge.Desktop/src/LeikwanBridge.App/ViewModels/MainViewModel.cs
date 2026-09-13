@@ -39,6 +39,19 @@ public partial class MainViewModel : ObservableObject
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly object _shutdownGate = new();
     private readonly NativeLeaseRenewalLoop _nativeLeaseRenewalLoop = new();
+
+    /// <summary>
+    /// Expiry of the candidate batch this client last minted for the active
+    /// native session.
+    /// WindowsProxyConnectionService only knows a lease expiry when the data
+    /// plane runs inside this process. With the direct runtime the leases live
+    /// in a child process and ActiveNativeLeaseExpiresAt stays null, and a null
+    /// expiry reads as "due now" (see NativeLeaseRenewalLoop.IsRefreshDue), so
+    /// every config poll - one roughly every 16 seconds - minted a fresh
+    /// candidate batch for every forward. The panel measured 1.05 grant rows
+    /// per second from that alone, against a five minute TTL.
+    /// </summary>
+    private DateTimeOffset? _nativeLeaseBatchExpiresAt;
     private Task? _shutdownTask;
     private Task? _heartbeatTask;
     private CancellationTokenSource? _nativeLeaseRenewalCts;
@@ -71,6 +84,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _activeClientName = "";
     [ObservableProperty] private bool _showUpdatePrompt;
     [ObservableProperty] private string _availableUpdateVersion = "";
+    [ObservableProperty] private string _updatePhaseText = "";
+    [ObservableProperty] private double _updatePercent;
+    [ObservableProperty] private string _updateProgressMessage = "";
+    [ObservableProperty] private string _updateErrorMessage = "";
+    [ObservableProperty] private bool _isUpdateInProgress;
+    [ObservableProperty] private bool _showUpdateError;
     [ObservableProperty] private ForwardViewModel? _selectedForward;
     [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
     [ObservableProperty] private string _selectedProxyGameId = "";
@@ -110,6 +129,38 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnCurrentViewChanged(string value)
         => OnPropertyChanged(nameof(IsForwardPairingView));
+
+    partial void OnShowUpdatePromptChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+
+    partial void OnShowUpdateErrorChanged(bool value)
+        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+
+    /// <summary>Shows the overlay for both the update prompt and failures.</summary>
+    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError;
+
+    /// <summary>
+    /// Injected by MainWindow so the retry button can re-run the failed
+    /// update step (manifest check or installer download/apply).
+    /// </summary>
+    public Func<Task>? RetryUpdateHandler { get; set; }
+
+    [RelayCommand]
+    private async Task RetryUpdateAsync()
+    {
+        if (RetryUpdateHandler is null)
+            return;
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+        await RetryUpdateHandler();
+    }
+
+    [RelayCommand]
+    private void DismissUpdateError()
+    {
+        ShowUpdateError = false;
+        UpdateErrorMessage = string.Empty;
+    }
 
     partial void OnIsProxyModeSelectedChanged(bool value)
         => NotifySelectedProxyPairingStateChanged();
@@ -1251,6 +1302,7 @@ public partial class MainViewModel : ObservableObject
         _availableUpdateArtifact = artifact;
         AvailableUpdateVersion = artifact.Version;
         ShowUpdatePrompt = true;
+        ReportUpdateFinished();
     }
 
     public void DeferUpdateForRestartForTests(string version, string installerPath, string sha256)
@@ -1261,6 +1313,7 @@ public partial class MainViewModel : ObservableObject
         _config.PendingUpdateDownloadedAt = DateTimeOffset.UtcNow.ToString("O");
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
+        ReportUpdateFinished();
     }
 
     public void ReportNoUpdateAvailableForTests(string version)
@@ -1268,6 +1321,7 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Already up to date ({version}).";
+        ReportUpdateFinished();
     }
 
     public void ReportUpdateCheckFailedForTests(string message)
@@ -1275,7 +1329,46 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Update check failed: {message}";
+        ReportUpdateFailed(message);
     }
+
+    /// <summary>Applies a progress update reported by the update service.</summary>
+    public void ReportUpdateProgress(UpdateProgress progress)
+    {
+        UpdatePhaseText = PhaseLabel(progress.Phase);
+        UpdatePercent = progress.Percent;
+        UpdateProgressMessage = progress.Message;
+        IsUpdateInProgress = true;
+    }
+
+    /// <summary>Shows a failed update step with details and a retry action.</summary>
+    public void ReportUpdateFailed(string message)
+    {
+        IsUpdateInProgress = false;
+        UpdateErrorMessage = message;
+        ShowUpdateError = true;
+    }
+
+    /// <summary>Clears progress/error state after an update flow completes.</summary>
+    public void ReportUpdateFinished()
+    {
+        IsUpdateInProgress = false;
+        UpdatePhaseText = string.Empty;
+        UpdatePercent = 0;
+        UpdateProgressMessage = string.Empty;
+        UpdateErrorMessage = string.Empty;
+        ShowUpdateError = false;
+    }
+
+    private static string PhaseLabel(UpdatePhase phase) => phase switch
+    {
+        UpdatePhase.Check => "Checking for updates",
+        UpdatePhase.Download => "Downloading update",
+        UpdatePhase.Verify => "Verifying download",
+        UpdatePhase.Stage => "Preparing update",
+        UpdatePhase.Apply => "Applying update",
+        _ => string.Empty,
+    };
 
     [RelayCommand]
     private async Task ConnectAsync(CancellationToken ct)
@@ -1402,10 +1495,18 @@ public partial class MainViewModel : ObservableObject
         CurrentView = "Forwards";
     }
 
+    /// <summary>
+    /// A native outbound rule is panel-declared configuration only. Its data
+    /// plane belongs to a user-initiated native outbound relay connection, so
+    /// every start/stop entry point must stay a no-op for it.
+    /// </summary>
+    private static bool IsNativeOutboundRule(ForwardViewModel? vm)
+        => vm?.Config is { } config && ForwardRuntimeManager.IsNativeOutboundForward(config);
+
     [RelayCommand]
     private async Task ToggleForward(ForwardViewModel? vm)
     {
-        if (vm == null)
+        if (vm == null || IsNativeOutboundRule(vm))
             return;
 
         if (vm.Summary.CanStop)
@@ -1417,7 +1518,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task StartForward(ForwardViewModel? vm)
     {
-        if (vm?.Config == null || _runtimeManager == null || _busyForwards.Contains(vm.ForwardId))
+        if (vm?.Config == null || IsNativeOutboundRule(vm) || _runtimeManager == null || _busyForwards.Contains(vm.ForwardId))
             return;
 
         _busyForwards.Add(vm.ForwardId);
@@ -1455,7 +1556,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task StopForward(ForwardViewModel? vm)
     {
-        if (vm == null || _runtimeManager == null)
+        if (vm == null || IsNativeOutboundRule(vm) || _runtimeManager == null)
             return;
 
         await Task.Run(() => _runtimeManager.StopForward(vm.ForwardId));
@@ -1523,6 +1624,7 @@ public partial class MainViewModel : ObservableObject
 
     private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded)
     {
+        var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(forward);
         var lifecycle = busy ? ForwardLifecycleState.Connecting
             : running ? ForwardLifecycleState.Connected
             : userStopped ? ForwardLifecycleState.Stopped
@@ -1542,9 +1644,12 @@ public partial class MainViewModel : ObservableObject
             quality.ToString(),
             friendly,
             busy,
-            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
-            CanStop: lifecycle is ForwardLifecycleState.Connected,
-            LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
+            LastTransitionAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        {
+            IsNativeOutboundRule = nativeOutboundRule,
+        };
     }
 
     private static string BuildForwardDisplayName(ForwardConfig forward)
@@ -1561,6 +1666,7 @@ public partial class MainViewModel : ObservableObject
         if (vm?.Config == null)
             return;
 
+        var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(vm.Config);
         var running = lifecycle == ForwardLifecycleState.Connected;
         var busy = _busyForwards.Contains(forwardId);
         vm.Summary = new ForwardSummary(
@@ -1571,9 +1677,12 @@ public partial class MainViewModel : ObservableObject
             running ? ForwardQualityState.Good.ToString() : ForwardQualityState.Unavailable.ToString(),
             lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "",
             busy,
-            CanStart: lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
-            CanStop: lifecycle is ForwardLifecycleState.Connected,
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
+            CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        {
+            IsNativeOutboundRule = nativeOutboundRule,
+        };
     }
 
     private static bool HasDegradedLeg(StateManager? stateManager, ForwardConfig forward)
@@ -1758,9 +1867,23 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
-                if (IsShuttingDown || _heartbeatService is null)
-                    return;
-                await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
+                RefreshMeasuredPayloadCeilings(forwards);
+                if (!IsShuttingDown && _heartbeatService is not null)
+                {
+                    // A failed heartbeat must not suppress the resize below.
+                    try
+                    {
+                        await _heartbeatService.SendHeartbeatAsync(_lifecycleCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex) { Log.Error(ex, "heartbeat failed"); }
+                }
+                // Run after the heartbeat so a rare in-place TUN resize can never
+                // delay the liveness signal.
+                await ApplyPendingTunMtuAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
             {
@@ -1771,6 +1894,68 @@ public partial class MainViewModel : ObservableObject
             _heartbeatTask = heartbeatTask;
 
         ScheduleNativeLeaseRefresh();
+    }
+
+    /// <summary>
+    /// Feeds the payload ceiling each running runtime published for its own
+    /// association into the proxy service, so a TUN that is started later (a
+    /// failover, a lease rotation, the next connect) uses the MTU that matches
+    /// the path. Ceilings rotate with the relay, so this must run on every tick.
+    /// </summary>
+    private void RefreshMeasuredPayloadCeilings(IReadOnlyList<ForwardConfig> forwards)
+    {
+        var proxyService = _proxyService;
+        if (proxyService is null || forwards.Count == 0)
+            return;
+        foreach (var forward in forwards)
+        {
+            if (forward.ForwardId <= 0 || _runtimeManager?.IsForwardRunning(forward.ForwardId) != true)
+                continue;
+            try
+            {
+                proxyService.RefreshMeasuredPayloadCeiling(forward.ForwardId);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "payload ceiling refresh failed forward={ForwardId}", forward.ForwardId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resizes a live TUN when the path it is measured against can no longer
+    /// carry it. sing-box 1.13 cannot reload inbounds, so the service restarts
+    /// its own sing-box process in place from the same config; the restart is
+    /// debounced to one attempt per minute and is skipped entirely unless
+    /// <c>MtuUpdatePending</c> is set, so a ceiling that merely wobbles inside
+    /// the MTU that is already live stays free of charge.
+    /// </summary>
+    private async Task ApplyPendingTunMtuAsync()
+    {
+        var proxyService = _proxyService;
+        if (IsShuttingDown || proxyService?.MtuUpdatePending != true)
+            return;
+        bool applied;
+        try
+        {
+            applied = await proxyService.ApplyPendingTunMtuAsync(_lifecycleCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifecycleCts.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "live TUN MTU apply failed");
+            return;
+        }
+
+        if (applied)
+        {
+            var mtu = proxyService.AppliedTunMtu;
+            Log.Information("live TUN MTU applied mtu={Mtu}", mtu);
+            InvokeOnUiThread(() => AddLog($"TUN MTU updated to {mtu} to match the measured path."));
+        }
     }
 
     private void OnNativeOutboundUpdated(NativeOutboundCapability? capability)
@@ -1855,6 +2040,9 @@ public partial class MainViewModel : ObservableObject
 
     private Task? CancelNativeLeaseRenewalLoop()
     {
+        // The batch belongs to the session that is going away; a restart inside
+        // the old window must fetch a fresh batch instead of inheriting it.
+        _nativeLeaseBatchExpiresAt = null;
         CancellationTokenSource? cancellation;
         Task? task;
         lock (_shutdownGate)
@@ -1895,9 +2083,14 @@ public partial class MainViewModel : ObservableObject
                 return;
             var proxyService = _proxyService;
             var now = DateTimeOffset.UtcNow;
-            var expiresAt = proxyService.ActiveNativeLeaseExpiresAt;
+            // Prefer the in-process lease, then the batch this client minted
+            // itself. A config poll or health tick must never re-lease while the
+            // batch the active session is running with is still inside its
+            // renewal window: that check is the only thing standing between a
+            // 16 second poll and a fresh candidate batch per forward.
+            var expiresAt = proxyService.ActiveNativeLeaseExpiresAt ?? _nativeLeaseBatchExpiresAt;
             var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
-            if (dataPlaneRunning
+            if (expiresAt is not null
                 && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 
@@ -1930,6 +2123,7 @@ public partial class MainViewModel : ObservableObject
                 DisposeNativeLeases(leases);
                 return;
             }
+            var batchExpiresAt = leases.Max(lease => lease.ExpiresAt);
             var game = ResolveProxyGame(gameId);
             var rules = (game?.ProcessNames ?? [])
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -1986,10 +2180,11 @@ public partial class MainViewModel : ObservableObject
                     return;
                 }
             }
+            _nativeLeaseBatchExpiresAt = batchExpiresAt;
             Log.Information(
                 "native outbound lease refreshed for forward {ForwardId} (expires={ExpiresAt:O})",
                 forwardId,
-                proxyService.ActiveNativeLeaseExpiresAt);
+                proxyService.ActiveNativeLeaseExpiresAt ?? batchExpiresAt);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

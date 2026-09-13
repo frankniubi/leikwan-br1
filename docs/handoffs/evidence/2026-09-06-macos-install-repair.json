@@ -1,0 +1,136 @@
+{
+  "source_commit": "56d7726a",
+  "version": "1.0.9",
+  "production_version": "1.0.8",
+  "published": false,
+  "blocker": "No Developer ID Application identity or notarization credentials; spctl still rejects.",
+  "test_host": "100.103.253.21",
+  "test_os": "macOS 26.6.2 25G83 arm64",
+  "artifacts": [
+    {
+      "key": "macos_client_app_arm64",
+      "architecture": "arm64",
+      "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
+      "format": "dmg",
+      "hardening": {
+        "managed_symbols": "disabled",
+        "native_helpers": "release-strip",
+        "ultra_client": "garble-v0.17.0-literals-tiny"
+      },
+      "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
+      "sha256": "fb29462f6f951387ec663f5d46d786f84afd562c2f8f0b291b455a538b2e4274",
+      "size_bytes": 76865794,
+      "version": "1.0.9",
+      "candidate_path": "artifacts/macos-install-fix-1.0.9/leikwan-bridge-arm64.dmg"
+    },
+    {
+      "key": "macos_client_update_arm64",
+      "architecture": "arm64",
+      "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
+      "format": "zip",
+      "hardening": {
+        "managed_symbols": "disabled",
+        "native_helpers": "release-strip",
+        "ultra_client": "garble-v0.17.0-literals-tiny"
+      },
+      "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
+      "sha256": "3efd56bbd610bcf527759703953b10c63e7bbd403ab3a83c2a20f3cb549d5f7e",
+      "size_bytes": 68265412,
+      "version": "1.0.9",
+      "candidate_path": "artifacts/macos-install-fix-1.0.9/leikwan-bridge-update-arm64.zip"
+    },
+    {
+      "key": "macos_client_app_x64",
+      "architecture": "x86_64",
+      "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
+      "format": "dmg",
+      "hardening": {
+        "managed_symbols": "disabled",
+        "native_helpers": "release-strip",
+        "ultra_client": "garble-v0.17.0-literals-tiny"
+      },
+      "path": "artifacts/macos/leikwan-bridge-x64.dmg",
+      "sha256": "bada54a0ed417b7ed714a115024821243e545b730ec94be8ead15369f23c1915",
+      "size_bytes": 81298606,
+      "version": "1.0.9",
+      "candidate_path": "artifacts/macos-install-fix-1.0.9/leikwan-bridge-x64.dmg"
+    },
+    {
+      "key": "macos_client_update_x64",
+      "architecture": "x86_64",
+      "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
+      "format": "zip",
+      "hardening": {
+        "managed_symbols": "disabled",
+        "native_helpers": "release-strip",
+        "ultra_client": "garble-v0.17.0-literals-tiny"
+      },
+      "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
+      "sha256": "c4c74d621bd19ce1073ebb03763a3a9f2aabb42f8b4463c53724071d10d4985e",
+      "size_bytes": 72542005,
+      "version": "1.0.9",
+      "candidate_path": "artifacts/macos-install-fix-1.0.9/leikwan-bridge-update-x64.zip"
+    }
+  ],
+  "native_acceptance": {
+    "arm64": {
+      "files": 231,
+      "layout_ok": true,
+      "dmg_signature_ok": true,
+      "zip_signature_ok": true,
+      "gatekeeper_exit": 3,
+      "notarized": false
+    },
+    "x64": {
+      "files": 231,
+      "layout_ok": true,
+      "dmg_signature_ok": true,
+      "zip_signature_ok": true,
+      "gatekeeper_exit": 3,
+      "notarized": false
+    },
+    "installation": {
+      "path": "/Applications/LeiKwan Bridge.app",
+      "open_exit": 0,
+      "window": {
+        "windows": [
+          {
+            "kCGWindowAlpha": 1.0,
+            "kCGWindowBounds": {
+              "Height": 668.0,
+              "Width": 1180.0,
+              "X": 25.0,
+              "Y": 30.0
+            },
+            "kCGWindowIsOnscreen": true,
+            "kCGWindowLayer": 0,
+            "kCGWindowMemoryUsage": 2368,
+            "kCGWindowNumber": 514,
+            "kCGWindowOwnerName": "LeiKwan Bridge",
+            "kCGWindowOwnerPID": 5850,
+            "kCGWindowSharingState": 0,
+            "kCGWindowStoreType": 1
+          }
+        ],
+        "count": 28
+      },
+      "app_version": "1.0.9"
+    }
+  },
+  "tests": {
+    "mac_unit_tests": 71,
+    "layout_tests": 9,
+    "metadata_signing_tests": 3,
+    "packaging_tests": "passed"
+  },
+  "signing_identity_count": 0,
+  "quarantine_removed": false,
+  "gatekeeper_disabled": false,
+  "screenshots_available": false,
+  "remaining": [
+    "Default Gatekeeper rejection for unnotarized builds",
+    "Intel execution not tested; Rosetta missing",
+    "Avalonia display-sleep RenderTimer -6661 remains; awake-display startup verified"
+  ],
+  "unrelated_dirty_preserved": true
+}

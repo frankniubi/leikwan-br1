@@ -75,25 +75,126 @@ func (s *PolicyStore) acceptsInFlight(ss RuntimeSnapshot) bool {
 	}
 	return s.policy.TargetDigest == ss.Policy.TargetDigest && s.policy.Transport == ss.Policy.Transport && s.policy.RouteScope == ss.Policy.RouteScope && s.policy.RoutePolicy == ss.Policy.RoutePolicy
 }
+
+// pathIsolationWindows escalates the isolation of a path that keeps failing.
+// Retrying a dead candidate every 15 seconds is what stretched one half-dead
+// relay into minutes of outage on 2026-09-13: every retry spent its arm budget
+// on the same corpse before walking on. Any real success clears the record.
+var pathIsolationWindows = [...]time.Duration{15 * time.Second, 45 * time.Second, 2 * time.Minute}
+
+// pathIsolationMinStrikes is how many consecutive failures a path may show
+// before new streams stop using it. One is not enough: a client that connects
+// and aborts before the relay answers looks exactly like a dead relay, and the
+// second strike costs about a second when the path really is dead.
+const pathIsolationMinStrikes = 2
+
+// FailPath isolates a path after one unambiguous failure: a dial or a datagram
+// arm that never completed. The path must belong to the current lease, so a
+// stale caller can never isolate something the panel did not authorize.
+func (s *PolicyStore) FailPath(protocol, key, generation string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failPathLocked(protocol, key, generation, 1)
+}
+
+// FailSilentPath records a failure that is only suspicious in repetition: a
+// stream that connected and then returned nothing. One of those can be a client
+// that gave up too early, so it takes pathIsolationMinStrikes of them in a row.
+func (s *PolicyStore) FailSilentPath(protocol, key, generation string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failPathLocked(protocol, key, generation, pathIsolationMinStrikes)
+}
+
+// ClearPathFailure forgets both the isolation and the escalation streak: the
+// path just carried data, so it is healthy again.
+func (s *PolicyStore) ClearPathFailure(protocol, key string) {
+	if key == "" {
+		return
+	}
+	stateKey := protocol + ":" + key
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pathFailures, stateKey)
+	delete(s.isolated, stateKey)
+}
+
 func (s *PolicyStore) failCandidateKey(protocol, key, generation string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.failPathLocked(protocol, key, generation, 1)
+}
+
+func (s *PolicyStore) failPathLocked(protocol, key, generation string, minStrikes int) bool {
 	if s.isolated == nil {
 		s.isolated = map[string]time.Time{}
 	}
+	if s.pathFailures == nil {
+		s.pathFailures = map[string]int{}
+	}
 	// A healthy association survives generation rotation, so its later failure
 	// must still isolate the SAME physical/logical path. Never affect a new path.
-	if s.policy == nil || s.lease == nil {
-		return
+	if s.policy == nil || s.lease == nil || !s.pathIsAuthorizedLocked(key) {
+		return false
 	}
-	matched := haPathKey(*s.lease) == key
+	stateKey := protocol + ":" + key
+	streak := s.pathFailures[stateKey] + 1
+	if streak > 65535 {
+		streak = 65535
+	}
+	s.pathFailures[stateKey] = streak
+	if streak < minStrikes {
+		return false
+	}
+	index := streak - minStrikes
+	if index > len(pathIsolationWindows)-1 {
+		index = len(pathIsolationWindows) - 1
+	}
+	window := pathIsolationWindows[index]
+	if remaining := time.Until(s.policy.ExpiresAt); remaining > 0 && remaining < window {
+		window = remaining
+	}
+	now := time.Now()
+	s.isolated[stateKey] = now.Add(window)
+	if s.allPathsIsolatedLocked(protocol, now) {
+		// Every authorized path is down at once. That is a local or upstream
+		// outage, not evidence about any single relay, and letting the escalated
+		// windows stand would keep the tunnels locked out for minutes after the
+		// endpoint became reachable again. Forget the streaks; the isolations
+		// themselves still expire on their own (at most the first window).
+		s.pathFailures = map[string]int{}
+	}
+	return true
+}
+
+// allPathsIsolatedLocked reports whether a protocol has no usable path left,
+// which means the next stream cannot be served at all.
+func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) bool {
+	checked := 0
+	keys := make([]string, 0, len(s.candidates)+1)
+	if s.lease != nil {
+		keys = append(keys, haPathKey(*s.lease))
+	}
+	for _, l := range s.candidates {
+		if l != nil {
+			keys = append(keys, haPathKey(*l))
+		}
+	}
+	for _, key := range keys {
+		checked++
+		if until, ok := s.isolated[protocol+":"+key]; !ok || !until.After(now) {
+			return false
+		}
+	}
+	return checked > 0
+}
+
+func (s *PolicyStore) pathIsAuthorizedLocked(key string) bool {
+	matched := s.lease != nil && haPathKey(*s.lease) == key
 	for _, l := range s.candidates {
 		matched = matched || (l != nil && haPathKey(*l) == key)
 	}
-	if !matched {
-		return
-	}
-	s.isolated[protocol+":"+key] = time.Now().Add(15 * time.Second)
+	return matched
 }
 
 type candidateStreamDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)

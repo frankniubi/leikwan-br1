@@ -1,50 +1,46 @@
 <h2>What you will accomplish</h2>
-<p>You will go from an active package to one verified Forward without changing advanced settings. The goal is not merely to save a configuration. The goal is to send a real request through the assigned local port and receive the expected response.</p>
+<p>You will go from an active plan to a working line: add one forward in the panel, install the app, connect, and see the line running. About five minutes, and you never have to choose a connection type - every line uses ultra, which keeps the route steady while you play.</p>
 
 <h2>Before you begin</h2>
 <ul>
-  <li>Confirm that your package or service is marked <strong>Active</strong>.</li>
-  <li>Know the destination host, destination port, and whether the application uses TCP, UDP, or both.</li>
-  <li>Have a supported Windows, Android, or Linux device ready for the Client.</li>
-  <li>Never share passwords, tokens, copied install commands, private keys, or route material.</li>
+  <li>An active plan, so the panel lets you create a forward.</li>
+  <li>The game or program you want to speed up, and the address it connects to (the game's server list usually shows it).</li>
+  <li>Windows, Android, or Linux on the device you play on. A phone works as well as a computer.</li>
+  <li>Your panel login, and about five minutes.</li>
 </ul>
 
 <h2>Steps</h2>
 <pre class="mermaid">flowchart TD
-accTitle: Five-minute connection path
-accDescr: Start with an active package, create one Forward, install and sign in to the Client, test the assigned local port, then either finish or open troubleshooting.
-A[Active package] --&gt; B[Create one Forward]
-B --&gt; C[Install and sign in]
-C --&gt; D[Test assigned local port]
-D --&gt; E{Works?}
-E -- Yes --&gt; F[Setup complete]
-E -- No --&gt; G[Open troubleshooting]</pre>
-<p>The shortest safe path has one decision: if an application request succeeds through the local listener, setup is complete; if it fails, keep the saved Forward and troubleshoot the visible symptom.</p>
+accTitle: From a plan to a working line
+accDescr: Create a forward, install the app, connect it, then point the game at the local port.
+A[Open the panel] --&gt; B[Create a forward]
+B --&gt; C[Install the app]
+C --&gt; D[Sign in and connect]
+D --&gt; E[Point the game at the local port]
+E --&gt; F[Play]</pre>
+<p>Five steps, each one covered in a few lines below. Nothing here needs a technical decision.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Tenant overview showing the three setup steps and the Create a forward action">
-  <figcaption>Demo screenshot. The package, counts, and IDs shown here are demonstration values.</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Panel overview showing the active plan and the list of forwards">
+  <figcaption>Your starting point: the plan and the forward list, both on the panel's first page.</figcaption>
 </figure>
 <ol>
-  <li>Open the active service in the tenant panel.</li>
-  <li>Select <strong>Create Forward</strong>.</li>
-  <li>Choose the offered route package and enter the destination.</li>
-  <li>Save the Forward and record its assigned local port.</li>
-  <li>Install the Client and sign in.</li>
-  <li>Wait for a recent client sync.</li>
-  <li>Point your application at the local listener.</li>
-  <li>Test with the actual application protocol, such as an HTTP request, SSH connection, or game connection.</li>
+  <li><strong>Open the panel and check the plan is active.</strong> If it shows as expired or unpaid, the forward form stays locked.</li>
+  <li><strong>Create a forward.</strong> Pick the line closest to the game's server, type the address and port the game connects to, keep the suggested local port, and save. Note that local port down - the game needs it in step 5.</li>
+  <li><strong>Install the app</strong> on the device you play on: Windows or Android from the Clients page, or the one-line Linux command. Sign in with your panel account.</li>
+  <li><strong>Connect.</strong> The app lists your forward; press connect and wait until it reads running.</li>
+  <li><strong>Point the game at the client.</strong> Wherever the game asks for a server address, use <code>127.0.0.1</code> and the local port from step 2, then start the game.</li>
+  <li><strong>Play, and glance at the panel afterwards.</strong> The forward shows traffic while you play.</li>
 </ol>
 
 <h2>How to know it worked</h2>
-<p>The panel shows an active endpoint after provisioning, the Client shows a recent sync, and the Forward reaches <strong>Connected</strong> or <strong>Running</strong>. Those signals are different from final proof. Final proof is that the application request succeeds and returns the expected result. If you control the target, its logs should also show the request arriving.</p>
+<p>Three signs, in this order: the app shows the line as running, the forward in the panel shows incoming traffic while you play, and the game itself stays steady instead of spiking in the middle of a match. If the game starts but the traffic numbers stay at zero, the local port is almost always the reason - check step 5 again.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop before changing route details at random.</strong> Keep the first Forward, note the exact error and time, then open the troubleshooting guide. A saved configuration, completed provisioning, recent sync, running process, and successful application request are separate checkpoints.</p>
+<p><strong>Stop and check the plan first</strong> if the panel refuses to save the forward: an expired plan is the most common reason on day one. The next most common is the wrong destination - use the address the game really connects to, not the address of the site you downloaded it from. Third is the local port: the game has to use exactly the port the panel assigned. Everything else - the app will not stay connected, the line keeps dropping, the game cannot reach the server - is covered in the troubleshooting guide below.</p>
 
 <h2>Related guides</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create Your First Forward</a></li>
   <li><a href="/knowledgebase?thread=install-client">Install the Client</a></li>
   <li><a href="/knowledgebase?thread=connect-and-verify">Connect and Verify</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a></li>
 </ul>

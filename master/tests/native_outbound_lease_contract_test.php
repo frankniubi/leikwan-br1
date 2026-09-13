@@ -109,8 +109,20 @@ assertNativeLease(!array_key_exists('source_id', $lease) && !array_key_exists('l
 assertNativeLease(!str_contains((string) json_encode($lease), 'leigod'), 'native lease exposed provider name');
 assertNativeLease(strtotime((string) ($lease['expires_at'] ?? '')) <= $now + UltraMode::MAX_POLICY_TTL_SECONDS, 'native TTL exceeded Ultra bound');
 
-$replay = $service->issueLease($request, 7, 'device-native');
-assertNativeLease(($replay['error'] ?? '') === 'lease_replayed', 'native nonce replay was not rejected');
+// A repeated nonce is a retry, not a replay: the nonce is already scoped to this
+// client, device and forward, and two refreshes racing each other (or a request
+// that timed out after the panel committed it) must still get a lease. The
+// allowance is bounded, so a flood of retries is refused.
+$retry = $service->issueLease($request, 7, 'device-native');
+assertNativeLease(($retry['ok'] ?? false) === true, 'a nonce retry must still issue a lease');
+$exhausted = [];
+for ($attempt = 0; $attempt < UltraLeaseService::MAX_REPLAY_ATTEMPTS; $attempt++) {
+    $exhausted = $service->issueLease($request, 7, 'device-native');
+}
+assertNativeLease(
+    ($exhausted['error'] ?? '') === 'lease_replayed',
+    'an unbounded nonce retry must be refused'
+);
 
 $candidateState = 'unknown';
 $unknown = $service->issueLease(array_merge($request, [

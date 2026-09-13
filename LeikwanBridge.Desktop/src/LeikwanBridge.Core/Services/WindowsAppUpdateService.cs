@@ -30,6 +30,29 @@ public sealed class WindowsAppUpdateService : IDisposable
         return remote > local;
     }
 
+    public static bool HasRuntimeDrift(AgentConfig config, WindowsClientAppArtifact artifact)
+    {
+        if (artifact.RuntimeSha256.Count == 0)
+            return false;
+        var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ultra_client_runtime_windows"] = config.GetEffectiveUltraBin(),
+            ["leikwan_bond_windows_amd64"] = config.GetEffectiveBondBin(),
+            ["leikwan_ingress_windows_amd64"] = config.GetEffectiveBondIngressBin(),
+            ["leikwan_uot_bond_windows_amd64"] = config.GetEffectiveUotBondBin(),
+            ["leikwan_mptcp_relay_windows_amd64"] = config.GetEffectiveMptcpRelayBin(),
+            ["wstunnel_windows_amd64"] = config.GetEffectiveWstunnelBin(),
+        };
+        foreach (var (key, expected) in artifact.RuntimeSha256)
+        {
+            if (!paths.TryGetValue(key, out var path) || string.IsNullOrWhiteSpace(expected))
+                continue;
+            if (!File.Exists(path) || !string.Equals(ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     public static bool ShouldCheckForUpdatesOnStartup(AgentConfig config)
     {
         return !config.DisableAutoUpdates
@@ -61,6 +84,68 @@ public sealed class WindowsAppUpdateService : IDisposable
     public static string BuildCachedInstallerPath(string installRoot, string version)
     {
         return Path.Combine(installRoot, "updates", $"leikwan-bridge-setup-{version}.exe");
+    }
+
+    /// <summary>
+    /// Keeps the installer cache down to the builds the client can still act
+    /// on. Every release drops a ~70 MB setup in this folder and nothing ever
+    /// removed them, so the cache grew without bound on every machine.
+    /// Never throws: failing to prune must not affect an update.
+    /// </summary>
+    public static IReadOnlyList<string> PruneCachedInstallers(
+        string installRoot,
+        string currentVersion,
+        string? pendingInstallerPath = null)
+    {
+        var removed = new List<string>();
+        try
+        {
+            var updatesDir = Path.Combine(installRoot, "updates");
+            if (!Directory.Exists(updatesDir))
+                return removed;
+
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                Path.GetFullPath(BuildCachedInstallerPath(installRoot, currentVersion)),
+            };
+            if (!string.IsNullOrWhiteSpace(pendingInstallerPath))
+            {
+                try
+                {
+                    keep.Add(Path.GetFullPath(pendingInstallerPath.Trim()));
+                }
+                catch (Exception)
+                {
+                    // A malformed pending path simply is not protected.
+                }
+            }
+
+            foreach (var file in Directory.EnumerateFiles(updatesDir, "leikwan-bridge-setup-*.exe"))
+            {
+                string fullPath;
+                try
+                {
+                    fullPath = Path.GetFullPath(file);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (keep.Contains(fullPath))
+                    continue;
+
+                TryDeleteFile(fullPath);
+                if (!File.Exists(fullPath))
+                    removed.Add(fullPath);
+            }
+        }
+        catch (Exception)
+        {
+            // Best effort only.
+        }
+
+        return removed;
     }
 
     public static string BuildInstallStatePath(string installRoot)
@@ -142,11 +227,10 @@ public sealed class WindowsAppUpdateService : IDisposable
 
     public static string ResolveArtifactUrl(string masterUrl, string artifactUrl)
     {
-        if (string.IsNullOrWhiteSpace(artifactUrl))
-            return string.Empty;
-        if (Uri.TryCreate(artifactUrl, UriKind.Absolute, out var absolute))
-            return absolute.ToString();
-        return masterUrl.TrimEnd('/') + "/" + artifactUrl.TrimStart('/');
+        // Rebases relative URLs onto the selected endpoint and redirects
+        // absolute URLs that point at another known panel endpoint so every
+        // artifact download follows the user's chosen mirror.
+        return PanelEndpoints.RebaseArtifactUrl(masterUrl, artifactUrl);
     }
 
     public static string BuildArtifactDownloadUrl(string artifactUrl, string version, string sha256)
@@ -191,8 +275,15 @@ public sealed class WindowsAppUpdateService : IDisposable
         return false;
     }
 
-    public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
+    public Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(string masterUrl, CancellationToken ct = default)
+        => FetchWindowsClientArtifactAsync(masterUrl, progress: null, ct);
+
+    public async Task<WindowsClientAppArtifact> FetchWindowsClientArtifactAsync(
+        string masterUrl,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default)
     {
+        Report(progress, UpdateProgress.Checking("Checking for updates..."));
         var uri = new Uri(masterUrl.TrimEnd('/') + "/artifacts/client-manifest.json");
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         using var responseMessage = await SendAsync(request, ct);
@@ -200,21 +291,104 @@ public sealed class WindowsAppUpdateService : IDisposable
         var json = await responseMessage.Content.ReadAsStringAsync(ct);
         var response = JsonSerializer.Deserialize<WindowsClientArtifactManifestResponse>(json)
             ?? throw new InvalidOperationException("null client manifest response");
-        return response.Manifest.WindowsClientApp;
+        var artifact = response.Manifest.WindowsClientApp;
+        foreach (var (key, component) in response.Manifest.Components)
+        {
+            if (!key.Contains("runtime", StringComparison.OrdinalIgnoreCase)
+                || component.ValueKind != JsonValueKind.Object)
+                continue;
+            if (component.TryGetProperty("sha256", out var sha)
+                && sha.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(sha.GetString()))
+                artifact.RuntimeSha256[key] = sha.GetString()!;
+        }
+        Report(progress, UpdateProgress.Checking("Update check finished."));
+        return artifact;
     }
 
-    public async Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)
+    public Task DownloadInstallerAsync(string artifactUrl, string destinationPath, CancellationToken ct = default)
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress: null, expectedSha256: null, ct: ct);
+
+    public Task DownloadInstallerAsync(
+        string artifactUrl,
+        string destinationPath,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default)
+        => DownloadInstallerAsync(artifactUrl, destinationPath, progress, expectedSha256: null, ct: ct);
+
+    public async Task DownloadInstallerAsync(
+        string artifactUrl,
+        string destinationPath,
+        IProgress<UpdateProgress>? progress,
+        string? expectedSha256,
+        long? expectedLength = null,
+        CancellationToken ct = default)
     {
         var dir = Path.GetDirectoryName(destinationPath);
         if (!string.IsNullOrWhiteSpace(dir))
             Directory.CreateDirectory(dir);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, artifactUrl);
-        using var response = await SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        await using var file = File.Create(destinationPath);
-        await stream.CopyToAsync(file, ct);
+        try
+        {
+            Report(progress, UpdateProgress.Downloading(0, "Downloading update..."));
+            // Resumable: the shared panel client caps every request at 30 s
+            // including the body, and this artifact is ~70 MB, so a single
+            // request only ever completes on a >2.3 MB/s link. The downloader
+            // keeps a .part file and continues from the last byte received.
+            await ResumableArtifactDownloader.DownloadAsync(
+                SendAsync,
+                artifactUrl,
+                destinationPath,
+                progress: (received, total) => Report(progress, UpdateProgress.Downloading(
+                    total is > 0
+                        ? Math.Min(99.5, received * 100.0 / total.Value)
+                        : 0,
+                    $"Downloading update... ({received} bytes)")),
+                expectedLength: expectedLength,
+                ct: ct);
+            Report(progress, UpdateProgress.Downloading(100, "Download finished."));
+
+            if (string.IsNullOrWhiteSpace(expectedSha256))
+                return;
+
+            Report(progress, UpdateProgress.Verifying(0, "Verifying download..."));
+            var actualSha256 = ComputeSha256(destinationPath);
+            if (!string.Equals(actualSha256, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("downloaded installer hash mismatch");
+            Report(progress, UpdateProgress.Verifying(100, "Download verified."));
+        }
+        catch
+        {
+            TryDeleteFile(destinationPath);
+            throw;
+        }
+    }
+
+    private static void Report(IProgress<UpdateProgress>? progress, UpdateProgress update)
+    {
+        try
+        {
+            progress?.Report(update);
+        }
+        catch (Exception)
+        {
+            // A broken UI progress sink must never fail the update pipeline.
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     public static string ComputeSha256(string path)

@@ -14,6 +14,21 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
 {
     private sealed record RuntimeState(string Directory, string SocketDirectory, string SocketPath, string StatusPath);
 
+    /// <summary>
+    /// Budget for delivering the lease batch over the control socket.
+    /// <para>
+    /// The runtime answers the delivery only after its selection window closes:
+    /// probe duration + datagram association budget + response grace, which is
+    /// roughly 45-50 seconds with the shipped contract. The Windows host waits
+    /// without an explicit deadline (it relies on
+    /// <see cref="UnixUltraLeaseClient.BatchTimeout"/>); a hard 20 second cap
+    /// here cancelled every multi-candidate delivery on macOS and made all
+    /// forwards report "forward start failed". Keep this strictly above the
+    /// lease client's own budget so the inner timeout always decides.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan LeaseDeliveryTimeout = TimeSpan.FromSeconds(90);
+
     private readonly AgentConfig _config;
     private readonly IProcessSupervisor _supervisor;
     private readonly StateManager _stateManager;
@@ -111,7 +126,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["target_digest"] = leases[0].TargetDigest,
                 ["auto_select"] = autoSelect,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 64,
+                ["udp_queue_packets"] = 256,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
@@ -147,7 +162,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
-            using var deliveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var deliveryTimeout = new CancellationTokenSource(LeaseDeliveryTimeout);
             var leaseDelivered = (leases.Count == 1
                 ? _leaseSender(socketPath, forward.ForwardId, leases[0], deliveryTimeout.Token)
                 : _leaseBatchSender(socketPath, forward.ForwardId, leases, deliveryTimeout.Token))
@@ -194,6 +209,17 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             DisposeLeases(leases);
         }
     }
+
+    /// <summary>
+    /// Payload ceiling the running runtime last published for a forward, or 0 while the
+    /// association is unusable or has not been measured yet. The value lives in the status
+    /// file handed to the helper as "status_path"; the Ultra forwards have no TUN, so this
+    /// is the observation point rather than an MTU input.
+    /// </summary>
+    public int GetPayloadCeiling(int forwardId)
+        => _runtimes.TryGetValue(forwardId, out var runtime)
+            ? MacUltraRuntimeStatusReader.ReadPayloadCeiling(runtime.StatusPath)
+            : 0;
 
     public bool Refresh(ForwardConfig forward, UltraLease lease)
         => Refresh(forward, new[] { lease });

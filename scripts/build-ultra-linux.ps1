@@ -2,14 +2,33 @@
 param(
     [string]$Version = "2026.08.27.1",
     [string]$OutputPath = "",
+    # amd64 (default) or arm64; the artifact name follows the arch.
+    [ValidateSet("amd64", "arm64")]
+    [string]$Arch = "amd64",
+    # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
+    [string]$ShortSha = "",
     [switch]$SkipReproducibilityCheck
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $repoRoot "tools\ultra-client"
+# Same fingerprint convention as build-ultra-macos.ps1: <version>.<shortsha>.
+$shortSha = $ShortSha
+if ([string]::IsNullOrWhiteSpace($shortSha)) {
+    # $LASTEXITCODE is only meaningful immediately after git ran: an explicit
+    # -ShortSha used to be clobbered to "unknown" because a fresh PowerShell
+    # session reports $null there, which is -ne 0. The stamped fingerprint then
+    # never matched the release manifest, so the panel's attestation check
+    # could not recognise a released Linux/Windows runtime at all.
+    $shortSha = git -C $repoRoot rev-parse --short HEAD
+    if ($LASTEXITCODE -ne 0) { $shortSha = "" }
+}
+if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
+$FullVersion = "$Version.$shortSha"
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $repoRoot "artifacts\ultra\ultra-client_linux_amd64"
+    $archSuffix = if ($Arch -eq "arm64") { "arm64" } else { "amd64" }
+    $OutputPath = Join-Path $repoRoot "artifacts\ultra\ultra-client_linux_$archSuffix"
 }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDir = Split-Path -Parent $OutputPath
@@ -63,7 +82,7 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
 }
 
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid=" -o $Destination .
+    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble build failed"
     }
@@ -71,7 +90,7 @@ function Invoke-GarbleBuild([string]$Destination) {
 
 try {
     $env:GOOS = "linux"
-    $env:GOARCH = "amd64"
+    $env:GOARCH = $Arch
     $env:CGO_ENABLED = "0"
     Push-Location $sourceRoot
     try {

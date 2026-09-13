@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.11.2"
+INSTALLER_VERSION="2026.09.13.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -826,6 +826,13 @@ if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   # download_atomic "$ARTIFACT_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
   download_manifest_artifact client_agent_update "$DOWNLOAD_BASE/artifacts/client-agent-update.sh" "$BIN_DIR/leikwan-client-agent-update"
 fi
+# `leikwan` is the operator surface for this client (status/start/stop/restart/
+# logs/doctor/update); it ships as a verified manifest artifact so it can never
+# drift from the resolver/updater it drives.
+download_manifest_artifact leikwan_cli_linux "$DOWNLOAD_BASE/artifacts/leikwan-linux.sh" "$BIN_DIR/leikwan"
+chmod 0755 "$BIN_DIR/leikwan"
+download_manifest_artifact tcp_accel_installer "$DOWNLOAD_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
+"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
 download_manifest_artifact install_forward_runtime "$DOWNLOAD_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_PATH" "$BIN_DIR/ultra-client"
 # Legacy amd64 route contract retained for older static tooling:
@@ -910,7 +917,7 @@ EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
 Restart=always
 RestartSec=5
-WatchdogSec=90
+WatchdogSec=180
 NotifyAccess=main
 
 [Install]

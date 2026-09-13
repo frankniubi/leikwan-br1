@@ -165,6 +165,47 @@ public sealed class MacUltraRuntimeHostTests
         host.Stop(42);
     }
 
+    [Fact]
+    public void PayloadCeilingIsReadFromTheRuntimeStatusFile()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new RecordingProcessSupervisor();
+        var lease = CreateLease("203.0.113.199");
+        var host = new MacUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            socketExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _, _) => Task.FromResult(true),
+            socketRoot: Path.Combine(temp.Path, "sockets"));
+        var forward = CreateForward("198.51.100.199:443", lease);
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        // The helper writes the status file the host handed it as "status_path".
+        var runtimeDirectory = Assert.Single(Directory.EnumerateDirectories(
+            Path.Combine(temp.Path, "runtime"),
+            "ultra-42-*"));
+        var statusPath = Path.Combine(runtimeDirectory, "status.json");
+        Assert.False(File.Exists(statusPath));
+        Assert.Equal(0, host.GetPayloadCeiling(42));
+        Assert.Equal(0, host.GetPayloadCeiling(7));
+
+        File.WriteAllText(statusPath, """{"forward_id":42,"udp_payload_ceiling":1472,"udp_oversize_drops":1}""");
+
+        Assert.Equal(1472, host.GetPayloadCeiling(42));
+        Assert.All(lease.Password, value => Assert.Equal(0, value));
+        host.Stop(42);
+    }
+
     private static ForwardConfig CreateForward(string target, UltraLease lease)
     {
         return new ForwardConfig

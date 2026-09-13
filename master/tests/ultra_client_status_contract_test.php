@@ -54,7 +54,7 @@ namespace Leikwan\Master\Database {
                     'user_email' => 'user7@example.test',
                 ]];
             }
-            if (str_contains($sql, 'SELECT last_seen_at FROM client_device_sessions')) {
+            if (str_contains($sql, 'SELECT last_seen_at')) {
                 return [['last_seen_at' => gmdate('Y-m-d H:i:s', self::$now - self::$age)]];
             }
             return [];

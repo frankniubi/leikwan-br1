@@ -379,6 +379,19 @@ var (
 	errStreamPreludeRejected          = errors.New("stream prelude rejected")
 	errDatagramControlReplyIncomplete = errors.New("datagram control reply incomplete")
 	errDatagramAssociationFailed      = errors.New("datagram association failed")
+	// The provider endpoint could not be reached at all. That is a verdict on
+	// the endpoint; a connection that is established and then refused is not,
+	// and the two are told apart by this sentinel.
+	errProviderDial = errors.New("provider connect")
+)
+
+// Test-only observation hooks. The production runtime never assigns these;
+// the in-process game-sim benchmark uses them to inspect the kernel buffer
+// sizes on the sockets the runtime itself configures (4MB datagram buffers).
+var (
+	testHookLocalUDPListening  func(local *net.UDPConn)
+	testHookDatagramArmed      func(remote *net.UDPConn)
+	testHookRuntimeQueueDepth  func(depth int)
 )
 
 type handshakePhaseError struct {
@@ -436,7 +449,7 @@ func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetP
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
 	if err != nil {
-		return nil, fmt.Errorf("provider connect: %w", err)
+		return nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
 	handshake, err := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 1, targetHost, targetPort, greeting)
 	defer clearBytes(handshake)
@@ -583,40 +596,48 @@ func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, ti
 	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
 
-func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
+// copyOutbound and copyInbound report how many bytes they moved: the relay
+// health decision needs to tell "the far end answered and closed" apart from
+// "the far end took the connection and returned nothing", and only the byte
+// count separates those two EOFs.
+func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
 	buffer := make([]byte, 32*1024)
+	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
 			if err := limiter.Consume(count); err != nil {
-				return err
+				return total, err
 			}
 			status.AddUsage(0, count)
 			if err := writeXor(destination, buffer[:count]); err != nil {
-				return err
+				return total, err
 			}
+			total += int64(count)
 		}
 		if readErr != nil {
-			return readErr
+			return total, readErr
 		}
 	}
 }
 
-func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) error {
+func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
 	buffer := make([]byte, 32*1024)
+	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
 			if err := limiter.Consume(count); err != nil {
-				return err
+				return total, err
 			}
 			status.AddUsage(count, 0)
 			if _, err := destination.Write(buffer[:count]); err != nil {
-				return err
+				return total, err
 			}
+			total += int64(count)
 		}
 		if readErr != nil {
-			return readErr
+			return total, readErr
 		}
 	}
 }
@@ -663,7 +684,14 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				}
 				defer snapshot.Lease.wipe()
 				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
-				relayTCP(ctx, local, remote, store.Limiter(), status, config.ForwardID, snapshot.Policy.PolicyGeneration, snapshot.Lease.SelectionRef)
+				relayTCP(ctx, local, remote, store.Limiter(), status, store, relayIdentity{
+					forward:      config.ForwardID,
+					generation:   snapshot.Policy.PolicyGeneration,
+					selection:    snapshot.Lease.SelectionRef,
+					pathKey:      haPathKey(snapshot.Lease),
+					candidateKey: snapshot.Lease.CandidateKeyHash,
+					leaseHash:    snapshot.Lease.LeaseHash,
+				})
 
 			}()
 		default:
@@ -715,11 +743,199 @@ type DatagramSession struct {
 	onRuntimeFailure func(error)
 	onRuntimeACK     func()
 	onRuntimeDrop    func()
+	// onCeilingMeasured publishes the payload ceiling of this association to the
+	// status file together with its provenance (declared or measured).
+	onCeilingMeasured func(ceiling int, source string)
 
 	control *net.TCPConn
 	remote  *net.UDPConn
 	mode    byte
 	sid     []byte
+
+	// Payload ceiling (path MTU) of this association. ceilingMu single-flights
+	// the lazy ladder measurement, which is why it is not a sync.Once: a
+	// panel-declared ceiling is applied first and verified later.
+	ceilingMu sync.Mutex
+	// declaredCeiling is the panel hint for this relay, 0 when unknown.
+	declaredCeiling int
+	payloadCeiling  int
+	ceilingSource   string
+	ceilingMeasured bool
+}
+
+// Native-UDP payload ceiling self-measurement.
+//
+// Field sweep 2026-09-12 (189 lines from the source host): the ceiling belongs to
+// the relay association, not to the line -- some relays carry 2000-byte payloads,
+// others drop everything above ~1450 wire bytes, and one relay of line 946
+// returned nothing at all. The runtime had no MTU concept, so a 1500-byte TUN
+// frame became a 1516-byte datagram and vanished without a trace.
+const (
+	// defaultPayloadCeiling keeps envelope+IP+UDP at 1444 bytes, under every
+	// ceiling observed in the sweep; payloads at or below it never pay for a probe.
+	defaultPayloadCeiling = 1400
+	// floorPayloadCeiling is the smallest ceiling still considered usable.
+	floorPayloadCeiling = 1280
+	// payloadCeilingAttempts guards against the 1-in-12 flapping seen at 1440.
+	payloadCeilingAttempts = 2
+	// datagramEnvelopeSize is the fixed Ultra envelope that prefixes a payload.
+	datagramEnvelopeSize = 16
+	// maxPayloadCeilingHint bounds a panel-declared ceiling: the largest payload
+	// one IPv4 UDP datagram can carry after the envelope.
+	maxPayloadCeilingHint = 65507 - datagramEnvelopeSize
+	// Payload ceiling provenance published in status: a value the panel declared
+	// for the relay versus one the runtime measured on the path.
+	payloadCeilingSourceDeclared = "declared"
+	payloadCeilingSourceMeasured = "measured"
+	// udpPayloadCeilingUnusableReason is the candidate feedback reason for an
+	// association that completes its handshake but cannot echo a floor-sized
+	// payload. It is deliberately distinct so status shows why a relay left.
+	udpPayloadCeilingUnusableReason = "udp_payload_ceiling_unusable"
+)
+
+var (
+	errDatagramOversize   = errors.New("datagram exceeds path payload ceiling")
+	errDatagramUnusable   = errors.New("association cannot carry a floor-sized payload")
+	payloadCeilingLadder  = []int{1500, 1472, 1440, 1400, 1360, 1280}
+	payloadCeilingTimeout = 300 * time.Millisecond
+	// payloadCeilingBudget bounds the one-time measurement on the send path. It
+	// must cover the whole ladder: below the floor a verdict of 0 means "the
+	// floor rung did not echo", so a rung skipped for time would report a
+	// narrow-but-working relay as unusable and make HA migrate away from it.
+	payloadCeilingBudget = payloadCeilingAttempts * time.Duration(len(payloadCeilingLadder)) * payloadCeilingTimeout
+)
+
+// probeEcho sends payload to the relay keep-echo target (2.0.0.0:0), the only
+// destination guaranteed to answer on an armed association, and reports whether
+// the identical bytes came back.
+func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration) bool {
+	if session.remote == nil {
+		return false
+	}
+	packet, err := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, payload)
+	if err != nil {
+		return false
+	}
+	if _, err := writeAllToUDP(session.remote, packet); err != nil {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	buffer := make([]byte, 65535)
+	for {
+		if err := session.remote.SetReadDeadline(deadline); err != nil {
+			return false
+		}
+		count, err := session.remote.Read(buffer)
+		if err != nil {
+			return false
+		}
+		if unwrapped, ok := unwrapDatagramForSession(buffer[:count]); ok && bytes.Equal(unwrapped, payload) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+	}
+}
+
+// measurePayloadCeiling walks the ladder from large to small and returns the first
+// size that echoed back on every attempt. ok is false when even the smallest rung
+// failed: the 2026-09-12 sweep found relays that complete the handshake but never
+// echo a real payload (10 of 180), and those must count as unusable instead of
+// silently swallowing traffic.
+func measurePayloadCeiling(echo func([]byte, time.Duration) bool) (int, bool) {
+	budget := time.Now().Add(payloadCeilingBudget)
+	for index, size := range payloadCeilingLadder {
+		// The floor rung is always probed: it is the rung that decides whether
+		// the association is unusable at all.
+		if index < len(payloadCeilingLadder)-1 && time.Now().After(budget) {
+			break
+		}
+		accepted := true
+		for attempt := 0; attempt < payloadCeilingAttempts && accepted; attempt++ {
+			payload := make([]byte, size)
+			for index := range payload {
+				payload[index] = byte(size + attempt + index)
+			}
+			if !echo(payload, payloadCeilingTimeout) {
+				accepted = false
+			}
+		}
+		if accepted {
+			return size, true
+		}
+	}
+	return 0, false
+}
+
+// payloadLimit is the ceiling currently trusted for this association. A
+// panel-declared hint is used as the initial ceiling so a relay the panel
+// already measured does not pay for a local ladder probe; without a hint the
+// path is measured once, lazily. 0 means the path cannot carry real payloads.
+func (session *DatagramSession) payloadLimit() int {
+	session.ceilingMu.Lock()
+	defer session.ceilingMu.Unlock()
+	if session.ceilingSource == "" {
+		if session.declaredCeiling > 0 {
+			session.applyCeilingLocked(session.declaredCeiling, payloadCeilingSourceDeclared)
+		} else {
+			session.applyMeasuredCeilingLocked()
+		}
+	}
+	return session.payloadCeiling
+}
+
+// verifyPayloadCeiling replaces a panel-declared ceiling with the value measured
+// on the path. It runs at most once, when a datagram exceeds the declared
+// ceiling, so a stale hint is corrected in either direction instead of
+// silently black-holing traffic the relay can carry.
+func (session *DatagramSession) verifyPayloadCeiling() int {
+	session.ceilingMu.Lock()
+	defer session.ceilingMu.Unlock()
+	if !session.ceilingMeasured {
+		session.applyMeasuredCeilingLocked()
+	}
+	return session.payloadCeiling
+}
+
+func (session *DatagramSession) applyMeasuredCeilingLocked() {
+	size, ok := measurePayloadCeiling(session.probeEcho)
+	if !ok || size < floorPayloadCeiling {
+		size = 0
+	}
+	session.ceilingMeasured = true
+	session.applyCeilingLocked(size, payloadCeilingSourceMeasured)
+}
+
+func (session *DatagramSession) applyCeilingLocked(ceiling int, source string) {
+	session.payloadCeiling = ceiling
+	session.ceilingSource = source
+	if session.onCeilingMeasured != nil {
+		session.onCeilingMeasured(ceiling, source)
+	}
+}
+
+// payloadUnusable reports an association the runtime measured as unable to carry
+// a floor-sized payload. It must migrate to another candidate instead of
+// dropping every large datagram until the policy expires.
+func (session *DatagramSession) payloadUnusable() bool {
+	return session.payloadLimit() == 0
+}
+
+// allowsPayload keeps sub-MTU traffic free of probes and only measures the path
+// for datagrams that could plausibly hit the ceiling.
+func (session *DatagramSession) allowsPayload(size int) bool {
+	if size <= floorPayloadCeiling {
+		return true
+	}
+	if limit := session.payloadLimit(); limit > 0 && size <= limit {
+		return true
+	}
+	// The datagram is above the known ceiling. Verify it against the path before
+	// refusing: a low panel hint is corrected upward instead of dropping traffic
+	// this relay can actually carry.
+	limit := session.verifyPayloadCeiling()
+	return limit > 0 && size <= limit
 }
 
 func (session *DatagramSession) Close() {
@@ -972,7 +1188,7 @@ func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting 
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
 	conn, err := net.DialTimeout("tcp", address, remaining)
 	if err != nil {
-		return nil, nil, fmt.Errorf("provider connect: %w", err)
+		return nil, nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
 	control := conn.(*net.TCPConn)
 	handshake, buildErr := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port, greeting)
@@ -1087,6 +1303,10 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 		if dialErr != nil {
 			continue
 		}
+		// Provider-side datagram sockets carry game bursts too; the OS default
+		// receive buffer overflows long before the reader loop can drain it.
+		_ = remote.SetReadBuffer(4 << 20)
+		_ = remote.SetWriteBuffer(4 << 20)
 		packet, packetErr := makeDatagramEnvelope(mode, sid, "2.0.0.0", 0, keep)
 		if packetErr != nil {
 			remote.Close()
@@ -1114,7 +1334,15 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 			if validDatagramSessionResponse(buffer[:count], sid) {
 				_ = remote.SetReadDeadline(time.Time{})
 				_ = remote.SetWriteDeadline(time.Time{})
-				return &DatagramSession{control: control, remote: remote, mode: mode, sid: sid}, nil
+				if testHookDatagramArmed != nil {
+					testHookDatagramArmed(remote)
+				}
+				// The lease carries the panel's ceiling hint for this relay; the
+				// session applies it lazily on the first payload that needs it.
+				return &DatagramSession{
+					control: control, remote: remote, mode: mode, sid: sid,
+					declaredCeiling: normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling),
+				}, nil
 			}
 		}
 		remote.Close()
@@ -1225,6 +1453,9 @@ type udpWarmSession struct {
 	keepaliveCancel  context.CancelFunc
 	claimed          chan struct{}
 	err              error
+	// payloadCeiling is the panel-declared ceiling of the armed candidate, 0
+	// when the panel declared none.
+	payloadCeiling int
 }
 
 // runPersistentWarmWorker keeps one unclaimed UDP association ready for the
@@ -1357,7 +1588,7 @@ type udpRuntimeLimits struct {
 func resolveUDPLimits(config Config) udpRuntimeLimits {
 	queuePackets := config.UDPQueuePackets
 	if queuePackets < 1 || queuePackets > 4096 {
-		queuePackets = 64
+		queuePackets = 256
 	}
 	maxAssociations := config.UDPMaxAssociations
 	if maxAssociations < 1 || maxAssociations > 8192 {
@@ -1403,6 +1634,13 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if err != nil {
 		return err
 	}
+	// Game clients burst well above the OS-default datagram receive buffer;
+	// the kernel drop counter (UdpRcvbufErrors) climbs silently otherwise.
+	_ = local.SetReadBuffer(4 << 20)
+	_ = local.SetWriteBuffer(4 << 20)
+	if testHookLocalUDPListening != nil {
+		testHookLocalUDPListening(local)
+	}
 	targetIP, err := resolveIPv4(targetHost)
 	if err != nil {
 		local.Close()
@@ -1426,8 +1664,10 @@ func serveUDPOnConn(
 	maxAssociations := limits.maxAssociations
 	setupSlots := make(chan struct{}, limits.setupWorkers)
 	associations := make(map[string]*udpAssociation)
-	const maxAssociationPackets = 100000
-	const associationIdle = 2 * time.Minute
+	// Associations are bounded by maxAssociations eviction and the idle GC
+	// below; a hard per-association packet cap caused a visible hiccup (a
+	// dropped packet plus a full re-handshake) every 100k packets.
+	const associationIdle = 10 * time.Minute
 	prewarmEnabled := config.UDPPrewarm && stringsContainsUDP(strings.ToLower(strings.TrimSpace(config.Transport)))
 	var associationMu sync.Mutex
 	warmSessions := make(chan udpWarmSession, 1)
@@ -1610,6 +1850,7 @@ func serveUDPOnConn(
 		associationMu.Unlock()
 		publishAssociationCounts()
 		status.UpdateUDPWithTierAndCandidate(warm.selectionRef, warm.selectionTier, warm.candidateKeyHash, time.Since(warm.started), warm.leaseHash)
+		status.UpdateUDPPayloadCeiling(warm.payloadCeiling, payloadCeilingSourceDeclared)
 		status.RecordUDPAttached(warm.selectionRef, warm.selectionTier)
 		for _, queuedPayload := range queued {
 			packet, packetErr := makeDatagramEnvelope(next.mode, next.sid, targetIP, targetPort, queuedPayload)
@@ -1744,12 +1985,6 @@ func serveUDPOnConn(
 			association.lastSeen = time.Now()
 			association.lastUserActivity = association.lastSeen
 			association.packetCnt++
-			if association.packetCnt > maxAssociationPackets {
-				associationMu.Unlock()
-				lease.wipe()
-				closeAssociation(key, association)
-				continue
-			}
 			association.sessionMu.Lock()
 			modeSet := association.localModeSet
 			modeMatches := !modeSet || association.socksUDP == packetIsSocksUDP
@@ -1859,6 +2094,26 @@ func serveUDPOnConn(
 			continue
 		}
 		current.writeMu.Lock()
+		if !session.allowsPayload(len(payload)) {
+			// Refuse instead of handing the path a datagram it will silently drop.
+			status.AddUDPOversizeDrop()
+			if session.payloadUnusable() {
+				// Nothing echoes on this association. Report it through the
+				// existing runtime failure path so HA arms another candidate
+				// instead of black-holing every large datagram until expiry.
+				current.writeMu.Unlock()
+				if session.onRuntimeFailure != nil {
+					session.onRuntimeFailure(errDatagramUnusable)
+				}
+				closeAssociation(key, current)
+				continue
+			}
+			if session.onRuntimeDrop != nil {
+				session.onRuntimeDrop()
+			}
+			current.writeMu.Unlock()
+			continue
+		}
 		packet, packetErr := makeDatagramEnvelope(session.mode, session.sid, targetIP, targetPort, payload)
 		if packetErr == nil {
 			if _, writeErr := session.remote.Write(packet); writeErr != nil {

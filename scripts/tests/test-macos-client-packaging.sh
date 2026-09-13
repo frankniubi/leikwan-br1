@@ -215,6 +215,9 @@ for key, filename, fmt in (
             "native_helpers": "release-strip",
             "managed_symbols": "disabled",
         },
+        "runtime_sha256": {
+            "bin/ultra-client": hashlib.sha256(b"runtime").hexdigest(),
+        },
         "unexpected": "must-not-be-merged",
     }
 (root / "metadata.json").write_text(json.dumps({"artifacts": artifacts}), encoding="utf-8")
@@ -224,6 +227,7 @@ PY
   --merge-versions "$merge_root/artifacts/versions.json" \
   --metadata "$merge_root/metadata.json" >/dev/null
 python3 - "$merge_root/artifacts/versions.json" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
@@ -233,6 +237,7 @@ assert "existing" in data
 assert data["macos_client_app_arm64"]["format"] == "dmg"
 assert data["macos_client_update_arm64"]["format"] == "zip"
 assert data["macos_client_app_arm64"]["hardening"]["ultra_client"] == "garble-v0.17.0-literals-tiny"
+assert data["macos_client_app_arm64"]["runtime_sha256"]["bin/ultra-client"] == hashlib.sha256(b"runtime").hexdigest()
 assert "unexpected" not in data["macos_client_app_arm64"]
 PY
 cp "$merge_root/artifacts/versions.json" "$merge_root/versions.before"
