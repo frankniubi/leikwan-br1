@@ -549,7 +549,15 @@ func probeTarget(config Config) (string, int, error) {
 }
 
 func probeTCPTarget(_ Config) (string, int, error) {
-	return "1.1.1.1", 443, nil
+	host, port, err := net.SplitHostPort(defaultTCPProbeTarget)
+	if err != nil {
+		return "", 0, err
+	}
+	var numericPort int
+	if _, err := fmt.Sscanf(port, "%d", &numericPort); err != nil || numericPort < 1 || numericPort > 65535 {
+		return "", 0, errors.New("tcp probe target port invalid")
+	}
+	return host, numericPort, nil
 }
 
 func summarizeRTTs(rtts []time.Duration) (time.Duration, time.Duration, time.Duration) {
