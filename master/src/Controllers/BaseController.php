@@ -1563,14 +1563,36 @@ HTML;
         $pageClass = $isBridgeHome ? ' bridge-home-page' : '';
         $topbarClass = $isBridgeHome ? ' bridge-home-topbar' : '';
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
-        $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
+        // The two faces that paint the first screen are fetched in parallel with
+        // the stylesheet instead of being discovered after CSS parse. Only the
+        // homepage uses these families.
+        $fontPreload = $isBridgeHome
+            ? '<link rel="preload" href="/assets/fonts/space-grotesk-var.ttf" as="font" type="font/ttf" crossorigin>'
+                . '<link rel="preload" href="/assets/fonts/inter-var.ttf" as="font" type="font/ttf" crossorigin>'
+            : '';
+        $styleLinks = $fontPreload . '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260914d">'
+                // The stylesheet is served with a 12h edge TTL, so every
+                // homepage restyle has to ship under a fresh cache key.
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260915M">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
+        $brandLockup = $isBridgeHome
+            ? '<span class="site-mark"><img src="' . $brandLogoUrl . '" alt="' . $escapedBrandName . ' logo"></span>'
+                . '<span class="site-copy">'
+                . '<strong lang="zh-Hant">利群會聚</strong>'
+                . '<span lang="en">LeiKwan Bridge</span>'
+                . '</span>'
+            : '<span class="site-mark"><img src="' . $brandLogoUrl . '" alt="' . $escapedBrandName . ' logo"></span>'
+                . '<span class="site-copy">'
+                . '<strong>' . $escapedBrandName . '</strong>'
+                . '<span>' . $escapedAppName . ' control plane</span>'
+                . '</span>';
 
-        $actionsHtml = '<a class="button" href="/login">Sign In</a>';
+        $actionsHtml = $isBridgeHome
+            ? '<a class="button" href="/login">登录 · Sign In</a>'
+            : '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
             $consoleLabel = $this->escape($this->dashboardLabelForUser($viewer));
@@ -1601,11 +1623,7 @@ HTML;
   <div class="public-shell">
     <header class="site-topbar{$topbarClass}">
       <a class="site-brand" href="/">
-        <span class="site-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></span>
-        <span class="site-copy">
-          <strong>{$escapedBrandName}</strong>
-          <span>{$escapedAppName} control plane</span>
-        </span>
+        {$brandLockup}
       </a>
       <div class="site-actions">
         {$languageSwitcher}
