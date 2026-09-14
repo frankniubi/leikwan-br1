@@ -1574,7 +1574,7 @@ HTML;
             . ($isBridgeHome
                 // The stylesheet is served with a 12h edge TTL, so every
                 // homepage restyle has to ship under a fresh cache key.
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260915M">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260915N">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';

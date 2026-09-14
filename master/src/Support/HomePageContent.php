@@ -610,14 +610,16 @@ final class HomePageContent
         $far = [$australia, $newGuinea, $philippines, $java, $sumatra, $borneo, $sulawesi,
             $indochina, $korea, $honshu, $shikoku, $kyushu, $hokkaido, $taiwan];
 
+        // non-scaling-stroke keeps every coastline the same weight on screen
+        // whether the plate is 320 or 550 pixels wide.
         $out = '';
         foreach ($far as $path) {
-            $out .= '<path class="rk-land rk-land-far" d="' . $path . '"></path>';
+            $out .= '<path class="rk-land rk-land-far" vector-effect="non-scaling-stroke" d="' . $path . '"></path>';
         }
 
         return $out
-            . '<path class="rk-land rk-land-near" d="' . $hainan . '"></path>'
-            . '<path class="rk-land rk-land-near" d="' . $china . '"></path>';
+            . '<path class="rk-land rk-land-near" vector-effect="non-scaling-stroke" d="' . $hainan . '"></path>'
+            . '<path class="rk-land rk-land-near" vector-effect="non-scaling-stroke" d="' . $china . '"></path>';
     }
 
     /**
@@ -637,16 +639,18 @@ final class HomePageContent
                 }
                 $drawn[$key] = true;
                 $peerNode = self::NODES[$peer];
-                $links .= '<path class="rk-link rk-link-mesh" d="'
+                $links .= '<path class="rk-link rk-link-mesh" vector-effect="non-scaling-stroke" d="'
                     . self::greatCirclePath($node['lon'], $node['lat'], $peerNode['lon'], $peerNode['lat']) . '"></path>';
             }
         }
 
         foreach (self::NODES as $node) {
             [$x, $y] = self::px($node['lon'], $node['lat']);
+            // Tight halo, solid core, white ring: the ring is what keeps the dot
+            // readable where several peers land within a few pixels of each other.
             $nodes .= '<g class="rk-node">'
-                . '<circle class="rk-halo" cx="' . $x . '" cy="' . $y . '" r="10"></circle>'
-                . '<circle class="rk-dot" cx="' . $x . '" cy="' . $y . '" r="3.2"></circle>'
+                . '<circle class="rk-halo" cx="' . $x . '" cy="' . $y . '" r="9"></circle>'
+                . '<circle class="rk-dot" vector-effect="non-scaling-stroke" cx="' . $x . '" cy="' . $y . '" r="4.6"></circle>'
                 . '</g>';
         }
 
