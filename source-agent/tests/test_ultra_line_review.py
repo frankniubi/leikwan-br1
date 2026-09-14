@@ -159,8 +159,9 @@ class _FakeRelayStreamServer:
     are the ones that decide a review.
     """
 
-    def __init__(self, behaviour="healthy"):
+    def __init__(self, behaviour="healthy", refuse_code=0x04):
         self.behaviour = behaviour
+        self.refuse_code = refuse_code
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -254,6 +255,14 @@ class _FakeRelayStreamServer:
             if self.behaviour == "dns":
                 # No connect frame: the only evidence is the target's own answer.
                 conn.sendall(_dns_answer(probe.strip_address_header(plain)[0], framed=True))
+                return
+            if self.behaviour == "refuse_target":
+                # What the live relay on 10.10.10.171 actually does when it cannot
+                # reach the client's target: it answers with only the four-byte
+                # reply-header prefix 04 01 <rep> 00 and closes. Measured on
+                # 113.31.111.9:5438 and 113.31.106.203:5438, REP=0x04 host
+                # unreachable, identical every round, ~1 s close.
+                conn.sendall(bytes([0x04, 0x01, self.refuse_code, 0x00]))
                 return
             conn.sendall(b"\x04\x01\x00\x00\x01" + b"\x00" * 5)
         except (OSError, ConnectionError):
@@ -550,6 +559,52 @@ def test_stream_probe_rejects_a_relay_that_sends_nothing(relay_server):
     assert outcome.ok is False
     assert outcome.downstream_bytes == 0
     assert "no_downstream_bytes" in outcome.error
+
+
+def test_stream_probe_names_a_truncated_connect_refusal(relay_server):
+    """A refusal is NOT a silence, and the stored result must say which it was.
+
+    Measured on the live source host: the relay answers the target-connect with a
+    four-byte reply header whose third byte is the code, then closes. The probe
+    used to require a full ten-byte frame, so it never read the code, fell through
+    to a generic downstream check, and reported the round as "no_downstream_bytes"
+    while target_tcp_zero_downstream stayed at 0 - which the operator note tells a
+    human to read as the fault signature, so a refusal read as clean.
+    """
+    server = relay_server("refuse_target")  # refuse_code defaults to 0x04
+    outcome = probe.probe_target_stream(
+        (server.host, server.port), "USER1", PASSWORD, ("45.143.235.221", 10809), timeout=2.0
+    )
+    assert outcome.ok is False
+    assert outcome.downstream_bytes == 4
+    assert outcome.connect_frame_rep == 0x04, "the reply code must be decoded"
+    assert outcome.target_refused is True
+    assert "target_refused" in outcome.error
+    assert "host_unreachable" in outcome.error
+    assert "no_downstream_bytes" not in outcome.error, (
+        "a refusal must not be reported as a silence - they are different faults"
+    )
+
+
+def test_a_refusal_is_counted_separately_from_a_silence(relay_server):
+    """target_tcp_zero_downstream must mean silence, and only silence."""
+    refused = relay_server("refuse_target")
+    session = _FakeSession(ADVERTISED_RELAY, b"u", b"p")
+    result = run_review(session, refused)
+    assert result["target_tcp_refused"] == result["rounds"] > 0
+    assert result["target_tcp_zero_downstream"] == 0, "a refusal is not a zero-byte silence"
+    assert result["target_tcp_refused_code"] == 0x04
+    assert result["target_tcp_refused_meaning"] == "host_unreachable"
+    assert result["proof"]["tcp_refused"] == result["rounds"]
+    assert result["proof"]["tcp_refused_reason"] == "host_unreachable"
+    assert result["passed"] is False
+
+    silent = relay_server("silent")
+    session2 = _FakeSession(ADVERTISED_RELAY, b"u", b"p")
+    result2 = run_review(session2, silent)
+    assert result2["target_tcp_zero_downstream"] == result2["rounds"] > 0
+    assert result2["target_tcp_refused"] == 0, "a silence must not be reported as a refusal"
+    assert result2["passed"] is False
 
 
 def test_stream_probe_does_not_count_an_echo_as_the_target(relay_server):

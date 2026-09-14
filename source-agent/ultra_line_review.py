@@ -97,6 +97,23 @@ STREAM_AUTH_ACK = b"\x05\x02\x01\x00"
 STREAM_PRELUDE_SIZE = 14
 # The relay's target-connect result frame (04 01 <rep> 00 01 <bound addr>).
 CONNECT_FRAME_SIZE = 10
+# The relay may answer with only the reply header and no bound address - that is
+# what the live relay on the source host does when it cannot reach the target
+# (measured: exactly four bytes, 04 01 04 00, then close). The refusal is still
+# the relay's verdict about the target and must be read, not discarded.
+CONNECT_REPLY_PREFIX_SIZE = 4
+# SOCKS5 reply codes, so a result says "host unreachable" instead of a hex byte.
+SOCKS_REPLY_MEANINGS = {
+    0x00: "succeeded",
+    0x01: "general_failure",
+    0x02: "connection_not_allowed",
+    0x03: "network_unreachable",
+    0x04: "host_unreachable",
+    0x05: "connection_refused",
+    0x06: "ttl_expired",
+    0x07: "command_not_supported",
+    0x08: "address_type_not_supported",
+}
 MAX_DOWNSTREAM_BYTES = 4096
 # Downstream bytes kept in the result JSON for a human reading a review.
 DOWNSTREAM_SAMPLE_BYTES = 24
@@ -119,6 +136,12 @@ class StreamRound:
     downstream_bytes: int = 0
     connect_frame: bool = False
     connect_frame_rep: Optional[int] = None
+    # The relay answered the target-connect with a refusal code. This is NOT the
+    # same fault as a relay that goes silent: it is an explicit verdict about the
+    # target, and the two must stay distinguishable in the stored result.
+    target_refused: bool = False
+    target_refused_code: Optional[int] = None
+    target_refused_meaning: str = ""
     dns_answer: bool = False
     echo: bool = False
     handshake_ms: Optional[int] = None
@@ -324,14 +347,34 @@ def read_stream_ack(conn: socket.socket, deadline: float) -> str:
 
 
 def valid_connect_frame(frame: bytes) -> bool:
-    """The relay's target-connect result frame shape (04 01 <rep> 00 01 ...)."""
+    """The relay's target-connect result frame shape (04 01 <rep> 00 01 ...).
+
+    A full frame carries the bound address; a reply header alone is accepted too,
+    because a relay that cannot reach the target answers with just the header
+    (measured on the live source host: 04 01 04 00, then close). Requiring the
+    tenth byte made the probe discard the relay's refusal and then describe the
+    round as if the relay had said nothing.
+    """
     return (
-        len(frame) == CONNECT_FRAME_SIZE
+        len(frame) >= CONNECT_REPLY_PREFIX_SIZE
         and frame[0] == 0x04
         and frame[1] == 0x01
         and frame[3] == 0x00
-        and frame[4] == 0x01
+        and (len(frame) < CONNECT_FRAME_SIZE or frame[4] == 0x01)
     )
+
+
+def connect_reply_code(frame: bytes) -> Optional[int]:
+    """The reply code byte of a target-connect frame, or None if not a frame."""
+    if not valid_connect_frame(frame):
+        return None
+    return int(frame[2])
+
+
+def reply_meaning(code: Optional[int]) -> str:
+    if code is None:
+        return ""
+    return SOCKS_REPLY_MEANINGS.get(int(code), "unknown_reply_" + hex(int(code)))
 
 
 def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> StreamRound:
@@ -348,10 +391,14 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
     outcome.sample = bytes(data[:DOWNSTREAM_SAMPLE_BYTES]).hex()
     body = bytes(data)
     if valid_connect_frame(body[:CONNECT_FRAME_SIZE]):
-        frame = body[:CONNECT_FRAME_SIZE]
-        outcome.connect_frame_rep = frame[2]
-        outcome.connect_frame = frame[2] == 0
-        body = body[CONNECT_FRAME_SIZE:]
+        full = len(body) >= CONNECT_FRAME_SIZE
+        frame = body[:CONNECT_FRAME_SIZE] if full else body
+        outcome.connect_frame_rep = connect_reply_code(frame)
+        outcome.target_refused_code = outcome.connect_frame_rep
+        outcome.target_refused_meaning = reply_meaning(outcome.connect_frame_rep)
+        outcome.connect_frame = outcome.connect_frame_rep == 0
+        outcome.target_refused = outcome.connect_frame_rep != 0
+        body = body[CONNECT_FRAME_SIZE:] if full else b""
     inner, framed = strip_address_header(body)
     if framed:
         outcome.dns_answer = validate_dns_answer(inner, identifier)
@@ -476,7 +523,16 @@ def _probe_target_stream_once(
         classified.close_ms = int((time.time() - started) * 1000)
         classified.greeting = outcome.greeting
         if not classified.ok:
-            classified.error = outcome.error or ("no_downstream_bytes" if closed or not data else "undiscriminating_downstream")
+            if classified.target_refused:
+                # The relay gave a verdict about the target. Say so, with the code,
+                # instead of reporting the refusal as if nothing had come back.
+                classified.error = (
+                    "target_refused: rep=0x%02x %s" % (classified.connect_frame_rep, classified.target_refused_meaning)
+                )
+            else:
+                classified.error = outcome.error or (
+                    "no_downstream_bytes" if closed or not data else "undiscriminating_downstream"
+                )
         return classified
     finally:
         try:
@@ -673,6 +729,12 @@ def review(
         "target_tcp_frame_ok": 0,
         "target_tcp_dns_ok": 0,
         "target_tcp_echo_rounds": 0,
+        # A refusal and a silence are different faults and must not share a counter:
+        # the operator note reads target_tcp_zero_downstream as the fault signature,
+        # so a refusal must never be counted there.
+        "target_tcp_refused": 0,
+        "target_tcp_refused_code": None,
+        "target_tcp_refused_meaning": "",
         "target_tcp_min_close_ms": None,
         "target_tcp_max_close_ms": None,
         "target_tcp_sample": "",
@@ -749,7 +811,15 @@ def review(
                     else:
                         result["target_tcp_failed"] += 1
                         result["last_error"] = result["last_error"] or str(stream.error or "no target transfer")
-                    if stream.downstream_bytes == 0:
+                    # A refusal and a silence are counted apart on purpose. The note
+                    # tells a human to read target_tcp_zero_downstream as the fault
+                    # signature, and a relay that answered "host unreachable" has not
+                    # been silent - counting it there would make a refusal read clean.
+                    if stream.target_refused:
+                        result["target_tcp_refused"] += 1
+                        result["target_tcp_refused_code"] = stream.target_refused_code
+                        result["target_tcp_refused_meaning"] = stream.target_refused_meaning
+                    elif stream.downstream_bytes == 0:
                         result["target_tcp_zero_downstream"] += 1
                     if stream.echo:
                         result["target_tcp_echo_rounds"] += 1
@@ -796,11 +866,27 @@ def finish(result: dict, target_configured: bool, require_big_packet: bool) -> d
         "udp_target_ok": int(result.get("target_udp_ok", 0)),
         "dns_e2e_ok": int(result.get("dns_ok", 0)),
         "relay_local_echo_ok": int(result.get("udp_ok", 0)) + int(result.get("big_ok", 0)),
+        # The relay's own verdict about the target, kept separate from silence so a
+        # reader can tell "refused with a code" from "went quiet". Confirmed on the
+        # live source host: the refusal is what actually happens; a true silence has
+        # no confirmed instance yet.
+        "tcp_refused": int(result.get("target_tcp_refused", 0)),
+        "tcp_refused_code": result.get("target_tcp_refused_code"),
+        "tcp_refused_reason": str(result.get("target_tcp_refused_meaning", "") or ""),
+        "tcp_zero_downstream_rounds": int(result.get("target_tcp_zero_downstream", 0)),
     }
     if not advertised_ok:
         result["proof"]["reason"] = "relay_not_advertised"
     elif not target_configured:
         result["proof"]["reason"] = "no_client_target"
+    elif int(result.get("target_tcp_refused", 0)) > 0 and proof_e2e < 1:
+        # The relay answered and named a reason. That is a real, named verdict about
+        # the target and must not be flattened into the generic no-transfer reason.
+        result["proof"]["reason"] = "target_refused"
+        result["proof"]["refusal_detail"] = "rep=0x%02x %s" % (
+            int(result.get("target_tcp_refused_code") or 0),
+            str(result.get("target_tcp_refused_meaning", "") or ""),
+        )
     elif proof_e2e < 1:
         result["proof"]["reason"] = "no_end_to_end_transfer"
 

@@ -15,6 +15,10 @@
     "tcp_connect_frame_ok": 5,
     "tcp_dns_answer_ok": 0,
     "tcp_downstream_ok": 5,
+    "tcp_refused": 0,
+    "tcp_refused_code": null,
+    "tcp_refused_reason": "",
+    "tcp_zero_downstream_rounds": 0,
     "udp_target_ok": 5
   },
   "target": "45.143.235.221:10809"
