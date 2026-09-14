@@ -41,9 +41,9 @@ func isPathIsolated(store *PolicyStore, protocol, key string) (time.Duration, bo
 	return time.Until(until), true
 }
 
-// A relay that accepts the connection and returns nothing must be quarantined
-// quickly: two silent streams, not "whenever the next lease lands elsewhere".
-func TestSilentStreamsQuarantineThePath(t *testing.T) {
+// A relay that accepts the connection and returns nothing is not enough to
+// quarantine ordinary user traffic: the destination protocol may be silent.
+func TestSilentStreamsDoNotQuarantineThePath(t *testing.T) {
 	store, first, _ := twoPathCandidateStore(t)
 	ident := relayIdentity{
 		forward: 42, generation: first.PolicyGeneration, selection: first.SelectionRef,
@@ -56,8 +56,8 @@ func TestSilentStreamsQuarantineThePath(t *testing.T) {
 	}
 	noteRelayOutcome(store, nil, ident, started, 64, 0)
 	remaining, isolated := isPathIsolated(store, "tcp", ident.pathKey)
-	if !isolated || remaining < 10*time.Second {
-		t.Fatalf("two silent streams did not isolate the path (isolated=%v remaining=%s)", isolated, remaining)
+	if isolated && remaining > 0 {
+		t.Fatalf("two protocol-silent streams quarantined the path (remaining=%s)", remaining)
 	}
 
 	candidates := store.CandidateSnapshots("tcp")
@@ -65,10 +65,14 @@ func TestSilentStreamsQuarantineThePath(t *testing.T) {
 	if len(candidates) == 0 {
 		t.Fatal("the healthy sibling disappeared with the dead path")
 	}
+	found := false
 	for _, snapshot := range candidates {
 		if haPathKey(snapshot.Lease) == ident.pathKey {
-			t.Fatal("an isolated path was still offered to new streams")
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("a protocol-silent path was incorrectly removed from new streams")
 	}
 }
 
@@ -81,8 +85,12 @@ func TestHealthyStreamClearsIsolationAndStreak(t *testing.T) {
 		pathKey: haPathKey(first), candidateKey: first.CandidateKeyHash, leaseHash: first.LeaseHash,
 	}
 	started := time.Now()
-	noteRelayOutcome(store, nil, ident, started, 64, 0)
-	noteRelayOutcome(store, nil, ident, started, 64, 0)
+	if store.FailSilentPath("tcp", ident.pathKey, ident.generation) {
+		t.Fatal("first silent-path strike unexpectedly isolated")
+	}
+	if !store.FailSilentPath("tcp", ident.pathKey, ident.generation) {
+		t.Fatal("second silent-path strike did not isolate")
+	}
 	if _, isolated := isPathIsolated(store, "tcp", ident.pathKey); !isolated {
 		t.Fatal("path was not isolated before the healthy stream")
 	}

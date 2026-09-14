@@ -365,10 +365,10 @@
   "slave_agent": {
     "artifact_url": "/artifacts/slave-agent.py",
     "path": "slave-agent/slave_agent.py",
-    "sha256": "2fc5048da36113192ada79e89dcd21ec5f9ff2fbf0afafb8783f557cca510f86",
-    "size": 350493,
-    "size_bytes": 350493,
-    "version": "2026.08.13.2"
+    "sha256": "75ba376870e1e71a69a09d0a12b2f8b4b201278e3f563e555f6d820fadbad739",
+    "size": 355310,
+    "size_bytes": 355310,
+    "version": "2026.09.15.1"
   },
   "slave_installer": {
     "install_url": "/artifacts/install-slave.sh",

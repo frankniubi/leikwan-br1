@@ -53,8 +53,10 @@ class FakeControlSocket:
 
 
 class FakeUdpSocket:
-    def __init__(self):
+    def __init__(self, dropped: set[int] | None = None):
         self.sent: tuple[bytes, tuple[str, int]] | None = None
+        self.dropped = dropped or set()
+        self.receives = 0
 
     def __enter__(self):
         return self
@@ -76,6 +78,10 @@ class FakeUdpSocket:
 
     def recvfrom(self, _size: int):
         assert self.sent is not None
+        index = self.receives
+        self.receives += 1
+        if index in self.dropped:
+            raise slave_agent_module.socket.timeout("simulated UDP loss")
         request, _relay = self.sent
         header_size = 10  # RSV + FRAG + ATYP + IPv4 + port
         dns_query = request[header_size:]
@@ -255,6 +261,36 @@ class SlaveLeigodLineManagementTests(unittest.TestCase):
         self.assertTrue(any(payload.startswith(b"\x05\x01\x00") for payload in tcp_control.sent))
         self.assertTrue(any(payload.startswith(b"\x05\x03\x00") for payload in udp_control.sent))
         self.assertIsNotNone(udp_socket.sent)
+
+    def test_udp_probe_keeps_line_healthy_with_bounded_loss_and_reports_stats(self):
+        agent, _root = self.make_agent()
+        line = self.line()
+        agent.save_leigod_desired_lines([agent.desired_leigod_line_without_toml(line)])
+        root = pathlib.Path(agent.config["leigod_root"])
+        (root / "lines").mkdir(parents=True, exist_ok=True)
+        (root / "session.json").write_text("{}", encoding="utf-8")
+        (root / "lines" / "451.toml").write_bytes(line["toml"].encode("utf-8"))
+        tcp_control = FakeControlSocket(
+            b"\x05\x00" + b"\x05\x00\x00\x01\x7f\x00\x00\x01\x9c\x40"
+        )
+        udp_control = FakeControlSocket(
+            b"\x05\x00" + b"\x05\x00\x00\x01\x7f\x00\x00\x01\xa0\x28"
+        )
+        udp_socket = FakeUdpSocket({0})
+        with mock.patch.object(slave_agent_module.shutil, "which", return_value="/usr/bin/systemctl"):
+            with mock.patch.object(agent, "systemd_is_active", return_value=True):
+                with mock.patch.object(
+                    slave_agent_module.socket,
+                    "create_connection",
+                    side_effect=[tcp_control, udp_control],
+                ):
+                    with mock.patch.object(slave_agent_module.socket, "socket", return_value=udp_socket):
+                        health = agent.probe_leigod_line(agent.load_leigod_desired_lines()[0])
+
+        self.assertEqual("healthy", health["udp_status"], health)
+        self.assertEqual(5, health["udp_probe_sent"])
+        self.assertEqual(4, health["udp_probe_received"])
+        self.assertEqual(20, health["udp_loss_percent"])
 
     def test_heartbeat_contains_bounded_health_without_toml(self):
         agent, _root = self.make_agent()

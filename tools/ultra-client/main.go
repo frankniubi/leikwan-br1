@@ -21,7 +21,12 @@ import (
 
 const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa\x6a\x5f\x45\xac"
 
+// UDP candidate probing uses Cloudflare DNS because it provides a bounded,
+// protocol-aware response. TCP probing is deliberately independent: a TCP
+// connect to the ubiquitous HTTPS listener is enough to establish reachability
+// and must not depend on an application response header.
 const defaultProbeTarget = "1.1.1.1:53"
+const defaultTCPProbeTarget = "1.1.1.1:443"
 
 var runtimeBuildVersion = "development"
 
@@ -389,9 +394,9 @@ var (
 // the in-process game-sim benchmark uses them to inspect the kernel buffer
 // sizes on the sockets the runtime itself configures (4MB datagram buffers).
 var (
-	testHookLocalUDPListening  func(local *net.UDPConn)
-	testHookDatagramArmed      func(remote *net.UDPConn)
-	testHookRuntimeQueueDepth  func(depth int)
+	testHookLocalUDPListening func(local *net.UDPConn)
+	testHookDatagramArmed     func(remote *net.UDPConn)
+	testHookRuntimeQueueDepth func(depth int)
 )
 
 type handshakePhaseError struct {
