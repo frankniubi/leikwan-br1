@@ -408,6 +408,149 @@ public sealed class MacAppUpdateServiceTests
         Assert.Contains(updates, update => update.Phase == UpdatePhase.Apply && update.Percent == 100);
     }
 
+    [Fact]
+    public async Task ApplyAsync_LaunchesHelperFromAStableCopyOutsideTheStagedBundle()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => BytesResponse([]));
+        var launcher = new FakeUpdateLauncher();
+        using var service = CreateService(temp, "arm64", http, launcher, _ => true);
+        var stagedBundle = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", "Prepared.app");
+        var prepared = new PreparedAppUpdate(
+            ArtifactFor(Encoding.UTF8.GetBytes("zip")),
+            "package.zip",
+            stagedBundle,
+            Sha256(File.ReadAllBytes(Path.Combine(stagedBundle, "Contents", "MacOS", "LeikwanBridge.Mac"))));
+
+        var result = await service.ApplyAsync(prepared, deferUntilRestart: false);
+
+        Assert.True(result.Started);
+        var launch = Assert.Single(launcher.StartedProcesses);
+        var executable = launch.Executable.Replace('\\', '/');
+        var updatesRoot = Path.Combine(temp.Path, "updates").Replace('\\', '/') + "/";
+        // The helper resolves its managed payload relative to its own bundle, so the
+        // swap must never rename the bundle the helper runs from: doing that made the
+        // post-swap verification throw and silently rolled the update back while the
+        // caller still reported "applied" (field-observed 2026-09-14, reproduced 3x).
+        Assert.StartsWith(updatesRoot, executable, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Prepared.app", executable, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(".update-", executable, StringComparison.OrdinalIgnoreCase);
+        var requestJson = File.ReadAllText(launch.Arguments[1]);
+        Assert.Contains("applier_bundle_path", requestJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyHelper_PublishesTheRollbackReasonInsteadOfSwallowingIt()
+    {
+        using var temp = new TempDirectory();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        var staged = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", ".LeiKwan Bridge.update.app");
+        File.WriteAllText(Path.Combine(current, "old-marker"), "old");
+        File.WriteAllText(Path.Combine(staged, "new-marker"), "new");
+        var requestPath = Path.Combine(temp.Path, "apply.json");
+        MacAppUpdateApplier.WriteRequest(requestPath, new MacUpdateApplyRequest
+        {
+            CurrentProcessId = 0,
+            CurrentBundlePath = current,
+            StagedBundlePath = staged,
+            BackupBundlePath = Path.Combine(temp.Path, ".LeiKwan Bridge.backup.app"),
+            Version = "2.0.0",
+            PackageSizeBytes = 123,
+            PackageSha256 = new string('A', 64),
+            MainExecutableSha256 = Sha256(File.ReadAllBytes(Path.Combine(staged, "Contents", "MacOS", "LeikwanBridge.Mac"))),
+        });
+        var launcher = new FakeUpdateLauncher { OpenApplicationResult = false };
+
+        var outcome = await MacAppUpdateApplier.ApplyFromRequestOutcomeAsync(requestPath, launcher);
+
+        Assert.False(outcome.Success);
+        Assert.Equal("update_relaunch_failed", outcome.Code);
+        var log = File.ReadAllText(Path.Combine(temp.Path, MacAppUpdateApplier.ApplyLogFileName));
+        Assert.Contains("rollback reason=IOException: update_relaunch_failed", log, StringComparison.Ordinal);
+        Assert.Contains("rollback complete", log, StringComparison.Ordinal);
+        var published = MacAppUpdateApplier.ReadLastResult(temp.Path);
+        Assert.NotNull(published);
+        Assert.False(published!.Success);
+        Assert.Equal("update_relaunch_failed", published.Code);
+    }
+
+    [Fact]
+    public async Task ApplyHelper_PublishesSuccessAfterTheSwap()
+    {
+        using var temp = new TempDirectory();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        var staged = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", ".LeiKwan Bridge.update.app");
+        var requestPath = Path.Combine(temp.Path, "apply.json");
+        MacAppUpdateApplier.WriteRequest(requestPath, new MacUpdateApplyRequest
+        {
+            CurrentProcessId = 0,
+            CurrentBundlePath = current,
+            StagedBundlePath = staged,
+            BackupBundlePath = Path.Combine(temp.Path, ".LeiKwan Bridge.backup.app"),
+            Version = "2.0.0",
+            PackageSizeBytes = 123,
+            PackageSha256 = new string('A', 64),
+            MainExecutableSha256 = Sha256(File.ReadAllBytes(Path.Combine(staged, "Contents", "MacOS", "LeikwanBridge.Mac"))),
+        });
+
+        var outcome = await MacAppUpdateApplier.ApplyFromRequestOutcomeAsync(requestPath, new FakeUpdateLauncher());
+
+        Assert.True(outcome.Success);
+        Assert.Equal("ok", outcome.Code);
+        Assert.Equal("2.0.0", MacBundleValidator.ReadBundleVersion(current));
+        var published = MacAppUpdateApplier.ReadLastResult(temp.Path);
+        Assert.NotNull(published);
+        Assert.True(published!.Success);
+    }
+
+    [Fact]
+    public async Task ClientUpdateService_FailsWhenTheInstalledVersionDoesNotChange()
+    {
+        using var source = new TempDirectory();
+        using var temp = new TempDirectory();
+        var packageBundle = CreateBundle(source.Path, "com.leikwan.bridge", "2.0.0", "arm64", "LeiKwan Bridge.app");
+        var package = ZipDirectory(packageBundle);
+        // The published entry must describe the real package: the resumable downloader
+        // refuses a body whose length differs from the manifest.
+        var manifest = $$"""
+        {
+          "component": "desktop-client-app",
+          "manifest": {
+            "macos_client_update_arm64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{Sha256(package).ToLowerInvariant()}}", "size_bytes": {{package.Length}}, "architecture": "arm64", "format": "zip" },
+            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" }
+          }
+        }
+        """;
+        using var http = BuildHttp(request => request.RequestUri!.AbsolutePath.Contains("client-manifest", StringComparison.Ordinal)
+            ? JsonResponse(manifest)
+            : BytesResponse(package));
+        var launcher = new FakeUpdateLauncher();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        using var updater = new MacAppUpdateService(
+            Path.Combine(temp.Path, "updates"),
+            current,
+            "arm64",
+            _ => http,
+            ownsHttpClient: false,
+            launcher: launcher,
+            directoryWritable: _ => true,
+            waitForCallerExit: false);
+        var controller = new MacServiceController(new MacPlatformPaths(temp.Path, current));
+        var client = new MacClientUpdateService(
+            updater,
+            controller,
+            "https://panel.example.test",
+            TimeSpan.FromMilliseconds(600));
+        var output = new StringWriter();
+
+        var check = await client.CheckAsync(CancellationToken.None);
+        Assert.True(check.UpdateAvailable);
+        var applied = await client.ApplyAsync(check, controller, output, CancellationToken.None);
+
+        Assert.False(applied);
+        Assert.Contains("still 1.0.0", output.ToString(), StringComparison.Ordinal);
+    }
+
     private static MacAppUpdateService CreateService(
         TempDirectory temp,
         string architecture,
