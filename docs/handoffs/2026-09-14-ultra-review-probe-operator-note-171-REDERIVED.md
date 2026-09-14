@@ -2721,3 +2721,68 @@ provider endpoints — redact them if that matters.
   evidence from the relay's outbound connect.
 * If a whole candidate has no client target (empty `target`), the review can never
   pass. That is deliberate.
+
+---
+
+## 14. Operational finding: the advertised relay set is a poor sample of the live supply
+
+Measured on the host after the upgrade, 2026-09-14 ~17:20-17:30 UTC. This is why a
+review can now end `no advertised relay in the line material` even though the line is
+fine and the deploy is correct - and it is the thing to fix next, on the PANEL side,
+not on the source host.
+
+The new agent picks the relay the panel advertises for the line (paired with the port
+from the acquired material) and refuses to probe anything else. That requires the
+advertised set to intersect the supplier's live pool. For this source it often does
+not:
+
+| line | panel advertises (`ultra_lines.relay_ips_json`) | live supply (acquired material) | overlap |
+| ---- | ---- | ---- | ---- |
+| 7 | 49.0.254.177, 190.92.232.41, 190.92.233.128 | 190.92.233.128, 190.92.237.124, 190.92.232.41 | 2 - selects a relay |
+| 9 | 117.50.156.23, 106.75.79.92, 106.75.78.201 | 117.50.156.43, 106.75.20.96, 106.75.79.105 | 0 - refuses |
+| 17 | 106.75.146.129, 106.75.165.188 | 106.75.142.217, 106.75.143.234, 106.75.162.111 | 0 - refuses |
+| 581 | 113.31.106.203, 113.31.111.9, 113.31.108.63 | rotates on every acquisition | sometimes 0, sometimes 1 |
+
+Line 581's supply rotates on every acquisition. Across 8 consecutive acquisitions the
+advertised set matched on the 8th (`113.31.111.9`); across 4 earlier acquisitions it
+matched once (`113.31.108.63`). An advertised relay IS reachable through this source -
+it is simply not reliably present in any single acquisition.
+
+Also worth recording: for source-home-171 most `ultra_lines` rows carry
+`relay_ips_json = NULL`. A NULL/empty advertised set is handled as "no mandate" - the
+agent falls back to the first supplied relay (so the agent keeps working) and the
+panel's own proof gate is what refuses the result. A NON-empty set that does not
+intersect is the stricter case: the agent refuses locally and reports
+`no advertised relay in the line material` with `rounds=0`.
+
+Consequence, stated plainly: while the advertised set and the live pool disagree, the
+repaired probe reports `blocked` for those lines **even when the relay is healthy**,
+because it is not allowed to test an endpoint nobody advertised. That is the intended
+fail-safe direction, but it means `no advertised relay in the line material` is a
+PANEL INVENTORY problem - refresh/re-derive `ultra_lines.relay_ips_json` for this
+source - and not a probe defect and not a deployment failure.
+
+To measure a specific relay regardless of that data problem:
+
+```bash
+cd /opt/ultra-source/runtime && python3 - <<'PY'
+import importlib.util, sys, json
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('a', '/usr/local/bin/ultra-source-agent.py')
+m = importlib.util.module_from_spec(spec); sys.modules['a'] = m; spec.loader.exec_module(m)
+agent = m.SourceAgent(Path('/etc/ultra-source-agent.json'))
+adv = ['113.31.106.203', '113.31.111.9', '113.31.108.63']   # the panel's advertised IPs
+target = '38.207.136.247:32469'                             # clientTarget()'s own lookup
+for attempt in range(1, 21):
+    mat = m.acquire_line(581, agent.binary_path, agent.lines_dir,
+                         agent.state_dir / ('probe-581-%d.json.tmp' % attempt),
+                         session_path=agent.session_path, timeout=agent.acquire_timeout,
+                         lifetime_seconds=agent.material_lifetime)
+    chosen, reason = m.select_review_relay(mat.get('relays'), adv)
+    if chosen:
+        print('endpoint', chosen, 'after', attempt, 'acquisitions'); break
+else:
+    raise SystemExit('no advertised relay in the live pool after 20 acquisitions')
+print(json.dumps(agent.run_review(9001, 581, 600, advertised=adv, target=target), indent=2))
+PY
+```
