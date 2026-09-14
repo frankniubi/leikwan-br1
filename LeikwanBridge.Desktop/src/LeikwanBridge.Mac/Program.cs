@@ -28,7 +28,11 @@ internal static class Program
                 new Services.MacAppUpdateService(
                     cliPaths.Root.TrimEnd('/', '\\') + "/updates",
                     cliPaths.BundleDirectory,
-                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64"),
+                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64",
+                    // This process is the one being replaced, but it outlives the helper
+                    // so it can verify the installed version. The helper must therefore
+                    // not wait for it to exit (current_process_id = 0).
+                    waitForCallerExit: false),
                 controller,
                 Services.MacHeadlessCli.PanelUrl(cliPaths));
             using var cliCts = new CancellationTokenSource();
@@ -58,9 +62,15 @@ internal static class Program
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
         if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
         {
-            return Services.MacAppUpdateApplier.ApplyFromRequestAsync(args[1]).GetAwaiter().GetResult()
-                ? 0
-                : 1;
+            // Report the reason on the console as well as in the apply log: a helper
+            // that rolls back silently is indistinguishable from one that never ran.
+            var outcome = Services.MacAppUpdateApplier
+                .ApplyFromRequestOutcomeAsync(args[1])
+                .GetAwaiter()
+                .GetResult();
+            if (!outcome.Success)
+                Console.Error.WriteLine($"update_apply_failed: {outcome.Code} ({outcome.Detail})");
+            return outcome.Success ? 0 : 1;
         }
         if (Services.MacAppUpdateService.TryLaunchPendingUpdate(
                 paths.Root.TrimEnd('/', '\\') + "/updates",

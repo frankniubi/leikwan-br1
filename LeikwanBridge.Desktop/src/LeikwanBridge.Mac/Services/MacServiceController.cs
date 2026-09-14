@@ -111,12 +111,27 @@ public sealed class MacServiceController(MacPlatformPaths paths, string label = 
 /// zip, bundle replacement, relaunch) and then kicks the daemon so the new
 /// bundle is the one running.
 /// </summary>
-public sealed class MacClientUpdateService(
-    MacAppUpdateService updater,
-    MacServiceController controller,
-    string panelUrl) : IClientUpdateService
+public sealed class MacClientUpdateService : IClientUpdateService
 {
+    private readonly MacAppUpdateService updater;
+    private readonly MacServiceController controller;
+    private readonly string panelUrl;
+    private readonly TimeSpan applyVerificationTimeout;
     private ClientAppArtifact? _available;
+
+    public MacClientUpdateService(
+        MacAppUpdateService updater,
+        MacServiceController controller,
+        string panelUrl,
+        TimeSpan? applyVerificationTimeout = null)
+    {
+        this.updater = updater;
+        this.controller = controller;
+        this.panelUrl = panelUrl;
+        // The helper swaps the bundle after this process is told to keep running and
+        // then publishes its outcome; allow for a slow disk before giving up.
+        this.applyVerificationTimeout = applyVerificationTimeout ?? TimeSpan.FromSeconds(120);
+    }
 
     public async Task<ClientUpdateCheck> CheckAsync(CancellationToken ct)
     {
@@ -165,7 +180,11 @@ public sealed class MacClientUpdateService(
         if (result.Started)
         {
             output.WriteLine("applied    : the update launcher is replacing the bundle");
-            return true;
+            // "the helper started" is not "the update landed": verify the installed
+            // bundle really is the published version before reporting success. The
+            // field failure this closes reported "applied 1.0.37", exit 0, while the
+            // installed bundle stayed 1.0.36.
+            return await VerifyAppliedAsync(check.PublishedVersion, output, ct).ConfigureAwait(false);
         }
 
         var restarted = await controller.RestartAsync(ct).ConfigureAwait(false);
@@ -173,5 +192,39 @@ public sealed class MacClientUpdateService(
             ? "apply      : daemon restarted on the new build"
             : "apply      : daemon did not report running; run \"leikwan start\"");
         return restarted;
+    }
+
+    private async Task<bool> VerifyAppliedAsync(string? expected, TextWriter output, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(expected))
+            return true;
+        var logPath = Path.Combine(updater.UpdatesRoot, MacAppUpdateApplier.ApplyLogFileName);
+        var deadline = DateTime.UtcNow + applyVerificationTimeout;
+        MacUpdateApplyOutcome? outcome = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            outcome = MacAppUpdateApplier.ReadLastResult(updater.UpdatesRoot);
+            var installed = updater.ReadInstalledVersion();
+            if (string.Equals(installed, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                output.WriteLine($"verify     : installed bundle is now {installed}");
+                return true;
+            }
+            if (outcome is { Success: false })
+            {
+                output.WriteLine($"verify     : the update helper rolled back ({outcome.Code})");
+                if (!string.IsNullOrWhiteSpace(outcome.Detail))
+                    output.WriteLine($"verify     : reason {outcome.Detail}");
+                output.WriteLine($"verify     : installed bundle is still {installed ?? "unreadable"} (expected {expected})");
+                output.WriteLine($"verify     : helper log {logPath}");
+                return false;
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
+        }
+
+        var currentVersion = updater.ReadInstalledVersion();
+        output.WriteLine($"verify     : timed out waiting for {expected}; installed bundle is still {currentVersion ?? "unreadable"}");
+        output.WriteLine($"verify     : helper log {logPath}");
+        return false;
     }
 }
