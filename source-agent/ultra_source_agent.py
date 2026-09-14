@@ -905,6 +905,95 @@ def acquire_line(
             pass
 
 
+def advertised_relay_ips(advertised: object) -> list:
+    """The relay IPs the panel advertised for a review, validated and deduplicated.
+
+    The panel sends the set it re-derives from ultra_lines.relay_ips_json, which
+    is also the set reviewProof() checks a probed endpoint against, so an agent
+    cannot widen its own mandate by claiming an endpoint.
+    """
+    if isinstance(advertised, str):
+        advertised = [item for item in advertised.split(",")]
+    if not isinstance(advertised, (list, tuple)):
+        return []
+    seen = {}
+    for item in advertised:
+        ip = str(item or "").strip()
+        if not ip:
+            continue
+        seen.setdefault(ip.lower(), ip)
+    return list(seen.values())
+
+
+def select_review_relay(relays: object, advertised: object) -> tuple:
+    """Pick the relay a review may probe.
+
+    The reviewed endpoint must be one the panel advertises for the line, and the
+    panel stores relay IPs only - it cannot express ip:port for a review - so the
+    advertised IP is paired with the port the line material carried for it. An
+    endpoint the source host picked for itself is not evidence about the
+    candidate, which is how 8 of the first 9 reviews came to test the wrong
+    endpoint.
+
+    Returns (relay, reason); reason is "" when a relay was chosen.
+    """
+    usable = []
+    for raw in relays if isinstance(relays, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        ip = str(raw.get("ip", "") or "").strip()
+        try:
+            port = int(raw.get("port", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not ip or port <= 0 or port > 65535:
+            continue
+        usable.append({"ip": ip, "port": port})
+    if not usable:
+        return None, "line material has no relay"
+    mandate = advertised_relay_ips(advertised)
+    if not mandate:
+        # An older panel payload carries no advertised set at all. Run the review
+        # anyway so the agent keeps working, but its proof names an endpoint the
+        # panel never advertised, and the panel's own proof gate refuses it - the
+        # intended outcome for evidence about an endpoint nobody advertised.
+        return usable[0], ""
+    by_ip = {}
+    for relay in usable:
+        by_ip.setdefault(relay["ip"].lower(), relay)
+    for ip in mandate:
+        chosen = by_ip.get(ip.lower())
+        if chosen is not None:
+            return chosen, ""
+    return None, "no advertised relay in the line material"
+
+
+def non_discriminating_review_detail(reason: str, target: str = "", relay: str = "") -> dict:
+    """A probe-shaped result that can never be mistaken for evidence.
+
+    The panel stores this verbatim and its proof gate records the review as
+    rebuttal=blocked, so nothing is struck, demoted or lifted on a review that
+    could not test an advertised endpoint.
+    """
+    return {
+        "passed": False,
+        "relay": relay,
+        "target": target,
+        "rounds": 0,
+        "last_error": reason,
+        "end_to_end_ok": 0,
+        "local_path_only": True,
+        "proof": {
+            "endpoint": relay,
+            "local_path_only": True,
+            "end_to_end_ok": 0,
+            "target": target,
+            "method": "relay_stream_to_client_target",
+            "reason": reason,
+        },
+    }
+
+
 class SourceAgent:
     def __init__(self, config_path: Path):
         self.config = json.loads(config_path.read_text(encoding="utf-8-sig"))
@@ -1074,7 +1163,16 @@ class SourceAgent:
             seconds = int(review.get("seconds", 600) or 600)
             if review_id <= 0 or line_id <= 0:
                 continue
-            payload = self.run_review(review_id, line_id, seconds)
+            # The panel hands down the advertised relay set and the client's
+            # target; without them the probe can only test an endpoint it picked
+            # for itself, which is not evidence about this candidate.
+            payload = self.run_review(
+                review_id,
+                line_id,
+                seconds,
+                advertised=review.get("relays"),
+                target=str(review.get("target", "") or ""),
+            )
             try:
                 request_json(
                     self.base_url,
@@ -1086,14 +1184,49 @@ class SourceAgent:
                     self.timeout,
                 )
                 completed += 1
+                detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+                proof = detail.get("proof") if isinstance(detail.get("proof"), dict) else {}
+                # Local, secret-free evidence that the review was discriminating:
+                # the panel records rebuttal=blocked unless the proof block names
+                # an advertised endpoint and carried a real transfer, so this line
+                # is how an operator tells a working deploy from a silent one.
+                logging.info(
+                    "review %s line %s passed=%s proof_reason=%s end_to_end_ok=%s zero_downstream=%s note=%s",
+                    review_id,
+                    line_id,
+                    bool(payload.get("passed")),
+                    str(proof.get("reason", "") or "none"),
+                    proof.get("end_to_end_ok", 0),
+                    detail.get("target_tcp_zero_downstream", 0),
+                    str(payload.get("note", ""))[:160],
+                )
             except Exception as exc:  # noqa: BLE001
                 logging.warning("review %s could not be reported: %s", review_id, exc)
         return completed
 
-    def run_review(self, review_id: int, line_id: int, seconds: int) -> dict:
-        """Acquire the line and run the big-packet UDP + DNS probe against it."""
+    def run_review(
+        self,
+        review_id: int,
+        line_id: int,
+        seconds: int,
+        advertised: object = None,
+        target: str = "",
+    ) -> dict:
+        """Acquire the line and probe the client's target through an advertised relay.
+
+        The probe's verdict requires a real transfer to the client's target over
+        the relay, so a review that cannot be pointed at an advertised endpoint -
+        or that has no client target - is reported as a non-discriminating result
+        rather than run against an endpoint of the agent's own choosing.
+        """
+        target_text = str(target or "").strip()
         if not self.review_script.is_file():
-            return {"review_id": review_id, "passed": False, "note": "review probe is not installed"}
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": "review probe is not installed",
+                "detail": non_discriminating_review_detail("review probe is not installed", target_text),
+            }
         try:
             material = acquire_line(
                 line_id,
@@ -1105,23 +1238,39 @@ class SourceAgent:
                 lifetime_seconds=self.material_lifetime,
             )
         except Exception as exc:  # noqa: BLE001
-            return {"review_id": review_id, "passed": False, "note": f"line acquisition failed: {exc}"}
+            note = f"line acquisition failed: {exc}"
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": note,
+                "detail": non_discriminating_review_detail(note, target_text),
+            }
         relays = material.get("relays") if isinstance(material.get("relays"), list) else []
-        relay = relays[0] if relays and isinstance(relays[0], dict) else None
-        if not isinstance(relay, dict):
-            return {"review_id": review_id, "passed": False, "note": "line material has no relay"}
+        mandate = advertised_relay_ips(advertised)
+        relay, reason = select_review_relay(relays, mandate)
+        if relay is None:
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": reason,
+                "detail": non_discriminating_review_detail(reason, target_text),
+            }
+        relay_text = f"{relay['ip']}:{relay['port']}"
         window = max(30, min(1800, seconds))
         command = [
             "python3",
             str(self.review_script),
-            "--relay", f"{relay.get('ip', '')}:{int(relay.get('port', 0) or 0)}",
+            "--relay", relay_text,
             "--user", str(material.get("user", "")),
             "--password", str(material.get("credential", "")),
             "--seconds", str(window),
             "--interval", str(max(1.0, self.review_interval)),
             "--big-bytes", str(max(64, min(65000, self.review_big_bytes))),
+            "--target", target_text,
             "--json",
         ]
+        if mandate:
+            command.extend(["--advertised", ",".join(mandate)])
         if self.review_require_big_packet:
             command.append("--require-big-packet")
         try:
@@ -1133,9 +1282,20 @@ class SourceAgent:
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return {"review_id": review_id, "passed": False, "note": "review timed out"}
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": "review timed out",
+                "detail": non_discriminating_review_detail("review timed out", target_text, relay_text),
+            }
         except OSError as exc:
-            return {"review_id": review_id, "passed": False, "note": f"review could not start: {exc}"}
+            note = f"review could not start: {exc}"
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": note,
+                "detail": non_discriminating_review_detail(note, target_text, relay_text),
+            }
         detail: dict = {}
         for line in reversed((completed.stdout or "").strip().splitlines()):
             try:
@@ -1145,6 +1305,21 @@ class SourceAgent:
             if isinstance(parsed, dict):
                 detail = parsed
                 break
+        if not detail:
+            # An agent whose probe predates --target/--advertised exits on an
+            # argparse error with no JSON at all; say so instead of reporting an
+            # empty review the operator cannot explain.
+            stderr_lines = [item for item in (completed.stderr or "").strip().splitlines() if item.strip()]
+            note = f"review probe produced no result (exit {completed.returncode})"
+            if stderr_lines:
+                note = note + ": " + stderr_lines[-1].strip()
+            note = note[:240]
+            return {
+                "review_id": review_id,
+                "passed": False,
+                "note": note,
+                "detail": non_discriminating_review_detail(note, target_text, relay_text),
+            }
         passed = bool(detail.get("passed")) and completed.returncode == 0
         note = str(detail.get("last_error", "") or "")[:240]
         return {"review_id": review_id, "passed": passed, "note": note, "detail": detail}
