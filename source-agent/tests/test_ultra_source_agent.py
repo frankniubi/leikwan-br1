@@ -875,3 +875,190 @@ class UltraSourceSignatureTests(unittest.TestCase):
         source = (ROOT / "source-agent" / "ultra_source_agent.py").read_text(encoding="utf-8")
         self.assertIn("reviews_capacity=", source, "the panel hands out no review to an agent that does not ask")
         self.assertEqual("2026.09.13.1", MODULE.AGENT_VERSION)
+
+
+class UltraSourceAgentReviewTests(unittest.TestCase):
+    """The review probe must be pointed at an advertised endpoint and a target."""
+
+    TARGET = "45.143.235.221:10809"
+    ADVERTISED = ["1.117.238.119", "121.5.240.89"]
+
+    def _agent(self, root):
+        lines = root / "lines"
+        lines.mkdir(exist_ok=True)
+        script = root / "ultra_line_review.py"
+        script.write_text("# review probe\n", encoding="utf-8")
+        config = root / "agent.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "panel_url": "https://panel.example",
+                    "source_id": "source-a",
+                    "source_secret": "source-secret",
+                    "binary_path": str(root / "line-client"),
+                    "lines_dir": str(lines),
+                    "inventory_path": str(lines / "index.json"),
+                    "state_dir": str(root / "state"),
+                    "review_script": str(script),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return MODULE.SourceAgent(config)
+
+    @staticmethod
+    def _material(relays):
+        return {"line_id": 453, "user": "line-user", "credential": "1234567890123456", "relays": relays}
+
+    def test_review_probes_an_advertised_relay_not_the_first_acquired_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material(
+                [
+                    {"ip": "203.0.113.20", "port": 5438},
+                    {"ip": "1.117.238.119", "port": 5440},
+                ]
+            )
+            probe_result = {
+                "passed": True,
+                "relay": "1.117.238.119:5440",
+                "target": self.TARGET,
+                "proof": {"endpoint": "1.117.238.119:5440", "local_path_only": False, "end_to_end_ok": 5},
+            }
+            completed = mock.Mock(returncode=0, stdout=json.dumps(probe_result), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    payload = agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target=self.TARGET)
+
+            command = run.call_args.args[0]
+            self.assertIn("1.117.238.119:5440", command, "the advertised IP must be paired with the material port")
+            self.assertNotIn("203.0.113.20:5438", command, "the agent must not probe its own first relay")
+            self.assertEqual(self.TARGET, command[command.index("--target") + 1])
+            self.assertEqual(
+                "1.117.238.119,121.5.240.89",
+                command[command.index("--advertised") + 1],
+                "the probe has to be told the mandate it may prove against",
+            )
+            self.assertTrue(payload["passed"])
+            self.assertEqual(probe_result, payload["detail"])
+
+    def test_review_without_an_advertised_relay_reports_no_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "203.0.113.20", "port": 5438}])
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run") as run:
+                    payload = agent.run_review(41, 453, 600, advertised=["9.9.9.9"], target=self.TARGET)
+
+            run.assert_not_called()
+            self.assertFalse(payload["passed"])
+            self.assertIn("no advertised relay", payload["note"])
+            self.assertEqual(0, payload["detail"]["proof"]["end_to_end_ok"])
+            self.assertTrue(payload["detail"]["proof"]["local_path_only"])
+            self.assertTrue(payload["detail"]["proof"]["reason"])
+
+    def test_review_without_a_panel_mandate_still_runs_the_material_relay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "203.0.113.20", "port": 5438}])
+            completed = mock.Mock(returncode=1, stdout=json.dumps({"passed": False, "last_error": "nope"}), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    agent.run_review(41, 453, 600, advertised=None, target=self.TARGET)
+
+            command = run.call_args.args[0]
+            self.assertIn("203.0.113.20:5438", command)
+            self.assertNotIn("--advertised", command)
+
+    def test_review_reports_a_probe_without_json_as_non_discriminating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "1.117.238.119", "port": 5438}])
+            completed = mock.Mock(
+                returncode=2,
+                stdout="",
+                stderr="usage: probe\nprobe: error: unrecognized arguments: --target",
+            )
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+                    payload = agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target=self.TARGET)
+
+            self.assertFalse(payload["passed"])
+            self.assertIn("no result (exit 2)", payload["note"])
+            self.assertIn("unrecognized arguments", payload["note"])
+            self.assertEqual(0, payload["detail"]["end_to_end_ok"])
+            self.assertTrue(payload["detail"]["local_path_only"])
+
+    def test_review_without_a_target_sends_an_empty_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "1.117.238.119", "port": 5438}])
+            completed = mock.Mock(returncode=1, stdout=json.dumps({"passed": False}), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target="")
+
+            command = run.call_args.args[0]
+            self.assertEqual("", command[command.index("--target") + 1])
+
+    def test_process_reviews_hands_down_the_panel_payload_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            calls = []
+
+            def fake_run_review(review_id, line_id, seconds, advertised=None, target=""):
+                calls.append((review_id, line_id, seconds, advertised, target))
+                return {"review_id": review_id, "passed": False}
+
+            with mock.patch.object(MODULE.SourceAgent, "run_review", side_effect=fake_run_review):
+                with mock.patch.object(MODULE, "request_json", return_value={"ok": True}):
+                    completed = agent.process_reviews(
+                        [
+                            {
+                                "review_id": 41,
+                                "line_id": 453,
+                                "protocol": "tcp+udp",
+                                "seconds": 600,
+                                "relays": self.ADVERTISED,
+                                "target": self.TARGET,
+                            }
+                        ]
+                    )
+
+            self.assertEqual(1, completed)
+            self.assertEqual([(41, 453, 600, self.ADVERTISED, self.TARGET)], calls)
+
+    def test_select_review_relay_pairs_advertised_ip_with_material_port(self):
+        relay, reason = MODULE.select_review_relay(
+            [{"ip": "203.0.113.20", "port": 5438}, {"ip": "1.117.238.119", "port": 5440}],
+            self.ADVERTISED,
+        )
+        self.assertEqual({"ip": "1.117.238.119", "port": 5440}, relay)
+        self.assertEqual("", reason)
+
+    def test_select_review_relay_refuses_an_unadvertised_endpoint(self):
+        relay, reason = MODULE.select_review_relay([{"ip": "203.0.113.20", "port": 5438}], self.ADVERTISED)
+        self.assertIsNone(relay)
+        self.assertIn("no advertised relay", reason)
+
+    def test_select_review_relay_skips_unusable_material_entries(self):
+        relay, _reason = MODULE.select_review_relay(
+            [{"ip": "", "port": 5438}, {"ip": "1.117.238.119", "port": 0}, "junk"],
+            self.ADVERTISED,
+        )
+        self.assertIsNone(relay)
+
+    def test_advertised_relay_ips_validates_and_deduplicates(self):
+        self.assertEqual(
+            ["1.117.238.119", "121.5.240.89"],
+            MODULE.advertised_relay_ips(["1.117.238.119", " 121.5.240.89 ", "1.117.238.119", "", None]),
+        )
+        self.assertEqual(["1.117.238.119"], MODULE.advertised_relay_ips("1.117.238.119"))
+        self.assertEqual([], MODULE.advertised_relay_ips(None))
+
