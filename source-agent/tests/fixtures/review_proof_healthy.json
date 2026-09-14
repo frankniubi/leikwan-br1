@@ -18,6 +18,8 @@
     "tcp_refused": 0,
     "tcp_refused_code": null,
     "tcp_refused_reason": "",
+    "tcp_reply_unparsed": 0,
+    "tcp_unparsed_sample": "",
     "tcp_zero_downstream_rounds": 0,
     "udp_target_ok": 5
   },

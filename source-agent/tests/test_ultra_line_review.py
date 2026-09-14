@@ -159,9 +159,10 @@ class _FakeRelayStreamServer:
     are the ones that decide a review.
     """
 
-    def __init__(self, behaviour="healthy", refuse_code=0x04):
+    def __init__(self, behaviour="healthy", refuse_code=0x04, unparsed_bytes=b"\x04\x04\x01\x01"):
         self.behaviour = behaviour
         self.refuse_code = refuse_code
+        self.unparsed_bytes = unparsed_bytes
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -255,6 +256,13 @@ class _FakeRelayStreamServer:
             if self.behaviour == "dns":
                 # No connect frame: the only evidence is the target's own answer.
                 conn.sendall(_dns_answer(probe.strip_address_header(plain)[0], framed=True))
+                return
+            if self.behaviour == "unparsed_reply":
+                # Measured live on 38.207.136.247:32469 through 113.31.111.9:5438:
+                # four bytes whose second byte is 0x04, so it does NOT match the
+                # documented 04 01 <rep> 00 reply shape. We do not know this format,
+                # so it must be reported as unparsed and never as a silence.
+                conn.sendall(self.unparsed_bytes)
                 return
             if self.behaviour == "refuse_target":
                 # What the live relay on 10.10.10.171 actually does when it cannot
@@ -605,6 +613,47 @@ def test_a_refusal_is_counted_separately_from_a_silence(relay_server):
     assert result2["target_tcp_zero_downstream"] == result2["rounds"] > 0
     assert result2["target_tcp_refused"] == 0, "a silence must not be reported as a refusal"
     assert result2["passed"] is False
+
+
+def test_an_unparsed_reply_is_not_a_silence(relay_server):
+    """An unknown reply shape must be reported as unparsed, with its raw bytes.
+
+    Live on 38.207.136.247:32469 the relay returned only 04 04 01 01 - four bytes
+    whose second byte is 0x04, so it is NOT the documented 04 01 <rep> 00 shape.
+    We do not know that format and must not guess one. What we must not do is call
+    it "no downstream bytes": an unparsed refusal and a genuine silence are
+    different facts, and collapsing them is what hid this fault for a night.
+    """
+    server = relay_server("unparsed_reply")
+    outcome = probe.probe_target_stream(
+        (server.host, server.port), "USER1", PASSWORD, ("45.143.235.221", 10809), timeout=2.0
+    )
+    assert outcome.ok is False
+    assert outcome.downstream_bytes == 4
+    assert outcome.connect_frame_rep is None, "we do not know this format; do not invent a code"
+    assert outcome.target_refused is False
+    assert outcome.reply_unparsed is True
+    assert "unparsed_reply" in outcome.error
+    assert "04040101" in outcome.error, "the raw bytes must travel with the verdict"
+    assert "no_downstream_bytes" not in outcome.error
+
+
+def test_an_unparsed_reply_is_counted_apart_from_a_silence(relay_server):
+    server = relay_server("unparsed_reply")
+    session = _FakeSession(ADVERTISED_RELAY, b"u", b"p")
+    result = run_review(session, server)
+    assert result["target_tcp_reply_unparsed"] == result["rounds"] > 0
+    assert result["target_tcp_zero_downstream"] == 0, "an unparsed reply is not a silence"
+    assert result["target_tcp_refused"] == 0, "an unparsed reply is not a decoded refusal"
+    assert result["proof"]["tcp_reply_unparsed"] == result["rounds"]
+    assert result["proof"]["tcp_unparsed_sample"] == "04040101"
+    assert result["passed"] is False
+
+    silent = relay_server("silent")
+    session2 = _FakeSession(ADVERTISED_RELAY, b"u", b"p")
+    result2 = run_review(session2, silent)
+    assert result2["target_tcp_zero_downstream"] == result2["rounds"] > 0
+    assert result2["target_tcp_reply_unparsed"] == 0
 
 
 def test_stream_probe_does_not_count_an_echo_as_the_target(relay_server):
