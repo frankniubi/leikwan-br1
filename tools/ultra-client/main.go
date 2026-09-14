@@ -1380,21 +1380,58 @@ func resolveIPv4(host string) (string, error) {
 	return "", errors.New("datagram target has no IPv4 address")
 }
 
+// policyGapGrace bounds how long the runtime keeps its listeners bound while
+// no valid policy is held.
+//
+// Cancelling the runtime the moment the policy lapses is what closes the local
+// listeners, and the outer loop then parks in store.WaitValid until a
+// replacement lease arrives. Measured on 2026-09-14: a panel pull returning
+// ultra_access = null cost 37 seconds in which every local connection was
+// refused (ports 30522/32469/10002 returned ECONNREFUSED while the runtime
+// processes stayed alive and later re-bound the same sockets). Serving needs no
+// policy - dialCandidateStream already fails closed with "no healthy authorized
+// candidate" while CandidateSnapshots has nothing valid - so the listeners may
+// as well stay bound and the forward resumes the instant the lease lands.
+// A gap longer than this grace still tears the runtime down, which keeps the
+// fail-safe for an account that really is gone.
+const policyGapGrace = 90 * time.Second
+
 func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *PolicyStore) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	var lostAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-store.Updates():
-			if !store.HasValid() {
+			if store.HasValid() {
+				lostAt = time.Time{}
+				continue
+			}
+			if store.RevokedAny() {
 				cancel()
 				return
 			}
+			if lostAt.IsZero() {
+				lostAt = time.Now()
+			}
 		case <-ticker.C:
 			store.ClearExpired()
-			if !store.HasValid() {
+			if store.HasValid() {
+				lostAt = time.Time{}
+				continue
+			}
+			if store.RevokedAny() {
+				cancel()
+				return
+			}
+			if lostAt.IsZero() {
+				lostAt = time.Now()
+				continue
+			}
+			if time.Since(lostAt) >= policyGapGrace {
+				log.Printf("policy has been missing for %s; stopping the runtime", policyGapGrace)
 				cancel()
 				return
 			}
