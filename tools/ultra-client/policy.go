@@ -431,6 +431,17 @@ func (s *PolicyStore) Revoke(generation string) {
 	s.mu.Unlock()
 }
 
+// RevokedAny reports whether the store has ever been told to revoke a
+// generation. A revocation is an authorization decision and must tear the
+// listeners down at once, unlike a policy that merely lapsed or was never
+// issued: those are outages, and serving is already refused while
+// CandidateSnapshots has nothing valid.
+func (s *PolicyStore) RevokedAny() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.revoked) > 0
+}
+
 func (s *PolicyStore) ClearExpired() {
 	s.mu.Lock()
 	if s.policy != nil && !s.policy.ExpiresAt.After(time.Now()) {
