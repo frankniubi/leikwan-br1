@@ -100,35 +100,13 @@ func (o relayStreamOrder) remoteStoppedFirst() bool {
 	return !o.downstreamEnded.After(o.upstreamEnded.Add(haRelayOrderEpsilon))
 }
 
-// noteRelayOutcome feeds one finished stream back into candidate health.
-//
-// A relay that accepts the connection and then returns not a single byte does
-// that to every flow, but a zero-byte close is indistinguishable from a normal
-// close if all we look at is the error: EOF is EOF. Without this signal the next
-// dial walks straight back into the same dead path, which is how one dead
-// candidate produced six minutes of one-second reconnect storms on 2026-09-13.
-// Two such streams quarantine the path exactly like a failed dial does, and any
-// stream that actually receives data clears the record.
-//
-// Zero downstream bytes are only evidence when the RELAY ended the stream. A
-// local client that sends a request and then hangs up produces the identical
-// shape - upstream bytes, no downstream bytes, a short life - and on 2026-09-14
-// that shape quarantined healthy paths. A strike therefore also requires the
-// ordering relayTCP measured: the remote -> local read must have stopped no
-// later than the local -> remote read, so the remote stopped first and the local
-// hang-up was a consequence of it.
-//
-// Residual ambiguity, deliberately not papered over: a relay (or the provider
-// behind it) that answers our half-close with its own FIN within
-// haRelayOrderEpsilon of it is indistinguishable from one that hung up first,
-// because by then our FIN is already on the wire and the two ends are ordered
-// only by microseconds. Such a stream still counts as a strike, which is the
-// safe direction for the silent-relay failure this signal exists for, and one
-// strike alone never isolates a path (pathIsolationMinStrikes).
-//
-// order is optional so that a caller which cannot observe the ordering - the
-// unit tests that feed this function directly - keeps the byte-count-only
-// behaviour; relayTCP always supplies it.
+// noteRelayOutcome records one finished stream for telemetry. A successful
+// stream clears prior path-failure state. A protocol-silent stream is not a
+// relay-health verdict: encrypted destinations may accept a request without
+// returning application payload, and ordinary user streams do not carry enough
+// protocol context to distinguish that from a broken target. Explicit TCP/UDP
+// probes own availability decisions; the remote/local end ordering is logged
+// for diagnosis only.
 func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdentity, started time.Time, upstreamBytes, downstreamBytes int64, order ...relayStreamOrder) {
 	if store == nil || ident.pathKey == "" {
 		return
@@ -143,21 +121,16 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 		// silence is not yet evidence.
 		return
 	}
-	if len(order) > 0 && !order[0].remoteStoppedFirst() {
-		// The local side gave up on the stream first, so the relay was never
-		// asked to answer and its silence says nothing about the path.
-		return
-	}
-	if !store.FailSilentPath("tcp", ident.pathKey, ident.generation) {
-		return
-	}
+	// A zero-byte application response is not protocol-independent evidence
+	// that the relay is dead: encrypted destinations may legitimately remain
+	// silent. Keep the ordering for telemetry, but do not quarantine ordinary
+	// user traffic from this signal.
 	if status != nil {
-		status.RecordCandidateFailure(ident.candidateKey, "tcp", "tcp_no_response", ident.leaseHash)
 		status.RecordHAEvent("tcp", "no_response", ident.generation)
 	}
 	log.Printf(
-		"tcp candidate quarantined forward_id=%d selection_ref=%s reason=no_downstream_bytes lifetime_ms=%d upstream_bytes=%d",
-		ident.forward, ident.selection, lifetime.Milliseconds(), upstreamBytes)
+		"tcp stream had no downstream bytes forward_id=%d selection_ref=%s remote_stopped_first=%t lifetime_ms=%d upstream_bytes=%d; keeping candidate eligible",
+		ident.forward, ident.selection, len(order) > 0 && order[0].remoteStoppedFirst(), lifetime.Milliseconds(), upstreamBytes)
 }
 
 func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity) {

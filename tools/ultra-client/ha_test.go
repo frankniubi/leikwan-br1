@@ -323,10 +323,10 @@ func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	}
 }
 
-// A relay that takes the connection and answers with nothing is the failure
-// mode that kept a dead candidate selected for minutes: the dial succeeds and
-// EOF looks like a normal close. Two such streams must quarantine the path.
-func TestHATCPRelayQuarantinesSilentRelay(t *testing.T) {
+// A relay that takes the connection and answers with nothing is not enough to
+// quarantine an ordinary user path: an encrypted destination may legitimately
+// produce no immediate application bytes.
+func TestHATCPRelayDoesNotQuarantineProtocolSilentStream(t *testing.T) {
 	now := time.Now()
 	policy := testPolicy(now, strings.Repeat("a", 64))
 	lease := testLease(policy, strings.Repeat("b", 64))
@@ -369,8 +369,8 @@ func TestHATCPRelayQuarantinesSilentRelay(t *testing.T) {
 	store.mu.RLock()
 	until, isolated := store.isolated["tcp:"+ident.pathKey]
 	store.mu.RUnlock()
-	if !isolated || !until.After(time.Now()) {
-		t.Fatal("two silent relay streams did not quarantine the path")
+	if isolated && until.After(time.Now()) {
+		t.Fatal("protocol-silent user streams must not quarantine the path")
 	}
 }
 

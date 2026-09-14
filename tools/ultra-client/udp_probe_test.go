@@ -19,6 +19,20 @@ func TestProbeTargetDefaultsToCloudflareDNS(t *testing.T) {
 	}
 }
 
+func TestTCPProbeTargetDefaultsToCloudflareHTTPS(t *testing.T) {
+	host, port, err := probeTCPTarget(Config{ProbeTarget: defaultProbeTarget})
+	if err != nil || host != "1.1.1.1" || port != 443 {
+		t.Fatalf("target=%q:%d err=%v", host, port, err)
+	}
+}
+
+func TestTCPProbeResultDoesNotPretendToHaveUDPDelivery(t *testing.T) {
+	result := udpProbeResult{TCPSent: 1, TCPReceived: 1}
+	if result.Sent != 0 || result.Received != 0 {
+		t.Fatalf("TCP probe polluted UDP counters: %+v", result)
+	}
+}
+
 func TestDNSProbePayloadAndResponseMatchTransactionID(t *testing.T) {
 	payload, transactionID := buildDNSProbePayload(7)
 	if len(payload) < 20 || binary.BigEndian.Uint16(payload[:2]) != transactionID {

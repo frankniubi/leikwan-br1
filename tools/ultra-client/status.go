@@ -32,26 +32,26 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
-	UDPRuntimeSession      *SelectionStatus    `json:"udp_runtime_session,omitempty"`
-	HAEvents               []HAEvent           `json:"ha_events,omitempty"`
-	HAFailures             int64               `json:"ha_failures,omitempty"`
-	UDPKeepaliveACKs       int64               `json:"udp_keepalive_acks,omitempty"`
-	UDPLastACKAt           string              `json:"udp_last_ack_at,omitempty"`
-	ForwardID              int                 `json:"forward_id"`
-	State                  string              `json:"state"`
-	DetectedIngressZone    string              `json:"detected_ingress_zone"`
-	LocationSource         string              `json:"location_source"`
-	LatestTCP              *SelectionStatus    `json:"latest_tcp,omitempty"`
-	ActiveUDP              *SelectionStatus    `json:"active_udp,omitempty"`
-	UpdatedAt              string              `json:"updated_at"`
-	ErrorCode              string              `json:"error_code,omitempty"`
-	PolicyGeneration       string              `json:"policy_generation,omitempty"`
-	BytesIn                int64               `json:"bytes_in,omitempty"`
-	BytesOut               int64               `json:"bytes_out,omitempty"`
-	UDPActiveAssociations  int                 `json:"udp_active_associations,omitempty"`
-	UDPPendingAssociations int                 `json:"udp_pending_associations,omitempty"`
-	UDPQueueDrops          int64               `json:"udp_queue_drops,omitempty"`
-	UDPSetupFailures       int64               `json:"udp_setup_failures,omitempty"`
+	UDPRuntimeSession      *SelectionStatus `json:"udp_runtime_session,omitempty"`
+	HAEvents               []HAEvent        `json:"ha_events,omitempty"`
+	HAFailures             int64            `json:"ha_failures,omitempty"`
+	UDPKeepaliveACKs       int64            `json:"udp_keepalive_acks,omitempty"`
+	UDPLastACKAt           string           `json:"udp_last_ack_at,omitempty"`
+	ForwardID              int              `json:"forward_id"`
+	State                  string           `json:"state"`
+	DetectedIngressZone    string           `json:"detected_ingress_zone"`
+	LocationSource         string           `json:"location_source"`
+	LatestTCP              *SelectionStatus `json:"latest_tcp,omitempty"`
+	ActiveUDP              *SelectionStatus `json:"active_udp,omitempty"`
+	UpdatedAt              string           `json:"updated_at"`
+	ErrorCode              string           `json:"error_code,omitempty"`
+	PolicyGeneration       string           `json:"policy_generation,omitempty"`
+	BytesIn                int64            `json:"bytes_in,omitempty"`
+	BytesOut               int64            `json:"bytes_out,omitempty"`
+	UDPActiveAssociations  int              `json:"udp_active_associations,omitempty"`
+	UDPPendingAssociations int              `json:"udp_pending_associations,omitempty"`
+	UDPQueueDrops          int64            `json:"udp_queue_drops,omitempty"`
+	UDPSetupFailures       int64            `json:"udp_setup_failures,omitempty"`
 	// UDPPayloadCeiling is the largest datagram payload the current association was
 	// measured to carry (0 = not measured yet, or the association is unusable).
 	// Hosts size the TUN MTU from this instead of guessing a fixed value.
@@ -60,8 +60,8 @@ type RuntimeStatus struct {
 	// udp_payload_ceiling means the active association carries no real payload.
 	UDPPayloadCeilingSource string `json:"udp_payload_ceiling_source,omitempty"`
 	// UDPOversizeDrops counts datagrams refused because they exceeded that ceiling.
-	UDPOversizeDrops int64 `json:"udp_oversize_drops,omitempty"`
-	CandidateFeedback      []CandidateFeedback `json:"candidate_feedback,omitempty"`
+	UDPOversizeDrops  int64               `json:"udp_oversize_drops,omitempty"`
+	CandidateFeedback []CandidateFeedback `json:"candidate_feedback,omitempty"`
 	// RuntimeAttestation is the identity of the running helper binary.
 	RuntimeAttestation *RuntimeAttestation `json:"runtime_attestation,omitempty"`
 }
@@ -178,10 +178,22 @@ func (writer *StatusWriter) RecordCandidateFailure(candidateKeyHash, protocol, r
 // halves are recorded when both failed, so a relay that carries neither
 // protocol is still visible.
 func (writer *StatusWriter) RecordProbeFailure(lease ProviderLease, result udpProbeResult) {
-	if result.Err != nil {
+	// probeTCPLease also stores its error in Err. Treat the UDP half as failed
+	// only when this result actually contains a UDP measurement; otherwise a
+	// TCP-only failure would pollute the panel's UDP reputation stream.
+	udpFailed := false
+	if result.TCPSent == 0 {
+		udpFailed = result.Err != nil
+	} else if result.Sent > 0 {
+		udpFailed = !result.pathUsable(result.Sent, result.Received) &&
+			(result.Sent > 0 || result.Err != nil)
+	}
+	if udpFailed {
 		writer.RecordCandidateFailure(lease.CandidateKeyHash, "udp", errProbeUDPFailed.Error(), lease.LeaseHash)
 	}
-	if result.TCPError != nil {
+	tcpFailed := result.TCPSent > 0 &&
+		(result.TCPError != nil || !result.pathUsable(result.TCPSent, result.TCPReceived))
+	if tcpFailed {
 		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", errProbeTCPFailed.Error(), lease.LeaseHash)
 	}
 }

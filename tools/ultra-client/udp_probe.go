@@ -290,9 +290,9 @@ func stringsContainsUDP(transport string) bool {
 }
 
 func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
-	result := udpProbeResult{SelectionTier: lease.SelectionTier, Sent: 1, TCPSent: 1}
+	result := udpProbeResult{SelectionTier: lease.SelectionTier, TCPSent: 1}
 	started := time.Now()
-	host, port, err := probeTarget(config)
+	host, port, err := probeTCPTarget(config)
 	if err != nil {
 		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
 		result.Err = result.TCPError
@@ -312,7 +312,6 @@ func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, poli
 		return result
 	}
 	_ = connection.Close()
-	result.Received = 1
 	result.TCPReceived = 1
 	result.TCPRTT = time.Since(started)
 	result.MedianRTT = result.TCPRTT
@@ -547,6 +546,10 @@ func probeTarget(config Config) (string, int, error) {
 		return "", 0, errors.New("probe target is fixed to 1.1.1.1:53")
 	}
 	return "1.1.1.1", 53, nil
+}
+
+func probeTCPTarget(_ Config) (string, int, error) {
+	return "1.1.1.1", 443, nil
 }
 
 func summarizeRTTs(rtts []time.Duration) (time.Duration, time.Duration, time.Duration) {
