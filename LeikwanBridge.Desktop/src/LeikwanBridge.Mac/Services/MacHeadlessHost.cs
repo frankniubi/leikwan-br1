@@ -447,9 +447,24 @@ internal static class MacHeadlessSignals
 
         if (!OperatingSystem.IsWindows())
         {
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => Handle("SIGTERM")));
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGINT, _ => Handle("SIGINT")));
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGQUIT, _ => Handle("SIGQUIT")));
+            // Cancel the default disposition. PosixSignalRegistration runs the
+            // handler and then, unless POSIX_SIGTERM's default action is
+            // suppressed, terminates the process - so teardown only ever got as
+            // far as the first forward before the process died. That left the
+            // remaining ultra-client children reparented to launchd, still
+            // holding their listening ports (measured 2026-09-14: 2 of 4
+            // survived, ports 30522 and 32502 still listening, and
+            // "stopped macOS processes for forward" was never logged). The
+            // Windows branch below has always cancelled its CloseKeyPress the
+            // same way; the POSIX branch was simply missing it.
+            static Action<PosixSignalContext> Graceful(Action onSignal) => context =>
+            {
+                context.Cancel = true;
+                onSignal();
+            };
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGTERM, Graceful(() => Handle("SIGTERM"))));
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGINT, Graceful(() => Handle("SIGINT"))));
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGQUIT, Graceful(() => Handle("SIGQUIT"))));
         }
         else
         {
