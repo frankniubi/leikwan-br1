@@ -181,25 +181,97 @@ SS-none request per sample (432 samples):
              (2026-09-14T17:48:38 -> 17:49:19); the 8 zero-byte samples fall in the seconds between
              grace expiry and lease recovery.
 
-The reuse window equals the last grant's remaining TTL (panel MAX_POLICY_TTL_SECONDS = 300), so the
-"90 s grace" is that window, not a fixed constant. Teardown after this phase was again
-survivor_count=0 / orphan_ppid1_count=0 / held_port_count=0.
+MECHANISM, stated so the constant is not mistaken for the behaviour: there is no fixed grace
+constant and no `policyGapGrace`. `ConfigPollingService.RestoreLastKnownUltraPolicies` re-uses the
+last valid policy only while it still validates, i.e. until **that grant's own `expires_at`**, which
+the panel computes as min(now + MAX_POLICY_TTL_SECONDS = 300, line-material expiry, service expiry).
+The 41 s measured here is simply how much of the last grant was left when the lapse was observed; a
+lapse right after a lease would leave up to ~300 s. The durable result is that the listener never
+left LISTEN (432/432 samples) across the lapse and the reuse window.
+Teardown after this phase was again survivor_count=0 / orphan_ppid1_count=0 / held_port_count=0.
 NOTE: the headless client persists `--panel` into config.json — it had been set to the proxy URL and
 was restored to https://v3.leikwanhost.com and re-verified (`doctor`: published 1.0.37 (current)).
 
-## 6. NOT VERIFIED / CAVEATS
+## 6. ZIP-APPLY DEFECT — FIX COMMITTED, SOURCE ONLY (commits 6e5e0ab3, c0d01367)
 
-  * The macOS update APPLY step does not work (section 3). 1.0.37 reached the host by the manual DMG
-    path, not by the updater. No client source was changed, deliberately: a fix needs a new build,
-    and the shipped bytes must keep matching the repo.
+The field defect in section 3 is fixed in source, with regression tests, and deliberately NOT built
+or published (shipping a client build is a release decision, and the shipped bytes must keep
+matching the repo — this host still runs 1.0.37 / runtime b92a4e34…).
+
+Three changes in `LeikwanBridge.Desktop/src/LeikwanBridge.Mac`:
+
+  1. `MacAppUpdateService.ApplyAsync` no longer launches the helper from the staged bundle it then
+     renames. It makes a stable copy under the updates root (APFS clone through `cp -cR`, which
+     costs no extra blocks; a real copy anywhere else), records it as
+     `applier_bundle_path` in the request, and `TryLaunchPendingUpdate` applies the same rule to
+     deferred updates. Stale helper copies are pruned after an hour, never the one a
+     `pending-update.json` still references.
+  2. `MacAppUpdateApplier.ApplyFromRequestOutcomeAsync` returns `MacUpdateApplyOutcome` (code +
+     detail) instead of a bare `false`, appends every step and the rollback reason to
+     `updates/update-apply.log`, and publishes `updates/last-apply-result.json`; Program.Main also
+     prints the reason on stderr. A silent rollback can no longer look like a non-event.
+  3. `MacClientUpdateService.ApplyAsync` waits for the helper outcome and verifies the installed
+     bundle's `CFBundleShortVersionString` really is the published version before returning true.
+     The CLI path starts the helper with `current_process_id = 0` (`waitForCallerExit: false`) so the
+     helper does not wait for the very process that is waiting for it.
+
+Regression tests, and what they do pre-fix:
+
+    ApplyAsync_LaunchesHelperFromAStableCopyOutsideTheStagedBundle
+        pre-fix FAILS: "Assert.StartsWith() Failure: String start does not match"
+        prefix actual   = <tmp>/…/.LeiKwan Bridge.update-<guid>.app/Contents/MacOS/LeikwanBridge.Mac
+        expected prefix = <tmp>/…/updates/
+        (captured by running the test in a worktree at the pre-fix commit)
+    ApplyHelper_PublishesTheRollbackReasonInsteadOfSwallowingIt
+    ApplyHelper_PublishesSuccessAfterTheSwap
+    ClientUpdateService_FailsWhenTheInstalledVersionDoesNotChange
+
+`LeikwanBridge.Mac.Tests` 226/226; full desktop solution 860 tests, 0 failures.
+
+## 7. FORWARD 184 — NOT MEASURABLE FROM THIS HOST (blocked, with evidence)
+
+The intermittent fault under investigation is forward 184, and it was NOT re-measured. From the live
+panel DB (read-only queries only):
+
+    fwd 184 | service 26 | enabled 1 | backend ultra | listen 10809 | target 45.143.235.221:10809
+            | combo 54 (ultra-sha-tyo) | transport tcp+udp | line_client_id 20 | native 0
+    service 26 -> user 29 ; clients.owner_user_id = 29 is client 20
+    this Mac is client 3 (service 11): fwd 158 combo 51, fwd 159/170/171 combo 54, line_client_id 3
+    the only agent tokens on this host are client-agent-3 (active) and client-agent-22
+    (client 22 -> service 31, combo 53/55 forwards, none of them 184)
+
+A client's config only carries its own service's forwards, and the runtime needs a panel-minted
+session ticket bound to (client, forward, line scope), so forward 184 cannot be exercised from this
+host without one of:
+
+  (a) the client-20 agent token (or that device) — then the existing harness runs unchanged with
+      `--client-id 20`; or
+  (b) an authorized panel write attaching a forward with line_client_id 20 (i.e. combo 54 scoped to
+      that line client) to client 3's service.
+
+IMPORTANT NEGATIVE RESULT, WITH ITS LIMIT: forwards 159/170/171 share forward 184's *combination*
+(54, ultra-sha-tyo) and were clean here — 13,762 OK streams, 0 SILENT over 900 s. But they are scoped
+to `line_client_id 3` while 184 is scoped to `line_client_id 20`, and combo 54 has 16 lines, so
+**this clean result does NOT cover 184's line pool** and must not be reported as evidence about 184.
+The line scoping (`forwards.line_client_id`, `line_group_mode = selected`) is why the same combination
+can behave differently for two clients.
+
+## 8. NOT VERIFIED / CAVEATS
+
+  * Forward 184 (section 7) — blocked on credentials or an authorized panel write; the run that
+    matters for the original intermittent-fault question has still not happened.
+  * The applier fix is committed but NOT built: no osx-arm64 bundle was produced and nothing was
+    installed, so its field behaviour is argued from the differential (applier succeeds when it does
+    not run from the swapped bundle) plus unit tests, not from a field run.
   * The historical mismatch firing in the field is not evidenced by this host's logs (section 1);
     only the failure mode is proven.
   * x64 artefacts are verified by sha256/strict-verify only — this arm64 host cannot execute them.
   * Both defects found in the update path (`update_manifest_version_mismatch` equality gate and the
-    applier self-swap) are structural: nothing enforces update/app version equality at publish time,
-    and the applier has no logging. A publish-time assertion plus a log line would prevent both.
+    applier self-swap) are structural: nothing enforces update/app version equality at publish time.
+    The apply log now removes the "silent" part of the second one; a publish-time assertion would
+    remove the first.
 
-## 7. ARTEFACTS LEFT ON THE MAC (~/field-verify-20260914/, /tmp/fv-*)
+## 9. ARTEFACTS LEFT ON THE MAC (~/field-verify-20260914/, /tmp/fv-*)
 
   fvp2-runtime.log (11 MB phase-4 runtime log), fvp2-traffic.txt (generator output),
   fvp2-status.json, fvp2-stdout.txt, ultra-client-1037 (runtime copy, sha b92a4e34…),
