@@ -157,20 +157,15 @@ func (s *PolicyStore) failPathLocked(protocol, key, generation string, minStrike
 	now := time.Now()
 	s.isolated[stateKey] = now.Add(window)
 	if s.allPathsIsolatedLocked(protocol, now) {
-		// Every authorized path is down at once. That is a local or upstream
-		// outage, not evidence about any single relay, and letting the escalated
-		// windows stand would keep the tunnels locked out for minutes after the
-		// endpoint became reachable again. Forget the streaks; the isolations
-		// themselves still expire on their own (at most the first window).
-		s.pathFailures = map[string]int{}
+		s.collapseGlobalOutageLocked(protocol, now)
 	}
 	return true
 }
 
-// allPathsIsolatedLocked reports whether a protocol has no usable path left,
-// which means the next stream cannot be served at all.
-func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) bool {
-	checked := 0
+// authorizedPathKeysLocked lists the path keys the current lease authorizes.
+// Everything the health logic may touch lives in this set; a stale caller can
+// never isolate, clear, or shorten a path the panel did not authorize.
+func (s *PolicyStore) authorizedPathKeysLocked() []string {
 	keys := make([]string, 0, len(s.candidates)+1)
 	if s.lease != nil {
 		keys = append(keys, haPathKey(*s.lease))
@@ -180,13 +175,49 @@ func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) boo
 			keys = append(keys, haPathKey(*l))
 		}
 	}
+	return keys
+}
+
+// allPathsIsolatedLocked reports whether a protocol has no usable path left,
+// which means the next stream cannot be served at all.
+func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) bool {
+	keys := s.authorizedPathKeysLocked()
 	for _, key := range keys {
-		checked++
 		if until, ok := s.isolated[protocol+":"+key]; !ok || !until.After(now) {
 			return false
 		}
 	}
-	return checked > 0
+	return len(keys) > 0
+}
+
+// collapseGlobalOutageLocked bounds a total outage by the first isolation
+// window.
+//
+// Every authorized path is down at once: that is a local or upstream outage,
+// not evidence about any single relay, so the escalation must not outlive it.
+// Forgetting the streaks alone was not enough. The paths that had already
+// escalated kept their 45s/2min deadlines in s.isolated, and the only thing
+// that clears an isolation is a stream that succeeds - which cannot happen
+// while every path is isolated. The tunnel therefore stayed dead for the whole
+// escalated window with nothing left to try.
+//
+// On 2026-09-14 that turned a relay hiccup of about a second into 151 seconds
+// of "no healthy authorized candidate" on one forward (13:15:18 -> 13:17:49),
+// long after the panel had issued a fresh, working selection. Clamping the
+// deadlines to the first window keeps the documented bound true and leaves the
+// next attempt a few seconds away instead of minutes. Dropping the isolations
+// outright is not the answer either: that restores the one-second reconnect
+// storm against a pool that really is down, which is what the first window
+// exists to prevent.
+func (s *PolicyStore) collapseGlobalOutageLocked(protocol string, now time.Time) {
+	s.pathFailures = map[string]int{}
+	limit := now.Add(pathIsolationWindows[0])
+	for _, key := range s.authorizedPathKeysLocked() {
+		stateKey := protocol + ":" + key
+		if until, ok := s.isolated[stateKey]; ok && until.After(limit) {
+			s.isolated[stateKey] = limit
+		}
+	}
 }
 
 func (s *PolicyStore) pathIsAuthorizedLocked(key string) bool {
