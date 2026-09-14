@@ -142,6 +142,11 @@ class StreamRound:
     target_refused: bool = False
     target_refused_code: Optional[int] = None
     target_refused_meaning: str = ""
+    # The reply did not match the documented frame shape and we do not know its
+    # format. It is recorded as unparsed WITH its raw bytes: an unparsed reply must
+    # never be collapsed into "the relay said nothing", because that collapse is
+    # what hid a per-target refusal behind a silence-shaped counter.
+    reply_unparsed: bool = False
     dns_answer: bool = False
     echo: bool = False
     handshake_ms: Optional[int] = None
@@ -406,6 +411,13 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
         outcome.dns_answer = validate_dns_answer(body, identifier)
     if body and body in (bytes(sent), xor_one(bytes(sent))):
         outcome.echo = True
+    if not outcome.connect_frame and not outcome.dns_answer and not outcome.echo and len(body) >= CONNECT_REPLY_PREFIX_SIZE:
+        # A reply that is not a frame we recognise, not an answer and not our own
+        # bytes, but is long enough to be a protocol reply we simply do not know.
+        # We cannot say what it means, so we say exactly that and keep the bytes.
+        # A shorter payload stays classified by the downstream rules, so a one-byte
+        # fragment is not newly reported as a protocol verdict.
+        outcome.reply_unparsed = True
     outcome.ok = bool((outcome.connect_frame or outcome.dns_answer) and not outcome.echo)
     return outcome
 
@@ -529,6 +541,9 @@ def _probe_target_stream_once(
                 classified.error = (
                     "target_refused: rep=0x%02x %s" % (classified.connect_frame_rep, classified.target_refused_meaning)
                 )
+            elif classified.reply_unparsed:
+                # Never call an unparsed reply a silence. The raw bytes travel with it.
+                classified.error = "unparsed_reply: bytes=" + str(classified.sample or "")
             else:
                 classified.error = outcome.error or (
                     "no_downstream_bytes" if closed or not data else "undiscriminating_downstream"
@@ -735,6 +750,8 @@ def review(
         "target_tcp_refused": 0,
         "target_tcp_refused_code": None,
         "target_tcp_refused_meaning": "",
+        "target_tcp_reply_unparsed": 0,
+        "target_tcp_unparsed_sample": "",
         "target_tcp_min_close_ms": None,
         "target_tcp_max_close_ms": None,
         "target_tcp_sample": "",
@@ -819,6 +836,10 @@ def review(
                         result["target_tcp_refused"] += 1
                         result["target_tcp_refused_code"] = stream.target_refused_code
                         result["target_tcp_refused_meaning"] = stream.target_refused_meaning
+                    elif stream.reply_unparsed:
+                        result["target_tcp_reply_unparsed"] += 1
+                        if stream.sample and not result["target_tcp_unparsed_sample"]:
+                            result["target_tcp_unparsed_sample"] = stream.sample
                     elif stream.downstream_bytes == 0:
                         result["target_tcp_zero_downstream"] += 1
                     if stream.echo:
@@ -874,6 +895,10 @@ def finish(result: dict, target_configured: bool, require_big_packet: bool) -> d
         "tcp_refused_code": result.get("target_tcp_refused_code"),
         "tcp_refused_reason": str(result.get("target_tcp_refused_meaning", "") or ""),
         "tcp_zero_downstream_rounds": int(result.get("target_tcp_zero_downstream", 0)),
+        # A reply whose shape we do not know, with its bytes. Distinct from both a
+        # decoded refusal and a genuine silence.
+        "tcp_reply_unparsed": int(result.get("target_tcp_reply_unparsed", 0)),
+        "tcp_unparsed_sample": str(result.get("target_tcp_unparsed_sample", "") or ""),
     }
     if not advertised_ok:
         result["proof"]["reason"] = "relay_not_advertised"
@@ -887,6 +912,9 @@ def finish(result: dict, target_configured: bool, require_big_packet: bool) -> d
             int(result.get("target_tcp_refused_code") or 0),
             str(result.get("target_tcp_refused_meaning", "") or ""),
         )
+    elif int(result.get("target_tcp_reply_unparsed", 0)) > 0 and proof_e2e < 1:
+        result["proof"]["reason"] = "target_reply_unparsed"
+        result["proof"]["unparsed_sample"] = str(result.get("target_tcp_unparsed_sample", "") or "")
     elif proof_e2e < 1:
         result["proof"]["reason"] = "no_end_to_end_transfer"
 
