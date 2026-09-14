@@ -332,8 +332,11 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     {
         try
         {
+            var pendingHelper = ReadPendingHelperBundle();
             foreach (var directory in Directory.EnumerateDirectories(_updatesRoot, "applier-*.app"))
             {
+                if (string.Equals(directory, pendingHelper, StringComparison.Ordinal))
+                    continue;
                 if (DateTime.UtcNow - Directory.GetCreationTimeUtc(directory) < TimeSpan.FromHours(1))
                     continue;
                 TryDeleteDirectory(directory);
@@ -341,6 +344,23 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+        }
+    }
+
+    /// <summary>Helper bundle a deferred (next-start) update is still waiting to use.</summary>
+    private string? ReadPendingHelperBundle()
+    {
+        try
+        {
+            var requestPath = Path.Combine(_updatesRoot, "pending-update.json");
+            if (!File.Exists(requestPath))
+                return null;
+            var pending = MacAppUpdateApplier.ReadRequest(requestPath).ApplierBundlePath;
+            return string.IsNullOrWhiteSpace(pending) ? null : Path.GetFullPath(pending);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or IOException)
+        {
+            return null;
         }
     }
 
