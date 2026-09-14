@@ -19,7 +19,7 @@ advertised 中转端点与客户端目标传给探针。**先备份**，再校�
 
 | # | File | What it is | new md5 | new sha256 | bytes |
 | - | ---- | ---------- | ------- | ---------- | ----- |
-| 1 | /opt/ultra-source/runtime/ultra_line_review.py | the review probe the agent runs for each review | `8cae05e5153bb75a8219ef886ea55b1a` | `850bc6183e7fbe05303d650118ca711d5c8fdf063be863e6d4c0cf94e20f1a6a` | 34808 |
+| 1 | /opt/ultra-source/runtime/ultra_line_review.py | the review probe the agent runs for each review | `24cd4309810a07bb5de8ad61d9593253` | `2eb012e3345a4fc5ab84cb6e71c7c623b541b66642095689a2ad6c3028ebd789` | 41557 |
 | 2 | /usr/local/bin/ultra-source-agent.py | the agent itself (points the probe at an advertised endpoint + the client target) | `264990c14399877fa0300ba65527736a` | `1d11023ffd5afb61f5dbf722f6dbe94fca1b6148394a271ffa7161c1d231e57a` | 57632 |
 
 The two files are a matched pair. The new agent passes `--target` and `--advertised`
@@ -169,7 +169,7 @@ back the file up, record its digest, and report it — it may carry local fixes 
 recorded.
 
 ```bash
-sudo bash -c 'BASE=a9cc8b87b1bebf8a370bda023c9981ec; BASEA=db911ae5522e8e5986c6b8855a588dd3; NEW=8cae05e5153bb75a8219ef886ea55b1a; NEWA=264990c14399877fa0300ba65527736a;
+sudo bash -c 'BASE=a9cc8b87b1bebf8a370bda023c9981ec; BASEA=db911ae5522e8e5986c6b8855a588dd3; NEW=24cd4309810a07bb5de8ad61d9593253; NEWA=264990c14399877fa0300ba65527736a;
 P=/opt/ultra-source/runtime/ultra_line_review.py; A=/usr/local/bin/ultra-source-agent.py;
 GOTP=$(md5sum "$P" | cut -d" " -f1); GOTA=$(md5sum "$A" | cut -d" " -f1);
 echo "installed probe md5: $GOTP"; echo "installed agent md5: $GOTA";
@@ -291,6 +291,23 @@ STREAM_AUTH_ACK = b"\x05\x02\x01\x00"
 STREAM_PRELUDE_SIZE = 14
 # The relay's target-connect result frame (04 01 <rep> 00 01 <bound addr>).
 CONNECT_FRAME_SIZE = 10
+# The relay may answer with only the reply header and no bound address - that is
+# what the live relay on the source host does when it cannot reach the target
+# (measured: exactly four bytes, 04 01 04 00, then close). The refusal is still
+# the relay's verdict about the target and must be read, not discarded.
+CONNECT_REPLY_PREFIX_SIZE = 4
+# SOCKS5 reply codes, so a result says "host unreachable" instead of a hex byte.
+SOCKS_REPLY_MEANINGS = {
+    0x00: "succeeded",
+    0x01: "general_failure",
+    0x02: "connection_not_allowed",
+    0x03: "network_unreachable",
+    0x04: "host_unreachable",
+    0x05: "connection_refused",
+    0x06: "ttl_expired",
+    0x07: "command_not_supported",
+    0x08: "address_type_not_supported",
+}
 MAX_DOWNSTREAM_BYTES = 4096
 # Downstream bytes kept in the result JSON for a human reading a review.
 DOWNSTREAM_SAMPLE_BYTES = 24
@@ -313,6 +330,17 @@ class StreamRound:
     downstream_bytes: int = 0
     connect_frame: bool = False
     connect_frame_rep: Optional[int] = None
+    # The relay answered the target-connect with a refusal code. This is NOT the
+    # same fault as a relay that goes silent: it is an explicit verdict about the
+    # target, and the two must stay distinguishable in the stored result.
+    target_refused: bool = False
+    target_refused_code: Optional[int] = None
+    target_refused_meaning: str = ""
+    # The reply did not match the documented frame shape and we do not know its
+    # format. It is recorded as unparsed WITH its raw bytes: an unparsed reply must
+    # never be collapsed into "the relay said nothing", because that collapse is
+    # what hid a per-target refusal behind a silence-shaped counter.
+    reply_unparsed: bool = False
     dns_answer: bool = False
     echo: bool = False
     handshake_ms: Optional[int] = None
@@ -518,14 +546,34 @@ def read_stream_ack(conn: socket.socket, deadline: float) -> str:
 
 
 def valid_connect_frame(frame: bytes) -> bool:
-    """The relay's target-connect result frame shape (04 01 <rep> 00 01 ...)."""
+    """The relay's target-connect result frame shape (04 01 <rep> 00 01 ...).
+
+    A full frame carries the bound address; a reply header alone is accepted too,
+    because a relay that cannot reach the target answers with just the header
+    (measured on the live source host: 04 01 04 00, then close). Requiring the
+    tenth byte made the probe discard the relay's refusal and then describe the
+    round as if the relay had said nothing.
+    """
     return (
-        len(frame) == CONNECT_FRAME_SIZE
+        len(frame) >= CONNECT_REPLY_PREFIX_SIZE
         and frame[0] == 0x04
         and frame[1] == 0x01
         and frame[3] == 0x00
-        and frame[4] == 0x01
+        and (len(frame) < CONNECT_FRAME_SIZE or frame[4] == 0x01)
     )
+
+
+def connect_reply_code(frame: bytes) -> Optional[int]:
+    """The reply code byte of a target-connect frame, or None if not a frame."""
+    if not valid_connect_frame(frame):
+        return None
+    return int(frame[2])
+
+
+def reply_meaning(code: Optional[int]) -> str:
+    if code is None:
+        return ""
+    return SOCKS_REPLY_MEANINGS.get(int(code), "unknown_reply_" + hex(int(code)))
 
 
 def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> StreamRound:
@@ -542,10 +590,14 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
     outcome.sample = bytes(data[:DOWNSTREAM_SAMPLE_BYTES]).hex()
     body = bytes(data)
     if valid_connect_frame(body[:CONNECT_FRAME_SIZE]):
-        frame = body[:CONNECT_FRAME_SIZE]
-        outcome.connect_frame_rep = frame[2]
-        outcome.connect_frame = frame[2] == 0
-        body = body[CONNECT_FRAME_SIZE:]
+        full = len(body) >= CONNECT_FRAME_SIZE
+        frame = body[:CONNECT_FRAME_SIZE] if full else body
+        outcome.connect_frame_rep = connect_reply_code(frame)
+        outcome.target_refused_code = outcome.connect_frame_rep
+        outcome.target_refused_meaning = reply_meaning(outcome.connect_frame_rep)
+        outcome.connect_frame = outcome.connect_frame_rep == 0
+        outcome.target_refused = outcome.connect_frame_rep != 0
+        body = body[CONNECT_FRAME_SIZE:] if full else b""
     inner, framed = strip_address_header(body)
     if framed:
         outcome.dns_answer = validate_dns_answer(inner, identifier)
@@ -553,6 +605,13 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
         outcome.dns_answer = validate_dns_answer(body, identifier)
     if body and body in (bytes(sent), xor_one(bytes(sent))):
         outcome.echo = True
+    if not outcome.connect_frame and not outcome.dns_answer and not outcome.echo and len(body) >= CONNECT_REPLY_PREFIX_SIZE:
+        # A reply that is not a frame we recognise, not an answer and not our own
+        # bytes, but is long enough to be a protocol reply we simply do not know.
+        # We cannot say what it means, so we say exactly that and keep the bytes.
+        # A shorter payload stays classified by the downstream rules, so a one-byte
+        # fragment is not newly reported as a protocol verdict.
+        outcome.reply_unparsed = True
     outcome.ok = bool((outcome.connect_frame or outcome.dns_answer) and not outcome.echo)
     return outcome
 
@@ -670,7 +729,19 @@ def _probe_target_stream_once(
         classified.close_ms = int((time.time() - started) * 1000)
         classified.greeting = outcome.greeting
         if not classified.ok:
-            classified.error = outcome.error or ("no_downstream_bytes" if closed or not data else "undiscriminating_downstream")
+            if classified.target_refused:
+                # The relay gave a verdict about the target. Say so, with the code,
+                # instead of reporting the refusal as if nothing had come back.
+                classified.error = (
+                    "target_refused: rep=0x%02x %s" % (classified.connect_frame_rep, classified.target_refused_meaning)
+                )
+            elif classified.reply_unparsed:
+                # Never call an unparsed reply a silence. The raw bytes travel with it.
+                classified.error = "unparsed_reply: bytes=" + str(classified.sample or "")
+            else:
+                classified.error = outcome.error or (
+                    "no_downstream_bytes" if closed or not data else "undiscriminating_downstream"
+                )
         return classified
     finally:
         try:
@@ -867,6 +938,14 @@ def review(
         "target_tcp_frame_ok": 0,
         "target_tcp_dns_ok": 0,
         "target_tcp_echo_rounds": 0,
+        # A refusal and a silence are different faults and must not share a counter:
+        # the operator note reads target_tcp_zero_downstream as the fault signature,
+        # so a refusal must never be counted there.
+        "target_tcp_refused": 0,
+        "target_tcp_refused_code": None,
+        "target_tcp_refused_meaning": "",
+        "target_tcp_reply_unparsed": 0,
+        "target_tcp_unparsed_sample": "",
         "target_tcp_min_close_ms": None,
         "target_tcp_max_close_ms": None,
         "target_tcp_sample": "",
@@ -943,7 +1022,19 @@ def review(
                     else:
                         result["target_tcp_failed"] += 1
                         result["last_error"] = result["last_error"] or str(stream.error or "no target transfer")
-                    if stream.downstream_bytes == 0:
+                    # A refusal and a silence are counted apart on purpose. The note
+                    # tells a human to read target_tcp_zero_downstream as the fault
+                    # signature, and a relay that answered "host unreachable" has not
+                    # been silent - counting it there would make a refusal read clean.
+                    if stream.target_refused:
+                        result["target_tcp_refused"] += 1
+                        result["target_tcp_refused_code"] = stream.target_refused_code
+                        result["target_tcp_refused_meaning"] = stream.target_refused_meaning
+                    elif stream.reply_unparsed:
+                        result["target_tcp_reply_unparsed"] += 1
+                        if stream.sample and not result["target_tcp_unparsed_sample"]:
+                            result["target_tcp_unparsed_sample"] = stream.sample
+                    elif stream.downstream_bytes == 0:
                         result["target_tcp_zero_downstream"] += 1
                     if stream.echo:
                         result["target_tcp_echo_rounds"] += 1
@@ -990,11 +1081,34 @@ def finish(result: dict, target_configured: bool, require_big_packet: bool) -> d
         "udp_target_ok": int(result.get("target_udp_ok", 0)),
         "dns_e2e_ok": int(result.get("dns_ok", 0)),
         "relay_local_echo_ok": int(result.get("udp_ok", 0)) + int(result.get("big_ok", 0)),
+        # The relay's own verdict about the target, kept separate from silence so a
+        # reader can tell "refused with a code" from "went quiet". Confirmed on the
+        # live source host: the refusal is what actually happens; a true silence has
+        # no confirmed instance yet.
+        "tcp_refused": int(result.get("target_tcp_refused", 0)),
+        "tcp_refused_code": result.get("target_tcp_refused_code"),
+        "tcp_refused_reason": str(result.get("target_tcp_refused_meaning", "") or ""),
+        "tcp_zero_downstream_rounds": int(result.get("target_tcp_zero_downstream", 0)),
+        # A reply whose shape we do not know, with its bytes. Distinct from both a
+        # decoded refusal and a genuine silence.
+        "tcp_reply_unparsed": int(result.get("target_tcp_reply_unparsed", 0)),
+        "tcp_unparsed_sample": str(result.get("target_tcp_unparsed_sample", "") or ""),
     }
     if not advertised_ok:
         result["proof"]["reason"] = "relay_not_advertised"
     elif not target_configured:
         result["proof"]["reason"] = "no_client_target"
+    elif int(result.get("target_tcp_refused", 0)) > 0 and proof_e2e < 1:
+        # The relay answered and named a reason. That is a real, named verdict about
+        # the target and must not be flattened into the generic no-transfer reason.
+        result["proof"]["reason"] = "target_refused"
+        result["proof"]["refusal_detail"] = "rep=0x%02x %s" % (
+            int(result.get("target_tcp_refused_code") or 0),
+            str(result.get("target_tcp_refused_meaning", "") or ""),
+        )
+    elif int(result.get("target_tcp_reply_unparsed", 0)) > 0 and proof_e2e < 1:
+        result["proof"]["reason"] = "target_reply_unparsed"
+        result["proof"]["unparsed_sample"] = str(result.get("target_tcp_unparsed_sample", "") or "")
     elif proof_e2e < 1:
         result["proof"]["reason"] = "no_end_to_end_transfer"
 
@@ -2578,7 +2692,7 @@ UNIT=ultra-source-agent
 AGENT=/usr/local/bin/ultra-source-agent.py
 PROBE=/opt/ultra-source/runtime/ultra_line_review.py
 want_agent=1d11023ffd5afb61f5dbf722f6dbe94fca1b6148394a271ffa7161c1d231e57a
-want_probe=850bc6183e7fbe05303d650118ca711d5c8fdf063be863e6d4c0cf94e20f1a6a
+want_probe=2eb012e3345a4fc5ab84cb6e71c7c623b541b66642095689a2ad6c3028ebd789
 fail=0
 got_agent=$(sha256sum "$AGENT" | cut -d" " -f1)
 got_probe=$(sha256sum "$PROBE" | cut -d" " -f1)
@@ -2600,6 +2714,37 @@ exit $fail'
 
 ## 10. STEP 6 — confirm the first review carries a proof block
 
+> ### READ THIS FIRST: the field this note used to point at READS CLEAN ON THE FAULT
+>
+> An earlier revision of this note told the reader to treat
+> `target_tcp_zero_downstream` as "the fault signature". **That was wrong, and it was
+> wrong in the worst way: the counter reads 0 on the exact fault it was written for.**
+>
+> Measured on 2026-09-14 on this host: an advertised relay refused the client's target
+> in 4 of 4 rounds with `REP=0x01 general_failure`, and `target_tcp_zero_downstream`
+> stayed at **0**. A probe that refused the target was recorded as a probe that had
+> nothing to report, so the fault looked like health.
+>
+> `target_tcp_zero_downstream = 0` **must never be read as "healthy" on its own.** It
+> counts one specific thing only: rounds where the relay closed without sending any
+> reply at all. Read the refusal fields instead:
+>
+> | field | meaning |
+> | ----- | ------- |
+> | `$.detail.proof.reason` | `target_refused` = the relay named a reason for failing to reach the target |
+> | `$.detail.target_tcp_refused` | how many rounds the relay answered with a refusal code |
+> | `$.detail.target_tcp_refused_code` | the code (SOCKS5 numbering) |
+> | `$.detail.target_tcp_refused_meaning` | `host_unreachable`, `general_failure`, ... |
+> | `$.detail.proof.tcp_refused` / `tcp_refused_reason` | the same two values inside the proof block |
+> | `$.detail.target_tcp_reply_unparsed` | a reply we could not parse, with raw bytes in `target_tcp_unparsed_sample` |
+> | `$.detail.target_tcp_zero_downstream` | genuine silence ONLY - as of this date there is **no confirmed instance** of it |
+>
+> Three different facts, three different fields: a DECODED REFUSAL, an UNPARSED REPLY,
+> and a GENUINE SILENCE. Never collapse them into one number.
+>
+> Also: the ~1 s stream close is **the refusal arriving**, not an idle timeout. Do not
+> read a ~1 s close as "the relay went quiet".
+
 On the source host (the new agent logs one line per reported review):
 
 ```bash
@@ -2609,15 +2754,24 @@ sudo journalctl -u ultra-source-agent --since "-40 min" --no-pager | grep -E "re
 A working deploy looks like this (numbers vary):
 
 ```text
-review 11 line 453 passed=True proof_reason=none end_to_end_ok=30 zero_downstream=0 note=
-review 12 line 37 passed=False proof_reason=no_end_to_end_transfer end_to_end_ok=0 zero_downstream=30 note=no_downstream_bytes
+review 11 line 453 passed=True  proof_reason=none            end_to_end_ok=30 zero_downstream=0  note=
+review 12 line 581 passed=False proof_reason=target_refused  end_to_end_ok=0  zero_downstream=0  note=target_refused: rep=0x01 general_failure
 ```
 
 * `passed=True proof_reason=none` — the probe proved the line end to end; the panel
   should record `rebuttal=applied`.
+* `passed=False proof_reason=target_refused` — **the relay answered and named a
+  reason.** Measured on this host: `rep=0x01 general_failure` for forward 184's target,
+  `rep=0x04 host_unreachable` for another. This is a real, reproducible measurement of
+  the target being refused, NOT a broken deploy — and note that
+  `zero_downstream=0` in this row, which is exactly why that field must not be read as
+  health.
+* `passed=False proof_reason=target_reply_unparsed` — the relay answered with bytes
+  whose shape we do not recognise; the raw bytes are in `unparsed_sample`. Unknown,
+  and recorded as unknown rather than as a silence.
 * `passed=False proof_reason=no_end_to_end_transfer` — the probe ran, held the relay
-  for the window, and got **zero** downstream bytes for the target. That is a real
-  measurement of the field fault, not a broken deploy.
+  for the window, and got **zero** downstream bytes for the target with no reply at
+  all. A genuine silence. As of 2026-09-14 there is no confirmed instance of this.
 * `proof_reason=no_client_target` — the panel sent an empty target. Expected for some
   candidates, and it can never pass.
 * `proof_reason=relay_not_advertised` / `no advertised relay in the line material` —
@@ -2634,6 +2788,9 @@ SELECT id, line_id, state, completed_at,
        JSON_EXTRACT(result_json, '$.detail.proof.end_to_end_ok')        AS probe_e2e_ok,
        JSON_UNQUOTE(JSON_EXTRACT(result_json, '$.detail.proof.target')) AS probe_target,
        JSON_EXTRACT(result_json, '$.detail.proof.local_path_only')      AS probe_local_only,
+       JSON_EXTRACT(result_json, '$.detail.target_tcp_refused')         AS tcp_refused_rounds,
+       JSON_UNQUOTE(JSON_EXTRACT(result_json, '$.detail.target_tcp_refused_meaning')) AS refused_meaning,
+       JSON_EXTRACT(result_json, '$.detail.target_tcp_reply_unparsed')  AS unparsed_rounds,
        JSON_EXTRACT(result_json, '$.detail.target_tcp_zero_downstream') AS zero_downstream_rounds,
        JSON_EXTRACT(result_json, '$.detail.rounds')                     AS rounds,
        JSON_EXTRACT(result_json, '$.detail.target_tcp_min_close_ms')    AS min_close_ms,
@@ -2645,7 +2802,9 @@ SELECT id, line_id, state, completed_at,
 | `rebuttal` | `panel_reason` | meaning |
 | --- | --- | --- |
 | applied | advertised_endpoint_end_to_end | the new probe worked and the line is proven end to end |
-| blocked | no_end_to_end_transfer | the new probe ran but the target never answered over the relay |
+| blocked | target_refused | the relay answered and refused the target, with a code |
+| blocked | target_reply_unparsed | the relay's reply shape is unknown; raw bytes recorded |
+| blocked | no_end_to_end_transfer | the new probe ran and the relay sent nothing at all (no confirmed instance yet) |
 | blocked | local_path_only | the report claimed only relay-local evidence |
 | blocked | endpoint_not_advertised | the probed IP is not advertised for that line/source |
 | blocked | proof_missing | **no proof block at all — the OLD agent/probe is still running** |
@@ -2656,11 +2815,33 @@ The deploy is confirmed by either `rebuttal=applied` with `probe_e2e_ok >= 1`, o
 
 ### The measurement this upgrade exists for
 
-`$.detail.rounds` is how many stream probes ran; `$.detail.target_tcp_zero_downstream`
-is how many were ACKed and then returned zero downstream bytes (the field fault); and
-`target_tcp_min_close_ms`/`max_close_ms` is how long the silent streams lived (the
-field signature is ~1000 ms, sometimes 0-8 ms). Compare those across the advertised
-endpoints of the same line. Before this upgrade no review could produce them.
+`$.detail.rounds` is how many stream probes ran. Split those rounds three ways —
+they are NOT interchangeable:
+
+* `$.detail.target_tcp_refused` — the relay answered and refused the target. Read
+  `target_tcp_refused_code`/`_meaning` for why. This is the fault measured on this host
+  on 2026-09-14: 4 of 4 rounds, `REP=0x01 general_failure`, for forward 184's target
+  45.143.235.221:10809, from three different advertised relays (71-73 ms closes).
+* `$.detail.target_tcp_reply_unparsed` — the relay answered with a shape we do not
+  know. Raw bytes in `target_tcp_unparsed_sample`.
+* `$.detail.target_tcp_zero_downstream` — the relay sent nothing at all. Genuine
+  silence, and `0` here does **not** mean healthy.
+
+`target_tcp_min_close_ms`/`max_close_ms` is how long the stream lived. A ~1 s close is
+the refusal arriving, not an idle timeout; a ~72 ms close is a policy-speed refusal.
+
+Compare those across the advertised endpoints of the same line. Before this upgrade no
+review could produce any of them.
+
+### Known independent vantage, for triangulation
+
+A refused target may be refused by the relay's egress while being perfectly reachable
+from the open internet. Measured 2026-09-14 from the Mac test machine (plain TCP, no
+relay): forward 184's target 45.143.235.221:10809 **CONNECTED in 95 ms**, while every
+advertised relay of line 581 refused it in ~72 ms. A second target,
+38.207.136.247:32469, was refused by the destination itself
+(`ConnectionRefusedError`). So "the relay refuses it" and "it is down" are different
+claims, and a single vantage cannot tell them apart.
 
 ---
 
@@ -2707,6 +2888,18 @@ provider endpoints — redact them if that matters.
 ---
 
 ## 13. Limits, stated plainly
+
+* **THE PROBE RUNS ON THE SOURCE HOST, SO ITS VERDICT IS ABOUT THE SOURCE HOST'S EGRESS,
+  NOT A CLIENT'S.** It measures "from 10.10.10.171, via relay X, to target Y". It does
+  NOT measure "from a client in Shanghai, via relay X, to target Y". A source host can
+  sit behind a different egress, firewall or routing policy than a client, so a refusal
+  code proves the SOURCE cannot reach the target through that relay - it does not by
+  itself prove a user is affected. Measured 2026-09-14: forward 184's target
+  45.143.235.221:10809 was refused (REP=0x01, ~72 ms) by every advertised relay of line
+  581 from this host, while the SAME target accepted a plain TCP connection from an
+  independent vantage in 95 ms. Before reading any refusal as a user-impacting fact,
+  check it from a CLIENT vantage. Reading a source-host refusal as a field symptom
+  without that check is the exact mistake this note was written to correct.
 
 * The new probe **fails closed**. A target that never answers over TCP or UDP cannot
   produce a pass, so some reviews will now end in `rebuttal=blocked` where the old
