@@ -332,6 +332,24 @@ final class UltraCandidateReviewService
                 'line_id' => (int) ($row['line_id'] ?? 0),
                 'protocol' => (string) ($row['protocol'] ?? 'tcp+udp'),
                 'seconds' => self::REVIEW_SECONDS,
+                // The relay set the panel advertises for this line and the
+                // destination a client was reaching when it reported the
+                // failure. Without these the probe can only test a relay the
+                // source host picked for itself, which is what made 8 of the
+                // first 9 reviews evidence about the wrong endpoint; see
+                // reviewProof() for why that decides whether a result may
+                // change anyone's standing.
+                //
+                // The relays are re-derived from the panel's own inventory, so
+                // an agent cannot widen its own mandate by claiming an endpoint.
+                // Ports are deliberately not invented here: ultra_lines keeps
+                // IPs only, and the probe pairs an advertised IP with the port
+                // from the material it acquired for this line.
+                'relays' => $this->advertisedRelayIps([
+                    'line_id' => (int) ($row['line_id'] ?? 0),
+                    'source_id' => $sourceId,
+                ]),
+                'target' => $this->clientTarget((string) ($row['candidate_key_hash'] ?? '')),
             ];
         }
         return $claimed;
@@ -539,6 +557,61 @@ final class UltraCandidateReviewService
             }
         }
         return array_keys($ips);
+    }
+
+    /**
+     * The destination a real client reaches for the candidate's zone, as
+     * host:port - the thing the failing reports were actually about.
+     *
+     * A candidate is identified by (source, line, ingress, destination zone,
+     * protocol), so the zone is what selects the target: every client forward
+     * terminating in that zone reaches the same class of destination. The
+     * lowest forward id wins so a review is reproducible, and the whole lookup
+     * degrades to '' rather than failing a review: a target is what makes a
+     * probe meaningful, not something a review must have to be recorded.
+     *
+     * @param string $candidateHash
+     */
+    private function clientTarget(string $candidateHash): string
+    {
+        $candidateHash = strtolower(trim($candidateHash));
+        if ($this->db === null || preg_match('/^[a-f0-9]{64}$/', $candidateHash) !== 1) {
+            return '';
+        }
+        $scope = $this->db->fetchOne(
+            'SELECT destination_zone FROM ultra_candidate_reputation_current
+              WHERE candidate_key_hash = :candidate_key_hash LIMIT 1',
+            ['candidate_key_hash' => $candidateHash]
+        );
+        $zone = strtolower(trim((string) (is_array($scope) ? ($scope['destination_zone'] ?? '') : '')));
+        if ($zone === '' || $zone === 'unknown') {
+            return '';
+        }
+        // Mirrors UltraClientStatusService::assignmentsForClients(): only an
+        // active service on an ultra forward combination is a real client path.
+        $row = $this->db->fetchOne(
+            'SELECT f.target_host, f.target_port
+               FROM forwards f
+               INNER JOIN services s ON s.id = f.service_id AND s.status = :active_status
+               INNER JOIN forward_combinations fc
+                       ON fc.id = f.forward_combination_id AND fc.backend_mode = :backend_mode
+              WHERE f.enabled = 1 AND fc.ultra_destination_zone = :destination_zone
+              ORDER BY f.id ASC LIMIT 1',
+            [
+                'active_status' => 'active',
+                'backend_mode' => UltraMode::BACKEND_MODE,
+                'destination_zone' => $zone,
+            ]
+        );
+        if (!is_array($row)) {
+            return '';
+        }
+        $host = trim((string) ($row['target_host'] ?? ''));
+        $port = (int) ($row['target_port'] ?? 0);
+        if ($host === '' || $port <= 0) {
+            return '';
+        }
+        return $host . ':' . $port;
     }
 
     private static function flagTrue(mixed $value): bool
