@@ -11,6 +11,9 @@ foreach ([
     '.bridge-home-page :is(a, button, select):focus-visible',
     'transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease',
     '@media (prefers-reduced-motion: reduce)',
+    '.bridge-home-title-en',
+    '.bridge-home-cities',
+    '.bridge-home-ghost:hover',
 ] as $required) {
     if (!str_contains($css, $required)) {
         throw new RuntimeException('homepage visual polish marker missing ' . $required);
