@@ -3372,6 +3372,37 @@ final class AdminController extends BaseController
                 $ispOptions .= '<option value="' . $ispValue . '"' . ($ispRawFilter !== '' && $ispFilterValue === $ispValue ? ' selected' : '') . '>' . $ispLabel . '</option>';
             }
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
+            // The line table is paged, but the view rendered no pager and no
+            // page-size control: with a default limit of 50 (max 200) an
+            // operator only ever saw the first 50 rows ordered by sort_order and
+            // concluded the panel was missing lines that were in fact present.
+            $lineQuery = array_filter([
+                'view' => 'lines',
+                'catalog_ingress' => (string) $request->input('catalog_ingress', ''),
+                'catalog_destination' => (string) $request->input('catalog_destination', ''),
+                'access_class' => (string) $request->input('access_class', ''),
+                'native_udp_state' => (string) $request->input('native_udp_state', ''),
+                'native_socks5_state' => (string) $request->input('native_socks5_state', ''),
+                'direction_class' => (string) $request->input('direction_class', ''),
+                'pricing_class' => (string) $request->input('pricing_class', ''),
+                'isp' => (string) $request->input('isp', ''),
+                'dispatch_class' => (string) $request->input('dispatch_class', ''),
+                'include_absent' => $includeUnavailable ? '1' : '',
+            ], static fn (string $value): bool => $value !== '');
+            $linePageLink = function (int $page, int $size) use ($lineQuery): string {
+                return '/admin/ultra?' . http_build_query($lineQuery + ['limit' => $size, 'page' => $page]);
+            };
+            $lineShown = count($lines);
+            $lineLast = $offset + $lineShown;
+            $pager = '<section class="card"><div class="actions">'
+                . ($pageNumber > 1 ? '<a class="button ghost" href="' . $this->escape($linePageLink($pageNumber - 1, $limit)) . '">&larr; Previous</a>' : '')
+                . '<span class="muted">Showing ' . ($lineShown === 0 ? 0 : $offset + 1) . '-' . $lineLast . ' &middot; page ' . $pageNumber . ' &middot; ' . $limit . ' per page</span>'
+                . ($lineShown === $limit ? '<a class="button ghost" href="' . $this->escape($linePageLink($pageNumber + 1, $limit)) . '">Next &rarr;</a>' : '')
+                . '</div><div class="actions"><span class="muted">Lines per page:</span>';
+            foreach ([50, 100, 200] as $pageSize) {
+                $pager .= '<a class="button ghost" href="' . $this->escape($linePageLink(1, $pageSize)) . '">' . $pageSize . '</a>';
+            }
+            $pager .= '</div></section>';
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
                 . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
                 . '<label>Catalog destination <input name="catalog_destination" value="' . $catalogDestinationFilter . '" maxlength="191"></label>'
@@ -3384,7 +3415,8 @@ final class AdminController extends BaseController
                 . '<label>Dispatch <select name="dispatch_class">' . $dispatchOptions . '</select></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>'
+                . $pager;
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';
