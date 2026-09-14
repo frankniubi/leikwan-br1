@@ -102,6 +102,12 @@ CONNECT_FRAME_SIZE = 10
 # (measured: exactly four bytes, 04 01 04 00, then close). The refusal is still
 # the relay's verdict about the target and must be read, not discarded.
 CONNECT_REPLY_PREFIX_SIZE = 4
+# The smallest downstream payload that counts as a CARRIED TRANSFER. Below this a
+# non-frame reply is protocol noise we do not understand, not evidence: the live
+# carried transfers measured 316 bytes (an HTTP response) and the live failures
+# measured 0 or 4, so a handful of bytes is never a delivered payload. Without a
+# floor, any stray four bytes would satisfy "payload arrived" and pass a review.
+MIN_DELIVERED_PAYLOAD_BYTES = 8
 # SOCKS5 reply codes, so a result says "host unreachable" instead of a hex byte.
 SOCKS_REPLY_MEANINGS = {
     0x00: "succeeded",
@@ -147,6 +153,10 @@ class StreamRound:
     # never be collapsed into "the relay said nothing", because that collapse is
     # what hid a per-target refusal behind a silence-shaped counter.
     reply_unparsed: bool = False
+    # The relay reported a non-zero code but delivered no payload: reachable-looking,
+    # nothing carried. Kept apart from a refusal because the code does not
+    # discriminate (see classify_stream_downstream).
+    connect_no_payload: bool = False
     dns_answer: bool = False
     echo: bool = False
     handshake_ms: Optional[int] = None
@@ -402,23 +412,54 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
         outcome.target_refused_code = outcome.connect_frame_rep
         outcome.target_refused_meaning = reply_meaning(outcome.connect_frame_rep)
         outcome.connect_frame = outcome.connect_frame_rep == 0
-        outcome.target_refused = outcome.connect_frame_rep != 0
         body = body[CONNECT_FRAME_SIZE:] if full else b""
-    inner, framed = strip_address_header(body)
+    # The relay's reply CODE is not a verdict. Measured on the live source host
+    # 2026-09-14: a stream that delivered 316 real bytes and a stream that delivered
+    # nothing produced byte-identical ten-byte frames (04 01 01 00 01 <addr> <port>),
+    # so the code is 0x01 on a SUCCESSFUL carry. Treating a non-zero code as failure
+    # threw away delivered bytes; treating it as success would invent a transfer.
+    # The only reliable evidence is whether downstream payload actually arrived.
+    #
+    # Payload accounting must happen BEFORE any DNS probing, because
+    # strip_address_header() happily consumes three bytes of an HTTP body as if they
+    # were a Shadowsocks prefix, which would make real payload look like a 3-byte
+    # fragment (and therefore "unparsed").
+    payload = bytes(body)
+    echo = bool(payload) and payload in (bytes(sent), xor_one(bytes(sent)))
+    outcome.echo = echo
+    # The target's own answer is checked first: it is the strongest evidence and it
+    # does not depend on the relay's framing at all.
+    inner, framed = strip_address_header(payload)
     if framed:
         outcome.dns_answer = validate_dns_answer(inner, identifier)
     if not outcome.dns_answer:
-        outcome.dns_answer = validate_dns_answer(body, identifier)
-    if body and body in (bytes(sent), xor_one(bytes(sent))):
-        outcome.echo = True
-    if not outcome.connect_frame and not outcome.dns_answer and not outcome.echo and len(body) >= CONNECT_REPLY_PREFIX_SIZE:
-        # A reply that is not a frame we recognise, not an answer and not our own
-        # bytes, but is long enough to be a protocol reply we simply do not know.
-        # We cannot say what it means, so we say exactly that and keep the bytes.
-        # A shorter payload stays classified by the downstream rules, so a one-byte
-        # fragment is not newly reported as a protocol verdict.
-        outcome.reply_unparsed = True
-    outcome.ok = bool((outcome.connect_frame or outcome.dns_answer) and not outcome.echo)
+        outcome.dns_answer = validate_dns_answer(payload, identifier)
+    # ARRIVED PAYLOAD IS THE EVIDENCE. If bytes came back that are not our own echo,
+    # the relay carried something for this stream - that is the transfer, whatever the
+    # relay's reply code says. Everything the code claims is a diagnostic.
+    delivered = len(payload) >= MIN_DELIVERED_PAYLOAD_BYTES and not echo
+    # Unparsed applies only when NOTHING usable arrived: a short non-empty reply that
+    # is not a frame we recognise, not an answer and not our own bytes. We cannot say
+    # what it means, so we say exactly that and keep the bytes. It must never be called
+    # a silence.
+    outcome.reply_unparsed = bool(
+        payload
+        and not delivered
+        and not outcome.connect_frame
+        and not outcome.dns_answer
+        and len(payload) >= CONNECT_REPLY_PREFIX_SIZE
+    )
+    outcome.connect_no_payload = bool(outcome.connect_frame_rep is not None) and not delivered
+    # A refusal requires BOTH a non-zero code AND no delivered payload AND no answer.
+    # Never the code alone: the code is a named diagnostic, not a decision.
+    outcome.target_refused = bool(
+        outcome.target_refused_code not in (None, 0) and not delivered and not outcome.dns_answer
+    )
+    # Evidence = payload the relay actually delivered for our stream, or the target's
+    # own answer. A bare "target connected" frame is NOT evidence: it is the relay's
+    # claim, and we have seen that claim made on a stream that delivered 316 bytes and
+    # on one that delivered nothing, with identical bytes. A claim cannot decide.
+    outcome.ok = bool(delivered or outcome.dns_answer)
     return outcome
 
 

@@ -159,7 +159,7 @@ class _FakeRelayStreamServer:
     are the ones that decide a review.
     """
 
-    def __init__(self, behaviour="healthy", refuse_code=0x04, unparsed_bytes=b"\x04\x04\x01\x01"):
+    def __init__(self, behaviour="healthy", refuse_code=0x04, unparsed_bytes=b"\x05\x07\x08\x09"):
         self.behaviour = behaviour
         self.refuse_code = refuse_code
         self.unparsed_bytes = unparsed_bytes
@@ -247,6 +247,15 @@ class _FakeRelayStreamServer:
             payload = self._read_payload(conn)
             # The client XORs every upstream stream byte with 1; the relay decodes.
             plain = probe.xor_one(payload)
+            if self.behaviour == "refuse_target":
+                # Exactly ten bytes, matching the live wire: 04 01 <rep> 00 01 then a
+                # three-byte bound-address field and the two-byte bound port. The live
+                # relays emit this same length on both a carried and a failed stream.
+                conn.sendall(
+                    b"\x04\x01" + bytes([self.refuse_code, 0x00, 0x01]) + b"\x01\x01\x01"
+                    + struct.pack("!H", 10809)
+                )
+                return
             if self.behaviour == "silent":
                 # The field fault: handshake ACKed, then zero downstream bytes.
                 return
@@ -257,6 +266,14 @@ class _FakeRelayStreamServer:
                 # No connect frame: the only evidence is the target's own answer.
                 conn.sendall(_dns_answer(probe.strip_address_header(plain)[0], framed=True))
                 return
+            if self.behaviour == "carried":
+                # Measured live on 1.1.1.1:80 through the relay: the connect frame
+                # (code 0x01) IMMEDIATELY FOLLOWED BY 316 bytes of real payload.
+                # Identical frame shape to one that delivered nothing. Payload is the
+                # evidence; the code is a non-discriminating diagnostic.
+                conn.sendall(b"\x04\x01\x01\x00\x01" + b"\x01\x01\x01" + struct.pack("!H", 80))
+                conn.sendall(b"HTTP/1.1 400 Bad Request\r\nServer: cloudflare\r\n\r\n")
+                return
             if self.behaviour == "unparsed_reply":
                 # Measured live on 38.207.136.247:32469 through 113.31.111.9:5438:
                 # four bytes whose second byte is 0x04, so it does NOT match the
@@ -264,15 +281,17 @@ class _FakeRelayStreamServer:
                 # so it must be reported as unparsed and never as a silence.
                 conn.sendall(self.unparsed_bytes)
                 return
-            if self.behaviour == "refuse_target":
-                # What the live relay on 10.10.10.171 actually does when it cannot
-                # reach the client's target: it answers with only the four-byte
-                # reply-header prefix 04 01 <rep> 00 and closes. Measured on
-                # 113.31.111.9:5438 and 113.31.106.203:5438, REP=0x04 host
-                # unreachable, identical every round, ~1 s close.
+            if self.behaviour == "refuse_truncated":
+                # A truncated reply header with no bound address and no payload:
+                # 04 01 <rep> 00 then close.
                 conn.sendall(bytes([0x04, 0x01, self.refuse_code, 0x00]))
                 return
+            # A relay that carried the target's bytes: the connect frame followed by
+            # real payload. Payload is the evidence a review rides on; the frame alone
+            # is the relay's claim and was measured to appear even when nothing was
+            # delivered (see test_a_carried_transfer_with_code_0x01_is_not_a_refusal).
             conn.sendall(b"\x04\x01\x00\x00\x01" + b"\x00" * 5)
+            conn.sendall(b"HTTP/1.1 400 Bad Request\r\nServer: cloudflare\r\n\r\n")
         except (OSError, ConnectionError):
             return
         finally:
@@ -286,8 +305,8 @@ class _FakeRelayStreamServer:
 def relay_server():
     servers = []
 
-    def start(behaviour="healthy"):
-        server = _FakeRelayStreamServer(behaviour)
+    def start(behaviour="healthy", **kwargs):
+        server = _FakeRelayStreamServer(behaviour, **kwargs)
         servers.append(server)
         return server
 
@@ -552,7 +571,7 @@ def test_stream_probe_reads_the_connect_frame_from_a_healthy_relay(relay_server)
     assert outcome.ok is True
     assert outcome.connect_frame is True
     assert outcome.connect_frame_rep == 0
-    assert outcome.downstream_bytes == 10
+    assert outcome.downstream_bytes == 10 + len(b"HTTP/1.1 400 Bad Request\r\nServer: cloudflare\r\n\r\n")
     assert outcome.greeting == "legacy"
     assert server.greetings == [probe.LEGACY_STREAM_GREETING.hex()]
     assert server.addresses == [("45.143.235.221", 10809)]
@@ -579,7 +598,7 @@ def test_stream_probe_names_a_truncated_connect_refusal(relay_server):
     while target_tcp_zero_downstream stayed at 0 - which the operator note tells a
     human to read as the fault signature, so a refusal read as clean.
     """
-    server = relay_server("refuse_target")  # refuse_code defaults to 0x04
+    server = relay_server("refuse_truncated", refuse_code=0x04)
     outcome = probe.probe_target_stream(
         (server.host, server.port), "USER1", PASSWORD, ("45.143.235.221", 10809), timeout=2.0
     )
@@ -615,14 +634,49 @@ def test_a_refusal_is_counted_separately_from_a_silence(relay_server):
     assert result2["passed"] is False
 
 
+def test_a_carried_transfer_with_code_0x01_is_not_a_refusal(relay_server):
+    """REGRESSION GUARD for the whole class: payload decides, not the code.
+
+    Live on 1.1.1.1:80 through the relay the frame was
+    04 01 01 00 01 <addr> <port> followed by 316 bytes of real HTTP, while a
+    stream to a tokyo target produced a BYTE-IDENTICAL frame followed by nothing.
+    The code is therefore 0x01 on a successful carry and cannot decide a verdict.
+    A probe that treats a non-zero code as failure throws away delivered bytes.
+    """
+    server = relay_server("carried")
+    outcome = probe.probe_target_stream(
+        (server.host, server.port), "USER1", PASSWORD, ("1.1.1.1", 80), timeout=2.0
+    )
+    assert outcome.ok is True, "delivered payload is the transfer"
+    assert outcome.downstream_bytes > 0
+    assert outcome.target_refused is False, "a non-zero code with payload is NOT a refusal"
+    assert outcome.connect_frame_rep == 1, "the code is still recorded as a diagnostic"
+    assert outcome.target_refused_meaning == "general_failure"
+
+
+def test_the_code_alone_decides_nothing(relay_server):
+    """Same code, same frame shape, opposite outcomes - only payload differs."""
+    carried = relay_server("carried")
+    a = probe.probe_target_stream((carried.host, carried.port), "USER1", PASSWORD, ("1.1.1.1", 80), timeout=2.0)
+    refused = relay_server("refuse_target", refuse_code=0x01)
+    b = probe.probe_target_stream((refused.host, refused.port), "USER1", PASSWORD, ("1.1.1.1", 80), timeout=2.0)
+    assert a.connect_frame_rep == b.connect_frame_rep == 1, "byte-identical code on both frames"
+    assert a.ok is True and b.ok is False, "only the payload separates them"
+    assert a.target_refused is False and b.target_refused is True
+
+
 def test_an_unparsed_reply_is_not_a_silence(relay_server):
     """An unknown reply shape must be reported as unparsed, with its raw bytes.
 
-    Live on 38.207.136.247:32469 the relay returned only 04 04 01 01 - four bytes
-    whose second byte is 0x04, so it is NOT the documented 04 01 <rep> 00 shape.
-    We do not know that format and must not guess one. What we must not do is call
-    it "no downstream bytes": an unparsed refusal and a genuine silence are
-    different facts, and collapsing them is what hid this fault for a night.
+    A reply whose bytes do not match the connect-frame shape at all (here 05 07 08 09)
+    is a protocol reply we do not understand. We must not guess a meaning for it.
+    What we must not do is call it "no downstream bytes": an unparsed reply and a
+    genuine silence are different facts, and collapsing them is what hid this fault
+    for a night.
+
+    Note the distinction this test protects: 04 01 04 00 (a truncated reply HEADER
+    with code 4) IS decodable and is covered by the truncated-refusal test; only
+    genuinely unknown shapes land here.
     """
     server = relay_server("unparsed_reply")
     outcome = probe.probe_target_stream(
@@ -634,7 +688,7 @@ def test_an_unparsed_reply_is_not_a_silence(relay_server):
     assert outcome.target_refused is False
     assert outcome.reply_unparsed is True
     assert "unparsed_reply" in outcome.error
-    assert "04040101" in outcome.error, "the raw bytes must travel with the verdict"
+    assert "05070809" in outcome.error, "the raw bytes must travel with the verdict"
     assert "no_downstream_bytes" not in outcome.error
 
 
@@ -646,7 +700,7 @@ def test_an_unparsed_reply_is_counted_apart_from_a_silence(relay_server):
     assert result["target_tcp_zero_downstream"] == 0, "an unparsed reply is not a silence"
     assert result["target_tcp_refused"] == 0, "an unparsed reply is not a decoded refusal"
     assert result["proof"]["tcp_reply_unparsed"] == result["rounds"]
-    assert result["proof"]["tcp_unparsed_sample"] == "04040101"
+    assert result["proof"]["tcp_unparsed_sample"] == "05070809"
     assert result["passed"] is False
 
     silent = relay_server("silent")
