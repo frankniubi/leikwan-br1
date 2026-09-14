@@ -33,6 +33,23 @@ final class UltraCandidateReviewService
     public const MAX_OPEN_PER_SOURCE = 2;
     /** Strikes at which a device stops counting as an independent observer. */
     public const DEMOTION_STRIKES = 2;
+    // Evidence a review must carry before it may change anything.
+    //
+    // The probe runs on the source host and can only ever speak for the source
+    // host's path to the relay it picked. A pass is discriminating only when the
+    // probe exercised an endpoint the panel actually advertises for that line -
+    // one of the relays the client is handed - and moved real bytes end to end
+    // through it. A relay-local keep echo is not evidence about a client path,
+    // and a probe of some other endpoint is not evidence about this candidate.
+    // Non-discriminating results are recorded for audit and change NOTHING: a
+    // device must never take a strike, and a candidate must never lose its
+    // quarantine, on evidence that cannot discriminate.
+    public const PROOF_OK = 'advertised_endpoint_end_to_end';
+    public const PROOF_REASON_MISSING = 'proof_missing';
+    public const PROOF_REASON_ENDPOINT = 'endpoint_not_advertised';
+    public const PROOF_REASON_LOCAL = 'local_path_only';
+    public const PROOF_REASON_TRANSFER = 'no_end_to_end_transfer';
+
     /** A running review that stops reporting is retried after this long. */
     public const STALE_RUNNING_SECONDS = 1800;
     /** Claims one review may use before it is closed as abandoned. */
@@ -104,15 +121,24 @@ final class UltraCandidateReviewService
                 return [];
             }
             $observers = $this->reportingObservers($hash);
-            if ($passed) {
-                $this->liftQuarantine($hash);
+            $proof = $this->reviewProof($row, $detail);
+            $discriminating = (bool) ($proof['ok'] ?? false);
+            // A device is only rebutted - and a quarantine only lifted - by a
+            // review that could actually discriminate. Everything else keeps the
+            // candidate quarantined and every witness unstruck.
+            if ($discriminating) {
+                if ($passed) {
+                    $this->liftQuarantine($hash);
+                }
+                $this->adjustObserverStrikes($observers, $passed);
             }
-            $this->adjustObserverStrikes($observers, $passed);
             $payload = [
                 'passed' => $passed,
                 'note' => $this->clip(trim($note), 240),
                 'detail' => $detail,
                 'observers' => count($observers),
+                'proof' => $proof,
+                'rebuttal' => $discriminating ? 'applied' : 'blocked',
                 'completed_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
             ];
             $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -429,6 +455,255 @@ final class UltraCandidateReviewService
             }
         }
         return $observers;
+    }
+
+    /**
+     * Decide whether a review result may change a device's standing.
+     *
+     * The proof has to come from the probe and is re-verified here against the
+     * panel's own inventory: the panel never trusts an agent's claim that the
+     * endpoint it used was an advertised one.
+     *
+     * @param array<string, mixed> $reviewRow
+     * @param array<string, mixed> $detail
+     * @return array<string, mixed>
+     */
+    private function reviewProof(array $reviewRow, array $detail): array
+    {
+        $raw = $detail['proof'] ?? null;
+        if (!is_array($raw)) {
+            // The probe that was running in the field before this gate existed
+            // sent no proof at all, and an older agent never will.
+            return ['ok' => false, 'reason' => self::PROOF_REASON_MISSING, 'endpoint' => ''];
+        }
+        $endpoint = strtolower(trim((string) ($raw['endpoint'] ?? '')));
+        $host = str_contains($endpoint, ':')
+            ? strtolower(trim((string) strstr($endpoint, ':', true)))
+            : $endpoint;
+        $advertised = $this->advertisedRelayIps($reviewRow);
+        if ($advertised === [] || filter_var($host, FILTER_VALIDATE_IP) === false
+            || !in_array($host, $advertised, true)) {
+            return [
+                'ok' => false,
+                'reason' => self::PROOF_REASON_ENDPOINT,
+                'endpoint' => $endpoint,
+                'advertised' => $advertised,
+            ];
+        }
+        if (self::flagTrue($raw['local_path_only'] ?? true)) {
+            return ['ok' => false, 'reason' => self::PROOF_REASON_LOCAL, 'endpoint' => $endpoint];
+        }
+        if ((int) ($raw['end_to_end_ok'] ?? 0) < 1) {
+            return ['ok' => false, 'reason' => self::PROOF_REASON_TRANSFER, 'endpoint' => $endpoint];
+        }
+        return ['ok' => true, 'reason' => self::PROOF_OK, 'endpoint' => $endpoint];
+    }
+
+    /**
+     * The relays the panel advertises for the reviewed line - exactly what a
+     * client can be handed - keyed off the last accepted source upload.
+     *
+     * @param array<string, mixed> $reviewRow
+     * @return array<int, string>
+     */
+    private function advertisedRelayIps(array $reviewRow): array
+    {
+        if ($this->db === null) {
+            return [];
+        }
+        $lineId = (int) ($reviewRow['line_id'] ?? 0);
+        if ($lineId <= 0) {
+            return [];
+        }
+        // The source_id columns of these tables do not share a collation, so the
+        // match happens in PHP rather than in the join.
+        $rows = $this->db->fetchAll(
+            'SELECT source_id, relay_ips_json FROM ultra_lines WHERE line_id = :line_id',
+            ['line_id' => $lineId]
+        );
+        if (!is_array($rows)) {
+            return [];
+        }
+        $wanted = trim((string) ($reviewRow['source_id'] ?? ''));
+        $ips = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || trim((string) ($row['source_id'] ?? '')) !== $wanted) {
+                continue;
+            }
+            $decoded = json_decode((string) ($row['relay_ips_json'] ?? ''), true);
+            foreach (is_array($decoded) ? $decoded : [] as $ip) {
+                $ip = strtolower(trim((string) $ip));
+                if (filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+                    $ips[$ip] = true;
+                }
+            }
+        }
+        return array_keys($ips);
+    }
+
+    private static function flagTrue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (int) $value === 1;
+        }
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+        }
+        return false;
+    }
+
+    /**
+     * Detection health.
+     *
+     * A detector that has never returned a real negative is itself a fault
+     * signal, and so is a candidate that keeps collecting failure reports after
+     * every witness that reported them has been struck off. Both are computed
+     * here so something can say them out loud instead of reporting "healthy".
+     *
+     * @return array<string, mixed>
+     */
+    public function reviewHealth(int $windowSeconds = 86400): array
+    {
+        $windowSeconds = max(3600, min(2592000, $windowSeconds));
+        $health = [
+            'window_seconds' => $windowSeconds,
+            'reviews_completed' => 0,
+            'reviews_passed' => 0,
+            'reviews_failed' => 0,
+            'reviews_open' => 0,
+            'pass_rate' => null,
+            'candidates_reviewed' => 0,
+            'candidates_total' => 0,
+            'devices_rebutted' => 0,
+            'devices_demoted' => 0,
+            'client_failures_on_reviewed_candidates' => 0,
+            'witness_losses' => [],
+            'alarms' => [],
+        ];
+        if ($this->db === null) {
+            return $health;
+        }
+        $since = gmdate('Y-m-d H:i:s', $this->now() - $windowSeconds);
+
+        $rows = $this->db->fetchAll(
+            'SELECT state, COUNT(*) AS total
+               FROM ultra_candidate_reviews
+              WHERE completed_at IS NOT NULL AND completed_at >= :since
+              GROUP BY state',
+            ['since' => $since]
+        );
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $total = max(0, (int) ($row['total'] ?? 0));
+            $health['reviews_completed'] += $total;
+            if ((string) ($row['state'] ?? '') === self::STATE_PASSED) {
+                $health['reviews_passed'] = $total;
+            } elseif ((string) ($row['state'] ?? '') === self::STATE_FAILED) {
+                $health['reviews_failed'] = $total;
+            }
+        }
+        $open = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM ultra_candidate_reviews WHERE state IN (:pending, :running)',
+            ['pending' => self::STATE_PENDING, 'running' => self::STATE_RUNNING]
+        );
+        $health['reviews_open'] = is_array($open) ? (int) ($open['total'] ?? 0) : 0;
+        if ($health['reviews_completed'] > 0) {
+            $health['pass_rate'] = round($health['reviews_passed'] / $health['reviews_completed'], 4);
+        }
+        $total = $this->db->fetchOne('SELECT COUNT(*) AS total FROM ultra_candidate_reputation_current');
+        $health['candidates_total'] = is_array($total) ? (int) ($total['total'] ?? 0) : 0;
+        $reviewed = $this->db->fetchAll(
+            'SELECT DISTINCT candidate_key_hash FROM ultra_candidate_reviews
+              WHERE completed_at IS NOT NULL AND completed_at >= :since LIMIT 200',
+            ['since' => $since]
+        );
+        $hashes = [];
+        foreach (is_array($reviewed) ? $reviewed : [] as $row) {
+            $hash = strtolower(trim((string) ($row['candidate_key_hash'] ?? '')));
+            if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1) {
+                $hashes[$hash] = true;
+            }
+        }
+        $health['candidates_reviewed'] = count($hashes);
+        if ($hashes !== []) {
+            $params = ['since' => $since];
+            $placeholders = [];
+            $index = 0;
+            foreach (array_keys($hashes) as $hash) {
+                $key = 'h' . $index++;
+                $placeholders[] = ':' . $key;
+                $params[$key] = $hash;
+            }
+            // The hash is a literal here on purpose: the reviews and events
+            // tables do not share a collation, so joining them is an error.
+            $failures = $this->db->fetchOne(
+                'SELECT COUNT(*) AS total FROM ultra_candidate_reputation_events
+                  WHERE event_type = \'failure\' AND observed_at >= :since
+                    AND candidate_key_hash IN (' . implode(', ', $placeholders) . ')',
+                $params
+            );
+            $health['client_failures_on_reviewed_candidates'] = is_array($failures)
+                ? (int) ($failures['total'] ?? 0)
+                : 0;
+        }
+        $rebutted = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM ultra_observer_devices
+              WHERE last_rebuttal_at IS NOT NULL AND last_rebuttal_at >= :since',
+            ['since' => $since]
+        );
+        $health['devices_rebutted'] = is_array($rebutted) ? (int) ($rebutted['total'] ?? 0) : 0;
+        $demoted = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM ultra_observer_devices
+              WHERE demoted_at IS NOT NULL AND demoted_at >= :since',
+            ['since' => $since]
+        );
+        $health['devices_demoted'] = is_array($demoted) ? (int) ($demoted['total'] ?? 0) : 0;
+        $health['witness_losses'] = $this->witnessLosses($windowSeconds);
+
+        if ($health['reviews_completed'] > 0
+            && $health['reviews_passed'] === $health['reviews_completed']
+            && $health['client_failures_on_reviewed_candidates'] > 0) {
+            $health['alarms'][] = 'review_pass_rate_100_percent_while_clients_report_failures';
+        }
+        if ($health['witness_losses'] !== []) {
+            $health['alarms'][] = 'candidate_witness_pool_exhausted';
+        }
+        return $health;
+    }
+
+    /**
+     * Candidates that keep collecting failure reports while every device that
+     * ever reported one has been demoted: the quarantine path can no longer see
+     * them at all, so they read as healthy forever.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function witnessLosses(int $windowSeconds = 86400, int $limit = 50): array
+    {
+        if ($this->db === null) {
+            return [];
+        }
+        $windowSeconds = max(3600, min(2592000, $windowSeconds));
+        $limit = max(1, min(self::MAX_RECENT, $limit));
+        $rows = $this->db->fetchAll(
+            'SELECT c.line_id, c.destination_zone,
+                    COUNT(DISTINCT e.observer_hash) AS witnesses_all_time,
+                    COUNT(DISTINCT CASE WHEN d.demoted_at IS NULL THEN e.observer_hash END) AS witnesses_eligible,
+                    SUM(CASE WHEN e.observed_at >= :since THEN 1 ELSE 0 END) AS failures_in_window
+               FROM ultra_candidate_reputation_current c
+               JOIN ultra_candidate_reputation_events e
+                 ON e.candidate_key_hash = c.candidate_key_hash
+                AND e.event_type = \'failure\'
+               LEFT JOIN ultra_observer_devices d ON d.observer_hash = e.observer_hash
+              GROUP BY c.candidate_key_hash, c.line_id, c.destination_zone
+             HAVING witnesses_eligible <= 1 AND failures_in_window > 0
+              ORDER BY failures_in_window DESC, witnesses_all_time DESC
+              LIMIT ' . $limit,
+            ['since' => gmdate('Y-m-d H:i:s', $this->now() - $windowSeconds)]
+        );
+        return is_array($rows) ? $rows : [];
     }
 
     /**
