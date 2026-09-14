@@ -19,7 +19,7 @@ advertised 中转端点与客户端目标传给探针。**先备份**，再校�
 
 | # | File | What it is | new md5 | new sha256 | bytes |
 | - | ---- | ---------- | ------- | ---------- | ----- |
-| 1 | /opt/ultra-source/runtime/ultra_line_review.py | the review probe the agent runs for each review | `24cd4309810a07bb5de8ad61d9593253` | `2eb012e3345a4fc5ab84cb6e71c7c623b541b66642095689a2ad6c3028ebd789` | 41557 |
+| 1 | /opt/ultra-source/runtime/ultra_line_review.py | the review probe the agent runs for each review | `6bd9aba7d58ed673b27df15c4b8d9835` | `fda0a88f5068f66755e589d0e61abf11aa0b195582665386058a1889bde21ae0` | 44096 |
 | 2 | /usr/local/bin/ultra-source-agent.py | the agent itself (points the probe at an advertised endpoint + the client target) | `264990c14399877fa0300ba65527736a` | `1d11023ffd5afb61f5dbf722f6dbe94fca1b6148394a271ffa7161c1d231e57a` | 57632 |
 
 The two files are a matched pair. The new agent passes `--target` and `--advertised`
@@ -169,7 +169,7 @@ back the file up, record its digest, and report it — it may carry local fixes 
 recorded.
 
 ```bash
-sudo bash -c 'BASE=a9cc8b87b1bebf8a370bda023c9981ec; BASEA=db911ae5522e8e5986c6b8855a588dd3; NEW=24cd4309810a07bb5de8ad61d9593253; NEWA=264990c14399877fa0300ba65527736a;
+sudo bash -c 'BASE=a9cc8b87b1bebf8a370bda023c9981ec; BASEA=db911ae5522e8e5986c6b8855a588dd3; NEW=6bd9aba7d58ed673b27df15c4b8d9835; NEWA=264990c14399877fa0300ba65527736a;
 P=/opt/ultra-source/runtime/ultra_line_review.py; A=/usr/local/bin/ultra-source-agent.py;
 GOTP=$(md5sum "$P" | cut -d" " -f1); GOTA=$(md5sum "$A" | cut -d" " -f1);
 echo "installed probe md5: $GOTP"; echo "installed agent md5: $GOTA";
@@ -296,6 +296,12 @@ CONNECT_FRAME_SIZE = 10
 # (measured: exactly four bytes, 04 01 04 00, then close). The refusal is still
 # the relay's verdict about the target and must be read, not discarded.
 CONNECT_REPLY_PREFIX_SIZE = 4
+# The smallest downstream payload that counts as a CARRIED TRANSFER. Below this a
+# non-frame reply is protocol noise we do not understand, not evidence: the live
+# carried transfers measured 316 bytes (an HTTP response) and the live failures
+# measured 0 or 4, so a handful of bytes is never a delivered payload. Without a
+# floor, any stray four bytes would satisfy "payload arrived" and pass a review.
+MIN_DELIVERED_PAYLOAD_BYTES = 8
 # SOCKS5 reply codes, so a result says "host unreachable" instead of a hex byte.
 SOCKS_REPLY_MEANINGS = {
     0x00: "succeeded",
@@ -341,6 +347,10 @@ class StreamRound:
     # never be collapsed into "the relay said nothing", because that collapse is
     # what hid a per-target refusal behind a silence-shaped counter.
     reply_unparsed: bool = False
+    # The relay reported a non-zero code but delivered no payload: reachable-looking,
+    # nothing carried. Kept apart from a refusal because the code does not
+    # discriminate (see classify_stream_downstream).
+    connect_no_payload: bool = False
     dns_answer: bool = False
     echo: bool = False
     handshake_ms: Optional[int] = None
@@ -596,23 +606,54 @@ def classify_stream_downstream(data: bytes, identifier: int, sent: bytes) -> Str
         outcome.target_refused_code = outcome.connect_frame_rep
         outcome.target_refused_meaning = reply_meaning(outcome.connect_frame_rep)
         outcome.connect_frame = outcome.connect_frame_rep == 0
-        outcome.target_refused = outcome.connect_frame_rep != 0
         body = body[CONNECT_FRAME_SIZE:] if full else b""
-    inner, framed = strip_address_header(body)
+    # The relay's reply CODE is not a verdict. Measured on the live source host
+    # 2026-09-14: a stream that delivered 316 real bytes and a stream that delivered
+    # nothing produced byte-identical ten-byte frames (04 01 01 00 01 <addr> <port>),
+    # so the code is 0x01 on a SUCCESSFUL carry. Treating a non-zero code as failure
+    # threw away delivered bytes; treating it as success would invent a transfer.
+    # The only reliable evidence is whether downstream payload actually arrived.
+    #
+    # Payload accounting must happen BEFORE any DNS probing, because
+    # strip_address_header() happily consumes three bytes of an HTTP body as if they
+    # were a Shadowsocks prefix, which would make real payload look like a 3-byte
+    # fragment (and therefore "unparsed").
+    payload = bytes(body)
+    echo = bool(payload) and payload in (bytes(sent), xor_one(bytes(sent)))
+    outcome.echo = echo
+    # The target's own answer is checked first: it is the strongest evidence and it
+    # does not depend on the relay's framing at all.
+    inner, framed = strip_address_header(payload)
     if framed:
         outcome.dns_answer = validate_dns_answer(inner, identifier)
     if not outcome.dns_answer:
-        outcome.dns_answer = validate_dns_answer(body, identifier)
-    if body and body in (bytes(sent), xor_one(bytes(sent))):
-        outcome.echo = True
-    if not outcome.connect_frame and not outcome.dns_answer and not outcome.echo and len(body) >= CONNECT_REPLY_PREFIX_SIZE:
-        # A reply that is not a frame we recognise, not an answer and not our own
-        # bytes, but is long enough to be a protocol reply we simply do not know.
-        # We cannot say what it means, so we say exactly that and keep the bytes.
-        # A shorter payload stays classified by the downstream rules, so a one-byte
-        # fragment is not newly reported as a protocol verdict.
-        outcome.reply_unparsed = True
-    outcome.ok = bool((outcome.connect_frame or outcome.dns_answer) and not outcome.echo)
+        outcome.dns_answer = validate_dns_answer(payload, identifier)
+    # ARRIVED PAYLOAD IS THE EVIDENCE. If bytes came back that are not our own echo,
+    # the relay carried something for this stream - that is the transfer, whatever the
+    # relay's reply code says. Everything the code claims is a diagnostic.
+    delivered = len(payload) >= MIN_DELIVERED_PAYLOAD_BYTES and not echo
+    # Unparsed applies only when NOTHING usable arrived: a short non-empty reply that
+    # is not a frame we recognise, not an answer and not our own bytes. We cannot say
+    # what it means, so we say exactly that and keep the bytes. It must never be called
+    # a silence.
+    outcome.reply_unparsed = bool(
+        payload
+        and not delivered
+        and not outcome.connect_frame
+        and not outcome.dns_answer
+        and len(payload) >= CONNECT_REPLY_PREFIX_SIZE
+    )
+    outcome.connect_no_payload = bool(outcome.connect_frame_rep is not None) and not delivered
+    # A refusal requires BOTH a non-zero code AND no delivered payload AND no answer.
+    # Never the code alone: the code is a named diagnostic, not a decision.
+    outcome.target_refused = bool(
+        outcome.target_refused_code not in (None, 0) and not delivered and not outcome.dns_answer
+    )
+    # Evidence = payload the relay actually delivered for our stream, or the target's
+    # own answer. A bare "target connected" frame is NOT evidence: it is the relay's
+    # claim, and we have seen that claim made on a stream that delivered 316 bytes and
+    # on one that delivered nothing, with identical bytes. A claim cannot decide.
+    outcome.ok = bool(delivered or outcome.dns_answer)
     return outcome
 
 
@@ -2692,7 +2733,7 @@ UNIT=ultra-source-agent
 AGENT=/usr/local/bin/ultra-source-agent.py
 PROBE=/opt/ultra-source/runtime/ultra_line_review.py
 want_agent=1d11023ffd5afb61f5dbf722f6dbe94fca1b6148394a271ffa7161c1d231e57a
-want_probe=2eb012e3345a4fc5ab84cb6e71c7c623b541b66642095689a2ad6c3028ebd789
+want_probe=fda0a88f5068f66755e589d0e61abf11aa0b195582665386058a1889bde21ae0
 fail=0
 got_agent=$(sha256sum "$AGENT" | cut -d" " -f1)
 got_probe=$(sha256sum "$PROBE" | cut -d" " -f1)
@@ -2729,21 +2770,29 @@ exit $fail'
 > counts one specific thing only: rounds where the relay closed without sending any
 > reply at all. Read the refusal fields instead:
 >
+> **AND THE RELAY'S REPLY CODE IS NOT A VERDICT EITHER.** Measured on this host
+> 2026-09-14: a stream that delivered **326 real bytes** and a stream that delivered
+> **nothing** produced **byte-identical ten-byte frames** (`04 01 01 00 01 <addr>
+> <port>`). The code was `0x01` on the successful carry. It carries no information
+> about the outcome, so it is recorded as a name and never used to decide anything.
+>
+> What decides a transfer is **whether payload arrived**:
+>
 > | field | meaning |
 > | ----- | ------- |
-> | `$.detail.proof.reason` | `target_refused` = the relay named a reason for failing to reach the target |
-> | `$.detail.target_tcp_refused` | how many rounds the relay answered with a refusal code |
-> | `$.detail.target_tcp_refused_code` | the code (SOCKS5 numbering) |
-> | `$.detail.target_tcp_refused_meaning` | `host_unreachable`, `general_failure`, ... |
-> | `$.detail.proof.tcp_refused` / `tcp_refused_reason` | the same two values inside the proof block |
-> | `$.detail.target_tcp_reply_unparsed` | a reply we could not parse, with raw bytes in `target_tcp_unparsed_sample` |
-> | `$.detail.target_tcp_zero_downstream` | genuine silence ONLY - as of this date there is **no confirmed instance** of it |
+> | `$.detail.target_tcp_ok` / `proof.tcp_downstream_ok` | rounds that DELIVERED payload - this is the evidence |
+> | `$.detail.proof.reason` \`none\` | the line was proven end to end |
+> | `$.detail.proof.reason` = `target_refused` | non-zero code AND no payload AND no answer |
+> | `$.detail.target_tcp_refused_code` / `_meaning` | the code as a NAME (`general_failure`, `host_unreachable`), never as a decision |
+> | `$.detail.target_tcp_reply_unparsed` | a short reply we could not parse; bytes in `target_tcp_unparsed_sample` |
+> | `$.detail.target_tcp_zero_downstream` | genuine silence ONLY. As of this date there is **no confirmed instance** of it |
 >
-> Three different facts, three different fields: a DECODED REFUSAL, an UNPARSED REPLY,
-> and a GENUINE SILENCE. Never collapse them into one number.
+> Four different facts, four different fields: a CARRIED PAYLOAD, a REFUSAL WITH NO
+> PAYLOAD, an UNPARSED REPLY, and a GENUINE SILENCE. Never collapse them, and never
+> read a code as the answer.
 >
-> Also: the ~1 s stream close is **the refusal arriving**, not an idle timeout. Do not
-> read a ~1 s close as "the relay went quiet".
+> Also: a ~1 s or ~72 ms stream close is **the relay finishing its answer**, not an
+> idle timeout. Do not read a close time as "the relay went quiet".
 
 On the source host (the new agent logs one line per reported review):
 
@@ -2760,10 +2809,12 @@ review 12 line 581 passed=False proof_reason=target_refused  end_to_end_ok=0  ze
 
 * `passed=True proof_reason=none` — the probe proved the line end to end; the panel
   should record `rebuttal=applied`.
-* `passed=False proof_reason=target_refused` — **the relay answered and named a
-  reason.** Measured on this host: `rep=0x01 general_failure` for forward 184's target,
-  `rep=0x04 host_unreachable` for another. This is a real, reproducible measurement of
-  the target being refused, NOT a broken deploy — and note that
+* `passed=False proof_reason=target_refused` — **the relay answered with a non-zero
+  code and delivered no payload.** Measured on this host: forward 184's target got no
+  payload on 4 of 4 rounds while the SAME relay carried 326 real bytes to another
+  destination in the same run. The code was `0x01` on both, which is why the code is
+  recorded as a name and not treated as the reason. Read this together with
+  `target_tcp_ok`: payload present = carried, payload absent = not carried. Note
   `zero_downstream=0` in this row, which is exactly why that field must not be read as
   health.
 * `passed=False proof_reason=target_reply_unparsed` — the relay answered with bytes
@@ -2815,20 +2866,23 @@ The deploy is confirmed by either `rebuttal=applied` with `probe_e2e_ok >= 1`, o
 
 ### The measurement this upgrade exists for
 
-`$.detail.rounds` is how many stream probes ran. Split those rounds three ways —
+`$.detail.rounds` is how many stream probes ran. Split those rounds four ways —
 they are NOT interchangeable:
 
-* `$.detail.target_tcp_refused` — the relay answered and refused the target. Read
-  `target_tcp_refused_code`/`_meaning` for why. This is the fault measured on this host
-  on 2026-09-14: 4 of 4 rounds, `REP=0x01 general_failure`, for forward 184's target
-  45.143.235.221:10809, from three different advertised relays (71-73 ms closes).
-* `$.detail.target_tcp_reply_unparsed` — the relay answered with a shape we do not
-  know. Raw bytes in `target_tcp_unparsed_sample`.
+* `$.detail.target_tcp_ok` — rounds that DELIVERED payload. This is the evidence, and
+  it is decided by bytes arriving, never by the relay's code.
+* `$.detail.target_tcp_refused` — a non-zero code AND no payload AND no answer. On
+  2026-09-14 forward 184's target 45.143.235.221:10809 was in this state on 4 of 4
+  rounds from three advertised relays, while the same relay carried 326 real bytes to
+  another destination in the same run. The code is a name, not the reason.
+* `$.detail.target_tcp_reply_unparsed` — a short reply whose shape we do not know.
+  Raw bytes in `target_tcp_unparsed_sample`.
 * `$.detail.target_tcp_zero_downstream` — the relay sent nothing at all. Genuine
   silence, and `0` here does **not** mean healthy.
 
-`target_tcp_min_close_ms`/`max_close_ms` is how long the stream lived. A ~1 s close is
-the refusal arriving, not an idle timeout; a ~72 ms close is a policy-speed refusal.
+`target_tcp_min_close_ms`/`max_close_ms` is how long the stream lived. Do not read a
+close time as a reason: measured closes were ~68-76 ms, ~1040-1075 ms and ~6000 ms (the
+probe's own window) on streams that all looked identical in every other field.
 
 Compare those across the advertised endpoints of the same line. Before this upgrade no
 review could produce any of them.
