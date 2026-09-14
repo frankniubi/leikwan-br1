@@ -94,3 +94,71 @@ a verdict when it did not carry that information.
 
 The rule that would have caught all three: **name the thing a field actually counts, and
 check it against a control whose outcome you already know.**
+
+---
+
+## 7. RETRACTION (correction from the operator, 2026-09-14 ~18:20 UTC)
+
+The operator identified why every tokyo destination returned zero bytes: the forward targets
+are **Shadowsocks servers**, and a Shadowsocks server that receives an unframed request, or a
+request with no valid password/cipher, **drops it silently by design** — precisely so it is
+not probeable.
+
+That invalidates the framing of section 4 and of the reading placed on it:
+
+* **RETRACTED: "unresolved by construction with the payloads available."** It was not
+  unresolvable. We sent a payload the service is designed to ignore, and then spent hours
+  interpreting the silence. The correct statement is **unresolved because the payload was
+  wrong**, not because measurement was impossible.
+* **RETRACTED: "every non-HTTP destination is a blind spot in the instrument."** The
+  instrument was not blind; it was pointed with the wrong protocol.
+* **"Our relay and the native path are capability-equivalent" is TRUE BUT EMPTY.** Both
+  paths were correct and both got nothing, because the payload was wrong — not the path.
+* The 1.1.1.1:80 control answered because it is a plain HTTP server. 185.220.238.143:20007
+  returned zero bytes through its own native path because it too is a Shadowsocks server
+  doing exactly what SS does with a wrong payload. That was the clue, and it was read as a
+  property of the destination instead.
+
+**This does NOT explain the field symptom.** The ~6.2% zero-downstream on live forward 184
+was measured on REAL CLIENT TRAFFIC WITH REAL SHADOWSOCKS FRAMING. The correction explains
+the PROBE's zero-byte results. These are two separate things: a measurement error made here,
+and an unexplained production symptom that still requires the client-side measurement.
+
+### The general lesson — the third instance of one pattern
+
+A payload the service is designed to ignore produces the same observation as a dead path.
+That is the same class of error as reading a non-discriminating reply code as a verdict, and
+as reading `target_tcp_zero_downstream == 0` as health. Each time, a field or a silence was
+read as information it did not carry. The guard is the same: **use a control whose outcome is
+already known, and make the payload one the service must answer.**
+
+### Where the Shadowsocks material lives (bounded read-only search, ~18:30 UTC)
+
+Values were never printed. Findings:
+
+* `/opt/leigod/forwards.json` and `forwards.d/rules.json` — forwarding config only:
+  `id, name, listen_port, target_host, target_port, exit, mode`. **No method, no password.**
+* `/opt/leigod/resp_region0.json` — an API response cache; every `data` list in it is EMPTY.
+* `/opt/leigod/lines/*.toml` — blocks `acc, device, local, rules` only; `local` carries only
+  `socks_addr`.
+* `/opt/leigod/.leigod/session.json` — `client_token, saved_at, user, web_token`.
+* A recursive scan of `/opt/leigod/**/*.json` for the strings `"method"`, `"password"` or
+  `"cipher"` found NO file.
+
+Conclusion: **the Shadowsocks method and password are not persisted on this host in any file
+found; they exist only in memory inside the running `leigod-linux-amd64` processes.** The
+credentials for the tokyo forward targets are the operator's own and are not derivable from
+anything on this host. The plain-SOCKS path (`127.0.0.1:20041`) works without credential
+knowledge because the CLIENT holds them and performs the SS framing — but that path always
+egresses through its own line, so it cannot substitute for pointing OUR relay at a chosen
+destination.
+
+Consequence for the retest: an SS-framed comparison requires credentials supplied by the
+operator. It cannot be run from what is on the host.
+
+### Separate observation
+
+`tools/ultra-client` contains NO handling of the string `no_downstream_bytes`, yet the test
+log emits `tcp candidate quarantined ... reason=no_downstream_bytes`. That string comes from
+a layer outside `main.go` and should be located before any change to stream semantics that
+assumes this file owns the decision.
