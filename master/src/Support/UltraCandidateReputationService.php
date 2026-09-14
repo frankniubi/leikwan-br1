@@ -769,6 +769,21 @@ final class UltraCandidateReputationService
         return (int) (strtotime(trim($value) . ' UTC') ?: 0);
     }
 
+    /**
+     * How many devices currently qualify as independent witnesses for this
+     * candidate: distinct failure reporters, minus any whose reports the source
+     * host has disproved.
+     *
+     * The count is honest, including zero. It used to be clamped with
+     * max(1, ...), which made "no witnesses" unrepresentable: boundedOption
+     * allows minimum_observers = 1, and a reader that turned 0 into 1 would let a
+     * candidate with no independent reporters satisfy a floor of one. The gate
+     * itself is deliberately left as ">= minimum_observers" - an honest 0 still
+     * fails at the default floor of 2, so gating behaviour is unchanged and only
+     * the stored number (shown in the admin console) becomes truthful. A caller
+     * that genuinely needs "at least one" must say so at the call site instead of
+     * having it baked in here.
+     */
     private function observerCount(string $candidateHash, string $observerHash): int
     {
         $this->memoryObservers[$candidateHash][$observerHash] = true;
@@ -799,7 +814,8 @@ final class UltraCandidateReputationService
         if ((int) ($row['observer_seen'] ?? 0) === 0) {
             $count++;
         }
-        return max(1, $count);
+        // No max(1, ...) clamp: zero is a real and reportable answer.
+        return $count;
     }
 
     /**
