@@ -51,6 +51,9 @@ The Linux runtime attestation is `2026.09.15.1.4ea492e7`.
   `2,636/2,636` heartbeats. Lease refresh delivered 64 successful batches or
   per-forward renewals after the test restart; one failed batch retained the
   successful batches.
+- This is a forward-170 bidirectional data-plane measurement. The other four
+  forward services were checked for continuity only; they do not have a
+  separate one-hour traffic result in this run.
 
 ## Acceptance gap
 
