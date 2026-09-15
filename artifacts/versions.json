@@ -459,13 +459,13 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "b0abed28b8c34f65529d05068398c7d951ee9948867a4a0fda4e1a51df70b9f3",
-    "size_bytes": 16273674,
-    "version": "2026.09.15.2",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.2",
+    "sha256": "1bcf751aecb033720deb88db724c37e103860ec24bfb201173d9761a4455708e",
+    "size_bytes": 16224522,
+    "version": "2026.09.15.3",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.3",
     "attestation": {
-      "fingerprint": "2026.09.15.2.f10c1845",
-      "self_sha256": "b0abed28b8c34f65529d05068398c7d951ee9948867a4a0fda4e1a51df70b9f3"
+      "fingerprint": "2026.09.15.3.b652d940",
+      "self_sha256": "1bcf751aecb033720deb88db724c37e103860ec24bfb201173d9761a4455708e"
     }
   },
   "ultra_client_runtime_linux_arm64": {
@@ -484,13 +484,13 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "52e3f9c9ddac5daa469a1b250e1aa13148e6df71b02db8ab43a35f415ae74079",
+    "sha256": "808166ff1625a32d906f70950320be9098714436ca2bdbc8251449c7731e576e",
     "size_bytes": 14614794,
-    "version": "2026.09.15.2",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.2",
+    "version": "2026.09.15.3",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.3",
     "attestation": {
-      "fingerprint": "2026.09.15.2.f10c1845",
-      "self_sha256": "52e3f9c9ddac5daa469a1b250e1aa13148e6df71b02db8ab43a35f415ae74079"
+      "fingerprint": "2026.09.15.3.b652d940",
+      "self_sha256": "808166ff1625a32d906f70950320be9098714436ca2bdbc8251449c7731e576e"
     }
   },
   "ultra_client_runtime_windows": {
