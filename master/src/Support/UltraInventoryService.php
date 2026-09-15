@@ -24,7 +24,7 @@ final class UltraInventoryService
      * Matching is applied to the provider field and to the source title, because a
      * few Tencent lines only carry the marker in the title.
      */
-    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯', 'tencent', 'ucloud', 'u-cloud'];
+    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯', 'tencent', 'ucloud', 'u-cloud', '优云'];
     /**
      * Zone codes that count as mainland China for direction classification. The
      * list mirrors ultra_zones; add a code here when a new mainland zone is

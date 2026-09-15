@@ -124,6 +124,9 @@ if (UltraInventoryService::dispatchClass(['provider' => 'UCloud', 'title' => 'Sh
     || UltraInventoryService::dispatchClass(['provider' => '', 'title' => 'Shanghai-Tokyo-UCloud']) !== 'low') {
     failUltraInventory('UCloud-marked entries must be classified as low dispatch priority');
 }
+if (UltraInventoryService::dispatchClass(['provider' => '优云', 'title' => '上海-日本-BGP-优云']) !== 'low') {
+    failUltraInventory('the inventory UCloud alias 优云 must be classified as low dispatch priority');
+}
 $ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 497,
     'title' => 'Shanghai-Tokyo-UCloud',
@@ -133,6 +136,16 @@ $ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
 ], $zones, 1_893_456_000);
 if (($ucloudDeclaredNormal['dispatch_class'] ?? '') !== 'low') {
     failUltraInventory('UCloud marker must override a stale normal declaration');
+}
+$ucloudAliasDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 498,
+    'title' => '上海-日本-BGP-优云',
+    'provider' => '优云',
+    'dispatch_class' => 'normal',
+    'config_sha256' => str_repeat('4', 64),
+], $zones, 1_893_456_000);
+if (($ucloudAliasDeclaredNormal['dispatch_class'] ?? '') !== 'low') {
+    failUltraInventory('the inventory UCloud alias 优云 must override a stale normal declaration');
 }
 $dispatch = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 493,
