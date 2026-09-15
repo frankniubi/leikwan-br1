@@ -531,11 +531,9 @@ abstract class BaseController
 
     protected function macosClientArtifactsAvailable(): bool
     {
-        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
-            $metadata = $this->artifactMetadata($key);
-            if ($metadata === [] || trim((string) ($metadata['artifact_url'] ?? '')) === '') {
-                return false;
-            }
+        $metadata = $this->artifactMetadata('macos_client_app_arm64');
+        if ($metadata === [] || trim((string) ($metadata['artifact_url'] ?? '')) === '') {
+            return false;
         }
 
         return true;
@@ -543,14 +541,7 @@ abstract class BaseController
 
     protected function macosClientReleaseVersion(): string
     {
-        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
-            $version = trim((string) ($this->artifactMetadata($key)['version'] ?? ''));
-            if ($version !== '') {
-                return $version;
-            }
-        }
-
-        return '';
+        return trim((string) ($this->artifactMetadata('macos_client_app_arm64')['version'] ?? ''));
     }
 
     protected function macosClientReleaseNotice(): string
@@ -558,8 +549,8 @@ abstract class BaseController
         $version = $this->macosClientReleaseVersion();
 
         return $version !== ''
-            ? 'Release announcement / 发布声明：macOS client ' . $version . ' is now available. macOS 客户端 ' . $version . ' 已发布，支持 Apple Silicon 与 Intel。'
-            : 'Release announcement / 发布声明：macOS client is now available. macOS 客户端已发布，支持 Apple Silicon 与 Intel。';
+            ? 'Release announcement / 发布声明：macOS client ' . $version . ' is now available for Apple Silicon. macOS 客户端 ' . $version . ' 已发布，适用于 Apple Silicon。'
+            : 'Release announcement / 发布声明：macOS client is now available for Apple Silicon. macOS 客户端已发布，适用于 Apple Silicon。';
     }
 
     protected function clientWindowsInstallerUrl(): string
@@ -927,7 +918,6 @@ abstract class BaseController
 
         $releaseNotice = $this->macosClientReleaseNotice();
         $arm64Url = $this->macosClientArm64AppUrl();
-        $x64Url = $this->macosClientX64AppUrl();
 
         return $this->renderCommandPanel(
             $this->clientAppReleaseLabel('macOS App - Apple Silicon', 'macos_client_app_arm64'),
@@ -937,16 +927,6 @@ abstract class BaseController
                 $this->renderCopyButton('Copy Download Link', $arm64Url),
             ],
             $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。',
-            'macos'
-        )
-        . $this->renderCommandPanel(
-            $this->clientAppReleaseLabel('macOS App - Intel', 'macos_client_app_x64'),
-            $x64Url,
-            [
-                $this->renderCommandLink('Download Intel', $x64Url),
-                $this->renderCopyButton('Copy Download Link', $x64Url),
-            ],
-            'For Intel Macs (x86_64). 适用于 Intel Mac。',
             'macos'
         );
     }
@@ -968,7 +948,6 @@ abstract class BaseController
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
             . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
-            . $this->renderCommandLink('Intel', $this->macosClientX64AppUrl(), 'secondary')
             . '</div>'
             . '</section>';
     }

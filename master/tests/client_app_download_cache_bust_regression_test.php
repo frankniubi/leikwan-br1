@@ -78,11 +78,13 @@ try {
         'Windows App ' . ($manifest['windows_client_app']['version'] ?? ''),
         'Android App ' . ($manifest['android_client_apk']['version'] ?? ''),
         'macOS App - Apple Silicon ' . ($manifest['macos_client_app_arm64']['version'] ?? ''),
-        'macOS App - Intel ' . ($manifest['macos_client_app_x64']['version'] ?? ''),
     ] as $label) {
         if (!str_contains($overview, $label)) {
             failDownloadCacheBust('download surface is missing version label: ' . $label);
         }
+    }
+    if (str_contains($overview, 'macOS App - Intel') || str_contains($overview, 'Download Intel')) {
+        failDownloadCacheBust('unverified Intel macOS artifact is still displayed');
     }
 } finally {
     unlink($envPath);
