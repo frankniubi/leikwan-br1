@@ -4,9 +4,12 @@
 #   sudo sh install-macos-headless.sh --panel https://v3.leikwanhost.com \
 #        --client-id 123 --agent-token <token>
 #
-# The daemon runs the same signed application bundle as the windowed client, in
-# its --headless lifecycle: no GUI session, no Avalonia, same Core services,
-# same runtime attestation and update pinning. Remove it with --uninstall.
+# The daemon runs the same application bundle as the windowed client, in its
+# --headless lifecycle: no GUI session, no Avalonia, same Core services, same
+# runtime attestation and update pinning. The installer is self-bootstrapping:
+# it reads the public client manifest, downloads the correct architecture's
+# self-contained DMG, verifies its size and SHA-256, installs the app bundle,
+# and only then registers launchd. Remove it with --uninstall.
 set -eu
 
 LABEL="com.leikwan.bridge.headless"
@@ -22,6 +25,12 @@ CLIENT_ID=""
 TOKEN=""
 TOKEN_SOURCE=""
 MODE="install"
+MANIFEST_FILE=""
+DMG_FILE=""
+MOUNT_POINT=""
+NEW_APP=""
+OLD_APP_BACKUP=""
+SERVICE_WAS_LOADED=0
 
 usage() {
   cat <<'USAGE'
@@ -32,6 +41,28 @@ usage: sudo sh install-macos-headless.sh --panel <url> --client-id <n> \
        sh install-macos-headless.sh --print-plist [--panel <url>] [--client-id <n>] \
          [--agent-token <token> | --agent-token-file <path>]   # plist to stdout, no root needed
 USAGE
+}
+
+cleanup_downloads() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ -n "$MOUNT_POINT" ]; then
+    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+  fi
+  [ -z "$MOUNT_POINT" ] || rmdir "$MOUNT_POINT" >/dev/null 2>&1 || true
+  [ -z "$MANIFEST_FILE" ] || rm -f "$MANIFEST_FILE"
+  [ -z "$DMG_FILE" ] || rm -f "$DMG_FILE"
+  if [ "$status" -ne 0 ] && [ -n "$NEW_APP" ] && [ -e "$NEW_APP" ]; then
+    rm -rf "$NEW_APP"
+  fi
+  if [ "$status" -ne 0 ] && [ -n "$OLD_APP_BACKUP" ] && [ -e "$OLD_APP_BACKUP" ] && [ ! -e "$APP" ]; then
+    mv "$OLD_APP_BACKUP" "$APP" || true
+  fi
+  if [ "$status" -ne 0 ] && [ "$SERVICE_WAS_LOADED" = "1" ]; then
+    launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || true
+    launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || true
+  fi
+  exit "$status"
 }
 
 while [ $# -gt 0 ]; do
@@ -84,6 +115,8 @@ if [ "$MODE" = "uninstall" ]; then
   exit 0
 fi
 
+trap cleanup_downloads EXIT INT TERM
+
 if [ -n "$TOKEN_SOURCE" ]; then
   if [ ! -r "$TOKEN_SOURCE" ]; then
     echo "agent token file is not readable: $TOKEN_SOURCE" >&2
@@ -101,6 +134,151 @@ fi
 case "$CLIENT_ID" in
   ''|*[!0-9]*) echo "client id must be numeric" >&2; exit 2 ;;
 esac
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "required macOS command is missing: $1" >&2
+    exit 1
+  }
+}
+
+for command_name in curl shasum hdiutil ditto plutil launchctl xattr mktemp stat awk grep sed \
+  id uname mkdir rm mv rmdir dirname tr chmod chown; do
+  require_command "$command_name"
+done
+
+manifest_value() {
+  # plutil is part of macOS and can read JSON without requiring Homebrew,
+  # Python, jq, or any other third-party dependency.
+  plutil -extract "$1" raw -o - "$MANIFEST_FILE" 2>/dev/null
+}
+
+absolute_url() {
+  case "$1" in
+    http://*|https://*) printf '%s' "$1" ;;
+    /*) printf '%s%s' "${PANEL%/}" "$1" ;;
+    *) printf '%s/%s' "${PANEL%/}" "$1" ;;
+  esac
+}
+
+file_size() {
+  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"
+}
+
+download_verified() {
+  url="$1"
+  output="$2"
+  expected_size="$3"
+  expected_sha="$4"
+  curl -fL --retry 3 --retry-all-errors --connect-timeout 20 \
+    --speed-time 30 --speed-limit 1024 -o "$output" "$url"
+  actual_size="$(file_size "$output")"
+  [ "$actual_size" = "$expected_size" ] || {
+    echo "download size mismatch: expected $expected_size, got $actual_size" >&2
+    exit 1
+  }
+  actual_sha="$(shasum -a 256 "$output" | awk '{print tolower($1)}')"
+  [ "$actual_sha" = "$(printf '%s' "$expected_sha" | tr '[:upper:]' '[:lower:]')" ] || {
+    echo "download SHA-256 mismatch" >&2
+    exit 1
+  }
+}
+
+ensure_app_bundle() {
+  case "$(uname -m)" in
+    arm64|aarch64) manifest_key="macos_client_app_arm64" ;;
+    x86_64|amd64) manifest_key="macos_client_app_x64" ;;
+    *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+
+  MANIFEST_FILE="$(mktemp "${TMPDIR:-/tmp}/leikwan-client-manifest.XXXXXX.json")"
+  curl -fL --retry 3 --retry-all-errors --connect-timeout 20 \
+    --speed-time 30 --speed-limit 1024 \
+    -o "$MANIFEST_FILE" "${PANEL%/}/artifacts/client-manifest.json"
+
+  version="$(manifest_value "manifest.$manifest_key.version")"
+  artifact_path="$(manifest_value "manifest.$manifest_key.path")"
+  artifact_url="$(manifest_value "manifest.$manifest_key.artifact_url")"
+  expected_sha="$(manifest_value "manifest.$manifest_key.sha256")"
+  expected_size="$(manifest_value "manifest.$manifest_key.size_bytes")"
+  [ -n "$version" ] && [ -n "$artifact_path" ] && [ -n "$artifact_url" ] \
+    && printf '%s' "$expected_sha" | grep -Eq '^[0-9A-Fa-f]{64}$' \
+    && printf '%s' "$expected_size" | grep -Eq '^[0-9]+$' || {
+      echo "macOS client entry is incomplete in the panel manifest" >&2
+      exit 1
+    }
+
+  current_version=""
+  if [ -f "$APP/Contents/Info.plist" ]; then
+    current_version="$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  fi
+  if [ "$current_version" = "$version" ] \
+    && [ -x "$EXECUTABLE" ] \
+    && [ -d "$APP/Contents/Resources/dotnet" ] \
+    && [ -d "$APP/Contents/Resources/bin" ]; then
+    echo "macOS app $version already installed at $APP"
+    return 0
+  fi
+
+  echo "downloading macOS app $version ($manifest_key)"
+  DMG_FILE="$(mktemp "${TMPDIR:-/tmp}/leikwan-client.XXXXXX.dmg")"
+  download_verified "$(absolute_url "$artifact_url")" "$DMG_FILE" "$expected_size" "$expected_sha"
+  MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-client-mount.XXXXXX")"
+  hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$DMG_FILE" >/dev/null
+  source_app="$MOUNT_POINT/LeiKwan Bridge.app"
+  [ -x "$source_app/Contents/MacOS/LeikwanBridge.Mac" ] || {
+    echo "downloaded DMG does not contain a runnable LeiKwan Bridge.app" >&2
+    exit 1
+  }
+  # The DMG must carry the complete self-contained runtime. Do not register
+  # launchd against a framework-dependent or partially copied bundle.
+  [ -d "$source_app/Contents/Resources/dotnet" ] || {
+    echo "downloaded app is missing its bundled .NET runtime" >&2
+    exit 1
+  }
+  [ -d "$source_app/Contents/Resources/bin" ] || {
+    echo "downloaded app is missing its bundled helper binaries" >&2
+    exit 1
+  }
+  for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
+    [ -x "$source_app/Contents/Resources/bin/$helper" ] || {
+      echo "downloaded app is missing helper binary: $helper" >&2
+      exit 1
+    }
+  done
+  mounted_version="$(plutil -extract CFBundleShortVersionString raw -o - "$source_app/Contents/Info.plist" 2>/dev/null || true)"
+  [ "$mounted_version" = "$version" ] || {
+    echo "downloaded app version mismatch: expected $version, got $mounted_version" >&2
+    exit 1
+  }
+
+  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    SERVICE_WAS_LOADED=1
+    launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+  fi
+  app_parent="$(dirname "$APP")"
+  mkdir -p "$app_parent"
+  NEW_APP="$app_parent/.LeiKwan Bridge.app.new.$$"
+  rm -rf "$NEW_APP"
+  ditto "$source_app" "$NEW_APP"
+  hdiutil detach "$MOUNT_POINT" >/dev/null
+  rmdir "$MOUNT_POINT" >/dev/null 2>&1 || true
+  MOUNT_POINT=""
+
+  if [ -e "$APP" ]; then
+    OLD_APP_BACKUP="$app_parent/.LeiKwan Bridge.app.backup.$$.${current_version:-unknown}"
+    mv "$APP" "$OLD_APP_BACKUP"
+  fi
+  mv "$NEW_APP" "$APP"
+  NEW_APP=""
+  xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+  EXECUTABLE="$APP/Contents/MacOS/LeikwanBridge.Mac"
+  echo "installed macOS app $version at $APP"
+}
+
+if [ "$MODE" != "print" ]; then
+  ensure_app_bundle
+fi
 
 write_plist() {
 cat <<PLIST
@@ -154,7 +332,7 @@ fi
 
 if [ ! -x "$EXECUTABLE" ]; then
   echo "client bundle not found: $APP" >&2
-  echo "install the macOS app first (LeiKwan Bridge 1.0.32 or newer)" >&2
+  echo "the self-bootstrapping installer could not install the macOS app bundle" >&2
   exit 1
 fi
 
