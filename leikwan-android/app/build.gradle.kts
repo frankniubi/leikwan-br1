@@ -15,8 +15,8 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "0.2.28"
+        versionCode = 31
+        versionName = "0.2.29"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
