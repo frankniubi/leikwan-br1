@@ -272,17 +272,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-    "sha256": "39e5217bed4e04c909b4d57f4a03298e112001c3deec7f14a7db9503cefbead1",
-    "size_bytes": 77188010,
+    "sha256": "ac64cc1545f2e37b9944f4efbe529735ccc1355d1c893518c73a17c76a146441",
+    "size_bytes": 77498523,
     "runtime_sha256": {
-      "bin/sing-box": "ef06550a74ed6c071c39fdbf7033335f8f4a9985bc8789b4767fe33d2558a64e",
-      "bin/wstunnel": "5ba9776195ec1887e176683becd6b398cacb573c38a1a6f52cc73d980e997613",
-      "bin/leikwan-bond": "fbd94a7736cf416fb479ae33134b1426658c26a48556a55b2831ba2a377a30ad",
-      "bin/leikwan-ingress": "1dc86931e154db731c534b3d556c58ea04394199e5379bab6ab2f482fcb5d591",
-      "bin/leikwan-uot-bond": "c304a5190e6be33ee3d474b2c8a6d35bca857f58c66f028dc988affee68af08a",
-      "bin/ultra-client": "e5a55cee0c1ac0a2778984b78982a7595c0204d0c6b0426d7c9dd944fb30cb4e"
+      "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
+      "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
+      "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
+      "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
+      "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
+      "bin/ultra-client": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c"
     },
-    "version": "1.0.39"
+    "version": "1.0.40"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -294,9 +294,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-    "sha256": "57c7ed9e024cdaf6908cf5644126f23f5e44df99767b0425d05ea11d007224f7",
-    "size_bytes": 81670994,
-    "version": "1.0.38"
+    "sha256": "267c8e56a74c0c817d0139cc752eb7ea512b87cdcc5f46ee2ebc2f967a0c176c",
+    "size_bytes": 82052734,
+    "version": "1.0.40",
+    "runtime_sha256": {
+      "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
+      "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
+      "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
+      "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
+      "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
+      "bin/ultra-client": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836"
+    }
   },
   "macos_client_update_arm64": {
     "architecture": "arm64",
@@ -308,17 +316,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-    "sha256": "a291abda7236bc13fa304145567f19174d361eba3bc28f51bcfa53c118da8ea2",
-    "size_bytes": 68671431,
+    "sha256": "46c3abad7d024477487b78ae533b2373e3b902d1c986060f715b89128b634279",
+    "size_bytes": 68966411,
     "runtime_sha256": {
-      "bin/sing-box": "ef06550a74ed6c071c39fdbf7033335f8f4a9985bc8789b4767fe33d2558a64e",
-      "bin/wstunnel": "5ba9776195ec1887e176683becd6b398cacb573c38a1a6f52cc73d980e997613",
-      "bin/leikwan-bond": "fbd94a7736cf416fb479ae33134b1426658c26a48556a55b2831ba2a377a30ad",
-      "bin/leikwan-ingress": "1dc86931e154db731c534b3d556c58ea04394199e5379bab6ab2f482fcb5d591",
-      "bin/leikwan-uot-bond": "c304a5190e6be33ee3d474b2c8a6d35bca857f58c66f028dc988affee68af08a",
-      "bin/ultra-client": "e5a55cee0c1ac0a2778984b78982a7595c0204d0c6b0426d7c9dd944fb30cb4e"
+      "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
+      "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
+      "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
+      "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
+      "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
+      "bin/ultra-client": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c"
     },
-    "version": "1.0.39"
+    "version": "1.0.40"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -330,17 +338,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-    "sha256": "a58a72797e495f39ca870fa36d09a4c4e769ce0251f510750dedbeba68b06a91",
-    "size_bytes": 72861401,
+    "sha256": "e27fb613987af68e371da2abcbba0b4f3af7f9ae61f280613c4402e40b2f89f8",
+    "size_bytes": 73002670,
     "runtime_sha256": {
       "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
       "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
       "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
       "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
       "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-      "bin/ultra-client": "063ebe185c62934d672d62f93c5390febaa34c4cd4e18962c69f35ccdcfef989"
+      "bin/ultra-client": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836"
     },
-    "version": "1.0.38"
+    "version": "1.0.40"
   },
   "mptcp_client_runtime": {
     "artifact_url": "/artifacts/leikwan-mptcp-client.py",
@@ -459,13 +467,13 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "1bcf751aecb033720deb88db724c37e103860ec24bfb201173d9761a4455708e",
-    "size_bytes": 16224522,
-    "version": "2026.09.15.3",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.3",
+    "sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6",
+    "size_bytes": 16376074,
+    "version": "2026.09.16.1",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, active-candidate-fallback-2026.09.16.1",
     "attestation": {
-      "fingerprint": "2026.09.15.3.b652d940",
-      "self_sha256": "1bcf751aecb033720deb88db724c37e103860ec24bfb201173d9761a4455708e"
+      "fingerprint": "2026.09.16.1.e0e4a71f",
+      "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
     }
   },
   "ultra_client_runtime_linux_arm64": {
@@ -484,54 +492,54 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "808166ff1625a32d906f70950320be9098714436ca2bdbc8251449c7731e576e",
-    "size_bytes": 14614794,
-    "version": "2026.09.15.3",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, client-stability-2026.09.15.3",
+    "sha256": "bd0641f95efe504f78c7db44707fd44234c40d011375a2a2a2d1e36c9f10bc7d",
+    "size_bytes": 14811402,
+    "version": "2026.09.16.1",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, active-candidate-fallback-2026.09.16.1",
     "attestation": {
-      "fingerprint": "2026.09.15.3.b652d940",
-      "self_sha256": "808166ff1625a32d906f70950320be9098714436ca2bdbc8251449c7731e576e"
+      "fingerprint": "2026.09.16.1.e0e4a71f",
+      "self_sha256": "bd0641f95efe504f78c7db44707fd44234c40d011375a2a2a2d1e36c9f10bc7d"
     }
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender false positive), client-stability-2026.09.15.3",
+    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender clean), active-candidate-fallback-2026.09.16.1",
     "obfuscator": "none",
-    "sha256": "746623adbf2ea16b14d886fd0d45753987ec4a6147d48ff0fbccea16ed8b08a5",
-    "size_bytes": 7115264,
-    "version": "2026.09.15.3",
+    "sha256": "612c9f0f546101cc0723e83ccf76ab6a25ea34d27721e74026c5a762ad119f78",
+    "size_bytes": 7142400,
+    "version": "2026.09.16.1",
     "attestation": {
-      "fingerprint": "2026.09.15.3.b652d940",
-      "self_sha256": "746623adbf2ea16b14d886fd0d45753987ec4a6147d48ff0fbccea16ed8b08a5"
+      "fingerprint": "2026.09.16.1.e0e4a71f",
+      "self_sha256": "612c9f0f546101cc0723e83ccf76ab6a25ea34d27721e74026c5a762ad119f78"
     }
   },
   "ultra_client_runtime_macos_x64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
     "path": "artifacts/ultra/ultra-client_macos_amd64",
     "architecture": "x86_64",
-    "build": "go1.26.5, garble-v0.17.0, client-stability-2026.09.15.2",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, active-candidate-fallback-2026.09.16.1",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "063ebe185c62934d672d62f93c5390febaa34c4cd4e18962c69f35ccdcfef989",
-    "size_bytes": 15006592,
-    "version": "2026.09.15.2",
+    "sha256": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836",
+    "size_bytes": 15187824,
+    "version": "2026.09.16.1",
     "attestation": {
-      "fingerprint": "2026.09.15.2.f10c1845",
-      "self_sha256": "063ebe185c62934d672d62f93c5390febaa34c4cd4e18962c69f35ccdcfef989"
+      "fingerprint": "2026.09.16.1.e0e4a71f",
+      "self_sha256": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836"
     }
   },
   "ultra_client_runtime_macos_arm64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
     "architecture": "arm64",
-    "build": "go1.26.5, garble-v0.17.0, client-stability-2026.09.15.2",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, active-candidate-fallback-2026.09.16.1",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "7f52b6b2f66304147804a96b8ce93e21000b6caf54bd70f1195994f64bb9407d",
-    "size_bytes": 13396818,
-    "version": "2026.09.15.2",
+    "sha256": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c",
+    "size_bytes": 13494224,
+    "version": "2026.09.16.1",
     "attestation": {
-      "fingerprint": "2026.09.15.2.f10c1845",
-      "self_sha256": "7f52b6b2f66304147804a96b8ce93e21000b6caf54bd70f1195994f64bb9407d"
+      "fingerprint": "2026.09.16.1.e0e4a71f",
+      "self_sha256": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c"
     }
   },
   "uot_bond_runtime": {
@@ -666,37 +674,37 @@
     "artifact_url": "/artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "format": "zip",
-    "version": "0.1.20.48",
+    "version": "0.1.20.49",
     "architecture": "x86_64",
     "platform": "windows",
-    "sha256": "890428c370a4e4c6aecfae1c02433aa6ea5b9b5f9ab2cbdb4d49001bb4dc31b0",
-    "size_bytes": 36765542
+    "sha256": "18b3b8a084f69195d6d348a21f98222beefd997b1875d42db7c901f09c987c26",
+    "size_bytes": 36773994
   },
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
     "path": "install/install-macos-headless.sh",
-    "version": "1.0.39",
+    "version": "1.0.40",
     "sha256": "ba7fb6f0488f60e1827970f746c7ac2b5e66794fbb09171d5c44f95f7c94ed54",
     "size_bytes": 12606
   },
   "macos_headless_uninstaller": {
     "install_url": "/artifacts/uninstall-macos-headless.sh",
     "path": "install/uninstall-macos-headless.sh",
-    "version": "1.0.34",
+    "version": "1.0.40",
     "sha256": "cc33d63fb46e91090911284b2350b23ae3dea4a53b039919393435d4b06ecd56",
     "size_bytes": 577
   },
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "version": "0.1.20.48",
+    "version": "0.1.20.49",
     "sha256": "c85a583d96852b7eddb07e62fff9f384d6e3a3de02950790c2eeba423efa7875",
     "size_bytes": 4228
   },
   "windows_headless_uninstaller": {
     "install_url": "/artifacts/uninstall-windows-headless.ps1",
     "path": "install/uninstall-windows-headless.ps1",
-    "version": "0.1.20.48",
+    "version": "0.1.20.49",
     "sha256": "13100350f85bc191db8866f643d5fb0d83251a78f6435a8300e6f2cda5f7bdb1",
     "size_bytes": 1429
   },
