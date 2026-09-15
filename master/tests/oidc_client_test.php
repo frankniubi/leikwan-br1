@@ -130,6 +130,9 @@ $userinfoPayload = [
     'email' => 'Person@Example.COM',
     'email_verified' => true,
     'name' => 'Example Person',
+    'whmcs_client_id' => 123,
+    'whmcs_user_id' => 456,
+    'whmcs_email' => 'Person@Example.COM',
 ];
 $httpClient = static function (string $method, string $url, array $options) use (&$calls, &$userinfoPayload, &$idToken, $details): array {
     $calls[] = [$method, $url, $options];
@@ -158,7 +161,7 @@ $httpClient = static function (string $method, string $url, array $options) use 
             'e' => base64UrlEncode($details['rsa']['e']),
         ]]], JSON_THROW_ON_ERROR)];
     }
-    if ($url === 'https://issuer.example/userinfo-adapter') {
+    if (in_array($url, ['https://issuer.example/userinfo-adapter', 'https://issuer.example/oauth/userinfo-v3.php'], true)) {
         assertSame('Bearer access-token', $options['headers']['Authorization'] ?? null, 'userinfo bearer token');
         return ['status' => 200, 'body' => json_encode($userinfoPayload, JSON_THROW_ON_ERROR)];
     }
@@ -206,7 +209,36 @@ assertSame([
     'email_verified' => true,
     'name' => 'Example Person',
 ], $identity, 'callback must return normalized verified identity');
+assertTrue(!array_key_exists('whmcs_client_id', $identity), 'generic OIDC providers must not inject WHMCS binding claims');
 assertSame(4, count($calls), 'callback must use discovery, token, JWKS, and userinfo');
+
+$trustedEnvPath = tempnam(sys_get_temp_dir(), 'lw-oidc-whmcs-');
+if ($trustedEnvPath === false) {
+    fail('failed to create trusted WHMCS config file');
+}
+file_put_contents(
+    $trustedEnvPath,
+    str_replace(
+        'OIDC_USERINFO_URL=https://issuer.example/userinfo-adapter',
+        "OIDC_USERINFO_URL=https://issuer.example/oauth/userinfo-v3.php\nWHMCS_BASE_URL=https://issuer.example",
+        (string) file_get_contents($envPath)
+    )
+);
+$userinfoPayload = [
+    'sub' => 'subject-123',
+    'email' => 'Person@Example.COM',
+    'email_verified' => true,
+    'name' => 'Example Person',
+    'whmcs_client_id' => 123,
+    'whmcs_user_id' => 456,
+    'whmcs_email' => 'Person@Example.COM',
+];
+$trustedClient = new OidcClient(new Config($trustedEnvPath), $httpClient, static function () use ($now): int {
+    return $now;
+});
+$trustedIdentity = $trustedClient->authenticateCallback('authorization-code', $flow);
+assertSame(123, $trustedIdentity['whmcs_client_id'] ?? null, 'first-party WHMCS client claim must be retained');
+assertSame(456, $trustedIdentity['whmcs_user_id'] ?? null, 'first-party WHMCS owner claim must be retained');
 
 // WHMCS emits standards-compliant ID tokens without the optional nbf claim.
 $idToken = signedJwt([
@@ -512,4 +544,5 @@ assertTrue(str_contains($clientSource, 'OIDC_PROVIDER_RESOLVE'), 'provider resol
 @unlink($unsafeExplicitPath);
 @unlink($queryDiscoveryPath);
 @unlink($invalidResolvePath);
+@unlink($trustedEnvPath);
 echo "ok\n";
