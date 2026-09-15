@@ -19,11 +19,12 @@ final class UltraInventoryService
     public const DISPATCH_CLASSES = ['normal', 'low'];
     /**
      * Entries whose relay/provider marker contains one of these are dispatched last
-     * (operator instruction 2026-09-11: Tencent-marked entries are low priority).
+     * (operator instruction 2026-09-11: Tencent-marked entries are low priority;
+     * UCloud entries are demoted after the 2026-09-15 provider timeout review).
      * Matching is applied to the provider field and to the source title, because a
      * few Tencent lines only carry the marker in the title.
      */
-    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯'];
+    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯', 'tencent', 'ucloud', 'u-cloud'];
     /**
      * Zone codes that count as mainland China for direction classification. The
      * list mirrors ultra_zones; add a code here when a new mainland zone is
@@ -133,9 +134,7 @@ final class UltraInventoryService
             // A source may declare the dispatch priority: a line whose relay association
             // drops big datagrams is dispatched last, exactly like the Tencent ones. An
             // unknown/absent declaration falls back to the provider/title rule.
-            'dispatch_class' => ($declaredDispatch = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES)) !== 'unknown'
-                ? $declaredDispatch
-                : self::dispatchClass($raw),
+            'dispatch_class' => self::dispatchClassWithDeclaration($raw),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
             'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,
@@ -651,6 +650,18 @@ final class UltraInventoryService
             }
         }
         return 'normal';
+    }
+
+    /** @param array<string, mixed> $raw */
+    private static function dispatchClassWithDeclaration(array $raw): string
+    {
+        // A provider marker is authoritative so an old explicit "normal" value
+        // cannot undo an operator safety demotion on the next inventory refresh.
+        if (self::dispatchClass($raw) === 'low') {
+            return 'low';
+        }
+        $declared = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
+        return $declared !== 'unknown' ? $declared : 'normal';
     }
 
     /** Direction of a route from its resolved ingress/destination zones. */

@@ -120,6 +120,20 @@ if (UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'title' => 
     || UltraInventoryService::dispatchClass([]) !== 'normal') {
     failUltraInventory('tencent-marked entries must be classified as low dispatch priority');
 }
+if (UltraInventoryService::dispatchClass(['provider' => 'UCloud', 'title' => 'Shanghai-Tokyo-BGP']) !== 'low'
+    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => 'Shanghai-Tokyo-UCloud']) !== 'low') {
+    failUltraInventory('UCloud-marked entries must be classified as low dispatch priority');
+}
+$ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 497,
+    'title' => 'Shanghai-Tokyo-UCloud',
+    'provider' => 'UCloud',
+    'dispatch_class' => 'normal',
+    'config_sha256' => str_repeat('3', 64),
+], $zones, 1_893_456_000);
+if (($ucloudDeclaredNormal['dispatch_class'] ?? '') !== 'low') {
+    failUltraInventory('UCloud marker must override a stale normal declaration');
+}
 $dispatch = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 493,
     'title' => '北京-德国-BGP-腾讯云',
