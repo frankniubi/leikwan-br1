@@ -461,6 +461,16 @@ func (s *PolicyStore) Snapshot() (RuntimeSnapshot, bool) {
 	return s.snapshotLocked(time.Now())
 }
 
+// ActiveSnapshot returns the path the runtime was already using without
+// reselecting around a locally isolated candidate. It is used only as a last
+// resort when a fresh probe batch says every candidate is unhealthy: the
+// caller still has to prove the same path with a real forwarding attempt.
+func (s *PolicyStore) ActiveSnapshot() (RuntimeSnapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotLocked(time.Now())
+}
+
 // SnapshotNextCandidate selects a healthy sibling for a new connection while
 // excluding candidates already attempted for this connection. Existing
 // streams retain their own lease snapshot and are not moved by this method.
