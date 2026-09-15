@@ -496,14 +496,14 @@
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender false positive), client-stability-2026.09.15.2",
+    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender false positive), client-stability-2026.09.15.3",
     "obfuscator": "none",
-    "sha256": "07015b2d0b0d5a571a36434f64607c251b8337293c173b5d9630f798326673d2",
+    "sha256": "746623adbf2ea16b14d886fd0d45753987ec4a6147d48ff0fbccea16ed8b08a5",
     "size_bytes": 7115264,
-    "version": "2026.09.15.2",
+    "version": "2026.09.15.3",
     "attestation": {
-      "fingerprint": "2026.09.15.2.f10c1845",
-      "self_sha256": "07015b2d0b0d5a571a36434f64607c251b8337293c173b5d9630f798326673d2"
+      "fingerprint": "2026.09.15.3.b652d940",
+      "self_sha256": "746623adbf2ea16b14d886fd0d45753987ec4a6147d48ff0fbccea16ed8b08a5"
     }
   },
   "ultra_client_runtime_macos_x64": {
@@ -669,8 +669,8 @@
     "version": "0.1.20.48",
     "architecture": "x86_64",
     "platform": "windows",
-    "sha256": "c49be59f181f1dc820d7dde75a23dcb024f1e0ee266c5b5764dcaacfeef4a5b1",
-    "size_bytes": 33844363
+    "sha256": "890428c370a4e4c6aecfae1c02433aa6ea5b9b5f9ab2cbdb4d49001bb4dc31b0",
+    "size_bytes": 36765542
   },
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
