@@ -89,7 +89,7 @@ final class OidcClient
 
     /**
      * @param array<string, mixed> $flow A freshly consumed OIDC session flow.
-     * @return array{issuer:string, subject:string, email:string, email_verified:bool, name:string}
+     * @return array{issuer:string, subject:string, email:string, email_verified:bool, name:string, whmcs_client_id?:int, whmcs_user_id?:int}
      */
     public function authenticateCallback(string $code, array $flow): array
     {
@@ -121,13 +121,39 @@ final class OidcClient
             throw new RuntimeException('oidc_callback_invalid');
         }
 
-        return [
+        $identity = [
             'issuer' => $this->issuer(),
             'subject' => (string) $claims['sub'],
             'email' => strtolower($email),
             'email_verified' => $emailVerified,
             'name' => $name,
         ];
+
+        if ($this->usesTrustedWhmcsUserinfoClaims($userinfo, strtolower($email))) {
+            $identity['whmcs_client_id'] = (int) $userinfo['whmcs_client_id'];
+            $identity['whmcs_user_id'] = (int) $userinfo['whmcs_user_id'];
+        }
+
+        return $identity;
+    }
+
+    /** @param array<string, mixed> $userinfo */
+    private function usesTrustedWhmcsUserinfoClaims(array $userinfo, string $email): bool
+    {
+        $baseUrl = rtrim(trim((string) $this->config->get('WHMCS_BASE_URL', '')), '/');
+        $userinfoUrl = rtrim(trim((string) $this->config->get('OIDC_USERINFO_URL', '')), '/');
+        $clientId = $userinfo['whmcs_client_id'] ?? null;
+        $userId = $userinfo['whmcs_user_id'] ?? null;
+        $claimEmail = strtolower(trim((string) ($userinfo['whmcs_email'] ?? '')));
+
+        return $baseUrl !== ''
+            && $userinfoUrl === $baseUrl . '/oauth/userinfo-v3.php'
+            && is_int($clientId)
+            && $clientId > 0
+            && is_int($userId)
+            && $userId > 0
+            && $claimEmail !== ''
+            && hash_equals($email, $claimEmail);
     }
 
     /** @param array<string, mixed> $flow @return array<string, mixed> */

@@ -28,12 +28,14 @@ final class WhmcsIdentityService
     }
 
     /**
+     * @param array<string, mixed> $authenticatedIdentity
      * @return array<string, mixed>|null
      */
-    public function tryDirectBindForUser(int $userId): ?array
+    public function tryDirectBindForUser(int $userId, array $authenticatedIdentity = []): ?array
     {
         $user = $this->bindingUser($userId);
-        $profile = $this->profileByEmail((string) ($user['email'] ?? ''));
+        $profile = $this->profileFromAuthenticatedIdentity($authenticatedIdentity, $user);
+        $profile ??= $this->profileByEmail((string) ($user['email'] ?? ''));
         if ($profile === null) {
             return null;
         }
@@ -552,7 +554,49 @@ final class WhmcsIdentityService
             'credit_formatted' => (string) ($client['formattedcredit'] ?? ''),
             'stats' => is_array($client['stats'] ?? null) ? $client['stats'] : [],
             'client' => $client,
-            'products' => $this->whmcs->fetchClientProducts(100, 0, $clientId),
+            // Product inventory is fetched when the billing snapshot is opened. It is
+            // not part of resolving or binding an identity.
+            'products' => [],
+        ];
+    }
+
+    /**
+     * UserInfo from the first-party WHMCS adapter can carry the already verified
+     * client/owner relationship. Use it before the management API lookup, which may
+     * be blocked by WHMCS source-IP allowlisting even when OIDC succeeded.
+     *
+     * @param array<string, mixed> $identity
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>|null
+     */
+    private function profileFromAuthenticatedIdentity(array $identity, array $user): ?array
+    {
+        $clientId = max(0, (int) ($identity['whmcs_client_id'] ?? 0));
+        $ownerId = max(0, (int) ($identity['whmcs_user_id'] ?? 0));
+        $identityEmail = strtolower(trim((string) ($identity['email'] ?? '')));
+        $userEmail = strtolower(trim((string) ($user['email'] ?? '')));
+        if (
+            ($identity['email_verified'] ?? null) !== true
+            || $clientId <= 0
+            || $ownerId <= 0
+            || $identityEmail === ''
+            || $identityEmail !== $userEmail
+        ) {
+            return null;
+        }
+
+        return [
+            'whmcs_user_id' => $ownerId,
+            'whmcs_client_id' => $clientId,
+            'email' => $identityEmail,
+            'full_name' => trim((string) ($identity['name'] ?? '')),
+            'company_name' => '',
+            'currency_code' => 'CNY',
+            'credit' => 0.0,
+            'credit_formatted' => '',
+            'stats' => [],
+            'client' => [],
+            'products' => [],
         ];
     }
 
