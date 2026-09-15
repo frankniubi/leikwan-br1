@@ -217,30 +217,45 @@ public sealed partial class App : Application
         {
             // Prefer the live view-model selection so an endpoint change made
             // moments ago applies even before the config write settles.
-            var panelUrl = string.IsNullOrWhiteSpace(UpdateViewModel?.PanelUrl)
-                ? _services.Config.MasterUrl
-                : UpdateViewModel!.PanelUrl;
+            // Avalonia controls are thread-affine. Startup calls this method
+            // after the bootstrap continuation has deliberately left the UI
+            // thread, so reading DataContext here used to throw
+            // `Call from invalid thread` and abort every automatic update check.
+            var panelUrl = await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                var selected = UpdateViewModel?.PanelUrl;
+                return string.IsNullOrWhiteSpace(selected)
+                    ? _services.Config.MasterUrl
+                    : selected!;
+            });
             var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
             _availableUpdate = await _services.Updater.CheckAsync(
                 panelUrl,
                 currentVersion,
                 progress,
                 ct);
-            if (_availableUpdate is null)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (notifyWhenCurrent)
-                    _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                if (_availableUpdate is null)
+                {
+                    if (notifyWhenCurrent)
+                        _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                    UpdateViewModel?.ReportUpdateFinished();
+                    return;
+                }
+
+                _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
                 UpdateViewModel?.ReportUpdateFinished();
-                return;
-            }
-            _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
-            UpdateViewModel?.ReportUpdateFinished();
+            });
         }
         catch (Exception exception)
         {
             Log.Warning(exception, "update_check_failed");
-            _services.Controller.PublishNotice("The update check could not be completed.");
-            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice("The update check could not be completed.");
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
+            });
         }
     }
 
@@ -265,8 +280,11 @@ public sealed partial class App : Application
             var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, progress, ct);
             if (result.RequiresManualInstall)
             {
-                _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
-                UpdateViewModel?.ReportUpdateFinished();
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                    UpdateViewModel?.ReportUpdateFinished();
+                });
                 return;
             }
             if (result.Started)
@@ -275,8 +293,11 @@ public sealed partial class App : Application
         catch (Exception exception)
         {
             Log.Warning(exception, "update_install_failed");
-            _services.Controller.PublishNotice("The update could not be installed.");
-            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice("The update could not be installed.");
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
+            });
         }
     }
 

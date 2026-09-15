@@ -272,9 +272,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-    "sha256": "353edb78e466756e40c4419e1a4d2209db2c3c2b2379e5759115d433f2183a85",
-    "size_bytes": 77455932,
-    "version": "1.0.38"
+    "sha256": "39e5217bed4e04c909b4d57f4a03298e112001c3deec7f14a7db9503cefbead1",
+    "size_bytes": 77188010,
+    "runtime_sha256": {
+      "bin/sing-box": "ef06550a74ed6c071c39fdbf7033335f8f4a9985bc8789b4767fe33d2558a64e",
+      "bin/wstunnel": "5ba9776195ec1887e176683becd6b398cacb573c38a1a6f52cc73d980e997613",
+      "bin/leikwan-bond": "fbd94a7736cf416fb479ae33134b1426658c26a48556a55b2831ba2a377a30ad",
+      "bin/leikwan-ingress": "1dc86931e154db731c534b3d556c58ea04394199e5379bab6ab2f482fcb5d591",
+      "bin/leikwan-uot-bond": "c304a5190e6be33ee3d474b2c8a6d35bca857f58c66f028dc988affee68af08a",
+      "bin/ultra-client": "e5a55cee0c1ac0a2778984b78982a7595c0204d0c6b0426d7c9dd944fb30cb4e"
+    },
+    "version": "1.0.39"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -300,17 +308,17 @@
       "ultra_client": "garble-v0.17.0-literals-tiny"
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-    "sha256": "b547a105b51c75c7e2f9728a94f841b967dbebd8954d1d494f76e90ea31dea55",
-    "size_bytes": 68953768,
+    "sha256": "a291abda7236bc13fa304145567f19174d361eba3bc28f51bcfa53c118da8ea2",
+    "size_bytes": 68671431,
     "runtime_sha256": {
-      "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
-      "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847",
-      "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
-      "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
-      "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-      "bin/ultra-client": "7f52b6b2f66304147804a96b8ce93e21000b6caf54bd70f1195994f64bb9407d"
+      "bin/sing-box": "ef06550a74ed6c071c39fdbf7033335f8f4a9985bc8789b4767fe33d2558a64e",
+      "bin/wstunnel": "5ba9776195ec1887e176683becd6b398cacb573c38a1a6f52cc73d980e997613",
+      "bin/leikwan-bond": "fbd94a7736cf416fb479ae33134b1426658c26a48556a55b2831ba2a377a30ad",
+      "bin/leikwan-ingress": "1dc86931e154db731c534b3d556c58ea04394199e5379bab6ab2f482fcb5d591",
+      "bin/leikwan-uot-bond": "c304a5190e6be33ee3d474b2c8a6d35bca857f58c66f028dc988affee68af08a",
+      "bin/ultra-client": "e5a55cee0c1ac0a2778984b78982a7595c0204d0c6b0426d7c9dd944fb30cb4e"
     },
-    "version": "1.0.38"
+    "version": "1.0.39"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -667,9 +675,9 @@
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
     "path": "install/install-macos-headless.sh",
-    "version": "1.0.34",
-    "sha256": "82728b2485ec011a0d1f045e1935e24cb8b2cfee229684d868c91de02af0cae9",
-    "size_bytes": 6135
+    "version": "1.0.39",
+    "sha256": "ba7fb6f0488f60e1827970f746c7ac2b5e66794fbb09171d5c44f95f7c94ed54",
+    "size_bytes": 12606
   },
   "macos_headless_uninstaller": {
     "install_url": "/artifacts/uninstall-macos-headless.sh",

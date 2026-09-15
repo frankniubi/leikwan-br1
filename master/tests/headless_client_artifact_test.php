@@ -86,6 +86,22 @@ foreach (['--headless', 'com.leikwan.bridge.headless', '/Library/LaunchDaemons',
         failHeadless('macOS headless installer missing: ' . $needle);
     }
 }
+foreach ([
+    'client-manifest.json',
+    'macos_client_app_arm64',
+    'macos_client_app_x64',
+    'plutil -extract',
+    'hdiutil attach',
+    'shasum -a 256',
+    'ditto',
+    'Contents/Resources/dotnet',
+    'Contents/Resources/bin',
+    'sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client',
+] as $needle) {
+    if (!str_contains($macInstaller, $needle)) {
+        failHeadless('macOS installer is not self-bootstrapping: ' . $needle);
+    }
+}
 if (str_contains($macInstaller, 'agent-token=') || str_contains($macInstaller, 'Authorization:')) {
     failHeadless('macOS headless installer embeds credential material');
 }
