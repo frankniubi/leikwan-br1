@@ -91,10 +91,14 @@ try {
     };
     $installSection = $controller->installSection();
     $downloadPanels = $controller->downloadPanels();
-    foreach (['Release announcement / 发布声明', 'macOS 客户端 ' . $expectedVersion, 'Apple Silicon', 'Intel'] as $required) {
+    foreach (['Release announcement / 发布声明', 'macOS 客户端 ' . $expectedVersion, 'Apple Silicon'] as $required) {
         if (!str_contains($installSection, $required) || !str_contains($downloadPanels, $required)) {
             failMacDownloadPage('rendered Mac download surface missing ' . $required);
         }
+    }
+    if (str_contains($installSection . $downloadPanels, 'Intel')
+        || str_contains($installSection . $downloadPanels, 'macos_client_app_x64')) {
+        failMacDownloadPage('unverified Intel macOS artifact is still displayed');
     }
     foreach (['client_id=', 'agent_token=', 'forward_id='] as $forbidden) {
         if (str_contains(strtolower($installSection . $downloadPanels), $forbidden)) {
