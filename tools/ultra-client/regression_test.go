@@ -145,7 +145,8 @@ func TestStickyLeaseForPolicyKeepsSelectedPath(t *testing.T) {
 
 func TestControlDeadlineIncludesProbeWindowAndGrace(t *testing.T) {
 	config := Config{AutoSelect: true, ProbeDurationSecs: 30}
-	if got, want := controlDeadlineDuration(config), 48*time.Second; got != want {
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
+	if got := controlDeadlineDuration(config); got != want {
 		t.Fatalf("control deadline=%s, want %s", got, want)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -156,6 +157,8 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 	var selected ProviderLease
 	var probeResult udpProbeResult
 	var selectionEpoch uint64
+	var previousActive RuntimeSnapshot
+	var havePreviousActive bool
 	if err == nil {
 		coordinator := selectionCoordinatorFor(policy.ForwardID)
 		selectionEpoch = coordinator.begin()
@@ -166,6 +169,12 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		}
 		if err != nil {
 			goto selectionDone
+		}
+		if server.config.AutoSelect && len(leases) > 1 {
+			previousActive, havePreviousActive = server.store.ActiveSnapshot()
+			if havePreviousActive {
+				defer previousActive.Lease.wipe()
+			}
 		}
 		if storeHasGeneration(server.store, policy.PolicyGeneration) {
 			var stickyMatch bool
@@ -181,13 +190,20 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 			err = ErrLeaseInvalid
 		} else if server.config.AutoSelect && len(leases) > 1 {
 			logLeaseSelectionStart(policy.ForwardID, len(leases))
-			remaining := time.Until(deadline) - selectionResponseGrace
+			remaining := time.Until(deadline) - selectionResponseGrace - activeCandidateFallbackBudget(server.config)
 			if remaining <= 0 {
 				err = context.DeadlineExceeded
 			} else {
 				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
 				selected, probeResult, err = selectBestLeaseReporting(selectionContext, server.config, policy, leases, server.status.RecordProbeFailure)
 				cancel()
+				if errors.Is(err, errNoHealthyCandidate) && havePreviousActive {
+					log.Printf("active candidate forwarding test started forward_id=%d reason=no_healthy_candidate", policy.ForwardID)
+					fallbackContext, fallbackCancel := context.WithDeadline(context.Background(), deadline)
+					selected, probeResult, err = retryActiveCandidateForward(
+						fallbackContext, server.config, policy, previousActive, leases, nil)
+					fallbackCancel()
+				}
 			}
 		} else {
 			selected = leases[0]
@@ -202,7 +218,7 @@ selectionDone:
 		if err == nil && server.status != nil {
 			server.status.UpdatePolicy(policy.PolicyGeneration)
 		}
-		if err == nil && server.status != nil && probeResult.Sent > 0 {
+		if err == nil && server.status != nil && (probeResult.Sent > 0 || probeResult.TCPReceived > 0) {
 			if stringsContainsUDP(policy.Transport) {
 				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)

@@ -13,9 +13,17 @@ import (
 func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config, status *StatusWriter) (udpWarmSession, error) {
 	candidates := store.CandidateSnapshots("udp")
 	defer wipeSnapshots(candidates)
+	active, activeOK := store.ActiveSnapshot()
+	if activeOK {
+		defer active.Lease.wipe()
+	}
 	deadline := time.Now().Add(probeAssociationTimeout(config))
 	last := error(errHACandidatesUnavailable)
+	activeAttempted := false
 	for i, ss := range candidates {
+		if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
+			activeAttempted = true
+		}
 		if ctx.Err() != nil {
 			return udpWarmSession{}, ctx.Err()
 		}
@@ -49,6 +57,47 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 		status.RecordHAEvent("udp", haErrorClass(err), ss.Policy.PolicyGeneration)
 		log.Printf("udp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(err))
 		last = err
+	}
+	// A transient UDP probe false negative can isolate every fresh candidate
+	// while the path already carrying traffic is still usable. Give that active
+	// path one fresh association plus relay-echo check before failing closed.
+	if activeOK && !activeAttempted && store.acceptsInFlight(active) && ctx.Err() == nil {
+		budget := probeAssociationTimeout(config)
+		if expiry := time.Until(active.Lease.ExpiresAt); expiry < budget {
+			budget = expiry
+		}
+		if budget > 0 {
+			started := time.Now()
+			log.Printf("active candidate forwarding test started protocol=udp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
+			session, err := armDatagram(active.Lease, budget)
+			if err == nil && ctx.Err() == nil && store.acceptsInFlight(active) {
+				if session.probeEcho([]byte("leikw-an-active-forward-check"), probeTimeout(config)) {
+					forwardID := active.Policy.ForwardID
+					generation := active.Policy.PolicyGeneration
+					store.ClearPathFailure("udp", haPathKey(active.Lease))
+					status.RecordCandidateSuccess(active.Lease.CandidateKeyHash, "udp", active.Lease.LeaseHash)
+					configureRuntimeDatagram(session, store, status, active.Lease)
+					session.startRuntimeReader(3 * safeUDPKeepaliveInterval)
+					fallback := udpWarmSession{
+						session: session, selectionRef: active.Lease.SelectionRef, selectionTier: active.Lease.SelectionTier,
+						candidateKeyHash: active.Lease.CandidateKeyHash, leaseHash: active.Lease.LeaseHash,
+						payloadCeiling: normalizeRelayPayloadCeiling(active.Lease.RelayPayloadCeiling), started: started,
+					}
+					active.Lease.wipe()
+					active = RuntimeSnapshot{}
+					log.Printf("active candidate forwarding test succeeded protocol=udp forward_id=%d selection_ref=%s generation=%s", forwardID, fallback.selectionRef, generation)
+					return fallback, nil
+				}
+				session.Close()
+				last = errUDPReceiveTimeout
+			} else if err != nil {
+				last = err
+			} else {
+				session.Close()
+				last = ErrPolicyExpired
+			}
+			log.Printf("active candidate forwarding test failed protocol=udp forward_id=%d selection_ref=%s generation=%s reason=%s", store.config.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(last))
+		}
 	}
 	return udpWarmSession{}, last
 }

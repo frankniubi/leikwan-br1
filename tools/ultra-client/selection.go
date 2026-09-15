@@ -58,7 +58,7 @@ func controlDeadlineDuration(config Config) time.Duration {
 	// by probeUDPLease. A configured connect timeout can exceed the default
 	// thirteen-second SID scan budget, and a fixed grace would cancel a valid
 	// probe before its measurement window starts.
-	return probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace
+	return probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
 }
 
 func sameLeaseSelection(left, right ProviderLease) bool {

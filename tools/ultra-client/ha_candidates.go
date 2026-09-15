@@ -237,6 +237,10 @@ var errHACandidatesUnavailable = errors.New("no healthy authorized candidate")
 func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
 	candidates := s.CandidateSnapshots("tcp")
 	defer wipeSnapshots(candidates)
+	active, activeOK := s.ActiveSnapshot()
+	if activeOK {
+		defer active.Lease.wipe()
+	}
 	if total <= 0 {
 		total = 15 * time.Second
 	}
@@ -245,7 +249,11 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 		deadline = d
 	}
 	last := error(errHACandidatesUnavailable)
+	activeAttempted := false
 	for i, ss := range candidates {
+		if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
+			activeAttempted = true
+		}
 		if !s.acceptsInFlight(ss) {
 			return nil, RuntimeSnapshot{}, ErrPolicyExpired
 		}
@@ -314,6 +322,32 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 		s.FailCandidate("tcp", ss.Lease)
 		log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e))
 		last = e
+	}
+	// A probe can reject every fresh candidate during a transient false
+	// negative even though the path that was carrying traffic still works. Give
+	// that active path one real target-forwarding attempt before surfacing
+	// no_healthy_candidate. The attempt stays inside the same lease/policy
+	// generation checks and never widens the authorized candidate set.
+	if activeOK && !activeAttempted && s.acceptsInFlight(active) && ctx.Err() == nil {
+		remaining := time.Until(deadline)
+		if remaining > 0 {
+			budget := remaining
+			if budget > 3*time.Second {
+				budget = 3 * time.Second
+			}
+			log.Printf("active candidate forwarding test started protocol=tcp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
+			connection, err := dial(active.Lease, host, port, budget)
+			if err == nil {
+				s.ClearPathFailure("tcp", haPathKey(active.Lease))
+				fallback := RuntimeSnapshot{Policy: active.Policy, Lease: cloneHALease(active.Lease)}
+				active.Lease.wipe()
+				active = RuntimeSnapshot{}
+				log.Printf("active candidate forwarding test succeeded protocol=tcp forward_id=%d selection_ref=%s generation=%s", fallback.Policy.ForwardID, fallback.Lease.SelectionRef, fallback.Policy.PolicyGeneration)
+				return connection, fallback, nil
+			}
+			last = err
+			log.Printf("active candidate forwarding test failed protocol=tcp forward_id=%d selection_ref=%s generation=%s reason=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err))
+		}
 	}
 	return nil, RuntimeSnapshot{}, fmt.Errorf("%w: %v", errHACandidatesUnavailable, last)
 }

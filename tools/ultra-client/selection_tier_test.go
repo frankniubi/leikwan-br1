@@ -112,7 +112,7 @@ func TestRankUDPProbeResultsPrefersPaidAndMixedBeforeFreeAndUnknown(t *testing.T
 
 func TestControlDeadlineTracksConfiguredAssociationBudget(t *testing.T) {
 	config := Config{AutoSelect: true, ProbeDurationSecs: 30, ConnectTimeoutSecs: 15}
-	want := 30*time.Second + 15*time.Second + selectionResponseGrace
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
 	if got := controlDeadlineDuration(config); got != want {
 		t.Fatalf("control deadline=%s, want %s", got, want)
 	}
