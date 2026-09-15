@@ -959,13 +959,20 @@ def finish(result: dict, target_configured: bool, require_big_packet: bool) -> d
     elif proof_e2e < 1:
         result["proof"]["reason"] = "no_end_to_end_transfer"
 
+    # A short UDP loss burst is a quality signal, not an immediate line death.
+    # Keep the same 25% ceiling used by the client selector: a review window
+    # with a few late/lost datagrams must not make an otherwise reachable line
+    # look like `no_healthy_candidate`.
+    udp_ok = int(result.get("udp_ok", 0))
+    udp_failed = int(result.get("udp_failed", 0))
+    udp_total = udp_ok + udp_failed
+    udp_clean = udp_ok > 0 and udp_total > 0 and udp_failed * 100 <= udp_total * 25
     big_clean = not require_big_packet or (result.get("big_failed", 0) == 0 and result.get("big_ok", 0) > 0)
     result["passed"] = bool(
         target_configured
         and advertised_ok
         and result.get("rounds", 0) > 0
-        and result.get("udp_failed", 0) == 0
-        and result.get("udp_ok", 0) > 0
+        and udp_clean
         and result.get("target_tcp_failed", 0) == 0
         and result.get("target_tcp_ok", 0) > 0
         and big_clean

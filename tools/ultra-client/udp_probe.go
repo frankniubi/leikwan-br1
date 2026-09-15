@@ -290,32 +290,44 @@ func stringsContainsUDP(transport string) bool {
 }
 
 func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
-	result := udpProbeResult{SelectionTier: lease.SelectionTier, TCPSent: 1}
-	started := time.Now()
+	result := udpProbeResult{SelectionTier: lease.SelectionTier}
 	host, port, err := probeTCPTarget(config)
 	if err != nil {
+		result.TCPSent = 1
 		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
 		result.Err = result.TCPError
 		return result
 	}
-	select {
-	case <-ctx.Done():
-		result.TCPError = wrapProbeFailure(errProbeTCPFailed, ctx.Err())
-		result.Err = result.TCPError
-		return result
-	default:
+	// A single SYN/relay handshake can lose a packet during a route refresh.
+	// Retry the transport probe a bounded number of times before declaring the
+	// candidate unusable; this is deliberately independent from user streams.
+	const attempts = 3
+	var lastErr error
+	var totalRTT time.Duration
+	for attempt := 0; attempt < attempts; attempt++ {
+		result.TCPSent++
+		select {
+		case <-ctx.Done():
+			result.TCPError = wrapProbeFailure(errProbeTCPFailed, ctx.Err())
+			result.Err = result.TCPError
+			return result
+		default:
+		}
+		started := time.Now()
+		connection, dialErr := dialStream(lease, host, port, probeTimeout(config))
+		if dialErr == nil {
+			_ = connection.Close()
+			result.TCPReceived++
+			totalRTT += time.Since(started)
+			result.TCPRTT = totalRTT / time.Duration(result.TCPReceived)
+			result.MedianRTT = result.TCPRTT
+			result.P95RTT = result.TCPRTT
+			return result
+		}
+		lastErr = dialErr
 	}
-	connection, err := dialStream(lease, host, port, probeTimeout(config))
-	if err != nil {
-		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
-		result.Err = result.TCPError
-		return result
-	}
-	_ = connection.Close()
-	result.TCPReceived = 1
-	result.TCPRTT = time.Since(started)
-	result.MedianRTT = result.TCPRTT
-	result.P95RTT = result.TCPRTT
+	result.TCPError = wrapProbeFailure(errProbeTCPFailed, lastErr)
+	result.Err = result.TCPError
 	return result
 }
 
