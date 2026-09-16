@@ -89,6 +89,16 @@ func directForwardCandidateTest(ctx context.Context, config Config, policy Polic
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+		result = probeExternalUoTLease(ctx, lease, config, policy)
+		if result.TCPError != nil || result.TCPReceived <= 0 {
+			if result.TCPError != nil {
+				return result, result.TCPError
+			}
+			return result, errNoHealthyCandidate
+		}
+		return result, nil
+	}
 	transport := strings.ToLower(strings.TrimSpace(policy.Transport))
 	if transport != "tcp" && transport != "udp" && transport != "tcp+udp" {
 		return result, fmt.Errorf("unsupported transport %q", policy.Transport)

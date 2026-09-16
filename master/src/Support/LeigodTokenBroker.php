@@ -58,7 +58,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                     && (int) ($grant['quota_remaining_bytes'] ?? 0) > 0
                     && $currentQuota >= (int) ($grant['quota_remaining_bytes'] ?? 0)
                     && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
-                    $result[$forwardId] = $grant;
+                    $result[$forwardId] = $this->attachExternalUoT($grant, $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
                 }
                 continue;
             }
@@ -127,6 +127,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'quota_remaining_bytes' => $quotaBytes,
                 'target_digest' => hash('sha256', (string) $request['target']),
             ];
+            $result[$forwardId] = $this->attachExternalUoT($result[$forwardId], $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
         }
         try {
             $this->materials->saveGrantCache($clientId, $deviceId, $result);
@@ -158,7 +159,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             $snapshot = $this->materials->lineSnapshot($request['lines']);
             if ($snapshot === null) {
                 if ($this->legacyGrantUsable($grant, $now)) {
-                    $result[$forwardId] = $grant;
+                    $result[$forwardId] = $this->attachExternalUoT($grant, $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
                 }
                 continue;
             }
@@ -204,6 +205,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $request['allowed_ingress_zones'],
                 'fallback_policy' => $request['fallback_policy'],
             ];
+            $result[$forwardId] = $this->attachExternalUoT($result[$forwardId], $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
         }
         try {
             $this->materials->saveGrantCache($clientId, $deviceId, $result);
@@ -286,6 +288,10 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $this->zones((array) ($forward['_ultra_allowed_ingress_zones'] ?? [])),
                 'fallback_policy' => $this->fallbackPolicy((string) ($forward['_ultra_fallback_policy'] ?? 'detected_then_any')),
             ];
+            $externalUoT = $this->normalizeExternalUoT($forward['external_uot'] ?? null, $target);
+            if ($externalUoT !== null) {
+                $result[(string) $forwardId]['external_uot'] = $externalUoT;
+            }
             foreach (['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'] as $quotaKey) {
                 if (array_key_exists($quotaKey, $forward) && $forward[$quotaKey] !== null && $forward[$quotaKey] !== '') {
                     $result[(string) $forwardId][$quotaKey] = max(0, min(UltraMode::MAX_QUOTA_LEASE_BYTES, (int) $forward[$quotaKey]));
@@ -351,6 +357,48 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         return in_array($policy, ['detected_only', 'detected_then_any', 'any'], true)
             ? $policy
             : 'detected_then_any';
+    }
+
+    /** @param mixed $value @return array<string,mixed>|null */
+    private function normalizeExternalUoT(mixed $value, string $target): ?array
+    {
+        if (!is_array($value) || ($value['enabled'] ?? false) !== true) {
+            return null;
+        }
+        $sidecar = trim((string) ($value['sidecar_target'] ?? ''));
+        $token = trim((string) ($value['token'] ?? ''));
+        if (preg_match('/^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$|^[A-Za-z0-9._-]+:[0-9]{1,5}$/', $sidecar) !== 1
+            || $token === '' || strlen($token) > 8192 || preg_match('/\s/', $token) === 1) {
+            return null;
+        }
+        $port = (int) substr($sidecar, strrpos($sidecar, ':') + 1);
+        if ($port < 1 || $port > 65535) {
+            return null;
+        }
+        return [
+            'enabled' => true,
+            'sidecar_target' => $sidecar,
+            'token' => $token,
+            'queue_packets' => max(1, min(4096, (int) ($value['queue_packets'] ?? 256))),
+            'keepalive_seconds' => max(5, min(30, (int) ($value['keepalive_seconds'] ?? 10))),
+            'reconnect_grace_seconds' => max(5, min(300, (int) ($value['reconnect_grace_seconds'] ?? 30))),
+            'frame_payload_max' => max(256, min(65507, (int) ($value['frame_payload_max'] ?? 65507))),
+            'target_digest' => hash('sha256', trim($target)),
+        ];
+    }
+
+    /** @param mixed $value @return array<string,mixed> */
+    private function attachExternalUoT(array $grant, mixed $value, string $target = ''): array
+    {
+        if (is_array($value) && ($value['enabled'] ?? false) === true) {
+            $normalized = $this->normalizeExternalUoT($value, $target !== '' ? $target : (string) ($grant['target'] ?? ''));
+            if ($normalized !== null) {
+                $grant['external_uot'] = $normalized;
+                return $grant;
+            }
+        }
+        unset($grant['external_uot']);
+        return $grant;
     }
 
     private function classification(mixed $value): string

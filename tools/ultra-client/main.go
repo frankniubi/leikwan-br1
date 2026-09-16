@@ -72,6 +72,10 @@ type Config struct {
 	ProbeSamples             int                 `json:"probe_samples"`
 	ProbeIntervalMillis      int                 `json:"probe_interval_ms"`
 	ZoneAliases              map[string][]string `json:"zone_aliases"`
+	// ExternalUoT is an explicit opt-in UDP-over-TCP path which terminates at
+	// an operator-owned sidecar over the existing Ultra command-1 carrier.
+	// Native command-3 UDP remains the default when this is disabled.
+	ExternalUoT ExternalUoTConfig `json:"external_uot"`
 }
 
 func probeDuration(config Config) time.Duration {
@@ -2227,6 +2231,16 @@ func main() {
 	if config.ConnectTimeoutSecs < 1 || config.ConnectTimeoutSecs > 30 {
 		config.ConnectTimeoutSecs = 5
 	}
+	if config.ExternalUoT.Enabled {
+		normalizedExternalUoT, externalErr := config.ExternalUoT.normalized()
+		if externalErr != nil {
+			log.Fatal("external UoT configuration invalid")
+		}
+		config.ExternalUoT = normalizedExternalUoT
+		if config.NativeSocks5 {
+			log.Fatal("external UoT is not supported by native SOCKS5 mode")
+		}
+	}
 	if config.NativeSocks5 {
 		routePolicy, policyErr := ParseNativeRoutePolicy(config.NativeRoutePolicy)
 		if policyErr != nil {
@@ -2327,7 +2341,11 @@ func main() {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()
-				runtimeErrors <- serveUDP(runtimeContext, config, store, status)
+				if externalUoTEnabled(config) {
+					runtimeErrors <- serveExternalUoT(runtimeContext, config, store, status)
+				} else {
+					runtimeErrors <- serveUDP(runtimeContext, config, store, status)
+				}
 			}()
 		}
 		go watchRuntimePolicy(runtimeContext, cancelRuntime, store)

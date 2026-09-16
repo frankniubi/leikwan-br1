@@ -280,6 +280,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function externalUotRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('sidecar-agent/leikwan_external_uot.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function wssMuxRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8', $request);

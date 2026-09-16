@@ -1184,6 +1184,36 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "udp_prewarm": transport in {"udp", "tcp+udp"},
         "udp_keepalive_interval_seconds": 5 if transport in {"udp", "tcp+udp"} else 0,
     }
+    # External UoT is an explicit per-forward opt-in. The sidecar token is
+    # written only to the root-readable runtime config (mode 0600); ordinary
+    # Ultra forwards never receive this block and keep native command-3 UDP.
+    raw_external_uot = access.get("external_uot")
+    if not isinstance(raw_external_uot, dict):
+        raw_external_uot = forward.get("external_uot")
+    if not isinstance(raw_external_uot, dict):
+        raw_external_uot = agent_config.get("external_uot")
+    if isinstance(raw_external_uot, dict) and bool(raw_external_uot.get("enabled", False)):
+        sidecar_target = str(raw_external_uot.get("sidecar_target", "") or "").strip()
+        token = str(raw_external_uot.get("token", "") or "").strip()
+        if not re.fullmatch(r"\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[A-Za-z0-9._-]+:[0-9]{1,5}", sidecar_target):
+            raise RuntimeError("external UoT sidecar target invalid")
+        if token == "" or len(token) > 8192 or any(char.isspace() for char in token):
+            raise RuntimeError("external UoT sidecar token invalid")
+        def _bounded_external_int(key: str, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(raw_external_uot.get(key, default) or default)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(maximum, value))
+        config_payload["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": sidecar_target,
+            "token": token,
+            "queue_packets": _bounded_external_int("queue_packets", 256, 1, 4096),
+            "keepalive_seconds": _bounded_external_int("keepalive_seconds", 10, 5, 30),
+            "reconnect_grace_seconds": _bounded_external_int("reconnect_grace_seconds", 30, 5, 300),
+            "frame_payload_max": _bounded_external_int("frame_payload_max", 65507, 256, 65507),
+        }
     if auto_select:
         config_payload.update(
             {
