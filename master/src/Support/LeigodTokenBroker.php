@@ -74,7 +74,11 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 && $quotaBytes >= (int) ($grant['quota_remaining_bytes'] ?? 0)
                 && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
                 && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
-                $result[$forwardId] = $grant;
+                $result[$forwardId] = $this->attachExternalUoT(
+                    $grant,
+                    $request['external_uot'] ?? null,
+                    (string) ($request['target'] ?? '')
+                );
                 continue;
             }
             if ($quotaBytes <= 0 || ($serviceExpiresAt !== null && $serviceExpiresAt <= $now)) {
@@ -153,7 +157,11 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             $grant = $cached[$forwardId] ?? null;
             if ($this->legacyGrantUsable($grant, $now)
                 && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now) {
-                $result[$forwardId] = $grant;
+                $result[$forwardId] = $this->attachExternalUoT(
+                    $grant,
+                    $request['external_uot'] ?? null,
+                    (string) ($request['target'] ?? '')
+                );
                 continue;
             }
             $snapshot = $this->materials->lineSnapshot($request['lines']);

@@ -846,6 +846,80 @@ final class ProvisioningService
         return $codes;
     }
 
+    /**
+     * Normalize the operator-owned external UoT sidecar contract stored on an
+     * Ultra forward combination. The token is intentionally returned only in
+     * the short-lived Ultra grant; it is never copied into tenant-facing
+     * display fields.
+     *
+     * @return array{enabled:int,sidecar_target:?string,token:?string,queue_packets:int,keepalive_seconds:int,reconnect_grace_seconds:int,frame_payload_max:int}
+     */
+    private function normalizeExternalUoTCombination(array $payload, string $backendMode, int $combinationId): array
+    {
+        $empty = [
+            'enabled' => 0,
+            'sidecar_target' => null,
+            'token' => null,
+            'queue_packets' => 256,
+            'keepalive_seconds' => 10,
+            'reconnect_grace_seconds' => 30,
+            'frame_payload_max' => 65507,
+        ];
+        if (!UltraMode::isBackendMode($backendMode) || !$this->configValueEnabled($payload['external_uot_enabled'] ?? false)) {
+            return $empty;
+        }
+
+        $target = trim((string) ($payload['external_uot_sidecar_target'] ?? ''));
+        $token = trim((string) ($payload['external_uot_token'] ?? ''));
+        if ($combinationId > 0 && ($target === '' || $token === '')) {
+            try {
+                $existing = $this->db->fetchOne(
+                    'SELECT external_uot_sidecar_target, external_uot_token,
+                            external_uot_queue_packets, external_uot_keepalive_seconds,
+                            external_uot_reconnect_grace_seconds, external_uot_frame_payload_max
+                     FROM forward_combinations WHERE id = :id LIMIT 1',
+                    ['id' => $combinationId]
+                );
+                if (is_array($existing)) {
+                    if ($target === '') {
+                        $target = trim((string) ($existing['external_uot_sidecar_target'] ?? ''));
+                    }
+                    if ($token === '') {
+                        $token = trim((string) ($existing['external_uot_token'] ?? ''));
+                    }
+                    foreach (['queue_packets', 'keepalive_seconds', 'reconnect_grace_seconds', 'frame_payload_max'] as $key) {
+                        if (!array_key_exists('external_uot_' . $key, $payload) && array_key_exists('external_uot_' . $key, $existing)) {
+                            $payload['external_uot_' . $key] = $existing['external_uot_' . $key];
+                        }
+                    }
+                }
+            } catch (Throwable) {
+                // A missing legacy column is handled by the migration; keep validation below fail-closed.
+            }
+        }
+
+        if ($target === '' || preg_match('/^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$|^[A-Za-z0-9._-]+:[0-9]{1,5}$/', $target) !== 1) {
+            throw new ApiException('invalid_external_uot_sidecar_target', 422);
+        }
+        $port = (int) substr($target, strrpos($target, ':') + 1);
+        if ($port < 1 || $port > 65535) {
+            throw new ApiException('invalid_external_uot_sidecar_target', 422);
+        }
+        if ($token === '' || strlen($token) > 8192 || preg_match('/\s/', $token) === 1) {
+            throw new ApiException('invalid_external_uot_token', 422);
+        }
+
+        return [
+            'enabled' => 1,
+            'sidecar_target' => $target,
+            'token' => $token,
+            'queue_packets' => max(1, min(4096, (int) ($payload['external_uot_queue_packets'] ?? 256))),
+            'keepalive_seconds' => max(5, min(30, (int) ($payload['external_uot_keepalive_seconds'] ?? 10))),
+            'reconnect_grace_seconds' => max(5, min(300, (int) ($payload['external_uot_reconnect_grace_seconds'] ?? 30))),
+            'frame_payload_max' => max(256, min(65507, (int) ($payload['external_uot_frame_payload_max'] ?? 65507))),
+        ];
+    }
+
     /** @param array<int, array{ultra_line_id:int,sort_order:int}> $memberships */
     private function saveUltraLineMemberships(int $combinationId, array $memberships): void
     {
@@ -968,6 +1042,7 @@ final class ProvisioningService
         }
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $ultraPolicy = $this->normalizeUltraCombinationPolicy($payload, $backendMode);
+        $externalUoT = $this->normalizeExternalUoTCombination($payload, $backendMode, $id);
         $leigodLineId = UltraMode::isBackendMode($backendMode)
             ? 0
             : max(0, (int) ($payload['leigod_line_id'] ?? 0));
@@ -1109,6 +1184,13 @@ final class ProvisioningService
             'ultra_destination_zone' => $ultraPolicy['destination_zone'],
             'ultra_allowed_ingress_zones_json' => $ultraPolicy['allowed_ingress_zones_json'],
             'ultra_fallback_policy' => $ultraPolicy['fallback_policy'],
+            'external_uot_enabled' => $externalUoT['enabled'],
+            'external_uot_sidecar_target' => $externalUoT['sidecar_target'],
+            'external_uot_token' => $externalUoT['token'],
+            'external_uot_queue_packets' => $externalUoT['queue_packets'],
+            'external_uot_keepalive_seconds' => $externalUoT['keepalive_seconds'],
+            'external_uot_reconnect_grace_seconds' => $externalUoT['reconnect_grace_seconds'],
+            'external_uot_frame_payload_max' => $externalUoT['frame_payload_max'],
             'desired_latency_ms' => $desiredLatencyMs,
             'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
             'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
@@ -1170,6 +1252,13 @@ final class ProvisioningService
                          ultra_destination_zone = :ultra_destination_zone,
                          ultra_allowed_ingress_zones_json = :ultra_allowed_ingress_zones_json,
                          ultra_fallback_policy = :ultra_fallback_policy,
+                         external_uot_enabled = :external_uot_enabled,
+                         external_uot_sidecar_target = :external_uot_sidecar_target,
+                         external_uot_token = :external_uot_token,
+                         external_uot_queue_packets = :external_uot_queue_packets,
+                         external_uot_keepalive_seconds = :external_uot_keepalive_seconds,
+                         external_uot_reconnect_grace_seconds = :external_uot_reconnect_grace_seconds,
+                         external_uot_frame_payload_max = :external_uot_frame_payload_max,
                          desired_latency_ms = :desired_latency_ms,
                          allow_public_self_leg_donation = :allow_public_self_leg_donation,
                          donation_qualify_window_seconds = :donation_qualify_window_seconds,
@@ -4255,6 +4344,13 @@ final class ProvisioningService
                     fc.ultra_destination_zone,
                     fc.ultra_allowed_ingress_zones_json,
                     fc.ultra_fallback_policy,
+                    fc.external_uot_enabled,
+                    fc.external_uot_sidecar_target,
+                    fc.external_uot_token,
+                    fc.external_uot_queue_packets,
+                    fc.external_uot_keepalive_seconds,
+                    fc.external_uot_reconnect_grace_seconds,
+                    fc.external_uot_frame_payload_max,
                     fcul.ultra_line_id,
                     fcul.sort_order,
                     ul.source_id,
@@ -4314,6 +4410,21 @@ final class ProvisioningService
                     )),
                     'fallback_policy' => strtolower(trim((string) ($row['ultra_fallback_policy'] ?? 'detected_then_any'))),
                 ];
+                if ((int) ($row['external_uot_enabled'] ?? 0) === 1) {
+                    $sidecarTarget = trim((string) ($row['external_uot_sidecar_target'] ?? ''));
+                    $token = trim((string) ($row['external_uot_token'] ?? ''));
+                    if ($sidecarTarget !== '' && $token !== '') {
+                        $result[$key]['external_uot'] = [
+                            'enabled' => true,
+                            'sidecar_target' => $sidecarTarget,
+                            'token' => $token,
+                            'queue_packets' => max(1, min(4096, (int) ($row['external_uot_queue_packets'] ?? 256))),
+                            'keepalive_seconds' => max(5, min(30, (int) ($row['external_uot_keepalive_seconds'] ?? 10))),
+                            'reconnect_grace_seconds' => max(5, min(300, (int) ($row['external_uot_reconnect_grace_seconds'] ?? 30))),
+                            'frame_payload_max' => max(256, min(65507, (int) ($row['external_uot_frame_payload_max'] ?? 65507))),
+                        ];
+                    }
+                }
             }
             $lineId = (int) ($row['line_id'] ?? 0);
             $sourceId = trim((string) ($row['source_id'] ?? ''));
@@ -5474,6 +5585,7 @@ final class ProvisioningService
                      combo.helper_group_cap AS forward_combination_helper_group_cap,
                      combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
                      combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
+                     combo.external_uot_enabled AS forward_combination_external_uot_enabled,
                      combo.desired_latency_ms AS forward_combination_desired_latency_ms,
                      combo.allow_public_self_leg_donation AS forward_combination_allow_public_self_leg_donation,
                      combo.donation_qualify_window_seconds AS forward_combination_donation_qualify_window_seconds,
@@ -5638,6 +5750,9 @@ final class ProvisioningService
             'forward_combination_helper_group_cap' => (int) ($forward['forward_combination_helper_group_cap'] ?? 0),
             'forward_combination_helper_escalation_policy' => (string) ($forward['forward_combination_helper_escalation_policy'] ?? 'disabled'),
             'forward_combination_self_leg_cf_transport' => (string) ($forward['forward_combination_self_leg_cf_transport'] ?? 'cf_direct'),
+            // The sidecar secret is attached to the short-lived Ultra grant,
+            // never to the ordinary forward configuration response.
+            'forward_combination_external_uot_enabled' => (int) ($forward['forward_combination_external_uot_enabled'] ?? 0),
             'desired_latency_ms' => (int) ($forward['forward_combination_desired_latency_ms'] ?? 0),
             'allow_public_self_leg_donation' => (int) ($forward['forward_combination_allow_public_self_leg_donation'] ?? 0),
             'donation_qualify_window_seconds' => (int) ($forward['forward_combination_donation_qualify_window_seconds'] ?? 60),
