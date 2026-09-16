@@ -73,8 +73,8 @@
   --bridge-radius-sm: 10px;
   --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
 
-  --bridge-display: "Space Grotesk var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --bridge-sans: "Inter var", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --bridge-display: "Inter var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --bridge-sans: "Inter var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bridge-mono: "JetBrains Mono var", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
   --bridge-gutter-left: 32px;
@@ -375,18 +375,17 @@ html {
   margin: 0;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: clamp(64px, 9vw, 128px);
+  font-size: clamp(68px, 9.5vw, 136px);
   font-weight: 700;
-  font-style: normal;
-  line-height: 0.9;
-  letter-spacing: -0.05em;
-  text-shadow: 0 0 90px rgba(78, 163, 255, 0.32), 0 2px 8px rgba(0, 0, 0, 0.5);
+  line-height: 0.92;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 90px rgba(78, 163, 255, 0.28), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .bridge-home-title {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .bridge-home-title-zh {
@@ -395,14 +394,11 @@ html {
 
 .bridge-home-title-en {
   display: block;
-  color: var(--bridge-blue-ink);
-  font-family: var(--bridge-mono);
-  font-size: 0.28em;
-  font-style: normal;
+  color: var(--bridge-ink-2);
+  font-size: 0.32em;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  line-height: 1.2;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
 }
 
 .bridge-home-hero-sub {
@@ -780,10 +776,10 @@ html {
 }
 
 .bridge-home-tech-name {
-  font-family: var(--bridge-mono);
+  font-family: var(--bridge-sans);
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--bridge-ink);
 }
 
