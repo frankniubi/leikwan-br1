@@ -167,6 +167,13 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     ultra_destination_zone VARCHAR(32) NULL,
     ultra_allowed_ingress_zones_json JSON NULL,
     ultra_fallback_policy VARCHAR(32) NOT NULL DEFAULT 'detected_then_any',
+    external_uot_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    external_uot_sidecar_target VARCHAR(255) NULL,
+    external_uot_token VARCHAR(8192) NULL,
+    external_uot_queue_packets INT NOT NULL DEFAULT 256,
+    external_uot_keepalive_seconds INT NOT NULL DEFAULT 10,
+    external_uot_reconnect_grace_seconds INT NOT NULL DEFAULT 30,
+    external_uot_frame_payload_max INT NOT NULL DEFAULT 65507,
     node_group_key VARCHAR(191) NOT NULL,
     -- Forward Mode: 'current_mode' (direct ingress) | 'cf_mode' (Cloudflare ingress) |
     -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod) |

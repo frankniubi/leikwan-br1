@@ -117,6 +117,15 @@ $grants = $broker->grantsForClientForwards(7, 'device-a', [[
     '_ultra_destination_zone' => 'tokyo',
     '_ultra_allowed_ingress_zones' => ['shanghai', 'beijing'],
     '_ultra_fallback_policy' => 'detected_then_any',
+    'external_uot' => [
+        'enabled' => true,
+        'sidecar_target' => '185.220.238.153:7443',
+        'token' => 'external-uot-test-token',
+        'queue_packets' => 512,
+        'keepalive_seconds' => 15,
+        'reconnect_grace_seconds' => 45,
+        'frame_payload_max' => 4096,
+    ],
 ], [
     'forward_id' => 43,
     'service_status' => 'active',
@@ -136,6 +145,35 @@ assertUltraContract(!array_key_exists('gateway_ips', $grant), 'legacy gateway me
 assertUltraContract(!array_key_exists('port', $grant), 'normal grant must not expose a business port');
 assertUltraContract(!array_key_exists('line_ids', $grant), 'normal grant must not expose line numbers');
 assertUltraContract(!str_contains(strtolower(json_encode($grant) ?: ''), 'credential'), 'normal grant exposed line material');
+assertUltraContract(($grant['external_uot']['enabled'] ?? false) === true, 'external UoT was not attached to a fresh grant');
+assertUltraContract(($grant['external_uot']['sidecar_target'] ?? '') === '185.220.238.153:7443', 'external UoT sidecar target mismatch');
+assertUltraContract(($grant['external_uot']['frame_payload_max'] ?? 0) === 4096, 'external UoT frame limit mismatch');
+
+$externalUotDisabledForward = [
+    'forward_id' => 42,
+    'service_id' => 5,
+    'service_status' => 'active',
+    'backend_mode' => 'ultra',
+    'target' => '198.51.100.10:443',
+    'transport' => 'tcp+udp',
+    'speed_limit_mbps' => 20,
+    '_ultra_line_ids' => [453],
+    '_ultra_lines' => [[
+        'ultra_line_id' => 10,
+        'line_id' => 453,
+        'source_id' => 'source-a',
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+        'sort_order' => 10,
+    ]],
+    '_ultra_line_direction' => 'Shanghai to Japan',
+    '_ultra_destination_zone' => 'tokyo',
+    '_ultra_allowed_ingress_zones' => ['shanghai', 'beijing'],
+    '_ultra_fallback_policy' => 'detected_then_any',
+];
+$cachedWithoutExternalUot = $broker->grantsForClientForwards(7, 'device-a', [$externalUotDisabledForward], true);
+assertUltraContract(isset($cachedWithoutExternalUot['42']), 'cached grant disappeared while removing external UoT');
+assertUltraContract(!isset($cachedWithoutExternalUot['42']['external_uot']), 'cached grant retained disabled external UoT');
 
 $quotaForward = [
     'forward_id' => 44,

@@ -2744,6 +2744,18 @@ final class AdminController extends BaseController
             . $ultraMembershipRows . '</tbody></table></div></fieldset>'
             . '<script>(function(){var s=document.querySelector(\'select[name=ultra_destination_zone]\');if(!s)return;function f(){document.querySelectorAll(\'[data-ultra-destination]\').forEach(function(r){r.style.display=r.getAttribute(\'data-ultra-destination\')===s.value?\'\':\'none\';});}s.addEventListener(\'change\',f);f();})();</script>';
 
+        $externalUotEnabled = (int) ($editing['external_uot_enabled'] ?? 0) === 1;
+        $externalUotField = '<fieldset class="field" data-mode-field="ultra"><legend>External UoT sidecar</legend>'
+            . '<div class="form-grid">'
+            . '<div class="field"><label>Enable External UoT</label><input type="hidden" name="external_uot_enabled" value="0"><label class="check-row"><input type="checkbox" name="external_uot_enabled" value="1"' . ($externalUotEnabled ? ' checked' : '') . '> Use the operator-owned UDP-over-TCP sidecar</label></div>'
+            . '<div class="field"><label>Sidecar target</label><input type="text" name="external_uot_sidecar_target" maxlength="255" value="' . $this->escape((string) ($editing['external_uot_sidecar_target'] ?? '')) . '" placeholder="185.220.238.153:7443"><p class="muted">The configured Ultra/LeiGod carrier reaches this endpoint; the client does not open a direct UDP socket to the sidecar.</p></div>'
+            . '<div class="field"><label>Sidecar token</label><input type="password" name="external_uot_token" maxlength="8192" value="" autocomplete="new-password" placeholder="leave blank to keep the existing token"><p class="muted">The token is stored server-side and is only delivered inside a short-lived Ultra grant.</p></div>'
+            . '<div class="field"><label>Queue packets</label><input type="number" name="external_uot_queue_packets" min="1" max="4096" value="' . $this->escape((string) ($editing['external_uot_queue_packets'] ?? 256)) . '"></div>'
+            . '<div class="field"><label>Keepalive seconds</label><input type="number" name="external_uot_keepalive_seconds" min="5" max="30" value="' . $this->escape((string) ($editing['external_uot_keepalive_seconds'] ?? 10)) . '"></div>'
+            . '<div class="field"><label>Reconnect grace seconds</label><input type="number" name="external_uot_reconnect_grace_seconds" min="5" max="300" value="' . $this->escape((string) ($editing['external_uot_reconnect_grace_seconds'] ?? 30)) . '"></div>'
+            . '<div class="field"><label>Frame payload max</label><input type="number" name="external_uot_frame_payload_max" min="256" max="65507" value="' . $this->escape((string) ($editing['external_uot_frame_payload_max'] ?? 65507)) . '"></div>'
+            . '</div></fieldset>';
+
         // LeiGod is a first-class Forward Mode; the ordered catalog memberships replace the legacy scalar.
         $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
         $leigodUot = strtolower((string) ($editing['leigod_uot_impl'] ?? 'lguot'));
@@ -2961,6 +2973,7 @@ final class AdminController extends BaseController
                     <div class="field" data-non-ultra-field><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
                     ' . $leigodField . '
                     ' . $ultraField . '
+                    ' . $externalUotField . '
                     <div class="field" data-non-ultra-field><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
