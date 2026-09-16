@@ -1,56 +1,45 @@
-﻿# Ultra single-reader 修复部署与真实验证（forward-170）
+﻿# Ultra single-reader 修复与 forward-170 验证（2026-09-16）
 
-- 日期：2026-09-16（Asia/Taipei）
-- 分支：fix/ultra-probe-single-reader（HEAD 6d189471，docs 5541aeb6；master 未改动）
-- 目标：修复 probeEcho/runtime 双读者竞态（keepalive_timeout 假死），并在 forward-170 用真实流量完成 canary + 大包 UDP 测试
+## 代码与部署
 
-## 1. 修复内容
+- 分支 fix/ultra-probe-single-reader；修复提交 6d189471。master 保持 55c0cbcb，未合并或推送。
+- 独立 worktree leikwan-br1-canary 从修复提交构建，未包含 external_uot WIP；其他未提交改动保留。
+- Windows 包测试 go test . -count=1 -timeout 600s 通过（162.194s）；不代表 Linux race 检测通过。
+- forward-170 / 172.21.255.189 于 19:11:57 CST 计划重启一次，PID 4089893 -> 4168421。
+- 版本 2026.09.16.2-reader.6d189471；二进制 /usr/local/libexec/leikwan/ultra-client-2026.09.16.2-reader.6d189471。
+- SHA256：9455177caf38c5f0f20e9d6fd495277a154e964621088c8360c3940f1f3e002b。
+- drop-in：/etc/systemd/system/ultra-forward-170.service.d/90-reader-fix.conf。
+- 共享 /usr/local/bin/ultra-client 未替换，其他 forwards 未推广。
+- 备份及回滚：/root/ultra-reader-fix-20260916-2/rollback.sh；回滚会删除本次 drop-in 并重启目标服务。
+- 部署前后 forward-170.json 哈希一致，不延伸为后续配置永不改变。
 
-- tools/ultra-client/ha_udp.go：单一 reader goroutine 独占 socket 读取，probe 经 channel 分发（readerOwned/probeWaiter/dispatchProbeEcho）
-- 单元测试覆盖：probe 等待、竞态防护、错误传播
-- 分支全量测试：ok leikwan.local/ultra-client 162.194s（0 失败）
+## 实测
 
-## 2. 部署（backup-first，单次计划重启）
+单发 canary：TCP 402B/1.114s、UDP DNS 71B/0.051s，均成功。
+尺寸阶梯每档 20 秒、30 pps、600 包，每档是独立 soak，不是同一个 association。
 
-| 项目 | 值 |
-|---|---|
-| 主机 | 172.21.255.189（instance-20241020-0131，x86_64） |
-| 服务 | ultra-forward-170.service |
-| 旧版本 | 2026.09.16.1.e0e4a71f（/usr/local/bin/ultra-client，PID 4089893） |
-| 新版本 | 2026.09.16.2-reader.6d189471（/usr/local/libexec/leikwan/，sha256 9455177caf38c5f0f20e9d6f...） |
-| 部署方式 | drop-in 90-reader-fix.conf 覆盖 ExecStart → daemon-reload → restart |
-| 新 PID | 4168421（active，NRestarts=0，全程未再重启） |
-| 备份 | /root/ultra-reader-fix-20260916-2（二进制+unit+config+pre.sha256+rollback.sh 0700） |
-| 回滚 | bash /root/ultra-reader-fix-20260916-2/rollback.sh（删 drop-in + daemon-reload + restart） |
-| 配置 | /etc/ultra/forward-170.json 哈希前后一致 |
+| payload | 隧道接收/发送 | 直连丢包 |
+| --- | --- | --- |
+| 256/512/768/972/973/1000/1200 bytes | 每档 600/600 | 7.67%–14% |
+| 1400 bytes | 0/600 | 12.33% |
+| 1472/1500/2000/4096/8192/12000 bytes | 每档 0/600 | 每档 100% |
 
-## 3. Canary（runtime 本地 SOCKS 127.0.0.1:10001）
+隧道 TCP 每档 20/20 心跳，无断连。部分小包档 p95 达 2.1–3.9 秒，不能称为整体低延迟验收通过；1200-byte 档 p95=50.28ms。
+1400-byte 失败原因未隔离：本地拒绝、探测目标语义、relay 限制和 MTU 仍需区分。上述丢包不能单独证明 provider 上限或具体 MTU。
+972/973 在本路径通过，不代表修复了另一项目 WireGuard MTU 1000 的边界。
 
-- ha-canary.py 单发：TCP 402B/1.114s ok；UDP 71B/0.051s ok
-- 尺寸阶梯（30pps × 20s，direct 基线 185.220.238.143:60000）：
+## 大包后恢复
 
-| 内层包长 | 隧道丢包 | 直连丢包 |
-|---|---|---|
-| 256-1200B（7 档） | 0.00% | 7.7-14% |
-| 1400B | 100%（路径上限） | 12.3% |
-| 1472-12000B | 100% | 100%（端点 MTU，无意义档） |
+- 1400–12000-byte 档共发送 4200 包，未收到 echo。
+- 恢复脚本未重启服务；11:27:15Z 开始记录，先等待 45 秒，再预热与测试。
+- 11:28:00Z 起 60 秒、256 bytes、10 pps：600/600，0% 丢包，p50=47.98ms、p95=49.37ms。TCP 心跳 60/60。
+- 前后 PID=4168421、NRestarts=0、启动时间=19:11:57 CST 相同，attestation 匹配上述版本及完整 SHA256。
+- state 前后 ready；oversize drops 4063 -> 4063；keepalive ACK 4973 -> 5890；HA failures 33 -> 34。
+- 仍有 io_error/reset/closed 等事件，不应声称无故障。已保存恢复窗口 journal 中 keepalive_timeout 计数为 0，不延伸为整个部署期间零故障。
 
-- 973B 边界消失：0% 丢包（旧版 972/973 EMSGSIZE 崩塌不复现）
-- TCP 心跳全程 20/20，无 send_errors
+证明此轮大包之后无服务重启的小包窗口可正常通信；未测定即时恢复时间、是否更换 association，未做同候选旧版 A/B。原旧版报告也有一次恢复成功，不能声称旧版总是必须重启。
 
-## 4. 大包毒化 + 免重启恢复（决定性）
+## 证据及结论
 
-- 毒化输入：1400/1472/1500/2000/4096/8192/12000B × 600 包 = 4200 超限包
-- 毒化后不重启，256B @ 10pps × 60s：sent=600 recv=600，loss=0.00%，rtt p50=47.98ms p95=49.37ms（无尾延迟）
-- TCP 心跳 60/60；PID 未变；status.json 无 keepalive_timeout/probe race 标签
-- 对比：旧二进制同场景 keepalive_timeout 假死，256B 全丢直至重启
-
-## 5. 边界与未验证项
-
-- 1400B 隧道 100% 丢包为本路径 provider 上限（直连同样高丢包），与读端竞态无关；生产安全上限仍按 ≤1200B
-- 本验证仅覆盖 forward-170 单主机；其他 forwards/线路未移植未验证
-- 长时（>1h）稳定性未测；无重负载并发 UDP 流场景
-
-## 6. 结论
-
-single-reader 修复在真实 forward-170 流量下验证通过：小包 0 丢失、973B 边界消失、大包毒化后免重启自愈、PID/服务全程稳定。分支已具备合并 master 的证据基础。
+本地 tmp/udp-size-diagnosis-linux/*.summary.json 与 tmp/udp-recovery-linux/ 保存结果、journal、status、unit 前后快照和时间。
+完成隔离分支修复、包测试、forward-170 定向部署、canary、大包测试和小包恢复验证。1400 bytes 及以上仍不通，大包可用性未通过；不能据此推广全线路或声称所有 UDP 故障已解决。
