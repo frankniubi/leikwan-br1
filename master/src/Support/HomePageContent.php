@@ -86,97 +86,97 @@ final class HomePageContent
     {
         $copy = [
             'en' => [
-                'hero_badge' => 'MESH · {n} PEERS LIVE',
-                'title_zh' => '直达目的地',
-                'title_en' => 'Your destination.',
-                'hero_sub' => 'A transit mesh that lands at the destination you pick.',
+                'hero_badge' => '{n} PEERS LIVE',
+                'title_zh' => '目的地',
+                'title_en' => 'Destination.',
+                'hero_sub' => 'Pick a line. Land at yours.',
                 'primary' => 'Enter Console',
                 'hero_guide_cta' => 'How it works',
                 'platforms_label' => 'Client platforms',
                 'map_label' => 'Mesh of {n} peers across East Asia',
-                'atlas_kicker' => '01 · MESH',
-                'atlas_note' => '{n} PEERS · GREAT-CIRCLE · BIDIRECTIONAL',
-                'spec_kicker' => '02 · SPEC',
-                'spec_title' => 'Your mesh. Your destination.',
+                'atlas_kicker' => 'MESH',
+                'atlas_note' => '{n} PEERS · BIDIRECTIONAL',
+                'spec_kicker' => 'SPEC',
+                'spec_title' => 'One mesh.',
                 'stat_nodes' => 'NODES',
                 'stat_carriers' => 'CARRIERS',
                 'stat_protocols' => 'PROTOCOLS',
                 'stat_platforms' => 'PLATFORMS',
-                'carriers_kicker' => '03 · CARRIERS',
+                'carriers_kicker' => 'CARRIERS',
                 'carriers_title' => 'Direct landing.',
-                'carriers_note' => 'Telecom, Unicom, Mobile and BGP.',
-                'steps_kicker' => '04 · START',
-                'steps_title' => 'Three steps to the destination.',
-                'step_1_title' => 'Console',
-                'step_1_note' => 'Pick your line',
+                'carriers_note' => 'Telecom, Unicom, Mobile, BGP.',
+                'steps_kicker' => 'PATH',
+                'steps_title' => 'Line. Forward. Land.',
+                'step_1_title' => 'Line',
+                'step_1_note' => 'Pick it',
                 'step_2_title' => 'Forward',
                 'step_2_note' => 'Name the destination',
-                'step_3_title' => 'Connect',
-                'step_3_note' => 'Land and play',
+                'step_3_title' => 'Land',
+                'step_3_note' => 'Play',
                 'closing_title' => 'Go to your destination.',
                 'console_link' => 'Enter Console',
                 'guides_link' => 'Guides',
             ],
             'zh-Hans' => [
-                'hero_badge' => '网状在线 · {n} 个节点',
-                'title_zh' => '直达目的地',
-                'title_en' => 'Your destination.',
-                'hero_sub' => '选一条线，流量直达你的目的地。',
+                'hero_badge' => '{n} 个节点在线',
+                'title_zh' => '目的地',
+                'title_en' => 'Destination.',
+                'hero_sub' => '选线，落地，到你的。',
                 'primary' => '进入控制台',
                 'hero_guide_cta' => '了解运作方式',
                 'platforms_label' => '客户端平台',
                 'map_label' => '{cn} 个对等节点组成的东亚网状网络',
-                'atlas_kicker' => '01 · 网状',
-                'atlas_note' => '{cn} 个节点 · 大圆航线 · 双向互通',
-                'spec_kicker' => '02 · 规格',
-                'spec_title' => '你的网，你的目的地。',
+                'atlas_kicker' => '网状',
+                'atlas_note' => '{cn} 节点 · 双向',
+                'spec_kicker' => '规格',
+                'spec_title' => '一张网。',
                 'stat_nodes' => '节点',
                 'stat_carriers' => '线路',
                 'stat_protocols' => '协议',
                 'stat_platforms' => '平台',
-                'carriers_kicker' => '03 · 线路',
+                'carriers_kicker' => '线路',
                 'carriers_title' => '当地直出。',
-                'carriers_note' => '电信、联通、移动与 BGP。',
-                'steps_kicker' => '04 · 上手',
-                'steps_title' => '三步直达目的地。',
-                'step_1_title' => '控制台',
-                'step_1_note' => '选择线路',
+                'carriers_note' => '电信、联通、移动、BGP。',
+                'steps_kicker' => '路径',
+                'steps_title' => '选线 · 转发 · 落地',
+                'step_1_title' => '选线',
+                'step_1_note' => '控制台',
                 'step_2_title' => '转发',
                 'step_2_note' => '写上目的地',
-                'step_3_title' => '连接',
-                'step_3_note' => '落地即玩',
+                'step_3_title' => '落地',
+                'step_3_note' => '即玩',
                 'closing_title' => '去你的目的地。',
                 'console_link' => '进入控制台',
                 'guides_link' => '指南',
             ],
             'zh-TW' => [
-                'hero_badge' => '網狀上線 · {n} 個節點',
-                'title_zh' => '直達目的地',
-                'title_en' => 'Your destination.',
-                'hero_sub' => '選一條線，流量直達你的目的地。',
+                'hero_badge' => '{n} 個節點上線',
+                'title_zh' => '目的地',
+                'title_en' => 'Destination.',
+                'hero_sub' => '選線，落地，到你的。',
                 'primary' => '進入控制台',
                 'hero_guide_cta' => '了解運作方式',
                 'platforms_label' => '用戶端平台',
                 'map_label' => '{cn} 個對等節點組成的東亞網狀網路',
-                'atlas_kicker' => '01 · 網狀',
-                'atlas_note' => '{cn} 個節點 · 大圓航線 · 雙向互通',
-                'spec_kicker' => '02 · 規格',
-                'spec_title' => '你的網，你的目的地。',
+                'atlas_kicker' => '網狀',
+                'atlas_note' => '{cn} 節點 · 雙向',
+                'spec_kicker' => '規格',
+                'spec_title' => '一張網。',
                 'stat_nodes' => '節點',
                 'stat_carriers' => '線路',
                 'stat_protocols' => '協定',
                 'stat_platforms' => '平台',
-                'carriers_kicker' => '03 · 線路',
+                'carriers_kicker' => '線路',
                 'carriers_title' => '當地直出。',
-                'carriers_note' => '電信、聯通、移動與 BGP。',
-                'steps_kicker' => '04 · 上手',
-                'steps_title' => '三步直達目的地。',
-                'step_1_title' => '控制台',
-                'step_1_note' => '選擇線路',
+                'carriers_note' => '電信、聯通、移動、BGP。',
+                'steps_kicker' => '路徑',
+                'steps_title' => '選線 · 轉發 · 落地',
+                'step_1_title' => '選線',
+                'step_1_note' => '控制台',
                 'step_2_title' => '轉發',
                 'step_2_note' => '寫上目的地',
-                'step_3_title' => '連線',
-                'step_3_note' => '落地即玩',
+                'step_3_title' => '落地',
+                'step_3_note' => '即玩',
                 'closing_title' => '去你的目的地。',
                 'console_link' => '進入控制台',
                 'guides_link' => '指南',
@@ -890,13 +890,6 @@ final class HomePageContent
             . '<div class="bridge-home-aurora" aria-hidden="true"></div>'
             . '<div class="bridge-home-gridlines" aria-hidden="true"></div>'
             . '<div class="bridge-home-hero-stage">'
-            . '<div class="bridge-home-network">'
-            . self::routePlate($copy)
-            . '<div class="bridge-home-network-meta">'
-            . '<span class="bridge-home-kicker">' . self::e((string) $copy['atlas_kicker']) . '</span>'
-            . '<span class="bridge-home-network-note">' . self::e((string) $copy['atlas_note']) . '</span>'
-            . '</div>'
-            . '</div>'
             . '<div class="bridge-home-hero-inner">'
             . '<div class="bridge-home-hero-copy">'
             . '<p class="bridge-home-tag">'
@@ -915,6 +908,13 @@ final class HomePageContent
             . self::platformRow($copy)
             . '</div>'
             . '</div>'
+            . '<div class="bridge-home-network">'
+            . self::routePlate($copy)
+            . '<div class="bridge-home-network-meta">'
+            . '<span class="bridge-home-kicker">' . self::e((string) $copy['atlas_kicker']) . '</span>'
+            . '<span class="bridge-home-network-note">' . self::e((string) $copy['atlas_note']) . '</span>'
+            . '</div>'
+            . '</div>'
             . '</div>'
             . '</section>'
             . self::plateKey($current)
@@ -927,6 +927,15 @@ final class HomePageContent
             . self::statTiles($copy)
             . '</div>'
             . '</section>'
+            . '<section class="bridge-home-steps" aria-labelledby="steps-heading">'
+            . '<div class="bridge-home-band">'
+            . '<header class="bridge-home-band-head">'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['steps_kicker']) . '</p>'
+            . '<h2 id="steps-heading">' . self::e((string) $copy['steps_title']) . '</h2>'
+            . '</header>'
+            . self::stepTiles($copy)
+            . '</div>'
+            . '</section>'
             . '<section class="bridge-home-carrier-band" aria-label="' . self::e((string) $copy['carriers_kicker']) . '">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
@@ -935,15 +944,6 @@ final class HomePageContent
             . '<p class="bridge-home-note">' . self::e((string) $copy['carriers_note']) . '</p>'
             . '</header>'
             . '<ul class="bridge-home-carriers">' . $carriers . '</ul>'
-            . '</div>'
-            . '</section>'
-            . '<section class="bridge-home-steps" aria-labelledby="steps-heading">'
-            . '<div class="bridge-home-band">'
-            . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['steps_kicker']) . '</p>'
-            . '<h2 id="steps-heading">' . self::e((string) $copy['steps_title']) . '</h2>'
-            . '</header>'
-            . self::stepTiles($copy)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-closing">'

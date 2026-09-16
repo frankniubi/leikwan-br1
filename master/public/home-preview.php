@@ -23,7 +23,7 @@ $lang = htmlspecialchars($locale, ENT_QUOTES, 'UTF-8');
   <link rel="preload" href="/assets/fonts/cormorant-garamond-600.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="preload" href="/assets/fonts/inter-var.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-home.css?v=20260916d">
+  <link rel="stylesheet" href="/assets/bridge-home.css?v=20260916e">
 </head>
 <body class="pg-public bridge-home-page">
   <div class="public-shell">

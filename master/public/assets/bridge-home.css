@@ -1,7 +1,7 @@
 /* ==========================================================================
    Leikwan Bridge — Public Homepage
-   "Destination Atlas": the Windows client mark (blue × green bridge) sets
-   the palette. Type sits on the mesh. The destination is the headline.
+   "Split Destination": left column—giant vertical "目的地", right—map bleeds,
+   below—one horizontal path, no card stacks.
    ========================================================================== */
 
 @font-face {
@@ -45,24 +45,19 @@
 }
 
 :root {
-  /* Surfaces: a cold near-black canvas with a blue undertone. */
   --bridge-paper: #07090e;
   --bridge-surface: #0b1018;
   --bridge-surface-2: #10161f;
   --bridge-elev: #141c27;
 
-  /* Hairlines: visible on dark without ever turning grey-white. */
   --bridge-line: #1c2633;
   --bridge-line-strong: #2a3646;
 
-  /* Text: off-white primaries, cool secondaries. */
   --bridge-ink: #eef3f8;
   --bridge-ink-2: #c3ceda;
   --bridge-muted: #8b9aab;
   --bridge-muted-2: #667687;
 
-  /* Kept so existing tests still find the tokens; the live accent is the
-     client-mark blue/green pair. */
   --bridge-orange: #ff8a2a;
   --bridge-orange-hover: #ffa257;
   --bridge-orange-ink: #8ec8ff;
@@ -156,8 +151,6 @@ html {
   text-decoration: none;
 }
 
-/* The Windows client mark already ships as a rounded square. Do not wrap
-   it in a second white tile. */
 .bridge-home-page .site-mark {
   display: inline-flex;
   align-items: center;
@@ -249,7 +242,6 @@ html {
   text-transform: none;
 }
 
-/* ---------- language control ---------- */
 .bridge-home-page .locale-switch {
   display: inline-flex;
   align-items: center;
@@ -288,19 +280,13 @@ html {
   appearance: none;
 }
 
-/* ---------- hero ---------- */
+/* ---------- hero: split left/right ---------- */
 .bridge-home-hero {
   position: relative;
   overflow: hidden;
   background: var(--bridge-paper);
 }
 
-.bridge-home-hero-stage {
-  position: relative;
-  min-height: 86vh;
-}
-
-/* The aurora: client-mark blue and green, out of focus. */
 .bridge-home-aurora {
   position: absolute;
   inset: 0;
@@ -311,7 +297,6 @@ html {
     radial-gradient(44% 38% at 62% 94%, rgba(110, 200, 240, 0.1), transparent 60%);
 }
 
-/* A faint plotted grid behind the type: structure, not texture. */
 .bridge-home-gridlines {
   position: absolute;
   inset: 0;
@@ -324,7 +309,6 @@ html {
   mask-image: radial-gradient(72% 60% at 50% 0%, #000 30%, transparent 100%);
 }
 
-/* Film grain, kept at a whisper so the dark stays smooth. */
 .bridge-home-hero::after {
   content: "";
   position: absolute;
@@ -334,36 +318,34 @@ html {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-.bridge-home-hero-inner {
-  position: absolute;
-  z-index: 4;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: auto;
-  width: min(1240px, 100%);
+.bridge-home-hero-stage {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 1.4fr;
+  gap: 48px;
+  min-height: 88vh;
+  width: 100%;
+  max-width: 1540px;
   margin: 0 auto;
-  padding: 72px var(--bridge-gutter-right) 28px var(--bridge-gutter-left);
-  pointer-events: none;
+  padding: 0 var(--bridge-gutter-right) 0 var(--bridge-gutter-left);
+}
+
+.bridge-home-hero-inner {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px 0 48px;
 }
 
 .bridge-home-hero-copy {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 16px;
+  gap: 20px;
   min-width: 0;
-  max-width: 760px;
-  pointer-events: auto;
-  padding: 28px 28px 26px;
-  background: linear-gradient(180deg, rgba(7, 9, 14, 0.62) 0%, rgba(7, 9, 14, 0.18) 100%);
-  border: 1px solid rgba(142, 200, 255, 0.12);
-  border-radius: 20px;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
-/* live status tag */
 .bridge-home-tag {
   margin: 0;
   display: inline-flex;
@@ -393,18 +375,18 @@ html {
   margin: 0;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: 88px;
+  font-size: clamp(72px, 10vw, 152px);
   font-weight: 600;
   font-style: normal;
-  line-height: 0.92;
-  letter-spacing: -0.03em;
+  line-height: 0.88;
+  letter-spacing: -0.04em;
   text-shadow: 0 0 90px rgba(78, 163, 255, 0.32), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .bridge-home-title {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .bridge-home-title-zh {
@@ -414,7 +396,7 @@ html {
 .bridge-home-title-en {
   display: block;
   color: var(--bridge-blue-ink);
-  font-size: 0.42em;
+  font-size: 0.38em;
   font-style: italic;
   font-weight: 500;
   letter-spacing: -0.02em;
@@ -422,14 +404,14 @@ html {
 }
 
 .bridge-home-hero-sub {
-  margin: 2px 0 0;
+  margin: 4px 0 0;
   color: var(--bridge-ink-2);
   font-family: var(--bridge-sans);
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 500;
   line-height: 1.45;
   letter-spacing: -0.008em;
-  max-width: 32em;
+  max-width: 28em;
 }
 
 .bridge-home-hero-actions {
@@ -440,7 +422,6 @@ html {
   margin-top: 10px;
 }
 
-/* Primary action: dark ink on the client-mark blue. */
 .bridge-home-primary {
   display: inline-flex;
   align-items: center;
@@ -490,7 +471,6 @@ html {
   transform: translateY(-2px);
 }
 
-/* The client strip: a glyph and one word per platform. */
 .bridge-home-platforms {
   display: flex;
   flex-wrap: wrap;
@@ -526,23 +506,21 @@ html {
   letter-spacing: 0.03em;
 }
 
-/* Every pictogram on the page is a 24x24 glyph that inherits its colour. */
 .bridge-home-icon {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-/* ---------- the network (the plate) ---------- */
+/* ---------- network (right column) ---------- */
 .bridge-home-network {
   position: relative;
-  z-index: 2;
-  width: min(1240px, 100%);
-  margin: 0 auto;
-  padding: 88px var(--bridge-gutter-right) 28px var(--bridge-gutter-left);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 48px 0;
 }
 
-/* A soft glow lifts the mesh off the canvas. */
 .bridge-home-network::before {
   content: "";
   position: absolute;
@@ -556,8 +534,9 @@ html {
   display: block;
   width: 100%;
   height: auto;
-  /* Mirrors HomePageContent::PLATE_RATIO so the crop never crops a peer. */
   aspect-ratio: 204 / 100;
+  position: relative;
+  z-index: 1;
 }
 
 .bridge-home-network-meta {
@@ -568,6 +547,18 @@ html {
   padding: 14px 2px 0;
   border-top: 1px solid var(--bridge-line);
   margin-top: -1px;
+  position: relative;
+  z-index: 1;
+}
+
+.bridge-home-kicker {
+  margin: 0 0 12px;
+  color: var(--bridge-orange-ink);
+  font-family: var(--bridge-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }
 
 .bridge-home-network-note {
@@ -650,48 +641,7 @@ html {
   }
 }
 
-/* ---------- section bands ---------- */
-.bridge-home-band {
-  width: min(1240px, 100%);
-  margin: 0 auto;
-  padding: 88px var(--bridge-gutter-right) 88px var(--bridge-gutter-left);
-}
-
-.bridge-home-band-head {
-  max-width: 46em;
-  margin-bottom: 44px;
-}
-
-.bridge-home-kicker {
-  margin: 0 0 12px;
-  color: var(--bridge-orange-ink);
-  font-family: var(--bridge-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-}
-
-.bridge-home-band-head h2,
-.bridge-home-closing h2 {
-  margin: 0;
-  font-family: var(--bridge-display);
-  font-size: 44px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.08;
-  color: var(--bridge-ink);
-}
-
-.bridge-home-note {
-  max-width: 46em;
-  margin: 16px 0 0;
-  color: var(--bridge-muted);
-  font-size: 16px;
-  line-height: 1.7;
-}
-
-/* ---------- spec: a datasheet strip ---------- */
+/* ---------- spec: horizontal stat bar ---------- */
 .bridge-home-features {
   position: relative;
   background: var(--bridge-surface);
@@ -707,6 +657,36 @@ html {
   background: radial-gradient(68% 90% at 50% 100%, rgba(78, 163, 255, 0.06), transparent 72%);
 }
 
+.bridge-home-band {
+  width: min(1240px, 100%);
+  margin: 0 auto;
+  padding: 56px var(--bridge-gutter-right) 56px var(--bridge-gutter-left);
+}
+
+.bridge-home-band-head {
+  max-width: 46em;
+  margin-bottom: 32px;
+}
+
+.bridge-home-band-head h2,
+.bridge-home-closing h2 {
+  margin: 0;
+  font-family: var(--bridge-display);
+  font-size: 48px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  color: var(--bridge-ink);
+}
+
+.bridge-home-note {
+  max-width: 46em;
+  margin: 16px 0 0;
+  color: var(--bridge-muted);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
 .bridge-home-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -717,16 +697,11 @@ html {
 }
 
 .bridge-home-stat {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: center;
-  gap: 18px;
-  padding: 8px 0 8px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 42px 18px 0;
   border-right: 1px solid var(--bridge-line);
-}
-
-.bridge-home-stat:first-child {
-  padding-left: 0;
 }
 
 .bridge-home-stat:last-child {
@@ -741,12 +716,18 @@ html {
   color: var(--bridge-blue);
 }
 
+.bridge-home-stat-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .bridge-home-stat-value {
   display: block;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
   font-size: 56px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 0.95;
   letter-spacing: -0.035em;
 }
@@ -760,6 +741,89 @@ html {
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+/* ---------- steps: horizontal path ---------- */
+.bridge-home-steps {
+  position: relative;
+  background: var(--bridge-surface);
+  border-bottom: 1px solid var(--bridge-line);
+}
+
+.bridge-home-steps::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(62% 85% at 50% 0%, rgba(111, 222, 98, 0.05), transparent 68%);
+}
+
+.bridge-home-steps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 26px 26px 24px;
+  background: var(--bridge-elev);
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-step:hover {
+  transform: translateY(-2px);
+  border-color: var(--bridge-line-strong);
+  box-shadow: var(--bridge-shadow);
+}
+
+.bridge-home-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.bridge-home-step-icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  color: var(--bridge-blue);
+}
+
+.bridge-home-step-index {
+  color: var(--bridge-muted-2);
+  font-family: var(--bridge-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+}
+
+.bridge-home-step-title {
+  margin: 0;
+  color: var(--bridge-ink);
+  font-family: var(--bridge-display);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+
+.bridge-home-step-note {
+  margin: -6px 0 0;
+  color: var(--bridge-muted);
+  font-family: var(--bridge-mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
 }
 
 /* ---------- carriers ---------- */
@@ -830,93 +894,9 @@ html {
 .bridge-home-carrier-name {
   font-family: var(--bridge-display);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--bridge-ink);
   letter-spacing: -0.01em;
-}
-
-/* ---------- steps: three pictograms ---------- */
-.bridge-home-steps {
-  position: relative;
-  background: var(--bridge-surface);
-  border-top: 1px solid var(--bridge-line);
-  border-bottom: 1px solid var(--bridge-line);
-}
-
-.bridge-home-steps::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(62% 85% at 50% 0%, rgba(111, 222, 98, 0.05), transparent 68%);
-}
-
-.bridge-home-steps-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.bridge-home-step {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 18px;
-  padding: 30px 30px 28px;
-  background: var(--bridge-elev);
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
-}
-
-.bridge-home-step:hover {
-  transform: translateY(-2px);
-  border-color: var(--bridge-line-strong);
-  box-shadow: var(--bridge-shadow);
-}
-
-.bridge-home-step-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.bridge-home-step-icon {
-  display: block;
-  width: 36px;
-  height: 36px;
-  color: var(--bridge-blue);
-}
-
-.bridge-home-step-index {
-  color: var(--bridge-muted-2);
-  font-family: var(--bridge-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-}
-
-.bridge-home-step-title {
-  margin: 0;
-  color: var(--bridge-ink);
-  font-family: var(--bridge-display);
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.015em;
-}
-
-.bridge-home-step-note {
-  margin: -8px 0 0;
-  color: var(--bridge-muted);
-  font-family: var(--bridge-mono);
-  font-size: 13px;
-  letter-spacing: 0.02em;
 }
 
 /* ---------- closing ---------- */
@@ -938,8 +918,8 @@ html {
 
 .bridge-home-closing .bridge-home-band {
   position: relative;
-  padding-top: 96px;
-  padding-bottom: 96px;
+  padding-top: 80px;
+  padding-bottom: 80px;
 }
 
 .bridge-home-closing h2 {
@@ -953,7 +933,7 @@ html {
   margin-top: 32px;
 }
 
-/* ---------- screen-reader-only plate key ---------- */
+/* ---------- screen-reader plate key ---------- */
 .bridge-home-plate-key {
   position: absolute;
   width: 1px;
@@ -979,42 +959,39 @@ html {
 }
 
 /* ---------- responsive ---------- */
+@media (max-width: 1100px) {
+  .bridge-home-hero-stage {
+    grid-template-columns: 1fr;
+    gap: 0;
+    min-height: 0;
+  }
+
+  .bridge-home-hero-inner {
+    padding: 48px 0 32px;
+  }
+
+  .bridge-home-network {
+    padding: 0 0 48px;
+  }
+}
+
 @media (max-width: 900px) {
   .bridge-home-page {
     --bridge-gutter-left: 20px;
     --bridge-gutter-right: 20px;
   }
 
-  .bridge-home-hero-stage {
-    min-height: 0;
-  }
-
-  .bridge-home-hero-inner {
-    position: relative;
-    padding-top: 36px;
-    padding-bottom: 8px;
-  }
-
-  .bridge-home-hero-copy {
-    max-width: none;
-    padding: 20px 18px 18px;
-  }
-
   .bridge-home-hero h1 {
-    font-size: 56px;
-  }
-
-  .bridge-home-network {
-    padding-top: 12px;
+    font-size: clamp(56px, 9vw, 88px);
   }
 
   .bridge-home-band {
-    padding-top: 64px;
-    padding-bottom: 64px;
+    padding-top: 48px;
+    padding-bottom: 48px;
   }
 
   .bridge-home-band-head {
-    margin-bottom: 32px;
+    margin-bottom: 28px;
   }
 
   .bridge-home-stats {
@@ -1045,12 +1022,10 @@ html {
 
   .bridge-home-band-head h2,
   .bridge-home-closing h2 {
-    font-size: 30px;
+    font-size: 32px;
   }
 }
 
-/* Below this the plate is too small to carry a name at a readable size, so the
-   chart keeps its geometry and the key takes over the naming. */
 @media (max-width: 760px) {
   .rk-node-label {
     display: none;
@@ -1107,17 +1082,17 @@ html {
   }
 
   .bridge-home-hero h1 {
-    font-size: 40px;
+    font-size: clamp(44px, 8vw, 64px);
+  }
+
+  .bridge-home-hero-sub {
+    font-size: 17px;
   }
 
   .bridge-home-page .site-mark,
   .bridge-home-page .site-mark img {
     width: 36px;
     height: 36px;
-  }
-
-  .bridge-home-hero-sub {
-    font-size: 17px;
   }
 
   .bridge-home-stats {

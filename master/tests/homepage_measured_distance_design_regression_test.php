@@ -165,7 +165,7 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         }
     }
 
-    if (!str_contains($html, 'Your destination.') || !preg_match('/直达目的地|直達目的地/u', $html)) {
+    if (!str_contains($html, 'Destination.') || !preg_match('/目的地/u', $html)) {
         homepageFail($locale . ' homepage lost its destination lockup');
     }
 
