@@ -10,7 +10,8 @@ public static class ForwardContractSignature
     public static string Compute(
         ForwardConfig forward,
         UdpUotSidepathConfig? udpUotSidepath = null,
-        string uotBinaryIdentity = "")
+        string uotBinaryIdentity = "",
+        ExternalUotGrant? externalUot = null)
     {
         var payload = new
         {
@@ -71,6 +72,21 @@ public static class ForwardContractSignature
                 udpUotSidepath.ControlQueuePackets,
             },
             UotBinaryIdentity = uotBinaryIdentity,
+            // The external UoT grant is bootstrap-only for the runtime: the
+            // sidecar endpoint and knobs feed the startup config and the token
+            // is handed over once at start. A rotated token therefore has to
+            // restart the runtime, and this field is what makes the applied
+            // signature change when it does. Only a fingerprint of the token
+            // is folded in because the signature is persisted to disk.
+            UotExternalGrant = externalUot is null ? null : new
+            {
+                externalUot.SidecarTarget,
+                externalUot.QueuePackets,
+                externalUot.KeepaliveSeconds,
+                externalUot.ReconnectGraceSeconds,
+                externalUot.FramePayloadMax,
+                TokenFingerprint = externalUot.TokenFingerprint(),
+            },
             Bonding = forward.Bonding is null ? null : new
             {
                 forward.Bonding.FrontendMode,

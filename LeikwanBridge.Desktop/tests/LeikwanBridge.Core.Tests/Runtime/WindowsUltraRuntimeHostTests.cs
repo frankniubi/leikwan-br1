@@ -83,6 +83,74 @@ public sealed class WindowsUltraRuntimeHostTests
         host.Stop(forward.ForwardId);
     }
 
+    [Fact]
+    public void Start_WithExternalUotGrant_WritesTheBootstrapPayloadAndDropsItWithTheLease()
+    {
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        lease.ExternalUot = CreateExternalUotGrant();
+        var grant = lease.ExternalUot!;
+        var tokenBytes = grant.Token;
+        var host = CreateHost(config, state, supervisor);
+        var forward = CreateForward("198.51.100.199:443", lease);
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        using var bootstrap = JsonDocument.Parse(File.ReadAllText(GetBootstrapPath(temp.Path, forward.ForwardId)));
+        var externalUot = bootstrap.RootElement.GetProperty("external_uot");
+        Assert.True(externalUot.GetProperty("enabled").GetBoolean());
+        Assert.Equal("sidecar-a.example.com:7443", externalUot.GetProperty("sidecar_target").GetString());
+        Assert.Equal("sidecar-token-canary-0123456789", externalUot.GetProperty("token").GetString());
+        Assert.Equal(1024, externalUot.GetProperty("queue_packets").GetInt32());
+        Assert.Equal(12, externalUot.GetProperty("keepalive_seconds").GetInt32());
+        Assert.Equal(45, externalUot.GetProperty("reconnect_grace_seconds").GetInt32());
+        Assert.Equal(1400, externalUot.GetProperty("frame_payload_max").GetInt32());
+        // The grant is provider-material-equivalent: it dies with the lease it arrived on.
+        Assert.Null(lease.ExternalUot);
+        Assert.All(tokenBytes, value => Assert.Equal(0, value));
+        Assert.Equal("", grant.SidecarTarget);
+
+        host.Stop(forward.ForwardId);
+        Assert.False(File.Exists(GetBootstrapPath(temp.Path, forward.ForwardId)));
+    }
+
+    [Fact]
+    public void Start_WithoutExternalUotGrant_OmitsTheBootstrapPayload()
+    {
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        var host = CreateHost(config, state, supervisor);
+        var forward = CreateForward("198.51.100.199:443", lease);
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        using var bootstrap = JsonDocument.Parse(File.ReadAllText(GetBootstrapPath(temp.Path, forward.ForwardId)));
+        Assert.False(bootstrap.RootElement.TryGetProperty("external_uot", out _));
+        host.Stop(forward.ForwardId);
+    }
+
+    private static ExternalUotGrant CreateExternalUotGrant()
+    {
+        using var document = JsonDocument.Parse(
+            """{"enabled":true,"sidecar_target":"sidecar-a.example.com:7443","token":"sidecar-token-canary-0123456789","queue_packets":1024,"keepalive_seconds":12,"reconnect_grace_seconds":45,"frame_payload_max":1400}""");
+        return ExternalUotGrant.TryParse(document.RootElement, out var failure)
+            ?? throw new InvalidOperationException(failure);
+    }
+
     private static WindowsUltraRuntimeHost CreateHost(
         AgentConfig config,
         StateManager state,

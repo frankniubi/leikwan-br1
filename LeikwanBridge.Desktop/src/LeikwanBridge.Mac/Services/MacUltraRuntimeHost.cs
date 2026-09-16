@@ -146,6 +146,13 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 bootstrapConfig["probe_interval_ms"] = UltraProbeContract.IntervalMilliseconds;
                 bootstrapConfig["probe_workers"] = UltraProbeContract.Workers;
             }
+            // Bootstrap-only contract: the runtime reads external_uot from its
+            // startup config, so a rotated token needs a runtime restart (the
+            // lease-socket delivery cannot update it). The payload only exists
+            // in memory and is zeroed in the finally block below.
+            var externalUot = ExternalUotGrant.Select(leases);
+            if (externalUot is not null)
+                bootstrapConfig["external_uot"] = externalUot.ToBootstrapPayload();
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
                 forward.ForwardId,

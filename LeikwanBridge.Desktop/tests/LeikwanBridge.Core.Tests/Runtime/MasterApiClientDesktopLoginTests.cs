@@ -603,6 +603,61 @@ public sealed class MasterApiClientDesktopLoginTests
         Assert.Equal("paid", leases[0].SelectionTier);
     }
 
+    [Theory]
+    [InlineData("""{"enabled":true,"sidecar_target":"203.0.113.7:7443","token":"sidecar-token-canary-0123456789","queue_packets":1024,"keepalive_seconds":12,"reconnect_grace_seconds":45,"frame_payload_max":1400}""", true)]
+    [InlineData("""{"enabled":true,"sidecar_target":"203.0.113.7:7443"}""", false)]
+    [InlineData("""{"enabled":false,"sidecar_target":"203.0.113.7:7443","token":"sidecar-token-canary-0123456789"}""", false)]
+    public async Task ResolveUltraLeasesAsync_ParsesTheOptionalExternalUotGrant(string grantJson, bool expectsGrant)
+    {
+        const string target = "198.51.100.10:443";
+        var generation = new string('a', 64);
+        var now = DateTimeOffset.UtcNow;
+        var policy = new UltraPolicy
+        {
+            ProtocolValue = UltraPolicy.Protocol,
+            ForwardId = 42,
+            PolicyGeneration = generation,
+            SessionTicket = "ticket-a",
+            IssuedAt = now,
+            RenewAfter = now.AddMinutes(1),
+            ExpiresAt = now.AddMinutes(4),
+            ServiceState = "active",
+            Transport = "tcp+udp",
+            QuotaRemainingBytes = 1024 * 1024,
+            TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+        };
+        var forward = new ForwardConfig
+        {
+            ForwardId = 42,
+            BackendMode = "ultra",
+            Mode = "single",
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = policy,
+        };
+        using var http = new HttpClient(new UltraLeaseExternalUotHandler(generation, target, grantJson)) { Timeout = TimeSpan.FromSeconds(5) };
+        using var api = new MasterApiClient(
+            "https://v3.leikwanhost.com",
+            "agent-token",
+            "windows-client-42-device",
+            httpClientFactory: () => http,
+            ownsHttpClient: false);
+
+        var leases = await api.ResolveUltraLeasesAsync(forward);
+
+        var lease = Assert.Single(leases);
+        Assert.Equal(expectsGrant, lease.ExternalUot is not null);
+        if (!expectsGrant)
+            return;
+        var grant = lease.ExternalUot!;
+        Assert.Equal("203.0.113.7:7443", grant.SidecarTarget);
+        Assert.Equal("sidecar-token-canary-0123456789", Encoding.UTF8.GetString(grant.Token));
+        Assert.Equal(1024, grant.QueuePackets);
+        Assert.Equal(12, grant.KeepaliveSeconds);
+        Assert.Equal(45, grant.ReconnectGraceSeconds);
+        Assert.Equal(1400, grant.FramePayloadMax);
+    }
+
     private sealed class NotModifiedHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -715,6 +770,38 @@ public sealed class MasterApiClientDesktopLoginTests
                           "rate_limit_mbps": 0, "quota_remaining_bytes": 1048576, "target_digest": "{{digest}}",
                           "selection_ref": "sssssssssssssssssssssssssssssssssssssssssss", "nonce_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                           "endpoint": { "ip": "203.0.113.21", "port": 5439 }, "credential": { "user": "line-user", "password": "line-password" }
+                        }
+                      ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            };
+            return response;
+        }
+    }
+
+    private sealed class UltraLeaseExternalUotHandler(string generation, string target, string grantJson) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await request.Content!.ReadAsStringAsync(cancellationToken);
+            var expires = DateTimeOffset.UtcNow.AddMinutes(3).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            var digest = UltraPolicy.ComputeTargetDigest(target);
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent($$"""
+                    {
+                      "ok": true,
+                      "leases": [
+                        {
+                          "protocol": "leikwan-ultra-policy-v2", "forward_id": 42, "session_ticket": "ticket-a",
+                          "lease_id": "lease-a", "policy_generation": "{{generation}}", "expires_at": "{{expires}}", "transport": "tcp+udp",
+                          "rate_limit_mbps": 20, "quota_remaining_bytes": 1048576, "target_digest": "{{digest}}",
+                          "selection_ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", "selection_tier": "paid",
+                          "nonce_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "endpoint": { "ip": "203.0.113.20", "port": 5438 },
+                          "credential": { "user": "line-user", "password": "line-password" },
+                          "external_uot": {{grantJson}}
                         }
                       ]
                     }

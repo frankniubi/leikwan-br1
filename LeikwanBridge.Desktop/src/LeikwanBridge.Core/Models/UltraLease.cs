@@ -30,6 +30,13 @@ public sealed class UltraLease : IDisposable
     [JsonIgnore] public byte[] User { get; init; } = [];
     [JsonIgnore] public byte[] Password { get; init; } = [];
 
+    /// <summary>
+    /// Optional operator-owned UoT sidecar grant ("external_uot"). Like the
+    /// provider material above it is ignored by every StateManager serializer,
+    /// and it is disposed together with the lease that carries it.
+    /// </summary>
+    [JsonIgnore] public ExternalUotGrant? ExternalUot { get; set; }
+
     public bool IsUsable(UltraPolicy policy, ForwardConfig forward, DateTimeOffset now)
     {
         return string.Equals(Protocol, UltraPolicy.Protocol, StringComparison.Ordinal)
@@ -66,6 +73,8 @@ public sealed class UltraLease : IDisposable
         NonceHash = "";
         ProviderIp = "";
         ProviderPort = 0;
+        ExternalUot?.Dispose();
+        ExternalUot = null;
     }
 
     public static bool IsSelectionTier(string value)
