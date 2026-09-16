@@ -105,3 +105,26 @@ History: `docs/reports/2026-09-16-ultra-japan-external-uot-pilot.md` (lab
 pilot) and `docs/reports/2026-09-16-external-uot-sidecar-runtime.md` (wire
 contract and runtime wiring).
 
+
+## Update — 2026-09-17 (store publish + install path)
+
+* External UoT now ships inside the standard sidecar install: `external_uot_installer`
+  (sha256 `0506d838…c6a4d665`) and `uot_sidecar_linux_{amd64,arm64}`
+  (`18bd060a…21ac60ef` / `9799779f…38ea6320`) are published on the artifact store and
+  `install/install-bond-sidecar.sh` installs them (`--external-uot-config` carries the
+  per-host config). A clean host installed straight from https://v3.leikwanhost.com
+  passed `LIVE-ACCEPT-ALL-PASS`, and the real runtime -> relay -> freshly installed
+  sidecar -> real UDP path returned `VERDICT udp_roundtrip=PASS sustained=20/20
+  burst=50/50`. See `docs/reports/2026-09-17-external-uot-live-store-publish.md`
+  (commit df6f43c4).
+* Residual 2 (multi-region): every region installs from the same store, so a second
+  sidecar host is now an install plus its own config away; the real-host canary is
+  tracked separately from this report.
+* Residual 4 (Windows/macOS runtime packaging): the desktop external-UoT grant
+  bootstrap is verified end-to-end — Windows writes `runtime/ultra-forward-{id}.json`,
+  macOS injects the bootstrap payload over stdin, and the contract signature folds the
+  token fingerprint only (`LeikwanBridge.Core.Tests` 570 passed, `LeikwanBridge.Mac.Tests`
+  227 passed, Go sidecar + ultra-client suites ok).
+* Residual 1 (session re-attach across a forced carrier reconnect) and residual 3
+  (restart-window `frame length invalid` burst) remain open.
+

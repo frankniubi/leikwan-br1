@@ -1,0 +1,30 @@
+{
+    "linux_arm64":  {
+                        "version":  "2026.09.17.1.33d5d5a3",
+                        "sha256":  "9799779fa66e014430f06e9bea9e6cabe52cb3196c3478ff4b20761038ea6320",
+                        "md5":  "94eab068436eb1bfdeb3d420515b572e",
+                        "size":  2949282,
+                        "file":  "uot-sidecar_linux_arm64"
+                    },
+    "darwin_arm64":  {
+                         "version":  "2026.09.17.1.33d5d5a3",
+                         "sha256":  "a90a3a689f1d931752bb1ee166dec71951718c21e3e992de49984d91d4e1a680",
+                         "md5":  "d1a973633b6a82311e74009fb5358904",
+                         "size":  2962322,
+                         "file":  "uot-sidecar_darwin_arm64"
+                     },
+    "windows_amd64":  {
+                          "version":  "2026.09.17.1.33d5d5a3",
+                          "sha256":  "f47e26a150b6ac7e25de298f91343b681bdd4d1d1bb1ef29227f54d6213e9b0e",
+                          "md5":  "1189dfe9bb2f4ffdc57d718dce3d3782",
+                          "size":  3169280,
+                          "file":  "uot-sidecar_windows_amd64.exe"
+                      },
+    "linux_amd64":  {
+                        "version":  "2026.09.17.1.33d5d5a3",
+                        "sha256":  "18bd060abd04242dd4b3a9cbd13ce76876159a76ae8276a3eedc303621ac60ef",
+                        "md5":  "0791af58610a69c5b534c0690f75a5e8",
+                        "size":  3014818,
+                        "file":  "uot-sidecar_linux_amd64"
+                    }
+}
