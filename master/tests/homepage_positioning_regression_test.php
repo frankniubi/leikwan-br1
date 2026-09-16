@@ -85,13 +85,13 @@ foreach ([
     '.bridge-home-network',
     '.bridge-home-tag',
     '.bridge-home-page .site-mark',
-    '--bridge-paper: #07090e',
+    '--bridge-paper: #f5f5f7',
     'border-radius: 999px',
     '@media (max-width: 900px)',
     'inter-var.ttf',
     'space-grotesk-var.ttf',
-    '--bridge-orange: #ff8a2a',
-    '--bridge-orange-hover: #ffa257',
+    '--bridge-orange: #0071e3',
+    '--bridge-orange-hover: #0077ed',
     '.bridge-home-aurora',
     '.bridge-home-network-meta',
 ] as $selector) {
@@ -111,7 +111,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260916m')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260917b')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 

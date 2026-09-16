@@ -103,7 +103,6 @@ final class HomePageContent
                 'atlas_kicker' => 'MESH',
                 'atlas_note' => '{n} PEERS · BIDIRECTIONAL',
                 'path_kicker' => 'PATH',
-                'path_title' => 'Line. Forward. Land.',
                 'lines_kicker' => 'LINES',
                 'lines_title' => 'Excellent mainland networks.',
                 'lines_note' => 'Carriers and clouds on the same mesh.',
@@ -131,7 +130,6 @@ final class HomePageContent
                 'atlas_kicker' => '网状',
                 'atlas_note' => '{cn} 节点 · 双向',
                 'path_kicker' => '路径',
-                'path_title' => '选线 · 转发 · 落地。',
                 'lines_kicker' => '线路',
                 'lines_title' => '优秀内地网络。',
                 'lines_note' => '运营商与云，同一张网。',
@@ -159,7 +157,6 @@ final class HomePageContent
                 'atlas_kicker' => '網狀',
                 'atlas_note' => '{cn} 節點 · 雙向',
                 'path_kicker' => '路徑',
-                'path_title' => '選線 · 轉發 · 落地。',
                 'lines_kicker' => '線路',
                 'lines_title' => '優秀內地網路。',
                 'lines_note' => '電信商與雲，同一張網。',
@@ -177,7 +174,36 @@ final class HomePageContent
             ],
         ];
 
-        $copy = $copy[$locale] ?? $copy['en'];
+        // The public door is intentionally language-invariant. Keep the locale
+        // dictionaries above for compatibility with older callers, but present
+        // both faces together so a visitor never has to hunt for a language menu.
+        $copy = [
+            'hero_badge' => '{cn} 个节点在线 / {n} PEERS LIVE',
+            'title_zh' => '會聚',
+            'title_en' => 'Bridge',
+            'hero_sub' => '聚流之所向·會網之通聯 / Bridge every network gap.',
+            'primary' => '进入控制台 / Enter Console',
+            'hero_guide_cta' => '了解运作方式 / How it works',
+            'platforms_label' => '客户端平台 / Client platforms',
+            'map_label' => '东亚 {cn} 个对等节点网状网络 / {n}-peer mesh across East Asia',
+            'atlas_kicker' => '网状网络 / MESH',
+            'atlas_note' => '{n} PEERS · 双向连接 / BIDIRECTIONAL',
+            'path_kicker' => '路径 / PATH',
+            'lines_kicker' => '线路 / LINES',
+            'lines_title' => '内地网络，相连无界 / Mainland networks, connected.',
+            'lines_note' => '运营商与云，同一张网 / Carriers and clouds on one mesh.',
+            'platforms_kicker' => '平台 / PLATFORMS',
+            'platforms_title' => '四个系统 / Four systems.',
+            'step_1_title' => '选线 / Line',
+            'step_1_note' => '在控制台挑线路 / Pick a route in the console',
+            'step_2_title' => '转发 / Forward',
+            'step_2_note' => '写上目的地 / Name the destination',
+            'step_3_title' => '落地 / Land',
+            'step_3_note' => '即刻连接 / Play connected',
+            'closing_title' => '直达你的目的地 / Go to your destination.',
+            'console_link' => '进入控制台 / Enter Console',
+            'guides_link' => '指南 / Guides',
+        ];
 
         // Every count in the copy comes from the node list itself.
         $count = count(self::NODES);
@@ -209,7 +235,9 @@ final class HomePageContent
      */
     private static function placeName(array $node, string $locale): string
     {
-        return $node['name'][$locale] ?? $node['name']['en'];
+        $zh = $node['name']['zh-TW'] ?? $node['name']['zh-Hans'] ?? $node['name']['en'];
+
+        return $zh . ' / ' . $node['name']['en'];
     }
 
     /**
@@ -378,8 +406,8 @@ final class HomePageContent
                 . '<div class="bridge-home-station-body">'
                 . '<span class="bridge-home-station-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
                 . '<span class="bridge-home-station-icon">' . self::icon($icon) . '</span>'
-                . '<h3 class="bridge-home-station-title">' . self::e($title) . '</h3>'
-                . '<p class="bridge-home-station-note">' . self::e($note) . '</p>'
+                . '<h3 class="bridge-home-station-title">' . self::bilingual($title) . '</h3>'
+                . '<p class="bridge-home-station-note">' . self::bilingual($note) . '</p>'
                 . '</div>'
                 . '</li>';
         }
@@ -553,7 +581,7 @@ final class HomePageContent
         $cells = '';
         foreach (self::NODES as $node) {
             $cells .= '<li><span class="bridge-home-plate-key-code">' . self::e($node['code']) . '</span>'
-                . self::e(self::placeName($node, $locale))
+                . self::bilingual(self::placeName($node, $locale))
                 . '</li>';
         }
 
@@ -876,9 +904,11 @@ final class HomePageContent
 
         $carriers = '';
         foreach (self::CARRIERS as $carrier) {
-            $carriers .= '<li class="bridge-home-carrier bridge-home-carrier--' . $carrier['key'] . '">'
+            $carrierZh = (string) ($carrier['label']['zh-TW'] ?? $carrier['label']['zh-Hans'] ?? $carrier['label']['en']);
+            $carrierEn = (string) $carrier['label']['en'];
+            $carrierLabel = self::e($carrierZh . ' / ' . $carrierEn);
+            $carriers .= '<li class="bridge-home-carrier bridge-home-carrier--' . $carrier['key'] . '" aria-label="' . $carrierLabel . '">'
                 . '<span class="bridge-home-carrier-mark" aria-hidden="true">' . self::carrierMark($carrier['key']) . '</span>'
-                . '<span class="bridge-home-carrier-name">' . self::e((string) ($carrier['label'][$current] ?? $carrier['label']['en'])) . '</span>'
                 . '</li>';
         }
 
@@ -890,16 +920,16 @@ final class HomePageContent
             . '<div class="bridge-home-hero-copy">'
             . '<p class="bridge-home-tag">'
             . '<span class="bridge-home-tag-dot" aria-hidden="true"></span>'
-            . self::e((string) $copy['hero_badge'])
+            . self::bilingual((string) $copy['hero_badge'])
             . '</p>'
             . '<h1 id="bridge-home-title" class="bridge-home-title">'
             . '<span class="bridge-home-title-zh">' . self::e((string) $copy['title_zh']) . '</span>'
             . '<span class="bridge-home-title-en">' . self::e((string) $copy['title_en']) . '</span>'
             . '</h1>'
-            . '<p class="bridge-home-hero-sub">' . self::e((string) $copy['hero_sub']) . '</p>'
+            . '<p class="bridge-home-hero-sub">' . self::bilingual((string) $copy['hero_sub']) . '</p>'
             . '<div class="bridge-home-hero-actions">'
-            . '<a class="bridge-home-primary" href="' . $href . '">' . self::e((string) $copy['primary']) . '</a>'
-            . '<a class="bridge-home-ghost" href="/knowledgebase?thread=getting-started-five-minute-overview">' . self::e((string) $copy['hero_guide_cta']) . '</a>'
+            . '<a class="bridge-home-primary" href="' . $href . '">' . self::bilingual((string) $copy['primary']) . '</a>'
+            . '<a class="bridge-home-ghost" href="/knowledgebase?thread=getting-started-five-minute-overview">' . self::bilingual((string) $copy['hero_guide_cta']) . '</a>'
             . '</div>'
             . self::platformRow($copy)
             . '</div>'
@@ -907,8 +937,8 @@ final class HomePageContent
             . '<div class="bridge-home-network">'
             . self::routePlate($copy)
             . '<div class="bridge-home-network-meta">'
-            . '<span class="bridge-home-kicker">' . self::e((string) $copy['atlas_kicker']) . '</span>'
-            . '<span class="bridge-home-network-note">' . self::e((string) $copy['atlas_note']) . '</span>'
+            . '<span class="bridge-home-kicker">' . self::bilingual((string) $copy['atlas_kicker']) . '</span>'
+            . '<span class="bridge-home-network-note">' . self::bilingual((string) $copy['atlas_note']) . '</span>'
             . '</div>'
             . '</div>'
             . '</div>'
@@ -917,8 +947,7 @@ final class HomePageContent
             . '<section class="bridge-home-path-band" aria-labelledby="path-heading">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['path_kicker']) . '</p>'
-            . '<h2 id="path-heading">' . self::e((string) $copy['path_title']) . '</h2>'
+            . '<p id="path-heading" class="bridge-home-kicker">' . self::bilingual((string) $copy['path_kicker']) . '</p>'
             . '</header>'
             . self::routeLedger($copy)
             . '</div>'
@@ -926,9 +955,9 @@ final class HomePageContent
             . '<section class="bridge-home-lines-band" aria-labelledby="lines-heading">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['lines_kicker']) . '</p>'
-            . '<h2 id="lines-heading">' . self::e((string) $copy['lines_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['lines_note']) . '</p>'
+            . '<p class="bridge-home-kicker">' . self::bilingual((string) $copy['lines_kicker']) . '</p>'
+            . '<h2 id="lines-heading">' . self::bilingual((string) $copy['lines_title']) . '</h2>'
+            . '<p class="bridge-home-note">' . self::bilingual((string) $copy['lines_note']) . '</p>'
             . '</header>'
             . '<ul class="bridge-home-carriers">' . $carriers . '</ul>'
             . '</div>'
@@ -936,25 +965,62 @@ final class HomePageContent
             . '<section class="bridge-home-systems-band" aria-labelledby="systems-heading">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['platforms_kicker']) . '</p>'
-            . '<h2 id="systems-heading">' . self::e((string) $copy['platforms_title']) . '</h2>'
+            . '<p class="bridge-home-kicker">' . self::bilingual((string) $copy['platforms_kicker']) . '</p>'
+            . '<h2 id="systems-heading">' . self::bilingual((string) $copy['platforms_title']) . '</h2>'
             . '</header>'
             . self::platformRow2($copy)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-closing">'
             . '<div class="bridge-home-band">'
-            . '<h2>' . self::e((string) $copy['closing_title']) . '</h2>'
+            . '<h2>' . self::bilingual((string) $copy['closing_title']) . '</h2>'
             . '<div class="bridge-home-closing-actions">'
-            . '<a class="bridge-home-primary" href="' . $href . '">' . self::e((string) $copy['console_link']) . '</a>'
-            . '<a class="bridge-home-ghost" href="/knowledgebase">' . self::e((string) $copy['guides_link']) . '</a>'
+            . '<a class="bridge-home-primary" href="' . $href . '">' . self::bilingual((string) $copy['console_link']) . '</a>'
+            . '<a class="bridge-home-ghost" href="/knowledgebase">' . self::bilingual((string) $copy['guides_link']) . '</a>'
             . '</div>'
             . '</div>'
-            . '</section>';
+            . '</section>'
+            . '<footer class="bridge-home-footer" aria-label="页脚 / Footer">'
+            . '<div class="bridge-home-footer-inner">'
+            . '<div class="bridge-home-footer-brand">'
+            . '<strong>會聚</strong><span>LeiKwan Bridge</span>'
+            . '<a class="bridge-home-footer-parent" href="https://www.leikwanhost.com" rel="home">利群主機 · LeiKwan Host</a>'
+            . '<p>' . self::bilingual('让每一条路径都更近 / Make every route feel closer.') . '</p>'
+            . '<p>' . self::bilingual('云主机、网络基础设施与全球连接服务 / Cloud servers, network infrastructure, and global connectivity.') . '</p>'
+            . '</div>'
+            . '<nav class="bridge-home-footer-nav" aria-label="站点导航 / Site navigation">'
+            . '<a href="/">' . self::bilingual('首页 / Home') . '</a>'
+            . '<a href="/knowledgebase">' . self::bilingual('知识库 / Knowledgebase') . '</a>'
+            . '<a href="/login">' . self::bilingual('登录 / Sign In') . '</a>'
+            . '</nav>'
+            . '<div class="bridge-home-footer-meta">'
+            . '<span>© ' . date('Y') . ' LeiKwan Bridge</span>'
+            . '<span>' . self::bilingual('利群主機 | LeiKwan Host · 全球网络连接 / Global network connectivity') . '</span>'
+            . '<a href="https://www.leikwanhost.com" rel="home">' . self::bilingual('主站 / Main site · leikwanhost.com') . '</a>'
+            . '</div>'
+            . '</div>'
+            . '</footer>';
     }
 
     private static function e(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    /**
+     * Render a copy string written as "Chinese / English" as two language-aware
+     * spans. The dot separator is visual only and keeps the wording from reading
+     * like a machine-translated label.
+     */
+    private static function bilingual(string $value): string
+    {
+        $parts = preg_split('/\s+\/\s+/u', trim($value), 2);
+        if (!is_array($parts) || count($parts) !== 2) {
+            return self::e($value);
+        }
+
+        return '<span class="bridge-home-bilingual-zh" lang="zh-Hans">' . self::e(trim($parts[0])) . '</span>'
+            . '<span class="bridge-home-bilingual-dot" aria-hidden="true">·</span>'
+            . '<span class="bridge-home-bilingual-en" lang="en">' . self::e(trim($parts[1])) . '</span>';
     }
 }
