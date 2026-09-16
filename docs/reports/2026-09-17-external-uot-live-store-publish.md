@@ -17,6 +17,8 @@ Ultra runtime 的 `external_uot` 承载必须在对侧有成对的 external UoT 
 | `external_uot_installer` | 2026.09.17.1 | `0506d83841a6885804a1646e35ee791e524fbaf8151c4cb782f5a510c6a4d665` | 10158 | `/artifacts/install-external-uot.sh` |
 | `uot_sidecar_linux_amd64` | 2026.09.17.1.33d5d5a3 | `18bd060abd04242dd4b3a9cbd13ce76876159a76ae8276a3eedc303621ac60ef` | 3014818 | `/artifacts/uot-sidecar/uot-sidecar_linux_amd64` |
 | `uot_sidecar_linux_arm64` | 2026.09.17.1.33d5d5a3 | `9799779fa66e014430f06e9bea9e6cabe52cb3196c3478ff4b20761038ea6320` | 2949282 | `/artifacts/uot-sidecar/uot-sidecar_linux_arm64` |
+> Note (fresh-install wiring deploy, 2026-09-17 20:38 UTC): bond_sidecar_installer was republished with the same version but new content - sha256 c7389c5a...e17c69261, size 11884 (was 14fcc9e2... / 11263). See docs/reports/2026-09-17-external-uot-panel-config-verification.md, section Fresh-install wiring.
+
 
 参考实现（Python）仍在制品库：`/artifacts/leikwan-external-uot.py`（sha256 `810d5d2e…798d44`）。
 

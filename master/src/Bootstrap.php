@@ -5,6 +5,7 @@ namespace Leikwan\Master;
 
 use Leikwan\Master\Controllers\AdminController;
 use Leikwan\Master\Controllers\ArtifactController;
+use Leikwan\Master\Controllers\ExternalUotConfigController;
 use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
@@ -172,6 +173,7 @@ final class Bootstrap
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
         $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
+        $externalUotConfig = new ExternalUotConfigController($this->config);
 
         $this->router->add('GET', '/', [$auth, 'home']);
         $this->router->add('GET', '/knowledgebase', [$auth, 'knowledgebasePage']);
@@ -419,6 +421,8 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client.sh', [$artifacts, 'installClient']);
         $this->router->add('GET', '/artifacts/install-bond-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/install-external-uot.sh', [$artifacts, 'installExternalUot']);
+        $this->router->add('GET', '/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
+        $this->router->add('GET', '/artifacts/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
         $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64', [$artifacts, 'uotSidecarLinuxAmd64']);
         $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64', [$artifacts, 'uotSidecarLinuxArm64']);
         $this->router->add('GET', '/artifacts/install-tcp-accel.sh', [$artifacts, 'installTcpAccel']);

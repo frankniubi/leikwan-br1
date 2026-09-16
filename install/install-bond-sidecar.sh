@@ -158,6 +158,14 @@ if [[ -z "$ARTIFACT_BASE" ]]; then
   ARTIFACT_BASE="$MASTER_URL"
 fi
 
+# Fresh installs self-configure the external UoT sidecar from the panel: the
+# endpoint resolves this host and returns only the forwards it terminates, so a
+# new build never comes up without its UoT carrier (UDP candidate failed).
+if [[ "$SKIP_EXTERNAL_UOT" != "1" && -z "$EXTERNAL_UOT_CONFIG" && -n "$ARTIFACT_BASE" ]]; then
+  EXTERNAL_UOT_CONFIG="$ARTIFACT_BASE/external-uot-config"
+  echo "external UoT sidecar config defaulted to $EXTERNAL_UOT_CONFIG"
+fi
+
 if [[ "$SKIP_MPTCP_CHECK" != "1" ]]; then
   ensure_mptcp_ready || {
     echo "sidecar: install aborted because this host cannot run MPTCP yet. Re-run with --auto-install-mptcp-kernel if you want the installer to add a newer kernel package." >&2
@@ -243,8 +251,10 @@ download_atomic "$ARTIFACT_BASE/artifacts/lguot/lguot_linux_amd64" "$BIN_DIR/lgu
 # --- External UoT sidecar (Go) ---------------------------------------------
 # The Ultra runtime's external_uot carrier terminates on this sidecar, so a
 # freshly installed host can answer UDP instead of reporting "UDP candidate
-# failed".  The forward list stays operator/panel owned: pass it with
-# --external-uot-config, otherwise the unit is installed but left disabled.
+# failed".  The forward list stays panel owned: by default the installer pulls
+# this host's document from the panel (EXTERNAL_UOT_CONFIG default above),
+# --external-uot-config overrides it and --skip-external-uot omits the sidecar
+# entirely.  A host with no enabled forwards installs the unit disabled.
 if [[ "$SKIP_EXTERNAL_UOT" == "1" || "${LEIKWAN_SKIP_EXTERNAL_UOT:-0}" == "1" ]]; then
   echo "external UoT sidecar install skipped by configuration"
 elif download_verified_artifact external_uot_installer "$ARTIFACT_BASE/artifacts/install-external-uot.sh" "$BIN_DIR/install-external-uot.sh"; then
