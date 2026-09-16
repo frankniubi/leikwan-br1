@@ -13,6 +13,14 @@
 }
 
 @font-face {
+  font-family: "Noto Sans SC";
+  src: url("/assets/fonts/noto-sans-sc-var.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
   font-family: "Space Grotesk var";
   src: url("/assets/fonts/space-grotesk-var.ttf") format("truetype");
   font-weight: 300 700;
@@ -28,54 +36,38 @@
   font-display: swap;
 }
 
-@font-face {
-  font-family: "Cormorant Garamond";
-  src: url("/assets/fonts/cormorant-garamond-600.ttf") format("truetype");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Cormorant Garamond";
-  src: url("/assets/fonts/cormorant-garamond-italic-500.ttf") format("truetype");
-  font-weight: 500;
-  font-style: italic;
-  font-display: swap;
-}
-
 :root {
-  --bridge-paper: #07090e;
-  --bridge-surface: #0b1018;
-  --bridge-surface-2: #10161f;
-  --bridge-elev: #141c27;
+  --bridge-paper: #f5f5f7;
+  --bridge-surface: #ffffff;
+  --bridge-surface-2: #f5f5f7;
+  --bridge-elev: #ffffff;
 
-  --bridge-line: #1c2633;
-  --bridge-line-strong: #2a3646;
+  --bridge-line: #d2d2d7;
+  --bridge-line-strong: #b7b7bd;
 
-  --bridge-ink: #eef3f8;
-  --bridge-ink-2: #c3ceda;
-  --bridge-muted: #8b9aab;
-  --bridge-muted-2: #667687;
+  --bridge-ink: #1d1d1f;
+  --bridge-ink-2: #424245;
+  --bridge-muted: #6e6e73;
+  --bridge-muted-2: #86868b;
 
-  --bridge-orange: #ff8a2a;
-  --bridge-orange-hover: #ffa257;
-  --bridge-orange-ink: #8ec8ff;
-  --bridge-focus: #8ec8ff;
+  --bridge-orange: #0071e3;
+  --bridge-orange-hover: #0077ed;
+  --bridge-orange-ink: #0066cc;
+  --bridge-focus: #0071e3;
 
-  --bridge-blue: #4ea3ff;
-  --bridge-blue-hover: #73b7ff;
-  --bridge-blue-ink: #8ec8ff;
-  --bridge-green: #6fde62;
-  --bridge-cyan: #6ec8f0;
+  --bridge-blue: #0071e3;
+  --bridge-blue-hover: #0077ed;
+  --bridge-blue-ink: #0066cc;
+  --bridge-green: #1d9a68;
+  --bridge-cyan: #0b7fab;
 
   --bridge-radius: 16px;
   --bridge-radius-sm: 10px;
-  --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
+  --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 16px 40px rgba(0, 0, 0, 0.07);
 
-  --bridge-display: "Inter var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --bridge-sans: "Inter var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --bridge-mono: "JetBrains Mono var", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --bridge-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "Inter var", sans-serif;
+  --bridge-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "Inter var", sans-serif;
+  --bridge-mono: "SF Mono", "SFMono-Regular", "Roboto Mono", ui-monospace, "JetBrains Mono var", monospace;
 
   --bridge-gutter-left: 32px;
   --bridge-gutter-right: 32px;
@@ -104,6 +96,36 @@ html {
 .bridge-home-page *::before,
 .bridge-home-page *::after {
   box-sizing: border-box;
+}
+
+.bridge-home-bilingual-dot {
+  display: inline-block;
+  margin: 0 0.42em;
+  color: var(--bridge-muted-2);
+  font-size: 0.72em;
+  font-weight: 500;
+  vertical-align: 0.08em;
+}
+
+.bridge-home-bilingual-en {
+  font-weight: 500;
+}
+
+.bridge-home-band-head h2 .bridge-home-bilingual-en,
+.bridge-home-closing h2 .bridge-home-bilingual-en {
+  color: var(--bridge-muted);
+  font-size: 0.72em;
+  font-weight: 500;
+}
+
+.bridge-home-station-title .bridge-home-bilingual-en {
+  color: var(--bridge-ink-2);
+  font-size: 0.82em;
+  font-weight: 550;
+}
+
+.bridge-home-hero-sub .bridge-home-bilingual-en {
+  color: var(--bridge-ink-2);
 }
 
 .bridge-home-page .public-shell {
@@ -135,7 +157,7 @@ html {
   justify-content: space-between;
   gap: 24px;
   padding: 12px var(--bridge-gutter-right) 12px var(--bridge-gutter-left);
-  background: rgba(7, 9, 14, 0.72);
+  background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   color: var(--bridge-ink);
@@ -155,8 +177,8 @@ html {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 88px;
+  height: 88px;
   padding: 0;
   background: transparent;
   border-radius: 12px;
@@ -166,8 +188,8 @@ html {
 
 .bridge-home-page .site-mark img {
   display: block;
-  width: 44px;
-  height: 44px;
+  width: 88px;
+  height: 88px;
   max-width: none;
   object-fit: cover;
   object-position: center;
@@ -183,7 +205,7 @@ html {
 .bridge-home-page .site-copy strong {
   color: var(--bridge-ink);
   font-family: var(--bridge-sans);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1.2;
@@ -192,7 +214,7 @@ html {
 .bridge-home-page .site-copy span {
   color: var(--bridge-muted);
   font-family: var(--bridge-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -209,7 +231,7 @@ html {
   padding: 0 18px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(247, 247, 248, 0.65);
   color: var(--bridge-ink);
   font-size: 13px;
   font-weight: 600;
@@ -219,7 +241,7 @@ html {
 }
 
 .bridge-home-page .site-actions .button:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(247, 247, 248, 0.9);
   border-color: var(--bridge-ink-2);
   color: var(--bridge-ink);
   transform: translateY(-1px);
@@ -249,7 +271,7 @@ html {
   padding: 7px 14px 7px 12px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(247, 247, 248, 0.65);
   color: var(--bridge-ink);
 }
 
@@ -292,9 +314,9 @@ html {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(58% 46% at 12% 8%, rgba(78, 163, 255, 0.22), transparent 62%),
-    radial-gradient(52% 44% at 88% 16%, rgba(111, 222, 98, 0.16), transparent 62%),
-    radial-gradient(44% 38% at 62% 94%, rgba(110, 200, 240, 0.1), transparent 60%);
+    radial-gradient(58% 46% at 12% 8%, rgba(0, 87, 255, 0.05), transparent 62%),
+    radial-gradient(52% 44% at 88% 16%, rgba(0, 87, 255, 0.04), transparent 62%),
+    radial-gradient(44% 38% at 62% 94%, rgba(0, 87, 255, 0.03), transparent 60%);
 }
 
 .bridge-home-gridlines {
@@ -302,8 +324,8 @@ html {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    linear-gradient(to right, rgba(0, 0, 0, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.035) 1px, transparent 1px);
   background-size: 56px 56px;
   -webkit-mask-image: radial-gradient(72% 60% at 50% 0%, #000 30%, transparent 100%);
   mask-image: radial-gradient(72% 60% at 50% 0%, #000 30%, transparent 100%);
@@ -314,7 +336,7 @@ html {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0.05;
+  opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -354,7 +376,7 @@ html {
   padding: 6px 14px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(247, 247, 248, 0.65);
   color: var(--bridge-ink-2);
   font-family: var(--bridge-mono);
   font-size: 11px;
@@ -368,22 +390,18 @@ html {
   height: 7px;
   border-radius: 999px;
   background: var(--bridge-green);
-  box-shadow: 0 0 0 4px rgba(111, 222, 98, 0.16), 0 0 14px rgba(111, 222, 98, 0.7);
+  box-shadow: 0 0 0 4px rgba(0, 168, 107, 0.16), 0 0 14px rgba(0, 168, 107, 0.45);
 }
 
 .bridge-home-hero h1 {
   margin: 0;
-  background: linear-gradient(135deg, #6ec8f0 0%, #8ec8ff 50%, #ffa257 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: clamp(68px, 9.5vw, 136px);
-  font-weight: 700;
-  line-height: 0.92;
-  letter-spacing: -0.03em;
-  text-shadow: none;
-  filter: drop-shadow(0 0 60px rgba(255, 138, 42, 0.4)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
+  font-size: clamp(72px, 9vw, 140px);
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
 }
 
 .bridge-home-title {
@@ -398,22 +416,25 @@ html {
 
 .bridge-home-title-en {
   display: block;
-  color: var(--bridge-ink-2);
-  font-size: 0.32em;
+  color: var(--bridge-muted);
+  font-family: var(--bridge-sans);
+  font-size: 0.22em;
   font-weight: 500;
-  letter-spacing: -0.01em;
-  line-height: 1.1;
+  font-style: normal;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: none;
 }
 
 .bridge-home-hero-sub {
   margin: 4px 0 0;
-  color: var(--bridge-ink-2);
+  color: var(--bridge-muted);
   font-family: var(--bridge-sans);
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.45;
-  letter-spacing: -0.008em;
-  max-width: 28em;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  max-width: 26em;
 }
 
 .bridge-home-hero-actions {
@@ -429,25 +450,25 @@ html {
   align-items: center;
   justify-content: center;
   min-height: 50px;
-  padding: 0 28px;
-  background: linear-gradient(135deg, var(--bridge-orange) 0%, #ffb070 100%);
-  color: #0a0d12;
+  padding: 0 30px;
+  background: var(--bridge-orange);
+  color: #ffffff;
   text-decoration: none;
   font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   border: 1px solid var(--bridge-orange);
   border-radius: var(--bridge-radius-sm);
-  box-shadow: 0 8px 30px rgba(255, 138, 42, 0.5), 0 0 60px rgba(255, 138, 42, 0.2);
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  box-shadow: 0 8px 24px rgba(0, 87, 255, 0.28);
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 
 .bridge-home-primary:hover {
   transform: translateY(-2px);
-  background: var(--bridge-blue-hover);
-  border-color: var(--bridge-blue-hover);
-  color: #061018;
-  box-shadow: 0 14px 40px rgba(78, 163, 255, 0.45);
+  background: var(--bridge-orange-hover);
+  border-color: var(--bridge-orange-hover);
+  color: #ffffff;
+  box-shadow: 0 10px 28px rgba(0, 87, 255, 0.36);
 }
 
 .bridge-home-ghost {
@@ -458,7 +479,7 @@ html {
   padding: 0 26px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: var(--bridge-radius-sm);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(247, 247, 248, 0.65);
   color: var(--bridge-ink);
   text-decoration: none;
   font-size: 14px;
@@ -468,7 +489,7 @@ html {
 }
 
 .bridge-home-ghost:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(247, 247, 248, 0.9);
   border-color: var(--bridge-ink-2);
   transform: translateY(-2px);
 }
@@ -491,7 +512,7 @@ html {
   padding: 0 14px 0 11px;
   border: 1px solid var(--bridge-line);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(247, 247, 248, 0.65);
   color: var(--bridge-ink-2);
 }
 
@@ -528,7 +549,7 @@ html {
   position: absolute;
   inset: -8%;
   pointer-events: none;
-  background: radial-gradient(55% 52% at 50% 48%, rgba(78, 163, 255, 0.16), transparent 70%);
+  background: radial-gradient(55% 52% at 50% 48%, rgba(0, 87, 255, 0.05), transparent 70%);
   filter: blur(20px);
 }
 
@@ -573,12 +594,12 @@ html {
 
 /* ---------- chart plate (SVG) ---------- */
 .rk-grid {
-  stroke: #1a2430;
+  stroke: #d9dce2;
   stroke-width: 1;
 }
 
 .rk-grid-major {
-  stroke: #243140;
+  stroke: #c9cdd5;
 }
 
 .rk-edge,
@@ -587,26 +608,26 @@ html {
 }
 
 .rk-land {
-  fill: #101820;
-  stroke: #2a3a4c;
+  fill: #e6e9ee;
+  stroke: #b8bec9;
   stroke-width: 1;
 }
 
 .rk-land-near {
-  fill: #13202c;
-  stroke: #3a5168;
+  fill: #d9dee7;
+  stroke: #aab3c1;
   stroke-width: 1.25;
 }
 
 .rk-land-far {
-  fill: #0c1218;
-  stroke: #1d2a36;
+  fill: #f1f3f6;
+  stroke: #d3d7df;
   stroke-width: 1;
 }
 
 .rk-link {
   fill: none;
-  stroke: var(--bridge-blue);
+  stroke: #4ea3ff;
   stroke-width: 1.3;
   stroke-linecap: round;
 }
@@ -621,18 +642,18 @@ html {
 }
 
 .rk-dot {
-  fill: var(--bridge-green);
-  stroke: #07090e;
+  fill: #6fde62;
+  stroke: #ffffff;
   stroke-width: 1.6;
 }
 
 .rk-node-label {
-  fill: var(--bridge-ink-2);
+  fill: #1d1d1f;
   font-family: var(--bridge-mono);
   font-size: 14px;
   font-weight: 500;
   paint-order: stroke;
-  stroke: #07090e;
+  stroke: #ffffff;
   stroke-width: 3.6;
   stroke-linejoin: round;
 }
@@ -652,7 +673,7 @@ html {
 }
 
 .bridge-home-band {
-  width: min(1240px, 100%);
+  width: min(1480px, 100%);
   margin: 0 auto;
   padding: 72px var(--bridge-gutter-right) 72px var(--bridge-gutter-left);
 }
@@ -677,13 +698,10 @@ html {
   margin: 0;
   font-family: var(--bridge-display);
   font-size: 44px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  line-height: 1.08;
-  background: linear-gradient(120deg, var(--bridge-ink) 0%, #a8d5ff 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  line-height: 1.12;
+  color: var(--bridge-ink);
 }
 
 .bridge-home-note {
@@ -751,7 +769,7 @@ html {
   border-radius: 999px;
   background: var(--bridge-paper);
   color: var(--bridge-blue);
-  box-shadow: 0 0 0 6px rgba(78, 163, 255, 0.1);
+  box-shadow: 0 0 0 6px rgba(0, 87, 255, 0.12);
 }
 
 .bridge-home-station-node svg {
@@ -763,7 +781,7 @@ html {
 .bridge-home-station:last-child .bridge-home-station-node {
   border-color: var(--bridge-orange);
   color: var(--bridge-orange);
-  box-shadow: 0 0 0 6px rgba(255, 138, 42, 0.14), 0 0 24px rgba(255, 138, 42, 0.35);
+  box-shadow: 0 0 0 6px rgba(0, 87, 255, 0.12), 0 0 22px rgba(0, 87, 255, 0.16);
 }
 
 .bridge-home-station-body {
@@ -797,7 +815,7 @@ html {
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
   font-size: 30px;
-  font-weight: 600;
+  font-weight: 620;
   line-height: 1.15;
   letter-spacing: -0.02em;
 }
@@ -814,8 +832,9 @@ html {
 .bridge-home-carriers {
   display: flex;
   flex-wrap: wrap;
+  justify-content: space-between;
   align-items: center;
-  gap: 22px 40px;
+  gap: 28px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -823,7 +842,9 @@ html {
 
 .bridge-home-carrier {
   display: flex;
+  flex: 1 1 0;
   align-items: center;
+  min-width: 0;
   min-height: 40px;
   transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
@@ -836,29 +857,27 @@ html {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #1d1d1d;
+  width: 100%;
+  color: var(--bridge-ink);
+}
+
+.bridge-home-carrier-mark .bridge-home-carrier-svg {
+  opacity: 0.5;
+  filter: brightness(0.78) saturate(1.15) contrast(1.08);
+  transition: opacity 200ms var(--bridge-ease);
+}
+
+.bridge-home-carrier:hover .bridge-home-carrier-svg {
+  opacity: 1;
 }
 
 .bridge-home-carrier-svg {
   display: block;
   width: auto;
   max-width: 100%;
-  height: clamp(26px, 3vw, 34px);
+  height: clamp(32px, 4vw, 46px);
   object-fit: contain;
   object-position: center;
-}
-
-.bridge-home-carrier-name {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
 }
 
 /* ---------- 03 · platforms: four systems on a ruled row ---------- */
@@ -887,21 +906,21 @@ html {
 
 .bridge-home-system-icon {
   display: block;
-  width: 52px;
-  height: 52px;
+  width: 64px;
+  height: 64px;
   color: var(--bridge-blue);
 }
 
 .bridge-home-system-icon .bridge-home-platform-glyph {
-  width: 52px;
-  height: 52px;
+  width: 64px;
+  height: 64px;
 }
 
 .bridge-home-system-name {
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 620;
   letter-spacing: -0.01em;
 }
 
@@ -919,7 +938,7 @@ html {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(56% 120% at 50% 120%, rgba(78, 163, 255, 0.16), transparent 64%);
+  background: radial-gradient(56% 120% at 50% 120%, rgba(0, 87, 255, 0.05), transparent 64%);
 }
 
 .bridge-home-closing .bridge-home-band {
@@ -938,6 +957,100 @@ html {
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 32px;
+}
+
+/* ---------- footer ---------- */
+.bridge-home-footer {
+  background: var(--bridge-paper);
+  border-top: 1px solid var(--bridge-line);
+  color: var(--bridge-muted);
+}
+
+.bridge-home-footer-inner {
+  width: min(1480px, 100%);
+  margin: 0 auto;
+  padding: 34px var(--bridge-gutter-right) 30px var(--bridge-gutter-left);
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(220px, 1fr) auto;
+  align-items: start;
+  gap: 28px;
+}
+
+.bridge-home-footer-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+}
+
+.bridge-home-footer-brand strong {
+  color: var(--bridge-ink);
+  font-family: var(--bridge-display);
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.bridge-home-footer-brand > span {
+  color: var(--bridge-muted-2);
+  font-family: var(--bridge-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.bridge-home-footer-parent {
+  flex-basis: 100%;
+  margin-top: 10px;
+  color: var(--bridge-ink-2);
+  font-family: var(--bridge-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+}
+
+.bridge-home-footer-parent:hover {
+  color: var(--bridge-orange-ink);
+}
+
+.bridge-home-footer-brand p {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  color: var(--bridge-muted);
+  font-size: 13px;
+}
+
+.bridge-home-footer-brand p + p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.bridge-home-footer-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  padding-top: 3px;
+}
+
+.bridge-home-footer-nav a {
+  color: var(--bridge-ink-2);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.bridge-home-footer-nav a:hover {
+  color: var(--bridge-orange-ink);
+}
+
+.bridge-home-footer-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  color: var(--bridge-muted-2);
+  font-family: var(--bridge-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-align: right;
 }
 
 /* ---------- screen-reader plate key ---------- */
@@ -1003,6 +1116,11 @@ html {
 
   .bridge-home-carriers {
     gap: 16px 24px;
+    justify-content: flex-start;
+  }
+
+  .bridge-home-carrier {
+    flex: 0 0 auto;
   }
 
   .bridge-home-systems {
@@ -1027,6 +1145,16 @@ html {
 
   .bridge-home-closing h2 {
     font-size: 38px;
+  }
+
+  .bridge-home-footer-inner {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .bridge-home-footer-meta {
+    grid-column: 1 / -1;
+    align-items: flex-start;
+    text-align: left;
   }
 }
 
@@ -1076,10 +1204,6 @@ html {
     gap: 8px;
   }
 
-  .bridge-home-page .locale-switch {
-    padding: 6px 10px 6px 9px;
-  }
-
   .bridge-home-page .site-actions .button {
     padding: 0 14px;
     font-size: 12px;
@@ -1095,8 +1219,8 @@ html {
 
   .bridge-home-page .site-mark,
   .bridge-home-page .site-mark img {
-    width: 36px;
-    height: 36px;
+    width: 64px;
+    height: 64px;
   }
 
   .bridge-home-systems {
@@ -1118,6 +1242,15 @@ html {
 
   .bridge-home-plate-key {
     grid-template-columns: 1fr;
+  }
+
+  .bridge-home-footer-inner {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .bridge-home-footer-meta {
+    grid-column: auto;
   }
 }
 
@@ -1146,3 +1279,171 @@ html {
     background-image: linear-gradient(to bottom, var(--bridge-line-strong) 55%, transparent 45%);
   }
 }
+
+
+/* ==========================================================================
+   Style variants (local preview only): ?style=cool | mono | slate
+   ========================================================================== */
+.home-style-cool {
+  --bridge-paper: #ffffff;
+  --bridge-surface: #ffffff;
+  --bridge-surface-2: #f4f7fb;
+  --bridge-elev: #ffffff;
+  --bridge-line: #e2e8f0;
+  --bridge-line-strong: #cbd5e1;
+  --bridge-ink: #0f1722;
+  --bridge-ink-2: #334155;
+  --bridge-muted: #64748b;
+  --bridge-muted-2: #94a3b8;
+  --bridge-orange: #2563eb;
+  --bridge-orange-hover: #3b82f6;
+  --bridge-orange-ink: #1d4ed8;
+  --bridge-focus: #2563eb;
+  --bridge-blue: #2563eb;
+  --bridge-blue-hover: #3b82f6;
+  --bridge-blue-ink: #1d4ed8;
+  --bridge-green: #16a34a;
+  --bridge-cyan: #0891b2;
+  --bridge-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "Inter var", sans-serif;
+}
+
+.home-style-cool .bridge-home-title-en {
+  font-family: inherit;
+  font-style: normal;
+  letter-spacing: 0.14em;
+}
+
+.home-style-cool .bridge-home-hero h1 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.home-style-cool .bridge-home-band-head h2,
+.home-style-cool .bridge-home-closing h2 {
+  font-weight: 600;
+}
+
+.home-style-cool .bridge-home-topbar {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.home-style-cool .rk-land { fill: #f1f5f9; stroke: #cbd5e1; }
+.home-style-cool .rk-land-near { fill: #e2e8f0; stroke: #94a3b8; }
+.home-style-cool .rk-land-far { fill: #f8fafc; stroke: #e2e8f0; }
+.home-style-cool .rk-grid { stroke: #e2e8f0; }
+.home-style-cool .rk-grid-major { stroke: #dbe4ee; }
+.home-style-cool .rk-link { stroke: #2563eb; }
+.home-style-cool .rk-halo { fill: rgba(37, 99, 235, 0.14); }
+.home-style-cool .rk-dot { fill: #16a34a; stroke: #ffffff; }
+.home-style-cool .rk-node-label { fill: #334155; stroke: #ffffff; }
+
+.home-style-mono {
+  --bridge-paper: #ffffff;
+  --bridge-surface: #ffffff;
+  --bridge-surface-2: #f6f6f5;
+  --bridge-elev: #ffffff;
+  --bridge-line: #e5e5e5;
+  --bridge-line-strong: #d4d4d4;
+  --bridge-ink: #101214;
+  --bridge-ink-2: #374151;
+  --bridge-muted: #6b7280;
+  --bridge-muted-2: #9ca3af;
+  --bridge-orange: #ea580c;
+  --bridge-orange-hover: #f97316;
+  --bridge-orange-ink: #c2410c;
+  --bridge-focus: #111827;
+  --bridge-blue: #111827;
+  --bridge-blue-hover: #374151;
+  --bridge-blue-ink: #374151;
+  --bridge-green: #16a34a;
+  --bridge-cyan: #0f766e;
+  --bridge-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "Inter var", sans-serif;
+}
+
+.home-style-mono .bridge-home-title-en {
+  font-family: inherit;
+  font-style: normal;
+  letter-spacing: 0.18em;
+}
+
+.home-style-mono .bridge-home-hero h1 {
+  font-weight: 750;
+  letter-spacing: -0.035em;
+}
+
+.home-style-mono .bridge-home-band-head h2,
+.home-style-mono .bridge-home-closing h2 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.home-style-mono .bridge-home-station-title {
+  font-weight: 650;
+}
+
+.home-style-mono .bridge-home-topbar {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.home-style-mono .rk-land { fill: #f5f5f4; stroke: #d6d3d1; }
+.home-style-mono .rk-land-near { fill: #e7e5e4; stroke: #a8a29e; }
+.home-style-mono .rk-land-far { fill: #fafaf9; stroke: #e7e5e4; }
+.home-style-mono .rk-grid { stroke: #e5e5e5; }
+.home-style-mono .rk-grid-major { stroke: #dcdcdc; }
+.home-style-mono .rk-link { stroke: #111827; }
+.home-style-mono .rk-halo { fill: rgba(234, 88, 12, 0.12); }
+.home-style-mono .rk-dot { fill: #ea580c; stroke: #ffffff; }
+.home-style-mono .rk-node-label { fill: #1f2937; stroke: #ffffff; }
+
+.home-style-slate {
+  --bridge-paper: #eef1f6;
+  --bridge-surface: #f6f8fb;
+  --bridge-surface-2: #e4e9f1;
+  --bridge-elev: #fbfcfe;
+  --bridge-line: #d8dfe9;
+  --bridge-line-strong: #c3cddd;
+  --bridge-ink: #16202e;
+  --bridge-ink-2: #3b4759;
+  --bridge-muted: #6b7688;
+  --bridge-muted-2: #97a0b0;
+  --bridge-orange: #0891b2;
+  --bridge-orange-hover: #06b6d4;
+  --bridge-orange-ink: #0e7490;
+  --bridge-focus: #0891b2;
+  --bridge-blue: #0891b2;
+  --bridge-blue-hover: #22b8d4;
+  --bridge-blue-ink: #0e7490;
+  --bridge-green: #059669;
+  --bridge-cyan: #0891b2;
+  --bridge-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "Inter var", sans-serif;
+}
+
+.home-style-slate .bridge-home-title-en {
+  font-family: inherit;
+  font-style: normal;
+  letter-spacing: 0.16em;
+}
+
+.home-style-slate .bridge-home-hero h1 {
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.home-style-slate .bridge-home-band-head h2,
+.home-style-slate .bridge-home-closing h2 {
+  font-weight: 650;
+}
+
+.home-style-slate .bridge-home-topbar {
+  background: rgba(238, 241, 246, 0.88);
+}
+
+.home-style-slate .rk-land { fill: #e2e8f0; stroke: #c3cddd; }
+.home-style-slate .rk-land-near { fill: #d5dde9; stroke: #a5b3c8; }
+.home-style-slate .rk-land-far { fill: #edf1f7; stroke: #dbe2ec; }
+.home-style-slate .rk-grid { stroke: #dde4ee; }
+.home-style-slate .rk-grid-major { stroke: #d0d9e6; }
+.home-style-slate .rk-link { stroke: #0891b2; }
+.home-style-slate .rk-halo { fill: rgba(8, 145, 178, 0.14); }
+.home-style-slate .rk-dot { fill: #059669; stroke: #eef1f6; }
+.home-style-slate .rk-node-label { fill: #3b4759; stroke: #eef1f6; }

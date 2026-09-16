@@ -1572,15 +1572,18 @@ HTML;
     protected function publicPage(string $title, string $body, ?array $viewer = null, string $variant = 'default'): Response
     {
         $isBridgeHome = $variant === 'bridge-home';
-        $escapedTitle = $this->escape($title);
+        $pageTitle = $isBridgeHome ? '會聚 · LeiKwan Bridge | 利群主機 | LeiKwan Host' : $title;
+        $escapedTitle = $this->escape($pageTitle);
         $appName = $this->appName();
         $escapedAppName = $this->escape($appName);
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $flashHtml = $this->flashHtml();
         $currentLocale = LocaleResolver::fromGlobals();
-        $languageSwitcher = $this->localeSwitcherHtml();
-        $htmlLang = $this->escape($currentLocale);
+        // The homepage is deliberately bilingual and has no language toggle. The
+        // rest of the public shell keeps the existing locale-aware experience.
+        $languageSwitcher = $isBridgeHome ? '' : $this->localeSwitcherHtml();
+        $htmlLang = $this->escape($isBridgeHome ? 'zh-Hant' : $currentLocale);
         $csrfToken = $this->escape(SessionAuth::csrfToken());
         $bodyLayoutClass = $isBridgeHome ? 'bridge-home-body' : 'pg-auth-layout';
         $pageClass = $isBridgeHome ? ' bridge-home-page' : '';
@@ -1596,9 +1599,49 @@ HTML;
             . ($isBridgeHome
                 // The stylesheet is served with a 12h edge TTL, so every
                 // homepage restyle has to ship under a fresh cache key.
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260916m">'
+                 ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260917b">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
+        $i18nHtml = $isBridgeHome ? '' : $this->i18nBootstrapHtml();
+        $seoHead = '';
+        if ($isBridgeHome) {
+            $seoDescription = '會聚 LeiKwan Bridge：连接东亚多地节点的双向网络转发平台。利群主機提供云主机、网络基础设施与全球连接服务。 / A bilingual network bridge across East Asia, from LeiKwan Host, with cloud servers, network infrastructure, and global connectivity.';
+            $escapedDescription = $this->escape($seoDescription);
+            $appUrl = rtrim((string) ($this->config->get('APP_URL', '') ?? ''), '/');
+            $canonicalUrl = $appUrl !== '' ? $appUrl . '/' : 'https://www.leikwanhost.com/';
+            $escapedCanonical = $this->escape($canonicalUrl);
+            $schema = json_encode([
+                '@context' => 'https://schema.org',
+                '@type' => 'WebSite',
+                'name' => '會聚 · LeiKwan Bridge',
+                'alternateName' => 'LeiKwan Bridge',
+                'url' => $canonicalUrl,
+                'description' => $seoDescription,
+                'inLanguage' => ['zh-Hant', 'en'],
+                'publisher' => [
+                    '@type' => 'Organization',
+                    'name' => '利群主機 | LeiKwan Host',
+                    'url' => 'https://www.leikwanhost.com',
+                ],
+                'isPartOf' => [
+                    '@type' => 'WebSite',
+                    'name' => '利群主機 | LeiKwan Host',
+                    'url' => 'https://www.leikwanhost.com',
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+            $seoHead = '<meta name="description" content="' . $escapedDescription . '">'
+                . '<meta name="robots" content="index,follow">'
+                . '<link rel="canonical" href="' . $escapedCanonical . '">'
+                . '<meta property="og:type" content="website">'
+                . '<meta property="og:site_name" content="利群主機 | LeiKwan Host">'
+                . '<meta property="og:title" content="' . $escapedTitle . '">'
+                . '<meta property="og:description" content="' . $escapedDescription . '">'
+                . '<meta property="og:url" content="' . $escapedCanonical . '">'
+                . '<meta name="twitter:card" content="summary">'
+                . '<meta name="twitter:title" content="' . $escapedTitle . '">'
+                . '<meta name="twitter:description" content="' . $escapedDescription . '">'
+                . '<script type="application/ld+json">' . ($schema ?: '{}') . '</script>';
+        }
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
         $brandLockup = $isBridgeHome
             ? '<span class="site-mark"><img src="/assets/brand-mark.png" alt="' . $escapedBrandName . ' logo"></span>'
@@ -1617,18 +1660,24 @@ HTML;
             : '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
-            $consoleLabel = $this->escape($this->dashboardLabelForUser($viewer));
+            $consoleLabel = $this->dashboardLabelForUser($viewer);
+            if ($isBridgeHome) {
+                $consoleLabel = (string) ($viewer['role'] ?? '') === 'admin'
+                    ? '管理控制台 / Admin Console'
+                    : '租户面板 / Tenant Panel';
+            }
+            $consoleLabel = $this->escape($consoleLabel);
             $viewerName = $this->escape((string) ($viewer['name'] ?? 'Workspace User'));
             $viewerRole = strtoupper($this->escape((string) ($viewer['role'] ?? 'user')));
             $actionsHtml = '
                 <div class="public-session">
                     <strong>' . $viewerName . '</strong>
-                    <span>' . $viewerRole . ' SESSION</span>
+                    <span>' . ($isBridgeHome ? '会话 / ' : '') . $viewerRole . ' SESSION</span>
                 </div>
                 <a class="button" href="' . $consoleHref . '">' . $consoleLabel . '</a>
                 <form class="inline" method="post" action="/logout">
                     <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
-                    <button type="submit" class="button secondary">Sign Out</button>
+                    <button type="submit" class="button secondary">' . ($isBridgeHome ? '退出 / Sign Out' : 'Sign Out') . '</button>
                 </form>';
         }
 
@@ -1639,6 +1688,7 @@ HTML;
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
+  {$seoHead}
   {$styleLinks}
 </head>
 <body class="pg-public{$pageClass}">
@@ -1657,7 +1707,7 @@ HTML;
       {$body}
     </main>
   </div>
-{$this->i18nBootstrapHtml()}
+{$i18nHtml}
   {$script}
 </body>
 </html>
