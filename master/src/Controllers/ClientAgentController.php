@@ -846,6 +846,11 @@ final class ClientAgentController extends BaseController
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
                 'native_outbound' => !empty($forward['native_outbound'] ?? $forward['native_outbound_enabled'] ?? false),
                 'native_direction' => (string) ($forward['native_direction'] ?? $forward['native_direction_key'] ?? ''),
+                // Enabling, disabling or retuning the external UoT sidecar has
+                // to re-apply client runtime config. The per-combination
+                // digest (sidecar target, token, queue and frame knobs) is
+                // published by ProvisioningService::buildClientConfig.
+                'external_uot_revision' => (string) ($forward['forward_combination_external_uot_revision'] ?? ''),
             ];
         }
         if ($nativeOutbound === null) {
@@ -906,6 +911,14 @@ final class ClientAgentController extends BaseController
                 $brokerForwards[$index]['_ultra_destination_zone'] = $metadata[$forwardId]['destination_zone'];
                 $brokerForwards[$index]['_ultra_allowed_ingress_zones'] = $metadata[$forwardId]['allowed_ingress_zones'];
                 $brokerForwards[$index]['_ultra_fallback_policy'] = $metadata[$forwardId]['fallback_policy'];
+                // The external UoT sidecar contract is published per forward
+                // combination. It is handed to the broker (which normalizes it
+                // and adds the target digest) instead of the ordinary client
+                // config, so the sidecar secret only ever travels inside the
+                // short-lived Ultra grant.
+                if (is_array($metadata[$forwardId]['external_uot'] ?? null)) {
+                    $brokerForwards[$index]['external_uot'] = $metadata[$forwardId]['external_uot'];
+                }
             }
         }
         try {

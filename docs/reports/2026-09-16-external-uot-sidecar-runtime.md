@@ -164,3 +164,44 @@ The Go carrier uses the exact `frame_payload_max` HELLO/ACK keys and the six
 type values above. `KEEPALIVE` is echoed with type 6; there is no type-7
 `KEEPALIVE_ACK`. The older `max_datagram_bytes` JSON key is not part of this
 wire contract.
+
+## Panel surface wiring (2026-09-16, follow-up)
+
+The admin form, the forward-combination persistence, the installer, and the Go
+client all understood the `external_uot` block, but the two hops between them
+did not carry it:
+
+- `ClientAgentController::attachUltraAccessGrants()` never copied the
+  published sidecar contract onto the forward it hands to
+  `LeigodTokenBroker`, so `ultra_access.external_uot` was always empty and
+  `install_forward_runtime.py` silently fell back to native command-3 UDP;
+- `ClientAgentController::forwardRevision()` did not project the published
+  `forward_combination_external_uot_revision` digest, so enabling, retuning, or
+  disabling the sidecar left the client polling on an unchanged revision while
+  still running its previous transport.
+
+Both hops are now wired, and the admin surface strings for the sidecar block
+("Enable External UoT", "External UoT sidecar", "Sidecar target",
+"Sidecar token", "Queue packets", "Keepalive seconds",
+"Reconnect grace seconds", "Frame payload max", and the grant-only token note)
+are registered in the zh-Hans and zh-TW dictionaries.
+
+Verification:
+
+```text
+php master/tests/client_agent_external_uot_grant_wiring_test.php
+php master/tests/client_configs_external_uot_revision_test.php
+php master/tests/i18n_locale_regression_test.php
+php master/tests/ultra_external_uot_metadata_test.php
+php master/tests/admin_forward_combination_leigod_field_test.php
+php master/tests/saveforwardcombination_ultra_inventory_test.php
+python -m pytest client-agent/tests/test_ultra_runtime.py tests/test_external_uot_runtime.py -q
+```
+
+Both new tests fail against the unwired controller with
+"external UoT contract from the forward combination never reached the token
+broker" and "forward_revision did not change when the external UoT sidecar was
+enabled". The full `master/tests` sweep reports 383 pass / 16 fail / 399; those
+16 failures reproduce on a pristine `da038db3` worktree and are unrelated to
+the Ultra or UoT surface. Delivery is still control-plane only: no live sidecar
+traffic is exercised by these tests.
