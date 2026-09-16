@@ -111,7 +111,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260916g')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260916h')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 

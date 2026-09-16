@@ -51,6 +51,12 @@ final class HomePageContent
         ['key' => 'cu', 'mark' => 'CU', 'label' => ['en' => 'Unicom', 'zh-Hans' => '联通', 'zh-TW' => '聯通']],
         ['key' => 'cm', 'mark' => 'CM', 'label' => ['en' => 'Mobile', 'zh-Hans' => '移动', 'zh-TW' => '移動']],
         ['key' => 'bgp', 'mark' => 'BGP', 'label' => ['en' => 'BGP', 'zh-Hans' => 'BGP', 'zh-TW' => 'BGP']],
+        ['key' => 'ucloud', 'mark' => 'UC', 'label' => ['en' => 'UCloud', 'zh-Hans' => 'UCloud', 'zh-TW' => 'UCloud']],
+        ['key' => 'zenlayer', 'mark' => 'ZL', 'label' => ['en' => 'Zenlayer', 'zh-Hans' => 'Zenlayer', 'zh-TW' => 'Zenlayer']],
+        ['key' => 'qcloud', 'mark' => 'QC', 'label' => ['en' => 'Tencent Cloud', 'zh-Hans' => '腾讯云', 'zh-TW' => '騰訊雲']],
+        ['key' => 'ctyun', 'mark' => 'TY', 'label' => ['en' => 'CTyun', 'zh-Hans' => '天翼云', 'zh-TW' => '天翼雲']],
+        ['key' => 'cucloud', 'mark' => 'CUC', 'label' => ['en' => 'Unicom Cloud', 'zh-Hans' => '联通云', 'zh-TW' => '聯通雲']],
+        ['key' => 'cmcloud', 'mark' => 'CMC', 'label' => ['en' => 'Mobile Cloud', 'zh-Hans' => '移动云', 'zh-TW' => '移動雲']],
     ];
 
     /**
@@ -68,18 +74,6 @@ final class HomePageContent
 
     /** The transport protocols every peer forwards. */
     private const PROTOCOLS = ['WireGuard', 'SOCKS5', 'Shadowsocks', 'VLESS'];
-
-    /** Core infrastructure stack shown on the homepage. */
-    private const TECH_STACK = [
-        ['key' => 'wg', 'label' => ['en' => 'WireGuard', 'zh-Hans' => 'WireGuard', 'zh-TW' => 'WireGuard']],
-        ['key' => 'mptcp', 'label' => ['en' => 'MPTCP', 'zh-Hans' => 'MPTCP', 'zh-TW' => 'MPTCP']],
-        ['key' => 'bond', 'label' => ['en' => 'Bond', 'zh-Hans' => 'Bond 聚合', 'zh-TW' => 'Bond 聚合']],
-        ['key' => 'php', 'label' => ['en' => 'PHP', 'zh-Hans' => 'PHP', 'zh-TW' => 'PHP']],
-        ['key' => 'rust', 'label' => ['en' => 'Rust', 'zh-Hans' => 'Rust', 'zh-TW' => 'Rust']],
-        ['key' => 'go', 'label' => ['en' => 'Go', 'zh-Hans' => 'Go', 'zh-TW' => 'Go']],
-        ['key' => 'mysql', 'label' => ['en' => 'MySQL', 'zh-Hans' => 'MySQL', 'zh-TW' => 'MySQL']],
-        ['key' => 'linux', 'label' => ['en' => 'Linux', 'zh-Hans' => 'Linux', 'zh-TW' => 'Linux']],
-    ];
 
     /** Chart crop: 95-150 degrees east, 50 north to 10 south. */
     private const LON_MIN = 93.0;
@@ -109,17 +103,14 @@ final class HomePageContent
                 'atlas_kicker' => 'MESH',
                 'atlas_note' => '{n} PEERS · BIDIRECTIONAL',
                 'spec_kicker' => 'SPEC',
-                'spec_title' => 'One mesh.',
+                'spec_title' => 'Four platforms.',
                 'stat_nodes' => 'NODES',
                 'stat_carriers' => 'CARRIERS',
                 'stat_protocols' => 'PROTOCOLS',
                 'stat_platforms' => 'PLATFORMS',
-                'tech_kicker' => 'STACK',
-                'tech_title' => 'Built on.',
-                'tech_note' => 'The core infrastructure stack.',
                 'carriers_kicker' => 'CARRIERS',
                 'carriers_title' => 'Direct landing.',
-                'carriers_note' => 'Telecom, Unicom, Mobile, BGP.',
+                'carriers_note' => 'Carriers and clouds on the same mesh.',
                 'steps_kicker' => 'PATH',
                 'steps_title' => 'Line. Forward. Land.',
                 'step_1_title' => 'Line',
@@ -144,17 +135,14 @@ final class HomePageContent
                 'atlas_kicker' => '网状',
                 'atlas_note' => '{cn} 节点 · 双向',
                 'spec_kicker' => '规格',
-                'spec_title' => '一张网。',
+                'spec_title' => '四个系统。',
                 'stat_nodes' => '节点',
                 'stat_carriers' => '线路',
                 'stat_protocols' => '协议',
                 'stat_platforms' => '平台',
-                'tech_kicker' => '技术栈',
-                'tech_title' => '构建于此。',
-                'tech_note' => '核心基础设施栈。',
                 'carriers_kicker' => '线路',
                 'carriers_title' => '当地直出。',
-                'carriers_note' => '电信、联通、移动、BGP。',
+                'carriers_note' => '运营商与云同网直出。',
                 'steps_kicker' => '路径',
                 'steps_title' => '选线 · 转发 · 落地',
                 'step_1_title' => '选线',
@@ -179,17 +167,14 @@ final class HomePageContent
                 'atlas_kicker' => '網狀',
                 'atlas_note' => '{cn} 節點 · 雙向',
                 'spec_kicker' => '規格',
-                'spec_title' => '一張網。',
+                'spec_title' => '四個系統。',
                 'stat_nodes' => '節點',
                 'stat_carriers' => '線路',
                 'stat_protocols' => '協定',
                 'stat_platforms' => '平台',
-                'tech_kicker' => '技術棧',
-                'tech_title' => '構建於此。',
-                'tech_note' => '核心基礎設施棧。',
                 'carriers_kicker' => '線路',
                 'carriers_title' => '當地直出。',
-                'carriers_note' => '電信、聯通、移動、BGP。',
+                'carriers_note' => '電信商與雲同網直出。',
                 'steps_kicker' => '路徑',
                 'steps_title' => '選線 · 轉發 · 落地',
                 'step_1_title' => '選線',
@@ -250,6 +235,12 @@ final class HomePageContent
             'ct' => '/assets/carriers/ct.svg',
             'cu' => '/assets/carriers/cu.svg',
             'cm' => '/assets/carriers/cm.svg',
+            'ucloud' => '/assets/carriers/ucloud.svg',
+            'zenlayer' => '/assets/carriers/zenlayer.svg',
+            'qcloud' => '/assets/carriers/qcloud.svg',
+            'ctyun' => '/assets/carriers/ctyun.svg',
+            'cucloud' => '/assets/carriers/cucloud.svg',
+            'cmcloud' => '/assets/carriers/cmcloud.svg',
         ];
         if (isset($official[$key])) {
             return '<img class="bridge-home-carrier-svg" src="' . self::e($official[$key]) . '" alt="">';
@@ -376,46 +367,23 @@ final class HomePageContent
             . $items . '</ul>';
     }
 
-    /** The infrastructure stack: one chip per technology, never a sentence. */
-    private static function techStack(array $copy, string $locale): string
-    {
-        $items = '';
-        foreach (self::TECH_STACK as $tech) {
-            $label = (string) ($tech['label'][$locale] ?? $tech['label']['en']);
-            $items .= '<li class="bridge-home-tech">'
-                . '<span class="bridge-home-tech-name">' . self::e($label) . '</span>'
-                . '</li>';
-        }
-
-        return '<ul class="bridge-home-techs" aria-label="' . self::e((string) $copy['tech_kicker']) . '">'
-            . $items . '</ul>';
-    }
-
     /**
-     * The datasheet strip. Every numeral is counted from the constants above, so
-     * adding a peer can never leave a stale figure on the page.
+     * Spec band: the four native clients as system marks, not node counts.
      */
-    private static function statTiles(array $copy): string
+    private static function specPlatforms(array $copy): string
     {
-        $tiles = [
-            ['nodes', (string) count(self::NODES), (string) $copy['stat_nodes']],
-            ['landing', (string) count(self::CARRIERS), (string) $copy['stat_carriers']],
-            ['protocols', (string) count(self::PROTOCOLS), (string) $copy['stat_protocols']],
-            ['platforms', (string) count(self::PLATFORMS), (string) $copy['stat_platforms']],
-        ];
-
         $items = '';
-        foreach ($tiles as [$icon, $value, $label]) {
+        foreach (self::PLATFORMS as $platform) {
             $items .= '<li class="bridge-home-stat">'
-                . '<span class="bridge-home-stat-icon">' . self::icon($icon) . '</span>'
+                . '<span class="bridge-home-stat-icon">' . self::platformGlyph($platform['key']) . '</span>'
                 . '<span class="bridge-home-stat-figure">'
-                . '<span class="bridge-home-stat-value">' . self::e($value) . '</span>'
-                . '<span class="bridge-home-stat-label">' . self::e($label) . '</span>'
+                . '<span class="bridge-home-stat-value">' . self::e($platform['label']) . '</span>'
                 . '</span>'
                 . '</li>';
         }
 
-        return '<ul class="bridge-home-stats">' . $items . '</ul>';
+        return '<ul class="bridge-home-stats" aria-label="' . self::e((string) $copy['platforms_label']) . '">'
+            . $items . '</ul>';
     }
 
     /** Three pictograms with a one-line footnote each. */
@@ -960,16 +928,7 @@ final class HomePageContent
             . '<p class="bridge-home-kicker">' . self::e((string) $copy['spec_kicker']) . '</p>'
             . '<h2 id="spec-heading">' . self::e((string) $copy['spec_title']) . '</h2>'
             . '</header>'
-            . self::statTiles($copy)
-            . '</div>'
-            . '</section>'
-            . '<section class="bridge-home-tech-band" aria-labelledby="tech-heading">'
-            . '<div class="bridge-home-band">'
-            . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['tech_kicker']) . '</p>'
-            . '<h2 id="tech-heading">' . self::e((string) $copy['tech_title']) . '</h2>'
-            . '</header>'
-            . self::techStack($copy, $current)
+            . self::specPlatforms($copy)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-steps" aria-labelledby="steps-heading">'

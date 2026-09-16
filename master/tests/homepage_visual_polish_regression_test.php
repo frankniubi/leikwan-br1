@@ -18,7 +18,6 @@ foreach ([
     '.bridge-home-hero-stage',
     '.bridge-home-network',
     '.bridge-home-platforms',
-    '.bridge-home-techs',
     '.rk-node-label',
     '.bridge-home-ghost:hover',
 ] as $required) {

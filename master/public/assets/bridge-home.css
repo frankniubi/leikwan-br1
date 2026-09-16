@@ -373,13 +373,17 @@ html {
 
 .bridge-home-hero h1 {
   margin: 0;
-  color: var(--bridge-ink);
+  background: linear-gradient(135deg, #6ec8f0 0%, #8ec8ff 50%, #ffa257 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   font-family: var(--bridge-display);
   font-size: clamp(68px, 9.5vw, 136px);
   font-weight: 700;
   line-height: 0.92;
   letter-spacing: -0.03em;
-  text-shadow: 0 0 90px rgba(78, 163, 255, 0.28), 0 2px 8px rgba(0, 0, 0, 0.5);
+  text-shadow: none;
+  filter: drop-shadow(0 0 60px rgba(255, 138, 42, 0.4)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
 }
 
 .bridge-home-title {
@@ -426,15 +430,15 @@ html {
   justify-content: center;
   min-height: 50px;
   padding: 0 28px;
-  background: var(--bridge-blue);
-  color: #061018;
+  background: linear-gradient(135deg, var(--bridge-orange) 0%, #ffb070 100%);
+  color: #0a0d12;
   text-decoration: none;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  border: 1px solid var(--bridge-blue);
+  border: 1px solid var(--bridge-orange);
   border-radius: var(--bridge-radius-sm);
-  box-shadow: 0 8px 30px rgba(78, 163, 255, 0.32);
+  box-shadow: 0 8px 30px rgba(255, 138, 42, 0.5), 0 0 60px rgba(255, 138, 42, 0.2);
   transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
 
@@ -674,7 +678,10 @@ html {
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1.08;
-  color: var(--bridge-ink);
+  background: linear-gradient(120deg, var(--bridge-ink) 0%, #a8d5ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .bridge-home-note {
@@ -709,9 +716,14 @@ html {
 
 .bridge-home-stat-icon {
   display: block;
-  width: 34px;
-  height: 34px;
+  width: 48px;
+  height: 48px;
   color: var(--bridge-blue);
+}
+
+.bridge-home-stat-icon .bridge-home-platform-glyph {
+  width: 48px;
+  height: 48px;
 }
 
 .bridge-home-stat-figure {
@@ -724,10 +736,11 @@ html {
   display: block;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: 56px;
+  font-size: 22px;
   font-weight: 600;
-  line-height: 0.95;
-  letter-spacing: -0.035em;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-shadow: none;
 }
 
 .bridge-home-stat-label {
@@ -882,7 +895,7 @@ html {
 
 .bridge-home-carriers {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 16px;
   margin: 0;
   padding: 0;
@@ -1060,10 +1073,6 @@ html {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .bridge-home-techs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .bridge-home-band-head h2,
   .bridge-home-closing h2 {
     font-size: 32px;
@@ -1152,10 +1161,6 @@ html {
   }
 
   .bridge-home-carriers {
-    grid-template-columns: 1fr;
-  }
-
-  .bridge-home-techs {
     grid-template-columns: 1fr;
   }
 
