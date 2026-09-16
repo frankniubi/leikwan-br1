@@ -159,7 +159,7 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' homepage has double-encoded or corrupted text');
     }
 
-    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title', 'bridge-home-plate-key', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg'] as $marker) {
+    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title', 'bridge-home-plate-key', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg', '/assets/carriers/ucloud.svg', '/assets/carriers/zenlayer.svg', '/assets/carriers/qcloud.svg', '/assets/carriers/ctyun.svg', '/assets/carriers/cucloud.svg', '/assets/carriers/cmcloud.svg'] as $marker) {
         if (!str_contains($html, $marker)) {
             homepageFail($locale . ' homepage is missing ' . $marker);
         }
@@ -210,13 +210,13 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' plate key must name every peer');
     }
 
-    // The pictogram set is the page: four spec tiles, four platform glyphs and
-    // three step glyphs. Losing one means prose crept back into a band.
-    if (substr_count($html, 'class="bridge-home-icon"') < 7
-        || substr_count($html, 'class="bridge-home-platform"') !== 4
+    // Spec is four system marks, hero keeps four platform chips, path keeps
+    // three step glyphs. The stack band is gone.
+    if (substr_count($html, 'class="bridge-home-platform"') !== 4
         || substr_count($html, 'class="bridge-home-stat"') !== 4
         || substr_count($html, 'class="bridge-home-step"') !== 3
-        || substr_count($html, 'class="bridge-home-tech"') !== 8) {
+        || substr_count($html, 'class="bridge-home-tech"') !== 0
+        || substr_count($html, 'class="bridge-home-icon"') < 3) {
         homepageFail($locale . ' homepage lost part of its pictogram set');
     }
 
