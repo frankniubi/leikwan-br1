@@ -40,7 +40,7 @@ foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT 
 foreach ([
     'publicPage(string $title, string $body, ?array $viewer = null, string $variant = \'default\')',
     "'bridge-home'",
-    '/assets/bridge-home.css?v=20260916e',
+    '/assets/bridge-home.css?v=20260916f',
     '/assets/signal-chamber.css?v=20260725',
     '/assets/signal-chamber.js?v=20260725',
     '$script = $isBridgeHome ? \'\' :',

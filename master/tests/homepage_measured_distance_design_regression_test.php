@@ -215,8 +215,13 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
     if (substr_count($html, 'class="bridge-home-icon"') < 7
         || substr_count($html, 'class="bridge-home-platform"') !== 4
         || substr_count($html, 'class="bridge-home-stat"') !== 4
-        || substr_count($html, 'class="bridge-home-step"') !== 3) {
+        || substr_count($html, 'class="bridge-home-step"') !== 3
+        || substr_count($html, 'class="bridge-home-tech"') !== 8) {
         homepageFail($locale . ' homepage lost part of its pictogram set');
+    }
+
+    if (str_contains($html, 'LeiGod') || str_contains($html, 'UoT') || str_contains($html, '雷神')) {
+        homepageFail($locale . ' homepage must not mention LeiGod or UoT');
     }
 
     // The text budget. This page is labels and glyphs, so what is left after the
@@ -226,7 +231,7 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
     $visible = html_entity_decode((string) preg_replace('#<[^>]+>#', ' ', $visible), ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $visible = trim((string) preg_replace('/\s+/u', ' ', $visible));
     $characters = (int) preg_match_all('/./u', $visible);
-    if ($characters > 900) {
+    if ($characters > 1100) {
         homepageFail($locale . ' homepage carries ' . $characters . ' characters of visible text');
     }
 }

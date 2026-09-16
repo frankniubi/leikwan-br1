@@ -51,7 +51,6 @@ foreach ([
     'Slave 节点',
     'SIDECAR',
     'Sidecar',
-    'MPTCP',
     'client_strategy',
     'Latency Best',
     'Speed max',
@@ -112,7 +111,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260916e')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260916f')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 
