@@ -405,6 +405,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/leikwan-uot-bond.py', [$artifacts, 'uotBondRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-sidecar.py', [$artifacts, 'mptcpSidecarRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-uot-merge.py', [$artifacts, 'udpUotMergeRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-external-uot.py', [$artifacts, 'externalUotRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-wss-mux.py', [$artifacts, 'wssMuxRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-rate-limit.py', [$artifacts, 'clientRateLimitHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-accel.py', [$artifacts, 'tcpAccelRuntime']);

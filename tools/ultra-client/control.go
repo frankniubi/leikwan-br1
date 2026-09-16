@@ -219,7 +219,7 @@ selectionDone:
 			server.status.UpdatePolicy(policy.PolicyGeneration)
 		}
 		if err == nil && server.status != nil && (probeResult.Sent > 0 || probeResult.TCPReceived > 0) {
-			if stringsContainsUDP(policy.Transport) {
+			if stringsContainsUDP(policy.Transport) && !externalUoTEnabled(server.config) {
 				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
 				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)

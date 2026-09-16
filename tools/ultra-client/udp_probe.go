@@ -263,6 +263,9 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 }
 
 func probeLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
+	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+		return probeExternalUoTLease(ctx, lease, config, policy)
+	}
 	switch policy.Transport {
 	case "tcp":
 		return probeTCPLease(ctx, lease, config, policy)
@@ -603,7 +606,7 @@ func probeTimeout(config Config) time.Duration {
 }
 
 func selectBestLease(ctx context.Context, config Config, policy Policy, leases []ProviderLease) (ProviderLease, udpProbeResult, error) {
-	return selectBestLeaseWithProbe(ctx, config, policy, leases, probeLease)
+	return selectBestLeaseWithProbe(ctx, config, effectiveProbePolicy(config, policy), leases, probeLease)
 }
 
 // probeFailureSink receives every candidate that failed its probe in a batch.
@@ -626,7 +629,17 @@ func selectBestLeaseReporting(
 	leases []ProviderLease,
 	onFailure probeFailureSink,
 ) (ProviderLease, udpProbeResult, error) {
-	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probeLease, onFailure)
+	return selectBestLeaseWithProbeReporting(ctx, config, effectiveProbePolicy(config, policy), leases, probeLease, onFailure)
+}
+
+func effectiveProbePolicy(config Config, policy Policy) Policy {
+	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+		// External UoT health is established by the TCP carrier plus sidecar
+		// HELLO. Requiring native command-3 UDP here would recreate the exact
+		// false-negative that this mode is intended to avoid.
+		policy.Transport = "tcp"
+	}
+	return policy
 }
 
 type leaseProbe func(context.Context, ProviderLease, Config, Policy) udpProbeResult

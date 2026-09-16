@@ -131,6 +131,43 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertEqual(30, config["probe_samples"])
         self.assertEqual(1000, config["probe_interval_ms"])
 
+    def test_external_uot_is_explicit_and_carries_only_bounded_sidecar_settings(self):
+        forward = sample_forward()
+        forward["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": "185.220.238.153:7443",
+            "token": "sidecar-token",
+            "queue_packets": 99999,
+            "keepalive_seconds": 1,
+            "reconnect_grace_seconds": 999,
+            "frame_payload_max": 99999,
+        }
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        config = json.loads(config_file["content"])
+        self.assertEqual(
+            {
+                "enabled": True,
+                "sidecar_target": "185.220.238.153:7443",
+                "token": "sidecar-token",
+                "queue_packets": 4096,
+                "keepalive_seconds": 5,
+                "reconnect_grace_seconds": 300,
+                "frame_payload_max": 65507,
+            },
+            config["external_uot"],
+        )
+
+    def test_external_uot_rejects_untrusted_sidecar_target(self):
+        forward = sample_forward()
+        forward["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": "https://sidecar.example.test:7443",
+            "token": "sidecar-token",
+        }
+        with self.assertRaisesRegex(RuntimeError, "sidecar target invalid"):
+            MODULE.render_ultra_runtime(forward, {})
+
     def test_ultra_fails_closed_without_resolved_material(self):
         forward = sample_forward()
         forward["ultra_access"]["policy_generation"] = "invalid"
