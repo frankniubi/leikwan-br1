@@ -467,13 +467,13 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6",
-    "size_bytes": 16376074,
-    "version": "2026.09.16.1",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, active-candidate-fallback-2026.09.16.1",
+    "sha256": "f740205376131bb7b4bea2468ecc6376bcf7754028c3fc4638b06b3561948137",
+    "size_bytes": 16646410,
+    "version": "2026.09.16.2",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, external-uot-2026.09.16.2",
     "attestation": {
-      "fingerprint": "2026.09.16.1.e0e4a71f",
-      "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+      "fingerprint": "2026.09.16.2.ecc2f82",
+      "self_sha256": "f740205376131bb7b4bea2468ecc6376bcf7754028c3fc4638b06b3561948137"
     }
   },
   "ultra_client_runtime_linux_arm64": {
@@ -492,54 +492,54 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "bd0641f95efe504f78c7db44707fd44234c40d011375a2a2a2d1e36c9f10bc7d",
-    "size_bytes": 14811402,
-    "version": "2026.09.16.1",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, active-candidate-fallback-2026.09.16.1",
+    "sha256": "0ac3dfb86cc352b3dda54fe56e17ad1e14cd5fc01c41ba463f05bb2b9f903b51",
+    "size_bytes": 15073546,
+    "version": "2026.09.16.2",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, external-uot-2026.09.16.2",
     "attestation": {
-      "fingerprint": "2026.09.16.1.e0e4a71f",
-      "self_sha256": "bd0641f95efe504f78c7db44707fd44234c40d011375a2a2a2d1e36c9f10bc7d"
+      "fingerprint": "2026.09.16.2.ecc2f82",
+      "self_sha256": "0ac3dfb86cc352b3dda54fe56e17ad1e14cd5fc01c41ba463f05bb2b9f903b51"
     }
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender clean), active-candidate-fallback-2026.09.16.1",
+    "build": "go1.26.5, cgo-disabled, stripped, unobfuscated (Windows Defender scan skipped locally), external-uot-2026.09.16.2",
     "obfuscator": "none",
-    "sha256": "612c9f0f546101cc0723e83ccf76ab6a25ea34d27721e74026c5a762ad119f78",
-    "size_bytes": 7142400,
-    "version": "2026.09.16.1",
+    "sha256": "7eb72b478bde0a102e499d7cac04c88a3a715b9fca13734e362e20099a7d9963",
+    "size_bytes": 7213056,
+    "version": "2026.09.16.2",
     "attestation": {
-      "fingerprint": "2026.09.16.1.e0e4a71f",
-      "self_sha256": "612c9f0f546101cc0723e83ccf76ab6a25ea34d27721e74026c5a762ad119f78"
+      "fingerprint": "2026.09.16.2.ecc2f82",
+      "self_sha256": "7eb72b478bde0a102e499d7cac04c88a3a715b9fca13734e362e20099a7d9963"
     }
   },
   "ultra_client_runtime_macos_x64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
     "path": "artifacts/ultra/ultra-client_macos_amd64",
     "architecture": "x86_64",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, active-candidate-fallback-2026.09.16.1",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, external-uot-2026.09.16.2",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836",
-    "size_bytes": 15187824,
-    "version": "2026.09.16.1",
+    "sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98af11d4fb0957",
+    "size_bytes": 15256672,
+    "version": "2026.09.16.2",
     "attestation": {
-      "fingerprint": "2026.09.16.1.e0e4a71f",
-      "self_sha256": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836"
+      "fingerprint": "2026.09.16.2.ecc2f82",
+      "self_sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98af11d4fb0957"
     }
   },
   "ultra_client_runtime_macos_arm64": {
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
     "architecture": "arm64",
-    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, active-candidate-fallback-2026.09.16.1",
+    "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, external-uot-2026.09.16.2",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c",
-    "size_bytes": 13494224,
-    "version": "2026.09.16.1",
+    "sha256": "5a1b16b2ea179f8ea4beb51fecc0b6eca80a7e5336704850e7861ca321b6a250",
+    "size_bytes": 13690962,
+    "version": "2026.09.16.2",
     "attestation": {
-      "fingerprint": "2026.09.16.1.e0e4a71f",
-      "self_sha256": "ae8bf1aab19226cabeb173ee5666520b0936123ef25902123109654e44fcda2c"
+      "fingerprint": "2026.09.16.2.ecc2f82",
+      "self_sha256": "5a1b16b2ea179f8ea4beb51fecc0b6eca80a7e5336704850e7861ca321b6a250"
     }
   },
   "uot_bond_runtime": {

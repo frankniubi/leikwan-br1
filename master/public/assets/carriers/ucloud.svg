@@ -1,7 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 24" fill="none">
-  <path d="M18 5.2c-4.8 0-8.8 3.9-8.8 8.8s4 8.8 8.8 8.8 8.8-3.9 8.8-8.8-4-8.8-8.8-8.8zm0 14.4c-3.1 0-5.6-2.5-5.6-5.6s2.5-5.6 5.6-5.6 5.6 2.5 5.6 5.6-2.5 5.6-5.6 5.6z" fill="#3860F4"/>
-  <path d="M39.2 6.2h-3.1v13.6h3.1V6.2zm7.4 0h-3.1v13.6h3.1V6.2z" fill="#1D1D1D"/>
-  <path d="M55.8 6.2h-3.2l-4.6 13.6h3.3l.8-2.6h4.3l.8 2.6h3.3l-4.7-13.6zm-2.8 8.4 1.2-4 1.2 4h-2.4z" fill="#1D1D1D"/>
-  <path d="M70.4 6.2h-3.1v13.6h8.8v-2.8h-5.7V6.2z" fill="#1D1D1D"/>
-  <path d="M86.2 6.2h-3.2l-4.6 13.6h3.3l.8-2.6h4.3l.8 2.6h3.3l-4.7-13.6zm-2.8 8.4 1.2-4 1.2 4h-2.4z" fill="#1D1D1D"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" fill="none">
+  <path d="M16 16h8v12c0 2.2 1.8 4 4 4s4-1.8 4-4V16h8v12c0 4.4-3.6 8-8 8s-8-3.6-8-8V16z" fill="#3b6dff"/>
+  <path d="M52 16c-2.2 0-4 1.8-4 4v8c0 2.2 1.8 4 4 4h12c2.2 0 4-1.8 4-4v-8c0-2.2-1.8-4-4-4H52zm0 4h12v8H52v-8z" fill="#3b6dff"/>
+  <text x="76" y="30" font-family="sans-serif" font-size="18" font-weight="600" fill="#3b6dff">UCloud</text>
 </svg>
