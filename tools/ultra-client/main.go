@@ -813,6 +813,15 @@ var (
 // probeEcho sends payload to the relay keep-echo target (2.0.0.0:0), the only
 // destination guaranteed to answer on an armed association, and reports whether
 // the identical bytes came back.
+//
+// Socket ownership rule (2026-09-16 reader-race fix): while a receive loop
+// owns the socket, the probe never calls Read or SetReadDeadline here. A probe
+// deadline used to wake the runtime reader's pending Read and collapse a
+// healthy association into errUDPReceiveTimeout ("keepalive_timeout" in the
+// canary) long before its own tolerance. Instead the probe registers a waiter
+// and the receive loop dispatches the matching echo frame. Before any reader
+// starts (candidate arms, warm-up and availability checks) this call is the
+// socket's only reader and reads it directly.
 func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration) bool {
 	if session.remote == nil {
 		return false
@@ -820,6 +829,25 @@ func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration)
 	packet, err := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, payload)
 	if err != nil {
 		return false
+	}
+	if waiter := session.registerProbeWaiter(payload); waiter != nil {
+		defer session.unregisterProbeWaiter(waiter)
+		if _, err := writeAllToUDP(session.remote, packet); err != nil {
+			return false
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-waiter.echo:
+			return true
+		case <-timer.C:
+			return false
+		case <-session.runtimeDone():
+			// The reader died on its own terms; the session is closed and this
+			// probe must not outlive it. (A nil done channel simply never fires,
+			// so the native path still relies on its own timer.)
+			return false
+		}
 	}
 	if _, err := writeAllToUDP(session.remote, packet); err != nil {
 		return false

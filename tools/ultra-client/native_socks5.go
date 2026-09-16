@@ -962,6 +962,15 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 		runtime.removeAssociation(association)
 		return
 	}
+	// The response loop owns this socket's reads from here on. Mark ownership
+	// and spawn the reader before the association becomes visible to direct
+	// sends, so a send-path ceiling probe always waits on the reader instead of
+	// racing it for SetReadDeadline/Read (2026-09-16 reader-race fix).
+	if runtime.status != nil {
+		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
+	}
+	session.markSocketReaderOwned()
+	go runtime.readUDPResponses(association, session)
 	if !association.markReady(session, lease) {
 		lease.wipe()
 		return
@@ -969,7 +978,6 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 	if runtime.status != nil {
 		// Publish the measured ceiling and the panel hint of this association so
 		// the panel can see which relay is narrow.
-		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
 		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 		runtime.status.UpdateUDPPayloadCeiling(normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling), payloadCeilingSourceDeclared)
 		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
@@ -980,7 +988,6 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)
 	}
-	go runtime.readUDPResponses(association, session)
 }
 
 func (runtime *nativeSocks5Runtime) startNativeAssociationKeepalive(ctx context.Context, association *nativeSocks5UDPAssociation) {
@@ -1086,6 +1093,9 @@ func (runtime *nativeSocks5Runtime) readUDPResponses(association *nativeSocks5UD
 			return
 		}
 		packet := buffer[:count]
+		if session.dispatchProbeEcho(packet) {
+			continue
+		}
 		if isDatagramKeepaliveResponse(packet, nil) {
 			continue
 		}
