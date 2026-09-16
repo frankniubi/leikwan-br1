@@ -73,7 +73,7 @@
   --bridge-radius-sm: 10px;
   --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
 
-  --bridge-display: "Cormorant Garamond", "PingFang SC", "Hiragino Sans GB", "Songti SC", "Noto Serif CJK SC", "Microsoft YaHei", serif;
+  --bridge-display: "Space Grotesk var", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bridge-sans: "Inter var", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bridge-mono: "JetBrains Mono var", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
@@ -375,18 +375,18 @@ html {
   margin: 0;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: clamp(72px, 10vw, 152px);
-  font-weight: 600;
+  font-size: clamp(64px, 9vw, 128px);
+  font-weight: 700;
   font-style: normal;
-  line-height: 0.88;
-  letter-spacing: -0.04em;
+  line-height: 0.9;
+  letter-spacing: -0.05em;
   text-shadow: 0 0 90px rgba(78, 163, 255, 0.32), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .bridge-home-title {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .bridge-home-title-zh {
@@ -396,11 +396,13 @@ html {
 .bridge-home-title-en {
   display: block;
   color: var(--bridge-blue-ink);
-  font-size: 0.38em;
-  font-style: italic;
+  font-family: var(--bridge-mono);
+  font-size: 0.28em;
+  font-style: normal;
   font-weight: 500;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.2;
 }
 
 .bridge-home-hero-sub {
@@ -743,6 +745,48 @@ html {
   text-transform: uppercase;
 }
 
+/* ---------- tech stack ---------- */
+.bridge-home-tech-band {
+  position: relative;
+  background: var(--bridge-paper);
+  border-bottom: 1px solid var(--bridge-line);
+}
+
+.bridge-home-techs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-tech {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 72px;
+  padding: 16px 18px;
+  background: var(--bridge-elev);
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius-sm);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-tech:hover {
+  transform: translateY(-2px);
+  border-color: var(--bridge-blue);
+  box-shadow: 0 8px 24px rgba(78, 163, 255, 0.12);
+}
+
+.bridge-home-tech-name {
+  font-family: var(--bridge-mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--bridge-ink);
+}
+
 /* ---------- steps: horizontal path ---------- */
 .bridge-home-steps {
   position: relative;
@@ -1020,6 +1064,10 @@ html {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .bridge-home-techs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .bridge-home-band-head h2,
   .bridge-home-closing h2 {
     font-size: 32px;
@@ -1111,6 +1159,10 @@ html {
     grid-template-columns: 1fr;
   }
 
+  .bridge-home-techs {
+    grid-template-columns: 1fr;
+  }
+
   .bridge-home-plate-key {
     grid-template-columns: 1fr;
   }
@@ -1121,6 +1173,7 @@ html {
   .bridge-home-page .bridge-home-ghost,
   .bridge-home-page .bridge-home-step,
   .bridge-home-page .bridge-home-carrier,
+  .bridge-home-page .bridge-home-tech,
   .bridge-home-page .site-actions .button {
     transition: none;
   }
@@ -1129,6 +1182,7 @@ html {
   .bridge-home-page .bridge-home-ghost:hover,
   .bridge-home-page .bridge-home-step:hover,
   .bridge-home-page .bridge-home-carrier:hover,
+  .bridge-home-page .bridge-home-tech:hover,
   .bridge-home-page .site-actions .button:hover {
     transform: none;
   }

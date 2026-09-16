@@ -20,10 +20,10 @@ $lang = htmlspecialchars($locale, ENT_QUOTES, 'UTF-8');
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LeiKwan Bridge — preview</title>
-  <link rel="preload" href="/assets/fonts/cormorant-garamond-600.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="preload" href="/assets/fonts/inter-var.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/space-grotesk-var.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/jetbrains-mono-var.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-home.css?v=20260916e">
+  <link rel="stylesheet" href="/assets/bridge-home.css?v=20260916f">
 </head>
 <body class="pg-public bridge-home-page">
   <div class="public-shell">

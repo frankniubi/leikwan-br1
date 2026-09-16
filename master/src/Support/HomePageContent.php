@@ -67,7 +67,19 @@ final class HomePageContent
     ];
 
     /** The transport protocols every peer forwards. */
-    private const PROTOCOLS = ['TCP', 'UDP'];
+    private const PROTOCOLS = ['WireGuard', 'SOCKS5', 'Shadowsocks', 'VLESS'];
+
+    /** Core infrastructure stack shown on the homepage. */
+    private const TECH_STACK = [
+        ['key' => 'wg', 'label' => ['en' => 'WireGuard', 'zh-Hans' => 'WireGuard', 'zh-TW' => 'WireGuard']],
+        ['key' => 'mptcp', 'label' => ['en' => 'MPTCP', 'zh-Hans' => 'MPTCP', 'zh-TW' => 'MPTCP']],
+        ['key' => 'bond', 'label' => ['en' => 'Bond', 'zh-Hans' => 'Bond 聚合', 'zh-TW' => 'Bond 聚合']],
+        ['key' => 'php', 'label' => ['en' => 'PHP', 'zh-Hans' => 'PHP', 'zh-TW' => 'PHP']],
+        ['key' => 'rust', 'label' => ['en' => 'Rust', 'zh-Hans' => 'Rust', 'zh-TW' => 'Rust']],
+        ['key' => 'go', 'label' => ['en' => 'Go', 'zh-Hans' => 'Go', 'zh-TW' => 'Go']],
+        ['key' => 'mysql', 'label' => ['en' => 'MySQL', 'zh-Hans' => 'MySQL', 'zh-TW' => 'MySQL']],
+        ['key' => 'linux', 'label' => ['en' => 'Linux', 'zh-Hans' => 'Linux', 'zh-TW' => 'Linux']],
+    ];
 
     /** Chart crop: 95-150 degrees east, 50 north to 10 south. */
     private const LON_MIN = 93.0;
@@ -102,6 +114,9 @@ final class HomePageContent
                 'stat_carriers' => 'CARRIERS',
                 'stat_protocols' => 'PROTOCOLS',
                 'stat_platforms' => 'PLATFORMS',
+                'tech_kicker' => 'STACK',
+                'tech_title' => 'Built on.',
+                'tech_note' => 'The core infrastructure stack.',
                 'carriers_kicker' => 'CARRIERS',
                 'carriers_title' => 'Direct landing.',
                 'carriers_note' => 'Telecom, Unicom, Mobile, BGP.',
@@ -134,6 +149,9 @@ final class HomePageContent
                 'stat_carriers' => '线路',
                 'stat_protocols' => '协议',
                 'stat_platforms' => '平台',
+                'tech_kicker' => '技术栈',
+                'tech_title' => '构建于此。',
+                'tech_note' => '核心基础设施栈。',
                 'carriers_kicker' => '线路',
                 'carriers_title' => '当地直出。',
                 'carriers_note' => '电信、联通、移动、BGP。',
@@ -166,6 +184,9 @@ final class HomePageContent
                 'stat_carriers' => '線路',
                 'stat_protocols' => '協定',
                 'stat_platforms' => '平台',
+                'tech_kicker' => '技術棧',
+                'tech_title' => '構建於此。',
+                'tech_note' => '核心基礎設施棧。',
                 'carriers_kicker' => '線路',
                 'carriers_title' => '當地直出。',
                 'carriers_note' => '電信、聯通、移動、BGP。',
@@ -352,6 +373,21 @@ final class HomePageContent
         }
 
         return '<ul class="bridge-home-platforms" aria-label="' . self::e((string) $copy['platforms_label']) . '">'
+            . $items . '</ul>';
+    }
+
+    /** The infrastructure stack: one chip per technology, never a sentence. */
+    private static function techStack(array $copy, string $locale): string
+    {
+        $items = '';
+        foreach (self::TECH_STACK as $tech) {
+            $label = (string) ($tech['label'][$locale] ?? $tech['label']['en']);
+            $items .= '<li class="bridge-home-tech">'
+                . '<span class="bridge-home-tech-name">' . self::e($label) . '</span>'
+                . '</li>';
+        }
+
+        return '<ul class="bridge-home-techs" aria-label="' . self::e((string) $copy['tech_kicker']) . '">'
             . $items . '</ul>';
     }
 
@@ -925,6 +961,15 @@ final class HomePageContent
             . '<h2 id="spec-heading">' . self::e((string) $copy['spec_title']) . '</h2>'
             . '</header>'
             . self::statTiles($copy)
+            . '</div>'
+            . '</section>'
+            . '<section class="bridge-home-tech-band" aria-labelledby="tech-heading">'
+            . '<div class="bridge-home-band">'
+            . '<header class="bridge-home-band-head">'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['tech_kicker']) . '</p>'
+            . '<h2 id="tech-heading">' . self::e((string) $copy['tech_title']) . '</h2>'
+            . '</header>'
+            . self::techStack($copy, $current)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-steps" aria-labelledby="steps-heading">'
