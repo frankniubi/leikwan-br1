@@ -253,6 +253,16 @@ abstract class BaseController
             $command .= ' --total-speed-limit-mbps ' . $totalSpeedLimitMbps;
         }
 
+        $sidecarHost = trim((string) ($point['sidecar_host'] ?? ''));
+        if ($sidecarHost !== '') {
+            // Fresh installs fetch this host's external UoT forwards straight
+            // from the panel; --require-external-uot keeps a silent miss (the
+            // old "UDP candidate failed" install) from shipping.
+            $command .= ' --external-uot-config '
+                . $this->shellQuote($this->artifactBaseUrl() . '/external-uot-config?host=' . $sidecarHost)
+                . ' --require-external-uot';
+        }
+
         return $command;
     }
 

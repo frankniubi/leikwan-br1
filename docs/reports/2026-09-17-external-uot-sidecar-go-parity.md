@@ -2,7 +2,7 @@
 
 Date: 2026-09-17
 Tree: `leikwan-br1` (Windows workstation), baseline `master` @ `33d5d5a3`
-Status: **parity verified locally (Go unit tests + Python parity harness); on-host canary NOT yet run**
+Status: **parity verified locally AND on the live host (fleet canary 2026-09-17, see `docs/reports/2026-09-17-external-uot-sidecar-go-fleet-canary.md`); Go binary adopted for forward 170: protocol 45/45 checks, client continuity 132/132 across both swap directions**
 
 ## 1. What shipped
 
@@ -88,10 +88,16 @@ python -m pytest tests/test_external_uot_sidecar_go.py tests/test_external_uot_r
    target (the reference's `if payload:` guard, mirrored in the Go reader).
 4. **Adaptive tuner.** As in the reference, the tuner is advisory: it never
    raises a live session above its negotiated maximum.
-5. **Unverified.** No live sidecar host has run this binary yet: the fleet
-   canary (slave -> sidecar hop, real forward, panel traffic) is still pending.
+5. **Verified on the live host (2026-09-17).** The binary was installed and
+   canaried on the production sidecar host (see the fleet-canary report): wire
+   behaviour 45/45 checks on the live forward, fleet continuity 132/132 across
+   both swap directions, and the rollback restored the Python `ExecStart`
+   verbatim.
+6. **Live log volume.** At current fleet activity the unit wrote ~10 journal
+   lines/min (INFO). `--log-level WARNING` was validated on a throwaway
+   listener: a full session produced 0 session lines.
 
-## 5. Deployment sketch (not yet executed)
+## 5. Deployment (executed 2026-09-17 on forward 170)
 
 ```bash
 install -m 0755 uot-sidecar_linux_amd64 /usr/local/bin/leikwan-external-uot-go   # arm64: uot-sidecar_linux_arm64
@@ -102,6 +108,14 @@ install -m 0755 uot-sidecar_linux_amd64 /usr/local/bin/leikwan-external-uot-go  
 Keep the existing systemd unit name and config path; swap `ExecStart` to the Go
 binary and keep the Python file in place for rollback (`ExecStart` revert +
 `systemctl daemon-reload` + `restart`).
+
+Receipts from the live run:
+
+- `ExecStart` swapped Python -> Go (`18bd060a...ac60ef`): hash match, active, 21 carriers, `NRestarts=0`.
+- Rollback Go -> Python: `ExecStart` restored verbatim, active, `NRestarts=0`.
+- Backups: `/root/backups/external-uot-go-20260917-0345`, `/root/backups/external-uot-python-20260917-0345`; config untouched (sha256 `f2afe1f0...c873d4`).
+
+End state: Go binary in production, one-line rollback (`swap --mode python`) re-verified.
 
 ## 6. 中文摘要
 
