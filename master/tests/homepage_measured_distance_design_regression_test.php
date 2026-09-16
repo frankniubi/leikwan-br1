@@ -63,7 +63,7 @@ foreach ([
     'url("/assets/fonts/space-grotesk-var.ttf")',
     '.bridge-home-title',
     '--bridge-orange: #ff8a2a',
-    '--bridge-line: #1d2421',
+    '--bridge-line: #1c2633',
     '.bridge-home-page .site-mark img',
     '.bridge-home-network',
     '.bridge-home-platforms',
@@ -81,8 +81,8 @@ foreach ([
 $code = (string) preg_replace('#/\*.*?\*/#s', '', $content);
 $code = (string) preg_replace('#^\s*//.*$#m', '', $code);
 
-foreach (['gateway', 'Gateway', 'departure', 'Departure', 'destination', 'Destination',
-    '出发地', '目的地', '游戏区', '遊戲區', '入口城市'] as $forbidden) {
+foreach (['gateway', 'Gateway', 'departure', 'Departure',
+    '出发地', '游戏区', '遊戲區', '入口城市'] as $forbidden) {
     if (str_contains($code, $forbidden)) {
         homepageFail('homepage reintroduces a direction on a symmetric mesh: ' . $forbidden);
     }
@@ -165,8 +165,12 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         }
     }
 
-    if (!str_contains($html, 'DIRECT.')) {
-        homepageFail($locale . ' homepage lost its English title');
+    if (!str_contains($html, 'Your destination.') || !preg_match('/直达目的地|直達目的地/u', $html)) {
+        homepageFail($locale . ' homepage lost its destination lockup');
+    }
+
+    if (str_contains($html, '127.0.0.1')) {
+        homepageFail($locale . ' homepage still names 127.0.0.1 instead of the destination');
     }
 
     if (preg_match('/\b\d+\s*ms\b/i', $html) === 1) {

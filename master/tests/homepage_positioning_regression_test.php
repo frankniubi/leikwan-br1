@@ -86,7 +86,7 @@ foreach ([
     '.bridge-home-network',
     '.bridge-home-tag',
     '.bridge-home-page .site-mark',
-    '--bridge-paper: #0a0d0c',
+    '--bridge-paper: #07090e',
     'border-radius: 999px',
     '@media (max-width: 900px)',
     'inter-var.ttf',
@@ -113,7 +113,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260916c')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260916d')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 
@@ -140,6 +140,10 @@ if (!str_contains($css, 'background: var(--bridge-paper)')) {
 
 if (str_contains($base, '/assets/brand-mark-foil.png')) {
     fail('homepage must use the full-colour brand mark, not the cropped foil cut');
+}
+
+if (!str_contains($base, '/assets/brand-mark.png')) {
+    fail('homepage must use the Windows client mark at /assets/brand-mark.png');
 }
 
 if (!str_contains($base, '<strong lang="zh-Hant">利群會聚</strong>')) {
