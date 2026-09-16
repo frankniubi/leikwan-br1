@@ -5586,6 +5586,12 @@ final class ProvisioningService
                      combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
                      combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
                      combo.external_uot_enabled AS forward_combination_external_uot_enabled,
+                     combo.external_uot_sidecar_target AS forward_combination_external_uot_sidecar_target,
+                     combo.external_uot_token AS forward_combination_external_uot_token,
+                     combo.external_uot_queue_packets AS forward_combination_external_uot_queue_packets,
+                     combo.external_uot_keepalive_seconds AS forward_combination_external_uot_keepalive_seconds,
+                     combo.external_uot_reconnect_grace_seconds AS forward_combination_external_uot_reconnect_grace_seconds,
+                     combo.external_uot_frame_payload_max AS forward_combination_external_uot_frame_payload_max,
                      combo.desired_latency_ms AS forward_combination_desired_latency_ms,
                      combo.allow_public_self_leg_donation AS forward_combination_allow_public_self_leg_donation,
                      combo.donation_qualify_window_seconds AS forward_combination_donation_qualify_window_seconds,
@@ -5725,6 +5731,17 @@ final class ProvisioningService
         $quotaRemainingBytes = $billingMode === 'monthly_bundle' && $trafficLimitGb > 0
             ? max(0, ($trafficLimitGb * 1024 * 1024 * 1024) - $trafficUsedBytes)
             : null;
+        $externalUoTRevision = UltraMode::isBackendMode($backendMode)
+            ? hash('sha256', implode('|', [
+                (string) ((int) ($forward['forward_combination_external_uot_enabled'] ?? 0)),
+                trim((string) ($forward['forward_combination_external_uot_sidecar_target'] ?? '')),
+                trim((string) ($forward['forward_combination_external_uot_token'] ?? '')),
+                (string) ((int) ($forward['forward_combination_external_uot_queue_packets'] ?? 256)),
+                (string) ((int) ($forward['forward_combination_external_uot_keepalive_seconds'] ?? 10)),
+                (string) ((int) ($forward['forward_combination_external_uot_reconnect_grace_seconds'] ?? 30)),
+                (string) ((int) ($forward['forward_combination_external_uot_frame_payload_max'] ?? 65507)),
+            ]))
+            : '';
 
         return [
             'service_id' => (int) $forward['service_id'],
@@ -5753,6 +5770,7 @@ final class ProvisioningService
             // The sidecar secret is attached to the short-lived Ultra grant,
             // never to the ordinary forward configuration response.
             'forward_combination_external_uot_enabled' => (int) ($forward['forward_combination_external_uot_enabled'] ?? 0),
+            'forward_combination_external_uot_revision' => $externalUoTRevision,
             'desired_latency_ms' => (int) ($forward['forward_combination_desired_latency_ms'] ?? 0),
             'allow_public_self_leg_donation' => (int) ($forward['forward_combination_allow_public_self_leg_donation'] ?? 0),
             'donation_qualify_window_seconds' => (int) ($forward['forward_combination_donation_qualify_window_seconds'] ?? 60),
