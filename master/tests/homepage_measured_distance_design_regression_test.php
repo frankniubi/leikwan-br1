@@ -165,8 +165,8 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         }
     }
 
-    if (!str_contains($html, 'Destination.') || !preg_match('/目的地/u', $html)) {
-        homepageFail($locale . ' homepage lost its destination lockup');
+    if (!str_contains($html, 'Bridge') || !preg_match('/會聚/u', $html)) {
+        homepageFail($locale . ' homepage lost its huiju lockup');
     }
 
     if (str_contains($html, '127.0.0.1')) {
