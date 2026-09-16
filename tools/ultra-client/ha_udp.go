@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -110,6 +111,20 @@ type datagramReceiver struct {
 	packets chan []byte
 	done    chan struct{}
 	err     error
+	// readerOwned flips under mu before the socket's single reader loop starts
+	// (the ultra runtime reader or the native SOCKS5 response loop). While set,
+	// probeEcho must not touch SetReadDeadline/Read: it registers a waiter and
+	// the reader dispatches the matching echo frame (2026-09-16 reader-race fix).
+	readerOwned bool
+	waiters     map[*probeWaiter]struct{}
+}
+
+// probeWaiter is one registered echo probe. The reader delivers the frame whose
+// payload matches exactly; every other frame keeps flowing through the normal
+// runtime paths.
+type probeWaiter struct {
+	payload []byte
+	echo    chan []byte
 }
 
 // Exactly one socket reader survives the warm -> active ownership transfer.
@@ -121,8 +136,11 @@ func (s *DatagramSession) startRuntimeReader(timeout time.Duration) {
 		}
 		// Sized for game burst rates; overflow is still counted as a drop
 		// instead of blocking the reader.
+		s.receiver.mu.Lock()
 		s.receiver.packets = make(chan []byte, 512)
 		s.receiver.done = make(chan struct{})
+		s.receiver.readerOwned = true
+		s.receiver.mu.Unlock()
 		go func() {
 			defer close(s.receiver.done)
 			defer close(s.receiver.packets)
@@ -146,6 +164,13 @@ func (s *DatagramSession) startRuntimeReader(timeout time.Duration) {
 					}
 					s.Close()
 					return
+				}
+				if s.dispatchProbeEcho(buffer[:n]) {
+					// The frame answered a registered probe. It proves the
+					// association alive but is not a game datagram, so it never
+					// reaches the packet channel.
+					deadline = time.Now().Add(timeout)
+					continue
 				}
 				ack := isDatagramKeepaliveResponse(buffer[:n], nil)
 				info, valid := decodeDatagramResponse(buffer[:n])
@@ -173,6 +198,71 @@ func (s *DatagramSession) startRuntimeReader(timeout time.Duration) {
 			}
 		}()
 	})
+}
+
+// markSocketReaderOwned records that one reader loop now owns this socket's
+// reads. Call it before spawning that loop so a concurrent probeEcho can never
+// choose direct-read mode against a live reader.
+func (s *DatagramSession) markSocketReaderOwned() {
+	s.receiver.mu.Lock()
+	s.receiver.readerOwned = true
+	s.receiver.mu.Unlock()
+}
+
+// registerProbeWaiter parks a probeEcho on the receive loop. It returns nil
+// while no reader owns the socket: the caller is then the only reader and may
+// read the socket directly (candidate arms, warm-up and availability checks).
+func (s *DatagramSession) registerProbeWaiter(payload []byte) *probeWaiter {
+	s.receiver.mu.Lock()
+	defer s.receiver.mu.Unlock()
+	if !s.receiver.readerOwned {
+		return nil
+	}
+	waiter := &probeWaiter{payload: append([]byte(nil), payload...), echo: make(chan []byte, 1)}
+	if s.receiver.waiters == nil {
+		s.receiver.waiters = make(map[*probeWaiter]struct{})
+	}
+	s.receiver.waiters[waiter] = struct{}{}
+	return waiter
+}
+
+func (s *DatagramSession) unregisterProbeWaiter(waiter *probeWaiter) {
+	s.receiver.mu.Lock()
+	delete(s.receiver.waiters, waiter)
+	s.receiver.mu.Unlock()
+}
+
+// dispatchProbeEcho hands one reserved keep-echo frame (source 2.0.0.0:0) to
+// the probe waiter waiting for exactly those payload bytes. It reports whether
+// a waiter consumed the frame: probe echoes stay out of the game packet
+// channel, and business datagrams can never satisfy a waiter because probes
+// only ever target the reserved address.
+func (s *DatagramSession) dispatchProbeEcho(packet []byte) bool {
+	if !isDatagramKeepaliveResponse(packet, nil) {
+		return false
+	}
+	payload, ok := unwrapDatagramForSession(packet)
+	if !ok {
+		return false
+	}
+	s.receiver.mu.Lock()
+	var matched *probeWaiter
+	for waiter := range s.receiver.waiters {
+		if bytes.Equal(waiter.payload, payload) {
+			matched = waiter
+			delete(s.receiver.waiters, waiter)
+			break
+		}
+	}
+	s.receiver.mu.Unlock()
+	if matched == nil {
+		return false
+	}
+	select {
+	case matched.echo <- payload:
+	default:
+	}
+	return true
 }
 
 func (s *DatagramSession) setRuntimeError(err error) {
