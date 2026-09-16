@@ -38,8 +38,8 @@ final class HomePageContent
     ];
 
     /**
-     * The operators behind every line. The official SVG wordmarks under /assets/carriers/
-     * are used for China Telecom, Unicom and Mobile, while BGP uses an SVG glyph.
+     * The operators behind every line. Each one carries its official wordmark
+     * from /assets/carriers/, while BGP stays a geometric SVG glyph.
      *
      * One word per operator: the legal name and the short name were the same string
      * twice, which is the kind of repetition this page no longer carries.
@@ -226,9 +226,9 @@ final class HomePageContent
             'ucloud' => '/assets/carriers/ucloud.svg',
             'zenlayer' => '/assets/carriers/zenlayer.svg',
             'qcloud' => '/assets/carriers/qcloud.svg',
-            'ctyun' => '/assets/carriers/ctyun.svg',
-            'cucloud' => '/assets/carriers/cucloud.svg',
-            'cmcloud' => '/assets/carriers/cmcloud.svg',
+            'ctyun' => '/assets/carriers/ctyun-logo.png',
+            'cucloud' => '/assets/carriers/cucloud.png',
+            'cmcloud' => '/assets/carriers/cmcloud.png',
         ];
         if (isset($official[$key])) {
             return '<img class="bridge-home-carrier-svg" src="' . self::e($official[$key]) . '" alt="">';
