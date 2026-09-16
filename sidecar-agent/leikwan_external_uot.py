@@ -138,6 +138,14 @@ class ForwardBinding:
     static_token: str = ""
 
     def allows_target(self, target: str) -> bool:
+        # Token HMAC already binds forward_id+target; empty or wildcard list
+        # means allow-any (still normalized). No needless whitelist contract.
+        if not self.targets or chr(42) in self.targets:
+            try:
+                normalize_target(target)
+                return True
+            except ValueError:
+                return False
         try:
             return normalize_target(target) in self.targets
         except ValueError:
@@ -623,7 +631,7 @@ def _parse_targets(value: Any) -> frozenset[str]:
     values = [value] if isinstance(value, str) else value
     if not isinstance(values, Sequence) or isinstance(values, (bytes, bytearray)):
         raise ValueError("forward targets must be a string or list")
-    return frozenset(normalize_target(str(item)) for item in values)
+    return frozenset(str(item) if str(item) == chr(42) else normalize_target(str(item)) for item in values)
 
 
 def load_config(path: str | os.PathLike[str]) -> SidecarConfig:
