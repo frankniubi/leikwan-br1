@@ -1,0 +1,20 @@
+feat(web): restyle the homepage as a light Cloudflare-style surface
+
+The homepage was a dark navy route board. It is now a white marketing
+surface: hairline borders, whisper-grey bands, one orange accent per band,
+and Inter / Space Grotesk / JetBrains Mono in place of the Cormorant
+display face.
+
+- bridge-home.css: new token set (paper, surface, line, ink, orange), white
+  page and hero, #f7f7f7 feature and steps bands, white cards, a white plate
+  panel carrying a faint line map, and #fff5eb tints on the carrier tiles
+  and step badges. Small orange text and the focus ring use #b45309 (4.7:1)
+  and the primary CTA paints #1d1d1d on #f6821f (6.5:1) so the page clears
+  WCAG AA instead of shipping white-on-orange at 2.6:1.
+- HomePageContent: the plate viewBox now comes from the solved frame, so the
+  crop no longer hides the southern peers, and the SVG draws with "meet".
+- BaseController: preload Inter and Space Grotesk, and bump the stylesheet
+  cache key (the asset is served with a 12h edge TTL).
+- tests: the four homepage regressions pin the light palette (font URLs,
+  orange tokens, cache key, ban on non-light backgrounds) instead of the
+  retired navy/foil tokens.

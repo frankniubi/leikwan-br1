@@ -1,0 +1,1224 @@
+{
+  "started": 1789546219.434966,
+  "ended": 1789546404.5142493,
+  "requested_seconds": 180,
+  "flows": [
+    {
+      "flow": 0,
+      "sent": 11629,
+      "received": 11629,
+      "duplicates": 0,
+      "corrupt": 0,
+      "late_over_500ms": 0,
+      "errors": [],
+      "sizes": {
+        "256": [
+          2908,
+          2908
+        ],
+        "1400": [
+          2907,
+          2907
+        ],
+        "4096": [
+          2907,
+          2907
+        ],
+        "16000": [
+          2907,
+          2907
+        ]
+      },
+      "lost": 0,
+      "loss_percent": 0.0,
+      "rtt_ms": {
+        "0.5": 48.212,
+        "0.95": 59.609,
+        "0.99": 113.885,
+        "1": 215.541
+      }
+    },
+    {
+      "flow": 1,
+      "sent": 11629,
+      "received": 11629,
+      "duplicates": 0,
+      "corrupt": 0,
+      "late_over_500ms": 0,
+      "errors": [],
+      "sizes": {
+        "256": [
+          2908,
+          2908
+        ],
+        "1400": [
+          2907,
+          2907
+        ],
+        "4096": [
+          2907,
+          2907
+        ],
+        "16000": [
+          2907,
+          2907
+        ]
+      },
+      "lost": 0,
+      "loss_percent": 0.0,
+      "rtt_ms": {
+        "0.5": 50.581,
+        "0.95": 67.752,
+        "0.99": 126.674,
+        "1": 244.851
+      }
+    },
+    {
+      "flow": 2,
+      "sent": 11627,
+      "received": 11627,
+      "duplicates": 0,
+      "corrupt": 0,
+      "late_over_500ms": 0,
+      "errors": [],
+      "sizes": {
+        "256": [
+          2907,
+          2907
+        ],
+        "1400": [
+          2907,
+          2907
+        ],
+        "4096": [
+          2907,
+          2907
+        ],
+        "16000": [
+          2906,
+          2906
+        ]
+      },
+      "lost": 0,
+      "loss_percent": 0.0,
+      "rtt_ms": {
+        "0.5": 44.951,
+        "0.95": 56.732,
+        "0.99": 93.909,
+        "1": 203.587
+      }
+    },
+    {
+      "flow": 3,
+      "sent": 11628,
+      "received": 11628,
+      "duplicates": 0,
+      "corrupt": 0,
+      "late_over_500ms": 0,
+      "errors": [],
+      "sizes": {
+        "256": [
+          2907,
+          2907
+        ],
+        "1400": [
+          2907,
+          2907
+        ],
+        "4096": [
+          2907,
+          2907
+        ],
+        "16000": [
+          2907,
+          2907
+        ]
+      },
+      "lost": 0,
+      "loss_percent": 0.0,
+      "rtt_ms": {
+        "0.5": 48.538,
+        "0.95": 59.942,
+        "0.99": 116.27,
+        "1": 246.123
+      }
+    }
+  ],
+  "observations": [
+    {
+      "at": 1789546219.4425187,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "7aa4dcd687237a78e775402dff83852f58d1dbfebf56c58c69887e6d1e5791aa",
+          "rtt_ms": 30171,
+          "selected_at": "2026-09-16T08:09:58Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 66,
+          "selected_at": "2026-09-16T08:09:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546224.443941,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "7aa4dcd687237a78e775402dff83852f58d1dbfebf56c58c69887e6d1e5791aa",
+          "rtt_ms": 30171,
+          "selected_at": "2026-09-16T08:09:58Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 67,
+          "selected_at": "2026-09-16T08:10:19Z"
+        }
+      }
+    },
+    {
+      "at": 1789546229.4454098,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "7aa4dcd687237a78e775402dff83852f58d1dbfebf56c58c69887e6d1e5791aa",
+          "rtt_ms": 30171,
+          "selected_at": "2026-09-16T08:09:58Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 67,
+          "selected_at": "2026-09-16T08:10:19Z"
+        }
+      }
+    },
+    {
+      "at": 1789546234.4464264,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546239.447742,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546244.449632,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546249.4507911,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546254.4521034,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546259.4561493,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "ebf28aca7002ec31c53ca38de2f2f59cc8dac697d423ec5098bfe9355bb1f828",
+          "rtt_ms": 30169,
+          "selected_at": "2026-09-16T08:10:28Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "f3suo1nIPFN44s1Deiwer2vzjz64JJU7orAfW4yEYt0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "9daa70368215e5bc3652c31ed323f32fc65dfbf0694a01354c57c88b59652323",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:10:28Z"
+        }
+      }
+    },
+    {
+      "at": 1789546264.4582467,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546269.4609933,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546274.462776,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546279.4643912,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546284.465818,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546289.4666197,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "JJWcQyOK-UTpaFtj7xsOB7P8mOV8hkoljhGxuOZL29A",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "9778873beb559d56aa5d4aa3fe4bf10847f137e448bcc19a2f68262bbca749ca",
+          "lease_hash": "7250fdd56d65a9c7ec657351f71de7d71d817f07a311aa84dd1bbace6568605b",
+          "rtt_ms": 26926,
+          "selected_at": "2026-09-16T08:10:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 64,
+          "selected_at": "2026-09-16T08:10:58Z"
+        }
+      }
+    },
+    {
+      "at": 1789546294.4680588,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546299.4690812,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546304.4710402,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546309.4724638,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546314.4740465,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546319.475435,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "e2a832ba6e37f3de16ef62ae865b55bc1aed2328ff3d7a7a28a9a687ebe0891c",
+          "rtt_ms": 30172,
+          "selected_at": "2026-09-16T08:11:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 65,
+          "selected_at": "2026-09-16T08:11:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546324.476456,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546329.4774063,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546334.478889,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546339.4802878,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546344.481679,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546349.4840791,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "d6bc0c3ad2e2aaf3d3376af70e1642c6ce96e5d19d26fca927a0ee79b465885e",
+          "rtt_ms": 30163,
+          "selected_at": "2026-09-16T08:11:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 63,
+          "selected_at": "2026-09-16T08:11:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546354.486157,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546359.4898877,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546364.4921117,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546369.495236,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546374.4980023,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546379.5012786,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "dcb75507e2696dbb806e92d564cc32cec3807ff7c30959498873b15483a7f048",
+          "rtt_ms": 30175,
+          "selected_at": "2026-09-16T08:12:29Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 71,
+          "selected_at": "2026-09-16T08:12:29Z"
+        }
+      }
+    },
+    {
+      "at": 1789546384.5042615,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 30182,
+          "selected_at": "2026-09-16T08:12:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 68,
+          "selected_at": "2026-09-16T08:12:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546389.506883,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 30182,
+          "selected_at": "2026-09-16T08:12:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 68,
+          "selected_at": "2026-09-16T08:12:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546394.5091484,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 30182,
+          "selected_at": "2026-09-16T08:12:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 68,
+          "selected_at": "2026-09-16T08:12:59Z"
+        }
+      }
+    },
+    {
+      "at": 1789546399.511311,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "57450dc6eef1f4ebd495961317ebeccba3bbe6b4accd1889c50ca7da0aab8b4e",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 30182,
+          "selected_at": "2026-09-16T08:12:59Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        },
+        "latest_tcp": {
+          "selection_ref": "LJu2hDz0cK_oJnYGVBI0lygLF4VxTBwKq3qubStzEr0",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "42fb859dbb8c7a06dd154b33eeaf412037d3fda30fc9b59d94b50e1ba2fab014",
+          "rtt_ms": 68,
+          "selected_at": "2026-09-16T08:12:59Z"
+        }
+      }
+    }
+  ],
+  "pps": 60,
+  "script_sha256": "1a64b7ab4d12f6ebd59cee726d7fb3003ac102c3ff9a0781aad8bc967dc99fff"
+}

@@ -1,8 +1,14 @@
 # Ultra UoT (UDP over TCP) - implementation plan
 
-Status: **plan only, nothing implemented.** Written 2026-09-13 after the
+Status: **superseded as the client delivery plan.** Written 2026-09-13 after the
 probe-failure work, to answer "let a user choose UoT so it does not matter
 whether a relay answers UDP".
+
+The 2026-09-16 spec is the one to implement from:
+`docs/superpowers/specs/2026-09-16-headless-ultra-uot-native-tun-design.md`.
+It keeps the command-4 idea, adds headless Windows/Linux/macOS and native TUN,
+and **rejects** the v1 single-peer restriction (TUN/native SOCKS5 UDP ASSOCIATE
+must multiplex destinations on one stream).
 
 ## Why
 

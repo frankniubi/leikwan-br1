@@ -1,0 +1,17 @@
+Sep 16 14:40:16 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:16 active candidate forwarding test failed protocol=udp forward_id=170 selection_ref=nEKy2SJlZHBBQbBLSbFOLjkwDAhHBLbuYaaxtzIH8pA generation=5a623773128bfc5ecd836b2594eed5f3836112af6a61d16d9923459d7e26486e reason=timeout
+Sep 16 14:40:18 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:18 udp session failed forward_id=170 reason=keepalive_timeout generation=5a623773128bfc5ecd836b2594eed5f3836112af6a61d16d9923459d7e26486e
+Sep 16 14:40:18 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:18 udp session failed forward_id=170 reason=udp_payload_ceiling_unusable generation=5a623773128bfc5ecd836b2594eed5f3836112af6a61d16d9923459d7e26486e
+Sep 16 14:40:20 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:20 tcp stream ended forward_id=170 direction=upstream reason=eof generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6 selection_ref=fpKEqh8CG1NqA6ZIauvPw1G4UrC60KYXKJt4muvEI6I duration_ms=50 bytes=80
+Sep 16 14:40:20 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:20 tcp stream ended forward_id=170 direction=downstream reason=eof generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6 selection_ref=fpKEqh8CG1NqA6ZIauvPw1G4UrC60KYXKJt4muvEI6I duration_ms=51 bytes=402
+Sep 16 14:40:33 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:33 udp session failed forward_id=170 reason=keepalive_timeout generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:40:33 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:33 udp session failed forward_id=170 reason=udp_payload_ceiling_unusable generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:40:48 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:48 udp session failed forward_id=170 reason=keepalive_timeout generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:40:48 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:40:48 udp session failed forward_id=170 reason=udp_payload_ceiling_unusable generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:40:52 instance-20241020-0131 systemd[1]: Stopping ultra-forward-170.service - Ultra Forward 170...
+Sep 16 14:41:03 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:41:03 udp session failed forward_id=170 reason=udp_payload_ceiling_unusable generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:41:03 instance-20241020-0131 ultra-client[4088495]: 2026/09/16 14:41:03 udp session failed forward_id=170 reason=keepalive_timeout generation=6914e9b187cf38a5c90ecab8c1a3e0b9791ecf26f274d9d7f7155ac4146af6b6
+Sep 16 14:41:03 instance-20241020-0131 systemd[1]: ultra-forward-170.service: Deactivated successfully.
+Sep 16 14:41:03 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+Sep 16 14:41:03 instance-20241020-0131 systemd[1]: ultra-forward-170.service: Consumed 1.994s CPU time.
+Sep 16 14:41:03 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+Sep 16 14:41:35 instance-20241020-0131 ultra-client[4089893]: 2026/09/16 14:41:35 ultra lease selection started forward_id=170 candidates=4

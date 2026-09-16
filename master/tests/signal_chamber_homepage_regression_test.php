@@ -15,7 +15,6 @@ foreach ([
     'class="bridge-home-map"',
     'class="bridge-home-network"',
     'class="bridge-home-plate-key"',
-    'class="bridge-home-cities"',
     'class="bridge-home-closing"',
 ] as $required) {
     if (!str_contains($home, $required)) {
@@ -41,7 +40,7 @@ foreach (['SELECT COUNT(*) AS total FROM nodes WHERE status = :status', 'SELECT 
 foreach ([
     'publicPage(string $title, string $body, ?array $viewer = null, string $variant = \'default\')',
     "'bridge-home'",
-    '/assets/bridge-home.css?v=20260915N',
+    '/assets/bridge-home.css?v=20260916c',
     '/assets/signal-chamber.css?v=20260725',
     '/assets/signal-chamber.js?v=20260725',
     '$script = $isBridgeHome ? \'\' :',

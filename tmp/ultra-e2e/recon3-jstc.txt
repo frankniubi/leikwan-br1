@@ -1,0 +1,293 @@
+﻿### /etc/ultra/forward-158.json
+{
+  "forward_id": 158,
+  "listen_host": "0.0.0.0",
+  "listen_port": 30522,
+  "target": "141.11.91.62:30522",
+  "control_socket": "/run/ultra/forward-158.control.sock",
+  "transport": "tcp+udp",
+  "max_tcp_connections": 512,
+  "udp_queue_packets": 256,
+  "connect_timeout_seconds": 5,
+  "location_cache_path": "/var/lib/ultra/location.json",
+  "location_lock_path": "/run/ultra/location.lock",
+  "status_path": "/run/ultra/forward-158.status.json",
+  "policy_generation": "8fa4fec7d132b298649c9f0b7615a567a4e0a8671af17f7ddf93601e30cd7a09",
+  "target_digest": "7a5dad5a8157db8513cbd3d009a3a78fc7a64c9b7ea79ae3b04c62b7086e8e85",
+  "zone_aliases": {},
+  "auto_select": true,
+  "udp_prewarm": true,
+  "udp_keepalive_interval_seconds": 5,
+  "probe_target": "1.1.1.1:53",
+  "probe_duration_seconds": 30,
+  "probe_timeout_ms": 800,
+  "probe_workers": 4,
+  "probe_samples": 30,
+  "probe_interval_ms": 1000
+}
+
+### /etc/ultra/forward-170.json
+{
+  "forward_id": 170,
+  "listen_host": "0.0.0.0",
+  "listen_port": 10001,
+  "target": "185.220.238.143:10001",
+  "control_socket": "/run/ultra/forward-170.control.sock",
+  "transport": "tcp+udp",
+  "max_tcp_connections": 512,
+  "udp_queue_packets": 256,
+  "connect_timeout_seconds": 5,
+  "location_cache_path": "/var/lib/ultra/location.json",
+  "location_lock_path": "/run/ultra/location.lock",
+  "status_path": "/run/ultra/forward-170.status.json",
+  "policy_generation": "bda4d42458521089a75382ae393c0a88524d269e4d2d9285037132cc7a4fa616",
+  "target_digest": "0f877086c7cff08cd00f6778f0f18654464fc41cb5a0b45a4d787f4e1244170b",
+  "zone_aliases": {},
+  "auto_select": true,
+  "udp_prewarm": true,
+  "udp_keepalive_interval_seconds": 5,
+  "probe_target": "1.1.1.1:53",
+  "probe_duration_seconds": 30,
+  "probe_timeout_ms": 800,
+  "probe_workers": 4,
+  "probe_samples": 30,
+  "probe_interval_ms": 1000
+}
+
+### /etc/ultra/forward-171.json
+{
+  "forward_id": 171,
+  "listen_host": "0.0.0.0",
+  "listen_port": 32502,
+  "target": "185.220.238.143:5202",
+  "control_socket": "/run/ultra/forward-171.control.sock",
+  "transport": "tcp+udp",
+  "max_tcp_connections": 512,
+  "udp_queue_packets": 256,
+  "connect_timeout_seconds": 5,
+  "location_cache_path": "/var/lib/ultra/location.json",
+  "location_lock_path": "/run/ultra/location.lock",
+  "status_path": "/run/ultra/forward-171.status.json",
+  "policy_generation": "43f2ec7c91cbfb95304eff9f5a7aae73a353d90ba845e6e2c65866c6de9beb49",
+  "target_digest": "e18f83d4f21b3a073967d7f478748cdbef39f25ed750870e1ce8ba071884b618",
+  "zone_aliases": {},
+  "auto_select": true,
+  "udp_prewarm": true,
+  "udp_keepalive_interval_seconds": 5,
+  "probe_target": "1.1.1.1:53",
+  "probe_duration_seconds": 30,
+  "probe_timeout_ms": 800,
+  "probe_workers": 4,
+  "probe_samples": 30,
+  "probe_interval_ms": 1000
+}
+
+### /etc/ultra/forward-180.json
+{
+  "forward_id": 180,
+  "listen_host": "0.0.0.0",
+  "listen_port": 54544,
+  "target": "127.0.0.1:54544",
+  "control_socket": "/run/ultra/forward-180.control.sock",
+  "transport": "tcp+udp",
+  "max_tcp_connections": 512,
+  "udp_queue_packets": 256,
+  "connect_timeout_seconds": 5,
+  "location_cache_path": "/var/lib/ultra/location.json",
+  "location_lock_path": "/run/ultra/location.lock",
+  "status_path": "/run/ultra/forward-180.status.json",
+  "policy_generation": "9df62299064f04a4ff8507eb41cb6354a3efeac2ee61fd6b5ddd570db16ef657",
+  "target_digest": "c5bb7b17bd9f49951fb851c9d1e428c2375024e14a34fd3fc9df376478ec49f0",
+  "zone_aliases": {},
+  "auto_select": true,
+  "udp_prewarm": true,
+  "udp_keepalive_interval_seconds": 5,
+  "probe_target": "1.1.1.1:53",
+  "probe_duration_seconds": 30,
+  "probe_timeout_ms": 800,
+  "probe_workers": 4,
+  "probe_samples": 30,
+  "probe_interval_ms": 1000
+}
+
+### ss-none-probe config
+{"udp_target":"1.1.1.1:53","state_path":"/var/lib/leikwan-ss-none-probe/status.json","method":"none","interval_seconds":30,"password":"laufrank","timeout_seconds":12,"window_seconds":86400,"host":"127.0.0.1","tcp_target":"1.1.1.1:80","label":"linux-172.21.255.189","port":10001,"events_path":"/var/lib/leikwan-ss-none-probe/events.jsonl"}
+### ss-none status
+{"availability_percent":77.454,"consecutive_failures":0,"credential_configured":true,"failure_count":604,"host":"127.0.0.1","label":"linux-172.21.255.189","last_error":"","last_failure_at":"2026-09-13T12:58:24Z","last_latency_ms":126,"last_success_at":"2026-09-13T13:15:30Z","last_tcp_error":"","last_udp_error":"","lifecycle":"running","method":"none","port":10001,"sample_count":2679,"schema_version":1,"started_at":"2026-09-11T06:56:32Z","state":"up","success_count":2075,"tcp_success_count":2075,"transport":"tcp+udp","udp_success_count":2261,"updated_at":"2026-09-13T13:15:30Z","window_seconds":86400,"window_start":"2026-09-12T13:15:30Z"}
+
+### ss-none last events
+{"at":"2026-09-13T13:15:00Z","error_code":"","latency_ms":113,"ok":true,"tcp_error_code":"","tcp_latency_ms":113,"tcp_ok":true,"timestamp":1789305300.167568,"udp_error_code":"","udp_latency_ms":52,"udp_ok":true}
+{"at":"2026-09-13T13:15:30Z","error_code":"","latency_ms":126,"ok":true,"tcp_error_code":"","tcp_latency_ms":126,"tcp_ok":true,"timestamp":1789305330.3539433,"udp_error_code":"","udp_latency_ms":52,"udp_ok":true}
+### agent config
+{
+  "master_url": "https://v3.leikwanhost.com",
+  "panel_mirror_urls": [
+    "https://api-leikwanbridge.nbwly.com"
+  ],
+  "artifact_base_url": "https://v3.leikwanhost.com",
+  "client_id": 3,
+  "agent_token": "f5fd4b93d782b9a0588071419f7cbd4d360d68b28de9843d",
+  "state_dir": "/var/lib/leikwan-client-agent",
+  "bond_bin": "/usr/local/bin/leikwan-bond",
+  "bond_ingress_bin": "/usr/local/bin/leikwan-ingress",
+  "wstunnel_bin": "/usr/local/bin/wstunnel",
+  "wstunnel_version": "10.5.2",
+  "mptcp_client_bin": "/usr/local/bin/leikwan-mptcp-client.py",
+  "uot_bond_bin": "/usr/local/bin/leikwan-uot-bond",
+  "log_level": "INFO",
+  "installer_version": "2026.09.11.3",
+  "installer_sha256": "8a8f7ffe8c3a2901efb37948e5d7cf89865de7f01c4a3de77a2171a9d3c365a6",
+  "poll_interval_seconds": 30,
+  "health_check_interval_seconds": 20,
+  "cfwg_latency_watchdog": {
+    "enabled": true,
+    "forward_ids": [
+      47
+    ],
+    "dwell_windows": 2,
+    "window_samples": 3,
+    "baseline_rtt_ms": {
+      "47": 31
+    },
+    "critical_rtt_ms": 45,
+    "restart_actions": [
+      "rotate_cf_ip",
+      "wstunnel"
+    ],
+    "cooldown_seconds": 240,
+    "critical_loss_pct": 0.34,
+    "ping_timeout_seconds": 1,
+    "critical_rtt_delta_ms": 8,
+    "enable_cf_ip_rotation": true,
+    "probe_interval_seconds": 5,
+    "min_relative_degradation_ms": 8,
+    "relative_degradation_factor": 1.35,
+    "state_write_interval_seconds": 15
+  },
+  "runtime_refresh": {
+    "token": "claude-forward47-refresh-20260528-0438",
+    "forward_ids": [
+      47,
+      59
+    ]
+  },
+  "cfwg_edge_pins": {
+    "47": "162.159.39.8"
+  },
+  "ultra_selection_mode": "auto"
+}
+### agent update state
+{
+  "request_token": "49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995",
+  "status": "success",
+  "last_attempt_at": 1789277491.5521612,
+  "last_download_bytes": 0,
+  "download_skip": false,
+  "last_error": "",
+  "last_failed_at": 1789236307.4597502,
+  "last_completed_request_token": "49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995",
+  "last_completed_at": 1789277491.5521612,
+  "installed_version": "2026.09.11.2",
+  "last_started_at": 1789277401.6349852
+}
+### config pull state
+{
+  "status": "ok",
+  "last_attempt_at": 1789305289.4084125,
+  "last_success_at": 1789305289.4084125,
+  "last_error": "",
+  "agent_version": "2026.09.11.2",
+  "master_url": "https://api-leikwanbridge.nbwly.com",
+  "client_id": 3,
+  "forwards_total": 5,
+  "applied_forward_ids": [
+    158,
+    159,
+    170,
+    171,
+    180
+  ],
+  "noop_forward_ids": [],
+  "invalid_forward_ids": [],
+  "inactive_forward_ids": [],
+  "agent_update_request_token": "49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995",
+  "diag_request_token": "codex-cfwg47-postfix-20260519220339",
+  "clock": {
+    "status": "error",
+    "offset_seconds": 83.605,
+    "panel_time": "2026-09-13T13:13:26+00:00",
+    "service": "systemd-timesyncd",
+    "synchronized": true
+  },
+  "unsupported_forward_ids": []
+}
+### tcp listeners
+State  Recv-Q Send-Q  Local Address:Port  Peer Address:PortProcess                                   
+LISTEN 0      128           0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=936,fd=4))            
+LISTEN 0      1024000             *:54544            *:*    users:(("ultra-client",pid=2824780,fd=6))
+LISTEN 0      1024000             *:30522            *:*    users:(("ultra-client",pid=2825211,fd=7))
+LISTEN 0      1024000             *:10001            *:*    users:(("ultra-client",pid=2825293,fd=7))
+LISTEN 0      65535               *:32909            *:*    users:(("brook",pid=1766,fd=42))         
+LISTEN 0      128              [::]:22            [::]:*    users:(("sshd",pid=936,fd=3))            
+LISTEN 0      65535               *:44080            *:*    users:(("brook",pid=1766,fd=50))         
+LISTEN 0      65535               *:44480            *:*    users:(("brook",pid=1766,fd=51))         
+LISTEN 0      65535               *:32216            *:*    users:(("brook",pid=1766,fd=44))         
+LISTEN 0      65535               *:32215            *:*    users:(("brook",pid=1766,fd=43))         
+LISTEN 0      65535               *:32152            *:*    users:(("brook",pid=1766,fd=35))         
+LISTEN 0      65535               *:32105            *:*    users:(("brook",pid=1766,fd=40))         
+LISTEN 0      65535               *:32109            *:*    users:(("brook",pid=1766,fd=38))         
+LISTEN 0      65535               *:32071            *:*    users:(("brook",pid=1766,fd=5))          
+LISTEN 0      65535               *:32032            *:*    users:(("brook",pid=1766,fd=39))         
+LISTEN 0      1024000             *:32502            *:*    users:(("ultra-client",pid=2825341,fd=7))
+LISTEN 0      1024000             *:32469            *:*    users:(("ultra-client",pid=2825254,fd=7))
+LISTEN 0      65535               *:65152            *:*    users:(("brook",pid=1766,fd=47))         
+LISTEN 0      65535               *:32353            *:*    users:(("brook",pid=1766,fd=10))         
+LISTEN 0      65535               *:32356            *:*    users:(("brook",pid=1766,fd=49))         
+LISTEN 0      65535               *:65150            *:*    users:(("brook",pid=1766,fd=26))         
+LISTEN 0      65535               *:65151            *:*    users:(("brook",pid=1766,fd=45))         
+LISTEN 0      65535               *:32711            *:*    users:(("brook",pid=1766,fd=30))         
+LISTEN 0      65535               *:8080             *:*    users:(("brook",pid=1766,fd=41))         
+### port 1000x
+udp   UNCONN 0      0                    *:10001            *:*    users:(("ultra-client",pid=2825293,fd=6))
+tcp   LISTEN 0      1024000              *:10001            *:*    users:(("ultra-client",pid=2825293,fd=7))
+### brook cmdline
+./brook relays -l :65353 10.71.0.9:65353 -l :32353 138.2.76.187:32353 -l :32711 192.168.50.211:32088 -l :43080 10.71.0.10:43080 -l :43443 10.71.0.10:43443 -l :32909 10.52.100.96:32909 -l :44080 172.21.255.248:80 -l :2121 172.21.255.248:21 -l :32531 192.168.50.211:32531 -l :8080 192.168.209.1:8080 -l :32356 192.168.16.8:80 -l :44480 192.168.103.105:80 -l :32032 10.52.0.211:32032 -l :65340 10.54.191.1:65340 -l :6443 223.112.21.198:6443 -l :32109 192.168.40.10:32109 -l :32216 192.168.40.10:32216 -l :32215 192.168.40.10:32215 -l :65150 192.168.16.207:80 -l :65151 192.168.16.208:80 -l :65152 192.168.16.209:80 -l :32105 192.168.50.211:32105 -l :32152 192.168.50.211:32152 -l :32071 192.168.50.211:32071 
+### ss-none unit
+# /etc/systemd/system/leikwan-ss-none-probe.service
+[Unit]
+Description=LeiKwan Shadowsocks none TCP+UDP availability probe
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=leikwan-probe
+Group=leikwan-probe
+ExecStart=/usr/bin/python3 /usr/local/libexec/leikwan-ss-none-probe/ss-none-availability-probe.py --config /etc/leikwan-ss-none-probe/config.json
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/leikwan-ss-none-probe
+
+[Install]
+### latest update svc journal
+svc=leikwan-client-agent-update-1789236298-49662020
+Sep 13 02:04:58 instance-20241020-0131 systemd[1]: Started leikwan-client-agent-update-1789236298-49662020.service - /usr/bin/env bash /usr/local/bin/leikwan-client-agent-update --request-token 49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995 --state-path /var/lib/leikwan-client-agent/agent_update_state.json --artifact-base https://v3.leikwanhost.com.
+Sep 13 02:05:07 instance-20241020-0131 env[2632898]: agent version differs from manifest
+Sep 13 02:05:07 instance-20241020-0131 systemd[1]: leikwan-client-agent-update-1789236298-49662020.service: Main process exited, code=exited, status=1/FAILURE
+Sep 13 02:05:07 instance-20241020-0131 systemd[1]: leikwan-client-agent-update-1789236298-49662020.service: Failed with result 'exit-code'.
+Sep 13 02:05:07 instance-20241020-0131 systemd[1]: leikwan-client-agent-update-1789236298-49662020.service: Consumed 2.292s CPU time.
+### done

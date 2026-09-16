@@ -1,0 +1,17 @@
+SagerNet sing-geoip and sing-geosite rule-set data
+Retrieved 2026-09-06; distributed as unmodified upstream SRS snapshots.
+
+geoip-cn.srs: 34074 bytes
+SHA-256: 0acf5dad38fba9db2dade29ce5e4edc6902220944f30628ae46ed16cb0ec5edd
+Source: https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs
+Build source: https://github.com/SagerNet/sing-geoip
+
+geosite-cn.srs: 55507 bytes
+SHA-256: f657669be37bf136f97e6c0cacede9bf735523427abd21d58ac34ca5ec5d92db
+Source: https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs
+Build source: https://github.com/SagerNet/sing-geosite
+
+Copyright (C) 2022 by nekohasekai <contact-sagernet@sekai.icu>
+Upstream license: GNU General Public License version 3 or later.
+See the accompanying SAGERNET-RULESETS-LICENSE.txt and COPYING.txt.
+These snapshots are updated with application releases, not during connection startup.

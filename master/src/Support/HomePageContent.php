@@ -6,9 +6,9 @@ namespace Leikwan\Master\Support;
 /**
  * Homepage for the Leikwan Bridge public surface.
  *
- * High-performance transit mesh and intelligent forwarding control plane.
- * The first screen renders the global peer mesh drawn on a recognizable coast,
- * paired with a clear, authoritative value proposition and bento capabilities grid.
+ * The page is a specification plate, not a brochure: one peer mesh drawn on a real
+ * coast, then pictograms, numerals and single-word labels. Prose is this surface's
+ * failure mode, so every band carries a label and nothing to read.
  *
  * The network is a symmetric MESH. Every node is a peer of every other node and can carry
  * traffic in either direction.
@@ -41,14 +41,33 @@ final class HomePageContent
      * The operators behind every line. The official SVG wordmarks under /assets/carriers/
      * are used for China Telecom, Unicom and Mobile, while BGP uses an SVG glyph.
      *
-     * @var array<int, array{key:string,glyph:string,name:array<string,string>,legal:array<string,string>}>
+     * One word per operator: the legal name and the short name were the same string
+     * twice, which is the kind of repetition this page no longer carries.
+     *
+     * @var array<int, array{key:string,mark:string,label:array<string,string>}>
      */
     private const CARRIERS = [
-        ['key' => 'ct', 'glyph' => 'CT', 'name' => ['en' => 'China Telecom', 'zh-Hans' => '中国电信', 'zh-TW' => '中國電信'], 'legal' => ['en' => 'China Telecom', 'zh-Hans' => '中国电信', 'zh-TW' => '中國電信']],
-        ['key' => 'cu', 'glyph' => 'CU', 'name' => ['en' => 'China Unicom', 'zh-Hans' => '中国联通', 'zh-TW' => '中國聯通'], 'legal' => ['en' => 'China Unicom', 'zh-Hans' => '中国联通', 'zh-TW' => '中國聯通']],
-        ['key' => 'cm', 'glyph' => 'CM', 'name' => ['en' => 'China Mobile', 'zh-Hans' => '中国移动', 'zh-TW' => '中國移動'], 'legal' => ['en' => 'China Mobile', 'zh-Hans' => '中国移动', 'zh-TW' => '中國移動']],
-        ['key' => 'bgp', 'glyph' => 'BGP', 'name' => ['en' => 'Multi-line BGP', 'zh-Hans' => 'BGP 多线', 'zh-TW' => 'BGP 多線'], 'legal' => ['en' => 'BGP multi-line', 'zh-Hans' => 'BGP 多线', 'zh-TW' => 'BGP 多線']],
+        ['key' => 'ct', 'mark' => 'CT', 'label' => ['en' => 'Telecom', 'zh-Hans' => '电信', 'zh-TW' => '電信']],
+        ['key' => 'cu', 'mark' => 'CU', 'label' => ['en' => 'Unicom', 'zh-Hans' => '联通', 'zh-TW' => '聯通']],
+        ['key' => 'cm', 'mark' => 'CM', 'label' => ['en' => 'Mobile', 'zh-Hans' => '移动', 'zh-TW' => '移動']],
+        ['key' => 'bgp', 'mark' => 'BGP', 'label' => ['en' => 'BGP', 'zh-Hans' => 'BGP', 'zh-TW' => 'BGP']],
     ];
+
+    /**
+     * The native clients, as a glyph and one word. The names are proper nouns and
+     * stay identical in every locale, so they live here rather than in the copy.
+     *
+     * @var array<int, array{key:string,label:string}>
+     */
+    private const PLATFORMS = [
+        ['key' => 'windows', 'label' => 'Windows'],
+        ['key' => 'macos', 'label' => 'macOS'],
+        ['key' => 'android', 'label' => 'Android'],
+        ['key' => 'linux', 'label' => 'Linux'],
+    ];
+
+    /** The transport protocols every peer forwards. */
+    private const PROTOCOLS = ['TCP', 'UDP'];
 
     /** Chart crop: 95-150 degrees east, 50 north to 10 south. */
     private const LON_MIN = 93.0;
@@ -67,133 +86,97 @@ final class HomePageContent
     {
         $copy = [
             'en' => [
-                'hero_badge' => 'PEER MESH · 13 GLOBAL HUBS ONLINE',
-                'title_zh' => '直達.',
-                'title_en' => 'Direct.',
-                'hero_sub' => 'High-Performance Transit Mesh & Forwarding Control Plane',
-                'hero_lede' => 'Engineered for sub-millisecond gaming acceleration, application transit, and resilient port forwarding. Full peer mesh with carrier-grade landing.',
-                'primary' => 'Enter Console · 进入控制台',
-                'hero_guide_cta' => 'Getting Started · 新手指南',
-                'platforms_label' => 'Native Runtimes: Windows · macOS · Android · Linux',
-                'features_kicker' => 'Capabilities · 核心能力',
-                'features_title' => 'Engineered for Speed, Reliability, and Precision.',
-                'features_note' => 'From competitive multiplayer to enterprise application transit, LeiKwan Bridge provides transparent routing with zero packet loss.',
-                'feat_mesh_title' => 'Any-to-Any Peer Mesh',
-                'feat_mesh_desc' => 'Direct bidirectional peer links across 13 global hubs. True full mesh with zero single-point bottleneck.',
-                'feat_carriers_title' => 'Carrier-Grade Landing',
-                'feat_carriers_desc' => 'China Telecom, China Unicom, China Mobile, and BGP multi-line peers landing directly where the city sits.',
-                'feat_transit_title' => 'Ultra-Low Jitter Transit',
-                'feat_transit_desc' => 'Optimized transmission paths for TCP and UDP, eliminating packet loss and public network congestion.',
-                'feat_runtimes_title' => 'Native Cross-Platform Clients',
-                'feat_runtimes_desc' => 'Lightweight background daemons and GUI clients with automated route discovery and silent sync.',
+                'hero_badge' => 'GLOBAL MESH · {n} NODES ONLINE',
+                'title' => 'DIRECT.',
+                'hero_sub' => 'High-performance transit mesh & forwarding control plane.',
+                'primary' => 'Enter Console',
+                'hero_guide_cta' => 'How it works',
+                'platforms_label' => 'Client platforms',
                 'map_label' => 'Mesh of {n} peers across East Asia',
-                'mesh_label' => 'Mesh',
-                'atlas_kicker' => 'Atlas · 全球拓扑',
-                'atlas_title' => 'Thirteen peers. One mesh.',
-                'atlas_note' => 'Any node reaches any other, in either direction. The panel issues the route. The client takes it from there.',
-                'carriers_kicker' => 'Carriers · 运营商专线',
-                'carriers_title' => 'Telecom, Unicom, Mobile, BGP.',
-                'carriers_note' => 'Single-line or multi-line at the node. Direct landing where the city sits.',
-                'steps_kicker' => 'Workflow · 快速上手',
-                'steps_title' => 'Three Steps from Subscription to Game.',
-                'steps_note' => 'No complex networking setup. Configure in seconds and let the native client handle the rest.',
-                'step_1_title' => 'Select Line',
-                'step_1_desc' => 'Verify your plan in console and pick the optimal transit line closest to your service.',
-                'step_2_title' => 'Create Forward',
-                'step_2_desc' => 'Input target server address and port to receive a dedicated local mapping port.',
-                'step_3_title' => 'Connect & Accelerate',
-                'step_3_desc' => 'Launch client, point your app or game to 127.0.0.1, and enjoy uninterrupted low latency.',
-                'closing_kicker' => 'Console · 控制台',
-                'closing_title' => 'Create a forward. Install the client.',
-                'closing_lede' => 'Windows, macOS, Android and Linux. The apps finish the rest.',
-                'console_link' => 'Enter Console · 进入',
-                'guides_link' => 'Guides · 指南',
+                'atlas_kicker' => '01 · MESH',
+                'atlas_note' => '{n} PEERS · GREAT-CIRCLE ROUTES · BIDIRECTIONAL',
+                'spec_kicker' => '02 · SPEC',
+                'spec_title' => 'One mesh. No detour.',
+                'stat_nodes' => 'NODES',
+                'stat_carriers' => 'CARRIERS',
+                'stat_protocols' => 'PROTOCOLS',
+                'stat_platforms' => 'PLATFORMS',
+                'carriers_kicker' => '03 · CARRIERS',
+                'carriers_title' => 'Direct landing.',
+                'carriers_note' => 'Telecom, Unicom, Mobile and BGP land where the city sits.',
+                'steps_kicker' => '04 · START',
+                'steps_title' => 'Three steps to 127.0.0.1.',
+                'step_1_title' => 'Console',
+                'step_1_note' => 'Pick your line',
+                'step_2_title' => 'Forward',
+                'step_2_note' => 'Map a local port',
+                'step_3_title' => 'Connect',
+                'step_3_note' => 'Point & play',
+                'closing_title' => 'Ready when you are.',
+                'console_link' => 'Enter Console',
+                'guides_link' => 'Guides',
             ],
             'zh-Hans' => [
-                'hero_badge' => '全网状对等网络 · 13 个核心枢纽在线',
-                'title_zh' => '直達.',
-                'title_en' => 'Direct.',
-                'hero_sub' => '专业级低延迟专线与流量转发控制平面',
-                'hero_lede' => '专为电竞加速、关键业务中继与端口转发打造。全网状对等互联，多线 BGP 智能直出，告别网络拥塞与抖动。',
-                'primary' => '进入控制台 · Enter',
-                'hero_guide_cta' => '新手指南 · Guide',
-                'platforms_label' => '原生客户端：Windows · macOS · Android · Linux',
-                'features_kicker' => '核心能力 · Capabilities',
-                'features_title' => '专为极致速度、可靠中继与精准调度而生',
-                'features_note' => '无论是联机电竞加速还是关键业务中继，利群會聚均可提供高稳定、抗抖动的透明传输。',
-                'feat_mesh_title' => '全网状对等互联',
-                'feat_mesh_desc' => '东亚与全球 13 大核心节点对等互通，双向直达，无单点瓶颈与额外中转。',
-                'feat_carriers_title' => '多线运营商直出',
-                'feat_carriers_desc' => '中国电信、中国联通、中国移动专线与 BGP 多线，城市所在地直接出网。',
-                'feat_transit_title' => '极致低延迟与抗丢包',
-                'feat_transit_desc' => '深度优化 TCP/UDP 数据包转发路径，有效平抑公网抖动与网络重传。',
-                'feat_runtimes_title' => '原生全平台客户端',
-                'feat_runtimes_desc' => '适配桌面与移动系统，一键登录同步线路，极低系统开销静默守护。',
+                'hero_badge' => '全球网状 · {n} 个节点在线',
+                'title' => 'DIRECT.',
+                'hero_sub' => '高性能中转网状网络与转发控制平面。',
+                'primary' => '进入控制台',
+                'hero_guide_cta' => '了解运作方式',
+                'platforms_label' => '客户端平台',
                 'map_label' => '{cn} 个对等节点组成的东亚网状网络',
-                'mesh_label' => '网状网络',
-                'atlas_kicker' => '图鉴 · Atlas',
-                'atlas_title' => '十三个对等节点，一张网。',
-                'atlas_note' => '任意节点双向互通。面板下发线路，客户端接着把事情做完。',
-                'carriers_kicker' => '线路 · Carriers',
-                'carriers_title' => '电信、联通、移动、BGP。',
-                'carriers_note' => '单线或多线落在节点当地，在城市所在地直接出网。',
-                'steps_kicker' => '快速上手 · Workflow',
-                'steps_title' => '三步就绪，即刻开启极速连接',
-                'steps_note' => '无需复杂的网络配置经验，五分钟内即可完成转发配置并建立稳定连接。',
-                'step_1_title' => '选配套餐与线路',
-                'step_1_desc' => '在控制台确认有效套餐，选择离目标服务最近的对等线路。',
-                'step_2_title' => '创建转发规则',
-                'step_2_desc' => '输入目标服务地址与端口，获取控制台分配的本地映射端口。',
-                'step_3_title' => '连接客户端并加速',
-                'step_3_desc' => '启动客户端一键连接，将游戏或应用指向 127.0.0.1 即可畅享加速。',
-                'closing_kicker' => '控制台 · Console',
-                'closing_title' => '建一条转发，装上客户端。',
-                'closing_lede' => 'Windows、macOS、Android 与 Linux。应用把剩下的做完。',
-                'console_link' => '进入控制台 · Enter',
-                'guides_link' => '指南 · Guides',
+                'atlas_kicker' => '01 · 网状',
+                'atlas_note' => '{cn} 个节点 · 大圆航线 · 双向互通',
+                'spec_kicker' => '02 · 规格',
+                'spec_title' => '一张网，不绕路。',
+                'stat_nodes' => '节点',
+                'stat_carriers' => '线路',
+                'stat_protocols' => '协议',
+                'stat_platforms' => '平台',
+                'carriers_kicker' => '03 · 线路',
+                'carriers_title' => '当地直出。',
+                'carriers_note' => '电信、联通、移动与 BGP 在节点所在城市直出。',
+                'steps_kicker' => '04 · 上手',
+                'steps_title' => '三步直达 127.0.0.1。',
+                'step_1_title' => '控制台',
+                'step_1_note' => '选择线路',
+                'step_2_title' => '转发',
+                'step_2_note' => '映射本地端口',
+                'step_3_title' => '连接',
+                'step_3_note' => '指向即玩',
+                'closing_title' => '随时可以开始。',
+                'console_link' => '进入控制台',
+                'guides_link' => '指南',
             ],
             'zh-TW' => [
-                'hero_badge' => '全網狀對等網路 · 13 個核心樞紐上線',
-                'title_zh' => '直達.',
-                'title_en' => 'Direct.',
-                'hero_sub' => '專業級低延遲專線與流量轉發控制平面',
-                'hero_lede' => '專為電競加速、關鍵業務中繼與連接埠轉發打造。全網狀對等互聯，多線 BGP 智慧直出，告別網路壅塞與抖動。',
-                'primary' => '進入控制台 · Enter',
-                'hero_guide_cta' => '新手指南 · Guide',
-                'platforms_label' => '原生用戶端：Windows · macOS · Android · Linux',
-                'features_kicker' => '核心能力 · Capabilities',
-                'features_title' => '專為極致速度、可靠中繼與精準調度而生',
-                'features_note' => '無論是連線電競加速還是關鍵業務中繼，利群會聚均可提供高穩定、抗抖動的透明傳輸。',
-                'feat_mesh_title' => '全網狀對等互聯',
-                'feat_mesh_desc' => '東亞與全球 13 大核心節點對等互通，雙向直達，無單點瓶頸與額外中轉。',
-                'feat_carriers_title' => '多線電信商直出',
-                'feat_carriers_desc' => '中國電信、中國聯通、中國移動專線與 BGP 多線，城市所在地直接出網。',
-                'feat_transit_title' => '極致低延遲與抗封包遺失',
-                'feat_transit_desc' => '深度最佳化 TCP/UDP 封包轉發路徑，有效平抑公網抖動與網路重傳。',
-                'feat_runtimes_title' => '原生全平台用戶端',
-                'feat_runtimes_desc' => '適配桌面與行動系統，一鍵登入同步線路，極低系統開銷靜默守護。',
+                'hero_badge' => '全球網狀 · {n} 個節點上線',
+                'title' => 'DIRECT.',
+                'hero_sub' => '高性能中轉網狀網路與轉發控制平面。',
+                'primary' => '進入控制台',
+                'hero_guide_cta' => '了解運作方式',
+                'platforms_label' => '用戶端平台',
                 'map_label' => '{cn} 個對等節點組成的東亞網狀網路',
-                'mesh_label' => '網狀網路',
-                'atlas_kicker' => '圖鑑 · Atlas',
-                'atlas_title' => '十三個對等節點，一張網。',
-                'atlas_note' => '任意節點雙向互通。面板下發線路，用戶端接著把事情做完。',
-                'carriers_kicker' => '線路 · Carriers',
-                'carriers_title' => '電信、聯通、移動、BGP。',
-                'carriers_note' => '單線或多線落在節點當地，在城市所在地直接出網。',
-                'steps_kicker' => '快速上手 · Workflow',
-                'steps_title' => '三步就緒，即刻開啟極速連線',
-                'steps_note' => '無需複雜的網路設定經驗，五分鐘內即可完成轉發設定並建立穩定連線。',
-                'step_1_title' => '選配套餐與線路',
-                'step_1_desc' => '在控制台確認有效方案，選擇離目標服務最近的對等線路。',
-                'step_2_title' => '建立轉發規則',
-                'step_2_desc' => '輸入目標服務位址與連接埠，取得控制台分配的本機映射連接埠。',
-                'step_3_title' => '連線用戶端並加速',
-                'step_3_desc' => '啟動用戶端一鍵連線，將遊戲或應用指向 127.0.0.1 即可暢享加速。',
-                'closing_kicker' => '控制台 · Console',
-                'closing_title' => '建一條轉發，裝上用戶端。',
-                'closing_lede' => 'Windows、macOS、Android 與 Linux。應用把剩下的做完。',
-                'console_link' => '進入控制台 · Enter',
-                'guides_link' => '指南 · Guides',
+                'atlas_kicker' => '01 · 網狀',
+                'atlas_note' => '{cn} 個節點 · 大圓航線 · 雙向互通',
+                'spec_kicker' => '02 · 規格',
+                'spec_title' => '一張網，不繞路。',
+                'stat_nodes' => '節點',
+                'stat_carriers' => '線路',
+                'stat_protocols' => '協定',
+                'stat_platforms' => '平台',
+                'carriers_kicker' => '03 · 線路',
+                'carriers_title' => '當地直出。',
+                'carriers_note' => '電信、聯通、移動與 BGP 在節點所在城市直出。',
+                'steps_kicker' => '04 · 上手',
+                'steps_title' => '三步直達 127.0.0.1。',
+                'step_1_title' => '控制台',
+                'step_1_note' => '選擇線路',
+                'step_2_title' => '轉發',
+                'step_2_note' => '映射本機連接埠',
+                'step_3_title' => '連線',
+                'step_3_note' => '指向即玩',
+                'closing_title' => '隨時可以開始。',
+                'console_link' => '進入控制台',
+                'guides_link' => '指南',
             ],
         ];
 
@@ -280,23 +263,144 @@ final class HomePageContent
         return 2.0 * self::EARTH_RADIUS_KM * asin(min(1.0, sqrt($a)));
     }
 
-    /** "31.2N" / "121.5E" — one decimal is the honest precision for these cities. */
-    private static function coord(float $value, string $positive, string $negative): string
+    /**
+     * The widest peer-to-peer span in the mesh, as a published figure. The plate
+     * draws great circles; this is what one of them actually measures.
+     */
+    private static function meshSpan(): float
     {
-        $hemisphere = $value >= 0 ? $positive : $negative;
+        $span = 0.0;
+        foreach (self::NODES as $a) {
+            foreach (self::NODES as $b) {
+                $span = max($span, self::greatCircleKm($a['lon'], $a['lat'], $b['lon'], $b['lat']));
+            }
+        }
 
-        return number_format(abs($value), 1) . $hemisphere;
+        return $span;
     }
 
-    /** "UTC+09:00" reads unambiguously in every locale, unlike "GMT+9". */
-    private static function utcLabel(float $offset): string
+    /**
+     * The page's whole visual vocabulary: 24x24 line pictograms drawn inline, so
+     * each one inherits the current colour and costs no extra request.
+     */
+    private static function icon(string $name): string
     {
-        $sign = $offset < 0 ? '-' : '+';
-        $absolute = abs($offset);
-        $hours = (int) floor($absolute);
-        $minutes = (int) round(($absolute - $hours) * 60.0);
+        $shapes = [
+            // A hub wired to three peers: the mesh itself.
+            'nodes' => '<circle cx="12" cy="12" r="2.6"/>'
+                . '<circle cx="4.6" cy="5.4" r="2"/><circle cx="19.4" cy="5.4" r="2"/><circle cx="12" cy="20" r="2"/>'
+                . '<path d="M6.1 6.7 9.9 10.2M17.9 6.7 14.1 10.2M12 14.6V18"/>',
+            // Trunks standing on a quay: carrier-grade landing at the city.
+            'landing' => '<path d="M3 20.4h18"/><path d="M6.4 20.4V9.6M12 20.4V4.4M17.6 20.4v-7.4"/>'
+                . '<path d="M6.4 9.6h11.2"/>',
+            // Two protocols travelling in opposite directions.
+            'protocols' => '<path d="M8 4.4v15.2M8 19.6l-3.2-3.2M8 19.6l3.2-3.2"/>'
+                . '<path d="M16 19.6V4.4M16 4.4l-3.2 3.2M16 4.4l3.2 3.2"/>',
+            // A screen and a handset: the native clients.
+            'platforms' => '<rect x="2.6" y="4.4" width="12.4" height="9.6" rx="1.6"/><path d="M5.6 18.4h6.4"/>'
+                . '<rect x="16.4" y="9.4" width="5" height="10.2" rx="1.6"/>',
+            // Three sliders: the console.
+            'console' => '<path d="M4 7h16M4 12h16M4 17h16"/>'
+                . '<circle cx="9.4" cy="7" r="2.2"/><circle cx="14.6" cy="12" r="2.2"/><circle cx="8.4" cy="17" r="2.2"/>',
+            // Two peers joined by one issued link.
+            'forward' => '<circle cx="5.4" cy="12" r="2.4"/><circle cx="18.6" cy="12" r="2.4"/>'
+                . '<path d="M8.2 12h7.4M13.2 9.6 15.6 12l-2.4 2.4"/>',
+            // A throughput bolt.
+            'connect' => '<path d="M13.6 2.6 4.8 13.8h5.8l-1.2 7.6 8.8-11.2h-5.8z"/>',
+        ];
 
-        return 'UTC' . $sign . str_pad((string) $hours, 2, '0', STR_PAD_LEFT) . ':' . str_pad((string) $minutes, 2, '0', STR_PAD_LEFT);
+        return '<svg class="bridge-home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+            . ' stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+            . ($shapes[$name] ?? '')
+            . '</svg>';
+    }
+
+    /**
+     * The operating-system marks. Windows keeps its four panes; the other three
+     * are neutral device glyphs rather than trademarks.
+     */
+    private static function platformGlyph(string $key): string
+    {
+        $shapes = [
+            'windows' => '<rect x="3.2" y="3.2" width="7.6" height="7.6"/><rect x="13.2" y="3.2" width="7.6" height="7.6"/>'
+                . '<rect x="3.2" y="13.2" width="7.6" height="7.6"/><rect x="13.2" y="13.2" width="7.6" height="7.6"/>',
+            'macos' => '<rect x="3.4" y="4.6" width="17.2" height="11.4" rx="1.8"/><path d="M1.6 19.4h20.8"/>',
+            'android' => '<rect x="6.8" y="2.4" width="10.4" height="19.2" rx="2.6"/>'
+                . '<path d="M10.4 5.4h3.2M10.6 18.6h2.8"/>',
+            'linux' => '<rect x="2.6" y="4" width="18.8" height="16" rx="2"/>'
+                . '<path d="M6.8 10.4 10 13l-3.2 2.6"/><path d="M12.6 16h4.4"/>',
+        ];
+
+        return '<svg class="bridge-home-platform-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+            . ' stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+            . ($shapes[$key] ?? '')
+            . '</svg>';
+    }
+
+    /** The client strip: a glyph and one word per platform, never a sentence. */
+    private static function platformRow(array $copy): string
+    {
+        $items = '';
+        foreach (self::PLATFORMS as $platform) {
+            $items .= '<li class="bridge-home-platform">'
+                . self::platformGlyph($platform['key'])
+                . '<span class="bridge-home-platform-name">' . self::e($platform['label']) . '</span>'
+                . '</li>';
+        }
+
+        return '<ul class="bridge-home-platforms" aria-label="' . self::e((string) $copy['platforms_label']) . '">'
+            . $items . '</ul>';
+    }
+
+    /**
+     * The datasheet strip. Every numeral is counted from the constants above, so
+     * adding a peer can never leave a stale figure on the page.
+     */
+    private static function statTiles(array $copy): string
+    {
+        $tiles = [
+            ['nodes', (string) count(self::NODES), (string) $copy['stat_nodes']],
+            ['landing', (string) count(self::CARRIERS), (string) $copy['stat_carriers']],
+            ['protocols', (string) count(self::PROTOCOLS), (string) $copy['stat_protocols']],
+            ['platforms', (string) count(self::PLATFORMS), (string) $copy['stat_platforms']],
+        ];
+
+        $items = '';
+        foreach ($tiles as [$icon, $value, $label]) {
+            $items .= '<li class="bridge-home-stat">'
+                . '<span class="bridge-home-stat-icon">' . self::icon($icon) . '</span>'
+                . '<span class="bridge-home-stat-figure">'
+                . '<span class="bridge-home-stat-value">' . self::e($value) . '</span>'
+                . '<span class="bridge-home-stat-label">' . self::e($label) . '</span>'
+                . '</span>'
+                . '</li>';
+        }
+
+        return '<ul class="bridge-home-stats">' . $items . '</ul>';
+    }
+
+    /** Three pictograms with a one-line footnote each. */
+    private static function stepTiles(array $copy): string
+    {
+        $steps = [
+            ['console', '01', (string) $copy['step_1_title'], (string) $copy['step_1_note']],
+            ['forward', '02', (string) $copy['step_2_title'], (string) $copy['step_2_note']],
+            ['connect', '03', (string) $copy['step_3_title'], (string) $copy['step_3_note']],
+        ];
+
+        $items = '';
+        foreach ($steps as [$icon, $index, $title, $note]) {
+            $items .= '<li class="bridge-home-step">'
+                . '<span class="bridge-home-step-head">'
+                . '<span class="bridge-home-step-icon">' . self::icon($icon) . '</span>'
+                . '<span class="bridge-home-step-index">' . $index . '</span>'
+                . '</span>'
+                . '<h3 class="bridge-home-step-title">' . self::e($title) . '</h3>'
+                . '<p class="bridge-home-step-note">' . self::e($note) . '</p>'
+                . '</li>';
+        }
+
+        return '<ul class="bridge-home-steps-grid">' . $items . '</ul>';
     }
 
     /** "10 420 km" with a space separator, so the unit never crowds the digits. */
@@ -623,7 +727,7 @@ final class HomePageContent
     }
 
     /**
-     * The plate: graticule, landmasses, mesh links, then nodes.
+     * The plate: graticule, landmasses, mesh links, nodes, then the codes.
      */
     private static function routePlate(array $copy): string
     {
@@ -654,19 +758,115 @@ final class HomePageContent
                 . '</g>';
         }
 
-        // The plate is cropped to the solved frame, so every peer the key lists
+        // The plate is cropped to the solved frame, so every peer the labels name
         // is actually on screen, and "meet" keeps a rounding difference between
         // this viewBox and the CSS aspect ratio from cropping an edge.
         $frame = self::frame();
         $viewBox = round($frame['x'], 1) . ' ' . round($frame['y'], 1) . ' '
             . round($frame['w'], 1) . ' ' . round($frame['h'], 1);
+        $description = (string) $copy['map_label'] . ' · ' . self::distanceLabel(self::meshSpan());
 
-        return '<svg class="bridge-home-map" viewBox="' . $viewBox . '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="' . self::e((string) $copy['map_label']) . '">'
+        return '<svg class="bridge-home-map" viewBox="' . $viewBox . '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="' . self::e($description) . '">'
             . '<g class="rk-chart">' . self::graticule() . '</g>'
             . '<g class="rk-lands">' . self::landMasses() . '</g>'
             . '<g class="rk-links">' . $links . '</g>'
             . '<g class="rk-nodes">' . $nodes . '</g>'
+            . '<g class="rk-labels">' . self::nodeLabels($frame) . '</g>'
             . '</svg>';
+    }
+
+    /**
+     * The IATA codes, on the plate, next to their dot.
+     *
+     * The chart carries the three-letter airport codes only — no city names, no
+     * localised text — so the ladder tries eight positions around each dot and
+     * takes the first that stays inside the solved frame and touches no code
+     * already placed. Without that, HKG and CAN — fourteen plate units apart —
+     * would print on top of each other.
+     */
+    private static function nodeLabels(array $frame): string
+    {
+        $fontSize = 15.0;
+        $slots = [
+            ['start', 12.0, 5.0], ['end', -12.0, 5.0],
+            ['start', 10.0, -11.0], ['end', -10.0, -11.0],
+            ['start', 10.0, 19.0], ['end', -10.0, 19.0],
+            ['middle', 0.0, -14.0], ['middle', 0.0, 22.0],
+        ];
+
+        $out = '';
+        $placed = [];
+
+        foreach (self::NODES as $node) {
+            [$x, $y] = self::px($node['lon'], $node['lat']);
+            // The padding is the breathing room the collision test enforces, so
+            // two neighbouring names never render as one run of text.
+            $width = self::labelWidth($node['code'], $fontSize) + 12.0;
+            $chosen = $slots[0];
+            $box = null;
+
+            foreach ($slots as $slot) {
+                [$anchor, $dx, $dy] = $slot;
+                $left = $anchor === 'end' ? $x + $dx - $width
+                    : ($anchor === 'middle' ? $x + $dx - $width / 2.0 : $x + $dx);
+                $candidate = [
+                    $left,
+                    $y + $dy - $fontSize * 0.78,
+                    $left + $width,
+                    $y + $dy + $fontSize * 0.24,
+                ];
+
+                if ($candidate[0] < $frame['x'] + 2.0 || $candidate[2] > $frame['x'] + $frame['w'] - 2.0) {
+                    continue;
+                }
+                if ($candidate[1] < $frame['y'] + 2.0 || $candidate[3] > $frame['y'] + $frame['h'] - 2.0) {
+                    continue;
+                }
+                foreach ($placed as $taken) {
+                    if ($candidate[0] < $taken[2] && $candidate[2] > $taken[0]
+                        && $candidate[1] < $taken[3] && $candidate[3] > $taken[1]) {
+                        continue 2;
+                    }
+                }
+
+                $chosen = $slot;
+                $box = $candidate;
+                break;
+            }
+
+            if ($box === null) {
+                // Every slot is taken: keep the name, take the first position.
+                $chosen = $slots[0];
+                $box = [
+                    $x + $chosen[1],
+                    $y + $chosen[2] - $fontSize * 0.78,
+                    $x + $chosen[1] + $width,
+                    $y + $chosen[2] + $fontSize * 0.24,
+                ];
+            }
+            $placed[] = $box;
+
+            $out .= '<text class="rk-node-label" x="' . round($x + $chosen[1], 1)
+                . '" y="' . round($y + $chosen[2], 1)
+                . '" text-anchor="' . $chosen[0] . '">' . self::e($node['code']) . '</text>';
+        }
+
+        return $out;
+    }
+
+    /**
+     * Label width in plate units. Latin runs about half an em in this face and
+     * CJK a full one; the estimate only has to be good enough to keep two names
+     * from touching.
+     */
+    private static function labelWidth(string $label, float $fontSize): float
+    {
+        $units = 0.0;
+        foreach (preg_split('//u', $label, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $char) {
+            $units += strlen($char) > 1 ? 1.0 : 0.55;
+        }
+
+        return $units * $fontSize;
     }
 
     public static function render(string $brand, string $consoleHref, ?string $locale = null): string
@@ -675,88 +875,51 @@ final class HomePageContent
         $copy = self::strings($current);
         $href = self::e($consoleHref);
 
-        $atlas = '';
-        foreach (self::NODES as $node) {
-            $atlas .= '<li class="bridge-home-city">'
-                . '<span class="bridge-home-city-code">' . self::e($node['code']) . '</span>'
-                . '<span class="bridge-home-city-name">' . self::e(self::placeName($node, $current)) . '</span>'
-                . '</li>';
-        }
-
         $carriers = '';
         foreach (self::CARRIERS as $carrier) {
             $carriers .= '<li class="bridge-home-carrier bridge-home-carrier--' . $carrier['key'] . '">'
                 . '<span class="bridge-home-carrier-mark" aria-hidden="true">' . self::carrierMark($carrier['key']) . '</span>'
-                . '<span class="bridge-home-carrier-name">' . self::e((string) ($carrier['name'][$current] ?? $carrier['name']['en'])) . '</span>'
-                . '<span class="bridge-home-carrier-legal">' . self::e($carrier['legal'][$current] ?? $carrier['legal']['en']) . '</span>'
+                . '<span class="bridge-home-carrier-name">' . self::e((string) ($carrier['label'][$current] ?? $carrier['label']['en'])) . '</span>'
                 . '</li>';
         }
 
         return '<section class="bridge-home-hero" aria-labelledby="bridge-home-title">'
-            . '<div class="bridge-home-hero-art">'
-            . self::routePlate($copy)
-            . '</div>'
+            . '<div class="bridge-home-aurora" aria-hidden="true"></div>'
+            . '<div class="bridge-home-gridlines" aria-hidden="true"></div>'
+            . '<div class="bridge-home-hero-inner">'
             . '<div class="bridge-home-hero-copy">'
-            . '<div class="bridge-home-tag">'
+            . '<p class="bridge-home-tag">'
             . '<span class="bridge-home-tag-dot" aria-hidden="true"></span>'
-            . '<span>' . self::e((string) $copy['hero_badge']) . '</span>'
-            . '</div>'
-            . '<h1 id="bridge-home-title">'
-            . '<span lang="zh-Hant" class="bridge-home-title-zh">' . self::e((string) $copy['title_zh']) . '</span>'
-            . '<span lang="en" class="bridge-home-title-en">' . self::e((string) $copy['title_en']) . '</span>'
-            . '</h1>'
+            . self::e((string) $copy['hero_badge'])
+            . '</p>'
+            . '<h1 id="bridge-home-title" class="bridge-home-title">' . self::e((string) $copy['title']) . '</h1>'
             . '<p class="bridge-home-hero-sub">' . self::e((string) $copy['hero_sub']) . '</p>'
-            . '<p class="bridge-home-hero-lede">' . self::e((string) $copy['hero_lede']) . '</p>'
             . '<div class="bridge-home-hero-actions">'
             . '<a class="bridge-home-primary" href="' . $href . '">' . self::e((string) $copy['primary']) . '</a>'
             . '<a class="bridge-home-ghost" href="/knowledgebase?thread=getting-started-five-minute-overview">' . self::e((string) $copy['hero_guide_cta']) . '</a>'
             . '</div>'
-            . '<div class="bridge-home-hero-runtimes">'
-            . '<span class="bridge-home-runtimes-label">' . self::e((string) $copy['platforms_label']) . '</span>'
+            . self::platformRow($copy)
+            . '</div>'
+            . '</div>'
+            . '<div class="bridge-home-network">'
+            . self::routePlate($copy)
+            . '<div class="bridge-home-network-meta">'
+            . '<span class="bridge-home-kicker">' . self::e((string) $copy['atlas_kicker']) . '</span>'
+            . '<span class="bridge-home-network-note">' . self::e((string) $copy['atlas_note']) . '</span>'
             . '</div>'
             . '</div>'
             . '</section>'
-            . '<section class="bridge-home-features" aria-labelledby="features-heading">'
-            . '<div class="bridge-home-band">'
-            . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['features_kicker']) . '</p>'
-            . '<h2 id="features-heading">' . self::e((string) $copy['features_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['features_note']) . '</p>'
-            . '</header>'
-            . '<div class="bridge-home-bento">'
-            . '<div class="bridge-home-bento-card bridge-home-line-card">'
-            . '<span class="bridge-home-bento-num">01</span>'
-            . '<h3>' . self::e((string) $copy['feat_mesh_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['feat_mesh_desc']) . '</p>'
-            . '</div>'
-            . '<div class="bridge-home-bento-card bridge-home-line-card">'
-            . '<span class="bridge-home-bento-num">02</span>'
-            . '<h3>' . self::e((string) $copy['feat_carriers_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['feat_carriers_desc']) . '</p>'
-            . '</div>'
-            . '<div class="bridge-home-bento-card bridge-home-line-card">'
-            . '<span class="bridge-home-bento-num">03</span>'
-            . '<h3>' . self::e((string) $copy['feat_transit_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['feat_transit_desc']) . '</p>'
-            . '</div>'
-            . '<div class="bridge-home-bento-card bridge-home-line-card">'
-            . '<span class="bridge-home-bento-num">04</span>'
-            . '<h3>' . self::e((string) $copy['feat_runtimes_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['feat_runtimes_desc']) . '</p>'
-            . '</div>'
-            . '</div>'
-            . '</div>'
-            . '</section>'
-            . '<section class="bridge-home-network" aria-label="' . self::e((string) $copy['mesh_label']) . '">'
-            . '<div class="bridge-home-band">'
-            . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['atlas_kicker']) . '</p>'
-            . '<h2>' . self::e((string) $copy['atlas_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['atlas_note']) . '</p>'
-            . '</header>'
-            . '<ul class="bridge-home-cities">' . $atlas . '</ul>'
             . self::plateKey($current)
+            . '<section class="bridge-home-features" aria-labelledby="spec-heading">'
+            . '<div class="bridge-home-band">'
+            . '<header class="bridge-home-band-head">'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['spec_kicker']) . '</p>'
+            . '<h2 id="spec-heading">' . self::e((string) $copy['spec_title']) . '</h2>'
+            . '</header>'
+            . self::statTiles($copy)
             . '</div>'
+            . '</section>'
+            . '<section class="bridge-home-carrier-band" aria-label="' . self::e((string) $copy['carriers_kicker']) . '">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
             . '<p class="bridge-home-kicker">' . self::e((string) $copy['carriers_kicker']) . '</p>'
@@ -771,32 +934,13 @@ final class HomePageContent
             . '<header class="bridge-home-band-head">'
             . '<p class="bridge-home-kicker">' . self::e((string) $copy['steps_kicker']) . '</p>'
             . '<h2 id="steps-heading">' . self::e((string) $copy['steps_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['steps_note']) . '</p>'
             . '</header>'
-            . '<div class="bridge-home-steps-grid">'
-            . '<div class="bridge-home-step-item">'
-            . '<span class="bridge-home-step-badge">STEP 01</span>'
-            . '<h3>' . self::e((string) $copy['step_1_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['step_1_desc']) . '</p>'
-            . '</div>'
-            . '<div class="bridge-home-step-item">'
-            . '<span class="bridge-home-step-badge">STEP 02</span>'
-            . '<h3>' . self::e((string) $copy['step_2_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['step_2_desc']) . '</p>'
-            . '</div>'
-            . '<div class="bridge-home-step-item">'
-            . '<span class="bridge-home-step-badge">STEP 03</span>'
-            . '<h3>' . self::e((string) $copy['step_3_title']) . '</h3>'
-            . '<p>' . self::e((string) $copy['step_3_desc']) . '</p>'
-            . '</div>'
-            . '</div>'
+            . self::stepTiles($copy)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-closing">'
             . '<div class="bridge-home-band">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['closing_kicker']) . '</p>'
             . '<h2>' . self::e((string) $copy['closing_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['closing_lede']) . '</p>'
             . '<div class="bridge-home-closing-actions">'
             . '<a class="bridge-home-primary" href="' . $href . '">' . self::e((string) $copy['console_link']) . '</a>'
             . '<a class="bridge-home-ghost" href="/knowledgebase">' . self::e((string) $copy['guides_link']) . '</a>'

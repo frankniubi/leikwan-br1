@@ -1,0 +1,120 @@
+﻿### ultra-client --version
+2026.09.13.1.unknown
+rc=0
+### ultra-client sha + mtime
+33ac5e4c66a072da9c45a08874e416aea2519099c1d7964a75dfdc3a6e64e2d3  /usr/local/bin/ultra-client
+-rwxr-xr-x 1 root root 16040202 Sep 13 13:31 /usr/local/bin/ultra-client
+### ultra unit 170
+# /etc/systemd/system/ultra-forward-170.service
+[Unit]
+Description=Ultra Forward 170
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ultra-client --config /etc/ultra/forward-170.json
+Restart=always
+RestartSec=5
+KillMode=control-group
+LimitCORE=0
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/ultra /var/lib/ultra
+ExecStopPost=/usr/bin/rm -f /run/ultra/forward-170.control.sock /run/ultra/forward-170.status.json
+
+[Install]
+WantedBy=multi-user.target
+### probe script head
+total 28
+-rwxr-xr-x 1 root root 26069 Sep 11 14:56 ss-none-availability-probe.py
+#!/usr/bin/env python3
+"""Long-running Shadowsocks ``none`` availability probe.
+
+The local Ultra listener carries the same address-first TCP wire format as a
+Shadowsocks ``none`` server.  Its UDP facade accepts the SOCKS5 UDP envelope
+and forwards the inner address-first payload.  The probe therefore needs no
+third-party runtime: it exercises the exact local TCP and UDP data paths and
+keeps a rolling availability window in a small, secret-free status file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import dataclasses
+import datetime as _datetime
+import ipaddress
+import json
+import logging
+import os
+import pathlib
+import signal
+import socket
+import struct
+import tempfile
+import time
+from typing import Any, Callable, Deque, Iterable, Optional
+
+
+LOG = logging.getLogger("leikwan.ss_none_probe")
+MAX_RESPONSE_BYTES = 16 * 1024
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 10001
+DEFAULT_INTERVAL_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 12
+DEFAULT_WINDOW_SECONDS = 24 * 60 * 60
+DEFAULT_TCP_TARGET = "1.1.1.1:80"
+DEFAULT_UDP_TARGET = "1.1.1.1:53"
+
+
+@dataclasses.dataclass(frozen=True)
+class ProbeResult:
+    ok: bool
+    tcp_ok: bool
+    udp_ok: bool
+    tcp_latency_ms: Optional[int]
+    udp_latency_ms: Optional[int]
+    error_code: str
+    tcp_error_code: str = ""
+    udp_error_code: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class UDPResponse:
+    ok: bool
+    error_code: str
+    payload: bytes = b""
+
+
+class ConfigError(ValueError):
+### probe failure distribution (24h)
+fail combos: [(('tcp_connection_refused+udp_timeout', 'tcp_connection_refused', 'udp_timeout'), 368), (('tcp_http_response_invalid', 'tcp_http_response_invalid', ''), 366), (('tcp_http_response_invalid+udp_timeout', 'tcp_http_response_invalid', 'udp_timeout'), 79), (('tcp_connection_reset+udp_timeout', 'tcp_connection_reset', 'udp_timeout'), 3), (('udp_timeout', '', 'udp_timeout'), 2), (('tcp_connection_reset', 'tcp_connection_reset', ''), 1)]
+total samples: 6269
+fails by hour (last 24):
+   2026-09-12T13 11
+   2026-09-12T14 10
+   2026-09-12T15 10
+   2026-09-12T16 15
+   2026-09-12T17 41
+   2026-09-12T18 26
+   2026-09-12T19 39
+   2026-09-12T20 85
+   2026-09-12T21 27
+   2026-09-12T22 18
+   2026-09-12T23 12
+   2026-09-13T00 24
+   2026-09-13T01 28
+   2026-09-13T02 8
+   2026-09-13T03 29
+   2026-09-13T04 22
+   2026-09-13T05 52
+   2026-09-13T06 68
+   2026-09-13T07 29
+   2026-09-13T08 3
+   2026-09-13T09 6
+   2026-09-13T10 15
+   2026-09-13T11 10
+   2026-09-13T12 18
+### done
