@@ -67,7 +67,7 @@ foreach ([
     '.bridge-home-page .site-mark img',
     '.bridge-home-network',
     '.bridge-home-platforms',
-    '.bridge-home-stats',
+    '.bridge-home-systems',
     '.rk-node-label',
     '@media (max-width: 900px)',
     '@media (max-width: 560px)',
@@ -210,12 +210,12 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' plate key must name every peer');
     }
 
-    // Spec is four system marks, hero keeps four platform chips, path keeps
-    // three step glyphs. The stack band is gone.
+    // Spec is the four system marks on a ruled row, the path ledger keeps
+    // three stations, and the carrier wall keeps ten marks.
     if (substr_count($html, 'class="bridge-home-platform"') !== 4
-        || substr_count($html, 'class="bridge-home-stat"') !== 4
-        || substr_count($html, 'class="bridge-home-step"') !== 3
-        || substr_count($html, 'class="bridge-home-tech"') !== 0
+        || substr_count($html, 'class="bridge-home-system"') !== 4
+        || substr_count($html, 'class="bridge-home-station"') !== 3
+        || substr_count($html, 'bridge-home-carrier bridge-home-carrier--') !== 10
         || substr_count($html, 'class="bridge-home-icon"') < 3) {
         homepageFail($locale . ' homepage lost part of its pictogram set');
     }

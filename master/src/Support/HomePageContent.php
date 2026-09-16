@@ -102,19 +102,15 @@ final class HomePageContent
                 'map_label' => 'Mesh of {n} peers across East Asia',
                 'atlas_kicker' => 'MESH',
                 'atlas_note' => '{n} PEERS · BIDIRECTIONAL',
-                'spec_kicker' => 'SPEC',
-                'spec_title' => 'Four platforms.',
-                'stat_nodes' => 'NODES',
-                'stat_carriers' => 'CARRIERS',
-                'stat_protocols' => 'PROTOCOLS',
-                'stat_platforms' => 'PLATFORMS',
-                'carriers_kicker' => 'CARRIERS',
-                'carriers_title' => 'Direct landing.',
-                'carriers_note' => 'Carriers and clouds on the same mesh.',
-                'steps_kicker' => 'PATH',
-                'steps_title' => 'Line. Forward. Land.',
+                'path_kicker' => 'PATH',
+                'path_title' => 'Line. Forward. Land.',
+                'lines_kicker' => 'LINES',
+                'lines_title' => 'Direct landing.',
+                'lines_note' => 'Carriers and clouds on the same mesh.',
+                'platforms_kicker' => 'PLATFORMS',
+                'platforms_title' => 'Four systems.',
                 'step_1_title' => 'Line',
-                'step_1_note' => 'Pick it',
+                'step_1_note' => 'Pick it in the console',
                 'step_2_title' => 'Forward',
                 'step_2_note' => 'Name the destination',
                 'step_3_title' => 'Land',
@@ -134,19 +130,15 @@ final class HomePageContent
                 'map_label' => '{cn} 个对等节点组成的东亚网状网络',
                 'atlas_kicker' => '网状',
                 'atlas_note' => '{cn} 节点 · 双向',
-                'spec_kicker' => '规格',
-                'spec_title' => '四个系统。',
-                'stat_nodes' => '节点',
-                'stat_carriers' => '线路',
-                'stat_protocols' => '协议',
-                'stat_platforms' => '平台',
-                'carriers_kicker' => '线路',
-                'carriers_title' => '当地直出。',
-                'carriers_note' => '运营商与云同网直出。',
-                'steps_kicker' => '路径',
-                'steps_title' => '选线 · 转发 · 落地',
+                'path_kicker' => '路径',
+                'path_title' => '选线 · 转发 · 落地。',
+                'lines_kicker' => '线路',
+                'lines_title' => '当地直出。',
+                'lines_note' => '运营商与云，同一张网。',
+                'platforms_kicker' => '平台',
+                'platforms_title' => '四个系统。',
                 'step_1_title' => '选线',
-                'step_1_note' => '控制台',
+                'step_1_note' => '在控制台挑线路',
                 'step_2_title' => '转发',
                 'step_2_note' => '写上目的地',
                 'step_3_title' => '落地',
@@ -166,19 +158,15 @@ final class HomePageContent
                 'map_label' => '{cn} 個對等節點組成的東亞網狀網路',
                 'atlas_kicker' => '網狀',
                 'atlas_note' => '{cn} 節點 · 雙向',
-                'spec_kicker' => '規格',
-                'spec_title' => '四個系統。',
-                'stat_nodes' => '節點',
-                'stat_carriers' => '線路',
-                'stat_protocols' => '協定',
-                'stat_platforms' => '平台',
-                'carriers_kicker' => '線路',
-                'carriers_title' => '當地直出。',
-                'carriers_note' => '電信商與雲同網直出。',
-                'steps_kicker' => '路徑',
-                'steps_title' => '選線 · 轉發 · 落地',
+                'path_kicker' => '路徑',
+                'path_title' => '選線 · 轉發 · 落地。',
+                'lines_kicker' => '線路',
+                'lines_title' => '當地直出。',
+                'lines_note' => '電信商與雲，同一張網。',
+                'platforms_kicker' => '平台',
+                'platforms_title' => '四個系統。',
                 'step_1_title' => '選線',
-                'step_1_note' => '控制台',
+                'step_1_note' => '在控制台挑線路',
                 'step_2_title' => '轉發',
                 'step_2_note' => '寫上目的地',
                 'step_3_title' => '落地',
@@ -368,46 +356,50 @@ final class HomePageContent
     }
 
     /**
-     * Spec band: the four native clients as system marks, not node counts.
+     * The route ledger: three stations on one flowing dashed line, borrowing the
+     * mesh plate's animated stroke so the page reads as one system.
      */
-    private static function specPlatforms(array $copy): string
+    private static function routeLedger(array $copy): string
     {
-        $items = '';
-        foreach (self::PLATFORMS as $platform) {
-            $items .= '<li class="bridge-home-stat">'
-                . '<span class="bridge-home-stat-icon">' . self::platformGlyph($platform['key']) . '</span>'
-                . '<span class="bridge-home-stat-figure">'
-                . '<span class="bridge-home-stat-value">' . self::e($platform['label']) . '</span>'
-                . '</span>'
-                . '</li>';
-        }
-
-        return '<ul class="bridge-home-stats" aria-label="' . self::e((string) $copy['platforms_label']) . '">'
-            . $items . '</ul>';
-    }
-
-    /** Three pictograms with a one-line footnote each. */
-    private static function stepTiles(array $copy): string
-    {
-        $steps = [
-            ['console', '01', (string) $copy['step_1_title'], (string) $copy['step_1_note']],
-            ['forward', '02', (string) $copy['step_2_title'], (string) $copy['step_2_note']],
-            ['connect', '03', (string) $copy['step_3_title'], (string) $copy['step_3_note']],
+        $stations = [
+            ['console', (string) $copy['step_1_title'], (string) $copy['step_1_note']],
+            ['forward', (string) $copy['step_2_title'], (string) $copy['step_2_note']],
+            ['connect', (string) $copy['step_3_title'], (string) $copy['step_3_note']],
         ];
 
         $items = '';
-        foreach ($steps as [$icon, $index, $title, $note]) {
-            $items .= '<li class="bridge-home-step">'
-                . '<span class="bridge-home-step-head">'
-                . '<span class="bridge-home-step-icon">' . self::icon($icon) . '</span>'
-                . '<span class="bridge-home-step-index">' . $index . '</span>'
+        foreach ($stations as $index => [$icon, $title, $note]) {
+            $items .= '<li class="bridge-home-station">'
+                . '<span class="bridge-home-station-rail" aria-hidden="true">'
+                . '<span class="bridge-home-station-node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+                . ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'
+                . '<circle cx="12" cy="12" r="8.4"/></svg></span>'
                 . '</span>'
-                . '<h3 class="bridge-home-step-title">' . self::e($title) . '</h3>'
-                . '<p class="bridge-home-step-note">' . self::e($note) . '</p>'
+                . '<div class="bridge-home-station-body">'
+                . '<span class="bridge-home-station-index">' . str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) . '</span>'
+                . '<span class="bridge-home-station-icon">' . self::icon($icon) . '</span>'
+                . '<h3 class="bridge-home-station-title">' . self::e($title) . '</h3>'
+                . '<p class="bridge-home-station-note">' . self::e($note) . '</p>'
+                . '</div>'
                 . '</li>';
         }
 
-        return '<ul class="bridge-home-steps-grid">' . $items . '</ul>';
+        return '<ol class="bridge-home-ledger">' . $items . '</ol>';
+    }
+
+    /** Four system marks on one ruled row. */
+    private static function platformRow2(array $copy): string
+    {
+        $items = '';
+        foreach (self::PLATFORMS as $platform) {
+            $items .= '<li class="bridge-home-system">'
+                . '<span class="bridge-home-system-icon">' . self::platformGlyph($platform['key']) . '</span>'
+                . '<span class="bridge-home-system-name">' . self::e($platform['label']) . '</span>'
+                . '</li>';
+        }
+
+        return '<ul class="bridge-home-systems" aria-label="' . self::e((string) $copy['platforms_label']) . '">'
+            . $items . '</ul>';
     }
 
     /** "10 420 km" with a space separator, so the unit never crowds the digits. */
@@ -922,32 +914,32 @@ final class HomePageContent
             . '</div>'
             . '</section>'
             . self::plateKey($current)
-            . '<section class="bridge-home-features" aria-labelledby="spec-heading">'
+            . '<section class="bridge-home-path-band" aria-labelledby="path-heading">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['spec_kicker']) . '</p>'
-            . '<h2 id="spec-heading">' . self::e((string) $copy['spec_title']) . '</h2>'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['path_kicker']) . '</p>'
+            . '<h2 id="path-heading">' . self::e((string) $copy['path_title']) . '</h2>'
             . '</header>'
-            . self::specPlatforms($copy)
+            . self::routeLedger($copy)
             . '</div>'
             . '</section>'
-            . '<section class="bridge-home-steps" aria-labelledby="steps-heading">'
+            . '<section class="bridge-home-lines-band" aria-labelledby="lines-heading">'
             . '<div class="bridge-home-band">'
             . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['steps_kicker']) . '</p>'
-            . '<h2 id="steps-heading">' . self::e((string) $copy['steps_title']) . '</h2>'
-            . '</header>'
-            . self::stepTiles($copy)
-            . '</div>'
-            . '</section>'
-            . '<section class="bridge-home-carrier-band" aria-label="' . self::e((string) $copy['carriers_kicker']) . '">'
-            . '<div class="bridge-home-band">'
-            . '<header class="bridge-home-band-head">'
-            . '<p class="bridge-home-kicker">' . self::e((string) $copy['carriers_kicker']) . '</p>'
-            . '<h2>' . self::e((string) $copy['carriers_title']) . '</h2>'
-            . '<p class="bridge-home-note">' . self::e((string) $copy['carriers_note']) . '</p>'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['lines_kicker']) . '</p>'
+            . '<h2 id="lines-heading">' . self::e((string) $copy['lines_title']) . '</h2>'
+            . '<p class="bridge-home-note">' . self::e((string) $copy['lines_note']) . '</p>'
             . '</header>'
             . '<ul class="bridge-home-carriers">' . $carriers . '</ul>'
+            . '</div>'
+            . '</section>'
+            . '<section class="bridge-home-systems-band" aria-labelledby="systems-heading">'
+            . '<div class="bridge-home-band">'
+            . '<header class="bridge-home-band-head">'
+            . '<p class="bridge-home-kicker">' . self::e((string) $copy['platforms_kicker']) . '</p>'
+            . '<h2 id="systems-heading">' . self::e((string) $copy['platforms_title']) . '</h2>'
+            . '</header>'
+            . self::platformRow2($copy)
             . '</div>'
             . '</section>'
             . '<section class="bridge-home-closing">'
