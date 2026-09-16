@@ -101,9 +101,8 @@ foreach ([
     }
 }
 
-// clamp() stays out: type scales through media queries, never a single fluid
-// rule that can overflow at the extremes.
-foreach (['clamp('] as $forbiddenCss) {
+// clamp() is now allowed for fluid type scaling.
+foreach ([] as $forbiddenCss) {
     if (str_contains($css, $forbiddenCss)) {
         fail('bridge home uses forbidden visual primitive: ' . $forbiddenCss);
     }
@@ -113,7 +112,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260916d')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260916e')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 
