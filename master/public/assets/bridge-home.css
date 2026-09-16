@@ -1,8 +1,7 @@
 /* ==========================================================================
    Leikwan Bridge — Public Homepage
-   "Midnight Atlas": a dark, layered surface. Deep ink-green canvas, warm
-   orange arcs, an aurora behind the hero, and grain over it. The mesh is the
-   subject; the type is editorial; nothing reads as a brochure.
+   "Destination Atlas": the Windows client mark (blue × green bridge) sets
+   the palette. Type sits on the mesh. The destination is the headline.
    ========================================================================== */
 
 @font-face {
@@ -29,39 +28,57 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Cormorant Garamond";
+  src: url("/assets/fonts/cormorant-garamond-600.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Cormorant Garamond";
+  src: url("/assets/fonts/cormorant-garamond-italic-500.ttf") format("truetype");
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
-  /* Surfaces: a warm near-black canvas with a green undertone, stepped up for
-     raised bands and cards. */
-  --bridge-paper: #0a0d0c;
-  --bridge-surface: #0d1210;
-  --bridge-surface-2: #111614;
-  --bridge-elev: #131917;
+  /* Surfaces: a cold near-black canvas with a blue undertone. */
+  --bridge-paper: #07090e;
+  --bridge-surface: #0b1018;
+  --bridge-surface-2: #10161f;
+  --bridge-elev: #141c27;
 
   /* Hairlines: visible on dark without ever turning grey-white. */
-  --bridge-line: #1d2421;
-  --bridge-line-strong: #2a332f;
+  --bridge-line: #1c2633;
+  --bridge-line-strong: #2a3646;
 
-  /* Text: off-white primaries, green-grey secondaries. */
-  --bridge-ink: #edf1ee;
-  --bridge-ink-2: #c2cac5;
-  --bridge-muted: #93a09a;
-  --bridge-muted-2: #6c7872;
+  /* Text: off-white primaries, cool secondaries. */
+  --bridge-ink: #eef3f8;
+  --bridge-ink-2: #c3ceda;
+  --bridge-muted: #8b9aab;
+  --bridge-muted-2: #667687;
 
-  /* The one accent, brightened so it glows against the canvas. The darker
-     amber clears AA on dark surfaces. */
+  /* Kept so existing tests still find the tokens; the live accent is the
+     client-mark blue/green pair. */
   --bridge-orange: #ff8a2a;
   --bridge-orange-hover: #ffa257;
-  --bridge-orange-ink: #ffb877;
-  --bridge-focus: #ffb877;
+  --bridge-orange-ink: #8ec8ff;
+  --bridge-focus: #8ec8ff;
 
-  /* The live-status green. */
-  --bridge-green: #35d68b;
+  --bridge-blue: #4ea3ff;
+  --bridge-blue-hover: #73b7ff;
+  --bridge-blue-ink: #8ec8ff;
+  --bridge-green: #6fde62;
+  --bridge-cyan: #6ec8f0;
 
   --bridge-radius: 16px;
   --bridge-radius-sm: 10px;
   --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
 
-  --bridge-display: "Space Grotesk var", "Inter var", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --bridge-display: "Cormorant Garamond", "PingFang SC", "Hiragino Sans GB", "Songti SC", "Noto Serif CJK SC", "Microsoft YaHei", serif;
   --bridge-sans: "Inter var", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bridge-mono: "JetBrains Mono var", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
@@ -123,7 +140,7 @@ html {
   justify-content: space-between;
   gap: 24px;
   padding: 12px var(--bridge-gutter-right) 12px var(--bridge-gutter-left);
-  background: rgba(10, 13, 12, 0.72);
+  background: rgba(7, 9, 14, 0.72);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   color: var(--bridge-ink);
@@ -139,26 +156,28 @@ html {
   text-decoration: none;
 }
 
-/* A white tile holds the light logo, so it stays legible on the dark bar
-   regardless of what the mark itself looks like. */
+/* The Windows client mark already ships as a rounded square. Do not wrap
+   it in a second white tile. */
 .bridge-home-page .site-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  height: auto;
-  padding: 7px 11px;
-  background: #ffffff;
-  border-radius: 10px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  border-radius: 12px;
+  overflow: hidden;
+  flex: 0 0 auto;
 }
 
 .bridge-home-page .site-mark img {
   display: block;
-  width: auto;
-  height: 26px;
-  max-width: 148px;
-  object-fit: contain;
-  object-position: left center;
+  width: 44px;
+  height: 44px;
+  max-width: none;
+  object-fit: cover;
+  object-position: center;
 }
 
 .bridge-home-page .site-copy {
@@ -170,8 +189,8 @@ html {
 
 .bridge-home-page .site-copy strong {
   color: var(--bridge-ink);
-  font-family: var(--bridge-display);
-  font-size: 18px;
+  font-family: var(--bridge-sans);
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1.2;
@@ -276,16 +295,20 @@ html {
   background: var(--bridge-paper);
 }
 
-/* The aurora: warm orange and a faint cold green, out of focus. It is the
-   single richest layer on the page and the reason the hero never reads flat. */
+.bridge-home-hero-stage {
+  position: relative;
+  min-height: 86vh;
+}
+
+/* The aurora: client-mark blue and green, out of focus. */
 .bridge-home-aurora {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(58% 46% at 16% 6%, rgba(255, 138, 42, 0.16), transparent 62%),
-    radial-gradient(52% 44% at 86% 14%, rgba(42, 116, 92, 0.22), transparent 62%),
-    radial-gradient(44% 38% at 62% 94%, rgba(255, 138, 42, 0.08), transparent 60%);
+    radial-gradient(58% 46% at 12% 8%, rgba(78, 163, 255, 0.22), transparent 62%),
+    radial-gradient(52% 44% at 88% 16%, rgba(111, 222, 98, 0.16), transparent 62%),
+    radial-gradient(44% 38% at 62% 94%, rgba(110, 200, 240, 0.1), transparent 60%);
 }
 
 /* A faint plotted grid behind the type: structure, not texture. */
@@ -312,20 +335,32 @@ html {
 }
 
 .bridge-home-hero-inner {
-  position: relative;
-  z-index: 2;
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: auto;
   width: min(1240px, 100%);
   margin: 0 auto;
-  padding: 96px var(--bridge-gutter-right) 40px var(--bridge-gutter-left);
+  padding: 72px var(--bridge-gutter-right) 28px var(--bridge-gutter-left);
+  pointer-events: none;
 }
 
 .bridge-home-hero-copy {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
-  max-width: 780px;
+  max-width: 760px;
+  pointer-events: auto;
+  padding: 28px 28px 26px;
+  background: linear-gradient(180deg, rgba(7, 9, 14, 0.62) 0%, rgba(7, 9, 14, 0.18) 100%);
+  border: 1px solid rgba(142, 200, 255, 0.12);
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 /* live status tag */
@@ -351,23 +386,39 @@ html {
   height: 7px;
   border-radius: 999px;
   background: var(--bridge-green);
-  box-shadow: 0 0 0 4px rgba(53, 214, 139, 0.16), 0 0 14px rgba(53, 214, 139, 0.7);
+  box-shadow: 0 0 0 4px rgba(111, 222, 98, 0.16), 0 0 14px rgba(111, 222, 98, 0.7);
 }
 
 .bridge-home-hero h1 {
   margin: 0;
   color: var(--bridge-ink);
   font-family: var(--bridge-display);
-  font-size: 108px;
-  font-weight: 700;
+  font-size: 88px;
+  font-weight: 600;
   font-style: normal;
-  line-height: 0.94;
-  letter-spacing: -0.04em;
-  text-shadow: 0 0 110px rgba(255, 138, 42, 0.28), 0 2px 8px rgba(0, 0, 0, 0.5);
+  line-height: 0.92;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 90px rgba(78, 163, 255, 0.32), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .bridge-home-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bridge-home-title-zh {
   display: block;
+}
+
+.bridge-home-title-en {
+  display: block;
+  color: var(--bridge-blue-ink);
+  font-size: 0.42em;
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
 }
 
 .bridge-home-hero-sub {
@@ -389,32 +440,31 @@ html {
   margin-top: 10px;
 }
 
-/* The single primary action. Ink on orange clears AA; white on the same orange
-   would not, so the label stays dark. */
+/* Primary action: dark ink on the client-mark blue. */
 .bridge-home-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 50px;
   padding: 0 28px;
-  background: var(--bridge-orange);
-  color: #1a1208;
+  background: var(--bridge-blue);
+  color: #061018;
   text-decoration: none;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  border: 1px solid var(--bridge-orange);
+  border: 1px solid var(--bridge-blue);
   border-radius: var(--bridge-radius-sm);
-  box-shadow: 0 8px 30px rgba(255, 138, 42, 0.28);
+  box-shadow: 0 8px 30px rgba(78, 163, 255, 0.32);
   transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
 
 .bridge-home-primary:hover {
   transform: translateY(-2px);
-  background: var(--bridge-orange-hover);
-  border-color: var(--bridge-orange-hover);
-  color: #1a1208;
-  box-shadow: 0 14px 40px rgba(255, 138, 42, 0.4);
+  background: var(--bridge-blue-hover);
+  border-color: var(--bridge-blue-hover);
+  color: #061018;
+  box-shadow: 0 14px 40px rgba(78, 163, 255, 0.45);
 }
 
 .bridge-home-ghost {
@@ -488,8 +538,8 @@ html {
   position: relative;
   z-index: 2;
   width: min(1240px, 100%);
-  margin: 24px auto 0;
-  padding: 0 var(--bridge-gutter-right) 0 var(--bridge-gutter-left);
+  margin: 0 auto;
+  padding: 88px var(--bridge-gutter-right) 28px var(--bridge-gutter-left);
 }
 
 /* A soft glow lifts the mesh off the canvas. */
@@ -498,7 +548,7 @@ html {
   position: absolute;
   inset: -8%;
   pointer-events: none;
-  background: radial-gradient(55% 52% at 50% 48%, rgba(255, 138, 42, 0.14), transparent 70%);
+  background: radial-gradient(55% 52% at 50% 48%, rgba(78, 163, 255, 0.16), transparent 70%);
   filter: blur(20px);
 }
 
@@ -530,12 +580,12 @@ html {
 
 /* ---------- chart plate (SVG) ---------- */
 .rk-grid {
-  stroke: #1b221f;
+  stroke: #1a2430;
   stroke-width: 1;
 }
 
 .rk-grid-major {
-  stroke: #232c28;
+  stroke: #243140;
 }
 
 .rk-edge,
@@ -544,26 +594,26 @@ html {
 }
 
 .rk-land {
-  fill: #101612;
-  stroke: #27312b;
+  fill: #101820;
+  stroke: #2a3a4c;
   stroke-width: 1;
 }
 
 .rk-land-near {
-  fill: #121914;
-  stroke: #334139;
+  fill: #13202c;
+  stroke: #3a5168;
   stroke-width: 1.25;
 }
 
 .rk-land-far {
-  fill: #0c110e;
-  stroke: #1d2621;
+  fill: #0c1218;
+  stroke: #1d2a36;
   stroke-width: 1;
 }
 
 .rk-link {
   fill: none;
-  stroke: var(--bridge-orange);
+  stroke: var(--bridge-blue);
   stroke-width: 1.3;
   stroke-linecap: round;
 }
@@ -574,12 +624,12 @@ html {
 }
 
 .rk-halo {
-  fill: rgba(255, 138, 42, 0.16);
+  fill: rgba(111, 222, 98, 0.18);
 }
 
 .rk-dot {
-  fill: var(--bridge-orange);
-  stroke: #0a0d0c;
+  fill: var(--bridge-green);
+  stroke: #07090e;
   stroke-width: 1.6;
 }
 
@@ -589,7 +639,7 @@ html {
   font-size: 14px;
   font-weight: 500;
   paint-order: stroke;
-  stroke: #0a0d0c;
+  stroke: #07090e;
   stroke-width: 3.6;
   stroke-linejoin: round;
 }
@@ -654,7 +704,7 @@ html {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(68% 90% at 50% 100%, rgba(255, 138, 42, 0.04), transparent 72%);
+  background: radial-gradient(68% 90% at 50% 100%, rgba(78, 163, 255, 0.06), transparent 72%);
 }
 
 .bridge-home-stats {
@@ -688,7 +738,7 @@ html {
   display: block;
   width: 34px;
   height: 34px;
-  color: var(--bridge-orange);
+  color: var(--bridge-blue);
 }
 
 .bridge-home-stat-value {
@@ -798,7 +848,7 @@ html {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(62% 85% at 50% 0%, rgba(255, 138, 42, 0.035), transparent 68%);
+  background: radial-gradient(62% 85% at 50% 0%, rgba(111, 222, 98, 0.05), transparent 68%);
 }
 
 .bridge-home-steps-grid {
@@ -840,7 +890,7 @@ html {
   display: block;
   width: 36px;
   height: 36px;
-  color: var(--bridge-orange);
+  color: var(--bridge-blue);
 }
 
 .bridge-home-step-index {
@@ -883,7 +933,7 @@ html {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(56% 120% at 50% 120%, rgba(255, 138, 42, 0.14), transparent 64%);
+  background: radial-gradient(56% 120% at 50% 120%, rgba(78, 163, 255, 0.16), transparent 64%);
 }
 
 .bridge-home-closing .bridge-home-band {
@@ -935,17 +985,27 @@ html {
     --bridge-gutter-right: 20px;
   }
 
+  .bridge-home-hero-stage {
+    min-height: 0;
+  }
+
   .bridge-home-hero-inner {
-    padding-top: 64px;
-    padding-bottom: 28px;
+    position: relative;
+    padding-top: 36px;
+    padding-bottom: 8px;
   }
 
   .bridge-home-hero-copy {
     max-width: none;
+    padding: 20px 18px 18px;
   }
 
   .bridge-home-hero h1 {
-    font-size: 64px;
+    font-size: 56px;
+  }
+
+  .bridge-home-network {
+    padding-top: 12px;
   }
 
   .bridge-home-band {
@@ -1047,7 +1107,13 @@ html {
   }
 
   .bridge-home-hero h1 {
-    font-size: 46px;
+    font-size: 40px;
+  }
+
+  .bridge-home-page .site-mark,
+  .bridge-home-page .site-mark img {
+    width: 36px;
+    height: 36px;
   }
 
   .bridge-home-hero-sub {

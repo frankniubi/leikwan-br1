@@ -1590,19 +1590,19 @@ HTML;
         // the stylesheet instead of being discovered after CSS parse. Only the
         // homepage uses these families.
         $fontPreload = $isBridgeHome
-            ? '<link rel="preload" href="/assets/fonts/space-grotesk-var.ttf" as="font" type="font/ttf" crossorigin>'
+            ? '<link rel="preload" href="/assets/fonts/cormorant-garamond-600.ttf" as="font" type="font/ttf" crossorigin>'
                 . '<link rel="preload" href="/assets/fonts/inter-var.ttf" as="font" type="font/ttf" crossorigin>'
             : '';
         $styleLinks = $fontPreload . '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
                 // The stylesheet is served with a 12h edge TTL, so every
                 // homepage restyle has to ship under a fresh cache key.
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260916c">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260916d">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
         $brandLockup = $isBridgeHome
-            ? '<span class="site-mark"><img src="' . $brandLogoUrl . '" alt="' . $escapedBrandName . ' logo"></span>'
+            ? '<span class="site-mark"><img src="/assets/brand-mark.png" alt="' . $escapedBrandName . ' logo"></span>'
                 . '<span class="site-copy">'
                 . '<strong lang="zh-Hant">利群會聚</strong>'
                 . '<span lang="en">LeiKwan Bridge</span>'
