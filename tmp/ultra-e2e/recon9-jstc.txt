@@ -1,0 +1,85 @@
+﻿### lease grant unavailable by forward
+    553 forward 158
+    550 forward 159
+    550 forward 170
+    550 forward 171
+    553 forward 180
+### refresh failed by forward
+     49 forward 158
+     45 forward 159
+     46 forward 170
+     47 forward 171
+    112 forward 180
+### listener absent by forward
+     22 ultra-forward-158
+     21 ultra-forward-159
+     21 ultra-forward-170
+     21 ultra-forward-171
+     19 ultra-forward-180
+### listener-absent restart times (last 30)
+Sep 13 14:26:28
+Sep 13 14:28:28
+Sep 13 14:28:29
+Sep 13 14:28:30
+Sep 13 14:28:31
+Sep 13 14:28:56
+Sep 13 14:30:51
+Sep 13 14:30:52
+Sep 13 14:30:53
+Sep 13 14:30:54
+Sep 13 14:31:16
+Sep 13 14:33:22
+Sep 13 14:33:23
+Sep 13 14:33:24
+Sep 13 14:33:25
+Sep 13 14:33:38
+Sep 13 14:35:50
+Sep 13 14:35:51
+Sep 13 14:35:52
+Sep 13 14:35:53
+Sep 13 14:36:19
+Sep 13 14:38:18
+Sep 13 14:38:19
+Sep 13 14:38:20
+Sep 13 14:38:21
+Sep 13 14:38:34
+Sep 13 14:40:35
+Sep 13 14:40:37
+Sep 13 14:40:38
+Sep 13 14:40:40
+### lease delivery failure reasons
+     32 Ultra lease delivery failed for forward 159: no_healthy_candidate
+     31 Ultra lease delivery failed for forward 158: no_healthy_candidate
+     27 Ultra lease delivery failed for forward 170: no_healthy_candidate
+     26 Ultra lease delivery failed for forward 171: timed
+     26 Ultra lease delivery failed for forward 170: timed
+     25 Ultra lease delivery failed for forward 171: no_healthy_candidate
+     25 Ultra lease delivery failed for forward 159: timed
+     16 Ultra lease delivery failed for forward 180: no_healthy_candidate
+      9 Ultra lease delivery failed for forward 158: timed
+      8 Ultra lease delivery failed for forward 171: lease_invalid
+### agent watchdog kills
+132
+### restarts of ultra-forward-170 (systemd)
+42
+2026-09-13T14:18:33+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:18:33+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:21:04+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:21:04+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:23:28+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:23:28+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:26:03+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:26:03+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:28:30+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:28:30+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:30:53+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:30:53+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:33:24+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:33:24+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:35:52+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:35:52+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:38:20+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:38:20+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:40:38+0800 instance-20241020-0131 systemd[1]: Stopped ultra-forward-170.service - Ultra Forward 170.
+2026-09-13T14:40:38+0800 instance-20241020-0131 systemd[1]: Started ultra-forward-170.service - Ultra Forward 170.
+### done

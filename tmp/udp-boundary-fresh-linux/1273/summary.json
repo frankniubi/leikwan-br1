@@ -1,0 +1,776 @@
+{
+ "started": "2026-09-16T06:34:08Z",
+ "elapsed_s": 33.0,
+ "target": {
+  "local": "127.0.0.1:10001",
+  "peer_udp": "185.220.238.143:60000",
+  "peer_tcp": "185.220.238.143:60001",
+  "pps": 10,
+  "size": 1273,
+  "size_big": 1273,
+  "big_every": 0,
+  "burst_every": 0,
+  "burst_len": 0
+ },
+ "udp": [
+  {
+   "name": "tunnel-udp",
+   "sent": 300,
+   "recv": 0,
+   "unknown_replies": 0,
+   "duplicates": 0,
+   "loss_pct": 100.0,
+   "permanent_loss": 300,
+   "burst": {
+    "sent": 0,
+    "recv": 0,
+    "loss_pct": null
+   },
+   "big_packet": {
+    "sent": 0,
+    "recv": 0,
+    "loss_pct": null
+   },
+   "rtt_ms": {},
+   "send_errors": {},
+   "recv_errors": {},
+   "loss_runs_ge3": [
+    [
+     1,
+     300
+    ]
+   ],
+   "worst_minutes": [
+    {
+     "minute": 0,
+     "sent": 300,
+     "recv": 0,
+     "loss_pct": 100.0
+    }
+   ],
+   "by_minute": [
+    {
+     "minute": 0,
+     "sent": 300,
+     "recv": 0,
+     "loss_pct": 100.0
+    }
+   ]
+  },
+  {
+   "name": "direct-udp",
+   "sent": 300,
+   "recv": 259,
+   "unknown_replies": 0,
+   "duplicates": 0,
+   "loss_pct": 13.667,
+   "permanent_loss": 41,
+   "burst": {
+    "sent": 0,
+    "recv": 0,
+    "loss_pct": null
+   },
+   "big_packet": {
+    "sent": 0,
+    "recv": 0,
+    "loss_pct": null
+   },
+   "rtt_ms": {
+    "samples": 259,
+    "min": 69.42,
+    "p50": 100.58,
+    "p90": 111.8,
+    "p95": 116.08,
+    "p99": 120.12,
+    "max": 130.67,
+    "mean": 99.89,
+    "jitter_mean": 4.41,
+    "jitter_p95": 11.64
+   },
+   "send_errors": {},
+   "recv_errors": {},
+   "loss_runs_ge3": [],
+   "worst_minutes": [
+    {
+     "minute": 0,
+     "sent": 300,
+     "recv": 259,
+     "loss_pct": 13.67
+    }
+   ],
+   "by_minute": [
+    {
+     "minute": 0,
+     "sent": 300,
+     "recv": 259,
+     "loss_pct": 13.67
+    }
+   ]
+  }
+ ],
+ "tcp": [
+  {
+   "name": "tunnel-tcp",
+   "connects": 0,
+   "breaks": 30,
+   "heartbeats_sent": 0,
+   "heartbeats_ok": 0,
+   "heartbeat_loss_pct": 0.0,
+   "rtt_ms": {},
+   "events": [
+    {
+     "at": "2026-09-16T06:33:35Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:36Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:37Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:38Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:39Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:40Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:41Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:42Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:43Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:44Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:45Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:46Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:47Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:48Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:49Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:50Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:51Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:52Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:53Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:54Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:55Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:56Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:57Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:58Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:33:59Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:34:00Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:34:01Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:34:02Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:34:03Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    },
+    {
+     "at": "2026-09-16T06:34:04Z",
+     "kind": "break",
+     "detail": "ConnectionRefusedError: [Errno 111] Connection refused"
+    }
+   ],
+   "outages": [
+    {
+     "at": "2026-09-16T06:33:35Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:36Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:37Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:38Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:39Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:40Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:41Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:42Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:43Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:44Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:45Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:46Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:47Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:48Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:49Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:50Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:51Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:52Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:53Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:54Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:55Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:56Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:57Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:58Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:33:59Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:34:00Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:34:01Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:34:02Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:34:03Z",
+     "down_s": 0.0
+    },
+    {
+     "at": "2026-09-16T06:34:04Z",
+     "down_s": 0.0
+    }
+   ]
+  },
+  {
+   "name": "direct-tcp",
+   "connects": 1,
+   "breaks": 0,
+   "heartbeats_sent": 30,
+   "heartbeats_ok": 30,
+   "heartbeat_loss_pct": 0.0,
+   "rtt_ms": {
+    "samples": 30,
+    "min": 78.51,
+    "p50": 101.51,
+    "p90": 112.6,
+    "p95": 114.8,
+    "p99": 309.48,
+    "max": 388.53,
+    "mean": 108.01,
+    "jitter_mean": 30.67,
+    "jitter_p95": 190.09
+   },
+   "events": [
+    {
+     "at": "2026-09-16T06:33:35Z",
+     "kind": "connect",
+     "detail": "90.8ms"
+    }
+   ],
+   "outages": []
+  }
+ ],
+ "samples": [
+  {
+   "at": "2026-09-16T06:33:35Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:33:40Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:33:45Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:33:50Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:33:55Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:34:00Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  },
+  {
+   "at": "2026-09-16T06:34:05Z",
+   "unit": {
+    "MainPID": "4087913",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Wed 2026-09-16 14:33:02 CST",
+    "SubState": "running",
+    "ActiveEnterTimestamp": "Wed 2026-09-16 14:33:02 CST"
+   },
+   "ultra": {
+    "forward_id": 170,
+    "state": "degraded",
+    "detected_ingress_zone": "unknown",
+    "location_source": "",
+    "updated_at": "2026-09-16T06:33:02Z",
+    "error_code": "awaiting_policy",
+    "runtime_attestation": {
+     "fingerprint": "2026.09.16.1.e0e4a71f",
+     "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+    }
+   },
+   "probe": {
+    "availability_percent": 93.161,
+    "consecutive_failures": 1,
+    "credential_configured": true,
+    "failure_count": 193,
+    "host": "127.0.0.1",
+    "label": "linux-172.21.255.189",
+    "last_error": "tcp_connection_refused+udp_timeout",
+    "last_failure_at": "2026-09-16T06:33:28Z",
+    "last_latency_ms": null,
+    "last_success_at": "2026-09-16T06:32:46Z",
+    "last_tcp_error": "tcp_connection_refused",
+    "last_udp_error": "udp_timeout",
+    "lifecycle": "running",
+    "method": "none",
+    "port": 10001,
+    "sample_count": 2822,
+    "schema_version": 1,
+    "started_at": "2026-09-11T06:56:32Z",
+    "state": "down",
+    "success_count": 2629,
+    "tcp_success_count": 2665,
+    "transport": "tcp+udp",
+    "udp_success_count": 2735,
+    "updated_at": "2026-09-16T06:33:28Z",
+    "window_seconds": 86400,
+    "window_start": "2026-09-15T06:33:28Z"
+   }
+  }
+ ]
+}

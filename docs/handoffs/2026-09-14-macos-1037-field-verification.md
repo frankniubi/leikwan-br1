@@ -277,3 +277,58 @@ can behave differently for two clients.
   fvp2-status.json, fvp2-stdout.txt, ultra-client-1037 (runtime copy, sha b92a4e34…),
   fvpb-runtime.log, fvpb-monitor.txt, fvpb-proxy.log.  Scripts live in .tmp/field-verify-20260914/
   in this repo (.tmp is git-ignored).
+
+## 10. CLIENT-20 FORWARD-184 MEASUREMENT (2026-09-14/15)
+
+The previously blocked run was completed with the operator-provided client-20 agent token
+passed by file only. No panel writes or forward changes were made. The token was deleted after
+the run and verified absent. The Mac configuration was restored byte-for-byte to its pre-run
+SHA-256 (`f12a67f14a5a837aca3ad7acc93cc3b6e4290b2887d0e9bb3bac4dca8361e7af`); no runtime,
+headless client, generator, or test listener remained.
+
+Runtime: macOS 1.0.37, `ultra-client` 2026.09.14.3 (`b92a4e3425152307...`), 900 seconds,
+SS-none traffic, four generator workers per local listener.
+
+| forward | reconstructed streams | OK | SILENT | idle | silent rate | longest setup-failure window |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 184 (port 10809, client 20) | 766 | 0 | 755 | 11 | 100.0% | 894 s |
+| 185 (port 11809, client 20) | 843 | 5 | 832 | 6 | 99.4% | 897 s |
+
+The client-side generator independently corroborated the result: forward 184 received 11,656
+requests and all were `rc2_zero_downstream`; forward 185 received 12,849 and all were
+`rc2_zero_downstream`. The runtime offered four candidates per lease, used 16 distinct
+selection references per forward, and recorded `no_downstream_bytes` for every quarantine.
+Teardown was clean: `survivor_count=0`, `orphan_ppid1_count=0`, and `held_port_count=0`.
+
+### Same-session control (client 3)
+
+The same binary and generator were then run for 900 seconds against client 3's four forwards;
+this is a control for a host-wide outage, not a substitute for client 20's line scope:
+
+| forward | reconstructed streams | OK | SILENT | idle |
+| --- | ---: | ---: | ---: | ---: |
+| 158 | 832 | 0 | 828 | 4 |
+| 159 | 7,948 | 7,948 | 0 | 0 |
+| 170 | 8,301 | 8,283 | 6 | 12 |
+| 171 | 9,911 | 9,911 | 0 | 0 |
+
+The client-side control agreed: port 10001 (forward 158) was 100% `rc2_zero_downstream`,
+port 30522 (forward 159) was 100% successful, and ports 32469/32502 had no zero-downstream
+responses. Control teardown was also clean with zero survivors, orphaned children, and held
+ports.
+
+### Interpretation boundary
+
+This is the first real-client evidence that the silent-stream behaviour is reproducible in the
+client data plane and is not a source-host-only observation. It is also not the original 6.2%
+intermittency: both enabled client-20 forwards were effectively wiped out for this run, while
+client-3 forwards 159/171 were healthy and 170 was nearly healthy. The result therefore narrows
+the fault to the affected forward/line scope (or its target/material), but does not identify
+the mechanism behind the historical 6.2% rate. Forward 158 is a known dead-forward control and
+must not be combined with the client-20 result.
+
+The remaining discriminating test is still an SS-framed request using the target service's real
+method/password. Those target credentials are not persisted on the host and were not placed in
+the repository or logs. The first post-deploy panel-issued review and the windowed
+`relay_ips_json` union remain separate acceptance/code items; neither is inferred from this
+field run.

@@ -1,0 +1,31 @@
+fix(ultra): a review passes only on a real transfer to the client's target
+
+The review probe ran on the source host and decided nothing: its udp verdict was
+a relay-local keep / large-payload echo to 2.0.0.0:0 (min_rtt_ms 0.06-0.08 ms,
+i.e. loopback), its dns verdict was 'the bytes 81 80 appear somewhere', and it
+probed relays[0] of its own acquisition rather than an endpoint the panel
+advertises for the line. A relay that ACKs a client handshake and then sends zero
+downstream bytes - the fault this probe exists to find - could pass it.
+
+The probe now has an evidence ladder. Relay-local echoes and a strictly validated
+DNS round trip through the relay are diagnostics only. A pass requires the window
+to hold AND a real TCP stream to the relay that names the CLIENT'S TARGET and
+returns real downstream bytes for it in every round, where those bytes are neither
+an echo of the probe's own payload nor unvalidated. The result JSON keeps every
+historical key for comparability and adds the end-to-end counters plus the proof
+block the panel's gate reads (endpoint, local_path_only, end_to_end_ok).
+
+The agent pairs an advertised IP with the port from the line material (the panel
+stores relay IPs only), passes the panel's target down, and reports a
+non-discriminating result instead of probing an endpoint of its own choosing when
+the advertised set and the acquired material do not intersect. It also logs one
+secret-free line per review, and names the case where the installed probe does not
+understand the new flags.
+
+Verified: 68 source-agent tests pass. master/tests is 379 pass / 16 fail, i.e. the
+378/16 baseline reproduced before this change plus the new contract test; the 16
+are pre-existing failures.
+
+Proven discrimination: against the pre-fix code in a worktree at 1893e05b the new
+tests are 35 failed / 32 passed, and the pre-fix probe returns passed=True with
+min_rtt_ms=0.0608 on a relay-local-only fake and no proof block at all.

@@ -1,0 +1,25 @@
+test(ultra): pin the review probe's end-to-end verdict and the panel gate contract
+
+Probe tests: a healthy end-to-end path passes; a relay-local-only path (live
+association, keep echo, big echo, DNS answer, ZERO downstream bytes - the field
+fault) fails; an endpoint outside the advertised set is rejected; an empty or
+malformed target cannot produce a pass; a relay that echoes the probe's own
+payload cannot pass; UDP-to-target evidence alone cannot pass.
+
+Wire-level tests run the real stream code against a local fake relay that speaks
+the client's handshake: connect frame, silent close, echo, target DNS answer, the
+modern prelude and a refused greeting. The DNS check is pinned in both directions:
+an '81 80 appears somewhere' datagram is not an answer, and the answer must arrive
+from the queried resolver's own address.
+
+Agent tests: the probe is pointed at an advertised IP with the material's port
+rather than the first acquired relay, the mandate and target are passed down, a
+review with no advertised endpoint in the material never runs the probe, and a
+probe that prints no JSON is reported as non-discriminating.
+
+master/tests/ultra_candidate_review_probe_contract_test.php closes the loop across
+the language boundary: it feeds the proof block the probe actually emits (the
+committed fixture the Python test pins) through the live gate and asserts the
+quarantine is lifted and the witnesses are rebutted, and that the same block is
+refused when the endpoint is not advertised, when there was no transfer, and when
+the evidence was relay-local only.

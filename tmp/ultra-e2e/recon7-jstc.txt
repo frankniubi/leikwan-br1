@@ -1,0 +1,29 @@
+﻿### failed unit count
+440
+### newest failed unit journal
+svc=leikwan-client-agent-update-1789305595-
+-- No entries --
+### newest successful-ish update units (list tail)
+● leikwan-client-agent-update-1789235983-49662020.service                                          loaded    failed     failed       /usr/bin/env bash /usr/local/bin/leikwan-client-agent-update --request-token 49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995 --state-path /var/lib/leikwan-client-agent/agent_update_state.json --artifact-base https://v3.leikwanhost.com
+● leikwan-client-agent-update-1789236298-49662020.service                                          loaded    failed     failed       /usr/bin/env bash /usr/local/bin/leikwan-client-agent-update --request-token 49662020d1f6ea241abf8dd78b76eeb8b639d01c843f2995 --state-path /var/lib/leikwan-client-agent/agent_update_state.json --artifact-base https://v3.leikwanhost.com
+  leikwan-client-agent-update-1789305595-auto-rel.service                                          loaded    active     running      /usr/bin/env bash /usr/local/bin/leikwan-client-agent-update --request-token auto-release:ultra_runtime=8251965d614635c9df32f9451086b7cb0bce8d894c7bcee129275663d200c33c --state-path /var/lib/leikwan-client-agent/agent_update_state.json --artifact-base https://api-leikwanbridge.nbwly.com
+### update chain journal (agent)
+Sep 13 20:57:25 instance-20241020-0131 python3[2903216]: 2026-09-13 20:57:25,007 WARNING forward 180 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:00:25 instance-20241020-0131 python3[2903216]: 2026-09-13 21:00:25,673 WARNING forward 180 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:01:49 instance-20241020-0131 python3[2903216]: 2026-09-13 21:01:49,026 WARNING forward 158 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:01:49 instance-20241020-0131 python3[2903216]: 2026-09-13 21:01:49,053 WARNING forward 159 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:01:49 instance-20241020-0131 python3[2903216]: 2026-09-13 21:01:49,082 WARNING forward 170 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:01:49 instance-20241020-0131 python3[2903216]: 2026-09-13 21:01:49,111 WARNING forward 171 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:01:49 instance-20241020-0131 python3[2903216]: 2026-09-13 21:01:49,137 WARNING forward 180 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:04:41 instance-20241020-0131 python3[2903216]: 2026-09-13 21:04:41,359 WARNING forward 180 Ultra refresh failed; preserving last known-good runtime (runtime_present=True)
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     self._apply_forward_locked(forward, contract_signature, force_runtime_restart)
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     raise RuntimeError("ultra lease delivery failed")
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]: RuntimeError: ultra lease delivery failed
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     self._apply_forward_locked(forward, contract_signature, force_runtime_restart)
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     raise RuntimeError("ultra lease delivery failed")
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]: RuntimeError: ultra lease delivery failed
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     self._apply_forward_locked(forward, contract_signature, force_runtime_restart)
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]:     raise RuntimeError("ultra lease delivery failed")
+Sep 13 21:14:46 instance-20241020-0131 python3[2903216]: RuntimeError: ultra lease delivery failed
+Sep 13 21:19:55 instance-20241020-0131 python3[2932023]: 2026-09-13 21:19:55,395 INFO requested client self-update token=auto-release:ultra_runtime=8251965d614635c9df32f9451086b7cb0bce8d894c7bcee129275663d200c33c
+### done

@@ -240,6 +240,16 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/ultra/ultra-client_macos_arm64', 'application/octet-stream', $request);
     }
 
+    public function ultraClientAndroidArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_arm64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientAndroidX64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_x86_64', 'application/octet-stream', $request);
+    }
+
     public function forwardStrategyHelper(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/forward-strategy.py', 'text/x-python; charset=utf-8', $request);

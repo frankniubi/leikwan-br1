@@ -31,8 +31,7 @@ foreach ([
     'class="bridge-home-map"',
     'class="bridge-home-network"',
     'class="bridge-home-plate-key"',
-    'bridge-home-title-zh',
-    'bridge-home-title-en',
+    'bridge-home-title',
     'rk-link-mesh',
     'BGP',
 ] as $snippet) {
@@ -87,21 +86,24 @@ foreach ([
     '.bridge-home-network',
     '.bridge-home-tag',
     '.bridge-home-page .site-mark',
-    '--bridge-paper: #ffffff',
+    '--bridge-paper: #0a0d0c',
     'border-radius: 999px',
     '@media (max-width: 900px)',
     'inter-var.ttf',
     'space-grotesk-var.ttf',
-    'background: #ffffff',
-    '--bridge-orange: #f6821f',
-    '--bridge-orange-hover: #f48120',
+    '--bridge-orange: #ff8a2a',
+    '--bridge-orange-hover: #ffa257',
+    '.bridge-home-aurora',
+    '.bridge-home-network-meta',
 ] as $selector) {
     if (!str_contains($css, $selector)) {
         fail('missing bridge home style selector: ' . $selector);
     }
 }
 
-foreach (['linear-gradient(', 'radial-gradient(', 'clamp('] as $forbiddenCss) {
+// clamp() stays out: type scales through media queries, never a single fluid
+// rule that can overflow at the extremes.
+foreach (['clamp('] as $forbiddenCss) {
     if (str_contains($css, $forbiddenCss)) {
         fail('bridge home uses forbidden visual primitive: ' . $forbiddenCss);
     }
@@ -111,7 +113,7 @@ if (preg_match('/\.bridge-home-page \.site-mark\s*\{[^}]*border:/s', $css) === 1
     fail('bridge home still frames the logo with a dark square border');
 }
 
-if (!str_contains($base, '/assets/bridge-home.css?v=20260915N')) {
+if (!str_contains($base, '/assets/bridge-home.css?v=20260916c')) {
     fail('homepage stylesheet cache key was not bumped');
 }
 

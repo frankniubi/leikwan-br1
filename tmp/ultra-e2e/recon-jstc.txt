@@ -1,0 +1,223 @@
+﻿=== host ===
+instance-20241020-0131
+Debian GNU/Linux 12 (bookworm)
+ 21:15:21 up 7 days,  4:27,  1 user,  load average: 0.62, 0.40, 0.37
+=== listeners ===
+Netid State  Recv-Q Send-Q   Local Address:Port  Peer Address:PortProcess                                   
+udp   UNCONN 0      0              0.0.0.0:43002      0.0.0.0:*                                             
+udp   UNCONN 0      0              0.0.0.0:43003      0.0.0.0:*                                             
+udp   UNCONN 0      0              0.0.0.0:43004      0.0.0.0:*                                             
+udp   UNCONN 0      0              0.0.0.0:53         0.0.0.0:*                                             
+udp   UNCONN 0      0              0.0.0.0:68         0.0.0.0:*    users:(("dhclient",pid=608,fd=7))        
+udp   UNCONN 0      0              0.0.0.0:53442      0.0.0.0:*                                             
+udp   UNCONN 0      0              0.0.0.0:1055       0.0.0.0:*                                             
+udp   UNCONN 0      0       172.21.255.189:59111      0.0.0.0:*    users:(("openvpn",pid=848,fd=5))         
+udp   UNCONN 0      0                 [::]:43002         [::]:*                                             
+udp   UNCONN 0      0                 [::]:43003         [::]:*                                             
+udp   UNCONN 0      0                 [::]:43004         [::]:*                                             
+udp   UNCONN 0      0                    *:43080            *:*    users:(("brook",pid=1766,fd=14))         
+udp   UNCONN 0      0                    *:2121             *:*    users:(("brook",pid=1766,fd=13))         
+udp   UNCONN 0      0                    *:6443             *:*    users:(("brook",pid=1766,fd=17))         
+udp   UNCONN 0      0                    *:43443            *:*    users:(("brook",pid=1766,fd=21))         
+udp   UNCONN 0      0                    *:44080            *:*    users:(("brook",pid=1766,fd=29))         
+udp   UNCONN 0      0                    *:32032            *:*    users:(("brook",pid=1766,fd=9))          
+udp   UNCONN 0      0                    *:32071            *:*    users:(("brook",pid=1766,fd=8))          
+udp   UNCONN 0      0                    *:32105            *:*    users:(("brook",pid=1766,fd=25))         
+udp   UNCONN 0      0                    *:32109            *:*    users:(("brook",pid=1766,fd=22))         
+udp   UNCONN 0      0                    *:32152            *:*    users:(("brook",pid=1766,fd=27))         
+udp   UNCONN 0      0                    *:44480            *:*    users:(("brook",pid=1766,fd=11))         
+udp   UNCONN 0      0                    *:32215            *:*    users:(("brook",pid=1766,fd=12))         
+udp   UNCONN 0      0                    *:32216            *:*    users:(("brook",pid=1766,fd=6))          
+udp   UNCONN 0      0                    *:32353            *:*    users:(("brook",pid=1766,fd=3))          
+udp   UNCONN 0      0                    *:32356            *:*    users:(("brook",pid=1766,fd=33))         
+udp   UNCONN 0      0                    *:65150            *:*    users:(("brook",pid=1766,fd=24))         
+udp   UNCONN 0      0                    *:65151            *:*    users:(("brook",pid=1766,fd=28))         
+udp   UNCONN 0      0                    *:65152            *:*    users:(("brook",pid=1766,fd=7))          
+udp   UNCONN 0      0                    *:32469            *:*    users:(("ultra-client",pid=2825254,fd=6))
+udp   UNCONN 0      0                    *:32502            *:*    users:(("ultra-client",pid=2825341,fd=8))
+udp   UNCONN 0      0                    *:32531            *:*    users:(("brook",pid=1766,fd=18))         
+udp   UNCONN 0      0                    *:65340            *:*    users:(("brook",pid=1766,fd=15))         
+udp   UNCONN 0      0                    *:65353            *:*    users:(("brook",pid=1766,fd=34))         
+udp   UNCONN 0      0                    *:8080             *:*    users:(("brook",pid=1766,fd=20))         
+udp   UNCONN 0      0                    *:32711            *:*    users:(("brook",pid=1766,fd=19))         
+udp   UNCONN 0      0                 [::]:53            [::]:*                                             
+udp   UNCONN 0      0                    *:32909            *:*    users:(("brook",pid=1766,fd=31))         
+udp   UNCONN 0      0                 [::]:53442         [::]:*                                             
+=== update-svc-count ===
+440
+=== units (filtered) ===
+  leikwan-client-agent.service                            loaded    active     running      Leikwan Client Agent
+  leikwan-ss-none-probe.service                           loaded    active     running      LeiKwan Shadowsocks none TCP+UDP availability probe
+  ultra-forward-158.service                               loaded    active     running      Ultra Forward 158
+  ultra-forward-159.service                               loaded    active     running      Ultra Forward 159
+  ultra-forward-170.service                               loaded    active     running      Ultra Forward 170
+  ultra-forward-171.service                               loaded    active     running      Ultra Forward 171
+  ultra-forward-180.service                               loaded    active     running      Ultra Forward 180
+=== procs ===
+root         824  0.0  0.4 400192 26724 ?        Ssl  Sep06   6:26 /usr/bin/python3 /usr/bin/fail2ban-server -xf start
+leikwan+ 2035585  0.0  0.3  26688 20756 ?        Ss   Sep11   0:32 /usr/bin/python3 /usr/local/libexec/leikwan-ss-none-probe/ss-none-availability-probe.py --config /etc/leikwan-ss-none-probe/config.json
+root     2824780  0.2  0.4 1276276 24468 ?       SLsl 14:38   0:59 /usr/local/bin/ultra-client --config /etc/ultra/forward-180.json
+root     2825211  0.2  0.3 1276020 23408 ?       SLsl 14:40   0:58 /usr/local/bin/ultra-client --config /etc/ultra/forward-158.json
+root     2825254  0.2  0.4 1276468 25656 ?       SLsl 14:40   1:04 /usr/local/bin/ultra-client --config /etc/ultra/forward-159.json
+root     2825293  0.5  0.6 1342332 39664 ?       Ssl  14:40   2:20 /usr/local/bin/ultra-client --config /etc/ultra/forward-170.json
+root     2825341  0.2  0.4 1341820 25184 ?       SLsl 14:40   1:03 /usr/local/bin/ultra-client --config /etc/ultra/forward-171.json
+root     2903216  5.0  1.0 424960 62136 ?        Ssl  19:32   5:09 /usr/bin/python3 /usr/local/bin/leikwan-client-agent.py --config /etc/leikwan-client-agent/config.json run
+=== usr-local-bin ===
+total 108404
+-rwxr-xr-x 1 root root  3350712 Jul  8 21:11 amneziawg-go
+-rwxr-xr-x 1 root root    32009 Aug 28 04:17 cfwg_latency_watchdog.py
+-rwxr-xr-x 1 root root   209234 May 28 03:51 client_agent.py
+-rwxr-xr-x 1 root root    60928 Apr 11 20:54 client_agent.py.bak-pre-mptcp-isolation
+-rwxr-xr-x 1 root root    56890 Apr  8 14:43 client_agent.py.bak-v2best-restore
+-rw-r--r-- 1 root root   209234 May 28 03:51 client_agent.py.tmp-sync
+-rwxr-xr-x 1 root root     3361 Aug 28 04:17 forward_strategy.py
+-rwxr-xr-x 1 root root 18796696 May 25  2025 hysteria-v1
+-rwxr-xr-x 1 root root    22260 Apr  9 16:15 install-forward-runtime.py
+-rwxr-xr-x 1 root root    96373 Sep 12 16:46 install_forward_runtime.py
+-rwxr-xr-x 1 root root    20910 Apr  8 02:10 install_forward_runtime.py.bak-20260408
+-rwxr-xr-x 1 root root    23858 Apr 12 19:32 install_forward_runtime.py.bak-codex-20260415
+-rwxr-xr-x 1 root root    24629 Apr 15 19:57 install_forward_runtime.py.bak-codex-20260415-f24c
+-rwxr-xr-x 1 root root    24710 Apr 15 23:21 install_forward_runtime.py.bak-codex-20260415-f24d
+-rwxr-xr-x 1 root root    26853 Apr 11 13:37 install_forward_runtime.py.bak-v2best-restore
+-rw-r--r-- 1 root root    64750 May 28 03:51 install_forward_runtime.py.tmp-sync
+-rwxr-xr-x 1 root root     8683 Sep 11 19:48 install-tcp-accel.sh
+-rwxr-xr-x 1 root root  8946736 Aug 28 04:17 leikwan-bond
+-rwxr-xr-x 1 root root  8037736 Apr  8 01:21 leikwan-bond.bak-0.1.7
+-rwxr-xr-x 1 root root  7687120 Apr  7 00:54 leikwan-bond.bak-20260407T005324
+-rwxr-xr-x 1 root root  7924672 Apr  8 02:06 leikwan-bond.bak-codex-20260416-proto
+-rwxr-xr-x 1 root root  8037736 Apr  7 22:38 leikwan-bond.pre-0.1.8.20260407-223826
+-rwxr-xr-x 1 root root  8037736 Apr  7 22:48 leikwan-bond.pre-0.1.9.20260407-224827
+-rwxr-xr-x 1 root root      530 Apr  7 22:51 leikwan-client-agent-check
+-rwxr-xr-x 1 root root   337707 Sep 13 02:11 leikwan-client-agent.py
+-rwxr-xr-x 1 root root    60923 Apr 12 14:57 leikwan-client-agent.py.bak
+-rw-r--r-- 1 root root    55287 Apr  8 19:55 leikwan-client-agent.py.bak-20260408-mptcp-fix
+-rwxr-xr-x 1 root root    59760 Apr 12 19:17 leikwan-client-agent.py.bak-codex-20260415
+-rwxr-xr-x 1 root root    69847 Apr 15 23:24 leikwan-client-agent.py.bak-codex-20260415-clean
+-rwxr-xr-x 1 root root    69666 Apr 15 19:57 leikwan-client-agent.py.bak-codex-20260415-f24d
+-rwxr-xr-x 1 root root    71461 Apr 15 23:35 leikwan-client-agent.py.bak-codex-20260415-orphan
+-rwxr-xr-x 1 root root    63450 Apr 17 05:43 leikwan-client-agent.py.bak-plain-tcp-hotfix
+-rwxr-xr-x 1 root root      976 Apr  7 22:51 leikwan-client-agent-uninstall
+-rwxr-xr-x 1 root root    18535 Sep 13 13:31 leikwan-client-agent-update
+-rwxr-xr-x 1 root root     3664 Apr  7 22:51 leikwan-client-agent-update.bak
+-rwxr-xr-x 1 root root     4359 May 18 03:02 leikwan-client-agent-update.bak-codex-20260518030239
+-rwxr-xr-x 1 root root     3605 May 15 04:17 leikwan-client-control
+-rwx------ 1 root root     1663 May 28 04:17 leikwan-client-start-47.sh
+-rwx------ 1 root root     3582 May 29 04:14 leikwan-client-start-59.sh
+=== ls-etc ===
+/etc/leikwan:
+total 24
+drwxr-xr-x   2 root root  4096 Aug 24 22:26 .
+drwxr-xr-x 101 root root 12288 Sep 11 14:56 ..
+-rw-------   1 root root  6028 May 28 08:00 mptcp-forward-47.json
+
+/etc/leikwan-client-agent:
+total 20
+drwx------   2 root root  4096 Sep 13 13:31 .
+drwxr-xr-x 101 root root 12288 Sep 11 14:56 ..
+-rw-------   1 root root  1635 Sep 13 13:31 config.json
+-rw-------   1 root root     0 Sep 13 13:30 proxy.env
+
+/etc/leikwan-ss-none-probe:
+total 20
+drwxr-x---   2 root          leikwan-probe  4096 Sep 11 14:56 .
+drwxr-xr-x 101 root          root          12288 Sep 11 14:56 ..
+-rw-------   1 leikwan-probe leikwan-probe   338 Sep 11 14:56 config.json
+
+/etc/ultra:
+total 36
+drwx------   2 root root  4096 Sep 10 04:54 .
+drwxr-xr-x 101 root root 12288 Sep 11 14:56 ..
+-rw-------   1 root root   899 Sep 12 03:44 forward-158.json
+-rw-------   1 root root   901 Sep 12 03:48 forward-159.json
+-rw-------   1 root root   902 Sep 12 03:49 forward-170.json
+-rw-------   1 root root   901 Sep 12 03:49 forward-171.json
+-rw-------   1 root root   896 Sep 12 03:44 forward-180.json
+=== ls-var ===
+/run/leikwan:
+total 0
+drwxr-xr-x  3 root root  60 Sep  5 20:40 .
+drwxr-xr-x 29 root root 880 Sep 13 21:15 ..
+drwxr-xr-x  2 root root  60 Sep  5 20:40 restart-ledger
+
+/var/lib/leikwan-client-agent:
+total 3508
+drwx------  5 root root    4096 Sep 13 21:15 .
+drwxr-xr-x 40 root root    4096 Sep 11 14:56 ..
+-rw-------  1 root root       0 Sep 13 13:30 agent-update.lock
+-rw-r--r--  1 root root     460 Sep 13 13:31 agent_update_state.json
+-rw-------  1 root root    3337 Sep 13 21:15 applied.json
+drwx------ 38 root root    4096 Sep 13 13:31 backups
+-rw-r--r--  1 root root   46879 Aug 24 22:26 bond-endpoint-health.json
+-rw-r--r--  1 root root     467 Sep 13 21:14 cfwg-latency-watchdog-state.json
+-rw-r--r--  1 root root     773 Sep 13 21:14 config_pull_state.json
+-rw-r--r--  1 root root      76 Sep 13 21:15 control-plane-endpoint.json
+drwxr-xr-x  2 root root    4096 Aug 17 15:16 forward-strategies
+-rw-------  1 root root    8257 Sep 13 13:31 install-health.json
+-rw-------  1 root root       0 Sep 13 13:31 install-health.stderr
+-rwxr-xr-x  1 root root 3477712 Aug 28 04:17 leikwan-mptcp-relay
+-rw-r--r--  1 root root    5163 Sep 13 21:14 usage_state.json
+drwxr-xr-x  2 root root    4096 Jul 28 00:49 wireguard
+
+/var/lib/leikwan-ss-none-probe:
+total 1372
+drwxr-x---  2 leikwan-probe leikwan-probe    4096 Sep 13 21:15 .
+drwxr-xr-x 40 root          root             4096 Sep 11 14:56 ..
+-rw-------  1 leikwan-probe leikwan-probe 1387416 Sep 13 21:15 events.jsonl
+-rw-------  1 leikwan-probe leikwan-probe     645 Sep 13 21:15 status.json
+
+/var/lib/ultra:
+total 12
+drwx------  2 root root 4096 Sep 13 03:44 .
+drwxr-xr-x 40 root root 4096 Sep 11 14:56 ..
+-rw-------  1 root root  155 Sep 13 03:44 location.json
+=== ls-root ===
+total 1459376
+drwx------ 18 root root       4096 Sep 11 21:41 .
+drwxr-xr-x 18 root root       4096 Jul  8 21:00 ..
+-rw-r--r--  1 root root  201670249 Jul 11 00:31 1G.1
+-rw-r--r--  1 root root 1069613463 Jul 10 23:45 1G.5
+-rw-r--r--  1 root root    2211433 Jul 14 10:50 1G.7
+-rw-------  1 root root      63772 Sep 11 02:17 .bash_history
+-rw-r--r--  1 root root       3106 Oct 20  2024 .bashrc
+-rwxr-xr-x  1 root root       3862 Apr 18 01:44 bond_sweep_20260418b.py
+-rwxr-xr-x  1 root root       5249 Apr 18 01:41 bond_sweep_20260418.py
+-rwx------  1 root root       4299 Apr 18 01:38 bond_sweep_20260418.sh
+-rwxr-xr-x  1 root root      26063 Apr 28  2023 brook-pf.sh
+drwxr-xr-x  3 root root       4096 Jul  8 21:03 .cache
+-rwxr-xr-x  1 root root        873 Apr 21 16:31 client38-check.sh
+-rwxr-xr-x  1 root root        873 Apr 21 16:39 client39-check.sh
+drwxr-xr-x 30 root root       4096 Sep 10 04:53 codex-backups
+drwx------  4 root root       4096 Jul  8 21:03 .config
+drwxr-xr-x  3 root root       4096 Jul  9 12:39 disabled-hysteria-20260709-123944
+drwxr-xr-x  2 1001  118       4096 Jun 25  2025 fakehttp-linux-x86_64
+-rw-r--r--  1 root root      62174 Jun 25  2025 fakehttp-linux-x86_64.tar.gz
+-rw-r--r--  1 root root       8259 Jul  3  2025 frank.ovpn
+drwxr-xr-x  2 1001  118       4096 Dec 16  2024 frp
+-rw-r--r--  1 root root       4951 Nov 27  2025 full-scan.py
+drwxr-xr-x  3 root root       4096 Jul  8 21:03 go
+-rw-r--r--  1 root root      30278 Dec  5  2024 index.html
+-rwxr-xr-x  1 root root     280072 Aug  1  2025 InstallNET.sh
+-rwxr-xr-x  1 root root       5298 May 25  2025 install-v1.sh
+-rw-r--r--  1 root root     778487 Nov 27  2025 ipv6_full_dump.txt
+-rw-r--r--  1 root root          0 Sep 11 21:44 jstc_tokyo_baseline.err
+-rw-r--r--  1 root root       1993 Sep 11 21:46 jstc_tokyo_baseline.json
+-rw-r--r--  1 root root       5875 Sep 11 21:44 jstc_tokyo_baseline.py
+drwxr-xr-x  2 root root       4096 Apr 10 12:09 leikwan-backups
+-rw-r--r--  1 root root     831239 Apr  2 23:07 leikwan-bond_0.1.0_linux_amd64.tar.gz
+-rwxr-xr-x  1 root root    3721552 Apr 18 10:04 leikwan-bond-748ef536.new
+-rwxr-xr-x  1 root root       4359 May 18 05:07 leikwan-client-agent-update.before-ae8098f.20260518-051408
+drwx------  2 root root       4096 Aug  4 18:06 leikwan-forward-speedtest-20260804T0958Z
+-rw-------  1 root root         20 Sep 11 01:53 .lesshst
+-rw-r--r--  1 root root          0 Oct 24  2025 live_ipv6_hosts.txt
+drwxr-xr-x  3 root root       4096 Oct 20  2024 .local
+drwxr-xr-x 24 root root       4096 Apr  8 03:29 mptcp-mptcp_v0.96
+=== tooling ===
+python3=/usr/bin/python3
+curl=/usr/bin/curl
+iperf3=/usr/bin/iperf3
+socat=missing
+nc=missing
+tcpdump=/usr/bin/tcpdump
+jq=missing
+ss-server=missing
+=== done ===

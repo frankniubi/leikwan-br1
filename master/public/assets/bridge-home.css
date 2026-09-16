@@ -1,7 +1,8 @@
 /* ==========================================================================
    Leikwan Bridge — Public Homepage
-   Cloudflare-style light surface: pure white page, hairlines, one orange
-   accent per band. Technical and airy, never a dark console.
+   "Midnight Atlas": a dark, layered surface. Deep ink-green canvas, warm
+   orange arcs, an aurora behind the hero, and grain over it. The mesh is the
+   subject; the type is editorial; nothing reads as a brochure.
    ========================================================================== */
 
 @font-face {
@@ -29,32 +30,36 @@
 }
 
 :root {
-  /* Surfaces: white page, two whisper-grey bands, one warm tint. */
-  --bridge-paper: #ffffff;
-  --bridge-surface: #f7f7f7;
-  --bridge-surface-soft: #fafafa;
-  --bridge-tint: #fff5eb;
-  --bridge-tint-soft: #fef3e8;
+  /* Surfaces: a warm near-black canvas with a green undertone, stepped up for
+     raised bands and cards. */
+  --bridge-paper: #0a0d0c;
+  --bridge-surface: #0d1210;
+  --bridge-surface-2: #111614;
+  --bridge-elev: #131917;
 
-  /* Text: near-black primaries, grey secondaries. Nothing lighter than #6b6b6b. */
-  --bridge-ink: #1d1d1d;
-  --bridge-ink-2: #313131;
-  --bridge-muted: #5c5c5c;
-  --bridge-muted-2: #6b6b6b;
+  /* Hairlines: visible on dark without ever turning grey-white. */
+  --bridge-line: #1d2421;
+  --bridge-line-strong: #2a332f;
 
-  /* Hairlines and the one accent. */
-  --bridge-line: #e6e6e6;
-  --bridge-line-strong: #d9d9d9;
-  --bridge-orange: #f6821f;
-  --bridge-orange-hover: #f48120;
-  /* #f6821f on white is 2.6:1, so small orange text and the focus ring use a
-     darker amber that clears WCAG AA (4.7:1) instead. */
-  --bridge-orange-ink: #b45309;
-  --bridge-focus: #b45309;
+  /* Text: off-white primaries, green-grey secondaries. */
+  --bridge-ink: #edf1ee;
+  --bridge-ink-2: #c2cac5;
+  --bridge-muted: #93a09a;
+  --bridge-muted-2: #6c7872;
 
-  --bridge-radius: 12px;
-  --bridge-radius-sm: 8px;
-  --bridge-shadow: 0 1px 2px rgba(29, 29, 29, 0.05), 0 10px 24px rgba(29, 29, 29, 0.05);
+  /* The one accent, brightened so it glows against the canvas. The darker
+     amber clears AA on dark surfaces. */
+  --bridge-orange: #ff8a2a;
+  --bridge-orange-hover: #ffa257;
+  --bridge-orange-ink: #ffb877;
+  --bridge-focus: #ffb877;
+
+  /* The live-status green. */
+  --bridge-green: #35d68b;
+
+  --bridge-radius: 16px;
+  --bridge-radius-sm: 10px;
+  --bridge-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
 
   --bridge-display: "Space Grotesk var", "Inter var", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bridge-sans: "Inter var", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -65,7 +70,6 @@
   --bridge-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-/* The viewport itself stays white so overscroll never flashes a dark rail. */
 html {
   background: var(--bridge-paper);
 }
@@ -111,14 +115,17 @@ html {
 
 /* ---------- top bar ---------- */
 .bridge-home-topbar {
-  position: relative;
-  z-index: 10;
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 14px var(--bridge-gutter-right) 14px var(--bridge-gutter-left);
-  background: #ffffff;
+  padding: 12px var(--bridge-gutter-right) 12px var(--bridge-gutter-left);
+  background: rgba(10, 13, 12, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   color: var(--bridge-ink);
   border-bottom: 1px solid var(--bridge-line);
 }
@@ -132,21 +139,24 @@ html {
   text-decoration: none;
 }
 
-/* No frame, no fill: the mark sits directly on the white bar. */
+/* A white tile holds the light logo, so it stays legible on the dark bar
+   regardless of what the mark itself looks like. */
 .bridge-home-page .site-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: auto;
   height: auto;
-  background: transparent;
+  padding: 7px 11px;
+  background: #ffffff;
+  border-radius: 10px;
 }
 
 .bridge-home-page .site-mark img {
   display: block;
   width: auto;
-  height: 40px;
-  max-width: 168px;
+  height: 26px;
+  max-width: 148px;
   object-fit: contain;
   object-position: left center;
 }
@@ -168,7 +178,7 @@ html {
 }
 
 .bridge-home-page .site-copy span {
-  color: var(--bridge-muted-2);
+  color: var(--bridge-muted);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 500;
@@ -187,21 +197,20 @@ html {
   padding: 0 18px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: 999px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.02);
   color: var(--bridge-ink);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
   text-decoration: none;
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 
 .bridge-home-page .site-actions .button:hover {
-  background: var(--bridge-surface);
-  border-color: var(--bridge-ink);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--bridge-ink-2);
   color: var(--bridge-ink);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(29, 29, 29, 0.1);
 }
 
 .bridge-home-page .public-session {
@@ -229,12 +238,12 @@ html {
   padding: 7px 14px 7px 12px;
   border: 1px solid var(--bridge-line-strong);
   border-radius: 999px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.02);
   color: var(--bridge-ink);
 }
 
 .bridge-home-page .locale-switch:hover {
-  border-color: var(--bridge-ink);
+  border-color: var(--bridge-ink-2);
 }
 
 .bridge-home-page .locale-globe {
@@ -249,9 +258,7 @@ html {
   border: 0;
   border-radius: 0;
   background: transparent;
-  /* A drawn chevron keeps the select readable as a control once the native
-     arrow is suppressed. */
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%235c5c5c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2393a09a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right center;
   background-size: 10px 7px;
@@ -262,27 +269,237 @@ html {
   appearance: none;
 }
 
-/* ---------- hero band ---------- */
+/* ---------- hero ---------- */
 .bridge-home-hero {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
-  align-items: center;
-  gap: 64px;
-  width: min(1180px, 100%);
-  margin: 0 auto;
-  padding: 76px var(--bridge-gutter-right) 84px var(--bridge-gutter-left);
-  background: #ffffff;
+  overflow: hidden;
+  background: var(--bridge-paper);
 }
 
-.bridge-home-hero-art {
-  order: 2;
+/* The aurora: warm orange and a faint cold green, out of focus. It is the
+   single richest layer on the page and the reason the hero never reads flat. */
+.bridge-home-aurora {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 46% at 16% 6%, rgba(255, 138, 42, 0.16), transparent 62%),
+    radial-gradient(52% 44% at 86% 14%, rgba(42, 116, 92, 0.22), transparent 62%),
+    radial-gradient(44% 38% at 62% 94%, rgba(255, 138, 42, 0.08), transparent 60%);
+}
+
+/* A faint plotted grid behind the type: structure, not texture. */
+.bridge-home-gridlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(72% 60% at 50% 0%, #000 30%, transparent 100%);
+  mask-image: radial-gradient(72% 60% at 50% 0%, #000 30%, transparent 100%);
+}
+
+/* Film grain, kept at a whisper so the dark stays smooth. */
+.bridge-home-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.bridge-home-hero-inner {
+  position: relative;
+  z-index: 2;
+  width: min(1240px, 100%);
+  margin: 0 auto;
+  padding: 96px var(--bridge-gutter-right) 40px var(--bridge-gutter-left);
+}
+
+.bridge-home-hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
   min-width: 0;
-  padding: 16px;
+  max-width: 780px;
+}
+
+/* live status tag */
+.bridge-home-tag {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border: 1px solid var(--bridge-line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--bridge-ink-2);
+  font-family: var(--bridge-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.bridge-home-tag-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--bridge-green);
+  box-shadow: 0 0 0 4px rgba(53, 214, 139, 0.16), 0 0 14px rgba(53, 214, 139, 0.7);
+}
+
+.bridge-home-hero h1 {
+  margin: 0;
+  color: var(--bridge-ink);
+  font-family: var(--bridge-display);
+  font-size: 108px;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 0.94;
+  letter-spacing: -0.04em;
+  text-shadow: 0 0 110px rgba(255, 138, 42, 0.28), 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.bridge-home-title {
+  display: block;
+}
+
+.bridge-home-hero-sub {
+  margin: 2px 0 0;
+  color: var(--bridge-ink-2);
+  font-family: var(--bridge-sans);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: -0.008em;
+  max-width: 32em;
+}
+
+.bridge-home-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+/* The single primary action. Ink on orange clears AA; white on the same orange
+   would not, so the label stays dark. */
+.bridge-home-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50px;
+  padding: 0 28px;
+  background: var(--bridge-orange);
+  color: #1a1208;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: 1px solid var(--bridge-orange);
+  border-radius: var(--bridge-radius-sm);
+  box-shadow: 0 8px 30px rgba(255, 138, 42, 0.28);
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-primary:hover {
+  transform: translateY(-2px);
+  background: var(--bridge-orange-hover);
+  border-color: var(--bridge-orange-hover);
+  color: #1a1208;
+  box-shadow: 0 14px 40px rgba(255, 138, 42, 0.4);
+}
+
+.bridge-home-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50px;
+  padding: 0 26px;
+  border: 1px solid var(--bridge-line-strong);
+  border-radius: var(--bridge-radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--bridge-ink);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+.bridge-home-ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--bridge-ink-2);
+  transform: translateY(-2px);
+}
+
+/* The client strip: a glyph and one word per platform. */
+.bridge-home-platforms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px 0 11px;
   border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-  background: #ffffff;
-  box-shadow: var(--bridge-shadow);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--bridge-ink-2);
+}
+
+.bridge-home-platform-glyph {
+  display: block;
+  width: 16px;
+  height: 16px;
+  color: var(--bridge-muted);
+}
+
+.bridge-home-platform-name {
+  font-family: var(--bridge-mono);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+
+/* Every pictogram on the page is a 24x24 glyph that inherits its colour. */
+.bridge-home-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- the network (the plate) ---------- */
+.bridge-home-network {
+  position: relative;
+  z-index: 2;
+  width: min(1240px, 100%);
+  margin: 24px auto 0;
+  padding: 0 var(--bridge-gutter-right) 0 var(--bridge-gutter-left);
+}
+
+/* A soft glow lifts the mesh off the canvas. */
+.bridge-home-network::before {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  pointer-events: none;
+  background: radial-gradient(55% 52% at 50% 48%, rgba(255, 138, 42, 0.14), transparent 70%);
+  filter: blur(20px);
 }
 
 .bridge-home-map {
@@ -293,163 +510,32 @@ html {
   aspect-ratio: 204 / 100;
 }
 
-.bridge-home-hero-copy {
-  order: 1;
-  position: relative;
+.bridge-home-network-meta {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 14px;
-  min-width: 0;
-  max-width: 620px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 2px 0;
+  border-top: 1px solid var(--bridge-line);
+  margin-top: -1px;
 }
 
-/* live status tag */
-.bridge-home-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  border: 1px solid var(--bridge-line-strong);
-  border-radius: 999px;
-  background: var(--bridge-surface-soft);
-  color: var(--bridge-ink-2);
+.bridge-home-network-note {
+  color: var(--bridge-muted-2);
   font-family: var(--bridge-mono);
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
-.bridge-home-tag-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #1a7f45;
-}
-
-.bridge-home-hero h1 {
-  margin: 0;
-  color: var(--bridge-ink);
-  font-family: var(--bridge-display);
-  font-size: 58px;
-  font-weight: 700;
-  font-style: normal;
-  line-height: 1.06;
-  letter-spacing: -0.02em;
-}
-
-.bridge-home-title-zh,
-.bridge-home-title-en {
-  display: block;
-}
-
-.bridge-home-title-en {
-  margin-top: 12px;
-  color: var(--bridge-muted-2);
-  font-family: var(--bridge-mono);
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.26em;
-  line-height: 1.4;
-  text-transform: uppercase;
-}
-
-.bridge-home-hero-sub {
-  margin: 4px 0 0;
-  color: var(--bridge-ink-2);
-  font-family: var(--bridge-sans);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
-}
-
-.bridge-home-hero-lede {
-  margin: 0;
-  color: var(--bridge-muted);
-  font-size: 16px;
-  line-height: 1.7;
-  max-width: 34em;
-}
-
-.bridge-home-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.bridge-home-hero-runtimes {
-  margin-top: 6px;
-  color: var(--bridge-muted-2);
-  font-family: var(--bridge-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-
-/* The single primary action of the hero. Ink on #f6821f clears AA at 6.5:1;
-   white on the same orange would only reach 2.6:1. */
-.bridge-home-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 48px;
-  padding: 0 26px;
-  background: var(--bridge-orange);
-  color: var(--bridge-ink);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  border: 1px solid var(--bridge-orange);
-  border-radius: var(--bridge-radius-sm);
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
-}
-
-.bridge-home-primary:hover {
-  transform: translateY(-1px);
-  background: var(--bridge-orange-hover);
-  border-color: var(--bridge-orange-hover);
-  color: var(--bridge-ink);
-  box-shadow: 0 8px 20px rgba(180, 83, 9, 0.18);
-}
-
-.bridge-home-ghost {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 48px;
-  padding: 0 24px;
-  border: 1px solid var(--bridge-line-strong);
-  border-radius: var(--bridge-radius-sm);
-  background: #ffffff;
-  color: var(--bridge-ink);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
-}
-
-.bridge-home-ghost:hover {
-  background: var(--bridge-surface);
-  border-color: var(--bridge-ink);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(29, 29, 29, 0.08);
-}
-
-/* ---------- chart plate ---------- */
-/* Every stroke here is `non-scaling`, so a hairline stays one pixel wide at
-   every plate size instead of thinning out with the viewBox. */
+/* ---------- chart plate (SVG) ---------- */
 .rk-grid {
-  stroke: #f1f1f1;
+  stroke: #1b221f;
   stroke-width: 1;
 }
 
 .rk-grid-major {
-  stroke: #e9e9e9;
+  stroke: #232c28;
 }
 
 .rk-edge,
@@ -457,35 +543,28 @@ html {
   display: none;
 }
 
-/* A line map, not a grey blob. The fills sit a hair off white and the drawn
-   coastline carries the shape, so the orange mesh is unambiguously the subject
-   while the plate stays a light surface. */
 .rk-land {
-  fill: #fafafa;
-  stroke: #c9c9c9;
+  fill: #101612;
+  stroke: #27312b;
   stroke-width: 1;
 }
 
 .rk-land-near {
-  fill: #f6f6f6;
-  stroke: #a8a8a8;
+  fill: #121914;
+  stroke: #334139;
   stroke-width: 1.25;
 }
 
-/* The far coast is context, not subject: white fill and a ghost outline, so the
-   peer mesh never has to compete with a field of grey shapes. */
 .rk-land-far {
-  fill: #ffffff;
-  stroke: #e4e4e4;
+  fill: #0c110e;
+  stroke: #1d2621;
   stroke-width: 1;
 }
 
-/* Long dashes at full brand orange: a link you can follow at 100%, not a
-   texture. 12 + 8 is a multiple of the rk-flow offset, so the loop is seamless. */
 .rk-link {
   fill: none;
   stroke: var(--bridge-orange);
-  stroke-width: 1.2;
+  stroke-width: 1.3;
   stroke-linecap: round;
 }
 
@@ -495,15 +574,24 @@ html {
 }
 
 .rk-halo {
-  fill: rgba(246, 130, 31, 0.1);
+  fill: rgba(255, 138, 42, 0.16);
 }
 
-/* Solid centre with a white ring, so a peer pops against land and against the
-   link that lands on it. */
 .rk-dot {
   fill: var(--bridge-orange);
-  stroke: #ffffff;
-  stroke-width: 1.4;
+  stroke: #0a0d0c;
+  stroke-width: 1.6;
+}
+
+.rk-node-label {
+  fill: var(--bridge-ink-2);
+  font-family: var(--bridge-mono);
+  font-size: 14px;
+  font-weight: 500;
+  paint-order: stroke;
+  stroke: #0a0d0c;
+  stroke-width: 3.6;
+  stroke-linejoin: round;
 }
 
 @keyframes rk-flow {
@@ -514,7 +602,7 @@ html {
 
 /* ---------- section bands ---------- */
 .bridge-home-band {
-  width: min(1180px, 100%);
+  width: min(1240px, 100%);
   margin: 0 auto;
   padding: 88px var(--bridge-gutter-right) 88px var(--bridge-gutter-left);
 }
@@ -525,12 +613,12 @@ html {
 }
 
 .bridge-home-kicker {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   color: var(--bridge-orange-ink);
   font-family: var(--bridge-mono);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
 }
 
@@ -538,131 +626,284 @@ html {
 .bridge-home-closing h2 {
   margin: 0;
   font-family: var(--bridge-display);
-  font-size: 34px;
+  font-size: 44px;
   font-weight: 700;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
   color: var(--bridge-ink);
 }
 
 .bridge-home-note {
   max-width: 46em;
-  margin: 14px 0 0;
+  margin: 16px 0 0;
   color: var(--bridge-muted);
   font-size: 16px;
   line-height: 1.7;
 }
 
-/* ---------- features: white cards on whisper grey ---------- */
+/* ---------- spec: a datasheet strip ---------- */
 .bridge-home-features {
+  position: relative;
   background: var(--bridge-surface);
   border-top: 1px solid var(--bridge-line);
   border-bottom: 1px solid var(--bridge-line);
 }
 
-.bridge-home-bento {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px;
+.bridge-home-features::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(68% 90% at 50% 100%, rgba(255, 138, 42, 0.04), transparent 72%);
 }
 
-.bridge-home-bento-card {
-  display: flex;
-  flex-direction: column;
-  padding: 30px 24px;
-  background: #ffffff;
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
-}
-
-.bridge-home-line-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--bridge-line-strong);
-  background: #ffffff;
-  box-shadow: var(--bridge-shadow);
-}
-
-.bridge-home-bento-num {
-  font-family: var(--bridge-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  color: var(--bridge-orange-ink);
-}
-
-.bridge-home-bento-card h3 {
-  margin: 18px 0 10px;
-  color: var(--bridge-ink);
-  font-family: var(--bridge-display);
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
-.bridge-home-bento-card p {
-  margin: 0;
-  color: var(--bridge-muted);
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-/* ---------- network: atlas + carriers ---------- */
-.bridge-home-network {
-  background: #ffffff;
-}
-
-.bridge-home-network .bridge-home-band + .bridge-home-band {
-  padding-top: 0;
-  border-top: 0;
-}
-
-.bridge-home-cities {
+.bridge-home-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
-  border-top: 1px solid var(--bridge-line);
 }
 
-.bridge-home-city {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 15px 20px 15px 0;
-  border-bottom: 1px solid var(--bridge-line);
+.bridge-home-stat {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 8px 0 8px 32px;
   border-right: 1px solid var(--bridge-line);
-  transition: background-color 180ms ease;
 }
 
-.bridge-home-city:hover {
-  background: var(--bridge-surface-soft);
+.bridge-home-stat:first-child {
+  padding-left: 0;
 }
 
-.bridge-home-city:nth-child(4n) {
+.bridge-home-stat:last-child {
   border-right: 0;
   padding-right: 0;
 }
 
-.bridge-home-city-code {
-  color: var(--bridge-orange-ink);
+.bridge-home-stat-icon {
+  display: block;
+  width: 34px;
+  height: 34px;
+  color: var(--bridge-orange);
+}
+
+.bridge-home-stat-value {
+  display: block;
+  color: var(--bridge-ink);
+  font-family: var(--bridge-display);
+  font-size: 56px;
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+}
+
+.bridge-home-stat-label {
+  display: block;
+  margin-top: 8px;
+  color: var(--bridge-muted);
+  font-family: var(--bridge-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* ---------- carriers ---------- */
+.bridge-home-carrier-band {
+  position: relative;
+  background: var(--bridge-paper);
+}
+
+.bridge-home-carrier-band::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(58% 72% at 50% 50%, rgba(42, 116, 92, 0.04), transparent 68%);
+}
+
+.bridge-home-carriers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-carrier {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px;
+  background: var(--bridge-elev);
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-carrier:hover {
+  transform: translateY(-2px);
+  border-color: var(--bridge-line-strong);
+  box-shadow: var(--bridge-shadow);
+}
+
+.bridge-home-carrier-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  height: 42px;
+  padding: 0 11px;
+  border-radius: var(--bridge-radius-sm);
+  background: #ffffff;
+  color: #1d1d1d;
+}
+
+.bridge-home-carrier-svg {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: 24px;
+  object-fit: contain;
+  object-position: center;
+}
+
+.bridge-home-carrier--bgp .bridge-home-carrier-svg {
+  height: 22px;
+}
+
+.bridge-home-carrier-name {
+  font-family: var(--bridge-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--bridge-ink);
+  letter-spacing: -0.01em;
+}
+
+/* ---------- steps: three pictograms ---------- */
+.bridge-home-steps {
+  position: relative;
+  background: var(--bridge-surface);
+  border-top: 1px solid var(--bridge-line);
+  border-bottom: 1px solid var(--bridge-line);
+}
+
+.bridge-home-steps::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(62% 85% at 50% 0%, rgba(255, 138, 42, 0.035), transparent 68%);
+}
+
+.bridge-home-steps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bridge-home-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 30px 30px 28px;
+  background: var(--bridge-elev);
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.bridge-home-step:hover {
+  transform: translateY(-2px);
+  border-color: var(--bridge-line-strong);
+  box-shadow: var(--bridge-shadow);
+}
+
+.bridge-home-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.bridge-home-step-icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  color: var(--bridge-orange);
+}
+
+.bridge-home-step-index {
+  color: var(--bridge-muted-2);
   font-family: var(--bridge-mono);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.2em;
 }
 
-.bridge-home-city-name {
-  color: var(--bridge-ink-2);
-  font-size: 15px;
-  font-weight: 500;
+.bridge-home-step-title {
+  margin: 0;
+  color: var(--bridge-ink);
+  font-family: var(--bridge-display);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
 }
 
-/* The plate carries codes only, so the code-to-city key stays in the
-   accessibility tree without becoming a second visual index. */
+.bridge-home-step-note {
+  margin: -8px 0 0;
+  color: var(--bridge-muted);
+  font-family: var(--bridge-mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+/* ---------- closing ---------- */
+.bridge-home-closing {
+  position: relative;
+  overflow: hidden;
+  background: var(--bridge-surface);
+  color: var(--bridge-ink);
+  border-bottom: 1px solid var(--bridge-line);
+}
+
+.bridge-home-closing::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(56% 120% at 50% 120%, rgba(255, 138, 42, 0.14), transparent 64%);
+}
+
+.bridge-home-closing .bridge-home-band {
+  position: relative;
+  padding-top: 96px;
+  padding-bottom: 96px;
+}
+
+.bridge-home-closing h2 {
+  max-width: 20em;
+}
+
+.bridge-home-closing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+/* ---------- screen-reader-only plate key ---------- */
 .bridge-home-plate-key {
   position: absolute;
   width: 1px;
@@ -674,146 +915,12 @@ html {
   list-style: none;
 }
 
-.bridge-home-carriers {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.bridge-home-carrier {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 22px;
-  background: #ffffff;
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-}
-
-/* One warm tinted tile per operator: the operator marks are full colour. */
-.bridge-home-carrier-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 56px;
-  padding: 0 16px;
-  border-radius: var(--bridge-radius-sm);
-  background: var(--bridge-tint);
-  color: var(--bridge-orange-ink);
-}
-
-.bridge-home-carrier--bgp .bridge-home-carrier-mark {
-  background: var(--bridge-tint-soft);
-}
-
-.bridge-home-carrier-svg {
-  display: block;
-  width: auto;
-  max-width: 100%;
-  height: 30px;
-  object-fit: contain;
-  object-position: center;
-}
-
-.bridge-home-carrier--bgp .bridge-home-carrier-svg {
-  height: 24px;
-}
-
-.bridge-home-carrier-name {
-  font-family: var(--bridge-display);
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--bridge-ink);
-  letter-spacing: -0.01em;
-}
-
-.bridge-home-carrier-legal {
-  color: var(--bridge-muted-2);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-
-/* ---------- steps ---------- */
-.bridge-home-steps {
-  background: var(--bridge-surface);
-  border-top: 1px solid var(--bridge-line);
-  border-bottom: 1px solid var(--bridge-line);
-}
-
-.bridge-home-steps-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.bridge-home-step-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: 30px 28px;
-  background: #ffffff;
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-}
-
-.bridge-home-step-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: var(--bridge-tint);
+.bridge-home-plate-key-code {
   color: var(--bridge-orange-ink);
   font-family: var(--bridge-mono);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.14em;
-}
-
-.bridge-home-step-item h3 {
-  margin: 18px 0 10px;
-  color: var(--bridge-ink);
-  font-family: var(--bridge-display);
-  font-size: 19px;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
-.bridge-home-step-item p {
-  margin: 0;
-  color: var(--bridge-muted);
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-/* ---------- closing ---------- */
-.bridge-home-closing {
-  background: var(--bridge-surface-soft);
-  color: var(--bridge-ink);
-  border-bottom: 1px solid var(--bridge-line);
-}
-
-.bridge-home-closing .bridge-home-band {
-  padding-top: 76px;
-  padding-bottom: 76px;
-}
-
-.bridge-home-closing h2 {
-  max-width: 20em;
-}
-
-.bridge-home-closing-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 30px;
-}
-
-/* Stubs kept for compatibility */
-.bridge-home-board-peers,
-.bridge-home-chip {
-  display: none;
+  letter-spacing: 0.12em;
 }
 
 .bridge-home-page :is(a, button, select):focus-visible {
@@ -821,43 +928,24 @@ html {
   outline-offset: 3px;
 }
 
-/* ---------- responsive design ---------- */
+/* ---------- responsive ---------- */
 @media (max-width: 900px) {
   .bridge-home-page {
     --bridge-gutter-left: 20px;
     --bridge-gutter-right: 20px;
   }
 
-  .bridge-home-hero {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 40px;
-    padding-top: 56px;
-    padding-bottom: 64px;
-  }
-
-  .bridge-home-hero-art {
-    order: 2;
+  .bridge-home-hero-inner {
+    padding-top: 64px;
+    padding-bottom: 28px;
   }
 
   .bridge-home-hero-copy {
     max-width: none;
   }
 
-  .bridge-home-page .site-mark img {
-    height: 32px;
-    max-width: 128px;
-  }
-
-  .bridge-home-page .site-copy strong {
-    font-size: 16px;
-  }
-
   .bridge-home-hero h1 {
-    font-size: 44px;
-  }
-
-  .bridge-home-hero-sub {
-    font-size: 19px;
+    font-size: 64px;
   }
 
   .bridge-home-band {
@@ -869,32 +957,66 @@ html {
     margin-bottom: 32px;
   }
 
-  .bridge-home-bento {
+  .bridge-home-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px 0;
+  }
+
+  .bridge-home-stat {
+    padding: 0 24px 0 0;
+  }
+
+  .bridge-home-stat:nth-child(odd) {
+    padding-left: 0;
+  }
+
+  .bridge-home-stat:nth-child(2n) {
+    border-right: 0;
+    padding-left: 24px;
   }
 
   .bridge-home-steps-grid {
     grid-template-columns: 1fr;
   }
 
-  .bridge-home-cities,
   .bridge-home-carriers {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .bridge-home-city:nth-child(4n) {
-    border-right: 1px solid var(--bridge-line);
-    padding-right: 18px;
-  }
-
-  .bridge-home-city:nth-child(2n) {
-    border-right: 0;
-    padding-right: 0;
-  }
-
   .bridge-home-band-head h2,
   .bridge-home-closing h2 {
-    font-size: 28px;
+    font-size: 30px;
+  }
+}
+
+/* Below this the plate is too small to carry a name at a readable size, so the
+   chart keeps its geometry and the key takes over the naming. */
+@media (max-width: 760px) {
+  .rk-node-label {
+    display: none;
+  }
+
+  .bridge-home-plate-key {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 18px;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    margin: 22px 0 0;
+  }
+
+  .bridge-home-plate-key li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--bridge-line);
+    color: var(--bridge-ink-2);
+    font-size: 14px;
   }
 }
 
@@ -925,46 +1047,47 @@ html {
   }
 
   .bridge-home-hero h1 {
-    font-size: 34px;
-  }
-
-  .bridge-home-title-en {
-    font-size: 12px;
-    letter-spacing: 0.2em;
+    font-size: 46px;
   }
 
   .bridge-home-hero-sub {
-    font-size: 18px;
+    font-size: 17px;
   }
 
-  .bridge-home-bento {
+  .bridge-home-stats {
     grid-template-columns: 1fr;
+    gap: 24px 0;
   }
 
-  .bridge-home-cities,
+  .bridge-home-stat,
+  .bridge-home-stat:nth-child(odd),
+  .bridge-home-stat:nth-child(2n) {
+    padding: 0;
+    border-right: 0;
+  }
+
   .bridge-home-carriers {
     grid-template-columns: 1fr;
   }
 
-  .bridge-home-city,
-  .bridge-home-city:nth-child(2n),
-  .bridge-home-city:nth-child(4n) {
-    border-right: 0;
-    padding-right: 0;
+  .bridge-home-plate-key {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bridge-home-page .bridge-home-primary,
   .bridge-home-page .bridge-home-ghost,
-  .bridge-home-page .bridge-home-line-card,
+  .bridge-home-page .bridge-home-step,
+  .bridge-home-page .bridge-home-carrier,
   .bridge-home-page .site-actions .button {
     transition: none;
   }
 
   .bridge-home-page .bridge-home-primary:hover,
   .bridge-home-page .bridge-home-ghost:hover,
-  .bridge-home-page .bridge-home-line-card:hover,
+  .bridge-home-page .bridge-home-step:hover,
+  .bridge-home-page .bridge-home-carrier:hover,
   .bridge-home-page .site-actions .button:hover {
     transform: none;
   }

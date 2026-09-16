@@ -387,6 +387,28 @@ abstract class BaseController
         );
     }
 
+    /**
+     * Single-file arm64 installer. It embeds the client-agent runtime, so the
+     * command downloads one binary, verifies it against the panel manifest, and
+     * runs it locally instead of piping a remote shell script.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    protected function linuxArm64ClientInstallCommand(?array $client = null): string
+    {
+        $command = 'curl -fsSL ' . $this->shellQuote($this->linuxArm64ClientInstallerUrl())
+            . ' -o install-client-agent-linux-arm64 && chmod 0755 install-client-agent-linux-arm64 && sudo ./install-client-agent-linux-arm64'
+            . ' --master ' . $this->shellQuote($this->agentBaseUrl());
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        if ($clientId > 0 && $agentToken !== '') {
+            $command .= ' --client-id ' . $clientId
+                . ' --agent-token ' . $this->shellQuote($agentToken);
+        }
+
+        return $command;
+    }
+
     protected function macosClientArm64AppUrl(): string
     {
         return $this->clientAppArtifactUrl('macos_client_app_arm64', '/artifacts/macos/leikwan-bridge-arm64.dmg');
@@ -749,6 +771,9 @@ abstract class BaseController
         $linuxDescription = $hasClient
             ? 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
             : 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
+        $linuxArm64Install = $this->linuxArm64ClientInstallCommand($hasClient ? $client : null);
+        $linuxArm64Description = 'Debian 11/12/13 only, Linux arm64/aarch64 only. Single-file installer for arm64 hosts (Raspberry Pi, Ampere, arm64 VMs) that cannot reach the shell installer: it embeds the client-agent runtime, keeps the configured artifact base for later hash-verified updates, and is refused on x86_64/amd64 machines. Verify it first with ./install-client-agent-linux-arm64 --self-test.'
+            . ($hasClient ? '' : ' Create a client first to get its exact install command.');
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
@@ -781,6 +806,16 @@ abstract class BaseController
                 $linuxInstall,
                 $linuxActions,
                 $linuxDescription,
+                'linux'
+            )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $linuxArm64Install,
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $this->linuxArm64ClientInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $linuxArm64Install),
+                ],
+                $linuxArm64Description,
                 'linux'
             )
             . $this->renderHeadlessClientDownloadPanel($client)
@@ -892,6 +927,15 @@ abstract class BaseController
                     $this->renderCopyButton('Copy Install Command', $installCommand),
                 ],
                 'Debian 11/12/13 only. Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 (apt/dpkg/systemd) and verifies every artifact against the panel manifest.'
+            )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $this->linuxArm64ClientInstallCommand($client),
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $this->linuxArm64ClientInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $this->linuxArm64ClientInstallCommand($client)),
+                ],
+                'Debian 11/12/13 only, Linux arm64/aarch64 only. Single-file installer that embeds the client-agent runtime, so an arm64 host needs no shell installer and no extra downloads. It verifies every artifact against the panel manifest and is refused on x86_64/amd64 machines.'
             )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
@@ -1553,7 +1597,7 @@ HTML;
             . ($isBridgeHome
                 // The stylesheet is served with a 12h edge TTL, so every
                 // homepage restyle has to ship under a fresh cache key.
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260915N">'
+                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260916c">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';

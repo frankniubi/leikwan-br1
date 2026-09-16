@@ -1,0 +1,41 @@
+{
+  "architecture": "x86_64",
+  "helpers": [
+    {
+      "name": "sing-box",
+      "path": "bin/sing-box",
+      "sha256": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
+      "size_bytes": 27306816
+    },
+    {
+      "name": "wstunnel",
+      "path": "bin/wstunnel",
+      "sha256": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683",
+      "size_bytes": 10592688
+    },
+    {
+      "name": "leikwan-bond",
+      "path": "bin/leikwan-bond",
+      "sha256": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
+      "size_bytes": 8361328
+    },
+    {
+      "name": "leikwan-ingress",
+      "path": "bin/leikwan-ingress",
+      "sha256": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
+      "size_bytes": 2300256
+    },
+    {
+      "name": "leikwan-uot-bond",
+      "path": "bin/leikwan-uot-bond",
+      "sha256": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
+      "size_bytes": 2088624
+    },
+    {
+      "name": "ultra-client",
+      "path": "bin/ultra-client",
+      "sha256": "9194f66b9cf683a91877feb86abe95f586a947f8fc9db890f3b58e3ed671b836",
+      "size_bytes": 15187824
+    }
+  ]
+}

@@ -11,6 +11,8 @@ declare(strict_types=1);
  *   - the solved chart frame, because the plate crop and the CSS have to
  *     agree or the coast silently letterboxes;
  *   - the ban on gradient primitives;
+ *   - the text budget, because this page is a plate of pictograms and labels:
+ *     a paragraph anywhere on it is the regression;
  *   - no latency numbers on the public door.
  */
 
@@ -59,11 +61,14 @@ if (preg_match('/--bridge-gutter-(left|right):\s*[^;]*%/', $css) === 1) {
 foreach ([
     'url("/assets/fonts/inter-var.ttf")',
     'url("/assets/fonts/space-grotesk-var.ttf")',
-    '.bridge-home-title-zh',
-    '.bridge-home-title-en',
-    '--bridge-orange: #f6821f',
-    '--bridge-line: #e6e6e6',
+    '.bridge-home-title',
+    '--bridge-orange: #ff8a2a',
+    '--bridge-line: #1d2421',
     '.bridge-home-page .site-mark img',
+    '.bridge-home-network',
+    '.bridge-home-platforms',
+    '.bridge-home-stats',
+    '.rk-node-label',
     '@media (max-width: 900px)',
     '@media (max-width: 560px)',
     '@media (prefers-reduced-motion: reduce)',
@@ -154,14 +159,14 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' homepage has double-encoded or corrupted text');
     }
 
-    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title-zh', 'bridge-home-title-en', 'bridge-home-cities', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg'] as $marker) {
+    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title', 'bridge-home-plate-key', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg'] as $marker) {
         if (!str_contains($html, $marker)) {
             homepageFail($locale . ' homepage is missing ' . $marker);
         }
     }
 
-    if (!str_contains($html, '直達') || !str_contains($html, 'Direct.')) {
-        homepageFail($locale . ' homepage lost the bilingual lockup');
+    if (!str_contains($html, 'DIRECT.')) {
+        homepageFail($locale . ' homepage lost its English title');
     }
 
     if (preg_match('/\b\d+\s*ms\b/i', $html) === 1) {
@@ -176,17 +181,49 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' homepage reintroduced the connection board');
     }
 
-    if (substr_count($html, 'class="bridge-home-city"') !== $nodeCount) {
-        homepageFail($locale . ' atlas must name every peer once');
+    if (substr_count($html, 'class="bridge-home-city"') !== 0) {
+        homepageFail($locale . ' homepage reintroduced a city list beside the plate');
     }
 
     if (preg_match_all('/<g class="rk-node">/', $html) !== $nodeCount) {
         homepageFail($locale . ' plate must draw one node per peer');
     }
 
+    // The plate is the only visible place a peer is named, so every peer has to
+    // carry its own label and the label ladder must not drop one.
+    preg_match_all('/class="rk-node-label"[^>]*>([^<]*)</', $html, $labels);
+    if (count($labels[1]) !== $nodeCount) {
+        homepageFail($locale . ' plate must name every peer in place');
+    }
+    foreach ($nodes as $node) {
+        if (!in_array($node['code'], $labels[1], true)) {
+            homepageFail($locale . ' plate never labels ' . $node['code']);
+        }
+    }
+
     preg_match_all('/bridge-home-plate-key-code">([^<]*)</', $html, $keys);
     if (count($keys[1]) !== $nodeCount) {
         homepageFail($locale . ' plate key must name every peer');
+    }
+
+    // The pictogram set is the page: four spec tiles, four platform glyphs and
+    // three step glyphs. Losing one means prose crept back into a band.
+    if (substr_count($html, 'class="bridge-home-icon"') < 7
+        || substr_count($html, 'class="bridge-home-platform"') !== 4
+        || substr_count($html, 'class="bridge-home-stat"') !== 4
+        || substr_count($html, 'class="bridge-home-step"') !== 3) {
+        homepageFail($locale . ' homepage lost part of its pictogram set');
+    }
+
+    // The text budget. This page is labels and glyphs, so what is left after the
+    // screen-reader-only key is removed has to stay under a page of prose; the
+    // paragraph-per-band design this replaced ran past three thousand characters.
+    $visible = (string) preg_replace('#<ul class="bridge-home-plate-key">.*?</ul>#s', ' ', $html);
+    $visible = html_entity_decode((string) preg_replace('#<[^>]+>#', ' ', $visible), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $visible = trim((string) preg_replace('/\s+/u', ' ', $visible));
+    $characters = (int) preg_match_all('/./u', $visible);
+    if ($characters > 900) {
+        homepageFail($locale . ' homepage carries ' . $characters . ' characters of visible text');
     }
 }
 

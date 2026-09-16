@@ -1,0 +1,7 @@
+06:01:25 prewarm udp_replies=0
+06:01:25 soak start duration=30s pps=20 tunnel=('127.0.0.1', 10001) direct=('185.220.238.143', 60000)
+06:01:58 tunnel-udp  sent=600 recv=0 loss=100.00% rtt p50=None p95=None p99=None max=None
+06:01:58 direct-udp  sent=600 recv=546 loss=9.00% rtt p50=89.26 p95=104.77 p99=109.65 max=116.84
+06:01:58 tunnel-tcp  connects=1 breaks=0 hb_ok=30/30 rtt p50=46.69 p95=48.65
+06:01:58 direct-tcp  connects=1 breaks=0 hb_ok=30/30 rtt p50=94.19 p95=265.9
+06:01:58 summary -> /tmp/ultra-udp-controlled-round2/1400/summary.json

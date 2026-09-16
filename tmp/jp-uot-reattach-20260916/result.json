@@ -1,0 +1,557 @@
+{
+  "started": 1789555347.9353728,
+  "ended": 1789555378.3132024,
+  "requested_seconds": 30,
+  "scope": "Linux -> Ultra forward 170 TCP -> LeiGod -> Japan SS-none -> loopback UoT -> UDP echo",
+  "script_sha256": "8be5331c1ba6f2a579307e0e31e11db0ea8bbf18259339632bbbdcc5dfc8f6eb",
+  "flows": [
+    {
+      "flow": 0,
+      "sent": 0,
+      "received": 0,
+      "corrupt": 0,
+      "connections": 0,
+      "reattaches": 0,
+      "errors": [
+        {
+          "elapsed": 1.13,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 2.75,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 4.36,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 5.98,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 7.6,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 9.22,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 10.83,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 12.44,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 13.98,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 15.59,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 17.2,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 18.74,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 20.28,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 21.83,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 23.45,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 25.07,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 26.69,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 28.23,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 29.88,
+          "type": "EOFError"
+        }
+      ],
+      "sizes": {
+        "256": [
+          0,
+          0
+        ],
+        "1400": [
+          0,
+          0
+        ],
+        "4096": [
+          0,
+          0
+        ],
+        "16000": [
+          0,
+          0
+        ]
+      },
+      "rtt_ms": {}
+    },
+    {
+      "flow": 1,
+      "sent": 0,
+      "received": 0,
+      "corrupt": 0,
+      "connections": 0,
+      "reattaches": 0,
+      "errors": [
+        {
+          "elapsed": 1.13,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 2.75,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 4.36,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 5.98,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 7.59,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 9.21,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 10.83,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 12.44,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 13.98,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 15.52,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 17.07,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 18.61,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 20.15,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 21.69,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 23.3,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 24.91,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 26.52,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 28.13,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 29.68,
+          "type": "EOFError"
+        }
+      ],
+      "sizes": {
+        "256": [
+          0,
+          0
+        ],
+        "1400": [
+          0,
+          0
+        ],
+        "4096": [
+          0,
+          0
+        ],
+        "16000": [
+          0,
+          0
+        ]
+      },
+      "rtt_ms": {}
+    },
+    {
+      "flow": 2,
+      "sent": 0,
+      "received": 0,
+      "corrupt": 0,
+      "connections": 0,
+      "reattaches": 0,
+      "errors": [
+        {
+          "elapsed": 1.14,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 2.75,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 4.36,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 5.98,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 7.59,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 9.21,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 10.83,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 12.37,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 13.99,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 15.61,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 17.22,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 18.76,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 20.38,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 21.99,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 23.53,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 25.07,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 26.62,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 28.16,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 29.78,
+          "type": "EOFError"
+        }
+      ],
+      "sizes": {
+        "256": [
+          0,
+          0
+        ],
+        "1400": [
+          0,
+          0
+        ],
+        "4096": [
+          0,
+          0
+        ],
+        "16000": [
+          0,
+          0
+        ]
+      },
+      "rtt_ms": {}
+    },
+    {
+      "flow": 3,
+      "sent": 0,
+      "received": 0,
+      "corrupt": 0,
+      "connections": 0,
+      "reattaches": 0,
+      "errors": [
+        {
+          "elapsed": 1.14,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 2.77,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 4.39,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 6.0,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 7.62,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 9.23,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 10.84,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 12.46,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 14.0,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 15.62,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 17.23,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 18.84,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 20.38,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 22.0,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 23.62,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 25.23,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 26.76,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 28.31,
+          "type": "EOFError"
+        },
+        {
+          "elapsed": 29.85,
+          "type": "EOFError"
+        }
+      ],
+      "sizes": {
+        "256": [
+          0,
+          0
+        ],
+        "1400": [
+          0,
+          0
+        ],
+        "4096": [
+          0,
+          0
+        ],
+        "16000": [
+          0,
+          0
+        ]
+      },
+      "rtt_ms": {}
+    }
+  ],
+  "observations": [
+    {
+      "at": 1789555347.951021,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30166,
+          "selected_at": "2026-09-16T10:42:13Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    },
+    {
+      "at": 1789555352.95494,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30166,
+          "selected_at": "2026-09-16T10:42:13Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    },
+    {
+      "at": 1789555357.9569337,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30166,
+          "selected_at": "2026-09-16T10:42:13Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    },
+    {
+      "at": 1789555362.958736,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30166,
+          "selected_at": "2026-09-16T10:42:13Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    },
+    {
+      "at": 1789555367.96071,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30177,
+          "selected_at": "2026-09-16T10:42:43Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    },
+    {
+      "at": 1789555372.9621801,
+      "status": {
+        "state": "ready",
+        "error": null,
+        "policy_generation": "7ac2e49ee15abc759f4b6b1a4f37042c1cbc2315f3c82ab7ea0bc5b69953fc2d",
+        "active_tcp": null,
+        "active_udp": {
+          "selection_ref": "Ku0IMmqFyAZlkNyuywaUYEtNn4Ub_e1XrFafvXhQuCc",
+          "selection_tier": "unknown",
+          "candidate_key_hash": "7fb395f1c4b4232cb51860fb001fd3d487f39da3d8b7e29cef63ba2ff6ffc583",
+          "lease_hash": "a5cc237da653cb6f513d7345915fa11bc500baace9428d0db4743868ac36a1b2",
+          "rtt_ms": 30177,
+          "selected_at": "2026-09-16T10:42:43Z"
+        },
+        "runtime_attestation": {
+          "fingerprint": "2026.09.16.1.e0e4a71f",
+          "self_sha256": "cb8d7e927624cb7c6180d16707995d862f9a92f2b75b28b84cd00fbe7530ebb6"
+        }
+      }
+    }
+  ]
+}
