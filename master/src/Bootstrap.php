@@ -418,6 +418,9 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/dedupe-slave.sh', [$artifacts, 'dedupeSlave']);
         $this->router->add('GET', '/artifacts/install-client.sh', [$artifacts, 'installClient']);
         $this->router->add('GET', '/artifacts/install-bond-sidecar.sh', [$artifacts, 'installBondSidecar']);
+        $this->router->add('GET', '/artifacts/install-external-uot.sh', [$artifacts, 'installExternalUot']);
+        $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64', [$artifacts, 'uotSidecarLinuxAmd64']);
+        $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64', [$artifacts, 'uotSidecarLinuxArm64']);
         $this->router->add('GET', '/artifacts/install-tcp-accel.sh', [$artifacts, 'installTcpAccel']);
         $this->router->add('GET', '/artifacts/install-mptcp-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-bond-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);

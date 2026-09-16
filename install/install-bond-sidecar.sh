@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.08.10.1"
+INSTALLER_VERSION="2026.09.17.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
 SERVICE_NAME="leikwan-bond-sidecar"
 CONFIG_DIR="/etc/leikwan-sidecar"
 BIN_DIR="/usr/local/bin"
+SKIP_EXTERNAL_UOT=0
+REQUIRE_EXTERNAL_UOT=0
+EXTERNAL_UOT_CONFIG=""
+EXTERNAL_UOT_LISTEN_PORT="7443"
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 SKIP_MPTCP_CHECK=0
@@ -133,6 +137,10 @@ while [[ $# -gt 0 ]]; do
     --service-name) SERVICE_NAME="$2"; shift 2 ;;
     --config-dir) CONFIG_DIR="$2"; shift 2 ;;
     --bin-dir) BIN_DIR="$2"; shift 2 ;;
+    --external-uot-config) EXTERNAL_UOT_CONFIG="$2"; shift 2 ;;
+    --external-uot-listen-port) EXTERNAL_UOT_LISTEN_PORT="$2"; shift 2 ;;
+    --skip-external-uot) SKIP_EXTERNAL_UOT=1; shift ;;
+    --require-external-uot) REQUIRE_EXTERNAL_UOT=1; shift ;;
     --listen-port|--token-secret|--total-speed-limit-mbps) shift 2 ;;
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
     --reboot-after-mptcp-kernel-install) REBOOT_AFTER_MPTCP_KERNEL_INSTALL=1; shift ;;
@@ -142,7 +150,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MASTER_URL" || -z "$AGENT_TOKEN" ]]; then
-  echo "usage: install-bond-sidecar.sh --master <url> --agent-token <token>" >&2
+  echo "usage: install-bond-sidecar.sh --master <url> --agent-token <token> [--external-uot-config <path|url>] [--skip-external-uot] [--require-external-uot]" >&2
   exit 1
 fi
 
@@ -231,6 +239,29 @@ download_atomic "$ARTIFACT_BASE/artifacts/wstunnel/wstunnel_linux_amd64" "$BIN_D
 download_optional_atomic "$ARTIFACT_BASE/artifacts/gost/gost_linux_amd64" "$BIN_DIR/gost" "legacy gost UoT carrier"
 # lguot: CPU-efficient UoT server, the leigod_uot_impl=lguot alternative to the gost server.
 download_atomic "$ARTIFACT_BASE/artifacts/lguot/lguot_linux_amd64" "$BIN_DIR/lguot"
+
+# --- External UoT sidecar (Go) ---------------------------------------------
+# The Ultra runtime's external_uot carrier terminates on this sidecar, so a
+# freshly installed host can answer UDP instead of reporting "UDP candidate
+# failed".  The forward list stays operator/panel owned: pass it with
+# --external-uot-config, otherwise the unit is installed but left disabled.
+if [[ "$SKIP_EXTERNAL_UOT" == "1" || "${LEIKWAN_SKIP_EXTERNAL_UOT:-0}" == "1" ]]; then
+  echo "external UoT sidecar install skipped by configuration"
+elif download_verified_artifact external_uot_installer "$ARTIFACT_BASE/artifacts/install-external-uot.sh" "$BIN_DIR/install-external-uot.sh"; then
+  external_uot_args=(--artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR" --listen-port "$EXTERNAL_UOT_LISTEN_PORT")
+  if [[ -n "$EXTERNAL_UOT_CONFIG" ]]; then
+    external_uot_args+=(--config "$EXTERNAL_UOT_CONFIG")
+  fi
+  if [[ "${LEIKWAN_SKIP_SYSTEMD:-0}" == "1" ]]; then
+    external_uot_args+=(--skip-systemd)
+  fi
+  "$BIN_DIR/install-external-uot.sh" "${external_uot_args[@]}"
+elif [[ "$REQUIRE_EXTERNAL_UOT" == "1" ]]; then
+  echo "external UoT installer missing from $ARTIFACT_BASE and --require-external-uot was set" >&2
+  exit 1
+else
+  echo "warning: external UoT installer unavailable from $ARTIFACT_BASE; continuing without it" >&2
+fi
 
 # --- WireGuard watchdog ---
 download "$ARTIFACT_BASE/artifacts/leikwan-wg-watchdog.sh" "$BIN_DIR/leikwan-wg-watchdog.sh"

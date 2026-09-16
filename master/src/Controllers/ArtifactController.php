@@ -95,6 +95,26 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    /**
+     * Serve the operator-owned external UoT sidecar installer. Installs the Go uot-sidecar
+     * (uot_sidecar_linux_*) plus its systemd unit; the carrier config is supplied separately
+     * so a point can be enabled without rebuilding the installer.
+     */
+    public function installExternalUot(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-external-uot.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uotSidecarLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function uotSidecarLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function wgWatchdog(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/leikwan-wg-watchdog.sh', 'text/plain; charset=utf-8', $request);

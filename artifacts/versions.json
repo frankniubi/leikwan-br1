@@ -10,9 +10,9 @@
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
     "path": "install/install-bond-sidecar.sh",
-    "sha256": "84edb2f1c90217c4f06bb51fa6d8a0429eb1de5628fe8587c0d27bedf3a80af9",
-    "size_bytes": 9507,
-    "version": "2026.08.10.1"
+    "sha256": "14fcc9e250020bd3366dddfbfb72583d6dfe4c057f71580e37f47dbfe9ecf1c9",
+    "size_bytes": 11263,
+    "version": "2026.09.17.1"
   },
   "bond_sidecar_uninstaller": {
     "install_url": "/artifacts/uninstall-bond-sidecar.sh",
@@ -20,6 +20,28 @@
     "sha256": "7b244075328d41aee424647e47fac54c344e66a9517d81dd543ec0b8bc2320b2",
     "size_bytes": 1487,
     "version": "2026.04.08.1"
+  },
+  "external_uot_installer": {
+    "install_url": "/artifacts/install-external-uot.sh",
+    "artifact_url": "/artifacts/install-external-uot.sh",
+    "path": "install/install-external-uot.sh",
+    "sha256": "0506d83841a6885804a1646e35ee791e524fbaf8151c4cb782f5a510c6a4d665",
+    "size_bytes": 10158,
+    "version": "2026.09.17.1"
+  },
+  "uot_sidecar_linux_arm64": {
+    "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_arm64",
+    "path": "artifacts/uot-sidecar/uot-sidecar_linux_arm64",
+    "sha256": "9799779fa66e014430f06e9bea9e6cabe52cb3196c3478ff4b20761038ea6320",
+    "size_bytes": 2949282,
+    "version": "2026.09.17.1.33d5d5a3"
+  },
+  "uot_sidecar_linux_amd64": {
+    "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_amd64",
+    "path": "artifacts/uot-sidecar/uot-sidecar_linux_amd64",
+    "sha256": "18bd060abd04242dd4b3a9cbd13ce76876159a76ae8276a3eedc303621ac60ef",
+    "size_bytes": 3014818,
+    "version": "2026.09.17.1.33d5d5a3"
   },
   "cfwg_latency_watchdog": {
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
@@ -110,10 +132,10 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "319ed6763aa4fa2ddf466f0593a2e8c9e87d129ec33fd22f7098b57be39f8af7",
-    "size": 96373,
-    "size_bytes": 96373,
-    "version": "2026.09.12.1"
+    "sha256": "4a7d06c5062995061b0c1c5fa506049bddfddac0f55870c5e26e7be981d9a56f",
+    "size": 98278,
+    "size_bytes": 98278,
+    "version": "2026.09.16.2"
   },
   "leigod_forward_relay": {
     "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -520,12 +542,12 @@
     "architecture": "x86_64",
     "build": "go1.26.5, cgo-disabled, stripped, garble-v0.17.0, rcodesign-0.29.0, external-uot-2026.09.16.2",
     "obfuscator": "garble-v0.17.0",
-    "sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98af11d4fb0957",
+    "sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98fa11d4fb0957",
     "size_bytes": 15256672,
     "version": "2026.09.16.2",
     "attestation": {
       "fingerprint": "2026.09.16.2.ecc2f82",
-      "self_sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98af11d4fb0957"
+      "self_sha256": "eba58693a3da9862315acaf203c0492c80bd90ee8fdedb6fca98fa11d4fb0957"
     }
   },
   "ultra_client_runtime_macos_arm64": {
