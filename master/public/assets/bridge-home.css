@@ -647,8 +647,8 @@ html {
 .bridge-home-features {
   position: relative;
   background: var(--bridge-surface);
-  border-top: 1px solid var(--bridge-line);
-  border-bottom: 1px solid var(--bridge-line);
+  border-top: none;
+  border-bottom: none;
 }
 
 .bridge-home-features::before {
@@ -695,7 +695,7 @@ html {
 .bridge-home-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
+  gap: 24px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -705,12 +705,11 @@ html {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 18px 42px 18px 0;
-  border-right: 1px solid var(--bridge-line);
+  padding: 0;
+  border-right: none;
 }
 
 .bridge-home-stat:last-child {
-  border-right: 0;
   padding-right: 0;
 }
 
@@ -800,7 +799,7 @@ html {
 .bridge-home-steps {
   position: relative;
   background: var(--bridge-surface);
-  border-bottom: 1px solid var(--bridge-line);
+  border-bottom: none;
 }
 
 .bridge-home-steps::before {
@@ -814,7 +813,7 @@ html {
 .bridge-home-steps-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  gap: 48px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -826,17 +825,16 @@ html {
   flex-direction: column;
   align-items: flex-start;
   gap: 14px;
-  padding: 26px 26px 24px;
-  background: var(--bridge-elev);
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  padding: 8px 32px 8px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  transition: none;
 }
 
 .bridge-home-step:hover {
-  transform: translateY(-2px);
-  border-color: var(--bridge-line-strong);
-  box-shadow: var(--bridge-shadow);
+  transform: none;
+  box-shadow: none;
 }
 
 .bridge-home-step-head {
@@ -882,7 +880,7 @@ html {
 /* ---------- carriers ---------- */
 .bridge-home-carrier-band {
   position: relative;
-  background: var(--bridge-paper);
+  background: var(--bridge-surface);
 }
 
 .bridge-home-carrier-band::before {
@@ -896,7 +894,7 @@ html {
 .bridge-home-carriers {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
+  gap: 28px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -906,17 +904,16 @@ html {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 20px;
-  background: var(--bridge-elev);
-  border: 1px solid var(--bridge-line);
-  border-radius: var(--bridge-radius);
-  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  padding: 12px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  transition: none;
 }
 
 .bridge-home-carrier:hover {
-  transform: translateY(-2px);
-  border-color: var(--bridge-line-strong);
-  box-shadow: var(--bridge-shadow);
+  transform: none;
+  box-shadow: none;
 }
 
 .bridge-home-carrier-mark {
@@ -958,7 +955,7 @@ html {
   overflow: hidden;
   background: var(--bridge-surface);
   color: var(--bridge-ink);
-  border-bottom: 1px solid var(--bridge-line);
+  border-bottom: none;
 }
 
 .bridge-home-closing::before {
