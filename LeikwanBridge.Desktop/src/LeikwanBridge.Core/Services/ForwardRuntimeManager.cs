@@ -155,12 +155,18 @@ public class ForwardRuntimeManager : IDisposable
 
     public virtual string ComputeContractSignature(ForwardConfig forward)
     {
+        // The external UoT grant lives on the lease candidates, exactly like the
+        // provider material, so the signature may only be computed while those
+        // leases are attached to the forward being compared/applied.
+        var externalUot = forward.RuntimeLeases.Count > 0
+            ? ExternalUotGrant.Select(forward.RuntimeLeases)
+            : forward.RuntimeLease?.ExternalUot;
         var sidepath = _config.UdpUotSidepath;
         if (sidepath == null || !sidepath.EnabledForwardIds.Contains(forward.ForwardId))
-            return ForwardContractSignature.Compute(forward);
+            return ForwardContractSignature.Compute(forward, externalUot: externalUot);
 
         var uotIdentity = UotRuntimeCapabilityProbe.BuildIdentity(_config.GetEffectiveUotBondBin());
-        return ForwardContractSignature.Compute(forward, sidepath, uotIdentity);
+        return ForwardContractSignature.Compute(forward, sidepath, uotIdentity, externalUot);
     }
 
     private void ApplyForwardCore(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)

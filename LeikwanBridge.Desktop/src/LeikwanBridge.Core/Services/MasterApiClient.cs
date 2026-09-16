@@ -539,6 +539,22 @@ public sealed class MasterApiClient : IDisposable
             && (candidateKeyHash.Length != 64
                 || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
             return null;
+        // The optional UoT grant is provider-material-equivalent. An enabled but
+        // unusable grant degrades to "no grant" because the runtime refuses an
+        // invalid grant at startup; only the failure reason is logged, never the
+        // token or the sidecar endpoint.
+        ExternalUotGrant? externalUot = null;
+        if (item.TryGetProperty("external_uot", out var externalUotElement))
+        {
+            externalUot = ExternalUotGrant.TryParse(externalUotElement, out var externalUotFailure);
+            if (externalUot is null && externalUotFailure.Length != 0)
+            {
+                Log.Warning(
+                    "Ultra lease for forward {ForwardId} carried an unusable external_uot grant ({Reason}); continuing without a UoT sidecar",
+                    forward.ForwardId,
+                    externalUotFailure);
+            }
+        }
         return new UltraLease
         {
             Protocol = protocol,
@@ -559,6 +575,7 @@ public sealed class MasterApiClient : IDisposable
             ProviderPort = endpoint.GetProperty("port").GetInt32(),
             User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
             Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
+            ExternalUot = externalUot,
         };
     }
 

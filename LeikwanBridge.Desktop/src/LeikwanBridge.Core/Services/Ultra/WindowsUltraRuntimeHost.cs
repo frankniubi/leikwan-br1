@@ -104,6 +104,12 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 staticConfig["probe_interval_ms"] = UltraProbeContract.IntervalMilliseconds;
                 staticConfig["probe_workers"] = UltraProbeContract.Workers;
             }
+            // Bootstrap-only contract: the runtime reads external_uot from its
+            // startup config, so a rotated token needs a runtime restart (the
+            // lease-pipe delivery cannot update it).
+            var externalUot = ExternalUotGrant.Select(leases);
+            if (externalUot is not null)
+                staticConfig["external_uot"] = externalUot.ToBootstrapPayload();
             Directory.CreateDirectory(runtimeDirectory);
             File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions
             {
