@@ -95,6 +95,9 @@
     <system:String x:Key="SettingsPollInterval">Poll Interval (seconds)</system:String>
     <system:String x:Key="SettingsHealthInterval">Health Check Interval (seconds)</system:String>
     <system:String x:Key="SettingsLogLevel">Log Level</system:String>
+    <system:String x:Key="SettingsLogLevelWarning">Warning (recommended)</system:String>
+    <system:String x:Key="SettingsLogLevelCritical">Critical only</system:String>
+    <system:String x:Key="SettingsLogLevelDebug">Debug</system:String>
     <system:String x:Key="SettingsAutoStart">Start on Windows login</system:String>
     <system:String x:Key="SettingsMinimizeToTray">Minimize to system tray</system:String>
     <system:String x:Key="SettingsBinaries">Binary Paths</system:String>

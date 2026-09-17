@@ -14,6 +14,7 @@ public partial class App : System.Windows.Application
 
     public static string ConfigPath { get; private set; } = "";
     public static AgentConfig Config { get; private set; } = new();
+    private static string _logDirectory = "";
 
     public static WindowsProxyStartRequest? ConsumeStartupProxyRequest()
     {
@@ -46,12 +47,7 @@ public partial class App : System.Windows.Application
             "Leikwan", "ClientAgent", "logs");
         var logDir = ResolveWritableLogDirectory(sharedLogDir);
 
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
-            .WriteTo.File(Path.Combine(logDir, "leikwan-gui-.log"),
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 7)
-            .CreateLogger();
+        ConfigureLogging(logDir, DesktopLogLevel.Warning);
 
         Log.Information("Leikwan Bridge GUI starting...");
         if (!string.Equals(logDir, sharedLogDir, StringComparison.OrdinalIgnoreCase))
@@ -72,7 +68,13 @@ public partial class App : System.Windows.Application
 
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
+        var normalizedLogLevel = DesktopLogLevel.Normalize(Config.LogLevel);
+        var configChanged = !string.Equals(Config.LogLevel, normalizedLogLevel, StringComparison.Ordinal);
+        Config.LogLevel = normalizedLogLevel;
+        ConfigureLogging(logDir, Config.LogLevel);
         if (Config.MigrateLegacyUltraBin(AppDefaults.GetInstallRoot()))
+            configChanged = true;
+        if (configChanged)
             TrySaveConfig(stateManager, Config);
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(Config.MasterUrl);
         if (!string.Equals(normalizedMasterUrl, Config.MasterUrl, StringComparison.Ordinal))
@@ -190,6 +192,27 @@ public partial class App : System.Windows.Application
         catch (ApplicationException) { }
         _mutex?.Dispose();
         base.OnExit(e);
+    }
+
+    internal static void ApplyLogLevel(string? level)
+    {
+        Config.LogLevel = DesktopLogLevel.Normalize(level);
+        if (!string.IsNullOrWhiteSpace(_logDirectory))
+            ConfigureLogging(_logDirectory, Config.LogLevel);
+    }
+
+    private static void ConfigureLogging(string logDirectory, string? level)
+    {
+        Log.CloseAndFlush();
+        _logDirectory = logDirectory;
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Is(DesktopLogLevel.ToSerilog(level))
+            .WriteTo.File(
+                new RedactingTextFormatter("{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"),
+                Path.Combine(logDirectory, "leikwan-gui-.log"),
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 7)
+            .CreateLogger();
     }
 
     private static bool TryAcquireSingleInstanceMutex(bool waitForExisting)

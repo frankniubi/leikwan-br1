@@ -590,8 +590,10 @@
                    </ComboBox>
                    <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
                    <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
-                   <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
+                  <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
                   <ComboBox ItemsSource="{Binding Languages}" SelectedItem="{Binding Language, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Classes="label" Text="LOG LEVEL" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding LogLevels}" SelectedItem="{Binding LogLevel, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
                   <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
                     <StackPanel Orientation="Horizontal" Spacing="7">
                       <lucide:LucideIcon Kind="Save" Size="16" />

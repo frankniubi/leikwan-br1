@@ -231,6 +231,8 @@ public partial class MainWindow : Window
             App.Config.PollIntervalSeconds = poll;
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
             App.Config.HealthCheckIntervalSeconds = health;
+        if (SettLogLevel.SelectedItem is ComboBoxItem logLevel)
+            App.Config.LogLevel = DesktopLogLevel.Normalize(logLevel.Tag?.ToString());
         App.Config.AutoStart = SettAutoStart.IsChecked == true;
         App.Config.MinimizeToTray = SettMinimizeTray.IsChecked == true;
 
@@ -245,6 +247,7 @@ public partial class MainWindow : Window
         App.Config.RememberLoginInfo = _saveLoginInfo;
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
         stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+        App.ApplyLogLevel(App.Config.LogLevel);
 
         // Handle auto-start
         SetAutoStart(App.Config.AutoStart);
@@ -1355,6 +1358,7 @@ public partial class MainWindow : Window
             ClearSettingsLoginInfo();
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
+        SelectLogLevel(App.Config.LogLevel);
         SettAutoStart.IsChecked = App.Config.AutoStart;
         SettMinimizeTray.IsChecked = App.Config.MinimizeToTray;
 
@@ -1367,6 +1371,16 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    private void SelectLogLevel(string? value)
+    {
+        var normalized = DesktopLogLevel.Normalize(value);
+        var selected = SettLogLevel.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), normalized, StringComparison.Ordinal));
+        if (selected is not null)
+            SettLogLevel.SelectedItem = selected;
     }
 
     private void OnSignOut_Click(object sender, RoutedEventArgs e)
