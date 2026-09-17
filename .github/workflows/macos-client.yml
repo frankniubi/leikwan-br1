@@ -430,7 +430,7 @@ jobs:
               helper_items = helpers.get("helpers")
               if not isinstance(helper_items, list) or len(helper_items) != 5:
                   raise SystemExit(f"helper set incomplete: {suffix}")
-              helper_hashes[suffix] = {item.get("name"): item.get("sha256") for item in helper_items}'
+              helper_hashes[suffix] = {item.get("name"): item.get("sha256") for item in helper_items}
               screenshots = sorted((directory / "screenshots").glob("*.png"))
               expected_shots = set()
               if screenshots:
@@ -444,7 +444,7 @@ jobs:
                   shot_hashes = [hashlib.sha256(shot.read_bytes()).hexdigest() for shot in screenshots]
                   if len(set(shot_hashes)) != len(shot_hashes):
                       raise SystemExit(f"duplicate UI screenshots: {suffix}")
-              combined["architectures"][suffix] = {'
+              combined["architectures"][suffix] = {
                   "architecture": architecture,
                   "version": metadata.get("version"),
                   "screenshots": sorted(expected_shots),
