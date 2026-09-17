@@ -10,8 +10,8 @@
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
     "path": "install/install-bond-sidecar.sh",
-    "sha256": "c7389c5a49a7abee61a042e65b89aa47ba559193c595b0d12b50c03e17c69261",
-    "size_bytes": 11884,
+    "sha256": "c9dd7f6aa2085124087ca5dcbe6615e126de3d58abc1de88f266b10e9276715d",
+    "size_bytes": 12517,
     "version": "2026.09.17.1"
   },
   "bond_sidecar_uninstaller": {
