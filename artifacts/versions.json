@@ -709,9 +709,9 @@
    "ultra_client_runtime_windows": "b7a0fa1df77f755d2280f8d097b5f54942064c26c4cc59fd1461d6909de73189",
    "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1"
   },
-  "sha256": "531e897b6317d8a9bb64d3193a8c1b45f3a787cc3d52a4e1121a4f0f8c2ae420",
-  "size_bytes": 69586887,
-  "version": "0.1.20.49"
+  "sha256": "bfa54bfdb9acc1ff09b1a42dd11f792c2c7f6d2ad5da998df4505d3dedb93f8a",
+  "size_bytes": 117034911,
+  "version": "0.1.20.50"
  },
  "windows_headless_client": {
   "architecture": "x86_64",
