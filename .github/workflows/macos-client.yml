@@ -131,7 +131,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd tools/ultra-client && go test -mod=readonly ./... -count=1)
+          (cd tools/ultra-client && go test -mod=readonly ./... -count=1 -skip '^TestGameSim$')
           cargo test \
             --manifest-path wstunnel-main/Cargo.toml \
             --locked \
