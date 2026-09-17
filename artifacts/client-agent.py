@@ -38,6 +38,17 @@ AGENT_VERSION = "2026.09.13.3"
 UPDATE_RETRY_SECONDS = 300
 
 
+def agent_artifact_path() -> pathlib.Path:
+    """Return the bytes that identify this running agent distribution."""
+    if getattr(sys, "frozen", False):
+        return pathlib.Path(sys.executable).resolve()
+    return pathlib.Path(__file__).resolve()
+
+
+def agent_artifact_sha256() -> str:
+    return file_sha256(agent_artifact_path())
+
+
 class ControlPlaneResponseError(RuntimeError):
     """The server answered, but its response could not be decoded safely."""
 
@@ -1815,7 +1826,7 @@ class ClientAgent:
                 normalized_sidepath = self.strip_apply_observation_fields(normalized_sidepath)
         runtime_inputs = {
             "agent_version": AGENT_VERSION,
-            "agent_sha256": file_sha256(pathlib.Path(__file__).resolve()),
+            "agent_sha256": agent_artifact_sha256(),
             "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
             "mptcp_client_sha256": file_sha256(mptcp_client),
             "udp_uot_sidepath": normalized_sidepath,
@@ -2875,6 +2886,8 @@ class ClientAgent:
             token,
             {
                 "agent_version": AGENT_VERSION,
+                "agent_architecture": local_runtime_architecture(),
+                "runtime_binary_mode": str(self.config.get("runtime_binary_mode", "python") or "python"),
                 "usage_bytes_in": usage_totals["bytes_in"],
                 "usage_bytes_out": usage_totals["bytes_out"],
                 "ultra_usage": usage_totals.get("ultra_usage", []),
@@ -3084,7 +3097,7 @@ class ClientAgent:
             mismatches.append(f"agent={desired_agent_version}")
 
         if desired_agent_sha256:
-            local_agent_sha256 = file_sha256(pathlib.Path(__file__).resolve()).lower()
+            local_agent_sha256 = agent_artifact_sha256().lower()
             if local_agent_sha256 != desired_agent_sha256:
                 mismatches.append(f"agent_sha256={desired_agent_sha256}")
 

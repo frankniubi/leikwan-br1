@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.13.1"
+INSTALLER_VERSION="2026.09.17.3"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -17,6 +17,10 @@ REQUIRE_MPTCP=0
 TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
 STATE_DIR="/var/lib/leikwan-client-agent"
 RUNTIME_ARCH="amd64"
+AGENT_RUNTIME_MODE="python"
+AGENT_BINARY_KEY=""
+AGENT_BINARY_PATH=""
+AGENT_BINARY_URL=""
 ULTRA_RUNTIME_KEY="ultra_client_runtime"
 ULTRA_RUNTIME_PATH="artifacts/ultra/ultra-client_linux_amd64"
 UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
@@ -775,6 +779,18 @@ except Exception:
 " "$_VERSIONS_JSON" "$1" "$2" 2>/dev/null || echo ''
 }
 
+manifest_artifact_url() {
+  local key="$1" fallback="$2" configured
+  configured="$(_vers_value "$key" artifact_url)"
+  if [[ "$configured" =~ ^https?:// ]]; then
+    printf '%s\n' "$configured"
+  elif [[ -n "$configured" ]]; then
+    printf '%s/%s\n' "${DOWNLOAD_BASE%/}" "${configured#/}"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
 download_manifest_artifact() {
   local key="$1" url="$2" path="$3" expected_sha256
   # Historical contract: expected_sha256="$(_vers_sha256 ... )" is retained
@@ -816,9 +832,24 @@ if [[ -z "$INSTALLER_SHA256" ]]; then
   exit 1
 fi
 
-# download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
-# download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
-download_manifest_artifact client_agent "$DOWNLOAD_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+# Prefer a verified, single-file agent on architectures for which the panel
+# publishes one.  A missing architecture-specific entry deliberately falls
+# back to the historical Python distribution so arm64 and older mirrors remain
+# installable while the binary rollout is staged.
+AGENT_BINARY_KEY="client_agent_linux_${RUNTIME_ARCH}"
+AGENT_BINARY_PATH="$BIN_DIR/leikwan-client-agent"
+AGENT_BINARY_URL="$(manifest_artifact_url "$AGENT_BINARY_KEY" "")"
+AGENT_BINARY_SHA256="$(_vers_sha256 "$AGENT_BINARY_KEY")"
+if [[ "$AGENT_BINARY_SHA256" =~ ^[0-9a-fA-F]{64}$ && -n "$AGENT_BINARY_URL" ]]; then
+  download_manifest_artifact "$AGENT_BINARY_KEY" "$AGENT_BINARY_URL" "$AGENT_BINARY_PATH" \
+    || die "published client-agent binary failed verification for ${RUNTIME_ARCH}"
+  AGENT_RUNTIME_MODE="frozen"
+  echo "using frozen client-agent binary: $AGENT_BINARY_PATH"
+else
+  download_manifest_artifact client_agent "$DOWNLOAD_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+  AGENT_BINARY_PATH="$BIN_DIR/leikwan-client-agent.py"
+  echo "using Python client-agent fallback: $AGENT_BINARY_PATH"
+fi
 download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   # Keep the legacy artifact route visible for older operator tooling while
@@ -872,7 +903,7 @@ WSTUNNEL_VERSION="$(_vers_value "$WSTUNNEL_RUNTIME_KEY" version)"
 
 CONFIG_TMP="$CONFIG_DIR/config.json.new"
 backup_existing "$CONFIG_DIR/config.json"
-MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" python3 - "$CONFIG_TMP" <<'PY'
+MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" AGENT_RUNTIME_MODE="$AGENT_RUNTIME_MODE" AGENT_BINARY_PATH="$AGENT_BINARY_PATH" python3 - "$CONFIG_TMP" <<'PY'
 import json
 import os
 import pathlib
@@ -896,15 +927,46 @@ payload = {
     "log_level": "INFO",
     "installer_version": os.environ["INSTALLER_VERSION"],
     "installer_sha256": os.environ["INSTALLER_SHA256"],
+    "runtime_binary_mode": os.environ.get("AGENT_RUNTIME_MODE", "python"),
+    "client_agent_bin": os.environ.get("AGENT_BINARY_PATH", ""),
 }
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
+if [[ ! -s "$CONFIG_TMP" ]]; then
+  die "generated client-agent config is empty; refusing to replace the current config"
+fi
+if ! python3 - "$CONFIG_TMP" <<'PYCONFIG'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+document = json.loads(path.read_text(encoding="utf-8"))
+if not isinstance(document, dict):
+    raise SystemExit("generated client-agent config is not an object")
+for key in ("master_url", "artifact_base_url", "client_id", "agent_token", "state_dir"):
+    if document.get(key) in (None, ""):
+        raise SystemExit(f"generated client-agent config missing {key}")
+PYCONFIG
+then
+  die "generated client-agent config failed validation; refusing to replace the current config"
+fi
 mv "$CONFIG_TMP" "$CONFIG_DIR/config.json"
 chmod 0600 "$CONFIG_DIR/config.json"
 
 SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
 backup_existing "$SERVICE_UNIT_PATH"
+if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+  AGENT_EXEC_START="$AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+  # PyInstaller one-file uses a bootloader process and sends sd_notify from
+  # the extracted Python child.  NotifyAccess=main rejects that heartbeat and
+  # makes an otherwise healthy frozen agent hit WatchdogSec after 180 seconds.
+  AGENT_NOTIFY_ACCESS="all"
+else
+  AGENT_EXEC_START="/usr/bin/python3 $AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+  AGENT_NOTIFY_ACCESS="main"
+fi
 cat > "$SERVICE_UNIT_PATH" <<UNIT
 [Unit]
 Description=Leikwan Client Agent
@@ -914,11 +976,11 @@ After=network.target
 Type=simple
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-$PROXY_ENV_FILE
-ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
+ExecStart=$AGENT_EXEC_START
 Restart=always
 RestartSec=5
 WatchdogSec=180
-NotifyAccess=main
+NotifyAccess=$AGENT_NOTIFY_ACCESS
 
 [Install]
 WantedBy=multi-user.target
@@ -944,7 +1006,12 @@ fi
 
 HEALTH_PATH="$STATE_DIR/install-health.json"
 backup_existing "$HEALTH_PATH"
-if ! "$BIN_DIR/leikwan-client-agent.py" --config "$CONFIG_DIR/config.json" check --live > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
+if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+  AGENT_HEALTH_CMD=("$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+else
+  AGENT_HEALTH_CMD=(/usr/bin/python3 "$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+fi
+if ! "${AGENT_HEALTH_CMD[@]}" > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
   cat "$STATE_DIR/install-health.stderr" >&2 || true
   cat "$HEALTH_PATH" >&2 || true
   die "client-agent live health check failed"

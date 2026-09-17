@@ -42,16 +42,19 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn('MASTER_URL="https://v3.leikwanhost.com"', source)
         self.assertIn('REQUESTED_MASTER_URL="$MASTER_URL"', source)
         # A lease batch may legitimately spend up to 70 s on the runtime control
-        # socket, and the agent pings the watchdog from its own thread, so 180 s
-        # means "wedged", not "busy".
+        # socket, so 180 s means "wedged", not "busy". PyInstaller one-file
+        # sends sd_notify from its extracted child and therefore needs the
+        # runtime-specific NotifyAccess policy rendered by the installer.
         self.assertIn("WatchdogSec=180", source)
-        self.assertIn("NotifyAccess=main", source)
+        self.assertIn('AGENT_NOTIFY_ACCESS="all"', source)
+        self.assertIn('AGENT_NOTIFY_ACCESS="main"', source)
+        self.assertIn("NotifyAccess=$AGENT_NOTIFY_ACCESS", source)
 
     def test_installer_downloads_cfwg_latency_watchdog_module(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            'download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"',
+            'download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"',
             source,
         )
 

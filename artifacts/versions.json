@@ -10,8 +10,8 @@
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
     "path": "install/install-bond-sidecar.sh",
-    "sha256": "c9dd7f6aa2085124087ca5dcbe6615e126de3d58abc1de88f266b10e9276715d",
-    "size_bytes": 12517,
+    "sha256": "e058831d90d350be8b438286794c46f457865f757e4c4bde0bf9938bca4e1307",
+    "size_bytes": 16198,
     "version": "2026.09.17.1"
   },
   "bond_sidecar_uninstaller": {
@@ -25,23 +25,23 @@
     "install_url": "/artifacts/install-external-uot.sh",
     "artifact_url": "/artifacts/install-external-uot.sh",
     "path": "install/install-external-uot.sh",
-    "sha256": "0506d83841a6885804a1646e35ee791e524fbaf8151c4cb782f5a510c6a4d665",
-    "size_bytes": 10158,
+    "sha256": "be5f968cbc42b3929460642a91570a3983b5003d031cc0518c927f2b617c16e5",
+    "size_bytes": 14404,
     "version": "2026.09.17.1"
   },
   "uot_sidecar_linux_arm64": {
     "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_arm64",
     "path": "artifacts/uot-sidecar/uot-sidecar_linux_arm64",
-    "sha256": "9799779fa66e014430f06e9bea9e6cabe52cb3196c3478ff4b20761038ea6320",
-    "size_bytes": 2949282,
-    "version": "2026.09.17.1.33d5d5a3"
+    "sha256": "92471f3ffc55a7471f9ad895bc583693f30b2d08f66ed1a83139ceabbd458791",
+    "size_bytes": 3408032,
+    "version": "2026.09.17.2.95535c6"
   },
   "uot_sidecar_linux_amd64": {
     "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_amd64",
     "path": "artifacts/uot-sidecar/uot-sidecar_linux_amd64",
-    "sha256": "18bd060abd04242dd4b3a9cbd13ce76876159a76ae8276a3eedc303621ac60ef",
-    "size_bytes": 3014818,
-    "version": "2026.09.17.1.33d5d5a3"
+    "sha256": "bdc18d8efc81d28341449ef51c29792edcd6e5d32206fff470edae3715a32b09",
+    "size_bytes": 3506336,
+    "version": "2026.09.17.2.95535c6"
   },
   "cfwg_latency_watchdog": {
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
@@ -53,8 +53,8 @@
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
     "path": "install/client-agent-update.sh",
-    "sha256": "825a6522029a4ec2ef1031b53b39d28404709a9e0c36f7b3cf7226713977f904",
-    "size_bytes": 18535,
+    "sha256": "75176775679b5989886bd548ad2f0c6d3980c81838ee274c4fc2f87a49189ce0",
+    "size_bytes": 22526,
     "version": "2026.09.11.2"
   },
   "client_rate_limit": {
@@ -67,9 +67,19 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "05cb9427e2c86b50f003d6b61712ab536017080db8c36deb26c16c550f16f863",
-    "size": 339286,
-    "size_bytes": 339286,
+    "sha256": "30d2a24eb55c3dc38e43f94dd22f4264c9051ee429808dba268fec351f7b3492",
+    "size": 339755,
+    "size_bytes": 339755,
+    "version": "2026.09.13.3"
+  },
+  "client_agent_linux_amd64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/python-agent/leikwan-client-agent_linux_amd64",
+    "format": "elf-onefile-pyinstaller",
+    "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
+    "runtime_mode": "frozen",
+    "sha256": "0fc2a2e0df4193d43414ef1ce7ba88ad809534ae42daa26a714e69b08c5d0183",
+    "size_bytes": 8847520,
     "version": "2026.09.13.3"
   },
   "client_agent_installer": {
@@ -77,10 +87,10 @@
     "install_url": "/artifacts/install-client-agent.sh",
     "path": "install/install-client-agent.sh",
     "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-    "sha256": "2f9c6c02f6932160bd7bfe362f8f66c982fd538647c683f58375f2f82cb47e1b",
-    "size_bytes": 35933,
-    "version": "2026.09.13.1",
-    "size": 35933
+    "sha256": "6152cbce0b7b3772396d706c387010e0b1bdb5b6de6519e9aaaa214db837b88b",
+    "size_bytes": 38742,
+    "version": "2026.09.17.3",
+    "size": 38742
   },
   "client_agent_installer_linux_arm64": {
     "architecture": "arm64",
@@ -132,9 +142,9 @@
   "install_forward_runtime": {
     "artifact_url": "/artifacts/install-forward-runtime.py",
     "path": "client-agent/install_forward_runtime.py",
-    "sha256": "4a7d06c5062995061b0c1c5fa506049bddfddac0f55870c5e26e7be981d9a56f",
-    "size": 98278,
-    "size_bytes": 98278,
+    "sha256": "b28515a26e81c53712595ecb29db2c85e5c479f9e3debc4a2158c819e5f9e357",
+    "size": 99404,
+    "size_bytes": 99404,
     "version": "2026.09.16.2"
   },
   "leigod_forward_relay": {
@@ -388,17 +398,34 @@
   "mptcp_sidecar_runtime": {
     "artifact_url": "/artifacts/leikwan-mptcp-sidecar.py",
     "path": "sidecar-agent/leikwan_mptcp_sidecar.py",
-    "sha256": "d1cb2beb23d25e14442f8be83618ee10e3dc2d9692a73360b6336f8207017dde",
-    "size_bytes": 41512,
+    "sha256": "71392d8faccc26522da72edff645053d97a62b094567894df30740f230ef66d0",
+    "size_bytes": 42508,
     "version": "2026.05.13.1"
   },
   "sidecar_agent": {
     "artifact_url": "/artifacts/sidecar-agent.py",
     "path": "sidecar-agent/sidecar_agent.py",
-    "sha256": "004c786bf59817b8c26354f752e8f586e71a0ef0775d1d0021f2d2ecb00e9a72",
-    "size": 140469,
-    "size_bytes": 140469,
-    "version": "2026.08.13.1"
+    "sha256": "111a201aa69ee13dbd82e8b813764625aca6efb17eacbdd8056dd98f3e0ddb92",
+    "size": 148545,
+    "size_bytes": 148545,
+    "version": "2026.09.17.2"
+  },
+  "sidecar_agent_linux_amd64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
+    "format": "elf-onefile-pyinstaller",
+    "path": "artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
+    "runtime_mode": "frozen",
+    "sha256": "cccb049e8ae1aa02d552dc72ee0bf48cceab0219add983dd3e482a66856925ff",
+    "size_bytes": 8648672,
+    "version": "2026.09.17.2"
+  },
+  "sidecar_agent_update": {
+    "artifact_url": "/artifacts/sidecar-agent-update.sh",
+    "path": "install/sidecar-agent-update.sh",
+    "sha256": "af92c61ce2bdaa87054dd1697d3fbb650bec7715f908299b7697134add4abc2f",
+    "size_bytes": 12079,
+    "version": "2026.09.17.2"
   },
   "slave_agent": {
     "artifact_url": "/artifacts/slave-agent.py",

@@ -2202,7 +2202,7 @@ final class AdminController extends BaseController
 
         $view = PrecisionGridUi::normalizeView(
             (string) $request->input('view', 'list'),
-            ['list', 'create', 'detail', 'updates'],
+            ['list', 'create', 'detail', 'updates', 'runtime'],
             'list'
         );
 
@@ -2284,6 +2284,11 @@ final class AdminController extends BaseController
             $status = (string) $client['status'];
             $agentVersion = (string) ($client['agent_version'] ?? 'Not reported');
             $lastSync = (string) ($client['last_sync_at'] ?? 'Never');
+            $agentRuntime = $this->decodeJsonList($client['agent_config_json'] ?? null);
+            $runtimeMode = strtolower(trim((string) ($agentRuntime['runtime_binary_mode'] ?? '')));
+            $runtimeArchitecture = strtolower(trim((string) ($agentRuntime['agent_architecture'] ?? '')));
+            $runtimeLabel = ($runtimeMode !== '' ? $runtimeMode : 'legacy')
+                . ' / ' . ($runtimeArchitecture !== '' ? $runtimeArchitecture : 'unknown');
             $assignedForwards = $clientForwardInstallMap[(int) ($client['id'] ?? 0)] ?? [];
             $assignedForwardSummary = $this->renderAssignedForwardSummary($assignedForwards);
             $installDetails = $this->renderClientAgentInstallDetails(
@@ -2306,11 +2311,12 @@ final class AdminController extends BaseController
                 <td>' . PrecisionGridUi::resourceCell($owner, $groupName) . '</td>
                 <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
                 <td>' . PrecisionGridUi::resourceCell($agentVersion, $lastSync) . '</td>
+                <td>' . $this->escape($runtimeLabel) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
                 . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
-                . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
+                . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Runtime</dt><dd>' . $this->escape($runtimeLabel) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
         }
 
@@ -2318,6 +2324,7 @@ final class AdminController extends BaseController
             ['key' => 'list', 'label' => 'Clients', 'href' => '/admin/clients?view=list'],
             ['key' => 'create', 'label' => 'Create Client', 'href' => '/admin/clients?view=create'],
             ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin/clients?view=updates'],
+            ['key' => 'runtime', 'label' => 'Runtime', 'href' => '/admin/clients?view=runtime'],
         ], $view);
         $formView = $this->renderClientAppDownloadOverview($overviewClient) . '
               <section class="card">
@@ -2373,7 +2380,7 @@ final class AdminController extends BaseController
                 <div class="pg-sheet-toolbar"><strong>Client Directory</strong><span class="muted">' . count($clients) . ' clients</span></div>
                 <div class="pg-sheet-scroll">
                   <table class="pg-sheet-table">
-                    <thead><tr><th>Client / Host</th><th>Owner / Group</th><th>Status</th><th>Agent / Last Sync</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
+                    <thead><tr><th>Client / Host</th><th>Owner / Group</th><th>Status</th><th>Agent / Last Sync</th><th>Runtime / Arch</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -2382,6 +2389,7 @@ final class AdminController extends BaseController
         $viewBody = match ($view) {
             'create', 'detail' => $formView,
             'updates' => '<div class="flash success">Use each client menu to request updates, republish, or run diagnostics.</div>' . $listView,
+            'runtime' => $listView,
             default => $listView,
         };
         $body = $tabs . $viewBody;
@@ -3594,7 +3602,7 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
-        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit', 'updates'], 'list');
+        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit', 'updates', 'health'], 'list');
 
         $points = $this->provisioning?->listSidecarPoints() ?? [];
         $tenants = $this->db->fetchAll('SELECT id, name, email FROM users WHERE role = :role ORDER BY name ASC, email ASC', ['role' => 'tenant']);
@@ -3623,10 +3631,14 @@ final class AdminController extends BaseController
         ));
         $rows = '';
         $mobileRows = '';
+        $healthRows = '';
+        $healthMobileRows = '';
+        $registeredExternalHosts = [];
         foreach ($points as $point) {
             $pointId = (int) $point['id'];
             $pointName = (string) $point['name'];
             $host = (string) $point['sidecar_host'];
+            $registeredExternalHosts[strtolower(trim($host, " []"))] = true;
             $owner = (string) ($point['owner_email'] ?? 'Shared');
             $status = $this->sidecarPointStatusInfo($point);
             $installCommand = $this->bondSidecarInstallCommand($point);
@@ -3645,6 +3657,74 @@ final class AdminController extends BaseController
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
+
+            $uot = $this->externalUotHealthInfo($point);
+            $uotLabel = !$uot['required']
+                ? ($uot['config_present'] ? 'not required' : 'not installed')
+                : ($uot['healthy'] ? 'online' : ($uot['state'] !== '' ? $uot['state'] : 'degraded'));
+            $uotClass = ($uot['healthy'] || !$uot['required']) ? 'ok' : 'warning';
+            $pointRuntime = $this->decodeJsonList($point['agent_config_json'] ?? null);
+            $pointRuntimeMode = strtolower(trim((string) ($pointRuntime['runtime_binary_mode'] ?? '')));
+            $pointArchitecture = strtolower(trim((string) ($pointRuntime['agent_architecture'] ?? '')));
+            $pointRuntimeLabel = ($pointRuntimeMode !== '' ? $pointRuntimeMode : 'legacy')
+                . ' / ' . ($pointArchitecture !== '' ? $pointArchitecture : 'unknown');
+            $healthRows .= '<tr>
+                <td>' . PrecisionGridUi::resourceCell($pointName, $host) . '</td>
+                <td>' . PrecisionGridUi::status($uotLabel, $uotClass) . '</td>
+                <td>' . $this->escape($pointRuntimeLabel) . '</td>
+                <td>' . $this->escape($uot['binary_version'] !== '' ? $uot['binary_version'] : 'unknown') . '</td>
+                <td>' . $this->escape($uot['hash_match'] ? 'manifest match' : ($uot['binary_sha256'] !== '' ? 'drift / legacy' : 'not reported')) . '</td>
+                <td>' . (int) $uot['forward_count'] . '</td>
+                <td>' . $this->escape(($uot['service_active'] ? 'active' : 'inactive') . ' / ' . ($uot['listening'] ? 'listening' : 'not listening')) . '</td>
+                <td>' . $this->escape($uot['config_sha256'] !== '' ? substr($uot['config_sha256'], 0, 12) : 'not reported') . '</td>
+                <td>' . $this->escape($uot['error'] !== '' ? $uot['error'] : ($uot['checked_at'] > 0 ? gmdate('Y-m-d H:i:s', $uot['checked_at']) . ' UTC' : 'Never')) . '</td>
+            </tr>';
+            $healthMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $host) . PrecisionGridUi::status($uotLabel, $uotClass) . '</header><dl><div><dt>Agent Runtime</dt><dd>' . $this->escape($pointRuntimeLabel) . '</dd></div><div><dt>Version</dt><dd>' . $this->escape($uot['binary_version'] !== '' ? $uot['binary_version'] : 'unknown') . '</dd></div><div><dt>Artifact</dt><dd>' . $this->escape($uot['hash_match'] ? 'manifest match' : ($uot['binary_sha256'] !== '' ? 'drift / legacy' : 'not reported')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) $uot['forward_count'] . '</dd></div><div><dt>Service</dt><dd>' . $this->escape(($uot['service_active'] ? 'active' : 'inactive') . ' / ' . ($uot['listening'] ? 'listening' : 'not listening')) . '</dd></div><div><dt>Checked</dt><dd>' . $this->escape($uot['error'] !== '' ? $uot['error'] : ($uot['checked_at'] > 0 ? gmdate('Y-m-d H:i:s', $uot['checked_at']) . ' UTC' : 'Never')) . '</dd></div></dl></article>';
+        }
+
+        // External UoT targets may be newly provisioned before an agent has
+        // registered a sidecar_points heartbeat. Keep those hosts visible in
+        // the same admin query surface so operators do not need a raw SQL
+        // lookup to discover a missing registration.
+        $externalTargets = $this->db->fetchAll(
+            'SELECT fc.external_uot_sidecar_target AS target, COUNT(f.id) AS forward_count
+             FROM forward_combinations fc
+             LEFT JOIN forwards f ON f.forward_combination_id = fc.id
+             WHERE fc.external_uot_enabled = 1
+               AND fc.external_uot_sidecar_target IS NOT NULL
+               AND fc.external_uot_sidecar_target <> :empty_target
+             GROUP BY fc.external_uot_sidecar_target
+             ORDER BY fc.external_uot_sidecar_target ASC',
+            ['empty_target' => '']
+        );
+        $expectedUotVersion = trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['version'] ?? ''));
+        $expectedUotHash = strtolower(trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['sha256'] ?? '')));
+        foreach ($externalTargets as $externalTarget) {
+            $target = trim((string) ($externalTarget['target'] ?? ''));
+            $separator = strrpos($target, ':');
+            if ($separator === false) {
+                continue;
+            }
+            $targetHost = trim(substr($target, 0, $separator), " []");
+            $targetPort = (int) substr($target, $separator + 1);
+            $normalizedTargetHost = strtolower($targetHost);
+            if ($targetHost === '' || $targetPort < 1 || $targetPort > 65535 || isset($registeredExternalHosts[$normalizedTargetHost])) {
+                continue;
+            }
+            $displayTarget = $targetHost . ':' . $targetPort;
+            $forwardCount = max(0, (int) ($externalTarget['forward_count'] ?? 0));
+            $healthRows .= '<tr>
+                <td>' . PrecisionGridUi::resourceCell('Configured external target', $displayTarget) . '</td>
+                <td>' . PrecisionGridUi::status('unregistered / no heartbeat', 'warning') . '</td>
+                <td>not reported</td>
+                <td>' . $this->escape($expectedUotVersion !== '' ? $expectedUotVersion : 'unknown') . '</td>
+                <td>' . ($expectedUotHash !== '' ? 'manifest' : 'not published') . '</td>
+                <td>' . $forwardCount . '</td>
+                <td>not reported</td>
+                <td>not reported</td>
+                <td>Panel configuration only</td>
+            </tr>';
+            $healthMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell('Configured external target', $displayTarget) . PrecisionGridUi::status('unregistered / no heartbeat', 'warning') . '</header><dl><div><dt>Agent Runtime</dt><dd>not reported</dd></div><div><dt>Expected Version</dt><dd>' . $this->escape($expectedUotVersion !== '' ? $expectedUotVersion : 'unknown') . '</dd></div><div><dt>Artifact</dt><dd>' . ($expectedUotHash !== '' ? 'manifest' : 'not published') . '</dd></div><div><dt>Forwards</dt><dd>' . $forwardCount . '</dd></div><div><dt>Service</dt><dd>not reported</dd></div><div><dt>Checked</dt><dd>Panel configuration only</dd></div></dl></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -3652,9 +3732,11 @@ final class AdminController extends BaseController
             ['key' => 'list', 'label' => 'Endpoints', 'href' => '/admin-transport-endpoints?view=list'],
             ['key' => 'create', 'label' => 'Create', 'href' => '/admin-transport-endpoints?view=create'],
             ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin-transport-endpoints?view=updates'],
+            ['key' => 'health', 'label' => 'UoT Health', 'href' => '/admin-transport-endpoints?view=health'],
         ], $view);
         $listView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>Transport Endpoints</strong><span class="muted">' . count($points) . ' endpoints</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Owner</th><th>Address / Ports</th><th>Status</th><th>Heartbeat / Version</th><th>Forwards</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>' . $rows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $mobileRows . '</div></section>';
-        $body = $tabs . ($view === 'list' || $view === 'updates' ? $listView : '') . ($view === 'create' || $view === 'edit' ? '
+        $healthView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>External UoT Health</strong><span class="muted">Heartbeat-backed checks plus configured targets awaiting sidecar registration; tokens stay redacted</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Host</th><th>UoT Status</th><th>Agent Runtime / Arch</th><th>Binary Version</th><th>Artifact</th><th>Configured Forwards</th><th>Service / Listener</th><th>Config Hash</th><th>Checked / Error</th></tr></thead><tbody>' . $healthRows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $healthMobileRows . '</div></section>';
+        $body = $tabs . ($view === 'list' || $view === 'updates' ? $listView : '') . ($view === 'health' ? $healthView : '') . ($view === 'create' || $view === 'edit' ? '
             <div class="hero">
               <div>
                 <h2>Target Transport Endpoints</h2>

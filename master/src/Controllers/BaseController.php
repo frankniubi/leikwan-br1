@@ -176,6 +176,63 @@ abstract class BaseController
         return ['class' => 'danger', 'label' => $status];
     }
 
+    /**
+     * Normalize the redacted external-UoT heartbeat state for admin/tenant
+     * views. Tokens and full runtime payloads intentionally never reach HTML.
+     *
+     * @param array<string, mixed> $point
+     * @return array<string, mixed>
+     */
+    protected function externalUotHealthInfo(array $point): array
+    {
+        $runtime = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $reported = is_array($runtime['external_uot'] ?? null) ? $runtime['external_uot'] : [];
+        $expectedHashes = [];
+        foreach (['uot_sidecar_linux_amd64', 'uot_sidecar_linux_arm64'] as $key) {
+            $hash = strtolower(trim((string) ($this->artifactMetadata($key)['sha256'] ?? '')));
+            if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1) {
+                $expectedHashes[] = $hash;
+            }
+        }
+        $actualHash = strtolower(trim((string) ($reported['binary_sha256'] ?? '')));
+        $hashMatch = $actualHash !== '' && in_array($actualHash, $expectedHashes, true);
+        $required = (bool) ($reported['required'] ?? false);
+        $healthy = (bool) ($reported['healthy'] ?? false);
+        $state = trim((string) ($reported['state'] ?? ''));
+        if ($state === '') {
+            $state = 'awaiting heartbeat';
+        }
+        if ($healthy && $required && !$hashMatch) {
+            $healthy = false;
+            $state = 'artifact drift';
+        }
+
+        return [
+            'required' => $required,
+            'healthy' => $healthy,
+            'state' => $state,
+            'binary_present' => (bool) ($reported['binary_present'] ?? false),
+            'config_present' => (bool) ($reported['config_present'] ?? false),
+            'config_valid' => (bool) ($reported['config_valid'] ?? false),
+            'service_active' => (bool) ($reported['service_active'] ?? false),
+            'service_enabled' => (bool) ($reported['service_enabled'] ?? false),
+            'listening' => (bool) ($reported['listening'] ?? false),
+            'expected_active' => (bool) ($reported['expected_active'] ?? $required),
+            'forward_count' => max(0, (int) ($reported['forward_count'] ?? 0)),
+            'listen_port' => max(0, (int) ($reported['listen_port'] ?? 0)),
+            'binary_version' => trim((string) ($reported['binary_version'] ?? '')),
+            'binary_sha256' => $actualHash,
+            'config_sha256' => strtolower(trim((string) ($reported['config_sha256'] ?? ''))),
+            'hash_match' => $hashMatch,
+            'expected_versions' => array_values(array_filter([
+                trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['version'] ?? '')),
+                trim((string) ($this->artifactMetadata('uot_sidecar_linux_arm64')['version'] ?? '')),
+            ], static fn(string $value): bool => $value !== '')),
+            'checked_at' => max(0, (int) ($reported['checked_at'] ?? 0)),
+            'error' => trim((string) ($reported['error'] ?? '')),
+        ];
+    }
+
     protected function sidecarServiceName(int $pointId): string
     {
         return 'leikwan-bond-sidecar-' . max(1, $pointId);

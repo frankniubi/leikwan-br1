@@ -18,10 +18,14 @@ FORCE_START=""
 FORCE_NO_START=""
 SKIP_SYSTEMD="${LEIKWAN_SKIP_SYSTEMD:-0}"
 CHECK_ONLY=0
+STRICT_CHECK=0
 UNINSTALL=0
 PASSTHROUGH=()
 
-BIN_NAME="leikwan-external-uot"
+# Canonical name for the operator-owned Go executable.  Keep the historical
+# name as a compatibility symlink so older operator commands continue to work.
+BIN_NAME="leikwan-external-uot-go"
+LEGACY_BIN_NAME="leikwan-external-uot"
 CFG_NAME="leikwan-external-uot.json"
 UNIT_NAME="leikwan-external-uot.service"
 
@@ -46,6 +50,9 @@ Options:
   --start / --no-start    force service enable+start / force keep disabled
   --skip-systemd          do not touch systemd (test harnesses)
   --check-only            read-only audit of the installed sidecar, then exit
+  --strict                with --check-only, return non-zero for an unhealthy
+                          install (missing config/binary, invalid config, or
+                          service/listener mismatch)
   --uninstall             stop+disable+remove the unit (binary/config kept)
   --print-token --secret <s> --forward-id <n> --target <host:port>
                           passthrough to the sidecar token helper
@@ -65,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --no-start) FORCE_NO_START=1; shift ;;
     --skip-systemd) SKIP_SYSTEMD=1; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
+    --strict) STRICT_CHECK=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --print-token|--secret|--secret-file|--forward-id|--target|--version)
       PASSTHROUGH+=("$1"); shift
@@ -75,13 +83,28 @@ while [[ $# -gt 0 ]]; do
 done
 
 BIN_PATH="$BIN_DIR/$BIN_NAME"
+LEGACY_BIN_PATH="$BIN_DIR/$LEGACY_BIN_NAME"
 CFG_PATH="$CONFIG_DIR/$CFG_NAME"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME"
 
 need_root() { [[ "$(id -u)" == "0" ]] || { echo "run as root: sudo bash $0" >&2; exit 1; }; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-sidecar_version() { "$BIN_PATH" --version 2>/dev/null | head -1 || echo unknown; }
+existing_bin_path() {
+  if [[ -x "$BIN_PATH" ]]; then
+    printf '%s\n' "$BIN_PATH"
+  elif [[ -x "$LEGACY_BIN_PATH" ]]; then
+    printf '%s\n' "$LEGACY_BIN_PATH"
+  else
+    printf '%s\n' "$BIN_PATH"
+  fi
+}
+
+sidecar_version() {
+  local path
+  path="$(existing_bin_path)"
+  "$path" --version 2>/dev/null | head -1 || echo unknown
+}
 forward_count() {
   python3 - "$1" <<'PY'
 import json, sys
@@ -94,9 +117,62 @@ print(len(forwards) if isinstance(forwards, (dict, list)) else -1)
 PY
 }
 
+listener_present() {
+  local port="$1"
+  if ! have ss; then
+    return 1
+  fi
+  ss -lntH 2>/dev/null | awk -v port=":$port" '$4 ~ port"$" || $4 ~ port" " {found=1} END {exit(found ? 0 : 1)}'
+}
+
+strict_audit() {
+  local failures=0 forwards active enabled listening config_ok audit_bin
+  audit_bin="$(existing_bin_path)"
+  if [[ -x "$audit_bin" ]]; then
+    echo "binary: $audit_bin present version=$(sidecar_version) sha256=$(sha256sum "$audit_bin" | awk '{print $1}')"
+  else
+    echo "binary: $BIN_PATH MISSING"
+    failures=$((failures + 1))
+  fi
+  forwards=-1
+  if [[ -f "$CFG_PATH" ]]; then
+    forwards="$(forward_count "$CFG_PATH")"
+    config_ok=0
+    if [[ "$forwards" != "-1" && -x "$audit_bin" ]] && "$audit_bin" --check-config --config "$CFG_PATH" >/dev/null 2>&1; then
+      config_ok=1
+    fi
+    echo "config: $CFG_PATH forwards=$forwards valid=$config_ok mode=$(stat -c %a "$CFG_PATH" 2>/dev/null || echo unknown)"
+    if [[ "$config_ok" != "1" ]]; then failures=$((failures + 1)); fi
+  else
+    echo "config: $CFG_PATH MISSING"
+    failures=$((failures + 1))
+  fi
+  active="unknown"; enabled="unknown"; listening=0
+  if have systemctl; then
+    active="$(systemctl is-active "$UNIT_NAME" 2>/dev/null || true)"
+    enabled="$(systemctl is-enabled "$UNIT_NAME" 2>/dev/null || true)"
+  fi
+  if [[ "$forwards" -gt 0 ]] 2>/dev/null; then
+    [[ "$active" == "active" ]] || failures=$((failures + 1))
+    [[ "$enabled" == "enabled" ]] || failures=$((failures + 1))
+    if listener_present "$LISTEN_PORT"; then listening=1; else failures=$((failures + 1)); fi
+  else
+    [[ "$active" != "active" ]] || failures=$((failures + 1))
+    [[ "$enabled" != "enabled" ]] || failures=$((failures + 1))
+  fi
+  echo "service: active=$active enabled=$enabled listening=$listening expected=$([[ "$forwards" -gt 0 ]] 2>/dev/null && echo active || echo disabled)"
+  if [[ "$failures" -eq 0 ]]; then
+    echo "health: PASS"
+    return 0
+  fi
+  echo "health: FAIL failures=$failures"
+  return 1
+}
+
 # --- passthrough helpers (token derivation, version): no root, no install ---
 if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
-  if [[ -x "$BIN_PATH" ]]; then exec "$BIN_PATH" "${PASSTHROUGH[@]}"; fi
+  PASSTHROUGH_BIN="$(existing_bin_path)"
+  if [[ -x "$PASSTHROUGH_BIN" ]]; then exec "$PASSTHROUGH_BIN" "${PASSTHROUGH[@]}"; fi
   if [[ -n "$LOCAL_BIN" && -x "$LOCAL_BIN" ]]; then exec "$LOCAL_BIN" "${PASSTHROUGH[@]}"; fi
   echo "sidecar binary not present yet; install first or pass --bin <path>" >&2
   exit 1
@@ -104,10 +180,15 @@ fi
 
 # --- read-only audit --------------------------------------------------------
 if [[ "$CHECK_ONLY" == "1" ]]; then
-  if [[ -x "$BIN_PATH" ]]; then echo "binary: $BIN_PATH present version=$(sidecar_version)"; else echo "binary: $BIN_PATH MISSING"; fi
+  if [[ "$STRICT_CHECK" == "1" ]]; then
+    strict_audit
+    exit $?
+  fi
+  CHECK_BIN="$(existing_bin_path)"
+  if [[ -x "$CHECK_BIN" ]]; then echo "binary: $CHECK_BIN present version=$(sidecar_version)"; else echo "binary: $BIN_PATH MISSING"; fi
   if [[ -f "$CFG_PATH" ]]; then
     echo "config: $CFG_PATH forwards=$(forward_count "$CFG_PATH") mode=$(stat -c %a "$CFG_PATH")"
-    [[ -x "$BIN_PATH" ]] && "$BIN_PATH" --check-config --config "$CFG_PATH" | head -1
+    [[ -x "$CHECK_BIN" ]] && "$CHECK_BIN" --check-config --config "$CFG_PATH" | head -1
   else
     echo "config: $CFG_PATH MISSING"
   fi
@@ -163,6 +244,11 @@ else
   fetch "$ARTIFACT_URL" > "$TMP_BIN"
   chmod 0755 "$TMP_BIN"
 fi
+if [[ ! -s "$TMP_BIN" || ! -x "$TMP_BIN" ]]; then
+  echo "downloaded sidecar binary is missing or not executable: $TMP_BIN" >&2
+  rm -f "$TMP_BIN"
+  exit 1
+fi
 ACTUAL_SHA="$(sha256sum "$TMP_BIN" | awk '{print $1}')"
 if [[ "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
   if [[ "$expected_sha" != "$ACTUAL_SHA" ]]; then
@@ -173,9 +259,25 @@ if [[ "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
 else
   echo "warning: no manifest sha256 for $ARTIFACT_KEY; installed unverified bytes" >&2
 fi
+if ! "$TMP_BIN" --version >/dev/null 2>&1; then
+  echo "downloaded sidecar binary failed --version; refusing replacement" >&2
+  rm -f "$TMP_BIN"
+  exit 1
+fi
+if [[ -f "$CFG_PATH" ]] && ! "$TMP_BIN" --check-config --config "$CFG_PATH" >/dev/null 2>&1; then
+  echo "existing config failed validation with downloaded sidecar; refusing replacement" >&2
+  rm -f "$TMP_BIN"
+  exit 1
+fi
 if [[ -x "$BIN_PATH" ]]; then cp -a "$BIN_PATH" "$BACKUP_DIR/$BIN_NAME"; fi
+if [[ -e "$LEGACY_BIN_PATH" || -L "$LEGACY_BIN_PATH" ]]; then cp -a "$LEGACY_BIN_PATH" "$BACKUP_DIR/$LEGACY_BIN_NAME"; fi
 mv "$TMP_BIN" "$BIN_PATH"
+[[ -x "$BIN_PATH" ]] || { echo "installed binary lost execute permission" >&2; exit 1; }
 "$BIN_PATH" --version >/dev/null || { echo "installed binary failed --version" >&2; exit 1; }
+# Keep the old executable name usable while making the Go path authoritative.
+if [[ "$LEGACY_BIN_PATH" != "$BIN_PATH" ]]; then
+  ln -sfn "$(basename "$BIN_PATH")" "$LEGACY_BIN_PATH"
+fi
 echo "installed $BIN_PATH version=$(sidecar_version)"
 
 # --- config ----------------------------------------------------------------
@@ -198,6 +300,14 @@ elif [[ ! -f "$CFG_PATH" ]]; then
 JSON
   chmod 0600 "$CFG_PATH"
   echo "wrote empty config $CFG_PATH; add forwards before enabling the service"
+fi
+
+# Always validate the effective config, including upgrades that keep an
+# existing file. This prevents a stale or malformed config from replacing a
+# healthy process and only failing later as a client-side UDP probe error.
+if [[ ! -x "$BIN_PATH" ]] || ! "$BIN_PATH" --check-config --config "$CFG_PATH" >/dev/null; then
+  echo "rejected effective config $CFG_PATH (--check-config failed)" >&2
+  exit 1
 fi
 
 FORWARDS="$(forward_count "$CFG_PATH")"
@@ -252,7 +362,7 @@ else
     echo "service left disabled (no forwards yet); enable with: systemctl enable --now $UNIT_NAME"
   fi
   if have ss && [[ "$SHOULD_START" == "1" ]]; then
-    ss -lntp | grep ":$LISTEN_PORT" || { echo "port $LISTEN_PORT is not listening" >&2; exit 1; }
+    listener_present "$LISTEN_PORT" || { echo "port $LISTEN_PORT is not listening" >&2; exit 1; }
   fi
 fi
 
@@ -267,4 +377,3 @@ EXTERNAL-UOT-INSTALL-OK
   backup:  $BACKUP_DIR
   rollback: cp -a $BACKUP_DIR/$BIN_NAME $BIN_PATH && cp -a $BACKUP_DIR/$CFG_NAME $CFG_PATH && systemctl restart $UNIT_NAME
 RECEIPT
-

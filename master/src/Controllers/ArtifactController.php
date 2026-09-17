@@ -225,6 +225,26 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function clientAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function clientAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function cfwgLatencyWatchdog(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8', $request);
@@ -520,11 +540,17 @@ final class ArtifactController extends BaseController
             'component' => 'sidecar',
             'manifest' => $this->manifestFor(
                 'sidecar_agent',
+                'sidecar_agent_linux_amd64',
+                'sidecar_agent_linux_arm64',
                 'mptcp_sidecar_runtime',
                 'udp_uot_merge_runtime',
                 'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller',
+                'external_uot_installer',
+                'uot_sidecar_linux_amd64',
+                'uot_sidecar_linux_arm64',
+                'sidecar_agent_update',
                 'tcp_accel_runtime',
                 'tcp_accel_installer'
             ),
@@ -540,6 +566,8 @@ final class ArtifactController extends BaseController
             'bond_sidecar_installer',
             'bond_sidecar_uninstaller',
             'client_agent',
+            'client_agent_linux_amd64',
+            'client_agent_linux_arm64',
             'client_agent_update',
             'install_forward_runtime',
             'cfwg_latency_watchdog',
