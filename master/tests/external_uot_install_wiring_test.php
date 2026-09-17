@@ -49,6 +49,9 @@ check(str_contains($base, 'shellQuote('), 'install command shell-quotes the conf
 check(str_contains($bond, 'EXTERNAL_UOT_CONFIG="$ARTIFACT_BASE/external-uot-config"'), 'bond installer defaults the config URL');
 check(str_contains($bond, '--require-external-uot'), 'bond installer exposes --require-external-uot');
 check(str_contains($bond, '--skip-external-uot'), 'bond installer still allows skipping external UoT');
+check(str_contains($bond, 'if ! "$BIN_DIR/install-external-uot.sh"'), 'bond installer guards a failed external UoT step');
+check(str_contains($bond, 'external UoT sidecar install failed and --require-external-uot was set'), 'a failed external UoT step is fatal only with --require-external-uot');
+check(str_contains($bond, 'warning: external UoT sidecar install failed; continuing without it'), 'a failed external UoT step warns and continues otherwise');
 
 check(str_contains($external, '--config) CONFIG_SOURCE="$2"'), 'external installer accepts --config');
 check(str_contains($external, '--check-config'), 'external installer validates the config before installing');

@@ -265,7 +265,18 @@ elif download_verified_artifact external_uot_installer "$ARTIFACT_BASE/artifacts
   if [[ "${LEIKWAN_SKIP_SYSTEMD:-0}" == "1" ]]; then
     external_uot_args+=(--skip-systemd)
   fi
-  "$BIN_DIR/install-external-uot.sh" "${external_uot_args[@]}"
+  # A failed sidecar step must not take the whole bond install down with it:
+  # without --require-external-uot the host keeps working, its forwards just
+  # fall back to the native UDP payload path; with the flag (what the panel
+  # passes for a point that owns a sidecar_host) the miss stays fatal so a
+  # panel-driven install cannot silently ship without its UoT carrier.
+  if ! "$BIN_DIR/install-external-uot.sh" "${external_uot_args[@]}"; then
+    if [[ "$REQUIRE_EXTERNAL_UOT" == "1" ]]; then
+      echo "external UoT sidecar install failed and --require-external-uot was set" >&2
+      exit 1
+    fi
+    echo "warning: external UoT sidecar install failed; continuing without it" >&2
+  fi
 elif [[ "$REQUIRE_EXTERNAL_UOT" == "1" ]]; then
   echo "external UoT installer missing from $ARTIFACT_BASE and --require-external-uot was set" >&2
   exit 1
