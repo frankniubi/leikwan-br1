@@ -865,7 +865,16 @@ final class ProvisioningService
             'reconnect_grace_seconds' => 30,
             'frame_payload_max' => 65507,
         ];
-        if (!UltraMode::isBackendMode($backendMode) || !$this->configValueEnabled($payload['external_uot_enabled'] ?? false)) {
+        if (!UltraMode::isBackendMode($backendMode)) {
+            return $empty;
+        }
+
+        // An omitted flag means "use the operator default".  The admin form
+        // still sends an explicit 0 when an operator unchecks the control.
+        $enabled = array_key_exists('external_uot_enabled', $payload)
+            ? $this->configValueEnabled($payload['external_uot_enabled'])
+            : ExternalUoTDefaults::enabled($this->config);
+        if (!$enabled) {
             return $empty;
         }
 
@@ -896,6 +905,16 @@ final class ProvisioningService
             } catch (Throwable) {
                 // A missing legacy column is handled by the migration; keep validation below fail-closed.
             }
+        }
+
+        if ($target === '') {
+            $target = ExternalUoTDefaults::targetForZone(
+                $this->config,
+                (string) ($payload['ultra_destination_zone'] ?? '')
+            );
+        }
+        if ($token === '') {
+            $token = ExternalUoTDefaults::generatedToken();
         }
 
         if ($target === '' || preg_match('/^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$|^[A-Za-z0-9._-]+:[0-9]{1,5}$/', $target) !== 1) {

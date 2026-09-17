@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\DebugCollectionStore;
+use Leikwan\Master\Support\ExternalUoTDefaults;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\LeigodActivationGateContext;
 use Leikwan\Master\Support\LeigodNormalizationActivationContext;
@@ -2752,11 +2753,15 @@ final class AdminController extends BaseController
             . $ultraMembershipRows . '</tbody></table></div></fieldset>'
             . '<script>(function(){var s=document.querySelector(\'select[name=ultra_destination_zone]\');if(!s)return;function f(){document.querySelectorAll(\'[data-ultra-destination]\').forEach(function(r){r.style.display=r.getAttribute(\'data-ultra-destination\')===s.value?\'\':\'none\';});}s.addEventListener(\'change\',f);f();})();</script>';
 
-        $externalUotEnabled = (int) ($editing['external_uot_enabled'] ?? 0) === 1;
+        $externalUotEnabled = (int) ($editing['external_uot_enabled'] ?? ($editing === null ? 1 : 0)) === 1;
+        $externalUotTarget = trim((string) ($editing['external_uot_sidecar_target'] ?? ''));
+        if ($externalUotTarget === '') {
+            $externalUotTarget = ExternalUoTDefaults::targetForZone($this->config, $selectedUltraDestination);
+        }
         $externalUotField = '<fieldset class="field" data-mode-field="ultra"><legend>External UoT sidecar</legend>'
             . '<div class="form-grid">'
             . '<div class="field"><label>Enable External UoT</label><input type="hidden" name="external_uot_enabled" value="0"><label class="check-row"><input type="checkbox" name="external_uot_enabled" value="1"' . ($externalUotEnabled ? ' checked' : '') . '> Use the operator-owned UDP-over-TCP sidecar</label></div>'
-            . '<div class="field"><label>Sidecar target</label><input type="text" name="external_uot_sidecar_target" maxlength="255" value="' . $this->escape((string) ($editing['external_uot_sidecar_target'] ?? '')) . '" placeholder="185.220.238.153:7443"><p class="muted">The configured Ultra/LeiGod carrier reaches this endpoint; the client does not open a direct UDP socket to the sidecar.</p></div>'
+            . '<div class="field"><label>Sidecar target</label><input type="text" name="external_uot_sidecar_target" maxlength="255" value="' . $this->escape($externalUotTarget) . '" placeholder="185.220.238.153:7443"><p class="muted">Defaults follow the destination zone; the client does not open a direct UDP socket to the sidecar.</p></div>'
             . '<div class="field"><label>Sidecar token</label><input type="password" name="external_uot_token" maxlength="8192" value="" autocomplete="new-password" placeholder="leave blank to keep the existing token"><p class="muted">The token is stored server-side and is only delivered inside a short-lived Ultra grant.</p></div>'
             . '<div class="field"><label>Queue packets</label><input type="number" name="external_uot_queue_packets" min="1" max="4096" value="' . $this->escape((string) ($editing['external_uot_queue_packets'] ?? 256)) . '"></div>'
             . '<div class="field"><label>Keepalive seconds</label><input type="number" name="external_uot_keepalive_seconds" min="5" max="30" value="' . $this->escape((string) ($editing['external_uot_keepalive_seconds'] ?? 10)) . '"></div>'
