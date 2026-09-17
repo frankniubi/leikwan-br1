@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.17.3"
+INSTALLER_VERSION="2026.09.18.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -205,7 +205,7 @@ install_wireguard_tools() {
   command -v apt-get >/dev/null 2>&1 || die "wireguard-tools is missing and apt-get is unavailable"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y wireguard-tools
+  apt-get install -y --no-install-recommends wireguard-tools
 }
 
 time_sync_ready() {

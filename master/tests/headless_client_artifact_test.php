@@ -226,6 +226,11 @@ foreach (['status', 'start', 'stop', 'restart', 'logs', 'doctor', 'version', 'up
         failHeadless('linux leikwan CLI missing: ' . $needle);
     }
 }
+foreach (['FROZEN_AGENT=', 'frozen_version=', '$FROZEN_AGENT --version'] as $needle) {
+    if (!str_contains($linuxCli, $needle)) {
+        failHeadless('linux leikwan CLI must prefer the frozen agent version: ' . $needle);
+    }
+}
 if (str_contains($linuxCli, 'agent-token ') || str_contains($linuxCli, 'token=')) {
     failHeadless('linux leikwan CLI must not print credentials');
 }

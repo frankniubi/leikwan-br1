@@ -543,8 +543,11 @@ source_version=None
 for node in ast.parse(data).body:
     if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): source_version=ast.literal_eval(node.value)
 if not source_version or source_version!=e.get('version'): raise SystemExit('agent version differs from manifest')
-binary_path=pathlib.Path(sys.argv[3]) if sys.argv[3] else None
-binary_key=sys.argv[5]
+binary_path=None
+binary_key='client_agent'
+if len(sys.argv) > 5 and sys.argv[3]:
+    binary_path=pathlib.Path(sys.argv[3])
+    binary_key=sys.argv[5]
 target=e
 version=source_version
 if binary_path is not None:
@@ -555,7 +558,7 @@ if binary_path is not None:
     version=probe.stdout.strip().splitlines()[0] if probe.returncode==0 and probe.stdout.strip() else None
     if not version or version!=target.get('version'): raise SystemExit('binary version differs from manifest')
     if version!=source_version: raise SystemExit('source and binary versions differ')
-token=sys.argv[4]
+token=sys.argv[4] if len(sys.argv) > 4 else sys.argv[3]
 if token.startswith('auto-release:'):
     fields=dict(part.split('=',1) for part in token[len('auto-release:'):].split('|') if '=' in part)
     if fields.get('agent',version)!=version: raise SystemExit('agent differs from requested version')

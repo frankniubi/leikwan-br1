@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.10.2",
+    [string]$Version = "2026.09.18.1",
     [string]$OutputPath = "artifacts/install-client-agent-linux-arm64",
     [switch]$SkipReproducibilityCheck
 )
@@ -32,6 +32,9 @@ try {
     Copy-Payload "client-agent/client_agent.py" "artifacts/client-agent.py"
     Copy-Payload "client-agent/cfwg_latency_watchdog.py" "artifacts/cfwg-latency-watchdog.py"
     Copy-Payload "install/client-agent-update.sh" "artifacts/client-agent-update.sh"
+    Copy-Payload "install/leikwan-linux.sh" "artifacts/leikwan-linux.sh"
+    Copy-Payload "install/install-tcp-accel.sh" "artifacts/install-tcp-accel.sh"
+    Copy-Payload "tools/tcp-accel/tcp_accel.py" "artifacts/leikwan-tcp-accel.py"
     Copy-Payload "artifacts/install-forward-runtime.py" "artifacts/install-forward-runtime.py"
     Copy-Payload "artifacts/forward-strategy.py" "artifacts/forward-strategy.py"
     Copy-Payload "client-agent/leikwan_tcp_race.py" "artifacts/leikwan-tcp-race.py"

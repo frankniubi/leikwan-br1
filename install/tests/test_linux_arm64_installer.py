@@ -60,6 +60,20 @@ class LinuxArm64InstallerTest(unittest.TestCase):
             (ROOT / "artifacts" / "versions.json").read_text(encoding="utf-8")
         )["client_agent_installer_linux_arm64"]["sha256"])
 
+    def test_arm64_bundle_contains_every_nested_installer_dependency(self) -> None:
+        build = (ROOT / "tools" / "linux-arm64-installer" / "build.ps1").read_text(encoding="utf-8")
+        source = (ROOT / "tools" / "linux-arm64-installer" / "main.go").read_text(encoding="utf-8")
+        self.assertIn('[string]$Version = "2026.09.18.1"', build)
+        required = {
+            "install/leikwan-linux.sh": "artifacts/leikwan-linux.sh",
+            "install/install-tcp-accel.sh": "artifacts/install-tcp-accel.sh",
+            "tools/tcp-accel/tcp_accel.py": "artifacts/leikwan-tcp-accel.py",
+        }
+        for source_path, payload_path in required.items():
+            with self.subTest(payload_path=payload_path):
+                self.assertIn(f'Copy-Payload "{source_path}" "{payload_path}"', build)
+                self.assertIn(f'"payload/{payload_path}"', source)
+
     def test_binary_installer_has_a_download_route_and_client_manifest_entry(self) -> None:
         bootstrap = (ROOT / "master" / "src" / "Bootstrap.php").read_text(encoding="utf-8")
         controller = (ROOT / "master" / "src" / "Controllers" / "ArtifactController.php").read_text(encoding="utf-8")
