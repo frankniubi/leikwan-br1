@@ -314,3 +314,37 @@ Scratch readback after the unit repair: `NotifyAccess=all`, service
 `0fc2a2e0df4193d43414ef1ce7ba88ad809534ae42daa26a714e69b08c5d0183`, version
 `2026.09.13.3`, health `ok=true`, live pull `ok=true`. No new heartbeat
 rejection appeared in the post-restart journal sample.
+
+## 14. Default-on closure (2026-09-17)
+
+The approved follow-up is now implemented and live:
+
+- `master/src/Support/ExternalUoTDefaults.php` centralizes the default. An
+  omitted `external_uot_enabled` on an Ultra combination means enabled; an
+  explicit `0` remains a supported opt-out. A missing token is generated with
+  `random_bytes(24)`, and a missing target follows the destination-zone map
+  with Tokyo `185.220.238.143:7443` as the bootstrap fallback.
+- The new-combination admin form is checked by default and pre-fills the
+  mapped target. The live panel `.env` now has the non-secret regional map:
+  Hong Kong `70.36.96.183`, Singapore `77.93.90.45`, South Korea/Taiwan
+  `103.246.219.39`, Frankfurt/Moscow `157.228.138.23`, Los Angeles
+  `208.122.17.50`, and Tokyo `185.220.238.143`, all on `7443`.
+- All 12 current Ultra combinations are now `external_uot_enabled=1` with
+  48-character tokens. Non-Ultra combinations remain disabled. The reversible
+  database snapshot is
+  `/root/codex-backups/panel-ultra-uot-default-on-20260917-120811/`.
+- The six active sidecars (HK/RU/SG/LA/TW/Tokyo) now run the same Go binary
+  `2026.09.17.2.95535c6`, SHA
+  `bdc18d8efc81d28341449ef51c29792edcd6e5d32206fff470edae3715a32b09`, with
+  `active/enabled`, `*:7443`, and `install-external-uot.sh --check-only
+  --strict` passing on every host. Each installer receipt has a host-local
+  rollback backup under `/root/backups/leikwan-external-uot-*`.
+- The scratch client (`sh36`) was refreshed through the published client
+  installer, then explicitly re-rendered via `runtime-refresh-request` after
+  the fail-safe lease migration. Its five Ultra runtimes are `ready`, the
+  client service has `NRestarts=0`, and the real runtime-to-Tokyo-sidecar
+  harness returned UDP `20/20` sequential and `50/50` burst with no loss.
+- Operators can query this without SQL: `Transport Endpoints -> UoT Health`
+  (`/admin-transport-endpoints?view=health`) shows registered and configured-
+  but-unregistered targets; `Clients -> Runtime`
+  (`/admin/clients?view=runtime`) shows client runtime state and attestation.

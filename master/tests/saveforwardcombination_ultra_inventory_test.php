@@ -156,6 +156,30 @@ namespace {
         }
     }
 
+    // New Ultra combinations inherit the operator default when the optional
+    // external UoT fields are omitted, while an explicit 0 remains an opt-out.
+    Database::$inserts = [];
+    Database::$executes = [];
+    $defaultEnabled = $base;
+    unset($defaultEnabled['external_uot_enabled'], $defaultEnabled['external_uot_sidecar_target'], $defaultEnabled['external_uot_token']);
+    $service->saveForwardCombination($defaultEnabled);
+    $combo = Database::$inserts['forward_combinations'][0] ?? [];
+    if (($combo['external_uot_enabled'] ?? 0) !== 1
+        || ($combo['external_uot_sidecar_target'] ?? '') !== '185.220.238.143:7443'
+        || !preg_match('/^[0-9a-f]{48}$/', (string) ($combo['external_uot_token'] ?? ''))) {
+        failUltraCombination('new Ultra combinations must inherit an enabled external UoT default');
+    }
+    Database::$inserts = [];
+    $explicitOptOut = $base;
+    $explicitOptOut['external_uot_enabled'] = 0;
+    $service->saveForwardCombination($explicitOptOut);
+    $combo = Database::$inserts['forward_combinations'][0] ?? [];
+    if (($combo['external_uot_enabled'] ?? 1) !== 0
+        || ($combo['external_uot_sidecar_target'] ?? null) !== null
+        || ($combo['external_uot_token'] ?? null) !== null) {
+        failUltraCombination('explicit external UoT opt-out must remain disabled');
+    }
+
     Database::$inserts = [];
     Database::$executes = [];
     $nonUltra = $base;

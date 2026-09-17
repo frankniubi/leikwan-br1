@@ -184,3 +184,23 @@ Verification:
 
 Rollback: panel `/root/codex-backups/panel-uot-install-wiring-20260916-203802`
 holds `.before` copies of all six replaced files; repo-side `git revert <commit>`.
+
+## Default-on follow-up (2026-09-17 12:33 UTC)
+
+The originally opt-in combination behavior is now default-on for Ultra. The
+shared `ExternalUoTDefaults` resolver enables an omitted flag, generates a
+fresh token, selects the live destination-zone map, and keeps an explicit `0`
+as an opt-out. The live panel map is HK `70.36.96.183`, SG `77.93.90.45`,
+South Korea/Taiwan `103.246.219.39`, Frankfurt/Moscow `157.228.138.23`, LA
+`208.122.17.50`, and Tokyo `185.220.238.143`, all `:7443`; unknown zones fall
+back to Tokyo.
+
+Production readback after the transaction: 12/12 Ultra combinations enabled,
+all tokens length 48, 10 non-Ultra combinations disabled. The six sidecars
+passed `install-external-uot.sh --check-only --strict` and run the same Go
+artifact (`2026.09.17.2.95535c6`, SHA
+`bdc18d8efc81d28341449ef51c29792edcd6e5d32206fff470edae3715a32b09`). The
+scratch client was refreshed and its real runtime -> Tokyo sidecar harness
+returned UDP `20/20` sequential and `50/50` burst, zero loss; the five local
+Ultra status files were `ready` with no `no_healthy_candidate` or
+`udp_probe_failed` in the verification window.
