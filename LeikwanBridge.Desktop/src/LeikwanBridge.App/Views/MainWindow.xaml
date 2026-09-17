@@ -1154,6 +1154,13 @@
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettPollInterval" Margin="0,0,0,8"/>
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsHealthInterval}"/>
                                 <TextBox Style="{StaticResource InputTextBox}" x:Name="SettHealthInterval" Margin="0,0,0,8"/>
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SettingsLogLevel}"/>
+                                <ComboBox x:Name="SettLogLevel" Margin="0,0,0,4"
+                                          AutomationProperties.Name="Log level">
+                                    <ComboBoxItem Content="{DynamicResource SettingsLogLevelWarning}" Tag="WARNING"/>
+                                    <ComboBoxItem Content="{DynamicResource SettingsLogLevelCritical}" Tag="CRITICAL"/>
+                                    <ComboBoxItem Content="{DynamicResource SettingsLogLevelDebug}" Tag="DEBUG"/>
+                                </ComboBox>
                             </StackPanel>
                         </Border>
 

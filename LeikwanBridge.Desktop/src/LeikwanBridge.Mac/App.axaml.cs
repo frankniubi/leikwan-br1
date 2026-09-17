@@ -134,7 +134,14 @@ public sealed partial class App : Application
             savedAgentToken: config.AgentToken,
             rememberLoginInfoChanged: value => config.RememberLoginInfo = value,
             checkForUpdatesWithProgress: (progress, ct) => CheckForUpdatesAsync(ct, notifyWhenCurrent: true, progress),
-            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress));
+            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress),
+            logLevel: config.LogLevel,
+            saveLogLevel: async (level, ct) =>
+            {
+                config.LogLevel = DesktopLogLevel.Normalize(level);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+                MacAppBootstrap.ReconfigureLogging(PlatformPaths, config.LogLevel);
+            });
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;

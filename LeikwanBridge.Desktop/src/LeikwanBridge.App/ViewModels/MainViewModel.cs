@@ -2327,12 +2327,16 @@ public partial class MainViewModel : ObservableObject
     {
         if (IsShuttingDown)
             return;
+        // Native helper output is verbose by nature. Keep it out of the
+        // Activity view unless the user explicitly enables Debug.
+        if (!DesktopLogLevel.IsDebug(_config.LogLevel))
+            return;
         InvokeOnUiThread(() => AddLog($"[fwd-{forwardId}/{label}] {line}"));
     }
 
     private void AddLog(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        var entry = $"[{DateTime.Now:HH:mm:ss}] {LogPrivacy.Redact(message)}";
         LogEntries.Add(entry);
         while (LogEntries.Count > 5000)
             LogEntries.RemoveAt(0);

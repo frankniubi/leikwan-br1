@@ -85,7 +85,9 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             {
                 if (eventArgs.Data is null)
                     return;
-                Log.Warning("[fwd-{ForwardId}/{Role}] stderr: {Line}", forwardId, role, eventArgs.Data);
+                // Native helpers commonly use stderr for progress and
+                // connection telemetry. Health/exit handling owns failures.
+                Log.Debug("[fwd-{ForwardId}/{Role}] stderr: {Line}", forwardId, role, eventArgs.Data);
                 _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
             };
             process.Exited += (_, _) => ProcessExited?.Invoke(forwardId, role);
