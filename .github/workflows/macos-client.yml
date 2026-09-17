@@ -123,7 +123,7 @@ jobs:
           # covered by the Windows/local suite; keep all other Core tests in
           # this cross-platform gate.
           dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj -c Release --no-restore \
-            --filter "Platform!=Windows&Name!=ProcessDialPlanKeepsDnsDirectAndBypassesOwnRuntime&Name!=BuildRelaunchStartInfoRequestsRunAsAndCarriesProxySelection&Name!=NativeLeaseBatchWirePreservesBoundedCandidates&Name!=NativeLeaseWireUsesRuntimeTargetDigestField&Name!=StartCandidates_UsesShortPrivateUnixControlPath&Name!=SyncOnceAsync_ActivatesIndependentForwardsConcurrentlyAndIsolatesFailure"
+            --filter "Platform!=Windows&FullyQualifiedName!~WindowsProxyElevationTests&FullyQualifiedName!~WindowsNetchProcessProxyAdapterTests&FullyQualifiedName!~UltraLeaseClientTests&FullyQualifiedName!~NativeOutboundRelayHostTests&FullyQualifiedName!~ConfigPollingServiceTests"
           dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj -c Release --no-restore
 
       - name: Run Go and Rust tests
