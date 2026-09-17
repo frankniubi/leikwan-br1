@@ -275,3 +275,42 @@ forward 170 的真实 UDP 往返；Go sidecar 在真实主机的协议一致性�
 旋钮级改动的即时生效；`up-20M` 空结果成因；`SIDECAR_DIRECT_TCP_*` 的真实意图。
 
 **没碰**：其它工作流（homepage 设计、sub2api、mihomo/Android 干线、`docs/handoffs/` 里 40+ 个 side worktree）。
+
+## 12. Closure update (2026-09-17)
+
+This handoff was continued after approval. The following items are now closed:
+
+- The external UoT Go executable uses the canonical `/usr/local/bin/leikwan-external-uot-go` path. The historical `/usr/local/bin/leikwan-external-uot` name remains a compatibility symlink on future installs; audits accept either path during migration.
+- `sidecar-agent.external_uot_status()` now detects the Go frozen executable, probes `--version` and `--check-config`, and reports its real hash instead of labelling it `python_reference`/`not_installed`.
+- A frozen `leikwan-sidecar-agent_linux_amd64` was rebuilt on the remote Taiwan build host (4 vCPU / 4 GB) with PyInstaller 6.22.3. Local build was not used. Artifact: 8648672 bytes, SHA-256 `cccb049e8ae1aa02d552dc72ee0bf48cceab0219add983dd3e482a66856925ff`.
+- The updated installer, sidecar source, frozen agent, and manifest were published atomically to the live panel. Panel backup: `/root/codex-backups/panel-uot-installer-guard-20260917-100837/`.
+- Live `install-external-uot.sh --check-only --strict` passed on HK (9 forwards), SG (2), LA (3), TW (3), and RU (0, disabled/no listener). RU's stale no-forward service was disabled after backup `/root/backups/external-uot-no-forward-20260917-055907`.
+- The scratch client was repaired through the live installer and is running the frozen `/usr/local/bin/leikwan-client-agent` with `NRestarts=0`, non-empty mode-600 config, and successful live pull. The admin panel exposes `Transport Endpoints -> UoT Health` and `Clients -> Runtime`, including configured-but-unregistered targets.
+
+Still intentionally unproven: a destructive zero-state wipe/reinstall of a disposable host, ARM64 frozen agent builds (those architectures keep the verified Python fallback), Android grant propagation, and the unrelated `up-20M` intermittent empty-result investigation.
+
+## 13. Frozen client watchdog correction (2026-09-17)
+
+The scratch host journal exposed one installer defect after the frozen rollout:
+the PyInstaller one-file bootloader kept the systemd `MainPID` while the
+extracted Python child sent `sd_notify`. With `NotifyAccess=main`, systemd
+logged `reception only permitted for main PID` and killed the otherwise healthy
+agent at `WatchdogSec=180` (`NRestarts=1`).
+
+This is now fixed in `install/install-client-agent.sh`: frozen installs emit
+`NotifyAccess=all`; source/Python fallback installs retain `NotifyAccess=main`.
+`external_uot_install_wiring_test.php` pins both branches. The installer hash is
+`6152cbce0b7b3772396d706c387010e0b1bdb5b6de6519e9aaaa214db837b88b` (38742
+bytes), and the live panel copy plus manifest were updated under backup
+`/root/codex-backups/panel-client-watchdog-20260917-102131/`.
+
+The external UoT strict audit now also requires `enabled` for a non-empty
+forward set and rejects an enabled empty set. Its updated installer hash is
+`be5f968cbc42b3929460642a91570a3983b5003d031cc0518c927f2b617c16e5` (14404
+bytes); panel backup: `/root/codex-backups/panel-uot-strict-enabled-20260917-102252/`.
+
+Scratch readback after the unit repair: `NotifyAccess=all`, service
+`active/running`, `NRestarts=0`, binary SHA
+`0fc2a2e0df4193d43414ef1ce7ba88ad809534ae42daa26a714e69b08c5d0183`, version
+`2026.09.13.3`, health `ok=true`, live pull `ok=true`. No new heartbeat
+rejection appeared in the post-restart journal sample.

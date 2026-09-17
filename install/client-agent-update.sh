@@ -14,6 +14,7 @@ UPDATE_TMP=$(mktemp -d /tmp/leikwan-client-update.XXXXXX)
 TEMP_INSTALLER="$UPDATE_TMP/install.sh"
 TEMP_UPDATE_HELPER="$UPDATE_TMP/update.sh"
 TEMP_AGENT="$UPDATE_TMP/agent.py"
+TEMP_AGENT_BINARY="$UPDATE_TMP/agent.bin"
 VERSIONS_TMP=""
 
 while [[ $# -gt 0 ]]; do
@@ -76,13 +77,26 @@ fi
 write_update_state() {
   local status="$1"
   local error_message="${2:-}"
-  python3 - "${STATE_PATH}" "${REQUEST_TOKEN}" "${status}" "${error_message}" "/usr/local/bin/leikwan-client-agent.py" <<'PY'
-import json, pathlib, re, sys, time
+  python3 - "${STATE_PATH}" "${REQUEST_TOKEN}" "${status}" "${error_message}" "${CONFIG_PATH}" <<'PY'
+import hashlib, json, pathlib, platform, re, subprocess, sys, time
 path = pathlib.Path(sys.argv[1])
 request_token = sys.argv[2]
 status = sys.argv[3]
 error_message = sys.argv[4]
-agent_path = pathlib.Path(sys.argv[5])
+config_path = pathlib.Path(sys.argv[5])
+config = {}
+try:
+    loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if isinstance(loaded_config, dict):
+        config = loaded_config
+except Exception:
+    config = {}
+runtime_mode = str(config.get("runtime_binary_mode", "python") or "python").strip().lower()
+configured_path = str(config.get("client_agent_bin", "") or "").strip()
+agent_path = pathlib.Path(configured_path or (
+    "/usr/local/bin/leikwan-client-agent" if runtime_mode == "frozen"
+    else "/usr/local/bin/leikwan-client-agent.py"
+))
 existing = {}
 if path.exists():
     try:
@@ -107,12 +121,25 @@ if status == "running":
 elif status == "success":
     version = ""
     if agent_path.exists():
-        text = agent_path.read_text(encoding="utf-8")
-        match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
-        version = match.group(1) if match else ""
+        if runtime_mode == "frozen":
+            try:
+                probe = subprocess.run([str(agent_path), "--version"], text=True, capture_output=True, timeout=10, check=False)
+                version = probe.stdout.strip().splitlines()[0] if probe.returncode == 0 and probe.stdout.strip() else ""
+            except Exception:
+                version = ""
+        else:
+            try:
+                text = agent_path.read_text(encoding="utf-8")
+                match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
+                version = match.group(1) if match else ""
+            except (OSError, UnicodeError):
+                version = ""
     payload["last_completed_request_token"] = request_token
     payload["last_completed_at"] = time.time()
     payload["installed_version"] = version
+    payload["installed_sha256"] = hashlib.sha256(agent_path.read_bytes()).hexdigest() if agent_path.is_file() else ""
+    payload["runtime_binary_mode"] = runtime_mode
+    payload["agent_architecture"] = platform.machine().strip().lower()
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
@@ -140,7 +167,7 @@ cleanup_update() {
   local status=$?
   trap - EXIT
   restore_previous_runtime_state "$status"
-  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER" "$TEMP_AGENT"
+  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER" "$TEMP_AGENT" "$TEMP_AGENT_BINARY"
   rmdir "$UPDATE_TMP" 2>/dev/null || true
   [[ -z "${VERSIONS_TMP:-}" ]] || rm -f "$VERSIONS_TMP"
   exit "$status"
@@ -459,26 +486,80 @@ if ! echo "$EXPECTED_INSTALLER_SHA256  $TEMP_INSTALLER" | sha256sum -c - >/dev/n
   exit 1
 fi
 
-# Validate the agent payload and requested version before running any installer.
+# Validate the source payload and the architecture-specific frozen executable
+# before running any installer. The source check keeps the fallback path valid;
+# the binary check pins the bytes that a frozen install will actually execute.
 if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent.py" "$TEMP_AGENT"; then
   write_update_state "error" "failed to preflight client agent"
   exit 1
 fi
-if ! python3 - "$VERSIONS_TMP" "$TEMP_AGENT" "$REQUEST_TOKEN" <<'PYGUARD'
-import ast,hashlib,json,pathlib,sys
+case "$(uname -m)" in
+  x86_64|amd64) RUNTIME_ARCH=amd64 ;;
+  aarch64|arm64) RUNTIME_ARCH=arm64 ;;
+  *) write_update_state "error" "unsupported client agent architecture: $(uname -m)"; exit 1 ;;
+esac
+AGENT_BINARY_KEY="client_agent_linux_${RUNTIME_ARCH}"
+read -r AGENT_BINARY_URL AGENT_BINARY_SHA256 < <(python3 - "$VERSIONS_TMP" "$AGENT_BINARY_KEY" <<'PYBINARY'
+import json,pathlib,sys
+m=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+e=m.get(sys.argv[2],{})
+if not isinstance(e,dict):
+    print("- -")
+else:
+    print(str(e.get("artifact_url","") or "-"),str(e.get("sha256","") or "-"))
+PYBINARY
+)
+if [[ "$AGENT_BINARY_URL" != "-" || "$AGENT_BINARY_SHA256" != "-" ]]; then
+  if [[ ! "$AGENT_BINARY_SHA256" =~ ^[0-9a-fA-F]{64}$ || "$AGENT_BINARY_URL" == "-" ]]; then
+    write_update_state "error" "incomplete ${AGENT_BINARY_KEY} manifest entry"
+    exit 1
+  fi
+  if [[ ! "$AGENT_BINARY_URL" =~ ^https?:// ]]; then
+    AGENT_BINARY_URL="${ARTIFACT_BASE%/}/${AGENT_BINARY_URL#/}"
+  fi
+  if ! leikwan_protected_download "$AGENT_BINARY_URL" "$TEMP_AGENT_BINARY"; then
+    write_update_state "error" "failed to preflight ${AGENT_BINARY_KEY}"
+    exit 1
+  fi
+  if [[ ! -s "$TEMP_AGENT_BINARY" ]]; then
+    write_update_state "error" "downloaded ${AGENT_BINARY_KEY} is empty"
+    exit 1
+  fi
+  chmod 0755 "$TEMP_AGENT_BINARY"
+  if [[ ! -x "$TEMP_AGENT_BINARY" ]]; then
+    write_update_state "error" "downloaded ${AGENT_BINARY_KEY} is not executable"
+    exit 1
+  fi
+else
+  TEMP_AGENT_BINARY=""
+fi
+if ! python3 - "$VERSIONS_TMP" "$TEMP_AGENT" "$TEMP_AGENT_BINARY" "$REQUEST_TOKEN" "$AGENT_BINARY_KEY" <<'PYGUARD'
+import ast,hashlib,json,pathlib,subprocess,sys
 m=json.loads(pathlib.Path(sys.argv[1]).read_text())
 data=pathlib.Path(sys.argv[2]).read_bytes()
 e=m.get('client_agent',{})
 if hashlib.sha256(data).hexdigest()!=e.get('sha256'): raise SystemExit('agent hash differs from manifest')
-version=None
+source_version=None
 for node in ast.parse(data).body:
-    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): version=ast.literal_eval(node.value)
-if not version or version!=e.get('version'): raise SystemExit('agent version differs from manifest')
-token=sys.argv[3]
+    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): source_version=ast.literal_eval(node.value)
+if not source_version or source_version!=e.get('version'): raise SystemExit('agent version differs from manifest')
+binary_path=pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+binary_key=sys.argv[5]
+target=e
+version=source_version
+if binary_path is not None:
+    target=m.get(binary_key,{})
+    binary_data=binary_path.read_bytes()
+    if hashlib.sha256(binary_data).hexdigest()!=target.get('sha256'): raise SystemExit('binary hash differs from manifest')
+    probe=subprocess.run([str(binary_path),'--version'],text=True,capture_output=True,timeout=15,check=False)
+    version=probe.stdout.strip().splitlines()[0] if probe.returncode==0 and probe.stdout.strip() else None
+    if not version or version!=target.get('version'): raise SystemExit('binary version differs from manifest')
+    if version!=source_version: raise SystemExit('source and binary versions differ')
+token=sys.argv[4]
 if token.startswith('auto-release:'):
     fields=dict(part.split('=',1) for part in token[len('auto-release:'):].split('|') if '=' in part)
     if fields.get('agent',version)!=version: raise SystemExit('agent differs from requested version')
-    if fields.get('agent_sha256',e['sha256']).lower()!=e['sha256'].lower(): raise SystemExit('agent differs from requested hash')
+    if fields.get('agent_sha256',target['sha256']).lower()!=target['sha256'].lower(): raise SystemExit('agent differs from requested hash')
 PYGUARD
 then
   write_update_state "error" "agent preflight mismatch; keeping current services"
@@ -498,6 +579,10 @@ if LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER" --master "${MASTER_URL}" --art
     exit 1
   fi
   chmod 0755 "$TEMP_UPDATE_HELPER"
+  if [[ ! -x "$TEMP_UPDATE_HELPER" ]]; then
+    write_update_state "error" "downloaded client-agent update helper is not executable"
+    exit 1
+  fi
   mv "$TEMP_UPDATE_HELPER" /usr/local/bin/leikwan-client-agent-update
   write_update_state "success"
 else

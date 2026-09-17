@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+import platform
 import re
 import shutil
 import socket
@@ -18,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.08.13.1"
+AGENT_VERSION = "2026.09.17.2"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
@@ -37,6 +38,33 @@ DEFAULT_CONFIG = {
     "wireguard_fallback_tcp_port": 24969,
     "installer_version": "",
 }
+
+
+def agent_artifact_path() -> pathlib.Path:
+    """Return the bytes that identify this running agent distribution."""
+    if getattr(sys, "frozen", False):
+        return pathlib.Path(sys.executable).resolve()
+    return pathlib.Path(__file__).resolve()
+
+
+def agent_artifact_sha256() -> str:
+    return file_sha256(agent_artifact_path())
+
+
+def sidecar_agent_helper_command(config: dict, alias: str, configured_path: str = "") -> str:
+    """Render a helper command for source and frozen sidecar installs."""
+    mode = str(config.get("runtime_binary_mode", "") or "").strip().lower()
+    if mode == "frozen":
+        binary = str(
+            config.get("sidecar_agent_bin", "/usr/local/bin/leikwan-sidecar-agent")
+            or "/usr/local/bin/leikwan-sidecar-agent"
+        ).strip()
+        if re.fullmatch(r"/[A-Za-z0-9._+@%/-]+", binary) is None:
+            raise ValueError("sidecar_agent_bin must be a safe absolute path")
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", alias) is None:
+            raise ValueError(f"invalid frozen helper alias: {alias}")
+        return f"{binary} --dispatch-as {alias}"
+    return f"/usr/bin/python3 {configured_path or '/usr/local/bin/' + alias}"
 
 UOT_SCHEDULER_DEFAULTS = {
     "scheduler_mode": "legacy",
@@ -963,7 +991,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-uot.py server --listen-tcp 0.0.0.0:{listen_tcp_port} --target-udp 127.0.0.1:{target_udp_port}
+ExecStart={sidecar_agent_helper_command(self.config, 'leikwan-uot.py')} server --listen-tcp 0.0.0.0:{listen_tcp_port} --target-udp 127.0.0.1:{target_udp_port}
 Restart=always
 RestartSec=3
 
@@ -1715,7 +1743,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/bin/leikwan-wss-mux.py --listen-port {listen_port} --tls-cert {tls_cert_path} --tls-key {tls_key_path} --routes-file {routes_path}
+ExecStart={sidecar_agent_helper_command(self.config, 'leikwan-wss-mux.py')} --listen-port {listen_port} --tls-cert {tls_cert_path} --tls-key {tls_key_path} --routes-file {routes_path}
 Restart=always
 RestartSec=3
 
@@ -1743,6 +1771,145 @@ WantedBy=multi-user.target
             check=False,
         )
         return result.stdout.strip() == "active"
+
+    def external_uot_status(self) -> dict:
+        """Return a redacted, local-only health snapshot for the external UoT unit.
+
+        The sidecar agent is already the authenticated heartbeat channel, so this
+        gives the panel durable visibility into fresh installs without exposing
+        the UoT token or requiring panel-side SSH access.
+        """
+        config_path = pathlib.Path(
+            os.environ.get("LEIKWAN_EXTERNAL_UOT_CONFIG", "/etc/leikwan-external-uot.json")
+        )
+        configured_binary = os.environ.get("LEIKWAN_EXTERNAL_UOT_BINARY", "").strip()
+        binary_candidates = ([pathlib.Path(configured_binary)] if configured_binary else []) + [
+            pathlib.Path("/usr/local/bin/leikwan-external-uot-go"),
+            pathlib.Path("/usr/local/bin/leikwan-external-uot"),
+            pathlib.Path("/usr/local/bin/leikwan_external_uot.py"),
+        ]
+        binary_path = next((path for path in binary_candidates if path.is_file()), None)
+        binary_is_frozen = binary_path is not None and binary_path.suffix.lower() != ".py"
+        status: dict = {
+            "required": False,
+            "healthy": False,
+            "state": "not_installed",
+            "binary_present": binary_path is not None,
+            "config_present": config_path.is_file(),
+            "config_valid": False,
+            "service_active": False,
+            "service_enabled": False,
+            "listening": False,
+            "forward_count": 0,
+            "listen_port": 7443,
+            "binary_path": str(binary_path) if binary_path is not None else "",
+            "binary_version": "",
+            "binary_sha256": file_sha256(binary_path) if binary_path is not None else "",
+            "config_sha256": file_sha256(config_path) if config_path.is_file() else "",
+            "checked_at": int(time.time()),
+            "error": "",
+        }
+
+        document: dict = {}
+        if config_path.is_file():
+            try:
+                loaded = json.loads(config_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("config_not_object")
+                document = loaded
+                forwards = loaded.get("forwards", loaded.get("forward_bindings", {}))
+                if isinstance(forwards, dict):
+                    status["forward_count"] = len(forwards)
+                elif isinstance(forwards, list):
+                    status["forward_count"] = len(forwards)
+                else:
+                    raise ValueError("forwards_not_collection")
+                configured_port = int(loaded.get("listen_port", 7443) or 7443)
+                if 1 <= configured_port <= 65535:
+                    status["listen_port"] = configured_port
+                else:
+                    raise ValueError("listen_port_invalid")
+                status["config_valid"] = True
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                status["error"] = "config_invalid"
+
+        status["required"] = bool(status["forward_count"] > 0)
+        if binary_is_frozen:
+            try:
+                version_result = subprocess.run(
+                    [str(binary_path), "--version"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=3,
+                )
+                status["binary_version"] = version_result.stdout.strip().splitlines()[0][:128] if version_result.stdout.strip() else ""
+            except (OSError, subprocess.SubprocessError):
+                status["error"] = status["error"] or "binary_probe_failed"
+        elif binary_path is not None:
+            status["binary_version"] = "python_reference"
+
+        if binary_is_frozen and status["config_valid"]:
+            try:
+                check_result = subprocess.run(
+                    [str(binary_path), "--check-config", "--config", str(config_path)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=5,
+                )
+                if check_result.returncode != 0:
+                    status["config_valid"] = False
+                    status["error"] = "binary_rejected_config"
+            except (OSError, subprocess.SubprocessError):
+                status["config_valid"] = False
+                status["error"] = "binary_config_probe_failed"
+
+        if shutil.which("systemctl") is not None:
+            for command, key in (("is-active", "service_active"), ("is-enabled", "service_enabled")):
+                try:
+                    result = subprocess.run(
+                        ["systemctl", command, "leikwan-external-uot.service"],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        timeout=3,
+                    )
+                    status[key] = result.stdout.strip() in {"active", "enabled"}
+                except (OSError, subprocess.SubprocessError):
+                    status["error"] = status["error"] or "systemd_probe_failed"
+
+        if shutil.which("ss") is not None and status["listen_port"] > 0:
+            try:
+                result = subprocess.run(
+                    ["ss", "-lntH"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=3,
+                )
+                port_pattern = re.compile(rf"(?:0\.0\.0\.0|\[?::\]?|\*)[:]{int(status['listen_port'])}(?:\s|$)")
+                status["listening"] = any(port_pattern.search(line) for line in result.stdout.splitlines())
+            except (OSError, subprocess.SubprocessError):
+                status["error"] = status["error"] or "listener_probe_failed"
+
+        expected_active = bool(status["forward_count"] > 0)
+        status["expected_active"] = expected_active
+        status["healthy"] = bool(
+            status["binary_present"]
+            and status["config_present"]
+            and status["config_valid"]
+            and status["service_active"] == expected_active
+            and status["service_enabled"] == expected_active
+            and (not expected_active or status["listening"])
+        )
+        if status["healthy"]:
+            status["state"] = "online" if expected_active else "disabled"
+        elif not status["binary_present"] or not status["config_present"]:
+            status["state"] = "not_installed"
+        else:
+            status["state"] = "degraded"
+        return status
 
     @staticmethod
     def systemd_available() -> bool:
@@ -2419,15 +2586,16 @@ WantedBy=multi-user.target
             }
             runtime_changed = write_text_if_changed(secondary_runtime_path, json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", mode=0o600)
             rust_relay_path = pathlib.Path(str(self.state_dir)) / "leikwan-mptcp-relay"
+            mptcp_command = sidecar_agent_helper_command(self.config, "leikwan-mptcp-sidecar.py", self.runtime_bin())
             start_script_lines = [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                f'/usr/bin/python3 {self.runtime_bin()} --config {secondary_runtime_path} --setup-only',
+                f'{mptcp_command} --config {secondary_runtime_path} --setup-only',
                 f'RUST_RELAY="{rust_relay_path}"',
                 'if [ -x "$RUST_RELAY" ]; then',
                 f'    exec "$RUST_RELAY" server --config {secondary_runtime_path}',
                 'else',
-                f'    exec /usr/bin/python3 {self.runtime_bin()} --config {secondary_runtime_path}',
+                f'    exec {mptcp_command} --config {secondary_runtime_path}',
                 'fi',
             ]
             start_script_changed = write_text_if_changed(secondary_start_script, "\n".join(start_script_lines) + "\n", mode=0o755)
@@ -2581,6 +2749,8 @@ WantedBy=multi-user.target
         payload = {
             "status": status,
             "version": AGENT_VERSION,
+            "agent_architecture": platform.machine().strip().lower(),
+            "runtime_binary_mode": str(self.config.get("runtime_binary_mode", "python") or "python"),
             "usage_bytes_in": int(stats.get("bytes_in", 0) or 0),
             "usage_bytes_out": int(stats.get("bytes_out", 0) or 0),
             "supports_mptcp": self.running_kernel_supports_mptcp(),
@@ -2589,8 +2759,9 @@ WantedBy=multi-user.target
             "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             "clock_sync": local_clock,
         }
-        payload["agent_sha256"] = file_sha256(pathlib.Path(__file__).resolve())
+        payload["agent_sha256"] = agent_artifact_sha256()
         payload["agent_update_state"] = self.load_update_state()
+        payload["external_uot"] = self.external_uot_status()
         if health_error != "":
             payload["health_error"] = health_error
         bond_leg_reputation = self.load_bond_leg_reputation_snapshot()
@@ -2649,7 +2820,7 @@ WantedBy=multi-user.target
             mismatches.append(f"agent={desired_agent_version}")
 
         if desired_agent_sha256:
-            local_agent_sha256 = file_sha256(pathlib.Path(__file__).resolve()).lower()
+            local_agent_sha256 = agent_artifact_sha256().lower()
             if local_agent_sha256 != desired_agent_sha256:
                 mismatches.append(f"agent_sha256={desired_agent_sha256}")
 

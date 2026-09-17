@@ -733,7 +733,12 @@ final class ClientAgentController extends BaseController
     ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
-        $clientAgent = $this->artifactMetadata('client_agent');
+        $clientAgentKey = 'client_agent_linux_' . $runtimeArchitecture;
+        $clientAgent = $this->artifactMetadata($clientAgentKey);
+        if ($clientAgent === []) {
+            $clientAgentKey = 'client_agent';
+            $clientAgent = $this->artifactMetadata($clientAgentKey);
+        }
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
         $arm64 = $runtimeArchitecture === 'arm64';
@@ -756,7 +761,7 @@ final class ClientAgentController extends BaseController
         $desiredUltraRuntimeSha256 = (string) ($ultraClientRuntime['binary_sha256'] ?? $ultraClientRuntime['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
-            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
+            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), $clientAgentKey, 'auto-client-agent');
         }
 
         $agentConfig = $this->authoritativeAgentConfig($client);
@@ -787,7 +792,7 @@ final class ClientAgentController extends BaseController
         $forwardRevision = self::forwardRevision($forwards, $nativeOutbound);
         $debugCollection = (new DebugCollectionStore($this->db, $this->config))->metadata($client);
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
-            'client_agent' => $clientAgent,
+            $clientAgentKey => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
             'install_forward_runtime' => $installForwardRuntime,
             'ultra_client_runtime' => $ultraClientRuntime,
@@ -1082,6 +1087,8 @@ final class ClientAgentController extends BaseController
         }
         $runtimeState = $this->mergeRuntimeState($existingAgentConfig, [
             'supports_mptcp' => $request->input('supports_mptcp'),
+            'agent_architecture' => $this->clientRuntimeArchitecture($request),
+            'runtime_binary_mode' => $request->input('runtime_binary_mode'),
             'wireguard_public_key' => $request->input('wireguard_public_key'),
             'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
             'wstunnel_sha256' => $request->input('wstunnel_sha256'),
@@ -1440,7 +1447,8 @@ final class ClientAgentController extends BaseController
 
     private function clientRuntimeArchitecture(Request $request): string
     {
-        $raw = strtolower(trim((string) ($request->header('x-device-architecture') ?? $request->input('architecture', ''))));
+        $raw = strtolower(trim((string) ($request->header('x-device-architecture')
+            ?? $request->input('agent_architecture', $request->input('architecture', '')))));
         return in_array($raw, ['arm64', 'aarch64', 'armv8'], true) ? 'arm64' : 'amd64';
     }
 
@@ -1687,12 +1695,18 @@ final class ClientAgentController extends BaseController
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }
         }
-        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256', 'wstunnel_sha256', 'wstunnel_version'] as $stringKey) {
+        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256', 'wstunnel_sha256', 'wstunnel_version', 'agent_architecture'] as $stringKey) {
             if (array_key_exists($stringKey, $input)) {
                 $value = trim((string) ($input[$stringKey] ?? ''));
                 if ($value !== '') {
                     $merged[$stringKey] = $value;
                 }
+            }
+        }
+        if (array_key_exists('runtime_binary_mode', $input)) {
+            $mode = strtolower(trim((string) ($input['runtime_binary_mode'] ?? '')));
+            if (in_array($mode, ['frozen', 'python'], true)) {
+                $merged['runtime_binary_mode'] = $mode;
             }
         }
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $intKey) {
