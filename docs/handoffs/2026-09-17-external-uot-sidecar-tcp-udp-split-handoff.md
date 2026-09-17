@@ -7,9 +7,9 @@
 ## 0. 30 秒速读
 
 - 目标（用户原话意图）：**新安装的 sidecar 主机不再出现 `UDP candidate failed`**；客户端 **TCP 走原有直接线路、UDP 走 sidecar UoT**；**admin 面板支持新 sidecar 安装**，且 **forward combination 可按路由走法指定** 这类承载。
-- 结果：三件事都**已成立并逐条核实**（见 §4）。本轮另补掉一个遗留缺口（安装脚本失败语义），已上线（`b590846d`）。
-- 当前**唯一**尚未在真实环境跑过的是：**全新 scratch 主机从线上制品库完整新装**（面板命令链已接通，未端到端走一遍）。
-- 代码在 `fix/ultra-probe-single-reader` @ `b590846d`，比本地 `master` 领先 30 个提交，**未推送** `origin`。
+- 结果：三件事都**已成立并逐条核实**（见 §4）。本轮另补掉安装脚本失败语义与 frozen watchdog 语义，最终收口于 `dca64f59`。
+- 当前仍未做的是**破坏性 zero-state scratch wipe/reinstall**；真实 updater 重装、制品 hash、服务健康和 panel 查询入口均已跑通。
+- 代码在 `fix/ultra-probe-single-reader` @ `dca64f59`，比本地 `master` 领先 32 个提交，**未推送** `origin`。
 
 ## 1. Worktree / 分支 / 环境
 
@@ -17,8 +17,8 @@
 | --- | --- |
 | 主 worktree | `C:\Users\frankniubi\Downloads\leikwan-br1`（Windows PowerShell） |
 | 分支 | `fix/ultra-probe-single-reader` |
-| HEAD | `b590846d` (2026-09-17 12:32 +0800) |
-| 本地 master | `55c0cbcb` (2026-09-16 04:45 +0800)，本分支领先 30 个提交、落后 0 |
+| HEAD | `dca64f59` (2026-09-17，最终 installer/watchdog 收口) |
+| 本地 master | `55c0cbcb` (2026-09-16 04:45 +0800)，本分支领先 32 个提交、落后 0 |
 | 上游 | `origin` = `https://github.com/frankniubi/leikwan-br1.git`；本分支无 tracking，未 push |
 | 面板主机 | `root@173.208.183.93`（plink/pscp，凭据沿用本地既有配置，勿写入任何文件） |
 | 面板站点根 | `/www/wwwroot/v3.leikwanhost.com/leikwan-v3`（`master/` 下为面板代码） |
@@ -262,7 +262,7 @@ curl -fsS https://v3.leikwanhost.com/external-uot-config?host=<SIDECAR_HOST> | p
 cd C:\Users\frankniubi\Downloads\leikwan-br1
 powershell -NoProfile -ExecutionPolicy Bypass -File .tmp\uot-config-deploy\targeted-tests.ps1   # 7 项 UoT 专项
 php master\tests\external_uot_install_wiring_test.php                                        # 18 checks
-git --no-pager log --oneline refs/heads/master..HEAD                                         # 本分支 30 个提交
+git --no-pager log --oneline refs/heads/master..HEAD                                         # 本分支 32 个提交
 ```
 
 ## 11. 交接边界声明（proven vs unproven）
