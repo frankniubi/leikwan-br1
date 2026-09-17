@@ -7,7 +7,7 @@
 # /etc/leikwan-external-uot.json unless --config points at a new one.
 set -euo pipefail
 
-INSTALLER_VERSION="2026.09.17.1"
+INSTALLER_VERSION="2026.09.17.4"
 ARTIFACT_BASE=""
 BIN_DIR="/usr/local/bin"
 CONFIG_DIR="/etc"

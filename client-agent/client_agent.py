@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.13.3"
+AGENT_VERSION = "2026.09.17.4"
 UPDATE_RETRY_SECONDS = 300
 
 

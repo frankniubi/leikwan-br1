@@ -11,15 +11,15 @@ if (!is_array($manifest)) fail('versions.json is not valid JSON');
 $expected = [
     'client_agent_linux_amd64' => [
         'source' => 'client-agent/client_agent.py',
-        'version' => '2026.09.13.3',
-        'sha256' => '0fc2a2e0df4193d43414ef1ce7ba88ad809534ae42daa26a714e69b08c5d0183',
-        'size_bytes' => 8847520,
+        'version' => '2026.09.17.4',
+        'sha256' => 'd0e74d4af3d421c07f8bb309c9abead855dcb95bffb7e488fc5eb16e013cd9cb',
+        'size_bytes' => 8849296,
     ],
     'sidecar_agent_linux_amd64' => [
         'source' => 'sidecar-agent/sidecar_agent.py',
-        'version' => '2026.09.17.2',
-        'sha256' => 'cccb049e8ae1aa02d552dc72ee0bf48cceab0219add983dd3e482a66856925ff',
-        'size_bytes' => 8648672,
+        'version' => '2026.09.17.4',
+        'sha256' => '3042f95685a6aead408e5b23400caab5c02e9e72fe1a708137d444d8690c0e43',
+        'size_bytes' => 8641784,
     ],
 ];
 

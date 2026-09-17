@@ -348,3 +348,128 @@ The approved follow-up is now implemented and live:
   (`/admin-transport-endpoints?view=health`) shows registered and configured-
   but-unregistered targets; `Clients -> Runtime`
   (`/admin/clients?view=runtime`) shows client runtime state and attestation.
+
+## 15. Frozen agent compatibility closure (2026-09-17)
+
+The first frozen client/sidecar artifacts were built on Debian 13 (glibc 2.41)
+and were rejected by the Debian 12 scratch host with
+`GLIBC_2.38 not found`. This was a real portability defect, not a manifest
+version error. The replacement binaries were built remotely, without using the
+operator workstation, inside a Debian 12 (glibc 2.36) Docker build on the
+panel host:
+
+- `client_agent_linux_amd64`: version `2026.09.17.4`, 8,849,296 bytes,
+  SHA-256 `d0e74d4af3d421c07f8bb309c9abead855dcb95bffb7e488fc5eb16e013cd9cb`.
+- `sidecar_agent_linux_amd64`: version `2026.09.17.4`, 8,641,784 bytes,
+  SHA-256 `3042f95685a6aead408e5b23400caab5c02e9e72fe1a708137d444d8690c0e43`.
+
+Both binaries ran with `--version` inside the Debian 12 build container before
+publication. The live panel now serves those hashes and its range/ETag canary
+passed for all client, sidecar, Go UoT, Ultra, Windows, Android, and macOS
+artifact entries. Live panel backups are under
+`/root/codex-backups/client-release-compat-*`.
+
+The Linux operator CLI now reads the frozen executable first, so it cannot report
+the stale compatibility Python file after a successful upgrade. Its published
+artifact is version `2026.09.17.4`, SHA-256
+`b4d4d482d5a744a21a78ed534d1963ef17d045fa282d27213d43ab2e5431b626`.
+The update guard is also published at version `2026.09.17.4`, SHA-256
+`aca430b9e97a397270de17a3b419defdc29b04c3da198b2625f283646f598254`.
+
+Scratch `instance-20241020-0131` completed a real update from
+`2026.09.13.3` to `2026.09.17.4`: the installed frozen hash is the client hash
+above, `leikwan version` and `leikwan update --check` both report
+`2026.09.17.4 / already current`, `doctor` is healthy, and
+`leikwan-client-agent.service` is active. Existing Go UoT sidecars remain on the
+canonical `2026.09.17.2.95535c6` artifact with `NRestarts=0` and `*:7443`
+listening; no unnecessary carrier restart was performed.
+
+The merged live `BaseController` preserves the panel-only homepage changes while
+retaining the Linux ARM64 installer entries. The merged `ClientAgentController`
+retains the panel's lease-refusal diagnostics and the OpenWrt/external-UoT
+surface. PHP lint passed for both controllers and
+`OpenWrtPairingCodeService.php`. Admin operators can query the result at
+`/admin-transport-endpoints?view=health`; no database login is needed.
+
+Still intentionally unproven: destructive zero-state sidecar wipe/reinstall,
+ARM64 frozen agent builds (ARM64 keeps the verified fallback), Android grant
+propagation on a physical device, and the unrelated intermittent `up-20M`
+empty-result investigation.
+
+## 16. Lease JSON and repository parity closure (2026-09-18)
+
+The post-release scratch watch found intermittent `invalid JSON response` events
+from `/api/client/ultra/lease` while all running runtimes correctly preserved
+their last-known-good leases. The request path contained an undefined
+`$clientId` in the rotated-ticket diagnostic. It has been replaced with the
+authenticated `(int) ($client['id'] ?? 0)` value, preventing PHP warning output
+from contaminating an otherwise HTTP 200 JSON response. The live merged
+controller is SHA-256
+`c124e98e93e3c5fbf2583ca34b1c53fec765a75b62c31ffe1f0f25a64db514f5`;
+backup: `/root/codex-backups/client-release-json-warning-20260917T155543Z/`.
+The live `failures` diagnostics were also merged back into the repository source,
+and a regression contract rejects the undefined-variable form.
+
+After the atomic deploy and PHP-FPM graceful reload, the scratch host kept all
+five Ultra runtimes active. The next real lease requests from its egress address
+returned HTTP 200 repeatedly, new lease renewals were delivered, and the observed
+window contained no further invalid JSON, `no_healthy_candidate`,
+`udp_probe_failed`, PHP undefined-variable warning, fatal, or uncaught exception.
+
+The live and repository artifact manifests now compare equal for every entry.
+The Debian 12-compatible x86_64 frozen binaries and the live ARM64 static
+installer were copied back into the repository artifact source after local
+backups, so a later panel publication cannot silently restore the glibc 2.41 or
+old ARM64 artifacts. The final manifest comparison reports
+`DIFFERENCE_COUNT=0`, and the tenant client page, Windows, macOS, Android,
+Linux, frozen-agent, and headless-client regression contracts all pass.
+
+## 17. Clean-host sidecar/client acceptance and installer 2026.09.18.1
+
+The earlier clean-host gap is now closed for the Linux x86_64 installation
+paths without wiping a production node. A disposable Debian 12 systemd
+container fetched the live external-UoT installer into an empty filesystem.
+The empty-config state installed the hash-verified Go binary and unit, remained
+disabled, and passed strict audit. Installing a one-forward fixture config then
+enabled the unit, opened TCP 7443, passed strict audit, and completed a real
+UOT2 HELLO plus UDP echo round trip. The service had `NRestarts=0`. The fixture
+container was removed after the result was saved at
+`/root/release-20260917/cleanhost-result-20260917T160704Z.log`.
+
+A second empty Debian 12 systemd container exercised the live client installer
+with an ephemeral authenticated panel client. It installed the frozen
+`2026.09.17.4` agent, completed a real config pull and heartbeat, reported one
+device session, passed `leikwan doctor`, reported `update: already current`,
+used `NotifyAccess=all`, and stayed active with `NRestarts=0`. The temporary
+client and its session were then deleted and independently audited at zero.
+Docker does not expose its inherited host clock as `NTPSynchronized=yes`; the
+first attempt correctly failed closed at that guard. The successful harness
+first bounded the build-host clock against the TLS endpoint (9 seconds) and
+overrode only that read-only container query.
+
+That clean install exposed an unnecessary package side effect:
+`apt-get install wireguard-tools` pulled a recommended 106 MB RT kernel. The
+live installer is now `2026.09.18.1` and uses
+`--no-install-recommends`; the repeated clean-host run installed only the
+87.6 KB `wireguard-tools` package and proved `recommended_kernel_install=absent`.
+Result:
+`/root/release-20260917/cleanhost-client-result-20260917T163103Z.log`.
+
+The ARM64 single-file installer was rebuilt on the remote build host, not the
+operator workstation. Its bundle now includes the later-added `leikwan` CLI,
+the tcp-accel installer, and the tcp-accel runtime that the embedded installer
+downloads recursively. Two independent builds were byte-identical. The
+published static aarch64 ELF is 40,501,372 bytes with SHA-256
+`d62dca92439128c7bf4b99289dc2368c9a7e14d6ca2b98b19401c32057e2313e`;
+an isolated Alpine/QEMU run reports `embedded arm64 payload ok (12 files
+checked)`. The shell installer SHA-256 is
+`b1fa5cac814b45aba8279cd4ec2344c369e274869ee3ad06f7c0760799fa6477`.
+Live and repository manifests again report `DIFFERENCE_COUNT=0`. A graceful
+reload of `php-fpm-83-source196.service` cleared the per-worker static artifact
+metadata cache, so `/tenant/clients` reads the new installer version immediately.
+
+Remaining platform boundary: this run did not perform a full systemd install
+on physical ARM64 hardware or Android grant propagation on a physical device.
+The signed/published Windows, macOS, and Android packages passed manifest,
+hash/range, and package-contract canaries, but were not freshly installed on
+those three OSes during this acceptance.

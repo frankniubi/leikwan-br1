@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.09.17.1"
+INSTALLER_VERSION="2026.09.17.4"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""

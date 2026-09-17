@@ -442,6 +442,7 @@ final class ClientAgentController extends BaseController
             }
         }
         $leases = [];
+        $failures = [];
         $lastError = 'lease_scope_invalid';
         foreach ($forwards as $item) {
             if (!is_array($item)) {
@@ -458,6 +459,7 @@ final class ClientAgentController extends BaseController
                     continue;
                 }
                 $lastError = 'policy_unavailable';
+                $failures[$forwardId] = $lastError;
                 continue;
             }
             $nativeCarrier = $nativeCarriersById[$forwardId] ?? null;
@@ -481,7 +483,7 @@ final class ClientAgentController extends BaseController
                 }
                 error_log(sprintf(
                     'ultra_lease_ticket_rotated client=%d forward=%d device=%s',
-                    $clientId,
+                    (int) ($client['id'] ?? 0),
                     $forwardId,
                     substr(hash('sha256', $deviceId), 0, 16)
                 ));
@@ -582,6 +584,14 @@ final class ClientAgentController extends BaseController
                     continue;
                 }
                 $lastError = (string) ($result['error'] ?? $lastError);
+                error_log(sprintf(
+                    'ultra_lease_forward_refused client=%d forward=%d device=%s error=%s',
+                    (int) ($client['id'] ?? 0),
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16),
+                    $lastError
+                ));
+                $failures[$forwardId] = $lastError;
                 if ($lastError !== 'no_approved_candidate') {
                     break;
                 }
@@ -589,12 +599,12 @@ final class ClientAgentController extends BaseController
             }
         }
         if ($leases === []) {
-            return $this->json(['ok' => false, 'error' => $lastError], 409)->withHeaders([
+            return $this->json(['ok' => false, 'error' => $lastError, 'failures' => $failures], 409)->withHeaders([
                 'Cache-Control' => 'no-store, no-cache, must-revalidate',
                 'Pragma' => 'no-cache',
             ]);
         }
-        return $this->json(['ok' => true, 'leases' => $leases])->withHeaders([
+        return $this->json(['ok' => true, 'leases' => $leases, 'failures' => $failures])->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);

@@ -181,6 +181,12 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("unsupported architecture", source)
         self.assertIn('uname -m', source)
 
+    def test_installer_does_not_pull_a_recommended_kernel_for_wireguard_tools(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn("apt-get install -y --no-install-recommends wireguard-tools", source)
+        self.assertNotIn("apt-get install -y wireguard-tools", source)
+
     def test_installer_downloads_and_configures_wstunnel(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 

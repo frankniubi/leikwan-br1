@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.09.17.2"
+AGENT_VERSION = "2026.09.17.4"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 DEFAULT_CONFIG = {
