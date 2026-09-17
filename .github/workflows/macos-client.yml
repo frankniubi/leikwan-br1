@@ -342,7 +342,9 @@ jobs:
           cp "artifacts/macos/leikwan-bridge-$suffix.dmg" "$stage/"
           cp "artifacts/macos/leikwan-bridge-update-$suffix.zip" "$stage/"
           cp "artifacts/macos/leikwan-bridge-$suffix-metadata.json" "$stage/"
-          if compgen -G "$RUNNER_TEMP/leikwan-screenshots-$suffix/*.png" >/dev/null; then`n            cp "$RUNNER_TEMP/leikwan-screenshots-$suffix/"*.png "$stage/screenshots/"`n          fi
+          if compgen -G "$RUNNER_TEMP/leikwan-screenshots-$suffix/*.png" >/dev/null; then
+            cp "$RUNNER_TEMP/leikwan-screenshots-$suffix/"*.png "$stage/screenshots/"
+          fi
 
       - name: Upload native deliverables
         uses: actions/upload-artifact@v4
