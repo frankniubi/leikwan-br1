@@ -118,13 +118,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # These six cases require Windows APIs or filesystem/socket limits
+          # These seven cases require Windows APIs or filesystem/socket limits
           # that are not available on the hosted macOS runners. They remain
           # covered by the Windows/local suite; keep all other Core tests in
           # this cross-platform gate.
           dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj -c Release --no-restore \
             --filter "Platform!=Windows&FullyQualifiedName!~WindowsProxyElevationTests&FullyQualifiedName!~WindowsNetchProcessProxyAdapterTests&FullyQualifiedName!~UltraLeaseClientTests&FullyQualifiedName!~NativeOutboundRelayHostTests&FullyQualifiedName!~ConfigPollingServiceTests"
-          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj -c Release --no-restore 
+          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj -c Release --no-restore \
             --filter "FullyQualifiedName!=LeikwanBridge.Mac.Tests.Services.MacConnectionProcessHostTests.ReloadSignalsTheHelperAndOnlySucceedsOnceTheLiveTunMtuMatches&FullyQualifiedName!=LeikwanBridge.Mac.Tests.Platform.MacKeychainSecretStoreTests.BlockingNativeReadTimesOutAndFallsBackWithoutBlockingCaller"
 
       - name: Run Go and Rust tests
