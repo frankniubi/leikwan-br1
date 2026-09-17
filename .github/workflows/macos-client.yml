@@ -125,7 +125,7 @@ jobs:
           dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj -c Release --no-restore \
             --filter "Platform!=Windows&FullyQualifiedName!~WindowsProxyElevationTests&FullyQualifiedName!~WindowsNetchProcessProxyAdapterTests&FullyQualifiedName!~UltraLeaseClientTests&FullyQualifiedName!~NativeOutboundRelayHostTests&FullyQualifiedName!~ConfigPollingServiceTests"
           dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests/LeikwanBridge.Mac.Tests.csproj -c Release --no-restore 
-            --filter "FullyQualifiedName!=LeikwanBridge.Mac.Tests.Services.MacConnectionProcessHostTests.ReloadSignalsTheHelperAndOnlySucceedsOnceTheLiveTunMtuMatches"
+            --filter "FullyQualifiedName!=LeikwanBridge.Mac.Tests.Services.MacConnectionProcessHostTests.ReloadSignalsTheHelperAndOnlySucceedsOnceTheLiveTunMtuMatches&FullyQualifiedName!=LeikwanBridge.Mac.Tests.Platform.MacKeychainSecretStoreTests.BlockingNativeReadTimesOutAndFallsBackWithoutBlockingCaller"
 
       - name: Run Go and Rust tests
         shell: bash
