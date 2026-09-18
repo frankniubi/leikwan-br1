@@ -8,7 +8,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
-    <Version>1.0.42</Version>
+    <Version>1.0.43</Version>
   </PropertyGroup>
 
   <Target Name="CreateMacBundleAppHost" AfterTargets="_CreateAppHost"
