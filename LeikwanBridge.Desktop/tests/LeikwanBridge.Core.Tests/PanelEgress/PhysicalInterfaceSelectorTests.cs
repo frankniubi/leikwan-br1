@@ -43,6 +43,44 @@ public sealed class PhysicalInterfaceSelectorTests
     }
 
     [Fact]
+    public void Preferred_UsesExplicitPhysicalInterfaceBeforeMetric()
+    {
+        var adapters = new[]
+        {
+            AdapterBuilder.Adapter("Ethernet", NetworkAdapterKind.Physical, 12, 12, v4Metric: 5, gateways: [Gateway]),
+            AdapterBuilder.Adapter("Wi-Fi", NetworkAdapterKind.Physical, 4, 4, v4Metric: 55, gateways: [Gateway]),
+        };
+
+        var selected = PhysicalInterfaceSelector.SelectPreferred(
+            adapters,
+            AddressFamily.InterNetwork,
+            preferredInterfaceName: "Wi-Fi");
+
+        Assert.NotNull(selected);
+        Assert.Equal("Wi-Fi", selected.Name);
+        Assert.Equal(4, selected.Index);
+    }
+
+    [Fact]
+    public void Preferred_DoesNotFallBackWhenExplicitInterfaceLacksFamily()
+    {
+        var adapters = new[]
+        {
+            AdapterBuilder.Adapter("Ethernet", NetworkAdapterKind.Physical, 12, 0,
+                v4Metric: 5, gateways: [Gateway]),
+            AdapterBuilder.Adapter("Wi-Fi", NetworkAdapterKind.Physical, 4, 4,
+                v4Metric: 55, gateways: [Gateway]),
+        };
+
+        var selected = PhysicalInterfaceSelector.SelectPreferred(
+            adapters,
+            AddressFamily.InterNetworkV6,
+            preferredInterfaceName: "Ethernet");
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
     public void DefaultRouteHolder_TunnelWithLowerMetricWins()
     {
         var adapters = new[]
@@ -135,6 +173,9 @@ public sealed class PhysicalInterfaceSelectorTests
     [InlineData("Netch TUN", "", true)]
     [InlineData("wg0", "", true)]
     [InlineData("zt12345", "", true)]
+    [InlineData("bridge100", "", true)]
+    [InlineData("awdl0", "", true)]
+    [InlineData("vmnet8", "", true)]
     [InlineData("en0", "", false)]
     [InlineData("Ethernet", "", false)]
     [InlineData("Wi-Fi", "", false)]

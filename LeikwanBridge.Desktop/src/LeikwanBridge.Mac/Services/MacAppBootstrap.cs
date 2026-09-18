@@ -50,6 +50,7 @@ public static class MacAppBootstrap
         config.MasterUrl = PanelEndpoints.NormalizeKnownUrl(config.MasterUrl);
         if (string.IsNullOrWhiteSpace(config.MasterUrl))
             config.MasterUrl = PanelEndpoints.Default.Url;
+        PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
         Log.Information("mac_bootstrap_identity_begin");
         var identity = new MacPlatformIdentityProvider(paths).GetOrCreate();
         Log.Information("mac_bootstrap_identity_complete");
@@ -61,7 +62,8 @@ public static class MacAppBootstrap
             (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity));
         var connections = new MacConnectionService(
             paths,
-            new MacConnectionProfileStore(secrets));
+            new MacConnectionProfileStore(secrets),
+            preferredEgressInterface: config.PreferredEgressInterface);
         Log.Information("mac_bootstrap_connections_load_begin");
         await connections.InitializeAsync(ct).ConfigureAwait(false);
         Log.Information("mac_bootstrap_connections_load_complete");

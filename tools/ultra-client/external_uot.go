@@ -114,7 +114,7 @@ func probeExternalUoTLease(ctx context.Context, lease ProviderLease, config Conf
 		return result
 	}
 	started := time.Now()
-	connection, err := dialStream(lease, sidecarHost, sidecarPort, probeTimeout(config))
+	connection, err := dialStreamConfig(config, lease, sidecarHost, sidecarPort, probeTimeout(config))
 	if err == nil {
 		defer connection.Close()
 		var probeSession [16]byte
@@ -471,7 +471,7 @@ func (association *externalUoTAssociation) run() {
 			association.store,
 			association.sidecarHost(), association.sidecarPort(),
 			time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
-			dialStream,
+			dialStreamForConfig(association.config),
 		)
 		if err == nil {
 			started := time.Now()

@@ -647,7 +647,9 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		request.host,
 		request.port,
 		timeout,
-		dialNativeStream,
+		func(candidate ProviderLease, host string, port int, candidateTimeout time.Duration) (net.Conn, error) {
+			return dialNativeStreamConfig(runtime.config, candidate, host, port, candidateTimeout)
+		},
 		runtime.status,
 	)
 	if err != nil {

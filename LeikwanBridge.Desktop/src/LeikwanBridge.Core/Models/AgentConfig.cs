@@ -70,6 +70,9 @@ public sealed class AgentConfig
     [JsonPropertyName("log_level")]
     public string LogLevel { get; set; } = "WARNING";
 
+    [JsonPropertyName("preferred_egress_interface")]
+    public string PreferredEgressInterface { get; set; } = "";
+
     [JsonPropertyName("bond_bin")]
     public string BondBin { get; set; } = "";
 

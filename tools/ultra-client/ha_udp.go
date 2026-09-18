@@ -39,7 +39,7 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 			return udpWarmSession{}, context.DeadlineExceeded
 		}
 		started := time.Now()
-		session, err := armDatagram(ss.Lease, budget)
+		session, err := armDatagramConfig(config, ss.Lease, budget)
 		if err == nil {
 			if ctx.Err() != nil || !store.acceptsInFlight(ss) {
 				session.Close()
@@ -70,7 +70,7 @@ func armRuntimeCandidates(ctx context.Context, store *PolicyStore, config Config
 		if budget > 0 {
 			started := time.Now()
 			log.Printf("active candidate forwarding test started protocol=udp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
-			session, err := armDatagram(active.Lease, budget)
+			session, err := armDatagramConfig(config, active.Lease, budget)
 			if err == nil && ctx.Err() == nil && store.acceptsInFlight(active) {
 				if session.probeEcho([]byte("leikw-an-active-forward-check"), probeTimeout(config)) {
 					forwardID := active.Policy.ForwardID
