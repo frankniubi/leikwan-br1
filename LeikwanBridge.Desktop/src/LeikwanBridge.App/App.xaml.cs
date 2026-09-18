@@ -68,6 +68,7 @@ public partial class App : System.Windows.Application
 
         var stateManager = new StateManager(configDir);
         Config = stateManager.LoadConfig(ConfigPath);
+        PanelDirectEgress.SetPreferredInterface(Config.PreferredEgressInterface);
         var normalizedLogLevel = DesktopLogLevel.Normalize(Config.LogLevel);
         var configChanged = !string.Equals(Config.LogLevel, normalizedLogLevel, StringComparison.Ordinal);
         Config.LogLevel = normalizedLogLevel;

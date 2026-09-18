@@ -29,6 +29,16 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
         string runtimeDirectory,
         CancellationToken ct = default);
 
+    Task<NativeOutboundRelayEndpoint> StartWithEgressAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        NativeOutboundLease lease,
+        string runtimeDirectory,
+        CancellationToken ct = default,
+        EgressInterfaceBinding? egressInterface = null)
+        => StartAsync(forwardId, ultraBinaryPath, listenPort, lease, runtimeDirectory, ct);
+
     /// <summary>
     /// Starts a relay with a bounded candidate batch. Implementations that do
     /// not support local probing retain the legacy first-candidate behavior.
@@ -45,6 +55,16 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
             throw new ArgumentException("native relay lease batch is empty", nameof(leases));
         return StartAsync(forwardId, ultraBinaryPath, listenPort, leases[0], runtimeDirectory, ct);
     }
+
+    Task<NativeOutboundRelayEndpoint> StartCandidatesWithEgressAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        IReadOnlyList<NativeOutboundLease> leases,
+        string runtimeDirectory,
+        CancellationToken ct = default,
+        EgressInterfaceBinding? egressInterface = null)
+        => StartCandidatesAsync(forwardId, ultraBinaryPath, listenPort, leases, runtimeDirectory, ct);
 
     /// <summary>
     /// Delivers a replacement lease to the already-running relay.  Returning
@@ -142,21 +162,42 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
         NativeOutboundLease lease,
         string runtimeDirectory,
         CancellationToken ct = default)
-        => StartCandidatesAsync(
+        => StartWithEgressAsync(forwardId, ultraBinaryPath, listenPort, lease, runtimeDirectory, ct, null);
+
+    public Task<NativeOutboundRelayEndpoint> StartWithEgressAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        NativeOutboundLease lease,
+        string runtimeDirectory,
+        CancellationToken ct = default,
+        EgressInterfaceBinding? egressInterface = null)
+        => StartCandidatesWithEgressAsync(
             forwardId,
             ultraBinaryPath,
             listenPort,
             new[] { lease },
             runtimeDirectory,
-            ct);
+            ct,
+            egressInterface);
 
-    public async Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
+    public Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
         int forwardId,
         string ultraBinaryPath,
         int listenPort,
         IReadOnlyList<NativeOutboundLease> leases,
         string runtimeDirectory,
         CancellationToken ct = default)
+        => StartCandidatesWithEgressAsync(forwardId, ultraBinaryPath, listenPort, leases, runtimeDirectory, ct, null);
+
+    public async Task<NativeOutboundRelayEndpoint> StartCandidatesWithEgressAsync(
+        int forwardId,
+        string ultraBinaryPath,
+        int listenPort,
+        IReadOnlyList<NativeOutboundLease> leases,
+        string runtimeDirectory,
+        CancellationToken ct = default,
+        EgressInterfaceBinding? egressInterface = null)
     {
         if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
             throw new ArgumentException("native relay lease batch is invalid", nameof(leases));
@@ -240,6 +281,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
                 ["location_cache_path"] = Path.Combine(root, "location.json"),
                 ["location_lock_path"] = Path.Combine(root, "location.lock"),
             };
+            EgressInterfaceConfig.Apply(config, null, egressInterface);
             var configBytes = JsonSerializer.SerializeToUtf8Bytes(config);
             try
             {

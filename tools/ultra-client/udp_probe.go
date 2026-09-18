@@ -317,7 +317,7 @@ func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, poli
 		default:
 		}
 		started := time.Now()
-		connection, dialErr := dialStream(lease, host, port, probeTimeout(config))
+		connection, dialErr := dialStreamConfig(config, lease, host, port, probeTimeout(config))
 		if dialErr == nil {
 			_ = connection.Close()
 			result.TCPReceived++
@@ -349,7 +349,7 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 	// Association setup scans the relay's bounded SID range and is distinct
 	// from the per-packet measurement timeout. Do not let an 800ms DNS reply
 	// timeout truncate a cold association before the quality window starts.
-	session, err := armDatagram(lease, probeAssociationTimeout(config))
+	session, err := armDatagramConfig(config, lease, probeAssociationTimeout(config))
 	if err != nil {
 		result.Err = err
 		return result

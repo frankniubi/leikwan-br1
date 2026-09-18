@@ -141,6 +141,14 @@ public sealed partial class App : Application
                 config.LogLevel = DesktopLogLevel.Normalize(level);
                 await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
                 MacAppBootstrap.ReconfigureLogging(PlatformPaths, config.LogLevel);
+            },
+            preferredEgressInterface: config.PreferredEgressInterface,
+            saveEgressInterface: async (interfaceName, ct) =>
+            {
+                config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+                PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
+                services.Connections.SetPreferredEgressInterface(config.PreferredEgressInterface);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
             });
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);

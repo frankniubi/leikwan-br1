@@ -321,7 +321,8 @@ public partial class MainViewModel : ObservableObject
                 proxyPort: _config.GetEffectiveProxyPort(),
                 tunMtu: _config.GetEffectiveProxyTunMtu(),
                 tunStack: _config.GetEffectiveProxyTunStack(),
-                chinaIpListPath: _config.GetEffectiveProxyChinaIpList());
+                chinaIpListPath: _config.GetEffectiveProxyChinaIpList(),
+                preferredEgressInterface: _config.PreferredEgressInterface);
             _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
         }
 
@@ -353,6 +354,12 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_port_invalid");
         _proxyService?.SetProxyPort(proxyPort);
         _config.ProxyPort = proxyPort;
+    }
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+    {
+        _config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+        _proxyService?.SetPreferredEgressInterface(_config.PreferredEgressInterface);
     }
 
     public void RefreshProxyProfiles()

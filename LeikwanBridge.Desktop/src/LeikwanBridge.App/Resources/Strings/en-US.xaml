@@ -94,6 +94,8 @@
     <system:String x:Key="SettingsConnection">Connection</system:String>
     <system:String x:Key="SettingsPollInterval">Poll Interval (seconds)</system:String>
     <system:String x:Key="SettingsHealthInterval">Health Check Interval (seconds)</system:String>
+    <system:String x:Key="SettingsEgressInterface">Outbound network interface</system:String>
+    <system:String x:Key="SettingsEgressInterfaceHint">Choose the physical adapter used by Ultra and direct control traffic. Automatic selects the best active adapter.</system:String>
     <system:String x:Key="SettingsLogLevel">Log Level</system:String>
     <system:String x:Key="SettingsLogLevelWarning">Warning (recommended)</system:String>
     <system:String x:Key="SettingsLogLevelCritical">Critical only</system:String>

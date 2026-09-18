@@ -3,6 +3,7 @@ using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
@@ -21,6 +22,7 @@ public sealed class MacConnectionService : IMacConnectionService
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly TimeSpan _nativeTunMtuApplyInterval;
+    private string _preferredEgressInterface;
     private MacConnectionSnapshot _snapshot = MacConnectionSnapshot.Disconnected;
     private string? _configPath;
     private string? _activeProcessConfigPath;
@@ -53,7 +55,8 @@ public sealed class MacConnectionService : IMacConnectionService
         INativeOutboundRelayHost? nativeRelayHost = null,
         int tunMtu = MacConnectionConfigBuilder.DefaultTunMtu,
         Func<DateTimeOffset>? utcNow = null,
-        TimeSpan? nativeTunMtuApplyInterval = null)
+        TimeSpan? nativeTunMtuApplyInterval = null,
+        string? preferredEgressInterface = null)
     {
         _paths = paths;
         _store = store;
@@ -64,10 +67,14 @@ public sealed class MacConnectionService : IMacConnectionService
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost(windows: false);
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _nativeTunMtuApplyInterval = nativeTunMtuApplyInterval ?? NativeTunMtuApplyInterval;
+        _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         _processHost.UnexpectedExit += OnProcessExited;
     }
 
     public event Action<MacConnectionSnapshot>? SnapshotChanged;
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+        => _preferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
 
     public IReadOnlyList<MacConnectionProfile> Profiles
     {
@@ -380,13 +387,15 @@ public sealed class MacConnectionService : IMacConnectionService
             var ultraExecutable = _paths.BinDirectory.TrimEnd('/', '\\') + "/ultra-client";
             if (!File.Exists(ultraExecutable))
                 throw new FileNotFoundException("ultra-client helper is missing", ultraExecutable);
-            await _nativeRelayHost.StartAsync(
+            var egressInterface = EgressInterfaceConfig.ResolveOrThrow(_preferredEgressInterface);
+            await _nativeRelayHost.StartWithEgressAsync(
                 lease.ForwardId,
                 ultraExecutable,
                 nativeRelayPort,
                 lease,
                 _paths.RuntimeDirectory,
-                ct).ConfigureAwait(false);
+                ct,
+                egressInterface).ConfigureAwait(false);
             relayStarted = true;
             var configPath = Path.Combine(
                 _paths.RuntimeDirectory,

@@ -34,6 +34,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly Func<IProgress<UpdateProgress>?, CancellationToken, Task>? _installUpdateWithProgress;
     private readonly Action<bool>? _rememberLoginInfoChanged;
     private readonly Func<string, CancellationToken, Task>? _saveLogLevel;
+    private readonly Func<string, CancellationToken, Task>? _saveEgressInterface;
     private string _updateFailureStage = "check";
     private bool _endpointPersistenceReady;
     private readonly Action<Action> _dispatch;
@@ -76,7 +77,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Func<IProgress<UpdateProgress>?, CancellationToken, Task>? installUpdateWithProgress = null,
         TimeSpan? nativeTunMtuWatchInterval = null,
         string logLevel = DesktopLogLevel.Warning,
-        Func<string, CancellationToken, Task>? saveLogLevel = null)
+        Func<string, CancellationToken, Task>? saveLogLevel = null,
+        string? preferredEgressInterface = null,
+        Func<string, CancellationToken, Task>? saveEgressInterface = null)
     {
         _controller = controller;
         _connections = connections;
@@ -89,11 +92,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _installUpdateWithProgress = installUpdateWithProgress;
         _rememberLoginInfoChanged = rememberLoginInfoChanged;
         _saveLogLevel = saveLogLevel;
+        _saveEgressInterface = saveEgressInterface;
         _dispatch = dispatch ?? Dispatch;
         _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
         CloseToTray = closeToTray;
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
         LogLevel = DesktopLogLevel.Normalize(logLevel);
+        PreferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         PanelUrl = controller.Snapshot.PanelUrl;
         SelectedPanelEndpoint = PanelEndpoints.ForUrl(PanelUrl);
         RememberLoginInfo = rememberLoginInfo;
@@ -140,6 +145,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<string> Logs { get; } = [];
     public IReadOnlyList<string> Languages { get; } = ["en-US", "zh-CN"];
     public IReadOnlyList<string> LogLevels { get; } = DesktopLogLevel.Options;
+    public IReadOnlyList<EgressInterfaceOption> EgressInterfaceOptions { get; } = EgressInterfaceCatalog.Enumerate();
     public IReadOnlyList<string> AuthenticationModes { get; } =
         [ClientIdTokenAuthentication];
     public IReadOnlyList<MacConnectionMode> ConnectionModes { get; } =
@@ -183,6 +189,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private bool _autoStartEnabled;
     [ObservableProperty] private string _language = "en-US";
     [ObservableProperty] private string _logLevel = DesktopLogLevel.Warning;
+    [ObservableProperty] private string _preferredEgressInterface = string.Empty;
     [ObservableProperty] private bool _trayAvailable;
     [ObservableProperty] private string _selectedSection = "dashboard";
     [ObservableProperty] private MacConnectionProfile? _selectedConnectionProfile;
@@ -1159,6 +1166,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             await _savePreferences(PanelUrl, Language, CloseToTray, CancellationToken.None);
         if (_saveLogLevel is not null)
             await _saveLogLevel(DesktopLogLevel.Normalize(LogLevel), CancellationToken.None);
+        if (_saveEgressInterface is not null)
+            await _saveEgressInterface(PreferredEgressInterface, CancellationToken.None);
     }
 
     [RelayCommand]

@@ -231,6 +231,12 @@ public partial class MainWindow : Window
             App.Config.PollIntervalSeconds = poll;
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
             App.Config.HealthCheckIntervalSeconds = health;
+        if (SettEgressInterface.SelectedValue is string egressInterface)
+        {
+            App.Config.PreferredEgressInterface = egressInterface.Trim();
+            PanelDirectEgress.SetPreferredInterface(App.Config.PreferredEgressInterface);
+            _vm.SetPreferredEgressInterface(App.Config.PreferredEgressInterface);
+        }
         if (SettLogLevel.SelectedItem is ComboBoxItem logLevel)
             App.Config.LogLevel = DesktopLogLevel.Normalize(logLevel.Tag?.ToString());
         App.Config.AutoStart = SettAutoStart.IsChecked == true;
@@ -1358,6 +1364,8 @@ public partial class MainWindow : Window
             ClearSettingsLoginInfo();
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
+        SettEgressInterface.ItemsSource = EgressInterfaceCatalog.Enumerate();
+        SettEgressInterface.SelectedValue = App.Config.PreferredEgressInterface ?? string.Empty;
         SelectLogLevel(App.Config.LogLevel);
         SettAutoStart.IsChecked = App.Config.AutoStart;
         SettMinimizeTray.IsChecked = App.Config.MinimizeToTray;
