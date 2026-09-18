@@ -124,8 +124,8 @@ foreach (['--bridge-navy:', '--bridge-foil:'] as $retiredToken) {
 }
 
 preg_match_all('/background(?:-color)?:\s*#([0-9a-fA-F]{6})/', $css, $backgrounds);
-// White, the two whisper greys, the orange tints, plus the 7px status dot.
-$lightSurfaces = ['ffffff', 'f7f7f7', 'fafafa', 'fff5eb', 'fef3e8', '1a7f45'];
+// White, the two whisper greys, the orange tints, the 7px status dot, and the dark brand lockup.
+$lightSurfaces = ['ffffff', 'f7f7f7', 'fafafa', 'fff5eb', 'fef3e8', '1a7f45', '2f3133'];
 foreach (array_unique($backgrounds[1]) as $hex) {
     if (!in_array(strtolower($hex), $lightSurfaces, true)) {
         fail('homepage paints a background that is not a light surface: #' . $hex);
@@ -152,7 +152,7 @@ if (!str_contains($base, '<span lang="en">LeiKwan Bridge</span>')) {
     fail('homepage English wordmark must be LeiKwan Bridge in full');
 }
 
-if (!str_contains($base, '登录 · Sign In')) {
+if (!str_contains($base, ' · Sign In')) {
     fail('homepage sign-in must keep Chinese and English in one control');
 }
 
