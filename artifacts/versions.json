@@ -294,21 +294,20 @@
   "hardening": {
    "managed_symbols": "disabled",
    "native_helpers": "release-strip",
-   "signature": "ad-hoc rcodesign-0.29.0",
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
   "runtime_sha256": {
-   "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
-   "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
-   "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-   "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
-   "bin/ultra-client": "2ad458a6b1e6efab0390e6ddd84cb6dd580ce1ad81592a29c545d46b66769317",
+   "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
+   "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
+   "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
+   "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
+   "bin/ultra-client": "9ed82a45433d038e0cd8c0c10c3e70c917bad5d185701b87709495ad26f67db4",
    "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847"
   },
-  "sha256": "0ae6508a21572baf99028efc7627491e0626a808c59b18067d68524d08f08c8f",
-  "size_bytes": 69053481,
-  "version": "1.0.41"
+  "sha256": "18464731e6a071c81757a9d2cc9a80602d761ba952bfa12f0943bfdd37e8dffd",
+  "size_bytes": 77170065,
+  "version": "1.0.42"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
@@ -317,21 +316,20 @@
   "hardening": {
    "managed_symbols": "disabled",
    "native_helpers": "release-strip",
-   "signature": "ad-hoc rcodesign-0.29.0",
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-x64.dmg",
   "runtime_sha256": {
-   "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
-   "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
-   "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-   "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
-   "bin/ultra-client": "9c53929d32510638d589af2908e3809a8b9caebb07821bf26801cadfed77d3cc",
+   "bin/leikwan-bond": "1206ea242ce407f6890aa080f1fe3f3fb03fd5dd2956f01e6d6260262efee914",
+   "bin/leikwan-ingress": "64de2a5498432f9466ff41fa6a913d5cee0282721956f5d7e56bbb392ab6dcfb",
+   "bin/leikwan-uot-bond": "cac447303fd66b4f19e891a0bf72e23c0b7c186533eb1363c25eea9041f9a06f",
+   "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
+   "bin/ultra-client": "09682f68292892d09d8402d1452b6e27d88c21f231422e901d14b4f903c58668",
    "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683"
   },
-  "sha256": "3725f01dff6ed20915ccf9fd8eac700f9cfc05b4750b1a9ef20e7c010108fafa",
-  "size_bytes": 73158281,
-  "version": "1.0.41"
+  "sha256": "32432a1a35dbc1d1e2f4ac23e291fb922587d8914b69a526c8ad7c9976ed504e",
+  "size_bytes": 82196811,
+  "version": "1.0.42"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
@@ -340,21 +338,20 @@
   "hardening": {
    "managed_symbols": "disabled",
    "native_helpers": "release-strip",
-   "signature": "ad-hoc rcodesign-0.29.0",
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
   "runtime_sha256": {
-   "bin/leikwan-bond": "48b0177f646640b1a1f9cf7a83c017606d317adb566e514a541b1f4505c71f43",
-   "bin/leikwan-ingress": "e17e13dba582666f471d22da09564e60a1de7c6511b08532406e060d3c1b4088",
-   "bin/leikwan-uot-bond": "3da21e499c96f42b32378e4e29a609dd4b8d1d0fe5cd77fd88cdb93cd664eb42",
-   "bin/sing-box": "d2957fe7fa43ff12e4e9f0ca31ec66958039cab167c1444e8003cd22ce52f401",
-   "bin/ultra-client": "2ad458a6b1e6efab0390e6ddd84cb6dd580ce1ad81592a29c545d46b66769317",
+   "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
+   "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
+   "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
+   "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
+   "bin/ultra-client": "9ed82a45433d038e0cd8c0c10c3e70c917bad5d185701b87709495ad26f67db4",
    "bin/wstunnel": "c4418dc79a16f96866cc11a0217a2924ee8f15f034302240c561fd2457b6c847"
   },
-  "sha256": "92d47c94b2b3fd6455fb1e5acd52d3598a1ed9971c2406c09d10dbb2bec30929",
-  "size_bytes": 69038099,
-  "version": "1.0.41"
+  "sha256": "d974365568a4f61dee386296f97960234c5eaff738c0cd07ec9e2f128a6ddd2f",
+  "size_bytes": 68660940,
+  "version": "1.0.42"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
@@ -363,21 +360,20 @@
   "hardening": {
    "managed_symbols": "disabled",
    "native_helpers": "release-strip",
-   "signature": "ad-hoc rcodesign-0.29.0",
    "ultra_client": "garble-v0.17.0-literals-tiny"
   },
   "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
   "runtime_sha256": {
-   "bin/leikwan-bond": "2615531442dc930f86488e5e8e1512c941f2231d0cbb9233543e88a1f672b5c5",
-   "bin/leikwan-ingress": "a77b21b826444d5e23bb34c78881efb997cfb50f4f486898f5a7d22a24fc3453",
-   "bin/leikwan-uot-bond": "b8161db20dcc52b2269d7cc946b94166a20e7baf7c30dad646d334202095a7cb",
-   "bin/sing-box": "2f7a306f8271ff22d9fa51e6a826b4afb07fa2008e1935c37c78a5eccf90fa7e",
-   "bin/ultra-client": "9c53929d32510638d589af2908e3809a8b9caebb07821bf26801cadfed77d3cc",
+   "bin/leikwan-bond": "1206ea242ce407f6890aa080f1fe3f3fb03fd5dd2956f01e6d6260262efee914",
+   "bin/leikwan-ingress": "64de2a5498432f9466ff41fa6a913d5cee0282721956f5d7e56bbb392ab6dcfb",
+   "bin/leikwan-uot-bond": "cac447303fd66b4f19e891a0bf72e23c0b7c186533eb1363c25eea9041f9a06f",
+   "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
+   "bin/ultra-client": "09682f68292892d09d8402d1452b6e27d88c21f231422e901d14b4f903c58668",
    "bin/wstunnel": "d11f073c9e6529ee1173bc40909d9bc04dfe7b9ff5b13bd74a93dcc513af3683"
   },
-  "sha256": "b3c56ea24694ef49f565b8880f8fcc488a327a2e2d5484bcf1297f4b6c8ef800",
-  "size_bytes": 73147034,
-  "version": "1.0.41"
+  "sha256": "ea0eda2feea61f78df4ab154ab628b0bf9150ed9572ce55217bb0bd3bca2a83c",
+  "size_bytes": 73383699,
+  "version": "1.0.42"
  },
  "macos_headless_installer": {
   "install_url": "/artifacts/install-macos-headless.sh",
