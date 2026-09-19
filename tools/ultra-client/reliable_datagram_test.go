@@ -101,3 +101,35 @@ func TestReliableFutureACKAndByteDeadline(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func TestReliableAdmissionSurvivesTransientCarrierBackpressure(t *testing.T) {
+	r := newReliableDatagrams()
+	if err := r.enqueue(context.Background(), make([]byte, datagramQueueBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.due(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.enqueue(context.Background(), []byte("next")) }()
+	// A reliable carrier's reconnect/write budget is measured in seconds.
+	// Its in-memory window must not be destroyed by the raw UDP queue's
+	// 250 ms admission timeout while an ACK is about to release it.
+	time.Sleep(350 * time.Millisecond)
+	if err := r.acknowledge(1, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("recoverable carrier stall destroyed reliable state: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ACK did not wake admission")
+	}
+	s := r.snapshot()
+	if s.WindowPackets != 1 || s.WindowBytes != 4 || s.QueueBlocked != 1 ||
+		s.QueueTimeout != 0 || s.UnrecoverableCount != 0 || s.Failed != "" {
+		t.Fatalf("unexpected recovery counters: %+v", s)
+	}
+}
