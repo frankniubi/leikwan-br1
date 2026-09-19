@@ -19,6 +19,7 @@ public sealed class MasterApiClient : IDisposable
     private readonly bool _ownsHttpClient;
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
     private readonly ControlPlaneEndpointSupervisor _endpointSupervisor;
+    private readonly ExternalUotPolicyGrantCache _externalUotPolicyGrants = new();
 
     public string LastErrorMessage { get; private set; } = "";
     public Uri CurrentControlPlaneEndpoint => _endpointSupervisor.CurrentEndpoint;
@@ -118,8 +119,14 @@ public sealed class MasterApiClient : IDisposable
         var json = await response.Content.ReadAsStringAsync(ct);
         try
         {
-            return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
-                   ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+            var result = JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
+                ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+            if (result.Ok && !result.NotModified)
+            {
+                using var document = JsonDocument.Parse(json);
+                _externalUotPolicyGrants.Replace(result, document.RootElement);
+            }
+            return result;
         }
         catch (JsonException ex)
         {
@@ -456,8 +463,9 @@ public sealed class MasterApiClient : IDisposable
                     foreach (var item in leases.EnumerateArray().Take(maxCandidates))
                     {
                         var lease = ParseUltraLease(item, forward, policy);
-                        if (lease is null)
+                        if (lease is null || !_externalUotPolicyGrants.TryAttach(forward, lease))
                         {
+                            lease?.Dispose();
                             foreach (var parsedLease in parsed)
                                 parsedLease.Dispose();
                             return [];
@@ -539,10 +547,8 @@ public sealed class MasterApiClient : IDisposable
             && (candidateKeyHash.Length != 64
                 || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
             return null;
-        // The optional UoT grant is provider-material-equivalent. An enabled but
-        // unusable grant degrades to "no grant" because the runtime refuses an
-        // invalid grant at startup; only the failure reason is logged, never the
-        // token or the sidecar endpoint.
+        // An enabled but unusable sidecar grant invalidates the lease. Dropping
+        // it would silently select native UDP instead of the required UoT route.
         ExternalUotGrant? externalUot = null;
         if (item.TryGetProperty("external_uot", out var externalUotElement))
         {
@@ -550,9 +556,10 @@ public sealed class MasterApiClient : IDisposable
             if (externalUot is null && externalUotFailure.Length != 0)
             {
                 Log.Warning(
-                    "Ultra lease for forward {ForwardId} carried an unusable external_uot grant ({Reason}); continuing without a UoT sidecar",
+                    "Ultra lease for forward {ForwardId} rejected an unusable external_uot grant ({Reason})",
                     forward.ForwardId,
                     externalUotFailure);
+                return null;
             }
         }
         return new UltraLease
@@ -865,6 +872,7 @@ public sealed class MasterApiClient : IDisposable
 
     public void Dispose()
     {
+        _externalUotPolicyGrants.Dispose();
         if (_ownsHttpClient)
             _http.Dispose();
     }

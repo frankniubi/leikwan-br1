@@ -19,6 +19,8 @@ public sealed class ConfigPollingService
     private readonly ForwardRuntimeManager _runtimeManager;
     private readonly StateManager _stateManager;
     private readonly IForwardAcceptancePolicy _forwardPolicy;
+    private readonly TimeProvider _timeProvider;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTimeOffset> _deliveredLeaseRenewals = new();
 
     private List<ForwardConfig> _latestForwards = [];
     private CancellationTokenSource? _cts;
@@ -53,11 +55,22 @@ public sealed class ConfigPollingService
         ForwardRuntimeManager runtimeManager,
         StateManager stateManager,
         IForwardAcceptancePolicy? forwardPolicy = null)
+        : this(api, runtimeManager, stateManager, forwardPolicy, TimeProvider.System)
+    {
+    }
+
+    public ConfigPollingService(
+        MasterApiClient api,
+        ForwardRuntimeManager runtimeManager,
+        StateManager stateManager,
+        IForwardAcceptancePolicy? forwardPolicy,
+        TimeProvider timeProvider)
     {
         _api = api;
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
         _forwardPolicy = forwardPolicy ?? WindowsForwardAcceptancePolicy.Instance;
+        _timeProvider = timeProvider;
         _runtimeManager.UltraRecoveryRequested += RequestUltraRecovery;
     }
 
@@ -354,7 +367,8 @@ public sealed class ConfigPollingService
             if (targetedUltraRefreshes.Count > 0
                 && !targetedUltraRefreshes.Contains(forward.ForwardId)
                 && hasAppliedState
-                && isRunning)
+                && isRunning
+                && !DeliveredLeaseRenewalDue(forward.ForwardId))
             {
                 var currentSignature = _runtimeManager.ComputeContractSignature(effectiveForward);
                 if (string.Equals(appliedState!.ContractSignature, currentSignature, StringComparison.Ordinal)
@@ -427,16 +441,22 @@ public sealed class ConfigPollingService
 
         if (hasAppliedState && isRunning && signatureMatches && !RecoveryNeedsRestart(effectiveForward))
         {
-            if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
-                && !_runtimeManager.RefreshUltraLease(effectiveForward)
-                && !TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease delivery failed"))
-                _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            if (string.Equals(effectiveForward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+            {
+                var renewal = LeaseRenewalDeadline(effectiveForward);
+                if (_runtimeManager.RefreshUltraLease(effectiveForward))
+                    _deliveredLeaseRenewals[forward.ForwardId] = renewal;
+                else if (!TryPreserveRunningUltra(forward.ForwardId, hasAppliedState, isRunning, "lease delivery failed"))
+                    _runtimeManager.StopForwardForPolicy(forward.ForwardId);
+            }
             return;
         }
 
         try
         {
+            var renewal = LeaseRenewalDeadline(effectiveForward);
             _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            _deliveredLeaseRenewals[forward.ForwardId] = renewal;
             _ultraRecoveries.TryRemove(forward.ForwardId, out _);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -499,7 +519,8 @@ public sealed class ConfigPollingService
         var isRunning = _runtimeManager.IsForwardRunning(forward.ForwardId);
         if (isRunning
             && effectiveForward.UltraAccess is { } policy
-            && policy.RenewAfter > DateTimeOffset.UtcNow)
+            && policy.RenewAfter > DateTimeOffset.UtcNow
+            && !DeliveredLeaseRenewalDue(forward.ForwardId))
             return;
 
         IReadOnlyList<UltraLease> leases;
@@ -544,15 +565,19 @@ public sealed class ConfigPollingService
 
         if (appliedState != null && isRunning && signatureMatches && !RecoveryNeedsRestart(effectiveForward))
         {
-            if (!_runtimeManager.RefreshUltraLease(effectiveForward)
-                && !TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
+            var renewal = LeaseRenewalDeadline(effectiveForward);
+            if (_runtimeManager.RefreshUltraLease(effectiveForward))
+                _deliveredLeaseRenewals[forward.ForwardId] = renewal;
+            else if (!TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
             return;
         }
 
         try
         {
+            var renewal = LeaseRenewalDeadline(effectiveForward);
             _runtimeManager.ApplyForward(effectiveForward, contractSignature, "config_sync");
+            _deliveredLeaseRenewals[forward.ForwardId] = renewal;
             _ultraRecoveries.TryRemove(forward.ForwardId, out _);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -563,6 +588,25 @@ public sealed class ConfigPollingService
         {
             Log.Error(ex, "failed applying forward {ForwardId} after lease refresh", forward.ForwardId);
         }
+    }
+
+    // A full pull can extend the *desired* policy while a targeted sibling
+    // recovery skips delivery to this runtime. Only an acknowledged delivery
+    // may move its renewal deadline; otherwise repeated sibling failures can
+    // starve a healthy forward until its actual runtime lease expires.
+    private bool DeliveredLeaseRenewalDue(int forwardId) =>
+        !_deliveredLeaseRenewals.TryGetValue(forwardId, out var deadline) ||
+        deadline <= _timeProvider.GetUtcNow();
+
+    private DateTimeOffset LeaseRenewalDeadline(ForwardConfig forward)
+    {
+        var expiry = forward.RuntimeLeases.Select(lease => lease.ExpiresAt)
+            .Append(forward.UltraAccess?.ExpiresAt ?? _timeProvider.GetUtcNow()).Min();
+        // Leave room for one long poll and the bounded forwarding probe.
+        var deadline = expiry.AddMinutes(-1);
+        if (forward.UltraAccess is { } policy && policy.RenewAfter != default && policy.RenewAfter < deadline)
+            deadline = policy.RenewAfter;
+        return deadline;
     }
 
     private bool RecoveryNeedsRestart(ForwardConfig forward)

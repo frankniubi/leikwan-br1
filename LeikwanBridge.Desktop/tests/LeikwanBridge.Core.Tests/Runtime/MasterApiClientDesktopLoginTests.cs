@@ -645,6 +645,11 @@ public sealed class MasterApiClientDesktopLoginTests
 
         var leases = await api.ResolveUltraLeasesAsync(forward);
 
+        if (grantJson.Contains("\"enabled\":true", StringComparison.Ordinal) && !expectsGrant)
+        {
+            Assert.Empty(leases);
+            return;
+        }
         var lease = Assert.Single(leases);
         Assert.Equal(expectsGrant, lease.ExternalUot is not null);
         if (!expectsGrant)

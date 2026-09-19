@@ -51,6 +51,10 @@ public sealed class ExternalUotGrant : IDisposable
 
     [JsonIgnore] public int FramePayloadMax { get; init; }
 
+    // Preserve an explicit unsupported mode through bootstrap. The runtime must
+    // fail closed, rather than the host dropping the grant and using native UDP.
+    [JsonIgnore] public string DeliveryMode { get; init; } = "raw";
+
     /// <summary>
     /// Parses the optional "external_uot" grant.
     /// <para>
@@ -110,6 +114,9 @@ public sealed class ExternalUotGrant : IDisposable
             KeepaliveSeconds = ReadInt(item, "keepalive_seconds", MinKeepaliveSeconds, MaxKeepaliveSeconds),
             ReconnectGraceSeconds = ReadInt(item, "reconnect_grace_seconds", MinReconnectGraceSeconds, MaxReconnectGraceSeconds),
             FramePayloadMax = ReadInt(item, "frame_payload_max", MinFramePayloadMax, MaxFramePayloadMax),
+            DeliveryMode = item.TryGetProperty("delivery_mode", out var mode)
+                ? mode.ValueKind == JsonValueKind.String ? mode.GetString() ?? "invalid" : "invalid"
+                : "raw",
         };
     }
 
@@ -173,16 +180,25 @@ public sealed class ExternalUotGrant : IDisposable
     /// Keys and value types mirror the Go struct's json tags; disabled grants
     /// never reach this point, so "enabled" is always true here.
     /// </summary>
-    public Dictionary<string, object?> ToBootstrapPayload() => new()
+    public Dictionary<string, object?> ToBootstrapPayload()
     {
-        ["enabled"] = true,
-        ["sidecar_target"] = SidecarTarget,
-        ["token"] = Encoding.UTF8.GetString(Token),
-        ["queue_packets"] = QueuePackets,
-        ["keepalive_seconds"] = KeepaliveSeconds,
-        ["reconnect_grace_seconds"] = ReconnectGraceSeconds,
-        ["frame_payload_max"] = FramePayloadMax,
-    };
+        var payload = new Dictionary<string, object?>
+        {
+            ["enabled"] = true,
+            ["sidecar_target"] = SidecarTarget,
+            ["token"] = Encoding.UTF8.GetString(Token),
+            ["queue_packets"] = QueuePackets,
+            ["keepalive_seconds"] = KeepaliveSeconds,
+            ["reconnect_grace_seconds"] = ReconnectGraceSeconds,
+            ["frame_payload_max"] = FramePayloadMax,
+        };
+        // Legacy runtimes reject unknown JSON keys. Raw is their existing
+        // default; reliable/unsupported modes must remain explicit and must
+        // never be removed to make an older runtime accept the configuration.
+        if (DeliveryMode != "raw")
+            payload["delivery_mode"] = DeliveryMode;
+        return payload;
+    }
 
     /// <summary>
     /// Non-reversible fingerprint used by the forward contract signature. The
