@@ -43,7 +43,13 @@ try {
     expectRollout(!array_key_exists('delivery_mode', $legacy), 'legacy unknown key emitted');
     $invalid = $forwards[0]['external_uot'] + ['delivery_mode' => 'unsupported_mode'];
     expectRollout($normalize->invoke($broker, $invalid, 'target.test:53')['delivery_mode'] === 'unsupported_mode', 'unsupported mode downgraded');
+    putenv('EXTERNAL_UOT_RELIABLE_CLIENT_IDS=');
+    putenv('EXTERNAL_UOT_RELIABLE_DEVICES=3:mac-tested');
+    expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 3, $forwards, 'windows-legacy') === $forwards, 'legacy device affected');
+    expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 3, $forwards, 'mac-tested')[0]['external_uot']['delivery_mode'] === 'reliable_datagram_v1', 'device rollout missing');
+    expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 4, $forwards, 'mac-tested') === $forwards, 'other client affected');
     echo "PASS external UoT reliable rollout\n";
 } finally {
     putenv('EXTERNAL_UOT_RELIABLE_CLIENT_IDS');
+    putenv('EXTERNAL_UOT_RELIABLE_DEVICES');
 }
