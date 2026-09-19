@@ -1220,6 +1220,9 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
             raise RuntimeError("external UoT sidecar target invalid")
         if token == "" or len(token) > 8192 or any(char.isspace() for char in token):
             raise RuntimeError("external UoT sidecar token invalid")
+        delivery_mode = str(raw_external_uot.get("delivery_mode", "raw") or "raw").strip().lower()
+        if delivery_mode not in {"raw", "reliable_datagram"}:
+            raise RuntimeError("external UoT delivery mode unsupported")
         def _bounded_external_int(key: str, default: int, minimum: int, maximum: int) -> int:
             try:
                 value = int(raw_external_uot.get(key, default) or default)
@@ -1235,6 +1238,10 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
             "reconnect_grace_seconds": _bounded_external_int("reconnect_grace_seconds", 30, 5, 300),
             "frame_payload_max": _bounded_external_int("frame_payload_max", 65507, 256, 65507),
         }
+        # Keep raw bootstrap compatible with strict pre-mode runtimes. A
+        # requested reliable mode must never be silently downgraded to raw.
+        if delivery_mode != "raw":
+            config_payload["external_uot"]["delivery_mode"] = delivery_mode
     if auto_select:
         config_payload.update(
             {
