@@ -357,6 +357,22 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		if !validStreamPrelude(prelude) {
 			return nil, errStreamPreludeRejected
 		}
+		// This relay dialect has no optional SOCKS final frame, but the
+		// metadata ACK can still be immediately followed by FIN/reset.
+		// Keep that failure in the setup phase, before any caller bytes are
+		// consumed. Do not discard early server-first application payload.
+		checkDeadline := time.Now().Add(100 * time.Millisecond)
+		if checkDeadline.After(deadline) {
+			checkDeadline = deadline
+		}
+		_ = conn.SetReadDeadline(checkDeadline)
+		early, peekErr := reader.Peek(1)
+		if peekErr != nil && len(early) == 0 {
+			var timeout net.Error
+			if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+				return nil, peekErr
+			}
+		}
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		return nil, err

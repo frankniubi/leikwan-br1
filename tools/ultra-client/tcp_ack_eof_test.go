@@ -48,3 +48,60 @@ func TestStreamAckWithShortPayloadThenEOFPreservesPayload(t *testing.T) {
 		t.Fatalf("lost early payload: %q %v", got, err)
 	}
 }
+
+func TestStreamPreludeThenEOFIsHandshakeFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	go func() {
+		server, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer server.Close()
+		prelude := make([]byte, streamPreludeSize)
+		prelude[8] = 1
+		server.Write(prelude)
+	}()
+	if _, err := readStreamAcks(client); !errors.Is(err, io.EOF) {
+		t.Fatalf("accepted dead metadata-prelude stream: %v", err)
+	}
+}
+
+func TestStreamPreludeWithPayloadThenEOFPreservesPayload(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	go func() {
+		server, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer server.Close()
+		prelude := make([]byte, streamPreludeSize)
+		prelude[8] = 1
+		server.Write(append(prelude, []byte("ok")...))
+	}()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil || !bytes.Equal(got, []byte("ok")) {
+		t.Fatalf("lost prelude stream's early payload: %q %v", got, err)
+	}
+}
