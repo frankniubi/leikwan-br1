@@ -128,3 +128,37 @@ func TestExternalUoTProbeFailureBelongsToLogicalUDP(t *testing.T) {
 		t.Fatal("UoT failure polluted user-TCP reputation")
 	}
 }
+
+func TestExternalUoTRenewalKeepsLineWhenProviderCredentialsRotate(t *testing.T) {
+	config := testPolicyConfig()
+	config.ExternalUoT.Enabled = true
+	oldPolicy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	oldLease := testLease(oldPolicy, strings.Repeat("b", 64))
+	oldLease.CandidateKeyHash = strings.Repeat("1", 64)
+	oldLease.User = []byte("previous-ephemeral-user")
+	policy := testPolicy(time.Now(), strings.Repeat("c", 64))
+	refreshed := testLease(policy, strings.Repeat("d", 64))
+	refreshed.CandidateKeyHash = oldLease.CandidateKeyHash
+	refreshed.SelectionRef = "fresh-selection-reference-abcdefghijkl"
+	refreshed.User = []byte("new-ephemeral-user")
+	refreshed.Password = []byte("new-password")
+	other := testLease(policy, strings.Repeat("e", 64))
+	other.CandidateKeyHash = strings.Repeat("2", 64)
+	other.IP = "203.0.113.21"
+	other.SelectionRef = "other-selection-reference-abcdefghijkl"
+	probe := func(_ context.Context, lease ProviderLease, _ Config, _ Policy) udpProbeResult {
+		rtt := time.Millisecond
+		if lease.CandidateKeyHash == refreshed.CandidateKeyHash {
+			rtt = 2 * time.Millisecond
+		}
+		return udpProbeResult{TCPSent: 1, TCPReceived: 1, MedianRTT: rtt}
+	}
+	selected, _, _, err := selectVerifiedExternalUoTCandidates(
+		context.Background(), config, policy, []ProviderLease{other, refreshed},
+		RuntimeSnapshot{Policy: oldPolicy, Lease: oldLease}, true, nil, probe)
+	if err != nil || selected.CandidateKeyHash != oldLease.CandidateKeyHash ||
+		string(selected.User) != string(refreshed.User) || selected.NonceHash != refreshed.NonceHash {
+		t.Fatalf("credential rotation changed the revalidated line or reused credentials: key=%s userFresh=%t err=%v",
+			selected.CandidateKeyHash, string(selected.User) == string(refreshed.User), err)
+	}
+}
