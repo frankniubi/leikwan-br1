@@ -20,7 +20,7 @@ public static class MacAppBootstrap
 {
     public static async Task<MacAppServices> CreateAsync(MacPlatformPaths paths, CancellationToken ct = default)
     {
-        ConfigureLogging(paths);
+        ConfigureLogging(paths, DesktopLogLevel.Warning);
         Log.Information("mac_bootstrap_begin");
         // Panel/update traffic must egress through the physical interface
         // (e.g. en0, discovered dynamically) even when a utun TUN is up.
@@ -45,9 +45,12 @@ public static class MacAppBootstrap
         Log.Information("mac_bootstrap_config_load_begin");
         var config = await configStore.LoadAsync(ct).ConfigureAwait(false);
         Log.Information("mac_bootstrap_config_load_complete");
+        config.LogLevel = DesktopLogLevel.Normalize(config.LogLevel);
+        ConfigureLogging(paths, config.LogLevel);
         config.MasterUrl = PanelEndpoints.NormalizeKnownUrl(config.MasterUrl);
         if (string.IsNullOrWhiteSpace(config.MasterUrl))
             config.MasterUrl = PanelEndpoints.Default.Url;
+        PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
         Log.Information("mac_bootstrap_identity_begin");
         var identity = new MacPlatformIdentityProvider(paths).GetOrCreate();
         Log.Information("mac_bootstrap_identity_complete");
@@ -59,7 +62,8 @@ public static class MacAppBootstrap
             (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity));
         var connections = new MacConnectionService(
             paths,
-            new MacConnectionProfileStore(secrets));
+            new MacConnectionProfileStore(secrets),
+            preferredEgressInterface: config.PreferredEgressInterface);
         Log.Information("mac_bootstrap_connections_load_begin");
         await connections.InitializeAsync(ct).ConfigureAwait(false);
         Log.Information("mac_bootstrap_connections_load_complete");
@@ -141,20 +145,22 @@ public static class MacAppBootstrap
         }
     }
 
-    private static void ConfigureLogging(MacPlatformPaths paths)
+    public static void ReconfigureLogging(MacPlatformPaths paths, string? level)
+        => ConfigureLogging(paths, DesktopLogLevel.Normalize(level));
+
+    private static void ConfigureLogging(MacPlatformPaths paths, string? level)
     {
+        Log.CloseAndFlush();
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Information()
+            .MinimumLevel.Is(DesktopLogLevel.ToSerilog(level))
             .WriteTo.File(
+                new RedactingTextFormatter("{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"),
                 paths.LogDirectory.TrimEnd('/', '\\') + "/client-.log",
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5 * 1024 * 1024,
                 rollOnFileSizeLimit: true,
-                // {Exception} matters here: a caught update/lease failure is useless
-                // to diagnose without the exception text (it is the only place the
-                // macOS client records why an operation failed).
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                buffered: false)
             .CreateLogger();
     }
 }

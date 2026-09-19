@@ -78,14 +78,20 @@ public class ProcessSupervisor : IProcessSupervisor
             {
                 if (e.Data != null)
                 {
-                    Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                    // Native helpers commonly use stderr for progress and
+                    // connection telemetry. The process exit/health path owns
+                    // actual failures; keep this stream available in Debug.
+                    Log.Debug("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
                     _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
                 }
             };
             process.Exited += (_, _) =>
             {
-                Log.Warning("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
-                    forwardId, label, process.ExitCode);
+                var exitCode = process.ExitCode;
+                // HealthCheckService distinguishes an unexpected exit from a
+                // user stop and owns the warning/error decision.
+                Log.Debug("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
+                    forwardId, label, exitCode);
                 ProcessExited?.Invoke(forwardId, role);
             };
 

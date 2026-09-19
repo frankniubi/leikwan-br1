@@ -45,11 +45,13 @@ public static class TunnelInterfaceHeuristics
     private static readonly string[] TunnelNamePrefixes =
     [
         "utun", "tun", "tap", "wintun", "ppp", "ipsec", "l2tp", "wg", "zt", "tailscale",
+        "bridge", "awdl", "llw", "vmnet", "vboxnet", "docker", "veth", "br-",
     ];
 
     private static readonly string[] TunnelNameMarkers =
     [
         "netch", "wireguard", "openvpn", "nordlynx", "warp", "sstp", "tap-windows", "tap-win32",
+        "docker", "virtualbox", "hyper-v", "vmware",
     ];
 
     private static readonly string[] TunnelDescriptionMarkers =

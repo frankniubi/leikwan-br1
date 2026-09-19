@@ -1672,7 +1672,7 @@ HTML;
         $i18nHtml = $isBridgeHome ? '' : $this->i18nBootstrapHtml();
         $seoHead = '';
         if ($isBridgeHome) {
-            $seoDescription = '會聚 LeiKwan Bridge：连接东亚多地节点的双向网络转发平台。利群主機提供云主机、网络基础设施与全球连接服务。 / A bilingual network bridge across East Asia, from LeiKwan Host, with cloud servers, network infrastructure, and global connectivity.';
+            $seoDescription = '會聚 LeiKwan Bridge：連接東亞多地的雙向轉發平台。利群主機提供雲主機、網路基礎設施與全球連接服務。 / A bilingual network bridge across East Asia, from LeiKwan Host, with cloud servers, network infrastructure, and global connectivity.';
             $escapedDescription = $this->escape($seoDescription);
             $appUrl = rtrim((string) ($this->config->get('APP_URL', '') ?? ''), '/');
             $canonicalUrl = $appUrl !== '' ? $appUrl . '/' : 'https://www.leikwanhost.com/';
@@ -1711,10 +1711,11 @@ HTML;
         }
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
         $brandLockup = $isBridgeHome
-            ? '<span class="site-mark"><img src="/assets/brand-mark.png" alt="' . $escapedBrandName . ' logo"></span>'
+            ? '<span class="site-mark" aria-hidden="true"><img src="/assets/brand-mark.png" alt="" data-bridge-variant="/assets/brand-mark-bridge.webp"></span>'
                 . '<span class="site-copy">'
                 . '<strong lang="zh-Hant">利群會聚</strong>'
                 . '<span lang="en">LeiKwan Bridge</span>'
+                . '<span class="site-provenance" lang="zh-Hant">利群主機<span aria-hidden="true"> · </span><span lang="en">LeiKwan Host</span></span>'
                 . '</span>'
             : '<span class="site-mark"><img src="' . $brandLogoUrl . '" alt="' . $escapedBrandName . ' logo"></span>'
                 . '<span class="site-copy">'
@@ -1723,7 +1724,7 @@ HTML;
                 . '</span>';
 
         $actionsHtml = $isBridgeHome
-            ? '<a class="button" href="/login">登录 · Sign In</a>'
+            ? '<a class="button" href="/login">登入 · Sign In</a>'
             : '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
@@ -1748,6 +1749,7 @@ HTML;
                 </form>';
         }
 
+        $brandA11yLabel = $isBridgeHome ? ' aria-label="利群會聚 LeiKwan Bridge — by 利群主機 LeiKwan Host"' : '';
         $html = <<<HTML
 <!doctype html>
 <html lang="{$htmlLang}">
@@ -1761,7 +1763,7 @@ HTML;
 <body class="pg-public{$pageClass}">
   <div class="public-shell">
     <header class="site-topbar{$topbarClass}">
-      <a class="site-brand" href="/">
+      <a class="site-brand" href="/"{$brandA11yLabel}>
         {$brandLockup}
       </a>
       <div class="site-actions">

@@ -132,6 +132,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
                 ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
             };
+            EgressInterfaceConfig.Apply(bootstrapConfig, _config.PreferredEgressInterface);
             if (udpCapable)
             {
                 bootstrapConfig["udp_prewarm"] = true;

@@ -123,10 +123,15 @@
     <system:String x:Key="ActionSignOut">退出登录</system:String>
 
     <!-- Settings -->
+    <system:String x:Key="SettingsEgressInterface">出站网络适配器</system:String>
+    <system:String x:Key="SettingsEgressInterfaceHint">选择 Ultra 和直连控制流量使用的物理网卡；自动会选择当前可用的最佳网卡。</system:String>
     <system:String x:Key="SettingsConnection">连接设置</system:String>
     <system:String x:Key="SettingsPollInterval">轮询间隔（秒）</system:String>
     <system:String x:Key="SettingsHealthInterval">健康检查间隔（秒）</system:String>
     <system:String x:Key="SettingsLogLevel">日志级别</system:String>
+    <system:String x:Key="SettingsLogLevelWarning">警告（推荐）</system:String>
+    <system:String x:Key="SettingsLogLevelCritical">仅严重错误</system:String>
+    <system:String x:Key="SettingsLogLevelDebug">调试</system:String>
     <system:String x:Key="SettingsAutoStart">开机自启</system:String>
     <system:String x:Key="SettingsMinimizeToTray">最小化到系统托盘</system:String>
     <system:String x:Key="SettingsBinaries">二进制路径</system:String>

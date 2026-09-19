@@ -68,7 +68,10 @@ public sealed class AgentConfig
     public int HealthCheckIntervalSeconds { get; set; } = 20;
 
     [JsonPropertyName("log_level")]
-    public string LogLevel { get; set; } = "INFO";
+    public string LogLevel { get; set; } = "WARNING";
+
+    [JsonPropertyName("preferred_egress_interface")]
+    public string PreferredEgressInterface { get; set; } = "";
 
     [JsonPropertyName("bond_bin")]
     public string BondBin { get; set; } = "";

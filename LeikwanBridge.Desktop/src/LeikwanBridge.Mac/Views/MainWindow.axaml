@@ -590,8 +590,22 @@
                    </ComboBox>
                    <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
                    <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
-                   <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
+                  <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
                   <ComboBox ItemsSource="{Binding Languages}" SelectedItem="{Binding Language, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Classes="label" Text="LOG LEVEL" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding LogLevels}" SelectedItem="{Binding LogLevel, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Classes="label" Text="OUTBOUND NETWORK INTERFACE" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding EgressInterfaceOptions}"
+                            SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
+                            SelectedValueBinding="{Binding Id}"
+                            HorizontalAlignment="Left" MinWidth="280">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding DisplayName}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <TextBlock Classes="muted" Text="Select the physical adapter used by Ultra and direct control traffic. Automatic chooses the active adapter." FontSize="11" TextWrapping="Wrap" />
                   <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
                     <StackPanel Orientation="Horizontal" Spacing="7">
                       <lucide:LucideIcon Kind="Save" Size="16" />

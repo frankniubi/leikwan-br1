@@ -29,6 +29,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly IWindowsTunMtuReader _tunMtuReader;
     private readonly TimeSpan _mtuApplyMinInterval;
+    private string _preferredEgressInterface;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<WindowsProxyProfile> _profiles = [];
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
@@ -65,7 +66,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         string? chinaIpListPath = null,
         INativeOutboundRelayHost? nativeRelayHost = null,
         IWindowsTunMtuReader? tunMtuReader = null,
-        TimeSpan? mtuApplyMinInterval = null)
+        TimeSpan? mtuApplyMinInterval = null,
+        string? preferredEgressInterface = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _singBoxPath = singBoxPath ?? string.Empty;
@@ -89,11 +91,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
         _tunMtuReader = tunMtuReader ?? new WindowsTunMtuReader();
         _mtuApplyMinInterval = mtuApplyMinInterval ?? MtuApplyDefaultInterval;
+        _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         if (_mtuApplyMinInterval < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(mtuApplyMinInterval));
     }
 
     public event Action<WindowsProxySnapshot>? SnapshotChanged;
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+        => _preferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
 
     public IReadOnlyList<WindowsProxyProfile> Profiles
     {
@@ -754,13 +760,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 ""));
             connectionStopped = true;
             await StopCoreAsync(ct);
-            await _nativeRelayHost.StartCandidatesAsync(
+            var egressInterface = EgressInterfaceConfig.ResolveOrThrow(_preferredEgressInterface);
+            await _nativeRelayHost.StartCandidatesWithEgressAsync(
                 lease.ForwardId,
                 ResolveUltraBinaryPath(),
                 nativeRelayPort,
                 leases,
                 _runtimeDirectory,
-                ct);
+                ct,
+                egressInterface);
             Directory.CreateDirectory(_runtimeDirectory);
             var configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
             try

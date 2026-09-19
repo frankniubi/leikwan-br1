@@ -50,7 +50,7 @@ final class HomePageContent
         ['key' => 'ct', 'mark' => 'CT', 'label' => ['en' => 'Telecom', 'zh-Hans' => '电信', 'zh-TW' => '電信']],
         ['key' => 'cu', 'mark' => 'CU', 'label' => ['en' => 'Unicom', 'zh-Hans' => '联通', 'zh-TW' => '聯通']],
         ['key' => 'cm', 'mark' => 'CM', 'label' => ['en' => 'Mobile', 'zh-Hans' => '移动', 'zh-TW' => '移動']],
-        ['key' => 'bgp', 'mark' => 'BGP', 'label' => ['en' => 'BGP', 'zh-Hans' => 'BGP', 'zh-TW' => 'BGP']],
+        ['key' => 'kpcloud', 'mark' => 'KP', 'label' => ['en' => 'KPCloud', 'zh-Hans' => '靠谱云', 'zh-TW' => '靠譜雲']],
         ['key' => 'ucloud', 'mark' => 'UC', 'label' => ['en' => 'UCloud', 'zh-Hans' => 'UCloud', 'zh-TW' => 'UCloud']],
         ['key' => 'zenlayer', 'mark' => 'ZL', 'label' => ['en' => 'Zenlayer', 'zh-Hans' => 'Zenlayer', 'zh-TW' => 'Zenlayer']],
         ['key' => 'qcloud', 'mark' => 'QC', 'label' => ['en' => 'Tencent Cloud', 'zh-Hans' => '腾讯云', 'zh-TW' => '騰訊雲']],
@@ -177,31 +177,32 @@ final class HomePageContent
         // The public door is intentionally language-invariant. Keep the locale
         // dictionaries above for compatibility with older callers, but present
         // both faces together so a visitor never has to hunt for a language menu.
+        // Copy is Traditional Chinese + English as requested (shortened).
         $copy = [
-            'hero_badge' => '{cn} 个节点在线 / {n} PEERS LIVE',
+            'hero_badge' => '{cn} 個節點在線 / {n} PEERS LIVE',
             'title_zh' => '會聚',
             'title_en' => 'Bridge',
-            'hero_sub' => '聚流之所向·會網之通聯 / Bridge every network gap.',
-            'primary' => '进入控制台 / Enter Console',
-            'hero_guide_cta' => '了解运作方式 / How it works',
-            'platforms_label' => '客户端平台 / Client platforms',
-            'map_label' => '东亚 {cn} 个对等节点网状网络 / {n}-peer mesh across East Asia',
-            'atlas_kicker' => '网状网络 / MESH',
-            'atlas_note' => '{n} PEERS · 双向连接 / BIDIRECTIONAL',
-            'path_kicker' => '路径 / PATH',
-            'lines_kicker' => '线路 / LINES',
-            'lines_title' => '内地网络，相连无界 / Mainland networks, connected.',
-            'lines_note' => '运营商与云，同一张网 / Carriers and clouds on one mesh.',
+            'hero_sub' => '聚流所向 · 會網通聯 / Bridge every gap.',
+            'primary' => '進入控制台 / Enter Console',
+            'hero_guide_cta' => '運作方式 / How it works',
+            'platforms_label' => '用戶端平台 / Client platforms',
+            'map_label' => '東亞 {cn} 節點網狀網路 / {n}-peer mesh, East Asia',
+            'atlas_kicker' => '網狀 / MESH',
+            'atlas_note' => '{n} PEERS · 雙向 / BIDIRECTIONAL',
+            'path_kicker' => '路徑 / PATH',
+            'lines_kicker' => '線路 / LINES',
+            'lines_title' => '內地網路 · 相連無界',
+            'lines_note' => '電信商與雲 · 同一張網',
             'platforms_kicker' => '平台 / PLATFORMS',
-            'platforms_title' => '四个系统 / Four systems.',
-            'step_1_title' => '选线 / Line',
-            'step_1_note' => '在控制台挑线路 / Pick a route in the console',
-            'step_2_title' => '转发 / Forward',
-            'step_2_note' => '写上目的地 / Name the destination',
+            'platforms_title' => '四個系統 / Four systems.',
+            'step_1_title' => '選線 / Line',
+            'step_1_note' => '控制台挑線路 / Pick in console',
+            'step_2_title' => '轉發 / Forward',
+            'step_2_note' => '寫上目的地 / Name it',
             'step_3_title' => '落地 / Land',
-            'step_3_note' => '即刻连接 / Play connected',
-            'closing_title' => '直达你的目的地 / Go to your destination.',
-            'console_link' => '进入控制台 / Enter Console',
+            'step_3_note' => '即刻連接 / Play',
+            'closing_title' => '直達目的地 / Your destination.',
+            'console_link' => '進入控制台 / Enter Console',
             'guides_link' => '指南 / Guides',
         ];
 
@@ -227,6 +228,7 @@ final class HomePageContent
             20 => '二十',
         ];
 
+        // Traditional typography keeps the same spoken form.
         return $words[$value] ?? (string) $value;
     }
 
@@ -251,9 +253,10 @@ final class HomePageContent
             'ct' => '/assets/carriers/ct.svg',
             'cu' => '/assets/carriers/cu.svg',
             'cm' => '/assets/carriers/cm.svg',
+            'kpcloud' => '/assets/carriers/kpcloud.svg',
             'ucloud' => '/assets/carriers/ucloud.svg',
             'zenlayer' => '/assets/carriers/zenlayer.svg',
-            'qcloud' => '/assets/carriers/qcloud.svg',
+            'qcloud' => '/assets/carriers/qcloud-h.svg',
             'ctyun' => '/assets/carriers/ctyun-logo.png',
             'cucloud' => '/assets/carriers/cucloud.png',
             'cmcloud' => '/assets/carriers/cmcloud.png',
@@ -971,6 +974,13 @@ final class HomePageContent
             . self::platformRow2($copy)
             . '</div>'
             . '</section>'
+            . '<section class="bridge-home-provenance" aria-label="關於利群主機 / About LeiKwan Host">'
+            . '<div class="bridge-home-band">'
+            . '<p class="bridge-home-kicker bridge-home-provenance-head"><img class="bridge-home-host-mark" src="/assets/host-logo.webp" alt="LeiKwan Host" width="84" height="22" loading="lazy" decoding="async"> ' . self::bilingual('來自利群主機 / FROM LEIKWAN HOST') . '</p>'
+            . '<h2>' . self::bilingual('你的目的地 / Your destination.') . '</h2>'
+            . '<p class="bridge-home-note">' . self::bilingual('東亞轉發 · 會聚搭好中間 / East Asia, bridged by LeiKwan Host.') . ' <a href="https://www.leikwanhost.com" rel="home">' . self::bilingual('leikwanhost.com') . ' →</a></p>'
+            . '</div>'
+            . '</section>'
             . '<section class="bridge-home-closing">'
             . '<div class="bridge-home-band">'
             . '<h2>' . self::bilingual((string) $copy['closing_title']) . '</h2>'
@@ -980,22 +990,22 @@ final class HomePageContent
             . '</div>'
             . '</div>'
             . '</section>'
-            . '<footer class="bridge-home-footer" aria-label="页脚 / Footer">'
+            . '<footer class="bridge-home-footer" aria-label="頁腳 / Footer">'
             . '<div class="bridge-home-footer-inner">'
             . '<div class="bridge-home-footer-brand">'
             . '<strong>會聚</strong><span>LeiKwan Bridge</span>'
-            . '<a class="bridge-home-footer-parent" href="https://www.leikwanhost.com" rel="home">利群主機 · LeiKwan Host</a>'
-            . '<p>' . self::bilingual('让每一条路径都更近 / Make every route feel closer.') . '</p>'
-            . '<p>' . self::bilingual('云主机、网络基础设施与全球连接服务 / Cloud servers, network infrastructure, and global connectivity.') . '</p>'
+            . '<a class="bridge-home-footer-parent" href="https://www.leikwanhost.com" rel="home"><img class="bridge-home-host-mark-footer" src="/assets/host-logo.webp" alt="" aria-hidden="true" width="52" height="13" loading="lazy" decoding="async">利群主機 · LeiKwan Host</a>'
+            . '<p>' . self::bilingual('讓每一條路徑都更近 / Make every route feel closer.') . '</p>'
+            . '<p>' . self::bilingual('雲主機、網路基礎設施與全球連接服務 / Cloud servers, network infrastructure, and global connectivity.') . '</p>'
             . '</div>'
-            . '<nav class="bridge-home-footer-nav" aria-label="站点导航 / Site navigation">'
-            . '<a href="/">' . self::bilingual('首页 / Home') . '</a>'
-            . '<a href="/knowledgebase">' . self::bilingual('知识库 / Knowledgebase') . '</a>'
-            . '<a href="/login">' . self::bilingual('登录 / Sign In') . '</a>'
+            . '<nav class="bridge-home-footer-nav" aria-label="站點導航 / Site navigation">'
+            . '<a href="/">' . self::bilingual('首頁 / Home') . '</a>'
+            . '<a href="/knowledgebase">' . self::bilingual('知識庫 / Knowledgebase') . '</a>'
+            . '<a href="/login">' . self::bilingual('登入 / Sign In') . '</a>'
             . '</nav>'
             . '<div class="bridge-home-footer-meta">'
             . '<span>© ' . date('Y') . ' LeiKwan Bridge</span>'
-            . '<span>' . self::bilingual('利群主機 | LeiKwan Host · 全球网络连接 / Global network connectivity') . '</span>'
+            . '<span>' . self::bilingual('利群主機 | LeiKwan Host · 全球網路連接 / Global network connectivity') . '</span>'
             . '<a href="https://www.leikwanhost.com" rel="home">' . self::bilingual('主站 / Main site · leikwanhost.com') . '</a>'
             . '</div>'
             . '</div>'
@@ -1010,7 +1020,7 @@ final class HomePageContent
     /**
      * Render a copy string written as "Chinese / English" as two language-aware
      * spans. The dot separator is visual only and keeps the wording from reading
-     * like a machine-translated label.
+     * like a machine-translated label. zh-Hant is the homepage's Chinese face.
      */
     private static function bilingual(string $value): string
     {
@@ -1019,7 +1029,7 @@ final class HomePageContent
             return self::e($value);
         }
 
-        return '<span class="bridge-home-bilingual-zh" lang="zh-Hans">' . self::e(trim($parts[0])) . '</span>'
+        return '<span class="bridge-home-bilingual-zh" lang="zh-Hant">' . self::e(trim($parts[0])) . '</span>'
             . '<span class="bridge-home-bilingual-dot" aria-hidden="true">·</span>'
             . '<span class="bridge-home-bilingual-en" lang="en">' . self::e(trim($parts[1])) . '</span>';
     }

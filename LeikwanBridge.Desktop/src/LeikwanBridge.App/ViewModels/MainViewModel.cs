@@ -321,7 +321,8 @@ public partial class MainViewModel : ObservableObject
                 proxyPort: _config.GetEffectiveProxyPort(),
                 tunMtu: _config.GetEffectiveProxyTunMtu(),
                 tunStack: _config.GetEffectiveProxyTunStack(),
-                chinaIpListPath: _config.GetEffectiveProxyChinaIpList());
+                chinaIpListPath: _config.GetEffectiveProxyChinaIpList(),
+                preferredEgressInterface: _config.PreferredEgressInterface);
             _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
         }
 
@@ -353,6 +354,12 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_port_invalid");
         _proxyService?.SetProxyPort(proxyPort);
         _config.ProxyPort = proxyPort;
+    }
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+    {
+        _config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+        _proxyService?.SetPreferredEgressInterface(_config.PreferredEgressInterface);
     }
 
     public void RefreshProxyProfiles()
@@ -2327,12 +2334,16 @@ public partial class MainViewModel : ObservableObject
     {
         if (IsShuttingDown)
             return;
+        // Native helper output is verbose by nature. Keep it out of the
+        // Activity view unless the user explicitly enables Debug.
+        if (!DesktopLogLevel.IsDebug(_config.LogLevel))
+            return;
         InvokeOnUiThread(() => AddLog($"[fwd-{forwardId}/{label}] {line}"));
     }
 
     private void AddLog(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        var entry = $"[{DateTime.Now:HH:mm:ss}] {LogPrivacy.Redact(message)}";
         LogEntries.Add(entry);
         while (LogEntries.Count > 5000)
             LogEntries.RemoveAt(0);
