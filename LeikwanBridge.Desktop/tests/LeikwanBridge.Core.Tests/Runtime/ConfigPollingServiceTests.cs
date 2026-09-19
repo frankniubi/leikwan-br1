@@ -1272,7 +1272,10 @@ public sealed class ConfigPollingServiceTests
 
         public override bool RefreshUltraLease(ForwardConfig forward)
         {
-            RefreshedForwardIds.Add(forward.ForwardId);
+            // Reconcile runs sibling forwards concurrently. Keep the test
+            // recorder from losing writes while retaining List-based assertions.
+            lock (RefreshedForwardIds)
+                RefreshedForwardIds.Add(forward.ForwardId);
             forward.RuntimeLease?.Dispose();
             forward.RuntimeLease = null;
             return RefreshUltraLeaseResult;
@@ -1285,13 +1288,15 @@ public sealed class ConfigPollingServiceTests
 
         public override void ApplyForward(ForwardConfig forward, string? contractSignature, string applyReason)
         {
-            AppliedForwardIds.Add(forward.ForwardId);
+            lock (AppliedForwardIds)
+                AppliedForwardIds.Add(forward.ForwardId);
             OnApply?.Invoke(forward);
         }
 
         public override void StopForward(int forwardId)
         {
-            StoppedForwardIds.Add(forwardId);
+            lock (StoppedForwardIds)
+                StoppedForwardIds.Add(forwardId);
         }
     }
 
