@@ -27,10 +27,13 @@ final class ExternalUoTDefaults
      * @param array<int,array<string,mixed>> $forwards
      * @return array<int,array<string,mixed>>
      */
-    public static function withClientDeliveryMode(Config $config, int $clientId, array $forwards): array
+    public static function withClientDeliveryMode(Config $config, int $clientId, array $forwards, string $deviceId = ''): array
     {
         $ids = preg_split('/[\s,]+/', trim((string) $config->get(self::RELIABLE_CLIENT_IDS_KEY, ''))) ?: [];
-        if ($clientId <= 0 || !in_array((string) $clientId, $ids, true)) {
+        $devices = preg_split('/[\s,]+/', trim((string) $config->get('EXTERNAL_UOT_RELIABLE_DEVICES', ''))) ?: [];
+        $selected = in_array((string) $clientId, $ids, true)
+            || ($deviceId !== '' && in_array($clientId . ':' . $deviceId, $devices, true));
+        if ($clientId <= 0 || !$selected) {
             return $forwards;
         }
         foreach ($forwards as &$forward) {
