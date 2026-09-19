@@ -16,6 +16,13 @@ const reliableDatagramMode = "reliable_datagram_v1"
 const reliableACKType byte = 7
 const reliableWindowPackets = 4096
 
+// Reliable admission must tolerate carrier backpressure and the bounded
+// five-second write/reconnect attempt. The raw datagram queue's 250 ms
+// deadline prematurely destroyed retained frames during ordinary TCP stalls.
+// Packet/byte caps are unchanged; cancellation and earlier caller deadlines
+// still terminate admission immediately.
+const reliableAdmissionDeadline = 5 * time.Second
+
 type reliablePacket struct {
 	seq        uint64
 	body       []byte
@@ -78,7 +85,7 @@ func (r *reliableDatagrams) fail(err error) error {
 	return r.failure
 }
 func (r *reliableDatagrams) enqueue(ctx context.Context, p []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, datagramQueueDeadline)
+	ctx, cancel := context.WithTimeout(ctx, reliableAdmissionDeadline)
 	defer cancel()
 	blocked := false
 	for {
