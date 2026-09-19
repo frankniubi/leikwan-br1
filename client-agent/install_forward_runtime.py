@@ -1221,7 +1221,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         if token == "" or len(token) > 8192 or any(char.isspace() for char in token):
             raise RuntimeError("external UoT sidecar token invalid")
         delivery_mode = str(raw_external_uot.get("delivery_mode", "raw") or "raw").strip().lower()
-        if delivery_mode not in {"raw", "reliable_datagram"}:
+        if delivery_mode not in {"raw", "reliable_datagram_v1"}:
             raise RuntimeError("external UoT delivery mode unsupported")
         def _bounded_external_int(key: str, default: int, minimum: int, maximum: int) -> int:
             try:
