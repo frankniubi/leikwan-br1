@@ -8,6 +8,7 @@ use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Throwable;
+use Leikwan\Master\Support\ExternalUoTPool;
 
 /**
  * Per-host configuration for the operator-owned external UoT (UDP over TCP)
@@ -38,6 +39,34 @@ final class ExternalUotConfigController extends BaseController
     public function __construct(Config $config)
     {
         parent::__construct($config, new Database($config));
+    }
+
+    /** Dedicated pool credentials; never accept a requested host as authorization. */
+    public function poolNode(Request $request, array $params): Response
+    {
+        $pool = new ExternalUoTPool($this->config);
+        $id = (string) ($params['id'] ?? '');
+        $node = $pool->authenticate($id, (string) $request->bearerToken());
+        if ($node === null) {
+            return $this->json(['error' => 'unauthorized'], 401)->withHeaders(['Cache-Control' => 'no-store']);
+        }
+        $combinations = $pool->combinationsForNode($node, $this->db->fetchAll(
+            'SELECT * FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
+        ));
+        [$host, $port] = self::splitTarget($node['target']);
+        $payload = self::buildPayload(null, $combinations, $this->forwardIdsByCombination($combinations), $port, $host);
+        unset($payload['panel']);
+        $hash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        if ($request->method() === 'POST') {
+            $body = $request->body();
+            if (!is_bool($body['healthy'] ?? null) || !is_string($body['config_hash'] ?? null)
+                || !hash_equals($hash, $body['config_hash'])) {
+                return $this->json(['error' => 'pool_config_mismatch'], 409)->withHeaders(['Cache-Control' => 'no-store']);
+            }
+            $pool->heartbeat($id, $body['healthy'], $hash);
+            return $this->json(['ok' => true])->withHeaders(['Cache-Control' => 'no-store']);
+        }
+        return $this->json(['config' => $payload, 'config_hash' => $hash])->withHeaders(['Cache-Control' => 'no-store']);
     }
 
     /**
