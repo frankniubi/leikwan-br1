@@ -79,3 +79,26 @@ func TestRetryActiveCandidateForwardKeepsFailureFailClosed(t *testing.T) {
 		t.Fatalf("err=%v, want wrapped active-candidate failure", err)
 	}
 }
+
+func TestActiveCandidateStableIdentityDoesNotCrossLineOrEndpoint(t *testing.T) {
+	p := testPolicy(time.Now(), strings.Repeat("a", 64))
+	left := testLease(p, strings.Repeat("b", 64))
+	left.CandidateKeyHash = strings.Repeat("c", 64)
+	right := left
+	right.User = []byte("rotated-user")
+	right.SelectionRef = "rotated-selection-reference-abcdefghijkl"
+	if !sameActiveCandidatePath(left, right) {
+		t.Fatal("same authorized line lost continuity after credential rotation")
+	}
+	right.CandidateKeyHash = strings.Repeat("d", 64)
+	right.SelectionRef = left.SelectionRef
+	right.User = left.User
+	if sameActiveCandidatePath(left, right) {
+		t.Fatal("different panel line accepted because endpoint/user matched")
+	}
+	right.CandidateKeyHash = left.CandidateKeyHash
+	right.IP = "203.0.113.45"
+	if sameActiveCandidatePath(left, right) {
+		t.Fatal("endpoint change treated as the existing physical path")
+	}
+}
