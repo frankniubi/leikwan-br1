@@ -27,6 +27,7 @@ $forwards = [
     [],
 ];
 putenv('EXTERNAL_UOT_RELIABLE_CLIENT_IDS=3, 12');
+putenv('EXTERNAL_UOT_RELIABLE_SIDECAR_TARGETS=example.test:7443');
 try {
     expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 13, $forwards) === $forwards, 'legacy client changed');
     expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 0, $forwards) === $forwards, 'invalid client changed');
@@ -48,8 +49,11 @@ try {
     expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 3, $forwards, 'windows-legacy') === $forwards, 'legacy device affected');
     expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 3, $forwards, 'mac-tested')[0]['external_uot']['delivery_mode'] === 'reliable_datagram_v1', 'device rollout missing');
     expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 4, $forwards, 'mac-tested') === $forwards, 'other client affected');
+    putenv('EXTERNAL_UOT_RELIABLE_SIDECAR_TARGETS=not-yet-upgraded.test:7443');
+    expectRollout(ExternalUoTDefaults::withClientDeliveryMode($config, 3, $forwards, 'mac-tested') === $forwards, 'old sidecar received new protocol');
     echo "PASS external UoT reliable rollout\n";
 } finally {
     putenv('EXTERNAL_UOT_RELIABLE_CLIENT_IDS');
     putenv('EXTERNAL_UOT_RELIABLE_DEVICES');
+    putenv('EXTERNAL_UOT_RELIABLE_SIDECAR_TARGETS');
 }

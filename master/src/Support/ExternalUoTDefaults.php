@@ -36,9 +36,11 @@ final class ExternalUoTDefaults
         if ($clientId <= 0 || !$selected) {
             return $forwards;
         }
+        $sidecars = preg_split('/[\s,]+/', trim((string) $config->get('EXTERNAL_UOT_RELIABLE_SIDECAR_TARGETS', ''))) ?: [];
         foreach ($forwards as &$forward) {
             if (is_array($forward) && is_array($forward['external_uot'] ?? null)
-                && ($forward['external_uot']['enabled'] ?? false) === true) {
+                && ($forward['external_uot']['enabled'] ?? false) === true
+                && in_array(trim((string) ($forward['external_uot']['sidecar_target'] ?? '')), $sidecars, true)) {
                 $forward['external_uot']['delivery_mode'] = 'reliable_datagram_v1';
                 $forward['external_uot']['queue_packets'] = 4096;
             }
