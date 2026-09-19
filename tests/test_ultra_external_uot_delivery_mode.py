@@ -30,10 +30,10 @@ class ExternalUotDeliveryModeTests(unittest.TestCase):
                 self.assertNotIn("delivery_mode", self.config(self.render(mode))["external_uot"])
 
     def test_reliable_mode_is_preserved(self):
-        self.assertEqual("reliable_datagram", self.config(self.render("reliable_datagram"))["external_uot"]["delivery_mode"])
+        self.assertEqual("reliable_datagram_v1", self.config(self.render("reliable_datagram_v1"))["external_uot"]["delivery_mode"])
 
     def test_unsupported_mode_fails_closed(self):
-        for mode in ("guaranteed_delivery", "invalid"):
+        for mode in ("reliable_datagram", "guaranteed_delivery", "invalid"):
             with self.subTest(mode=mode), self.assertRaisesRegex(RuntimeError, "delivery mode unsupported"):
                 self.render(mode)
 
