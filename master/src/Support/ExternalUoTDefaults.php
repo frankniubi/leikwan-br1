@@ -19,6 +19,30 @@ final class ExternalUoTDefaults
     public const TARGET_KEY = 'EXTERNAL_UOT_DEFAULT_TARGET';
     public const TARGETS_JSON_KEY = 'EXTERNAL_UOT_DEFAULT_TARGETS_JSON';
     public const BOOTSTRAP_TARGET = '185.220.238.143:7443';
+    public const RELIABLE_CLIENT_IDS_KEY = 'EXTERNAL_UOT_RELIABLE_CLIENT_IDS';
+
+    /**
+     * Enable only after the named clients and their sidecars have been upgraded.
+     * Never emit a new bootstrap key to legacy clients outside this allowlist.
+     * @param array<int,array<string,mixed>> $forwards
+     * @return array<int,array<string,mixed>>
+     */
+    public static function withClientDeliveryMode(Config $config, int $clientId, array $forwards): array
+    {
+        $ids = preg_split('/[\s,]+/', trim((string) $config->get(self::RELIABLE_CLIENT_IDS_KEY, ''))) ?: [];
+        if ($clientId <= 0 || !in_array((string) $clientId, $ids, true)) {
+            return $forwards;
+        }
+        foreach ($forwards as &$forward) {
+            if (is_array($forward) && is_array($forward['external_uot'] ?? null)
+                && ($forward['external_uot']['enabled'] ?? false) === true) {
+                $forward['external_uot']['delivery_mode'] = 'reliable_datagram_v1';
+                $forward['external_uot']['queue_packets'] = 4096;
+            }
+        }
+        unset($forward);
+        return $forwards;
+    }
 
     public static function enabled(Config $config): bool
     {
