@@ -90,6 +90,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
             };
+            EgressInterfaceConfig.Apply(staticConfig, _config.PreferredEgressInterface);
             if (udpCapable)
             {
                 staticConfig["udp_prewarm"] = true;

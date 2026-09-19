@@ -130,6 +130,8 @@ public interface IMacConnectionService : IAsyncDisposable
     string? ActiveNativeLeasePolicyGeneration { get; }
     bool IsNativeOutboundActive { get; }
 
+    void SetPreferredEgressInterface(string? interfaceName) { }
+
     /// <summary>Payload ceiling the native relay published for the live association (0 = unknown).</summary>
     int ActiveNativePayloadCeiling => 0;
 

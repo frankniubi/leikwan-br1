@@ -399,12 +399,12 @@ public static class MacHeadlessHost
         var configuration = new LoggerConfiguration()
             .MinimumLevel.Information()
             .WriteTo.File(
+                new RedactingTextFormatter("{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"),
                 string.IsNullOrWhiteSpace(options.LogFile) ? defaultLogFile : options.LogFile,
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5 * 1024 * 1024,
-                rollOnFileSizeLimit: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
+                rollOnFileSizeLimit: true);
         Log.Logger = configuration.CreateLogger();
     }
 

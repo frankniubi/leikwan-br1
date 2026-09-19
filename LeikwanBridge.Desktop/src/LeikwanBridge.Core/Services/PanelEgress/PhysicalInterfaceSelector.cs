@@ -32,16 +32,26 @@ public static class PhysicalInterfaceSelector
     public static PhysicalEgressInterface? SelectPreferred(
         IReadOnlyList<NetworkAdapterInfo> adapters,
         AddressFamily family,
-        bool preferMacPhysicalNaming = false)
+        bool preferMacPhysicalNaming = false,
+        string? preferredInterfaceName = null)
     {
         var holder = FindDefaultRouteHolder(adapters, family);
-        var best = adapters
+        var eligible = adapters
             .Where(adapter => adapter.IsUp
                 && !adapter.IsLoopback
                 && !adapter.IsTunnelLike
                 && adapter.Kind is not NetworkAdapterKind.Virtual
                 && IndexFor(adapter, family) > 0
                 && HasFamily(adapter, family))
+            .ToList();
+        var hasExplicitPreference = !string.IsNullOrWhiteSpace(preferredInterfaceName);
+        var preferred = eligible.FirstOrDefault(adapter =>
+            hasExplicitPreference
+            && string.Equals(adapter.Name, preferredInterfaceName!.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (hasExplicitPreference && preferred is null)
+            return null;
+        IEnumerable<NetworkAdapterInfo> candidates = preferred is null ? eligible : new[] { preferred };
+        var best = candidates
             .Select(adapter => new
             {
                 Adapter = adapter,
