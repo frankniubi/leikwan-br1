@@ -129,6 +129,23 @@ func (c *testCarrier) mustRead(t *testing.T, timeout time.Duration) frame {
 	return incoming
 }
 
+func (c *testCarrier) mustReadUDPData(t *testing.T, timeout time.Duration) frame {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		incoming := c.mustRead(t, time.Until(deadline))
+		if incoming.msgType == msgKeepalive {
+			continue
+		}
+		if incoming.msgType != msgUDPData {
+			t.Fatalf("expected UDP_DATA, got frame type %d", incoming.msgType)
+		}
+		return incoming
+	}
+	t.Fatal("timed out waiting for UDP_DATA")
+	return frame{}
+}
+
 func fixtureServer(t *testing.T, echo *echoServer, mutate func(*sidecarConfig)) (*sidecarServer, string) {
 	t.Helper()
 	binding := forwardBinding{
@@ -286,7 +303,7 @@ func TestReattachReusesSocketAndSuppressesReplay(t *testing.T) {
 		t.Fatalf("first ack = %v", decoded)
 	}
 	first.send(t, msgData, 1, []byte("Eone"))
-	if payload := first.mustRead(t, 3*time.Second).payload; string(payload) != "one" {
+	if payload := first.mustReadUDPData(t, 3*time.Second).payload; string(payload) != "one" {
 		t.Fatalf("echo payload = %q", payload)
 	}
 	portBefore := echo.lastPeerPort()
@@ -297,12 +314,15 @@ func TestReattachReusesSocketAndSuppressesReplay(t *testing.T) {
 	}
 	second.send(t, msgData, 1, []byte("Ereplay"))
 	second.send(t, msgData, 2, []byte("Efresh"))
-	payload := second.mustRead(t, 3*time.Second).payload
+	payload := second.mustReadUDPData(t, 3*time.Second).payload
 	if string(payload) != "fresh" {
 		t.Fatalf("expected the replay to be suppressed, got %q", payload)
 	}
 	if portAfter := echo.lastPeerPort(); portAfter != portBefore {
 		t.Fatalf("UDP source port changed across reattach: %s -> %s", portBefore, portAfter)
+	}
+	if got := echo.receivedCount(); got != 2 {
+		t.Fatalf("replayed packet reached UDP target: received %d packets", got)
 	}
 }
 
