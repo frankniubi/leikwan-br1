@@ -64,6 +64,7 @@ type relayIdentity struct {
 	pathKey      string
 	candidateKey string
 	leaseHash    string
+	targetHash   string
 }
 
 // haDeadStreamMaxAge bounds how young a stream must be for its silence to count
@@ -178,7 +179,7 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 				downstreamBytes = r.bytes
 				order.downstreamEnded = r.ended
 			}
-			log.Printf("tcp stream ended forward_id=%d direction=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d", ident.forward, r.direction, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes)
+			log.Printf("tcp stream ended forward_id=%d direction=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
 			status.RecordHAEvent("tcp", haErrorClass(r.err), ident.generation)
 			if r.err == nil || errors.Is(r.err, io.EOF) {
 				target := local

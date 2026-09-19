@@ -116,7 +116,7 @@ func directForwardCandidateTest(ctx context.Context, config Config, policy Polic
 			return result, result.TCPError
 		}
 		started := time.Now()
-		connection, err := dialStream(lease, targetHost, targetPort, timeout)
+		connection, err := dialStreamConfig(config, lease, targetHost, targetPort, timeout)
 		result.TCPSent = 1
 		if err != nil {
 			result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
@@ -138,7 +138,7 @@ func directForwardCandidateTest(ctx context.Context, config Config, policy Polic
 			return result, result.Err
 		}
 		started := time.Now()
-		session, err := armDatagram(lease, timeout)
+		session, err := armDatagramConfig(config, lease, timeout)
 		if err != nil {
 			result.Err = wrapProbeFailure(errProbeUDPFailed, err)
 			return result, result.Err

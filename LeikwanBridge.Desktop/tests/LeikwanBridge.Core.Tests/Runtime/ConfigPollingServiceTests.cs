@@ -969,8 +969,10 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal([42], runtimeManager.RefreshedForwardIds);
     }
 
-    [Fact]
-    public async Task SyncOnceAsync_TargetedGrantRefreshDoesNotProbeUnrelatedRunningUltraForwards()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncOnceAsync_TargetedGrantRefreshDoesNotStarveDueSibling(bool renewalDue)
     {
         using var tempDir = new TempStateDirectory();
         var payloadNode = JsonNode.Parse(BuildTwoUltraPullResponseJson())!.AsObject();
@@ -992,7 +994,8 @@ public sealed class ConfigPollingServiceTests
         var supervisor = new AlwaysRunningProcessSupervisor();
         var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
         using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
-        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+        var clock = new LeaseTestClock();
+        var service = new ConfigPollingService(api, runtimeManager, stateManager, forwardPolicy: null, timeProvider: clock);
 
         await service.SyncOnceAsync();
         stateManager.SaveApplied(service.LatestForwards.ToDictionary(
@@ -1010,6 +1013,8 @@ public sealed class ConfigPollingServiceTests
         await service.SyncOnceAsync();
         server.FailingUltraForwardIds.Clear();
 
+        if (renewalDue) clock.Advance(TimeSpan.FromMinutes(20));
+
         var requestsBeforeTargetedPull = server.UltraLeaseRequestForwardIds.Count;
         var refreshesBeforeTargetedPull = runtimeManager.RefreshedForwardIds.Count;
         await service.SyncOnceAsync();
@@ -1018,9 +1023,16 @@ public sealed class ConfigPollingServiceTests
             .Skip(requestsBeforeTargetedPull)
             .OrderBy(id => id)
             .ToArray();
-        Assert.Equal([42], targetedRequestIds);
-        Assert.Equal(refreshesBeforeTargetedPull + 1, runtimeManager.RefreshedForwardIds.Count);
-        Assert.Equal([42], runtimeManager.RefreshedForwardIds.Skip(refreshesBeforeTargetedPull));
+        Assert.Equal(renewalDue ? new[] { 42, 43 } : new[] { 42 }, targetedRequestIds);
+        Assert.Equal(refreshesBeforeTargetedPull + (renewalDue ? 2 : 1), runtimeManager.RefreshedForwardIds.Count);
+        Assert.Equal(renewalDue ? new[] { 42, 43 } : new[] { 42 }, runtimeManager.RefreshedForwardIds.Skip(refreshesBeforeTargetedPull).OrderBy(id => id));
+    }
+
+    private sealed class LeaseTestClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan duration) => _now += duration;
     }
 
     private static string BuildPullResponseJson()

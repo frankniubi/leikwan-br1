@@ -43,6 +43,16 @@ type Config struct {
 	ListenHost string `json:"listen_host"`
 	ListenPort int    `json:"listen_port"`
 	Target     string `json:"target"`
+	// Forward-local, bounded operator quarantine. It can only remove candidates
+	// from authenticated grants; it never creates or extends authorization.
+	CandidateQuarantineHashes   []string `json:"candidate_quarantine_hashes,omitempty"`
+	CandidateQuarantineUntil    string   `json:"candidate_quarantine_until,omitempty"`
+	CandidateQuarantineProtocol string   `json:"candidate_quarantine_protocol,omitempty"`
+	// EgressInterface* describe an optional user-selected underlay. When
+	// present, provider TCP/UDP sockets are bound before connect.
+	EgressInterface      string `json:"egress_interface"`
+	EgressInterfaceIndex int    `json:"egress_interface_index"`
+	EgressLocalAddress   string `json:"egress_local_address"`
 	// NativeSocks5 exposes a local standard SOCKS5 facade while retaining the
 	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
 	// forwards leave this disabled and keep their fixed-target behavior.
@@ -317,7 +327,17 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 				optionalDeadline = deadline
 			}
 			_ = conn.SetReadDeadline(optionalDeadline)
-			if optional, peekErr := reader.Peek(10); peekErr == nil && validLegacyStreamFinal(optional) {
+			optional, peekErr := reader.Peek(10)
+			if peekErr != nil && len(optional) == 0 {
+				// An auth ACK followed by FIN/reset is not a usable stream.
+				// Retry while no caller bytes have been consumed, rather than
+				// handing a known-dead connection to the application.
+				var timeout net.Error
+				if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+					return nil, peekErr
+				}
+			}
+			if peekErr == nil && validLegacyStreamFinal(optional) {
 				_, _ = reader.Discard(10)
 				if optional[2] == 0 {
 					return nil, errStreamCommandRejected
@@ -445,18 +465,26 @@ func isRetryableHandshakeError(err error) bool {
 }
 
 func dialStreamWithGreeting(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration, greeting []byte) (net.Conn, error) {
+	return dialStreamWithGreetingConfig(Config{}, lease, targetHost, targetPort, timeout, greeting)
+}
+
+func dialStreamWithGreetingConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration, greeting []byte) (net.Conn, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
-	return dialStreamWithGreetingUntil(lease, targetHost, targetPort, time.Now().Add(timeout), greeting)
+	return dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, time.Now().Add(timeout), greeting)
 }
 
 func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetPort int, deadline time.Time, greeting []byte) (net.Conn, error) {
+	return dialStreamWithGreetingUntilConfig(Config{}, lease, targetHost, targetPort, deadline, greeting)
+}
+
+func dialStreamWithGreetingUntilConfig(config Config, lease ProviderLease, targetHost string, targetPort int, deadline time.Time, greeting []byte) (net.Conn, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
+	conn, err := dialProviderTCP(config, net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
@@ -498,6 +526,17 @@ func dialStreamWithGreetingOrder(
 	timeout time.Duration,
 	order [][]byte,
 ) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(Config{}, lease, targetHost, targetPort, timeout, order)
+}
+
+func dialStreamWithGreetingOrderConfig(
+	config Config,
+	lease ProviderLease,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	order [][]byte,
+) (net.Conn, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
@@ -505,7 +544,7 @@ func dialStreamWithGreetingOrder(
 		return nil, errors.New("stream handshake greeting order invalid")
 	}
 	deadline := time.Now().Add(timeout)
-	conn, err := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[0])
+	conn, err := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[0])
 	if err == nil {
 		return conn, nil
 	}
@@ -516,7 +555,7 @@ func dialStreamWithGreetingOrder(
 	if remaining <= 0 {
 		return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, context.DeadlineExceeded)
 	}
-	fallbackConn, fallbackErr := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[1])
+	fallbackConn, fallbackErr := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[1])
 	if fallbackErr == nil {
 		return fallbackConn, nil
 	}
@@ -524,7 +563,17 @@ func dialStreamWithGreetingOrder(
 }
 
 func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
+	return dialStreamConfig(Config{}, lease, targetHost, targetPort, timeout)
+}
+
+func dialStreamConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(config, lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
+}
+
+func dialStreamForConfig(config Config) candidateStreamDial {
+	return func(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+		return dialStreamConfig(config, lease, targetHost, targetPort, timeout)
+	}
 }
 
 type streamCandidateDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)
@@ -568,6 +617,16 @@ func dialStreamWithCandidates(
 		if identity != "" {
 			attempted = append(attempted, identity)
 		}
+		if operatorQuarantines(store.config, current, "tcp", time.Now()) {
+			current.wipe()
+			lastErr = errOperatorQuarantine
+			next, ok := store.SnapshotNextCandidate(attempted...)
+			if !ok {
+				break
+			}
+			current = next.Lease
+			continue
+		}
 		attemptTimeout := timeout
 		if remaining := time.Until(current.ExpiresAt); remaining < attemptTimeout {
 			attemptTimeout = remaining
@@ -602,7 +661,11 @@ func dialStreamWithCandidates(
 }
 
 func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
+	return dialNativeStreamConfig(Config{}, lease, targetHost, targetPort, timeout)
+}
+
+func dialNativeStreamConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(config, lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
 
 // copyOutbound and copyInbound report how many bytes they moved: the relay
@@ -684,7 +747,14 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				defer func() { <-semaphore }()
 				defer local.Close()
 				started := time.Now()
-				remote, snapshot, dialErr := dialCandidateStream(ctx, store, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second, dialStream)
+				remote, snapshot, dialErr := dialCandidateStream(
+					ctx,
+					store,
+					targetHost,
+					targetPort,
+					time.Duration(config.ConnectTimeoutSecs)*time.Second,
+					dialStreamForConfig(config),
+				)
 				if dialErr != nil {
 					status.RecordHAEvent("tcp", haErrorClass(dialErr), "")
 					log.Printf("tcp stream setup failed forward_id=%d: %v", config.ForwardID, dialErr)
@@ -700,6 +770,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					pathKey:      haPathKey(snapshot.Lease),
 					candidateKey: snapshot.Lease.CandidateKeyHash,
 					leaseHash:    snapshot.Lease.LeaseHash,
+					targetHash:   tcpTargetHash(config.Target),
 				})
 
 			}()
@@ -1211,23 +1282,35 @@ func logLeaseSelectionStart(forwardID, candidateCount int) {
 }
 
 func openDatagramControl(lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
+	return openDatagramControlConfig(Config{}, lease, timeout, greeting)
+}
+
+func openDatagramControlConfig(config Config, lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
 	if timeout <= 0 {
 		return nil, nil, context.DeadlineExceeded
 	}
-	return openDatagramControlUntil(lease, time.Now().Add(timeout), greeting)
+	return openDatagramControlUntilConfig(config, lease, time.Now().Add(timeout), greeting)
 }
 
 func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting []byte) (*net.TCPConn, []byte, error) {
+	return openDatagramControlUntilConfig(Config{}, lease, deadline, greeting)
+}
+
+func openDatagramControlUntilConfig(config Config, lease ProviderLease, deadline time.Time, greeting []byte) (*net.TCPConn, []byte, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return nil, nil, context.DeadlineExceeded
 	}
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
-	conn, err := net.DialTimeout("tcp", address, remaining)
+	conn, err := dialProviderTCP(config, address, remaining)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
-	control := conn.(*net.TCPConn)
+	control, ok := conn.(*net.TCPConn)
+	if !ok {
+		conn.Close()
+		return nil, nil, fmt.Errorf("provider control dial returned non-TCP connection")
+	}
 	handshake, buildErr := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port, greeting)
 	defer clearBytes(handshake)
 	if buildErr != nil {
@@ -1260,6 +1343,10 @@ func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting 
 }
 
 func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
+	return armDatagramConfig(Config{}, lease, timeout)
+}
+
+func armDatagramConfig(config Config, lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
 	if timeout <= 0 {
 		return nil, context.DeadlineExceeded
 	}
@@ -1275,7 +1362,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 		if index == 1 {
 			fallbackTried = true
 		}
-		control, reply, err := openDatagramControlUntil(lease, deadline, greeting)
+		control, reply, err := openDatagramControlUntilConfig(config, lease, deadline, greeting)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -1286,7 +1373,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 			}
 			continue
 		}
-		session, err := armDatagramWithControl(lease, control, reply, deadline)
+		session, err := armDatagramWithControlConfig(config, lease, control, reply, deadline)
 		if err == nil {
 			return session, nil
 		}
@@ -1308,6 +1395,10 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 }
 
 func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []byte, deadline time.Time) (*DatagramSession, error) {
+	return armDatagramWithControlConfig(Config{}, lease, control, reply, deadline)
+}
+
+func armDatagramWithControlConfig(config Config, lease ProviderLease, control *net.TCPConn, reply []byte, deadline time.Time) (*DatagramSession, error) {
 	marker := bytes.LastIndex(reply, []byte{4, 1, 1, 0, 1})
 	if marker < 0 || marker+10 > len(reply) {
 		control.Close()
@@ -1336,7 +1427,7 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 		// Use one socket per candidate. A response that arrives late for a
 		// rejected SID then remains queued on the closed socket and cannot arm
 		// the next candidate's association.
-		remote, dialErr := net.DialUDP("udp4", nil, remoteAddress)
+		remote, dialErr := dialProviderUDP(config, remoteAddress.String(), remaining)
 		if dialErr != nil {
 			continue
 		}

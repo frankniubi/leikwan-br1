@@ -179,11 +179,27 @@ public sealed class ExternalUotGrantTests
         Assert.Equal(12, payload["keepalive_seconds"]);
         Assert.Equal(45, payload["reconnect_grace_seconds"]);
         Assert.Equal(1400, payload["frame_payload_max"]);
+        Assert.False(payload.ContainsKey("delivery_mode"));
 
         var json = JsonSerializer.Serialize(payload);
         Assert.Contains("enabled", json, StringComparison.Ordinal);
         Assert.Contains(TargetCanary, json, StringComparison.Ordinal);
         Assert.Contains(TokenCanary, json, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("\"reliable_datagram_v1\"", "reliable_datagram_v1")]
+    [InlineData("\"guaranteed_delivery\"", "guaranteed_delivery")]
+    [InlineData("\"unsupported\"", "unsupported")]
+    [InlineData("null", "invalid")]
+    [InlineData("42", "invalid")]
+    public void DeliveryMode_IsNeverSilentlyDowngraded(string value, string expected)
+    {
+        using var grant = Parse($$"""
+            {"enabled":true,"sidecar_target":"{{TargetCanary}}","token":"{{TokenCanary}}",
+             "delivery_mode":{{value}}}
+            """);
+        Assert.Equal(expected, grant.ToBootstrapPayload()["delivery_mode"]);
     }
 
     [Fact]

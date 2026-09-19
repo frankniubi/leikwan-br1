@@ -9,6 +9,7 @@ package main
 // relay never waits for a response before forwarding the next datagram.
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -82,11 +83,15 @@ type sessionStats struct {
 	udpIn        uint64
 	udpOut       uint64
 	queueDrops   uint64
+	queueBlocked uint64
+	queueTimeout uint64
 	oversizeDrop uint64
 	reattaches   uint64
 }
 
 type uotSession struct {
+	reliable        *reliableDatagrams
+	carrierRunMu    sync.Mutex
 	server          *sidecarServer
 	id              [sessionIDBytes]byte
 	binding         forwardBinding
@@ -94,6 +99,9 @@ type uotSession struct {
 	framePayloadMax int
 	tuner           *adaptiveTuner
 	outbound        chan frame
+	budget          *datagramBudget
+	ctx             context.Context
+	cancel          context.CancelFunc
 	udpConn         *net.UDPConn
 	udpDone         chan struct{}
 
@@ -107,7 +115,9 @@ type uotSession struct {
 }
 
 func newUoTSession(server *sidecarServer, id [sessionIDBytes]byte, binding forwardBinding, target string, framePayloadMax int) *uotSession {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &uotSession{
+		ctx: ctx, cancel: cancel, budget: newDatagramBudget(datagramQueueBytes),
 		server:          server,
 		id:              id,
 		binding:         binding,
@@ -135,6 +145,10 @@ func (s *uotSession) open(dialer *net.Dialer) error {
 		_ = connection.Close()
 		return fmt.Errorf("target resolution did not yield a UDP socket")
 	}
+	recvErr := udpConn.SetReadBuffer(16 << 20)
+	sendErr := udpConn.SetWriteBuffer(16 << 20)
+	recv, send, bufferErr := datagramSocketBuffers(udpConn)
+	s.server.logger.infof("external UoT socket sid=%s rcvbuf=%d sndbuf=%d buffer_error=%t socket_receive_drop=unknown", s.shortID(), recv, send, recvErr != nil || sendErr != nil || bufferErr != nil)
 	s.udpConn = udpConn
 	go s.udpReader()
 	return nil
@@ -152,7 +166,13 @@ func (s *uotSession) udpReader() {
 			return
 		}
 		if count > 0 {
-			s.enqueueUDP(buffer[:count])
+			if !s.enqueueUDP(buffer[:count]) && s.reliable != nil {
+				// Reliable admission failure is terminal. Continuing to read
+				// generated a warning for every subsequent datagram forever.
+				// Do not wait for udpDone from this reader itself.
+				s.closeSockets()
+				return
+			}
 		}
 	}
 }
@@ -171,28 +191,79 @@ func (s *uotSession) nextSequence() uint64 {
 }
 
 func (s *uotSession) enqueueUDP(payload []byte) bool {
-	if s.isClosed() || len(payload) > s.framePayloadMax {
+	if s.isClosed() {
+		return false
+	}
+	if len(payload) > s.framePayloadMax {
 		s.mu.Lock()
 		s.stats.oversizeDrop++
 		s.mu.Unlock()
 		s.tuner.observePressure()
+		if s.reliable != nil {
+			s.reliable.fail(errors.New("reliable payload too large"))
+			s.cancel()
+		}
 		return false
 	}
 	s.tuner.observePayload(len(payload))
-	encoded := append([]byte(nil), payload...)
-	select {
-	case s.outbound <- frame{msgType: msgUDPData, session: s.id, seq: s.nextSequence(), payload: encoded}:
-		s.mu.Lock()
-		s.stats.udpIn++
-		s.mu.Unlock()
+	if s.reliable != nil {
+		if err := s.reliable.enqueue(s.ctx, payload); err != nil {
+			s.server.logger.warnf("external UoT reliable session failed sid=%s reason=%v", s.shortID(), err)
+			s.cancel()
+			if c := s.currentCarrier(); c != nil {
+				c.Close()
+			}
+			return false
+		}
 		return true
-	default:
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, datagramQueueDeadline)
+	defer cancel()
+	blocked, err := s.budget.reserve(ctx, len(payload))
+	if blocked {
 		s.mu.Lock()
-		s.stats.queueDrops++
+		s.stats.queueBlocked++
 		s.mu.Unlock()
-		s.tuner.observePressure()
+	}
+	if err == nil {
+		outgoing := frame{msgType: msgUDPData, session: s.id, seq: s.nextSequence(), payload: append([]byte(nil), payload...)}
+		admitted := false
+		select {
+		case s.outbound <- outgoing:
+			admitted = true
+		default:
+		}
+		if !admitted {
+			if !blocked {
+				s.mu.Lock()
+				s.stats.queueBlocked++
+				s.mu.Unlock()
+			}
+			select {
+			case s.outbound <- outgoing:
+				admitted = true
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		}
+		if admitted {
+			s.mu.Lock()
+			s.stats.udpIn++
+			s.mu.Unlock()
+			return true
+		}
+		s.budget.release(len(payload))
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
+	s.mu.Lock()
+	s.stats.queueDrops++
+	s.stats.queueTimeout++
+	s.mu.Unlock()
+	s.server.logger.warnf("external UoT queue_timeout sid=%s", s.shortID())
+	s.tuner.observePressure()
+	return false
 }
 
 func (s *uotSession) sendToUDP(payload []byte) error {
@@ -286,12 +357,20 @@ func (s *uotSession) graceExpired(now time.Time, grace time.Duration) bool {
 }
 
 func (s *uotSession) close() {
+	s.closeSockets()
+	if s.udpConn != nil {
+		<-s.udpDone
+	}
+}
+
+func (s *uotSession) closeSockets() {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
 	}
 	s.closed = true
+	s.cancel()
 	carrier := s.carrier
 	s.carrier = nil
 	s.mu.Unlock()
@@ -300,7 +379,6 @@ func (s *uotSession) close() {
 	}
 	if s.udpConn != nil {
 		_ = s.udpConn.Close()
-		<-s.udpDone
 	}
 }
 
@@ -362,6 +440,7 @@ func (s *uotSession) carrierWriter(carrier net.Conn, stop <-chan struct{}) error
 		case <-stop:
 			return nil
 		case outgoing := <-s.outbound:
+			s.budget.release(len(outgoing.payload))
 			if s.currentCarrier() != carrier {
 				return nil
 			}
@@ -414,10 +493,13 @@ func newSessionRegistry(server *sidecarServer) *sessionRegistry {
 }
 
 func (r *sessionRegistry) announce(id [sessionIDBytes]byte, binding forwardBinding, target string, requestedMax int) (*uotSession, bool, error) {
+	return r.announceMode(id, binding, target, requestedMax, "raw")
+}
+func (r *sessionRegistry) announceMode(id [sessionIDBytes]byte, binding forwardBinding, target string, requestedMax int, mode string) (*uotSession, bool, error) {
 	r.mu.Lock()
 	existing, present := r.sessions[id]
 	if present && !existing.isClosed() {
-		if existing.binding.forwardID != binding.forwardID || existing.target != target {
+		if existing.binding.forwardID != binding.forwardID || existing.target != target || (existing.reliable != nil) != (mode == reliableDatagramMode) {
 			r.mu.Unlock()
 			return nil, false, protocolError{reason: "session binding mismatch"}
 		}
@@ -434,11 +516,30 @@ func (r *sessionRegistry) announce(id [sessionIDBytes]byte, binding forwardBindi
 		return nil, false, protocolError{reason: "no usable frame payload size"}
 	}
 	session := newUoTSession(r.server, id, binding, target, negotiated)
+	if mode == reliableDatagramMode {
+		session.reliable = newReliableDatagrams()
+	}
 	r.mu.Unlock()
 	if err := session.open(r.server.dialer()); err != nil {
 		return nil, false, connectionError{err: err}
 	}
 	r.mu.Lock()
+	// Opening a UDP socket must not hold the registry lock. Another HELLO may
+	// have installed the same session while open was in progress; preserve that
+	// session's sequence state and close our unused socket.
+	if existing, present := r.sessions[id]; present && !existing.isClosed() {
+		r.mu.Unlock()
+		session.close()
+		if existing.binding.forwardID != binding.forwardID || existing.target != target || (existing.reliable != nil) != (mode == reliableDatagramMode) {
+			return nil, false, protocolError{reason: "session binding mismatch"}
+		}
+		return existing, true, nil
+	}
+	if len(r.sessions) >= r.server.config.sessionLimit {
+		r.mu.Unlock()
+		session.close()
+		return nil, false, protocolError{reason: "session limit reached"}
+	}
 	r.sessions[id] = session
 	r.mu.Unlock()
 	r.server.logger.infof("external UoT session opened sid=%s forward=%d target=%s frame_payload_max=%d",
@@ -494,16 +595,16 @@ type sidecarServer struct {
 
 func newSidecarServer(config sidecarConfig, logger *sidecarLogger) *sidecarServer {
 	server := &sidecarServer{
-		config:   config,
-		logger:   logger,
-		carriers: make(map[net.Conn]struct{}),
+		config:    config,
+		logger:    logger,
+		carriers:  make(map[net.Conn]struct{}),
+		udpDialer: net.Dialer{Timeout: time.Duration(config.udpConnectTimeoutSeconds * float64(time.Second))},
 	}
 	server.registry = newSessionRegistry(server)
 	return server
 }
 
 func (s *sidecarServer) dialer() *net.Dialer {
-	s.udpDialer = net.Dialer{Timeout: time.Duration(s.config.udpConnectTimeoutSeconds * float64(time.Second))}
 	return &s.udpDialer
 }
 
@@ -610,6 +711,9 @@ func (s *sidecarServer) acceptAck(sessionID [sessionIDBytes]byte, session *uotSe
 		"queue_packets":     s.config.queuePackets,
 		"session":           marker,
 	}
+	if session.reliable != nil {
+		payload["delivery_mode"] = reliableDatagramMode
+	}
 	return frame{msgType: msgHelloAck, session: sessionID, payload: encodeJSON(payload)}
 }
 
@@ -658,7 +762,7 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 		s.writeRejection(carrier, errorSessionID, "authentication or target binding failed")
 		return
 	}
-	announced, reattached, err := s.registry.announce(hello.session, binding, helloData.target, helloData.framePayloadMax)
+	announced, reattached, err := s.registry.announceMode(hello.session, binding, helloData.target, helloData.framePayloadMax, helloData.deliveryMode)
 	if err != nil {
 		if isProtocolFailure(err) {
 			s.writeRejection(carrier, errorSessionID, err.Error())
@@ -669,7 +773,18 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 		return
 	}
 	session = announced
-	session.attach(carrier)
+	if session.reliable != nil {
+		// Publish before waiting: a newer attachment must close both an active
+		// carrier and a pending replacement, not wait behind an unclosed stream.
+		session.attach(carrier)
+		session.carrierRunMu.Lock()
+		defer session.carrierRunMu.Unlock()
+		if session.currentCarrier() != carrier {
+			return
+		}
+	} else {
+		session.attach(carrier)
+	}
 	_ = carrier.SetWriteDeadline(time.Now().Add(readTimeout))
 	if err := writeFrame(carrier, s.acceptAck(hello.session, session, reattached), s.config.maxFrameBytes); err != nil {
 		session.detach(carrier)
@@ -678,6 +793,12 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 	}
 	s.logger.infof("external UoT carrier attached sid=%s forward=%d session=%s", session.shortID(), helloData.forwardID, ackMarker(reattached))
 
+	if session.reliable != nil {
+		err := session.runReliableCarrier(carrier)
+		session.detach(carrier)
+		s.logger.infof("external UoT reliable sid=%s stats=%s carrier_error=%v", session.shortID(), encodeJSON(map[string]any{"reliable": session.reliable.snapshot()}), err)
+		return
+	}
 	stop := make(chan struct{})
 	readerErr := make(chan error, 1)
 	writerDone := make(chan struct{})

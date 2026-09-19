@@ -47,7 +47,7 @@ const (
 	minFramePayload          = 256
 	defaultFramePayload      = 1200
 	defaultMaxFrameBytes     = headerSize + maxDatagram
-	defaultQueuePackets      = 256
+	defaultQueuePackets      = 4096
 	defaultKeepaliveSeconds  = 10.0
 	defaultIdleTimeoutSecond = 90.0
 	defaultSessionGraceSec   = 30.0
@@ -67,7 +67,7 @@ func protocolErrf(format string, args ...any) error {
 
 func knownMessageType(msgType byte) bool {
 	switch msgType {
-	case msgHello, msgHelloAck, msgData, msgUDPData, msgClose, msgKeepalive:
+	case msgHello, msgHelloAck, msgData, msgUDPData, msgClose, msgKeepalive, reliableACKType:
 		return true
 	default:
 		return false
@@ -315,6 +315,7 @@ func decodeBase64Loose(value string) ([]byte, bool) {
 }
 
 type helloPayload struct {
+	deliveryMode    string
 	token           string
 	target          string
 	forwardID       int64
@@ -353,7 +354,14 @@ func parseHelloPayload(f frame) (helloPayload, error) {
 	if err != nil {
 		return helloPayload{}, err
 	}
-	return helloPayload{token: token, target: normalized, forwardID: forwardID, framePayloadMax: int(desired)}, nil
+	mode := asJSONString(raw["delivery_mode"])
+	if mode == "" {
+		mode = "raw"
+	}
+	if mode != "raw" && mode != reliableDatagramMode {
+		return helloPayload{}, protocolError{reason: "unsupported delivery mode"}
+	}
+	return helloPayload{deliveryMode: mode, token: token, target: normalized, forwardID: forwardID, framePayloadMax: int(desired)}, nil
 }
 
 // decodeJSONObject mirrors the Python helper: strict JSON object, no trailing data.

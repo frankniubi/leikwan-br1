@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"time"
 )
@@ -50,7 +51,8 @@ func (s *PolicyStore) CandidateSnapshots(protocol string) []RuntimeSnapshot {
 	seen := map[string]bool{}
 	for _, l := range candidates {
 		key := haPathKey(l)
-		if seen[key] || !l.ExpiresAt.After(now) || s.isolated[protocol+":"+key].After(now) {
+		if seen[key] || !l.ExpiresAt.After(now) || s.isolated[protocol+":"+key].After(now) ||
+			operatorQuarantines(s.config, l, protocol, now) {
 			continue
 		}
 		seen[key] = true
@@ -181,13 +183,19 @@ func (s *PolicyStore) authorizedPathKeysLocked() []string {
 // allPathsIsolatedLocked reports whether a protocol has no usable path left,
 // which means the next stream cannot be served at all.
 func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) bool {
-	keys := s.authorizedPathKeysLocked()
-	for _, key := range keys {
+	eligible := 0
+	candidates := append([]*ProviderLease{s.lease}, s.candidates...)
+	for _, lease := range candidates {
+		if lease == nil || operatorQuarantines(s.config, *lease, protocol, now) {
+			continue
+		}
+		eligible++
+		key := haPathKey(*lease)
 		if until, ok := s.isolated[protocol+":"+key]; !ok || !until.After(now) {
 			return false
 		}
 	}
-	return len(keys) > 0
+	return eligible > 0
 }
 
 // collapseGlobalOutageLocked bounds a total outage by the first isolation
@@ -235,11 +243,24 @@ var errHACandidatesUnavailable = errors.New("no healthy authorized candidate")
 // No caller payload has been read when this helper retries. Attempts are scoped
 // to one immutable generation; a concurrent refresh cannot widen its authority.
 func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
-	candidates := s.CandidateSnapshots("tcp")
-	defer wipeSnapshots(candidates)
+	return dialCandidateStreamForProtocol(ctx, s, "tcp", host, port, total, dial)
+}
+
+// Logical UDP uses the same TCP carrier dialer, but has independent health and
+// quarantine state. A failed user-TCP path must not evict a working UoT carrier.
+func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protocol, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
+	if protocol != "tcp" && protocol != "udp" {
+		return nil, RuntimeSnapshot{}, ErrPolicyInvalid
+	}
+	candidates := s.CandidateSnapshots(protocol)
+	// A setup-only retry may append an owned lease clone below.
+	defer func() { wipeSnapshots(candidates) }()
 	active, activeOK := s.ActiveSnapshot()
 	if activeOK {
 		defer active.Lease.wipe()
+		if operatorQuarantines(s.config, active.Lease, protocol, time.Now()) {
+			activeOK = false // Never bypass operator exclusion through rescue.
+		}
 	}
 	if total <= 0 {
 		total = 15 * time.Second
@@ -249,8 +270,27 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 		deadline = d
 	}
 	last := error(errHACandidatesUnavailable)
+	var first error
 	activeAttempted := false
-	for i, ss := range candidates {
+	for i := 0; i < len(candidates); i++ {
+		ss := candidates[i]
+		if i > 0 {
+			// Desynchronize a burst of failed 128-worker connections. This is
+			// inside the original setup deadline and never replays user bytes.
+			pause := time.Duration(10+rand.IntN(41)) * time.Millisecond
+			if remaining := time.Until(deadline); pause > remaining/4 {
+				pause = remaining / 4
+			}
+			if pause > 0 {
+				timer := time.NewTimer(pause)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: ctx.Err()}
+				case <-timer.C:
+				}
+			}
+		}
 		if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
 			activeAttempted = true
 		}
@@ -262,7 +302,7 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, RuntimeSnapshot{}, context.DeadlineExceeded
+			return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: context.DeadlineExceeded}
 		}
 		budget := remaining / time.Duration(len(candidates)-i)
 		if budget > 3*time.Second {
@@ -319,9 +359,24 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 		if c != nil {
 			c.Close()
 		}
-		s.FailCandidate("tcp", ss.Lease)
-		log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e))
+		s.FailCandidate(protocol, ss.Lease)
+		log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e), ss.Lease.CandidateKeyHash, ss.Lease.LeaseHash, haPathKey(ss.Lease), tcpTargetHash(net.JoinHostPort(host, fmt.Sprint(port))))
+		if first == nil {
+			first = e
+		}
 		last = e
+		// With one eligible TCP path, the per-attempt cap used to discard
+		// the rest of the total setup budget after one transient timeout.
+		// Retry at most once, before reading any caller payload. Do not
+		// retry EOF/protocol rejection or replay an established stream.
+		var timeout net.Error
+		if protocol == "tcp" && i == 0 && len(candidates) == 1 &&
+			(errors.Is(e, context.DeadlineExceeded) || (errors.As(e, &timeout) && timeout.Timeout())) &&
+			ctx.Err() == nil && time.Until(deadline) > 100*time.Millisecond && s.acceptsInFlight(ss) {
+			retry := ss
+			retry.Lease = cloneHALease(ss.Lease)
+			candidates = append(candidates, retry)
+		}
 	}
 	// A probe can reject every fresh candidate during a transient false
 	// negative even though the path that was carrying traffic still works. Give
@@ -338,7 +393,7 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 			log.Printf("active candidate forwarding test started protocol=tcp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
 			connection, err := dial(active.Lease, host, port, budget)
 			if err == nil {
-				s.ClearPathFailure("tcp", haPathKey(active.Lease))
+				s.ClearPathFailure(protocol, haPathKey(active.Lease))
 				fallback := RuntimeSnapshot{Policy: active.Policy, Lease: cloneHALease(active.Lease)}
 				active.Lease.wipe()
 				active = RuntimeSnapshot{}
@@ -346,8 +401,11 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 				return connection, fallback, nil
 			}
 			last = err
+			if first == nil {
+				first = err
+			}
 			log.Printf("active candidate forwarding test failed protocol=tcp forward_id=%d selection_ref=%s generation=%s reason=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err))
 		}
 	}
-	return nil, RuntimeSnapshot{}, fmt.Errorf("%w: %v", errHACandidatesUnavailable, last)
+	return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: errHACandidatesUnavailable}
 }
