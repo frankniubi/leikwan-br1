@@ -25,16 +25,31 @@
 therefore fail-closed and does not change current client routing. Enabling it
 requires per-node secrets and verified agent access for every candidate node.
 
-## Remaining blocker
+## Fleet upgrade completed
 
-Production combinations currently reference these UoT targets:
-`70.36.96.183`, `77.93.90.45`, `103.246.219.39`, `157.228.138.23`,
-`208.122.17.50`, and `185.220.238.143`. The local credential files only
-provide SSH access for Tokyo and selected legacy Hong Kong hosts; the other
-UoT targets rejected the available passwords or had SSH unavailable. Their
-UoT ports are reachable, but remote upgrade cannot be claimed without
-operator-provided SSH keys/passwords or an existing authenticated update
-channel. No guessing or slave/CDN hop was introduced.
+After the correct `uot-sidecars.txt` root credentials were supplied, all five
+listed UoT hosts were upgraded serially from `2026.09.17.2.95535c6` to
+`2026.09.19.1.f18d01fb`, with the manifest SHA-256
+`c6d11563b8c1b8a28f2d8b3a9422d4215ccc67755a0d0d32e059eba40dfd5317`.
+Each host kept a root backup under `/root/backups/uot-upgrade-20260919-*`;
+the installer also created its own binary/config rollback directory.
+
+Upgraded hosts and post-upgrade configured forward counts:
+
+| root host | forwards | service/listener |
+|---|---:|---|
+| `70.36.96.183` | 10 | active / `:7443` |
+| `77.93.90.45` | 2 | active / `:7443` |
+| `103.246.219.39:27789` | 3 | active / `:7443` |
+| `157.228.138.23` | 1 | active / `:7443` |
+| `208.122.17.50` | 3 | active / `:7443` |
+
+Tokyo `185.220.238.143` was already on the same version and was left
+running; its configured 15-forward endpoint also passed the canary.
+
+Post-upgrade live UOT2 HELLO/HELLO_ACK canaries passed for all six targets,
+using each target's live panel-generated forward token. No secrets are
+recorded here.
 
 ## Verification
 
