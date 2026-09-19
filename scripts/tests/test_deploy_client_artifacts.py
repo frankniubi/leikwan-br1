@@ -13,6 +13,14 @@ deploy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy)
 
 
+class VersionTests(unittest.TestCase):
+    def test_runtime_source_suffix_is_not_a_release_component(self):
+        self.assertEqual(deploy.numeric_version('2026.09.19.1.1234567'), (2026, 9, 19, 1))
+        self.assertEqual(deploy.numeric_version('2026.09.19.1.abcdef0'), (2026, 9, 19, 1))
+        self.assertEqual(deploy.numeric_version('1.0.45'), (1, 0, 45))
+        self.assertEqual(deploy.numeric_version('0.1.20.52'), (0, 1, 20, 52))
+
+
 @unittest.skipUnless(os.name == 'posix', 'atomic fsync and ownership integration requires POSIX')
 class GuardedDeployTests(unittest.TestCase):
     def setUp(self):
