@@ -53,7 +53,7 @@ LOCKS = ('/tmp/codex-coordinated-release.lock', '/tmp/leikwan-windows-native-ren
 def numeric_version(value):
     # Runtime versions historically append a source SHA after the numeric release.
     # Compare release components, not the non-orderable build identity.
-    match = re.fullmatch(r'(\d+(?:\.\d+)*)(?:\.[0-9a-f]{7,40})?', str(value))
+    match = re.fullmatch(r'(\d+(?:\.\d+){2,3})(?:\.[0-9a-f]{7,40})?', str(value))
     if not match:
         raise ValueError('invalid artifact version: ' + str(value))
     return tuple(map(int, match.group(1).split('.')))
