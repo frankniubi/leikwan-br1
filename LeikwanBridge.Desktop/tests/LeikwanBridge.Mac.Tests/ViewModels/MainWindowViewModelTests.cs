@@ -868,6 +868,7 @@ public sealed class MainWindowViewModelTests
         Assert.Equal("Starting routes", vm.BusyMessage);
         controller.RaiseLog("preparing_routes:2/5");
         Assert.Equal("Starting routes 2/5", vm.BusyMessage);
+        Assert.DoesNotContain(vm.Logs, message => message.EndsWith("preparing_routes:2/5", StringComparison.Ordinal));
         controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = false, IsBusy = true });
         Assert.Equal("Signing in", vm.BusyMessage);
     }

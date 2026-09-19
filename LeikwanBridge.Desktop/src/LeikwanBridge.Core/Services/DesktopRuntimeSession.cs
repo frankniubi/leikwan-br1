@@ -61,6 +61,12 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     private readonly int _healthIntervalSeconds;
     private readonly TimeSpan _heartbeatInterval;
     private readonly SemaphoreSlim _heartbeatGate = new(1, 1);
+    private readonly object _heartbeatScheduleGate = new();
+    private readonly object _heartbeatNoticeGate = new();
+    private DateTimeOffset _lastHeartbeatScheduledAtUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+    private int _consecutiveHeartbeatFailures;
+    private static readonly TimeSpan HeartbeatFailureNoticeInterval = TimeSpan.FromMinutes(5);
     private readonly object _taskLock = new();
     private CancellationTokenSource? _cts;
     private Task? _heartbeatLoop;
@@ -88,7 +94,9 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _diagnostics = diagnostics;
         _pollIntervalSeconds = Math.Max(1, pollIntervalSeconds);
         _healthIntervalSeconds = Math.Max(1, healthIntervalSeconds);
-        _heartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(30);
+        _heartbeatInterval = heartbeatInterval is { } interval && interval > TimeSpan.Zero
+            ? interval
+            : TimeSpan.FromSeconds(30);
         _polling.ForwardsUpdated += OnForwardsUpdated;
         _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
@@ -328,7 +336,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
-                await SendHeartbeatSafeAsync(ct);
+                QueueHeartbeat();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -337,6 +345,14 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 
     private void QueueHeartbeat()
     {
+        lock (_heartbeatScheduleGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastHeartbeatScheduledAtUtc < _heartbeatInterval)
+                return;
+            _lastHeartbeatScheduledAtUtc = now;
+        }
+
         var ct = _cts?.Token ?? CancellationToken.None;
         var task = SendHeartbeatSafeAsync(ct);
         lock (_taskLock)
@@ -356,13 +372,31 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             {
                 _heartbeatGate.Release();
             }
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures = 0;
+                _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
+            var shouldNotify = false;
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures++;
+                var now = DateTimeOffset.UtcNow;
+                if (_consecutiveHeartbeatFailures == 1
+                    || now - _lastHeartbeatNoticeAtUtc >= HeartbeatFailureNoticeInterval)
+                {
+                    _lastHeartbeatNoticeAtUtc = now;
+                    shouldNotify = true;
+                }
+            }
+            if (shouldNotify)
+                LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
         }
     }
 

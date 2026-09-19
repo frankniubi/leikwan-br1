@@ -120,6 +120,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
             {
                 _preparationProgress = message["preparing_routes:".Length..];
                 OnPropertyChanged(nameof(BusyMessage));
+                // Route preparation is transient UI progress, not an activity
+                // log entry. Keeping it out of Logs prevents one entry per
+                // forward on every reconciliation pass.
+                return;
             }
             else if (message is "preparing_config" or "connected" or "connection_failed")
             {
