@@ -50,18 +50,10 @@ middle of an acceptance run.
 
 This is bounded best-effort UDP backpressure, **not** an application-level
 delivery ACK or durable exactly-once service.
-# Installed desktop canary compatibility
+## Desktop compatibility
 
-`desktop-installed-1.0.44-compat.patch` is **not part of the master-based UoT
-feature**. It reproduces the already-installed desktop Core dependencies from
-commit `c5da15b1d53c4ad755f7a13f8054cb23a6fb1732` relative to master
-`72b086224ac3b5078fd1e536b0ee33056de64745`, for the copied 1.0.44 macOS canary
-bundle only. No dirty original-worktree changes are included.
-
-The installed executable references AssemblyVersion `1.0.44.0` and logging
-types absent from master. A master-only Core DLL therefore cannot be swapped
-into it. Build an isolated copy of the candidate Core with this compatibility
-patch and `-p:Version=1.0.44 -p:AssemblyVersion=1.0.44.0
--p:FileVersion=1.0.44.0`; run the full Core tests on that copy before use.
-This is a private compatibility canary, not a republished signed release.
-For production, rebuild the entire matching desktop package atomically instead.
+The earlier 1.0.44 private canary needed Core APIs from committed desktop
+baseline `c5da15b1` which were absent from the older master snapshot.
+The coordinated release integrates that baseline and rebuilds the entire
+matching desktop package atomically. Do not swap a differently versioned
+Core DLL into an installed application or ship the private canary wrapper.
