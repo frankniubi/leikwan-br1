@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -102,10 +103,38 @@ func (s *PolicyStore) FailPath(protocol, key, generation string) bool {
 // FailSilentPath records a failure that is only suspicious in repetition: a
 // stream that connected and then returned nothing. One of those can be a client
 // that gave up too early, so it takes pathIsolationMinStrikes of them in a row.
+//
+// This isolation is business evidence: a real request reached the relay and came
+// back as a reset. The active-path fallback must not clear it on a bare
+// handshake, or the fallback would defeat the isolation it exists to respect.
 func (s *PolicyStore) FailSilentPath(protocol, key, generation string) bool {
+	return s.failSilentPath(protocol, key, generation, true)
+}
+
+func (s *PolicyStore) failSilentPath(protocol, key, generation string, business bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.failPathLocked(protocol, key, generation, pathIsolationMinStrikes)
+	isolated := s.failPathLocked(protocol, key, generation, pathIsolationMinStrikes)
+	if isolated && business {
+		if s.businessPathIsolation == nil {
+			s.businessPathIsolation = map[string]bool{}
+		}
+		s.businessPathIsolation[protocol+":"+key] = true
+	}
+	return isolated
+}
+
+// businessPathIsIsolated reports whether the path's current isolation came from
+// repeated business-stream evidence rather than from a probe false negative.
+// Only business evidence is strong enough to refuse the active-path fallback.
+func (s *PolicyStore) businessPathIsIsolated(protocol, key string) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stateKey := protocol + ":" + key
+	return s.businessPathIsolation[stateKey] && s.isolated[stateKey].After(time.Now())
 }
 
 // ClearPathFailure forgets both the isolation and the escalation streak: the
@@ -119,6 +148,7 @@ func (s *PolicyStore) ClearPathFailure(protocol, key string) {
 	defer s.mu.Unlock()
 	delete(s.pathFailures, stateKey)
 	delete(s.isolated, stateKey)
+	delete(s.businessPathIsolation, stateKey)
 }
 
 func (s *PolicyStore) failCandidateKey(protocol, key, generation string) {
@@ -218,7 +248,15 @@ func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) boo
 // storm against a pool that really is down, which is what the first window
 // exists to prevent.
 func (s *PolicyStore) collapseGlobalOutageLocked(protocol string, now time.Time) {
-	s.pathFailures = map[string]int{}
+	// Protocol isolation: a total outage on one protocol must not erase the
+	// failure streak another protocol accumulated against the same relay. Only
+	// this protocol's streak is collapsed.
+	prefix := protocol + ":"
+	for stateKey := range s.pathFailures {
+		if strings.HasPrefix(stateKey, prefix) {
+			delete(s.pathFailures, stateKey)
+		}
+	}
 	limit := now.Add(pathIsolationWindows[0])
 	for _, key := range s.authorizedPathKeysLocked() {
 		stateKey := protocol + ":" + key
@@ -234,6 +272,43 @@ func (s *PolicyStore) pathIsAuthorizedLocked(key string) bool {
 		matched = matched || (l != nil && haPathKey(*l) == key)
 	}
 	return matched
+}
+
+// dialCandidateAttempt runs one candidate dial under a cancellation-aware budget.
+// A dialer that ignores its own timeout must not be able to block runtime
+// cancellation, and the worker owns the cloned lease secrets until it exits.
+func dialCandidateAttempt(ctx context.Context, lease ProviderLease, host string, port int, budget time.Duration, dial candidateStreamDial) (net.Conn, error) {
+	owned := cloneHALease(lease)
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	result := make(chan dialResult)
+	attempt, stop := context.WithTimeout(ctx, budget)
+	defer stop()
+	go func() {
+		defer owned.wipe()
+		c, e := dial(owned, host, port, budget)
+		select {
+		case result <- dialResult{c, e}:
+		case <-attempt.Done():
+			if c != nil {
+				c.Close()
+			}
+		}
+	}()
+	select {
+	case r := <-result:
+		if err := attempt.Err(); err != nil {
+			if r.conn != nil {
+				r.conn.Close()
+			}
+			return nil, err
+		}
+		return r.conn, r.err
+	case <-attempt.Done():
+		return nil, attempt.Err()
+	}
 }
 
 type candidateStreamDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)
@@ -383,7 +458,11 @@ func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protoco
 	// that active path one real target-forwarding attempt before surfacing
 	// no_healthy_candidate. The attempt stays inside the same lease/policy
 	// generation checks and never widens the authorized candidate set.
-	if activeOK && !activeAttempted && s.acceptsInFlight(active) && ctx.Err() == nil {
+	// Business-read resets are stronger evidence than a probe false negative. An
+	// active path isolated by real business failures must not be rescued by
+	// another bare handshake.
+	if activeOK && !activeAttempted && s.acceptsInFlight(active) && ctx.Err() == nil &&
+		!s.businessPathIsIsolated(protocol, haPathKey(active.Lease)) {
 		remaining := time.Until(deadline)
 		if remaining > 0 {
 			budget := remaining
@@ -391,9 +470,24 @@ func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protoco
 				budget = 3 * time.Second
 			}
 			log.Printf("active candidate forwarding test started protocol=tcp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
-			connection, err := dial(active.Lease, host, port, budget)
+			connection, err := dialCandidateAttempt(ctx, active.Lease, host, port, budget, dial)
+			if ctx.Err() != nil {
+				if connection != nil {
+					connection.Close()
+				}
+				return nil, RuntimeSnapshot{}, ctx.Err()
+			}
 			if err == nil {
-				s.ClearPathFailure(protocol, haPathKey(active.Lease))
+				if !s.acceptsInFlight(active) {
+					connection.Close()
+					return nil, RuntimeSnapshot{}, ErrPolicyExpired
+				}
+				if s.businessPathIsIsolated(protocol, haPathKey(active.Lease)) {
+					connection.Close()
+					return nil, RuntimeSnapshot{}, errHACandidatesUnavailable
+				}
+				// A handshake is not business availability. The path is left
+				// isolated until relayTCP observes actual remote payload bytes.
 				fallback := RuntimeSnapshot{Policy: active.Policy, Lease: cloneHALease(active.Lease)}
 				active.Lease.wipe()
 				active = RuntimeSnapshot{}

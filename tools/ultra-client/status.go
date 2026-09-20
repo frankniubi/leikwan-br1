@@ -32,6 +32,9 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
+	// UDPTransport reports which UDP data plane is actually in use, as selected
+	// by the effective bootstrap, so the panel never has to guess.
+	UDPTransport               string         `json:"udp_transport,omitempty"`
 	OperatorQuarantineProtocol string         `json:"operator_quarantine_protocol,omitempty"`
 	OperatorQuarantineActive   bool           `json:"operator_quarantine_active"`
 	OperatorQuarantineUntil    string         `json:"operator_quarantine_until,omitempty"`
@@ -119,6 +122,19 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 			RuntimeAttestation:  &attestation,
 		},
 	}
+}
+
+// RecordTransportConfig exposes only the selected transport, never bootstrap
+// credentials. Desktop bootstrap is stdin-only, so disk config is not evidence.
+func (writer *StatusWriter) RecordTransportConfig(config Config) {
+	mode := "disabled"
+	if stringsContainsUDP(config.Transport) {
+		mode = "native_udp"
+		if externalUoTEnabled(config) {
+			mode = "external_uot"
+		}
+	}
+	writer.update(func(status *RuntimeStatus) { status.UDPTransport = mode })
 }
 
 func (writer *StatusWriter) UpdateLocation(location LocationResult) {
