@@ -143,7 +143,22 @@ final class ExternalUoTPool
                     $best = $score;
                 }
             }
-            if ($managed && $winner === null) {
+            if (!$managed) {
+                // No node lists this origin, so the pool cannot manage the
+                // forward and leaves its original sidecar_target in place. The
+                // forward then fails later at HELLO admission with the opaque
+                // "forward is not allowed". Say so here instead, and name the
+                // origin, so a new forward that the operator forgot to add to
+                // every node's origins is not a silent gap.
+                error_log(sprintf(
+                    'external UoT pool has no node for origin %s (forward %s, client %d)',
+                    $origin,
+                    (string) ($forward['id'] ?? $forward['forward_id'] ?? '?'),
+                    $clientId
+                ));
+                continue;
+            }
+            if ($winner === null) {
                 throw new ApiException('external_uot_pool_unavailable', 503);
             }
             if ($winner !== null) {

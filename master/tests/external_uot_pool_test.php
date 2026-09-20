@@ -48,7 +48,18 @@ try {
     catch (ApiException $e) {}
     $unmanaged = $forwards;
     $unmanaged[0]['external_uot']['sidecar_target'] = 'other.test:7443';
-    checkPool($pool->assign(1, 'd', $unmanaged, 146) === $unmanaged, 'unmanaged changed');
+    $logFile = $dir . '/pool-diagnostic.log';
+    $previousLog = ini_get('error_log');
+    ini_set('error_log', $logFile);
+    $unmanagedResult = $pool->assign(1, 'd', $unmanaged, 146);
+    ini_set('error_log', $previousLog === false ? '' : $previousLog);
+    $diagnostic = is_file($logFile) ? (string) file_get_contents($logFile) : '';
+    checkPool($unmanagedResult === $unmanaged, 'unmanaged changed');
+    // An origin no node lists is left as-is, so the forward would fail later at
+    // HELLO admission with an opaque "forward is not allowed". That silent gap
+    // must at least name the origin and the forward.
+    checkPool(str_contains($diagnostic, 'other.test:7443') && str_contains($diagnostic, 'forward 17'),
+        'uncovered origin did not report the gap');
     $reliable = $forwards;
     $reliable[0]['external_uot']['delivery_mode'] = 'reliable_datagram_v1';
     $pool->heartbeat('la1', true, str_repeat('c', 64), 150);
@@ -63,7 +74,7 @@ try {
     putenv('EXTERNAL_UOT_POOL_JSON={bad');
     try { new ExternalUoTPool($config); throw new RuntimeException('bad JSON allowed'); }
     catch (JsonException $e) {}
-    echo "PASS pool auth, stable distribution, failover, stale/future heartbeat, protocol compatibility, reliable gating, config scope\n";
+    echo "PASS pool auth, stable distribution, failover, stale/future heartbeat, protocol compatibility, reliable gating, config scope, uncovered-origin visibility\n";
 } finally {
     foreach (glob($dir . '/*.json') ?: [] as $file) { unlink($file); }
     if (is_dir($dir)) { rmdir($dir); }

@@ -94,6 +94,32 @@ class PoolAgentTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b'original')
             self.assertEqual(path.with_suffix('.json.pool-backup').read_bytes(), b'original')
 
+    def test_probe_covers_every_binding_not_just_the_first(self):
+        # A newly added forward used to escape the health check entirely because
+        # probe() only ever exercised the lowest forward id. The node then kept
+        # reporting healthy while the new binding was broken.
+        config = {'listen_host': '127.0.0.1', 'listen_port': 9,
+                  'forwards': {'17': {'token': 'good', 'targets': []},
+                               '200': {'token': 'broken', 'targets': []}}}
+        probed = []
+
+        def fake(config_arg, fid, binding, udp):
+            probed.append(str(fid))
+            return str(fid) == '17'
+
+        with patch.object(agent, 'probe_forward', side_effect=fake):
+            self.assertFalse(agent.probe(config))
+        self.assertEqual(probed, ['17', '200'], 'probe stopped before checking every binding')
+
+    def test_probe_healthy_only_when_all_bindings_pass(self):
+        config = {'listen_host': '127.0.0.1', 'listen_port': 9,
+                  'forwards': {'17': {'token': 'good', 'targets': []},
+                               '200': {'token': 'good', 'targets': []}}}
+        with patch.object(agent, 'probe_forward', return_value=True):
+            self.assertTrue(agent.probe(config))
+        with patch.object(agent, 'probe_forward', return_value=False):
+            self.assertFalse(agent.probe(config))
+
 
 if __name__ == '__main__':
     unittest.main()
