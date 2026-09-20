@@ -35,6 +35,11 @@ import urllib.parse
 import urllib.request
 
 AGENT_VERSION = "2026.09.19.1"
+
+# Last content written to each managed runtime file. The restart decision needs
+# it to distinguish a real contract change from a volatile-field rotation: a new
+# policy_generation rewrites the file but must not cycle the forward service.
+WRITTEN_RUNTIME_CONTENT: dict[str, str] = {}
 UPDATE_RETRY_SECONDS = 300
 
 
@@ -1453,6 +1458,33 @@ class ClientAgent:
             logging.warning("debug log upload failed: %s", exc)
 
     @staticmethod
+    def restart_relevant_content(service_name: str, content: str) -> str:
+        """Content with volatile fields removed, for restart decisions only.
+
+        rendered_runtime_signature already strips policy_generation so that a
+        policy rotation does not look like a contract change. The restart check
+        in _apply_forward_locked compared raw bytes instead, so every rotation
+        rewrote the ultra config, reported files_changed, and restarted the
+        forward service. That restart is what the operator sees as a drop: the
+        listener disappears for tens of seconds while the unit cycles.
+
+        Only the restart decision is normalised here. The file on disk still
+        receives the real content, so the running runtime and any later read see
+        the true generation.
+        """
+        if not service_name.startswith("ultra-forward-"):
+            return content
+        try:
+            decoded = json.loads(content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return content
+        if not isinstance(decoded, dict) or "policy_generation" not in decoded:
+            return content
+        decoded = dict(decoded)
+        decoded.pop("policy_generation", None)
+        return json.dumps(decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
     def write_text_if_changed(path: pathlib.Path, content: str, mode: int | None = None) -> bool:
         existing = None
         if path.exists():
@@ -1465,6 +1497,7 @@ class ClientAgent:
         if changed:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
+            WRITTEN_RUNTIME_CONTENT[str(path)] = content
 
         if mode is not None and path.exists() and os.name != "nt":
             current_mode = path.stat().st_mode & 0o777
@@ -3625,13 +3658,26 @@ class ClientAgent:
 
             for file_entry in unit.get("files", []):
                 extra_path = pathlib.Path(str(file_entry["path"]))
+                desired_content = str(file_entry.get("content", ""))
                 file_changed = self.write_text_if_changed(
                     extra_path,
-                    str(file_entry.get("content", "")),
+                    desired_content,
                     int(file_entry["mode"]) if "mode" in file_entry and file_entry.get("mode") is not None else None,
                 )
                 restart_on_change = file_entry.get("restart_on_change") is not False
-                files_changed = files_changed or (file_changed and restart_on_change)
+                if file_changed and restart_on_change:
+                    # A write is only a restart reason when the restart-relevant
+                    # content actually differs. A bare policy_generation rotation
+                    # rewrites the file and must not cycle the service; the new
+                    # lease is delivered to the running runtime instead.
+                    previous_content = WRITTEN_RUNTIME_CONTENT.get(str(extra_path))
+                    if previous_content is None:
+                        restart_relevant = True
+                    else:
+                        restart_relevant = self.restart_relevant_content(
+                            service_name, previous_content
+                        ) != self.restart_relevant_content(service_name, desired_content)
+                    files_changed = files_changed or restart_relevant
                 managed_paths.append(str(extra_path))
 
             service_active = self.systemd_is_active(service_name)
