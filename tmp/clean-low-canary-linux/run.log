@@ -1,7 +1,0 @@
-06:43:35 prewarm udp_replies=1
-06:43:35 soak start duration=120s pps=10 tunnel=('127.0.0.1', 10001) direct=('185.220.238.143', 60000)
-06:45:39 tunnel-udp  sent=1200 recv=1200 loss=0.00% rtt p50=49.56 p95=50.83 p99=53.6 max=105.72
-06:45:39 direct-udp  sent=1200 recv=1082 loss=9.83% rtt p50=119.02 p95=130.11 p99=131.87 max=133.46
-06:45:39 tunnel-tcp  connects=1 breaks=0 hb_ok=120/120 rtt p50=46.59 p95=48.24
-06:45:39 direct-tcp  connects=1 breaks=0 hb_ok=120/120 rtt p50=119.07 p95=454.09
-06:45:39 summary -> /tmp/ultra-clean-low-canary/soak/summary.json

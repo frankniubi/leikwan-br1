@@ -1,7 +1,0 @@
-11:28:00 prewarm udp_replies=1
-11:28:00 soak start duration=60s pps=10 tunnel=('127.0.0.1', 10001) direct=('185.220.238.143', 60000)
-11:29:03 tunnel-udp  sent=600 recv=600 loss=0.00% rtt p50=47.98 p95=49.37 p99=52.22 max=65.19
-11:29:03 direct-udp  sent=600 recv=504 loss=16.00% rtt p50=77.46 p95=82.63 p99=86.69 max=98.83
-11:29:03 tunnel-tcp  connects=1 breaks=0 hb_ok=60/60 rtt p50=48.47 p95=50.64
-11:29:03 direct-tcp  connects=1 breaks=0 hb_ok=60/60 rtt p50=76.44 p95=375.89
-11:29:03 summary -> /tmp/ultra-udp-recovery/soak/summary.json
