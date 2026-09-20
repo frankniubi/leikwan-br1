@@ -36,7 +36,8 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             return [];
         }
         $requested = $this->eligibleForwards(
-            ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId)
+            (new ExternalUoTPool($this->config))->assign($clientId, $deviceId,
+                ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId))
         );
         if ($requested === []) {
             return [];

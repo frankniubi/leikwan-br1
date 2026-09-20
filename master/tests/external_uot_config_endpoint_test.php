@@ -18,6 +18,15 @@ namespace Leikwan\Master {
         public function __construct()
         {
         }
+        public function get(string $key, ?string $default = null): ?string
+        {
+            $value = getenv($key);
+            return $value === false ? $default : $value;
+        }
+        public function getInt(string $key, int $default = 0): int
+        {
+            return (int) $this->get($key, (string) $default);
+        }
     }
 }
 
@@ -69,6 +78,7 @@ namespace {
     require_once __DIR__ . '/../src/Http/Response.php';
     require_once __DIR__ . '/../src/Controllers/BaseController.php';
     require_once __DIR__ . '/../src/Controllers/ExternalUotConfigController.php';
+    require_once __DIR__ . '/../src/Support/ExternalUoTPool.php';
 
     use Leikwan\Master\Config;
     use Leikwan\Master\Controllers\ExternalUotConfigController;
@@ -272,6 +282,30 @@ namespace {
     [$status, $payload] = call(['host' => '70.36.96.183'], null, $combinations, $forwardRows, '185.220.238.143');
     checkSame('query-host', $payload['panel']['request']['host_source'], 'explicit host wins over remote address');
     checkSame(['190'], array_map('strval', array_keys($payload['forwards'])), 'explicit host selects its own combination');
+
+    // Pool endpoint: host selection never substitutes for bearer authentication.
+    putenv('EXTERNAL_UOT_POOL_JSON=' . json_encode([[
+        'id' => 'la1', 'target' => 'la1.test:7443', 'secret' => str_repeat('s', 32),
+        'origins' => ['185.220.238.143:7443'],
+    ]]));
+    $poolController = new ExternalUotConfigController(new Config());
+    $dbProperty = new ReflectionProperty(\Leikwan\Master\Controllers\BaseController::class, 'db');
+    $poolDb = $dbProperty->getValue($poolController);
+    $poolDb->combinationRows = $combinations;
+    $poolDb->forwardRows = $forwardRows;
+    $poolRequest = static fn(string $method, array $body = [], string $token = '') => new Request(
+        $method, '/api/external-uot/pool/la1/config', [], $body,
+        $token === '' ? [] : ['Authorization' => 'Bearer ' . $token], ''
+    );
+    checkSame(401, $poolController->poolNode($poolRequest('GET'), ['id' => 'la1'])->status(), 'pool denies anonymous');
+    $poolResponse = $poolController->poolNode($poolRequest('GET', [], str_repeat('s', 32)), ['id' => 'la1']);
+    checkSame(200, $poolResponse->status(), 'pool authenticated config');
+    $poolPayload = json_decode($poolResponse->body(), true);
+    checkSame(['170', '171', '172'], array_map('strval', array_keys($poolPayload['config']['forwards'])), 'pool standby has matching bindings');
+    checkSame(64, strlen($poolPayload['config_hash']), 'pool config digest');
+    checkSame(409, $poolController->poolNode($poolRequest('POST', ['healthy' => true, 'config_hash' => str_repeat('0', 64)], str_repeat('s', 32)), ['id' => 'la1'])->status(), 'pool rejects stale config heartbeat');
+    checkSame(401, $poolController->poolNode($poolRequest('POST', [], str_repeat('s', 32)), ['id' => 'la2'])->status(), 'pool token scoped to node');
+    putenv('EXTERNAL_UOT_POOL_JSON');
 
     if ($failures > 0) {
         fwrite(STDERR, "external_uot_config_endpoint_test: $failures of $checks checks failed\n");
