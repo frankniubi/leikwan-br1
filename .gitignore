@@ -85,3 +85,14 @@ artifacts/windows/leikwan-bridge-setup.exe
 /artifacts/macos/*.zip
 /artifacts/macos/*-metadata.json
 .gstack/
+
+# ---------------------------------------------------------------------------
+# These directories are scratch/build output and must never be tracked again.
+# Nearly 5.5 GB of publish trees, installers, .dmg/.zip/.apk output, crash hang
+# dumps and agent session logs had accumulated here because the narrow rules
+# below/above were added *after* the files were already committed -- and
+# gitignore never applies to already-tracked files. The broad rules win now.
+# ---------------------------------------------------------------------------
+/tmp/
+/artifacts/
+/LeikwanBridge.Desktop/tests/**/TestResults/

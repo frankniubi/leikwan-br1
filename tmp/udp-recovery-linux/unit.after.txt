@@ -1,3 +1,0 @@
-MainPID=4168421
-NRestarts=0
-ExecMainStartTimestamp=Wed 2026-09-16 19:11:57 CST

@@ -1,4 +1,0 @@
-<?xml version="1.0"?>
-<TestSequence>
-  <Test Name="LeikwanBridge.Mac.Tests.ViewModels.MainWindowViewModelTests.StopDuringForwardPreparationCancelsWithoutLaunchingProxy" DisplayName="LeikwanBridge.Mac.Tests.ViewModels.MainWindowViewModelTests.StopDuringForwardPreparationCancelsWithoutLaunchingProxy" Source="C:\Users\frankniubi\Downloads\leikwan-br1\LeikwanBridge.Desktop\tests\LeikwanBridge.Mac.Tests\bin\Debug\net8.0\LeikwanBridge.Mac.Tests.dll" Completed="False" />
-</TestSequence>

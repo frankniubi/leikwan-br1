@@ -1,1 +1,0 @@
-{"at": "2026-09-13T14:39:43Z", "elapsed_s": 601.6, "legs": {"tunnel-udp": {"sent": 18570, "recv": 18570}, "direct-udp": {"sent": 18570, "recv": 17987}}, "tcp": {"tunnel-tcp": {"connects": 1, "breaks": 0, "hb_sent": 600, "hb_ok": 600}, "direct-tcp": {"connects": 1, "breaks": 0, "hb_sent": 600, "hb_ok": 600}}}

@@ -1,7 +1,0 @@
-06:32:28 prewarm udp_replies=0
-06:32:28 soak start duration=30s pps=10 tunnel=('127.0.0.1', 10001) direct=('185.220.238.143', 60000)
-06:33:01 tunnel-udp  sent=300 recv=197 loss=34.33% rtt p50=50.73 p95=637.14 p99=1420.31 max=1615.06
-06:33:01 direct-udp  sent=300 recv=272 loss=9.33% rtt p50=111.68 p95=128.44 p99=130.81 max=138.59
-06:33:01 tunnel-tcp  connects=1 breaks=11 hb_ok=19/19 rtt p50=51.22 p95=60.59
-06:33:01 direct-tcp  connects=1 breaks=0 hb_ok=30/30 rtt p50=109.45 p95=438.35
-06:33:01 summary -> /tmp/ultra-udp-boundary-fresh/1272/soak/summary.json
