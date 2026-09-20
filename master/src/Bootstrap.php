@@ -428,6 +428,8 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-bond-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/install-external-uot.sh', [$artifacts, 'installExternalUot']);
         $this->router->add('GET', '/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
+        $this->router->add('GET', '/api/external-uot/pool/{id}/config', [$externalUotConfig, 'poolNode']);
+        $this->router->add('POST', '/api/external-uot/pool/{id}/heartbeat', [$externalUotConfig, 'poolNode']);
         $this->router->add('GET', '/artifacts/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
         $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64', [$artifacts, 'uotSidecarLinuxAmd64']);
         $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64', [$artifacts, 'uotSidecarLinuxArm64']);
