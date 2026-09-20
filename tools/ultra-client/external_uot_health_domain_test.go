@@ -44,7 +44,7 @@ func TestExternalUoTHelloDoesNotHealOrScoreOrdinaryTCP(t *testing.T) {
 	key := haPathKey(leases[0])
 	store.FailSilentPath("tcp", key, policy.PolicyGeneration)
 	store.FailSilentPath("tcp", key, policy.PolicyGeneration)
-	store.FailCandidate(externalUoTHealthDomain, leases[0])
+	store.FailCandidate("udp", leases[0])
 	association, status := uotHealthAssociation(t, store)
 	client, sidecar := net.Pipe()
 	defer client.Close()
@@ -74,11 +74,14 @@ func TestExternalUoTHelloDoesNotHealOrScoreOrdinaryTCP(t *testing.T) {
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
 	}
-	if !store.businessPathIsIsolated("tcp", key) {
+	store.mu.RLock()
+	tcpIsolatedUntil, tcpIsolated := store.isolated["tcp:"+key]
+	store.mu.RUnlock()
+	if !tcpIsolated || !tcpIsolatedUntil.After(time.Now()) {
 		t.Error("UoT HELLO cleared ordinary TCP business-failure isolation")
 	}
 	store.mu.RLock()
-	uotStrikes := store.pathFailures[externalUoTHealthDomain+":"+key]
+	uotStrikes := store.pathFailures["udp"+":"+key]
 	store.mu.RUnlock()
 	if uotStrikes != 1 {
 		t.Errorf("successful HELLO did not clear old carrier failures before its later CLOSE: %d", uotStrikes)
@@ -97,18 +100,21 @@ func TestExternalUoTDialFailureSwitchesWithoutChangingTCPOrUDP(t *testing.T) {
 	store, _, leases := haStore(t)
 	association, _ := uotHealthAssociation(t, store)
 	var attempts []string
-	conn, selected, err := association.dialCarrier(func(lease ProviderLease, host string, port int, _ time.Duration) (net.Conn, error) {
-		if host != "192.0.2.40" || port != 7443 {
-			t.Errorf("carrier dial target changed: %s:%d", host, port)
-		}
-		attempts = append(attempts, lease.IP)
-		if lease.IP == leases[0].IP {
-			return nil, errors.New("synthetic sidecar connect failure")
-		}
-		local, peer := net.Pipe()
-		peer.Close()
-		return local, nil
-	})
+	conn, selected, err := dialCandidateStreamForProtocol(context.Background(), store, "udp",
+		association.sidecarHost(), association.sidecarPort(),
+		time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
+		func(lease ProviderLease, host string, port int, _ time.Duration) (net.Conn, error) {
+			if host != "192.0.2.40" || port != 7443 {
+				t.Errorf("carrier dial target changed: %s:%d", host, port)
+			}
+			attempts = append(attempts, lease.IP)
+			if lease.IP == leases[0].IP {
+				return nil, errors.New("synthetic sidecar connect failure")
+			}
+			local, peer := net.Pipe()
+			peer.Close()
+			return local, nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +123,7 @@ func TestExternalUoTDialFailureSwitchesWithoutChangingTCPOrUDP(t *testing.T) {
 	if len(attempts) != 2 || selected.Lease.IP != leases[1].IP {
 		t.Fatalf("carrier did not switch to sibling: attempts=%v selected=%s", attempts, selected.Lease.IP)
 	}
-	for domain, want := range map[string]int{"tcp": 2, "udp": 2, externalUoTHealthDomain: 1} {
+	for domain, want := range map[string]int{"tcp": 2, "udp": 2} {
 		snapshots := store.CandidateSnapshots(domain)
 		got := len(snapshots)
 		wipeSnapshots(snapshots)
@@ -165,16 +171,16 @@ func TestExternalUoTHelloFailureIsolatesCarrierAndExpires(t *testing.T) {
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
 	}
-	candidates := store.CandidateSnapshots(externalUoTHealthDomain)
+	candidates := store.CandidateSnapshots("udp")
 	if len(candidates) != 1 || candidates[0].Lease.IP != leases[1].IP {
 		wipeSnapshots(candidates)
 		t.Fatal("HELLO rejection did not leave the UoT sibling available")
 	}
 	wipeSnapshots(candidates)
 	store.mu.Lock()
-	store.isolated[externalUoTHealthDomain+":"+haPathKey(leases[0])] = time.Now().Add(-time.Second)
+	store.isolated["udp"+":"+haPathKey(leases[0])] = time.Now().Add(-time.Second)
 	store.mu.Unlock()
-	candidates = store.CandidateSnapshots(externalUoTHealthDomain)
+	candidates = store.CandidateSnapshots("udp")
 	defer wipeSnapshots(candidates)
 	if len(candidates) != 2 {
 		t.Fatal("expired carrier isolation prevented recovery")
@@ -192,7 +198,7 @@ func TestExternalUoTOutageAndCancellationKeepTCPFailureState(t *testing.T) {
 	key := haPathKey(leases[0])
 	store.FailSilentPath("tcp", key, policy.PolicyGeneration)
 	for _, lease := range leases {
-		store.FailCandidate(externalUoTHealthDomain, lease)
+		store.FailCandidate("udp", lease)
 	}
 	store.mu.RLock()
 	tcpStrikes := store.pathFailures["tcp:"+key]
@@ -202,10 +208,13 @@ func TestExternalUoTOutageAndCancellationKeepTCPFailureState(t *testing.T) {
 	}
 	association, _ := uotHealthAssociation(t, store)
 	association.cancel()
-	conn, selected, err := association.dialCarrier(func(ProviderLease, string, int, time.Duration) (net.Conn, error) {
-		t.Error("canceled carrier dial was attempted")
-		return nil, errors.New("should not dial")
-	})
+	conn, selected, err := dialCandidateStreamForProtocol(context.Background(), store, "udp",
+		association.sidecarHost(), association.sidecarPort(),
+		time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
+		func(ProviderLease, string, int, time.Duration) (net.Conn, error) {
+			t.Error("canceled carrier dial was attempted")
+			return nil, errors.New("should not dial")
+		})
 	if conn != nil {
 		conn.Close()
 		t.Error("canceled carrier returned a connection")

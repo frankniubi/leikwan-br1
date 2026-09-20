@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -36,12 +38,25 @@ func haErrorClass(err error) string {
 		return "broken_pipe"
 	case errors.Is(err, ErrQuotaExhausted):
 		return "quota_exhausted"
+	case errors.Is(err, errStreamCommandRejected):
+		// The provider relay rejected the stream command. Classify it
+		// explicitly so it is not indistinguishable from a generic io_error in
+		// ha_events, and so it never counts as path-loss evidence.
+		return "target_connect_rejected"
 	}
 	var n net.Error
 	if errors.As(err, &n) && n.Timeout() {
 		return "timeout"
 	}
 	return "io_error"
+}
+
+// isTCPReset recognises an explicit connection reset from either side. On
+// Windows net.OpError wraps WSAECONNRESET (10054) rather than the POSIX-style
+// syscall.ECONNRESET constant, so both are checked.
+func isTCPReset(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) ||
+		(runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10054)))
 }
 
 func closeTCPWrite(c net.Conn) error {
@@ -87,6 +102,9 @@ const haRelayOrderEpsilon = 25 * time.Millisecond
 type relayStreamOrder struct {
 	upstreamEnded   time.Time // the local -> remote copy returned
 	downstreamEnded time.Time // the remote -> local copy returned
+	remoteReadError error     // excludes local-write and policy failures
+	upstreamOrder   uint64    // monotonic observation order, independent of clock precision
+	downstreamOrder uint64
 }
 
 // remoteStoppedFirst reports whether the remote -> local read ended no later
@@ -95,10 +113,15 @@ type relayStreamOrder struct {
 // is false when the local side ended the stream first, and false when the
 // ordering was never measured.
 func (o relayStreamOrder) remoteStoppedFirst() bool {
+	// Strict observed ordering: a tie, or a local end even microseconds earlier,
+	// is ambiguous rather than evidence against the path.
+	if o.upstreamOrder != 0 && o.downstreamOrder != 0 {
+		return o.downstreamOrder < o.upstreamOrder
+	}
 	if o.upstreamEnded.IsZero() || o.downstreamEnded.IsZero() {
 		return false
 	}
-	return !o.downstreamEnded.After(o.upstreamEnded.Add(haRelayOrderEpsilon))
+	return o.downstreamEnded.Before(o.upstreamEnded)
 }
 
 // noteRelayOutcome records one finished stream for telemetry. A successful
@@ -124,14 +147,36 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 	}
 	// A zero-byte application response is not protocol-independent evidence
 	// that the relay is dead: encrypted destinations may legitimately remain
-	// silent. Keep the ordering for telemetry, but do not quarantine ordinary
-	// user traffic from this signal.
+	// silent, and an ordinary EOF after a complete request is normal.
+	// Only a strict remote-first ordering combined with an explicit TCP reset on
+	// the remote read escalates to this forward's local path avoidance. That
+	// never becomes global candidate reputation, and no business payload is
+	// replayed.
+	remoteFirst := len(order) > 0 && order[0].remoteStoppedFirst()
+	remoteReset := remoteFirst && isTCPReset(order[0].remoteReadError)
+	isolated := false
+	if remoteReset {
+		isolated = store.FailSilentPath("tcp", ident.pathKey, ident.generation)
+	}
 	if status != nil {
-		status.RecordHAEvent("tcp", "no_response", ident.generation)
+		remoteReadReason := "unknown"
+		if len(order) > 0 {
+			remoteReadReason = haErrorClass(order[0].remoteReadError)
+		}
+		// A single classified outcome replaces the legacy generic "no_response"
+		// event: it carries the remote evidence the panel needs to tell an
+		// ordinary EOF from a remote reset, and whether this forward avoided
+		// the local path. Recording both would double-count the outcome.
+		status.RecordTCPOutcome(ident, upstreamBytes, downstreamBytes, remoteReadReason, remoteFirst, isolated)
 	}
 	log.Printf(
-		"tcp stream had no downstream bytes forward_id=%d selection_ref=%s remote_stopped_first=%t lifetime_ms=%d upstream_bytes=%d; keeping candidate eligible",
-		ident.forward, ident.selection, len(order) > 0 && order[0].remoteStoppedFirst(), lifetime.Milliseconds(), upstreamBytes)
+		"tcp stream had no downstream bytes forward_id=%d selection_ref=%s remote_stopped_first=%t remote_read_reset=%t remote_read_reason=%s lifetime_ms=%d upstream_bytes=%d local_path_avoided=%t global_scored=false",
+		ident.forward, ident.selection, remoteFirst, remoteReset, func() string {
+			if len(order) == 0 {
+				return "unknown"
+			}
+			return haErrorClass(order[0].remoteReadError)
+		}(), lifetime.Milliseconds(), upstreamBytes, isolated)
 }
 
 func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity) {
@@ -141,6 +186,9 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 		direction string
 		err       error
 		bytes     int64
+		readBytes int64
+		readError error
+		order     uint64
 		// ended is stamped by the copy goroutine itself, so the ordering of the
 		// two ends is not distorted by how relayTCP happens to receive them.
 		ended time.Time
@@ -149,13 +197,17 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 	started := time.Now()
 	var upstreamBytes, downstreamBytes int64
 	var order relayStreamOrder
+	var observedOrder atomic.Uint64
 	go func() {
 		moved, err := copyOutbound(remote, local, limiter, status)
-		done <- result{direction: "upstream", err: err, bytes: moved, ended: time.Now()}
+		ordinal := observedOrder.Add(1)
+		done <- result{direction: "upstream", err: err, bytes: moved, ended: time.Now(), order: ordinal}
 	}()
 	go func() {
-		moved, err := copyInbound(local, remote, limiter, status)
-		done <- result{direction: "downstream", err: err, bytes: moved, ended: time.Now()}
+		observed := copyInboundObserved(local, remote, limiter, status)
+		ordinal := observedOrder.Add(1)
+		done <- result{direction: "downstream", err: observed.Err(), bytes: observed.WrittenBytes,
+			readBytes: observed.ReadBytes, readError: observed.ReadError, ended: time.Now(), order: ordinal}
 	}()
 	received := 0
 	for received < 2 {
@@ -175,9 +227,12 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 			if r.direction == "upstream" {
 				upstreamBytes = r.bytes
 				order.upstreamEnded = r.ended
+				order.upstreamOrder = r.order
 			} else {
 				downstreamBytes = r.bytes
 				order.downstreamEnded = r.ended
+				order.downstreamOrder = r.order
+				order.remoteReadError = r.readError
 			}
 			log.Printf("tcp stream ended forward_id=%d direction=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
 			status.RecordHAEvent("tcp", haErrorClass(r.err), ident.generation)
