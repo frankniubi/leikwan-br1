@@ -365,6 +365,36 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    public function installDockerClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-docker-client.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientCompose(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-compose.yml', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientDockerfile(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/Dockerfile', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientFetchArtifacts(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/fetch-artifacts.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function dockerClientEntrypoint(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-entrypoint.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientHealthcheck(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-healthcheck.sh', 'text/plain; charset=utf-8', $request);
+    }
+
     public function installClientAgentLinuxArm64(Request $request, array $params): Response
     {
         return $this->serveRepoFile(

@@ -31,7 +31,7 @@ foreach ($contracts as $methodName => $contract) {
 $clientsStart = strpos($source, 'public function clientsPage(');
 $clientsEnd = strpos($source, 'public function sidecarsPage(', $clientsStart ?: 0);
 $clients = substr($source, $clientsStart ?: 0, ($clientsEnd ?: 0) - ($clientsStart ?: 0));
-foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', 'Windows App', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token'] as $required) {
+foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', 'Windows App', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token', 'runtime-attestation/refresh', '刷新运行时'] as $required) {
     if (!str_contains($clients, $required)) {
         throw new RuntimeException('tenant client install surface missing ' . $required);
     }

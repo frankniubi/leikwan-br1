@@ -44,8 +44,10 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
     {
         if (leases is null || leases.Count is < 1 or > 4)
             throw new ArgumentException("Ultra lease candidates are required", nameof(leases));
+        var phase = "validate";
         try
         {
+            Log.Information("ultra runtime start begin for forward {ForwardId}", forward.ForwardId);
             if (forward.ListenPort is < 1 or > 65535)
                 throw new InvalidOperationException("ultra_listen_port_invalid");
             var ultraBin = _config.GetEffectiveUltraBin();
@@ -53,6 +55,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 throw new InvalidOperationException("ultra_runtime_unavailable");
             if (_portPreflight is not null)
             {
+                phase = "port_preflight";
+                Log.Information("ultra port preflight begin for forward {ForwardId}", forward.ForwardId);
                 var preflight = _portPreflight(forward.ListenPort);
                 if (preflight.Blocked)
                 {
@@ -60,6 +64,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                         forward.ForwardId, forward.ListenPort, preflight.ConflictCode, preflight.ForeignPid);
                     throw new InvalidOperationException("ultra_port_conflict");
                 }
+                Log.Information("ultra port preflight complete blocked={Blocked} for forward {ForwardId}",
+                    preflight.Blocked, forward.ForwardId);
                 if (preflight.QuiescedPids.Count > 0)
                 {
                     Log.Information("Ultra forward {ForwardId}: quiesced managed-old owners {Pids}",
@@ -67,7 +73,10 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 }
             }
 
+            phase = "stop_previous_runtime";
+            Log.Information("ultra previous runtime stop begin for forward {ForwardId}", forward.ForwardId);
             Stop(forward.ForwardId);
+            Log.Information("ultra previous runtime stop complete for forward {ForwardId}", forward.ForwardId);
             var runtimeDirectory = Path.Combine(_config.GetEffectiveStateDir(), "runtime");
             var configPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.json");
             var statusPath = Path.Combine(runtimeDirectory, $"ultra-forward-{forward.ForwardId}.status.json");
@@ -117,20 +126,29 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 WriteIndented = true,
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
             }));
+            phase = "spawn_runtime";
             _supervisor.StartProcess(
                 forward.ForwardId,
                 "ultra-runtime",
                 "Ultra direct runtime",
                 ultraBin,
                 $"--config \"{configPath}\"");
+            Log.Information("ultra runtime process started for forward {ForwardId}", forward.ForwardId);
+            phase = "deliver_lease";
+            Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
             var delivered = leases.Count == 1
                 ? _leaseSender(forward.ForwardId, leases[0], CancellationToken.None).GetAwaiter().GetResult()
                 : _leaseBatchSender(forward.ForwardId, leases, CancellationToken.None).GetAwaiter().GetResult();
+            Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", delivered, forward.ForwardId);
             if (!delivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
-            if (!_portListeningProbe(forward.ListenPort))
+            phase = "wait_listener";
+            var portReady = _portListeningProbe(forward.ListenPort);
+            Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
+            if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
 
+            phase = "persist_applied_state";
             var applied = _stateManager.LoadApplied();
             applied[forward.ForwardId.ToString()] = new AppliedForwardState
             {
@@ -150,10 +168,14 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             };
             _stateManager.SaveApplied(applied);
         }
-        catch
+        catch (Exception exception)
         {
+            Log.Warning(exception, "ultra runtime start failed for forward {ForwardId} phase={Phase} ({ErrorType})",
+                forward.ForwardId,
+                phase,
+                exception.GetType().Name);
             Stop(forward.ForwardId);
-            throw;
+            throw new InvalidOperationException("ultra_runtime_start_failed", exception);
         }
         finally
         {

@@ -134,6 +134,13 @@ public static class MacHeadlessHost
             config.ClientId = options.ClientId;
             config.ActiveClientId = options.ClientId;
         }
+        if (!string.IsNullOrWhiteSpace(options.PreferredEgressInterface))
+            config.PreferredEgressInterface = options.PreferredEgressInterface.Trim();
+        if (!string.IsNullOrWhiteSpace(config.PreferredEgressInterface))
+        {
+            _ = EgressInterfaceConfig.ResolveOrThrow(config.PreferredEgressInterface);
+            PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
+        }
 
         if (string.IsNullOrWhiteSpace(options.AgentToken))
             return;
@@ -272,7 +279,9 @@ public static class MacHeadlessHost
                     continue;
                 try
                 {
-                    await controller.StartForwardAsync(forward.ForwardId, ct).ConfigureAwait(false);
+                    // A periodic ensure is not an operator retry: preserve the
+                    // runtime's per-forward startup failure cooldown.
+                    await controller.EnsureForwardAsync(forward.ForwardId, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {

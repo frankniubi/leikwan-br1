@@ -34,6 +34,10 @@ public static class HeadlessRunner
         var writer = output ?? Console.Out;
         var wait = delay ?? ((span, token) => Task.Delay(span, token));
         var config = (configFactory ?? LoadConfig)(options);
+        ApplyPinnedEgress(config, options);
+        PanelDirectEgress.Initialize();
+        if (!string.IsNullOrWhiteSpace(config.PreferredEgressInterface))
+            PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
         IHeadlessClientStack? stack = null;
         try
         {
@@ -106,8 +110,11 @@ public static class HeadlessRunner
         var configPath = Path.Combine(configDirectory, "config.json");
         var stateManager = new StateManager(configDirectory);
         var config = ApplyIdentity(stateManager.LoadConfig(configPath), options);
+        ApplyPinnedEgress(config, options);
 
-        if (options.ClientId > 0 || !string.IsNullOrWhiteSpace(options.AgentToken))
+        if (options.ClientId > 0
+            || !string.IsNullOrWhiteSpace(options.AgentToken)
+            || !string.IsNullOrWhiteSpace(options.PreferredEgressInterface))
         {
             try
             {
@@ -120,6 +127,20 @@ public static class HeadlessRunner
         }
 
         return config;
+    }
+
+    private static void ApplyPinnedEgress(AgentConfig config, HeadlessClientOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.PreferredEgressInterface))
+            config.PreferredEgressInterface = options.PreferredEgressInterface.Trim();
+
+        if (string.IsNullOrWhiteSpace(config.PreferredEgressInterface))
+            return;
+
+        // A requested pin is fail-closed. Falling back to Automatic here would
+        // let another TUN/VPN change the default route underneath the headless
+        // client, which is precisely the drift the pin is meant to prevent.
+        _ = EgressInterfaceConfig.ResolveOrThrow(config.PreferredEgressInterface);
     }
 
     /// <summary>

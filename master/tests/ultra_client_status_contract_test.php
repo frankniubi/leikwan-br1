@@ -100,6 +100,7 @@ namespace {
     file_put_contents($envPath, "APP_ENV=test\n");
     $service = new UltraClientStatusService(new Config($envPath), new Database(), static fn(): int => Database::$now);
     $status = [
+        'udp_transport' => 'external_uot',
         'forward_id' => 42,
         'state' => 'ready',
         'detected_ingress_zone' => 'shanghai',
@@ -126,6 +127,16 @@ namespace {
             'selected_at' => '2030-01-01T00:00:01Z',
         ],
         'updated_at' => '2030-01-01T00:00:02Z',
+        'ha_failures' => 3,
+        'udp_queue_drops' => 4,
+        'bytes_in' => 12345,
+        'ha_events' => [
+            ['protocol' => 'tcp', 'reason' => 'remote_reset_path_avoided', 'generation' => str_repeat('a', 64), 'at' => '2030-01-01T00:00:02Z', 'credential' => 'must-not-survive',
+                'candidate_key_hash' => str_repeat('b', 64), 'lease_hash' => 'invalid',
+                'upstream_bytes' => 123, 'remote_read_bytes' => 0,
+                'remote_read_reason' => 'reset', 'remote_stopped_first' => true, 'local_path_avoided' => false],
+            ['protocol' => 'unknown', 'reason' => 'invalid_protocol', 'at' => '2030-01-01T00:00:02Z'],
+        ],
         'error_code' => '',
         'credential' => 'must-not-survive',
     ];
@@ -153,6 +164,21 @@ namespace {
         failUltraStatus('status persistence retained provider relay identity');
     }
     $service->ingest(7, 'device-a', [$status]);
+    if (($encodedStatus[0]['udp_transport'] ?? '') !== 'external_uot'
+        || ($encodedStatus[0]['ha_failures'] ?? null) !== 3
+        || ($encodedStatus[0]['udp_queue_drops'] ?? null) !== 4
+        || ($encodedStatus[0]['bytes_in'] ?? null) !== 12345
+        || count($encodedStatus[0]['ha_events'] ?? []) !== 1
+        || ($encodedStatus[0]['ha_events'][0]['reason'] ?? '') !== 'remote_reset_path_avoided'
+        || ($encodedStatus[0]['ha_events'][0]['candidate_key_hash'] ?? '') !== str_repeat('b', 64)
+        || isset($encodedStatus[0]['ha_events'][0]['lease_hash'])
+        || ($encodedStatus[0]['ha_events'][0]['upstream_bytes'] ?? null) !== 123
+        || ($encodedStatus[0]['ha_events'][0]['remote_read_bytes'] ?? null) !== 0
+        || ($encodedStatus[0]['ha_events'][0]['remote_read_reason'] ?? '') !== 'reset'
+        || ($encodedStatus[0]['ha_events'][0]['remote_stopped_first'] ?? null) !== true
+        || ($encodedStatus[0]['ha_events'][0]['local_path_avoided'] ?? null) !== false) {
+        failUltraStatus('runtime health counters/events were not normalized correctly');
+    }
 
     foreach ([100 => 'Online', 200 => 'Stale', 1000 => 'Offline'] as $age => $expectedState) {
         Database::$age = $age;

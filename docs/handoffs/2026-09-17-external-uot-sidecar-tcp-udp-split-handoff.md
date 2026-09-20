@@ -38,7 +38,7 @@
 ## 3. 这项工作的整体结构（谁负责哪一半）
 
 ```text
-客户端 ultra runtime ── tcp  ──►  原有直接线路（serveTCP / slave relay）      ← 不动
+客户端 ultra runtime ── tcp  ──►  Ultra provider relay（serveTCP）              ← 不动
                     └─ udp  ──►  external UoT carrier ──►  sidecar :7443 ──► 目标 UDP
                                      ▲
                                      └── 由 forward combination 的 7 个 external_uot_* 字段开关
@@ -473,3 +473,38 @@ on physical ARM64 hardware or Android grant propagation on a physical device.
 The signed/published Windows, macOS, and Android packages passed manifest,
 hash/range, and package-contract canaries, but were not freshly installed on
 those three OSes during this acceptance.
+
+## 18. Ultra no-slave redline and forward 170 incident closure (2026-09-18)
+
+Ultra mode must never be analyzed, diagnosed, deployed, or accessed through a
+LeiKwan slave/CDN host. The Ultra paths are only:
+
+- TCP: `client -> leased Ultra provider relay -> target`
+- External-UoT UDP: `client -> leased Ultra provider relay -> external UoT sidecar -> UDP target`
+
+A leased Ultra provider relay is not a LeiKwan slave. The project `AGENTS.md`
+and persistent operator memory carry this redline; `cantons.txt` and
+`shanghais.txt` are out of scope for Ultra work.
+
+The reported forward 170 difference was reproduced and closed by direct access
+to the two client hosts, without a slave hop:
+
+- `172.21.255.189`: canonical `/usr/local/bin/ultra-client`, `external_uot.enabled=true`,
+  TCP and UDP listeners on `:10001`; a fresh 10-packet DNS probe created sidecar
+  session `763b0f11`, which closed with `udp_in=10 udp_out=10`.
+- `sh36.ctyun.mcbar.cc`: the same canonical runtime and configuration; a fresh
+  10-packet probe created sidecar session `577020d6`, which closed with
+  `udp_in=10 udp_out=10`.
+
+Both hosts returned `10/10` UDP replies with zero loss. The earlier 189-only
+discrepancy was the stale `ultra-client-extuot` systemd override; the published
+agent detected and quarantined it, and both hosts now run the canonical binary
+with matching SHA-256 `7f9f8d6c3e84105bb41cbee19e48a4c102a2e906805efdf08ee10529e789aa24`.
+
+From an external probe host, the repository's Shadowsocks `method=none` wire
+probe (`tools/ultra-client/ss-none-availability-probe.py`) was then run against
+`172.21.255.189:10001` with the operator-supplied password. Twenty sequential
+TCP+UDP samples all passed: `ok=20/20`, `tcp=20/20`, `udp=20/20`; UDP latency was
+160--181 ms. This exercises the public SS-none address-first TCP frame and
+SOCKS5 UDP envelope, not merely a local listener check. The `none` method does
+not put the password on the wire.

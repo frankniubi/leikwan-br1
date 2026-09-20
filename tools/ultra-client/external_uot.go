@@ -31,6 +31,7 @@ type ExternalUoTConfig struct {
 }
 
 const (
+	externalUoTHealthDomain            = "uot"
 	externalUoTMagic                   = "UOT2"
 	externalUoTVersion                 = byte(1)
 	externalUoTHeaderSize              = 36 // magic/version/type/flags/sid/seq/length
@@ -466,13 +467,7 @@ func (association *externalUoTAssociation) run() {
 			}
 			disconnectedAt = time.Time{}
 		}
-		connection, snapshot, err := dialCandidateStream(
-			association.ctx,
-			association.store,
-			association.sidecarHost(), association.sidecarPort(),
-			time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
-			dialStreamForConfig(association.config),
-		)
+		connection, snapshot, err := association.dialCarrier(dialStreamForConfig(association.config))
 		if err == nil {
 			started := time.Now()
 			err = association.runCarrier(connection, snapshot.Lease)
@@ -523,10 +518,25 @@ func (association *externalUoTAssociation) sidecarPort() int {
 	return port
 }
 
-func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease ProviderLease) error {
+func (association *externalUoTAssociation) dialCarrier(dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
+	return dialCandidateStreamInHealthDomain(
+		association.ctx, association.store, externalUoTHealthDomain,
+		association.sidecarHost(), association.sidecarPort(),
+		time.Duration(association.config.ConnectTimeoutSecs)*time.Second, dial,
+	)
+}
+
+func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease ProviderLease) (result error) {
 	if connection == nil {
 		return errors.New("external UoT carrier missing")
 	}
+	defer func() {
+		if result != nil && association.ctx.Err() == nil {
+			// HELLO/sidecar-stream failures belong to this carrier endpoint,
+			// not ordinary TCP forwarding or global provider reputation.
+			association.store.FailCandidate(externalUoTHealthDomain, lease)
+		}
+	}()
 	reader := bufio.NewReaderSize(connection, 128*1024)
 	hello := externalUoTHello{
 		Token: association.config.ExternalUoT.Token, ForwardID: association.config.ForwardID,
@@ -574,9 +584,8 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	_ = connection.SetWriteDeadline(time.Time{})
 	statusRTT := time.Since(helloStarted)
 	association.tuner.observeRTT(statusRTT)
-	association.status.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, statusRTT, lease.LeaseHash)
-	association.status.RecordCandidateSuccess(lease.CandidateKeyHash, "tcp", lease.LeaseHash)
-	association.store.ClearPathFailure("tcp", haPathKey(lease))
+	association.status.RecordUDPAttached(lease.SelectionRef, lease.SelectionTier)
+	association.store.ClearPathFailure(externalUoTHealthDomain, haPathKey(lease))
 
 	errCh := make(chan error, 2)
 	go association.externalUoTWriter(connection, errCh)

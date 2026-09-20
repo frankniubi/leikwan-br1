@@ -72,7 +72,14 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             process.EnableRaisingEvents = true;
             var ownsProcessGroup = _setProcessGroup(process.Id, process.Id) == 0;
             if (!ownsProcessGroup)
-                Log.Warning("process_group_create_failed for forward {ForwardId} [{Role}]", forwardId, role);
+            {
+                var errno = Marshal.GetLastWin32Error();
+                Log.Warning(
+                    "process_group_create_failed for forward {ForwardId} [{Role}] errno={Errno}; using direct-pid signal fallback",
+                    forwardId,
+                    role,
+                    errno);
+            }
 
             process.OutputDataReceived += (_, eventArgs) =>
             {

@@ -32,6 +32,7 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
+	UDPTransport           string           `json:"udp_transport,omitempty"`
 	UDPRuntimeSession      *SelectionStatus `json:"udp_runtime_session,omitempty"`
 	HAEvents               []HAEvent        `json:"ha_events,omitempty"`
 	HAFailures             int64            `json:"ha_failures,omitempty"`
@@ -104,6 +105,19 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 			RuntimeAttestation:  &attestation,
 		},
 	}
+}
+
+// RecordTransportConfig exposes only the selected transport, never bootstrap
+// credentials. Desktop bootstrap is stdin-only, so disk config is not evidence.
+func (writer *StatusWriter) RecordTransportConfig(config Config) {
+	mode := "disabled"
+	if stringsContainsUDP(config.Transport) {
+		mode = "native_udp"
+		if externalUoTEnabled(config) {
+			mode = "external_uot"
+		}
+	}
+	writer.update(func(status *RuntimeStatus) { status.UDPTransport = mode })
 }
 
 func (writer *StatusWriter) UpdateLocation(location LocationResult) {

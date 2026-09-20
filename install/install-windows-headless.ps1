@@ -17,6 +17,7 @@ param(
     [Parameter(Mandatory = $true)][int]$ClientId,
     [string]$AgentToken = "",
     [string]$AgentTokenFile = "",
+    [string]$EgressInterface = $env:LEIKWAN_EGRESS_INTERFACE,
     [string]$ClientIdArgument = "",
     [string]$InstallDir = (Join-Path $env:ProgramFiles "LeiKwan Bridge Headless"),
     [string]$ServiceName = "LeikwanBridgeHeadless",
@@ -73,6 +74,9 @@ $arguments = @(
     "--status-file", $statusPath,
     "--log-file", (Join-Path $logDir "headless-.log")
 )
+if (-not [string]::IsNullOrWhiteSpace($EgressInterface)) {
+    $arguments += @("--egress-interface", $EgressInterface.Trim())
+}
 & $exe @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "service registration failed with exit code $LASTEXITCODE"

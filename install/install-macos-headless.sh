@@ -24,6 +24,7 @@ PANEL=""
 CLIENT_ID=""
 TOKEN=""
 TOKEN_SOURCE=""
+EGRESS_INTERFACE="${LEIKWAN_EGRESS_INTERFACE:-}"
 MODE="install"
 MANIFEST_FILE=""
 DMG_FILE=""
@@ -35,7 +36,7 @@ SERVICE_WAS_LOADED=0
 usage() {
   cat <<'USAGE'
 usage: sudo sh install-macos-headless.sh --panel <url> --client-id <n> \
-         (--agent-token <token> | --agent-token-file <path>) [--app <bundle>]
+         (--agent-token <token> | --agent-token-file <path>) [--egress-interface <name>] [--app <bundle>]
        sudo sh install-macos-headless.sh --status
        sudo sh install-macos-headless.sh --uninstall
        sh install-macos-headless.sh --print-plist [--panel <url>] [--client-id <n>] \
@@ -71,6 +72,7 @@ while [ $# -gt 0 ]; do
     --client-id) CLIENT_ID="${2:-}"; shift 2 ;;
     --agent-token) TOKEN="${2:-}"; shift 2 ;;
     --agent-token-file) TOKEN_SOURCE="${2:-}"; shift 2 ;;
+    --egress-interface) EGRESS_INTERFACE="${2:-}"; shift 2 ;;
     --app) APP="${2:-}"; EXECUTABLE="$APP/Contents/MacOS/LeikwanBridge.Mac"; shift 2 ;;
     --status) MODE="status"; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
@@ -281,6 +283,11 @@ if [ "$MODE" != "print" ]; then
 fi
 
 write_plist() {
+  egress_plist_args=""
+  if [ -n "$EGRESS_INTERFACE" ]; then
+    egress_plist_args="    <string>--egress-interface</string>
+    <string>$EGRESS_INTERFACE</string>"
+  fi
 cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -298,6 +305,7 @@ cat <<PLIST
     <string>$CLIENT_ID</string>
     <string>--agent-token-file</string>
     <string>$TOKEN_FILE</string>
+$egress_plist_args
     <string>--status-file</string>
     <string>$STATUS_FILE</string>
     <string>--log-file</string>

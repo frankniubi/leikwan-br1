@@ -377,6 +377,7 @@ abstract class BaseController
             'linux' => '<circle cx="12" cy="7.2" r="4.3"/><ellipse cx="12" cy="16" rx="5.6" ry="6.4"/><path d="M10 9.2h4L12 11.9z"/><ellipse cx="6.4" cy="20.4" rx="2.6" ry="1.1"/><ellipse cx="17.6" cy="20.4" rx="2.6" ry="1.1"/>',
             'android' => '<path d="M5.6 10.4h12.8v6.8a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2z"/><path d="M5.6 9.6a6.4 6.4 0 0 1 12.8 0z"/><path d="M8.2 3.4 6.9 1.8M15.8 3.4l1.3-1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="3.1" y="10.6" width="1.7" height="5.6" rx="0.85"/><rect x="19.2" y="10.6" width="1.7" height="5.6" rx="0.85"/>',
             'helper' => '<path d="M12 4.6a7.4 7.4 0 1 0 7.1 9.4l-2.1-.6A5.2 5.2 0 1 1 12 6.8z"/><path d="M12 2.2l4 3-4 3z"/>',
+            'docker' => '<path d="M3 11h3.4v3.4H3zM7.1 11h3.4v3.4H7.1zM11.2 9.2h3.4v5.2h-3.4zM15.3 10.2h3.4v4.2h-3.4z"/><path d="M3.2 15.8h17.6l-1.1 2.2H4.3z"/><path d="M6.1 7.2h1.1V5.4h1.2v1.8h1.1V6h1.2v1.2h1l1 1v1.1h-6.6z"/>',
         ];
         if (!isset($icons[$kind])) {
             return '';
@@ -508,6 +509,16 @@ abstract class BaseController
         return $this->installerScriptUrl('windows_headless_installer', '/artifacts/install-windows-headless.ps1');
     }
 
+    protected function dockerClientInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('docker_client_installer', '/artifacts/install-docker-client.sh');
+    }
+
+    protected function dockerClientComposeUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/docker-client/docker-compose.yml';
+    }
+
     protected function installerScriptUrl(string $artifactKey, string $fallbackPath): string
     {
         $metadata = $this->artifactMetadata($artifactKey);
@@ -557,6 +568,49 @@ abstract class BaseController
             . '.\install-windows-headless.ps1 -Panel ' . $masterUrl
             . ' -ClientId ' . $clientId
             . ' -AgentToken \'' . $agentToken . '\'';
+    }
+
+    /**
+     * One-line Docker installer. Reuses the same client-id / agent-token
+     * surface as the Linux/macOS/Windows headless installers, and always
+     * pulls from the published artifact manifest so the container image build
+     * can verify every binary by sha256. Private-registry users can pass
+     * --image to skip the local build.
+     *
+     * @param array<string, mixed> $client
+     */
+    protected function dockerClientInstallCommand(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-docker-client.sh')
+            . ' | bash -s -- --panel ' . $this->shellQuote($masterUrl)
+            . ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+    }
+
+    protected function dockerClientComposeInline(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        // Keep the compose file minimal and honest: image is built from the
+        // signed manifest at build time, secrets are mounted, not inlined.
+        return 'services:'
+            . "\n  leikwan-bridge:"
+            . "\n    image: \${LEIKWAN_IMAGE:-leikwan/bridge:local}"
+            . "\n    restart: unless-stopped"
+            . "\n    network_mode: host"
+            . "\n    environment:"
+            . "\n      LEIKWAN_PANEL_URL: " . $masterUrl
+            . "\n      LEIKWAN_CLIENT_ID: " . $clientId
+            . "\n      LEIKWAN_AGENT_TOKEN_FILE: /run/secrets/leikwan-agent-token"
+            . "\n    secrets: [leikwan-agent-token]"
+            . "\n    volumes: [\"leikwan-state:/var/lib/leikwan-client-agent\"]"
+            . "\n# Full template: " . $artifactBase . "/artifacts/docker-client/docker-compose.yml";
     }
 
     protected function headlessClientReleaseVersion(): string

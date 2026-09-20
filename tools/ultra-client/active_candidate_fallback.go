@@ -70,6 +70,12 @@ func retryActiveCandidateForward(
 	for _, index := range matching {
 		candidate := leases[index]
 		result, err := test(ctx, config, policy, candidate)
+		if ctx.Err() != nil {
+			return ProviderLease{}, udpProbeResult{}, ctx.Err()
+		}
+		if err == nil && !result.usableFor(effectiveProbePolicy(config, policy).Transport) {
+			err = errNoHealthyCandidate
+		}
 		if err != nil {
 			lastErr = err
 			continue
@@ -89,9 +95,13 @@ func directForwardCandidateTest(ctx context.Context, config Config, policy Polic
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+	transport := strings.ToLower(strings.TrimSpace(policy.Transport))
+	if transport != "tcp" && transport != "udp" && transport != "tcp+udp" {
+		return result, fmt.Errorf("unsupported transport %q", policy.Transport)
+	}
+	if externalUoTEnabled(config) && transport == "udp" {
 		result = probeExternalUoTLease(ctx, lease, config, policy)
-		if result.TCPError != nil || result.TCPReceived <= 0 {
+		if !result.usableFor(effectiveProbePolicy(config, policy).Transport) {
 			if result.TCPError != nil {
 				return result, result.TCPError
 			}
@@ -99,10 +109,10 @@ func directForwardCandidateTest(ctx context.Context, config Config, policy Polic
 		}
 		return result, nil
 	}
-	transport := strings.ToLower(strings.TrimSpace(policy.Transport))
-	if transport != "tcp" && transport != "udp" && transport != "tcp+udp" {
-		return result, fmt.Errorf("unsupported transport %q", policy.Transport)
-	}
+	// A shared TCP+UDP lease with external UoT must remain usable for ordinary
+	// TCP even while its sidecar is unavailable. Normalize only the check:
+	// actual policy/lease authorization and the UoT-only check above are intact.
+	transport = effectiveProbePolicy(config, policy).Transport
 
 	if transport == "tcp" || transport == "tcp+udp" {
 		targetHost, targetPort, err := parseTarget(config.Target)

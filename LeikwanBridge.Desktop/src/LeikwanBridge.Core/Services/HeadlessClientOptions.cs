@@ -6,7 +6,7 @@ namespace LeikwanBridge.Core.Services;
 //
 //   LeikwanBridge.Mac --headless --panel <url> --client-id <n> --agent-token-file <path>
 //                     [--forwards all|1,2] [--log-file <path>] [--status-file <path>]
-//                     [--once] [--print-status]
+//                     [--egress-interface <name>] [--once] [--print-status]
 //
 // The windowless clients run the exact same managed payload, Core services and
 // lease/heartbeat code as the windowed applications; only the process lifecycle
@@ -21,6 +21,7 @@ public sealed record HeadlessClientOptions
     public string AgentToken { get; init; } = string.Empty;
     public string AgentTokenFile { get; init; } = string.Empty;
     public string Forwards { get; init; } = "all";
+    public string PreferredEgressInterface { get; init; } = string.Empty;
     public string LogFile { get; init; } = string.Empty;
     public string StatusFile { get; init; } = string.Empty;
     public bool Once { get; init; }
@@ -31,7 +32,8 @@ public sealed record HeadlessClientOptions
     public static string Usage =>
         "usage: <client> --headless [--panel <url>] [--client-id <n>] "
         + "[--agent-token <token>|--agent-token-file <path>] [--forwards all|1,2] "
-        + "[--log-file <path>] [--status-file <path>] [--once] [--print-status]";
+        + "[--egress-interface <name>] [--log-file <path>] [--status-file <path>] "
+        + "[--once] [--print-status]";
 
     public static bool TryParse(
         IReadOnlyList<string> args,
@@ -44,6 +46,7 @@ public sealed record HeadlessClientOptions
         string token = string.Empty;
         string tokenFile = string.Empty;
         string forwards = "all";
+        string egressInterface = string.Empty;
         string logFile = string.Empty;
         string statusFile = string.Empty;
         var once = false;
@@ -80,6 +83,10 @@ public sealed record HeadlessClientOptions
                 case "--forwards":
                     if (!TryRead(args, ref index, out forwards) || string.IsNullOrWhiteSpace(forwards))
                         return Fail(out options, out error, "--forwards requires a value");
+                    break;
+                case "--egress-interface":
+                    if (!TryRead(args, ref index, out egressInterface) || string.IsNullOrWhiteSpace(egressInterface))
+                        return Fail(out options, out error, "--egress-interface requires a value");
                     break;
                 case "--log-file":
                     if (!TryRead(args, ref index, out logFile))
@@ -149,6 +156,7 @@ public sealed record HeadlessClientOptions
             AgentToken = token.Trim(),
             AgentTokenFile = tokenFile.Trim(),
             Forwards = forwards.Trim(),
+            PreferredEgressInterface = egressInterface.Trim(),
             LogFile = logFile.Trim(),
             StatusFile = statusFile.Trim(),
             Once = once,

@@ -238,6 +238,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
         $this->router->add('GET', '/admin/ultra', [$admin, 'ultraOperationsPage']);
         $this->router->add('POST', '/admin/ultra/lines/{id}', [$admin, 'saveUltraLinePolicy']);
+        $this->router->add('POST', '/admin/ultra/attestation/refresh', [$admin, 'refreshUltraRuntimeAttestation']);
         $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
         $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
@@ -289,6 +290,7 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/security/devices/restore', [$tenant, 'restoreDevice']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
+        $this->router->add('POST', '/tenant/clients/runtime-attestation/refresh', [$tenant, 'refreshClientRuntimeAttestation']);
         $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);
         $this->router->add('POST', '/tenant/clients/ban', [$tenant, 'banClientDevice']);
         $this->router->add('POST', '/tenant/clients/unban', [$tenant, 'unbanClientDevice']);
@@ -438,6 +440,12 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
+        $this->router->add('GET', '/artifacts/install-docker-client.sh', [$artifacts, 'installDockerClient']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-compose.yml', [$artifacts, 'dockerClientCompose']);
+        $this->router->add('GET', '/artifacts/docker-client/Dockerfile', [$artifacts, 'dockerClientDockerfile']);
+        $this->router->add('GET', '/artifacts/docker-client/fetch-artifacts.py', [$artifacts, 'dockerClientFetchArtifacts']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-entrypoint.sh', [$artifacts, 'dockerClientEntrypoint']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-healthcheck.sh', [$artifacts, 'dockerClientHealthcheck']);
         $this->router->add('GET', '/artifacts/leikwan-linux.sh', [$artifacts, 'leikwanLinuxCli']);
         $this->router->add('GET', '/artifacts/install-client-agent-linux-arm64', [$artifacts, 'installClientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/client-agent-update.sh', [$artifacts, 'clientAgentUpdate']);
