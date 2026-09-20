@@ -26,6 +26,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$InstallerVersion = "0.1.20.52"
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -51,6 +52,10 @@ if ([string]::IsNullOrWhiteSpace($AgentToken)) {
 $payload = Join-Path $PayloadDir "leikwan-bridge-headless.exe"
 if (-not (Test-Path -LiteralPath $payload -PathType Leaf)) {
     throw "leikwan-bridge-headless.exe not found next to this script; extract the published zip first"
+}
+$payloadVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($payload).FileVersion
+if ($payloadVersion -ne $InstallerVersion) {
+    throw "headless installer/payload version mismatch: installer=$InstallerVersion payload=$payloadVersion"
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $stateDir, $logDir | Out-Null

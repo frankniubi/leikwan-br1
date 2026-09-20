@@ -29,8 +29,34 @@ CANONICAL = {
     'macos_client_app_x64': ('artifacts/macos/leikwan-bridge-x64.dmg', '/artifacts/macos/leikwan-bridge-x64.dmg'),
     'macos_client_update_arm64': ('artifacts/macos/leikwan-bridge-update-arm64.zip', '/artifacts/macos/leikwan-bridge-update-arm64.zip'),
     'macos_client_update_x64': ('artifacts/macos/leikwan-bridge-update-x64.zip', '/artifacts/macos/leikwan-bridge-update-x64.zip'),
+    'windows_headless_client': ('artifacts/windows/leikwan-bridge-headless-win-x64.zip', '/artifacts/windows/leikwan-bridge-headless-win-x64.zip'),
+    'windows_headless_installer': ('install/install-windows-headless.ps1', '/artifacts/install-windows-headless.ps1'),
+    'macos_headless_installer': ('install/install-macos-headless.sh', '/artifacts/install-macos-headless.sh'),
+    'client_agent_installer': ('install/install-client-agent.sh', '/artifacts/install-client-agent.sh'),
+    'client_agent_installer_linux_arm64': ('artifacts/install-client-agent-linux-arm64', '/artifacts/install-client-agent-linux-arm64'),
+    'client_agent_linux_amd64': ('artifacts/python-agent/leikwan-client-agent_linux_amd64', '/artifacts/python-agent/leikwan-client-agent_linux_amd64'),
+    'client_agent_update': ('install/client-agent-update.sh', '/artifacts/client-agent-update.sh'),
+    'client_installer': ('install/install-client.sh', '/artifacts/install-client.sh'),
+    'install_forward_runtime': ('client-agent/install_forward_runtime.py', '/artifacts/install-forward-runtime.py'),
+    'external_uot_installer': ('install/install-external-uot.sh', '/artifacts/install-external-uot.sh'),
+    'ultra_client_runtime': ('artifacts/ultra/ultra-client_linux_amd64', '/artifacts/ultra/ultra-client_linux_amd64'),
+    'ultra_client_runtime_linux_arm64': ('artifacts/ultra/ultra-client_linux_arm64', '/artifacts/ultra/ultra-client_linux_arm64'),
+    'ultra_client_runtime_windows': ('artifacts/ultra/ultra-client_windows_amd64.exe', '/artifacts/ultra/ultra-client_windows_amd64.exe'),
+    'ultra_client_runtime_macos_arm64': ('artifacts/ultra/ultra-client_macos_arm64', '/artifacts/ultra/ultra-client_macos_arm64'),
+    'ultra_client_runtime_macos_x64': ('artifacts/ultra/ultra-client_macos_amd64', '/artifacts/ultra/ultra-client_macos_amd64'),
+    'uot_sidecar_linux_amd64': ('artifacts/uot-sidecar/uot-sidecar_linux_amd64', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64'),
+    'uot_sidecar_linux_arm64': ('artifacts/uot-sidecar/uot-sidecar_linux_arm64', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64'),
 }
 LOCKS = ('/tmp/codex-coordinated-release.lock', '/tmp/leikwan-windows-native-renewal.lock', '/tmp/ordinary-ultra-release.lock')
+
+
+def numeric_version(value):
+    # Runtime versions historically append a source SHA after the numeric release.
+    # Compare release components, not the non-orderable build identity.
+    match = re.fullmatch(r'(\d+(?:\.\d+){2,3})(?:\.[0-9a-f]{7,40})?', str(value))
+    if not match:
+        raise ValueError('invalid artifact version: ' + str(value))
+    return tuple(map(int, match.group(1).split('.')))
 
 
 def metadata(path):
@@ -129,7 +155,7 @@ def validate_plan(root, stage, plan):
         info = after[key]
         if info['path'] != path or info['artifact_url'] != route or info['version'] != version:
             raise ValueError('noncanonical artifact contract: ' + key)
-        if tuple(map(int, version.split('.'))) <= tuple(map(int, before[key]['version'].split('.'))):
+        if numeric_version(version) <= numeric_version(before[key]['version']):
             raise ValueError('version must strictly increase: ' + key)
         for field in ('sha256', 'size_bytes'):
             if info[field] != entry['after'][field]:

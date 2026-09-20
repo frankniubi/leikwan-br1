@@ -154,11 +154,15 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 	}
 	defer clearBytes(payload)
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
+	if err == nil {
+		leases, err = applyCandidateQuarantine(server.config, leases, time.Now(), server.status)
+	}
 	var selected ProviderLease
 	var probeResult udpProbeResult
 	var selectionEpoch uint64
 	var previousActive RuntimeSnapshot
 	var havePreviousActive bool
+	var verifiedLeases []ProviderLease
 	if err == nil {
 		coordinator := selectionCoordinatorFor(policy.ForwardID)
 		selectionEpoch = coordinator.begin()
@@ -176,7 +180,14 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 				defer previousActive.Lease.wipe()
 			}
 		}
-		if storeHasGeneration(server.store, policy.PolicyGeneration) {
+		if externalUoTEnabled(server.config) && stringsContainsUDP(policy.Transport) &&
+			(server.config.AutoSelect || len(leases) == 1) {
+			probeContext, cancel := context.WithDeadline(context.Background(), deadline.Add(-selectionResponseGrace))
+			selected, probeResult, verifiedLeases, err = selectVerifiedExternalUoTCandidates(
+				probeContext, server.config, policy, leases, previousActive, havePreviousActive,
+				server.status.RecordProbeFailure, nil)
+			cancel()
+		} else if storeHasGeneration(server.store, policy.PolicyGeneration) {
 			var stickyMatch bool
 			selected, stickyMatch = stickyLeaseForPolicy(server.store, policy, leases)
 			if !stickyMatch {
@@ -214,12 +225,20 @@ selectionDone:
 		err = errSelectionSuperseded
 	}
 	if err == nil {
-		err = server.store.ReplaceCandidates(policy, selected, leases)
+		admitted := leases
+		if verifiedLeases != nil {
+			admitted = verifiedLeases
+		}
+		err = server.store.ReplaceCandidates(policy, selected, admitted)
 		if err == nil && server.status != nil {
 			server.status.UpdatePolicy(policy.PolicyGeneration)
 		}
 		if err == nil && server.status != nil && (probeResult.Sent > 0 || probeResult.TCPReceived > 0) {
-			if stringsContainsUDP(policy.Transport) && !externalUoTEnabled(server.config) {
+			if stringsContainsUDP(policy.Transport) && externalUoTEnabled(server.config) {
+				server.status.UpdateUDPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+			} else if stringsContainsUDP(policy.Transport) {
 				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
 				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
@@ -254,6 +273,8 @@ func writeJSONFrame(connection io.Writer, value any) error {
 
 func controlErrorName(err error) string {
 	switch {
+	case errors.Is(err, errOperatorQuarantine):
+		return "operator_quarantined"
 	case errors.Is(err, errProbeTCPFailed):
 		return "probe_tcp_failed"
 	case errors.Is(err, errProbeUDPFailed):

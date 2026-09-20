@@ -32,7 +32,19 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
-	UDPTransport           string           `json:"udp_transport,omitempty"`
+	OperatorQuarantineProtocol string         `json:"operator_quarantine_protocol,omitempty"`
+	OperatorQuarantineActive   bool           `json:"operator_quarantine_active"`
+	OperatorQuarantineUntil    string         `json:"operator_quarantine_until,omitempty"`
+	OperatorQuarantineExcluded int            `json:"operator_quarantine_excluded"`
+	UoTReliable                *reliableStats `json:"reliable_udp,omitempty"`
+	UoTQueueBlocked            uint64         `json:"queue_blocked"`
+	UoTQueueTimeout            uint64         `json:"queue_timeout"`
+	UoTQueueDrop               uint64         `json:"queue_drop"`
+	UoTSocketReceiveDrop       *uint64        `json:"socket_receive_drop"`
+	UoTSocketRcvbuf            int            `json:"socket_rcvbuf"`
+	UoTSocketSndbuf            int            `json:"socket_sndbuf"`
+	UoTSocketBufferError       bool           `json:"socket_buffer_error"`
+
 	UDPRuntimeSession      *SelectionStatus `json:"udp_runtime_session,omitempty"`
 	HAEvents               []HAEvent        `json:"ha_events,omitempty"`
 	HAFailures             int64            `json:"ha_failures,omitempty"`
@@ -78,16 +90,18 @@ type CandidateFeedback struct {
 }
 
 type StatusWriter struct {
-	path       string
-	interval   time.Duration
-	mu         sync.Mutex
-	writeMu    sync.Mutex
-	status     RuntimeStatus
-	lastWrite  time.Time
-	dirty      bool
-	timer      *time.Timer
-	closed     bool
-	writeCount atomic.Int64
+	path            string
+	interval        time.Duration
+	mu              sync.Mutex
+	writeMu         sync.Mutex
+	status          RuntimeStatus
+	lastWrite       time.Time
+	dirty           bool
+	timer           *time.Timer
+	closed          bool
+	writeCount      atomic.Int64
+	reliableLive    map[[16]byte]reliableStats
+	reliableRetired reliableStats
 }
 
 func newStatusWriter(path string, forwardID int, interval time.Duration) *StatusWriter {
@@ -105,19 +119,6 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 			RuntimeAttestation:  &attestation,
 		},
 	}
-}
-
-// RecordTransportConfig exposes only the selected transport, never bootstrap
-// credentials. Desktop bootstrap is stdin-only, so disk config is not evidence.
-func (writer *StatusWriter) RecordTransportConfig(config Config) {
-	mode := "disabled"
-	if stringsContainsUDP(config.Transport) {
-		mode = "native_udp"
-		if externalUoTEnabled(config) {
-			mode = "external_uot"
-		}
-	}
-	writer.update(func(status *RuntimeStatus) { status.UDPTransport = mode })
 }
 
 func (writer *StatusWriter) UpdateLocation(location LocationResult) {
@@ -556,4 +557,66 @@ func minInt64(value, maximum int64) int64 {
 		return maximum
 	}
 	return value
+}
+
+func (writer *StatusWriter) AddUoTQueueBlocked() {
+	writer.update(func(s *RuntimeStatus) { s.UoTQueueBlocked++ })
+}
+func (writer *StatusWriter) AddUoTQueueTimeout() {
+	writer.update(func(s *RuntimeStatus) { s.UoTQueueTimeout++; s.UoTQueueDrop++; s.UDPQueueDrops++ })
+}
+func (writer *StatusWriter) SetUoTSocketBuffers(recv, send int, failed bool) {
+	writer.update(func(s *RuntimeStatus) {
+		s.UoTSocketRcvbuf = recv
+		s.UoTSocketSndbuf = send
+		s.UoTSocketBufferError = failed
+	})
+}
+
+// Counters and sequence totals cover every association, including retired ones.
+// Window gauges cover live associations only; a quiet prewarm carrier must not
+// overwrite the busy data carrier's loss/replay evidence.
+func (w *StatusWriter) SetReliableStats(id [16]byte, s reliableStats, retired bool) {
+	w.update(func(status *RuntimeStatus) {
+		if w.reliableLive == nil {
+			w.reliableLive = make(map[[16]byte]reliableStats)
+		}
+		if retired {
+			delete(w.reliableLive, id)
+			s.WindowPackets, s.WindowBytes, s.OldestUnackedMS = 0, 0, 0
+			addReliableStats(&w.reliableRetired, s)
+		} else {
+			w.reliableLive[id] = s
+		}
+		total := w.reliableRetired
+		for _, item := range w.reliableLive {
+			addReliableStats(&total, item)
+		}
+		status.UoTReliable = &total
+	})
+}
+
+func addReliableStats(total *reliableStats, s reliableStats) {
+	total.QueueBlocked += s.QueueBlocked
+	total.QueueTimeout += s.QueueTimeout
+	total.QueueDrop += s.QueueDrop
+	total.SequenceGap += s.SequenceGap
+	total.RetransmitCount += s.RetransmitCount
+	total.ReconnectReplayCount += s.ReconnectReplayCount
+	total.UnrecoverableCount += s.UnrecoverableCount
+	total.Deduplicated += s.Deduplicated
+	total.Acknowledged += s.Acknowledged
+	total.Delivered += s.Delivered
+	total.WindowPackets += s.WindowPackets
+	total.WindowBytes += s.WindowBytes
+	if s.OldestUnackedMS > total.OldestUnackedMS {
+		total.OldestUnackedMS = s.OldestUnackedMS
+	}
+	if s.Failed != "" {
+		total.Failed = "one or more reliable associations failed"
+	}
+}
+
+func (w *StatusWriter) SetUoTSocketDrops(n *uint64) {
+	w.update(func(s *RuntimeStatus) { s.UoTSocketReceiveDrop = n })
 }

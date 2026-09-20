@@ -14,11 +14,19 @@ type activeCandidateForwardTest func(context.Context, Config, Policy, ProviderLe
 
 // sameActiveCandidatePath deliberately ignores rotating lease identifiers. A
 // refresh may mint a new selection reference and nonce for the same endpoint,
-// while the endpoint plus logical user still identifies the path the runtime
-// was using. Empty users are rejected because a relay can carry multiple lines.
+// while the panel candidate hash identifies the logical line even when its
+// provider username also rotates. Both leases must name the same endpoint.
+// Legacy grants without candidate hashes fall back to their logical user.
 func sameActiveCandidatePath(left, right ProviderLease) bool {
 	if !strings.EqualFold(strings.TrimSpace(left.IP), strings.TrimSpace(right.IP)) || left.Port != right.Port {
 		return false
+	}
+	leftKey, rightKey := strings.TrimSpace(left.CandidateKeyHash), strings.TrimSpace(right.CandidateKeyHash)
+	if leftKey != "" && rightKey != "" {
+		// This is only continuity evidence, never authorization. Callers must
+		// select a freshly granted lease and revalidate it before admission.
+		return len(leftKey) == 64 && isLowerHex(leftKey) &&
+			len(rightKey) == 64 && isLowerHex(rightKey) && leftKey == rightKey
 	}
 	if leftRef, rightRef := strings.TrimSpace(left.SelectionRef), strings.TrimSpace(right.SelectionRef); leftRef != "" && leftRef == rightRef {
 		return true

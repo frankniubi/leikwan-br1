@@ -43,6 +43,11 @@ type Config struct {
 	ListenHost string `json:"listen_host"`
 	ListenPort int    `json:"listen_port"`
 	Target     string `json:"target"`
+	// Forward-local, bounded operator quarantine. It can only remove candidates
+	// from authenticated grants; it never creates or extends authorization.
+	CandidateQuarantineHashes   []string `json:"candidate_quarantine_hashes,omitempty"`
+	CandidateQuarantineUntil    string   `json:"candidate_quarantine_until,omitempty"`
+	CandidateQuarantineProtocol string   `json:"candidate_quarantine_protocol,omitempty"`
 	// EgressInterface* describe an optional user-selected underlay. When
 	// present, provider TCP/UDP sockets are bound before connect.
 	EgressInterface      string `json:"egress_interface"`
@@ -322,7 +327,17 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 				optionalDeadline = deadline
 			}
 			_ = conn.SetReadDeadline(optionalDeadline)
-			if optional, peekErr := reader.Peek(10); peekErr == nil && validLegacyStreamFinal(optional) {
+			optional, peekErr := reader.Peek(10)
+			if peekErr != nil && len(optional) == 0 {
+				// An auth ACK followed by FIN/reset is not a usable stream.
+				// Retry while no caller bytes have been consumed, rather than
+				// handing a known-dead connection to the application.
+				var timeout net.Error
+				if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+					return nil, peekErr
+				}
+			}
+			if peekErr == nil && validLegacyStreamFinal(optional) {
 				_, _ = reader.Discard(10)
 				if optional[2] == 0 {
 					return nil, errStreamCommandRejected
@@ -341,6 +356,22 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		}
 		if !validStreamPrelude(prelude) {
 			return nil, errStreamPreludeRejected
+		}
+		// This relay dialect has no optional SOCKS final frame, but the
+		// metadata ACK can still be immediately followed by FIN/reset.
+		// Keep that failure in the setup phase, before any caller bytes are
+		// consumed. Do not discard early server-first application payload.
+		checkDeadline := time.Now().Add(100 * time.Millisecond)
+		if checkDeadline.After(deadline) {
+			checkDeadline = deadline
+		}
+		_ = conn.SetReadDeadline(checkDeadline)
+		early, peekErr := reader.Peek(1)
+		if peekErr != nil && len(early) == 0 {
+			var timeout net.Error
+			if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+				return nil, peekErr
+			}
 		}
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
@@ -602,6 +633,16 @@ func dialStreamWithCandidates(
 		if identity != "" {
 			attempted = append(attempted, identity)
 		}
+		if operatorQuarantines(store.config, current, "tcp", time.Now()) {
+			current.wipe()
+			lastErr = errOperatorQuarantine
+			next, ok := store.SnapshotNextCandidate(attempted...)
+			if !ok {
+				break
+			}
+			current = next.Lease
+			continue
+		}
 		attemptTimeout := timeout
 		if remaining := time.Until(current.ExpiresAt); remaining < attemptTimeout {
 			attemptTimeout = remaining
@@ -789,6 +830,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					pathKey:      haPathKey(snapshot.Lease),
 					candidateKey: snapshot.Lease.CandidateKeyHash,
 					leaseHash:    snapshot.Lease.LeaseHash,
+					targetHash:   tcpTargetHash(config.Target),
 				})
 
 			}()

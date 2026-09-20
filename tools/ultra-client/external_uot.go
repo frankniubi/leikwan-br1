@@ -21,6 +21,7 @@ import (
 // the encrypted command-1 byte stream; the operator-owned sidecar terminates
 // the framed stream and owns the UDP socket to the fixed target.
 type ExternalUoTConfig struct {
+	DeliveryMode          string `json:"delivery_mode,omitempty"`
 	Enabled               bool   `json:"enabled"`
 	SidecarTarget         string `json:"sidecar_target"`
 	Token                 string `json:"token"`
@@ -31,14 +32,13 @@ type ExternalUoTConfig struct {
 }
 
 const (
-	externalUoTHealthDomain            = "uot"
 	externalUoTMagic                   = "UOT2"
 	externalUoTVersion                 = byte(1)
 	externalUoTHeaderSize              = 36 // magic/version/type/flags/sid/seq/length
 	externalUoTFramePrefixSize         = 4
 	externalUoTMaxDatagramBytes        = 65507
 	externalUoTMinDatagramBytes        = 256
-	externalUoTDefaultQueuePackets     = 256
+	externalUoTDefaultQueuePackets     = 4096
 	externalUoTDefaultKeepalive        = 10 * time.Second
 	externalUoTMinKeepalive            = 5 * time.Second
 	externalUoTMaxKeepalive            = 30 * time.Second
@@ -67,6 +67,12 @@ type externalUoTFrame struct {
 func (config ExternalUoTConfig) normalized() (ExternalUoTConfig, error) {
 	if !config.Enabled {
 		return config, nil
+	}
+	if config.DeliveryMode == "" {
+		config.DeliveryMode = "raw"
+	}
+	if config.DeliveryMode != "raw" && config.DeliveryMode != reliableDatagramMode {
+		return ExternalUoTConfig{}, errors.New("unsupported UoT delivery_mode; guaranteed delivery requires an owned application-ACK endpoint")
 	}
 	config.SidecarTarget = strings.TrimSpace(config.SidecarTarget)
 	config.Token = strings.TrimSpace(config.Token)
@@ -246,6 +252,7 @@ type externalUoTHello struct {
 	Target          string `json:"target"`
 	FramePayloadMax int    `json:"frame_payload_max"`
 	LastSequence    uint64 `json:"last_sequence,omitempty"`
+	DeliveryMode    string `json:"delivery_mode,omitempty"`
 }
 
 type externalUoTHelloAck struct {
@@ -254,6 +261,7 @@ type externalUoTHelloAck struct {
 	FramePayloadMax int    `json:"frame_payload_max"`
 	QueuePackets    int    `json:"queue_packets"`
 	Error           string `json:"error,omitempty"`
+	DeliveryMode    string `json:"delivery_mode,omitempty"`
 }
 
 type externalUoTTuner struct {
@@ -342,28 +350,32 @@ func (t *externalUoTTuner) acceptsPayload(size int) bool {
 }
 
 type externalUoTAssociation struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	config     Config
-	store      *PolicyStore
-	status     *StatusWriter
-	local      *net.UDPConn
-	client     *net.UDPAddr
-	socksUDP   bool
-	target     string
-	sidecar    string
-	session    [16]byte
-	outbound   chan []byte
-	done       chan struct{}
-	lastMu     sync.Mutex
-	lastSeen   time.Time
-	writeMu    sync.Mutex
-	sequenceMu sync.Mutex
-	sequence   uint64
-	tuner      *externalUoTTuner
-	retryMu    sync.Mutex
-	retryBody  []byte
-	retrySeq   uint64
+	ctx               context.Context
+	cancel            context.CancelFunc
+	config            Config
+	store             *PolicyStore
+	status            *StatusWriter
+	local             *net.UDPConn
+	client            *net.UDPAddr
+	socksUDP          bool
+	target            string
+	sidecar           string
+	session           [16]byte
+	outbound          chan []byte
+	budget            *datagramBudget
+	reliable          *reliableDatagrams
+	reliableAttached  bool
+	carrierAttachedAt time.Time // owned by run/runCarrier, not packet workers
+	done              chan struct{}
+	lastMu            sync.Mutex
+	lastSeen          time.Time
+	writeMu           sync.Mutex
+	sequenceMu        sync.Mutex
+	sequence          uint64
+	tuner             *externalUoTTuner
+	retryMu           sync.Mutex
+	retryBody         []byte
+	retrySeq          uint64
 }
 
 func newExternalUoTAssociation(parent context.Context, config Config, store *PolicyStore, status *StatusWriter, local *net.UDPConn, client *net.UDPAddr, socksUDP bool) (*externalUoTAssociation, error) {
@@ -387,6 +399,11 @@ func newExternalUoTAssociation(parent context.Context, config Config, store *Pol
 		return nil, err
 	}
 	association.outbound = make(chan []byte, normalized.QueuePackets)
+	association.budget = newDatagramBudget(datagramQueueBytes)
+	association.config.ExternalUoT = normalized
+	if normalized.DeliveryMode == reliableDatagramMode {
+		association.reliable = newReliableDatagrams()
+	}
 	return association, nil
 }
 
@@ -408,17 +425,52 @@ func (association *externalUoTAssociation) enqueue(payload []byte) bool {
 	if !association.tuner.acceptsPayload(len(payload)) {
 		association.tuner.observeDrop()
 		association.status.AddUDPOversizeDrop()
+		if association.reliable != nil {
+			association.reliable.fail(errors.New("reliable payload too large"))
+			association.status.UpdateError("external_uot_reliable_failed")
+			association.close()
+		}
 		return false
 	}
-	copyPayload := append([]byte(nil), payload...)
-	select {
-	case association.outbound <- copyPayload:
+	if association.reliable != nil {
+		if err := association.reliable.enqueue(association.ctx, payload); err != nil {
+			association.status.UpdateError("external_uot_reliable_failed")
+			association.close()
+			return false
+		}
 		return true
-	default:
-		association.tuner.observeDrop()
-		association.status.AddUDPQueueDrop()
+	}
+	ctx, cancel := context.WithTimeout(association.ctx, datagramQueueDeadline)
+	defer cancel()
+	blocked, err := association.budget.reserve(ctx, len(payload))
+	if blocked {
+		association.status.AddUoTQueueBlocked()
+	}
+	if err == nil {
+		copyPayload := append([]byte(nil), payload...)
+		select {
+		case association.outbound <- copyPayload:
+			return true
+		default:
+		}
+		if !blocked {
+			association.status.AddUoTQueueBlocked()
+		}
+		select {
+		case association.outbound <- copyPayload:
+			return true
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		association.budget.release(len(payload))
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
+	association.tuner.observeDrop()
+	association.status.AddUoTQueueTimeout()
+	association.status.UpdateError("external_uot_queue_timeout")
+	return false
 }
 
 func (association *externalUoTAssociation) nextSequence() uint64 {
@@ -455,10 +507,20 @@ func (association *externalUoTAssociation) preserveRetry(payload []byte, sequenc
 func (association *externalUoTAssociation) run() {
 	defer close(association.done)
 	defer association.cancel()
+	if association.reliable != nil {
+		defer func() {
+			association.status.SetReliableStats(association.session, association.reliable.snapshot(), true)
+		}()
+	}
 	backoff := externalUoTReconnectBackoffInitial
 	var disconnectedAt time.Time
 	for association.ctx.Err() == nil {
 		if !disconnectedAt.IsZero() && time.Since(disconnectedAt) >= time.Duration(association.config.ExternalUoT.ReconnectGraceSeconds)*time.Second {
+			if association.reliable != nil {
+				association.reliable.fail(errors.New("reliable reconnect grace exhausted"))
+				association.status.UpdateError("external_uot_reliable_failed")
+				return
+			}
 			if _, rotateErr := rand.Read(association.session[:]); rotateErr == nil {
 				association.sequenceMu.Lock()
 				association.sequence = 0
@@ -467,13 +529,35 @@ func (association *externalUoTAssociation) run() {
 			}
 			disconnectedAt = time.Time{}
 		}
-		connection, snapshot, err := association.dialCarrier(dialStreamForConfig(association.config))
+		connection, snapshot, err := dialCandidateStreamForProtocol(
+			association.ctx,
+			association.store,
+			"udp",
+			association.sidecarHost(), association.sidecarPort(),
+			time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
+			dialStreamForConfig(association.config),
+		)
 		if err == nil {
 			started := time.Now()
 			err = association.runCarrier(connection, snapshot.Lease)
+			if err != nil && association.ctx.Err() == nil && association.carrierAttachedAt.Before(started) {
+				// A relay may authenticate successfully yet reset the actual
+				// sidecar HELLO. Do not keep retrying that same path forever.
+				association.store.FailCandidate("udp", snapshot.Lease)
+				association.status.RecordCandidateFailure(snapshot.Lease.CandidateKeyHash, "udp", "external_uot_hello_failed", snapshot.Lease.LeaseHash)
+			}
 			snapshot.Lease.wipe()
 			connection.Close()
-			backoff = externalUoTReconnectBackoffInitial
+			if association.reliable != nil && association.reliable.snapshot().Failed != "" {
+				association.status.UpdateError("external_uot_reliable_failed")
+				return
+			}
+			if !association.carrierAttachedAt.Before(started) {
+				// A completed HELLO resets the outage budget. Failed HELLOs
+				// must not reset backoff merely because TCP dial succeeded.
+				disconnectedAt = time.Now()
+				backoff = externalUoTReconnectBackoffInitial
+			}
 			if err == nil || association.ctx.Err() != nil {
 				return
 			}
@@ -518,29 +602,15 @@ func (association *externalUoTAssociation) sidecarPort() int {
 	return port
 }
 
-func (association *externalUoTAssociation) dialCarrier(dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
-	return dialCandidateStreamInHealthDomain(
-		association.ctx, association.store, externalUoTHealthDomain,
-		association.sidecarHost(), association.sidecarPort(),
-		time.Duration(association.config.ConnectTimeoutSecs)*time.Second, dial,
-	)
-}
-
-func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease ProviderLease) (result error) {
+func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease ProviderLease) error {
 	if connection == nil {
 		return errors.New("external UoT carrier missing")
 	}
-	defer func() {
-		if result != nil && association.ctx.Err() == nil {
-			// HELLO/sidecar-stream failures belong to this carrier endpoint,
-			// not ordinary TCP forwarding or global provider reputation.
-			association.store.FailCandidate(externalUoTHealthDomain, lease)
-		}
-	}()
 	reader := bufio.NewReaderSize(connection, 128*1024)
 	hello := externalUoTHello{
 		Token: association.config.ExternalUoT.Token, ForwardID: association.config.ForwardID,
 		Target: association.target, FramePayloadMax: association.config.ExternalUoT.FramePayloadMax,
+		DeliveryMode: association.config.ExternalUoT.DeliveryMode,
 	}
 	association.sequenceMu.Lock()
 	hello.LastSequence = association.sequence
@@ -579,14 +649,28 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	if helloAck.FramePayloadMax < externalUoTMinDatagramBytes || helloAck.FramePayloadMax > externalUoTMaxDatagramBytes {
 		return errors.New("external UoT sidecar frame limit invalid")
 	}
+	if association.reliable != nil && helloAck.DeliveryMode != reliableDatagramMode {
+		return association.reliable.fail(errors.New("sidecar did not negotiate reliable datagrams"))
+	}
+	if association.reliable != nil && helloAck.Session == "OKN" && association.reliableAttached {
+		return association.reliable.fail(errors.New("reliable peer session state lost"))
+	}
 	association.tuner.setMaxDatagram(helloAck.FramePayloadMax)
 	_ = connection.SetReadDeadline(time.Time{})
 	_ = connection.SetWriteDeadline(time.Time{})
 	statusRTT := time.Since(helloStarted)
 	association.tuner.observeRTT(statusRTT)
-	association.status.RecordUDPAttached(lease.SelectionRef, lease.SelectionTier)
-	association.store.ClearPathFailure(externalUoTHealthDomain, haPathKey(lease))
+	association.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, statusRTT, lease.LeaseHash)
+	association.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
+	association.store.ClearPathFailure("udp", haPathKey(lease))
+	log.Printf("external UoT carrier attached forward_id=%d sid=%x logical_protocol=udp carrier=tcp candidate_hash=%s lease_hash=%s target_hash=%s",
+		association.config.ForwardID, association.session[:4], lease.CandidateKeyHash, lease.LeaseHash, tcpTargetHash(association.config.Target))
+	association.carrierAttachedAt = time.Now()
 
+	if association.reliable != nil {
+		association.reliableAttached = true
+		return association.runReliableCarrier(reader, connection)
+	}
 	errCh := make(chan error, 2)
 	go association.externalUoTWriter(connection, errCh)
 	go association.externalUoTReader(reader, connection, errCh)
@@ -622,6 +706,7 @@ func (association *externalUoTAssociation) externalUoTWriter(connection net.Conn
 				case <-association.ctx.Done():
 					return
 				case pending = <-association.outbound:
+					association.budget.release(len(pending))
 					pendingSequence = association.nextSequence()
 				}
 			}
@@ -695,6 +780,9 @@ func (association *externalUoTAssociation) deliver(payload []byte) {
 }
 
 func (association *externalUoTAssociation) close() {
+	if association.reliable != nil && association.reliable.snapshot().WindowPackets > 0 {
+		association.reliable.fail(errors.New("reliable session closed with outstanding frames"))
+	}
 	association.cancel()
 }
 
@@ -713,8 +801,22 @@ func serveExternalUoT(ctx context.Context, config Config, store *PolicyStore, st
 		return err
 	}
 	defer local.Close()
-	_ = local.SetReadBuffer(4 << 20)
-	_ = local.SetWriteBuffer(4 << 20)
+	recvErr := local.SetReadBuffer(16 << 20)
+	sendErr := local.SetWriteBuffer(16 << 20)
+	recv, send, bufferErr := datagramSocketBuffers(local)
+	status.SetUoTSocketBuffers(recv, send, recvErr != nil || sendErr != nil || bufferErr != nil)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				status.SetUoTSocketDrops(datagramSocketDrops(local))
+			}
+		}
+	}()
 	if testHookLocalUDPListening != nil {
 		testHookLocalUDPListening(local)
 	}
