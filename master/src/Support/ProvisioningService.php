@@ -5329,6 +5329,21 @@ final class ProvisioningService
                     'actor' => $actor,
                     'revision' => $nextRevision,
                 ]);
+
+                // buildClientConfig deliberately requires an enabled forward and
+                // an active service, so it throws forward_not_found 404 for the
+                // row this branch just disabled. That rolled the whole
+                // transaction back and the pause silently never persisted, which
+                // is why pausing a forward from the tenant UI appeared to work
+                // but stayed running. A paused forward has no runnable client
+                // config to return, so report its new state instead. The
+                // payload is deliberately identity-only: a paused forward must
+                // not hand out credentials for a forward it just shut down.
+                return [
+                    'forward_id' => $forwardId,
+                    'enabled' => false,
+                    'state' => 'paused',
+                ];
             }
 
             return $this->buildClientConfig($forwardId);
