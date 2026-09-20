@@ -922,16 +922,50 @@ func freeNativeTCPPort(t *testing.T) int {
 	return port
 }
 
+// Listeners are selected by binding ":0" and closing it, so between that close
+// and the server's own bind either an unrelated local process or a sibling test
+// can take both the TCP and the UDP half of the port. A bare TCP dial cannot
+// tell that apart from readiness: it succeeds against whatever won the race, and
+// the test then waits on a SOCKS reply that never arrives and fails at the
+// caller's own timeout. Complete the SOCKS greeting instead, which only the
+// server under test can answer, and stay well inside the callers' 1s dial and
+// 2s port budget so a genuine bind failure still surfaces quickly.
 func waitNativeTCPPort(t *testing.T, port int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// The caller's dial budget is 1s and its own port budget was 2s, so stay
+	// under the larger of the two while still giving a real bind failure time to
+	// settle. A losing race is normally detectable within a few milliseconds.
+	deadline := time.Now().Add(3 * time.Second)
+	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
 	for time.Now().Before(deadline) {
-		connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 100*time.Millisecond)
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
 		if err == nil {
+			if err := completeSocksGreeting(connection); err == nil {
+				_ = connection.Close()
+				return
+			}
 			_ = connection.Close()
-			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("native SOCKS TCP port %d did not become ready", port)
+}
+
+// completeSocksGreeting performs the method negotiation a SOCKS5 server must
+// answer with 05 00. Anything else on the port is not the server under test.
+func completeSocksGreeting(connection net.Conn) error {
+	if err := connection.SetDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		return err
+	}
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		return err
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(connection, reply); err != nil {
+		return err
+	}
+	if !bytes.Equal(reply, []byte{5, 0}) {
+		return fmt.Errorf("unexpected SOCKS method reply %x", reply)
+	}
+	return nil
 }
