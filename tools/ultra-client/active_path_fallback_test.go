@@ -47,6 +47,11 @@ func TestDialCandidateStreamFallsBackToActivePathAfterIsolation(t *testing.T) {
 	if len(attempted) != 2 || attempted[0] != sibling.SelectionRef || attempted[1] != active.SelectionRef {
 		t.Fatalf("attempted=%v, want sibling then active fallback", attempted)
 	}
+	if candidates := store.CandidateSnapshots("tcp"); len(candidates) != 0 {
+		wipeSnapshots(candidates)
+		t.Fatal("a handshake without a reply restored an isolated path")
+	}
+	noteRelayOutcome(store, nil, relayIdentity{pathKey: haPathKey(active)}, time.Now(), 64, 128)
 	if candidates := store.CandidateSnapshots("tcp"); len(candidates) != 1 || candidates[0].Lease.SelectionRef != active.SelectionRef {
 		wipeSnapshots(candidates)
 		t.Fatalf("active path was not restored after fallback: %+v", candidates)

@@ -3254,15 +3254,20 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape($debugger === null ? 'unknown' : ($debugger ? 'yes' : 'no')) . '</td>'
                     . '<td>' . $this->escape($instrumented === null ? 'unknown' : ($instrumented ? 'yes' : 'no')) . '</td>'
                     . '<td>' . $this->escape((string) ($session['runtime_attested_at'] ?? '')) . '</td>'
-                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td></tr>';
+                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td>'
+                    . '<td><form method="post" action="/admin/ultra/attestation/refresh" onsubmit="return confirm(\'Clear this cached runtime identity and let the client re-attest on its next retry?\')">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="client_id" value="' . (int) ($session['client_id'] ?? 0) . '">'
+                    . '<input type="hidden" name="device_id" value="' . $this->escape((string) ($session['device_id'] ?? '')) . '">'
+                    . '<button class="button secondary" type="submit">Refresh runtime</button></form></td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="10" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="11" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
             }
             $content = '<section class="card">'
-                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is report-only. These sessions report a runtime build fingerprint that is not in '
+                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is normally report-only. Refresh runtime clears one cached identity so the client can start once and publish a fresh attestation on its next heartbeat. These sessions report a runtime build fingerprint that is not in '
                 . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (allow-list entries: ' . $allowlistSize . '); no lease is denied from this view.</div>'
-                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th></tr></thead><tbody>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th><th>Action</th></tr></thead><tbody>'
                 . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'refusals') {
             $refusals = (new UltraLeaseService($this->config, $this->db))->recentRefusals($limit);
@@ -3561,6 +3566,30 @@ final class AdminController extends BaseController
         $body = '<div class="hero"><div><h2>Ultra Operations</h2></div><div class="actions"><a class="button" href="/admin/forward-combinations?backend_mode=ultra">New Ultra Combination</a></div></div>'
             . '<div class="grid five">' . $summary . '</div><nav class="actions" style="margin:16px 0">' . $tabs . '</nav>' . $content;
         return $this->adminPage('Ultra Operations', $body, $viewer, 'ultra');
+    }
+
+    public function refreshUltraRuntimeAttestation(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $clientId = (int) $request->input('client_id', 0);
+            $deviceId = trim((string) $request->input('device_id', ''));
+            if ($clientId <= 0 || $deviceId === '' || strlen($deviceId) > 191) {
+                throw new \InvalidArgumentException('Invalid client device.');
+            }
+            $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
+            if (!$statusService->clearRuntimeAttestation($clientId, $deviceId)) {
+                throw new \RuntimeException('Client device session not found.');
+            }
+            SessionAuth::flash('success', 'Runtime attestation cleared. The client can retry and publish a fresh identity.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to refresh runtime attestation: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/ultra?view=attestation');
     }
 
     public function saveUltraLinePolicy(Request $request, array $params): Response

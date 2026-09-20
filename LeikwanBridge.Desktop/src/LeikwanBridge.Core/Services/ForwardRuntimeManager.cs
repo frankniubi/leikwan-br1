@@ -26,6 +26,9 @@ public class ForwardRuntimeManager : IDisposable
     private readonly ConcurrentDictionary<int, object> _forwardLocks = new();
     private readonly ConcurrentDictionary<int, byte> _startingForwards = new();
     private readonly ConcurrentDictionary<int, byte> _nativeOutboundNoticed = new();
+    private readonly Func<DateTimeOffset> _startupRetryClock;
+    private sealed record UltraStartupFailure(string Contract, int Attempts, DateTimeOffset RetryAfter);
+    private readonly ConcurrentDictionary<int, UltraStartupFailure> _ultraStartupFailures = new();
 
     public event Action<int, string>? UltraRecoveryRequested;
 
@@ -95,7 +98,8 @@ public class ForwardRuntimeManager : IDisposable
         Func<int, UltraLease, CancellationToken, Task<bool>>? ultraLeaseSender = null,
         Func<int, PortPreflightResult>? portPreflight = null,
         IUltraRuntimeHost? ultraRuntimeHost = null,
-        Func<int, IReadOnlyList<PortOwner>>? proxyPortOwners = null)
+        Func<int, IReadOnlyList<PortOwner>>? proxyPortOwners = null,
+        Func<DateTimeOffset>? startupRetryClock = null)
     {
         _config = config;
         _supervisor = supervisor;
@@ -103,6 +107,7 @@ public class ForwardRuntimeManager : IDisposable
         _mptcpBuilder = new MptcpRuntimeBuilder(config);
         _bondEndpointHealth = new BondEndpointHealthService(stateManager);
         _stateManager = stateManager;
+        _startupRetryClock = startupRetryClock ?? (() => DateTimeOffset.UtcNow);
         _binaryExists = binaryExists ?? File.Exists;
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         _proxyPortOwners = proxyPortOwners ?? (OperatingSystem.IsWindows()
@@ -216,6 +221,8 @@ public class ForwardRuntimeManager : IDisposable
             return;
         }
 
+        PinForwardEgressHosts(selectedForward);
+
         // Validation above is intentionally complete before replacing the running runtime.
         _supervisor.StopAll(forwardId);
         WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
@@ -278,6 +285,43 @@ public class ForwardRuntimeManager : IDisposable
         _stateManager.UpdateApplied(current => current[forwardId.ToString()] = state);
     }
 
+    private void PinForwardEgressHosts(ForwardConfig forward)
+    {
+        if (string.IsNullOrWhiteSpace(_config.PreferredEgressInterface))
+            return;
+
+        var hosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddHost(hosts, forward.Target);
+        foreach (var endpoint in forward.Endpoints)
+            AddHost(hosts, endpoint.Host);
+
+        if (forward.Bonding is { } bonding)
+        {
+            AddHost(hosts, bonding.SidecarHost);
+            AddHost(hosts, bonding.AggregatorHost);
+            AddHost(hosts, bonding.RelayHost);
+            AddHost(hosts, bonding.RemoteTarget);
+        }
+
+        if (forward.Mptcp is { } mptcp)
+        {
+            AddHost(hosts, mptcp.SidecarHost);
+            AddHost(hosts, mptcp.RemoteHost);
+            AddHost(hosts, mptcp.RelayHost);
+            AddHost(hosts, mptcp.SlaveRelayHost);
+        }
+
+        foreach (var host in hosts)
+            PanelDirectEgress.RegisterHost(host);
+
+        static void AddHost(HashSet<string> hosts, string? host)
+        {
+            var value = (host ?? string.Empty).Trim();
+            if (value.Length > 0)
+                hosts.Add(value);
+        }
+    }
+
     private void ApplyUltraForward(ForwardConfig forward, AppliedForwardState? previousState, string? contractSignature, string applyReason)
     {
         if (IsNativeOutboundForward(forward))
@@ -308,17 +352,39 @@ public class ForwardRuntimeManager : IDisposable
             StopForwardForPolicy(forward.ForwardId);
             return;
         }
+        var effectiveSignature = contractSignature ?? ComputeContractSignature(forward);
         try
         {
+            // Validation above always runs, even while cooling down: a revoked
+            // or expired policy must stop the forward, not be hidden by retries.
+            if (string.Equals(applyReason, "manual_apply", StringComparison.Ordinal)
+                || (_ultraStartupFailures.TryGetValue(forward.ForwardId, out var oldFailure)
+                    && !string.Equals(oldFailure.Contract, effectiveSignature, StringComparison.Ordinal)))
+                _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+            if (_ultraStartupFailures.TryGetValue(forward.ForwardId, out var failure)
+                && failure.RetryAfter > _startupRetryClock())
+            {
+                Log.Debug("Ultra startup retry deferred for forward {ForwardId} until {RetryAfter}",
+                    forward.ForwardId, failure.RetryAfter);
+                return;
+            }
             _ultraRuntimeHost.Start(
                 forward,
                 usableLeases,
-                contractSignature ?? previousState?.ContractSignature ?? string.Empty,
+                effectiveSignature,
                 string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
+            _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
         }
         catch (Exception ex)
         {
-            Log.Warning("Ultra runtime start failed for forward {ForwardId} ({ErrorType})",
+            var attempts = _ultraStartupFailures.TryGetValue(forward.ForwardId, out var previousFailure)
+                && string.Equals(previousFailure.Contract, effectiveSignature, StringComparison.Ordinal)
+                ? Math.Min(previousFailure.Attempts + 1, 5)
+                : 1;
+            var delaySeconds = Math.Min(300, 30 * (1 << (attempts - 1)));
+            _ultraStartupFailures[forward.ForwardId] = new UltraStartupFailure(
+                effectiveSignature, attempts, _startupRetryClock().AddSeconds(delaySeconds));
+            Log.Warning(ex, "Ultra runtime start failed for forward {ForwardId} ({ErrorType})",
                 forward.ForwardId, ex.GetType().Name);
             StopForwardForPolicy(forward.ForwardId);
         }
@@ -387,6 +453,8 @@ public class ForwardRuntimeManager : IDisposable
         {
             if (ultra)
             {
+                if (manual)
+                    _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
                 var state = _stateManager.LoadApplied().GetValueOrDefault(forward.ForwardId.ToString());
                 if (!manual && (state?.UserStopped == true || IsForwardReady(forward)))
                     return;
@@ -443,7 +511,10 @@ public class ForwardRuntimeManager : IDisposable
                     || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
                     || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
                     return false;
-                return _ultraRuntimeHost.Refresh(forward, leases);
+                var refreshed = _ultraRuntimeHost.Refresh(forward, leases);
+                if (refreshed)
+                    _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+                return refreshed;
             }
             finally
             {

@@ -309,6 +309,7 @@ type RuntimeSnapshot struct {
 type PolicyStore struct {
 	isolated              map[string]time.Time
 	pathFailures          map[string]int
+	businessPathIsolation map[string]bool
 	mu                    sync.RWMutex
 	config                Config
 	policy                *Policy
@@ -393,6 +394,7 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	for key, until := range s.isolated {
 		if !until.After(now) {
 			delete(s.isolated, key)
+			delete(s.businessPathIsolation, key)
 		}
 	}
 	for nonce := range batchNonces {

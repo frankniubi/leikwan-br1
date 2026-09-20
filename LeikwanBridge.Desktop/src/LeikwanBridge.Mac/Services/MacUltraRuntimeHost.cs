@@ -74,6 +74,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         if (leases is null || leases.Count is < 1 or > 4)
             throw new ArgumentException("Ultra lease candidates are required", nameof(leases));
         byte[] bootstrap = [];
+        var phase = "validate";
         try
         {
             Log.Information("ultra runtime start begin for forward {ForwardId}", forward.ForwardId);
@@ -84,6 +85,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 throw new InvalidOperationException("ultra_runtime_unavailable");
             if (_portPreflight is not null)
             {
+                phase = "port_preflight";
                 Log.Information("ultra port preflight begin for forward {ForwardId}", forward.ForwardId);
                 var preflight = _portPreflight.Invoke(forward.ListenPort);
                 Log.Information("ultra port preflight complete blocked={Blocked} for forward {ForwardId}",
@@ -92,6 +94,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                     throw new InvalidOperationException("ultra_port_conflict");
             }
 
+            phase = "stop_previous_runtime";
             Log.Information("ultra previous runtime stop begin for forward {ForwardId}", forward.ForwardId);
             Stop(forward.ForwardId);
             Log.Information("ultra previous runtime stop complete for forward {ForwardId}", forward.ForwardId);
@@ -154,6 +157,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             var externalUot = ExternalUotGrant.Select(leases);
             if (externalUot is not null)
                 bootstrapConfig["external_uot"] = externalUot.ToBootstrapPayload();
+            phase = "spawn_runtime";
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
                 forward.ForwardId,
@@ -165,10 +169,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 logArguments: false,
                 workingDirectory: runtimeDirectory);
             Log.Information("ultra runtime process started for forward {ForwardId}", forward.ForwardId);
+            phase = "wait_control_socket";
             var socketReady = WaitForSocket(socketPath, TimeSpan.FromSeconds(2));
             Log.Information("ultra control socket ready={SocketReady} for forward {ForwardId}", socketReady, forward.ForwardId);
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
+            phase = "deliver_lease";
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
             using var deliveryTimeout = new CancellationTokenSource(LeaseDeliveryTimeout);
             var leaseDelivered = (leases.Count == 1
@@ -180,11 +186,13 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);
             if (!leaseDelivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
+            phase = "wait_listener";
             var portReady = WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
 
+            phase = "persist_applied_state";
             var applied = _stateManager.LoadApplied();
             applied[forward.ForwardId.ToString()] = new AppliedForwardState
             {
@@ -206,10 +214,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         }
         catch (Exception exception)
         {
-            Log.Warning("ultra runtime start failed for forward {ForwardId} ({ErrorType})",
-                forward.ForwardId, exception.GetType().Name);
+            Log.Warning(exception, "ultra runtime start failed for forward {ForwardId} phase={Phase} ({ErrorType})",
+                forward.ForwardId,
+                phase,
+                exception.GetType().Name);
             Stop(forward.ForwardId);
-            throw new InvalidOperationException("ultra_runtime_start_failed");
+            throw new InvalidOperationException("ultra_runtime_start_failed", exception);
         }
         finally
         {

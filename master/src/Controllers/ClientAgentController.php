@@ -567,7 +567,7 @@ final class ClientAgentController extends BaseController
                 }
                 $result = $this->ultraLeases->issueLease($candidateRequest, (int) $client['id'], $deviceId, $policy);
                 if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
-                    $candidateLease = $result['lease'];
+                    $candidateLease = $this->attachExternalUotToLease($result['lease'], $grant, $isNative);
                     $endpoint = is_array($candidateLease['endpoint'] ?? null) ? $candidateLease['endpoint'] : [];
                     $endpointKey = strtolower(trim((string) ($endpoint['ip'] ?? ''))) . ':' . (int) ($endpoint['port'] ?? 0);
                     $selectionRef = trim((string) ($candidateLease['selection_ref'] ?? ''));
@@ -608,6 +608,28 @@ final class ClientAgentController extends BaseController
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
+    }
+
+    /**
+     * The desktop consumes /ultra/lease, not the broker grant in config pull.
+     * Carry the current server-authorized sidecar contract across that boundary.
+     * Native SOCKS5 has a separate transport contract and must not receive it.
+     */
+    private function attachExternalUotToLease(array $lease, array $grant, bool $isNative): array
+    {
+        unset($lease['external_uot']);
+        $external = $grant['external_uot'] ?? null;
+        if ($isNative || !is_array($external) || ($external['enabled'] ?? false) !== true) {
+            return $lease;
+        }
+        if ((int) ($lease['forward_id'] ?? 0) !== (int) ($grant['forward_id'] ?? 0)
+            || !hash_equals((string) ($lease['policy_generation'] ?? ''), (string) ($grant['policy_generation'] ?? ''))
+            || empty($external['target_digest'])
+            || !hash_equals((string) ($lease['target_digest'] ?? ''), (string) $external['target_digest'])) {
+            throw new ApiException('external_uot_scope_mismatch', 409);
+        }
+        $lease['external_uot'] = $external;
+        return $lease;
     }
 
     public function pullConfigs(Request $request, array $params): Response
@@ -1047,6 +1069,7 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'heartbeat');
         $ultraStatuses = $request->input('ultra_status', []);
+        $ultraStatusAccepted = 0;
         // The runtime build identity reaches the panel in two shapes: the
         // desktop client puts it inside each per-forward usage snapshot, the
         // Linux/macOS agent puts it inside each per-forward status entry. Only
@@ -1064,7 +1087,7 @@ final class ClientAgentController extends BaseController
         }
         if (is_array($ultraStatuses)) {
             try {
-                $this->ultraClientStatus->ingest(
+                $ultraStatusAccepted = $this->ultraClientStatus->ingest(
                     (int) $client['id'],
                     $deviceId,
                     $ultraStatuses,
@@ -1186,6 +1209,7 @@ final class ClientAgentController extends BaseController
 
         return $this->json([
             'ok' => true,
+            'ultra_status_accepted' => $ultraStatusAccepted,
             'ultra_usage_acknowledged' => $ultraUsageAcknowledged,
             'ultra_actions' => array_values($ultraActions),
         ]);

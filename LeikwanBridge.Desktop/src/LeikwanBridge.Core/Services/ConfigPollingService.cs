@@ -144,14 +144,15 @@ public sealed class ConfigPollingService
     }
 
     /// <summary>
-    /// Requests a full policy pull after a transient control-plane failure.
+    /// Requests a full policy pull after a transient control-plane failure,
+    /// optionally prioritising the affected Ultra forward.
     /// Keep the request throttled so a dual-CDN outage cannot create a tight
     /// retry loop; the normal polling loop remains responsible for subsequent
     /// retries. No API path or payload is changed by this operation.
     /// </summary>
-    public void RequestControlPlaneRecovery()
+    public void RequestControlPlaneRecovery(int? targetedForwardId = null)
     {
-        QueueConfigRefreshSoon();
+        QueueConfigRefreshSoon(targetedForwardId);
         if (_cts is null || _cts.IsCancellationRequested)
             return;
 
@@ -385,10 +386,10 @@ public sealed class ConfigPollingService
                 // whenever the relay material rotates, and the forward was usually not yet
                 // running at refresh time, so nothing could be "preserved" and the agent
                 // restarted it over and over (the user-visible "Starting routes" flashing).
-                if (IsGrantRefreshError(ex))
+                if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
                 {
-                    QueueConfigRefreshSoon(forward.ForwardId);
-                    Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                    RequestControlPlaneRecovery(forward.ForwardId);
+                    Log.Information("queued immediate policy refresh after Ultra control-plane failure for forward {ForwardId}", forward.ForwardId);
                     return;
                 }
                 if (TryPreserveRunningUltra(
@@ -519,10 +520,10 @@ public sealed class ConfigPollingService
                 ex.GetType().Name,
                 ex is MasterApiException apiException ? apiException.StatusCode : 0,
                 BoundErrorCode(ex.Message));
-            if (IsGrantRefreshError(ex))
+            if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
             {
-                QueueConfigRefreshSoon(forward.ForwardId);
-                Log.Information("queued full config pull after Ultra grant rotation for forward {ForwardId}", forward.ForwardId);
+                RequestControlPlaneRecovery(forward.ForwardId);
+                Log.Information("queued immediate policy refresh after Ultra control-plane failure for forward {ForwardId}", forward.ForwardId);
             }
             return;
         }
@@ -632,6 +633,11 @@ public sealed class ConfigPollingService
             or "no_approved_candidate"
             or "quota_exhausted";
     }
+
+    private static bool IsTransientControlPlaneError(Exception exception)
+        => exception is HttpRequestException
+            || (exception is MasterApiException apiException
+                && apiException.StatusCode is 502 or 503 or 504 or 530);
 
     private void QueueConfigRefreshSoon(int? targetedForwardId = null)
     {

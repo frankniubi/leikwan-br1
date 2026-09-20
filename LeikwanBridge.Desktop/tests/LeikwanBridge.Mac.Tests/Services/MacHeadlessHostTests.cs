@@ -109,7 +109,7 @@ public sealed class MacHeadlessHostTests
         using var workspace = new HeadlessWorkspace();
         var client = workspace.Client;
         client.Controller.OnConnect = () => client.Controller.Snapshot = ConnectedSnapshot(running: false);
-        client.Controller.OnStartForward = () => client.Controller.Snapshot = ConnectedSnapshot(running: true);
+        client.Controller.OnEnsureForward = () => client.Controller.Snapshot = ConnectedSnapshot(running: true);
         // Two supervise ticks, then the supervisor asks the process to stop.
         workspace.Delay = (_, token) =>
         {
@@ -121,7 +121,8 @@ public sealed class MacHeadlessHostTests
         var exit = await workspace.RunAsync("--headless", "--client-id", "5", "--agent-token", "t", "--status-interval", "5");
 
         Assert.Equal(0, exit);
-        Assert.Equal(1, client.Controller.StartForwardCalls);
+        Assert.Equal(1, client.Controller.EnsureForwardCalls);
+        Assert.Equal(0, client.Controller.StartForwardCalls);
         Assert.Equal(1, client.Controller.StopAllCalls);
         Assert.Equal(1, client.Controller.DisconnectCalls);
         Assert.Equal(1, client.Disposed);
@@ -267,10 +268,12 @@ public sealed class MacHeadlessHostTests
         public int ConnectCalls { get; private set; }
         public int StartAllCalls { get; private set; }
         public int StartForwardCalls { get; private set; }
+        public int EnsureForwardCalls { get; private set; }
         public int StopAllCalls { get; private set; }
         public int DisconnectCalls { get; private set; }
         public List<(string PanelUrl, int ClientId, string AgentToken)> Logins { get; } = [];
         public Action? OnStartForward { get; set; }
+        public Action? OnEnsureForward { get; set; }
         public Action? OnConnect { get; set; }
 
         public Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
@@ -314,6 +317,13 @@ public sealed class MacHeadlessHostTests
         {
             StartForwardCalls++;
             OnStartForward?.Invoke();
+            return Task.CompletedTask;
+        }
+
+        public Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
+        {
+            EnsureForwardCalls++;
+            OnEnsureForward?.Invoke();
             return Task.CompletedTask;
         }
 

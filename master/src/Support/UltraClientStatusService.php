@@ -120,6 +120,44 @@ final class UltraClientStatusService
     }
 
     /**
+     * Clear one device session's cached runtime identity so the next lease
+     * attempt can bootstrap the runtime and repopulate attestation via
+     * heartbeat. This is an operator recovery action, not a new trust grant.
+     */
+    public function clearRuntimeAttestation(int $clientId, string $deviceId): bool
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '' || strlen($deviceId) > 191) {
+            return false;
+        }
+        $session = $this->db->fetchOne(
+            'SELECT id FROM client_device_sessions
+              WHERE client_id = :client_id AND device_id = :device_id
+              LIMIT 1',
+            ['client_id' => $clientId, 'device_id' => $deviceId]
+        );
+        if (!is_array($session)) {
+            return false;
+        }
+        $this->db->execute(
+            'UPDATE client_device_sessions
+                SET ultra_runtime_fingerprint = NULL,
+                    ultra_runtime_self_sha256 = NULL,
+                    ultra_runtime_debugger = NULL,
+                    ultra_runtime_instrumented = NULL,
+                    ultra_runtime_attested_at = NULL,
+                    updated_at = :updated_at
+              WHERE client_id = :client_id AND device_id = :device_id',
+            [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+                'updated_at' => gmdate('Y-m-d H:i:s', $this->now()),
+            ]
+        );
+        return true;
+    }
+
+    /**
      * Ingest authenticated, bounded data-plane outcomes keyed by the opaque
      * candidate hash issued in a lease. Client-supplied line IDs are never
      * accepted here.
@@ -660,12 +698,67 @@ final class UltraClientStatusService
         return [
             'forward_id' => $forwardId,
             'state' => $state,
+            'udp_transport' => in_array($status['udp_transport'] ?? '', ['disabled', 'native_udp', 'external_uot'], true)
+                ? $status['udp_transport'] : 'unknown',
             'detected_ingress_zone' => self::zone($status['detected_ingress_zone'] ?? 'unknown'),
             'latest_tcp' => $this->normalizeSelection($status['latest_tcp'] ?? null),
             'active_udp' => $this->normalizeSelection($status['active_udp'] ?? null),
+            'ha_failures' => max(0, min(4294967295, (int) ($status['ha_failures'] ?? 0))),
+            'udp_queue_drops' => max(0, min(4294967295, (int) ($status['udp_queue_drops'] ?? 0))),
+            'udp_setup_failures' => max(0, min(4294967295, (int) ($status['udp_setup_failures'] ?? 0))),
+            'bytes_in' => max(0, min(1099511627776, (int) ($status['bytes_in'] ?? 0))),
+            'bytes_out' => max(0, min(1099511627776, (int) ($status['bytes_out'] ?? 0))),
+            'ha_events' => $this->normalizeHAEvents($status['ha_events'] ?? null),
             'updated_at' => self::text($status['updated_at'] ?? '', 40),
             'error_code' => self::text($status['error_code'] ?? '', 64),
         ];
+    }
+
+    /** @return array<int, array<string, string>> */
+    private function normalizeHAEvents(mixed $events): array
+    {
+        if (!is_array($events)) {
+            return [];
+        }
+        $result = [];
+        foreach (array_slice(array_values($events), -8) as $event) {
+            if (!is_array($event)) {
+                continue;
+            }
+            $protocol = strtolower(trim((string) ($event['protocol'] ?? '')));
+            $reason = strtolower(trim((string) ($event['reason'] ?? '')));
+            if (!in_array($protocol, ['tcp', 'udp'], true) || $reason === '') {
+                continue;
+            }
+            $normalized = [
+                'protocol' => self::text($protocol, 16),
+                'reason' => self::text($reason, 64),
+                'generation' => self::text($event['generation'] ?? '', 64),
+                'at' => self::text($event['at'] ?? '', 40),
+            ];
+            foreach (['candidate_key_hash', 'lease_hash'] as $key) {
+                $hash = is_string($event[$key] ?? null) ? strtolower(trim($event[$key])) : '';
+                if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1) {
+                    $normalized[$key] = $hash;
+                }
+            }
+            foreach (['upstream_bytes', 'remote_read_bytes'] as $key) {
+                if (is_int($event[$key] ?? null)) {
+                    $normalized[$key] = max(0, min(107374182400, $event[$key]));
+                }
+            }
+            foreach (['remote_stopped_first', 'local_path_avoided'] as $key) {
+                if (is_bool($event[$key] ?? null)) {
+                    $normalized[$key] = $event[$key];
+                }
+            }
+            $readReason = $event['remote_read_reason'] ?? null;
+            if (is_string($readReason) && preg_match('/^[a-z0-9_]{1,64}$/', $readReason) === 1) {
+                $normalized['remote_read_reason'] = $readReason;
+            }
+            $result[] = $normalized;
+        }
+        return $result;
     }
 
     /** @return array<string, mixed>|null */

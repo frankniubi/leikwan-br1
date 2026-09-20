@@ -40,12 +40,50 @@ public sealed class HeartbeatServiceTests
         Assert.Equal(
             "2026.09.13.3.452c8fe8",
             usage.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+        var status = Assert.Single(document.RootElement.GetProperty("ultra_status").EnumerateArray());
+        Assert.Equal(42, status.GetProperty("forward_id").GetInt32());
+        Assert.Equal("2026.09.13.3.452c8fe8",
+            document.RootElement.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
 
         // The identity is reported once per change and at a slow cadence, not on
         // every heartbeat.
         await service.SendHeartbeatAsync();
         using var second = JsonDocument.Parse(server.LastRequestBody);
         Assert.Empty(second.RootElement.GetProperty("ultra_usage").EnumerateArray());
+        Assert.Single(second.RootElement.GetProperty("ultra_status").EnumerateArray());
+        Assert.Equal("2026.09.13.3.452c8fe8",
+            second.RootElement.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_ArchivedUsageCannotReplaceCurrentRuntimeIdentity()
+    {
+        using var tempDir = new TempStateDirectory();
+        var runtimeDir = Path.Combine(tempDir.Path, "runtime");
+        Directory.CreateDirectory(runtimeDir);
+        foreach (var (forwardId, stopped) in new[] { (41, false), (42, true) })
+        {
+            File.WriteAllText(Path.Combine(runtimeDir, $"ultra-forward-{forwardId}.status.json"), $$"""
+            {
+              "forward_id": {{forwardId}},
+              "policy_generation": "{{new string('a', 64)}}",
+              "updated_at": "{{(stopped ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddDays(-1)):O}}",
+              "state": "{{(stopped ? "stopped" : "ready")}}",
+              "bytes_in": 100,
+              "bytes_out": 0,
+              "runtime_attestation": { "fingerprint": "2026.09.12.1.4b106b02", "self_sha256": "{{new string('b', 64)}}" }
+            }
+            """);
+        }
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        Assert.Empty(document.RootElement.GetProperty("ultra_status").EnumerateArray());
+        Assert.Equal("", document.RootElement.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+        // Billing rows are retained; their historical identity cannot become
+        // the top-level identity used to authorize the newly starting runtime.
+        Assert.Equal(2, document.RootElement.GetProperty("ultra_usage").GetArrayLength());
     }
 
     [Fact]

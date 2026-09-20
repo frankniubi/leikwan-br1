@@ -668,23 +668,67 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter,
 	}
 }
 
+// inboundCopyObservation keeps the peer's reads separate from delivery to the
+// local application. A local write failure must never look like a silent peer.
+type inboundCopyObservation struct {
+	ReadBytes    int64
+	WrittenBytes int64
+	ReadError    error
+	WriteError   error
+	PolicyError  error
+}
+
+func (o inboundCopyObservation) Err() error {
+	if o.PolicyError != nil {
+		return o.PolicyError
+	}
+	if o.WriteError != nil {
+		return o.WriteError
+	}
+	return o.ReadError
+}
+
 func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
+	observation := copyInboundObserved(destination, source, limiter, status)
+	return observation.WrittenBytes, observation.Err()
+}
+
+func copyInboundObserved(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) inboundCopyObservation {
 	buffer := make([]byte, 32*1024)
-	var total int64
+	var observation inboundCopyObservation
 	for {
 		count, readErr := source.Read(buffer)
+		observation.ReadError = readErr
 		if count > 0 {
+			observation.ReadBytes += int64(count)
 			if err := limiter.Consume(count); err != nil {
-				return total, err
+				observation.PolicyError = err
+				return observation
 			}
+			// Usage remains the bytes read after policy admission, not the
+			// application's potentially partial acceptance of those bytes.
 			status.AddUsage(count, 0)
-			if _, err := destination.Write(buffer[:count]); err != nil {
-				return total, err
+			remaining := buffer[:count]
+			for len(remaining) > 0 {
+				written, writeErr := destination.Write(remaining)
+				if written < 0 || written > len(remaining) {
+					observation.WriteError = errors.New("writer returned invalid count")
+					return observation
+				}
+				observation.WrittenBytes += int64(written)
+				remaining = remaining[written:]
+				if writeErr != nil {
+					observation.WriteError = writeErr
+					return observation
+				}
+				if written == 0 {
+					observation.WriteError = io.ErrShortWrite
+					return observation
+				}
 			}
-			total += int64(count)
 		}
 		if readErr != nil {
-			return total, readErr
+			return observation
 		}
 	}
 }
@@ -2348,6 +2392,7 @@ func main() {
 	}
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
+	status.RecordTransportConfig(config)
 	status.UpdateError("awaiting_policy")
 	control := NewControlServer(config.ControlSocket, config, store, status)
 	if err := control.Listen(); err != nil {

@@ -1288,29 +1288,73 @@ final class TenantController extends BaseController
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
-        // The helper renders the macOS, Apple Silicon, Intel, and Unsigned install surface.
-        $macosInstallSection = $this->renderMacClientInstallSection();
-
-        // No-GUI clients: same client, started by launchd (macOS) or the Windows
-        // service manager instead of a desktop session.
+        // macOS: App (Apple Silicon) + no-GUI together; Windows + Windows no-GUI together; Docker standalone.
+        // All command <pre> blocks are collapsible via <details> so the page stays scannable.
         $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
         $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
-        $headlessInstallSection = '<section class="tenant-client-install__platform"><strong>'
-            . $this->platformIcon('helper')
-            . $this->escape($this->clientAppReleaseLabel('无界面版 No-GUI (macOS / Windows)', 'windows_headless_client'))
-            . '</strong>'
-            . '<div class="muted">没有桌面会话也能跑：macOS 注册为 launchd 守护进程，Windows 注册为系统服务。与图形客户端共用同一套内核、同一份运行时指纹与更新校验，令牌保存在仅服务可读的文件里。</div>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+        $dockerCommand = $this->dockerClientInstallCommand($client);
+        $dockerComposeSnippet = $this->dockerClientComposeInline($client);
+
+        $macosGuiSectionRaw = $this->renderMacClientInstallSection();
+        $macosSection = '';
+        if ($macosGuiSectionRaw !== '') {
+            $macosNoGuiBlock = '<details style="margin-top:12px;"><summary>无界面版 No-GUI · macOS (launchd)</summary>'
+                . '<div class="muted" style="margin:8px 0 8px;">无桌面会话也能跑：注册为 launchd 守护进程，与图形客户端共用同一套内核与更新校验。</div>'
+                . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+                . '<div class="actions">'
+                . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+                . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+                . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明 / Install guide</a>'
+                . '</div></details>';
+            $macosSection = str_replace('</section>', $macosNoGuiBlock . '</section>', $macosGuiSectionRaw);
+        } else {
+            $macosSection = '<section class="tenant-client-install__platform"><strong>'
+                . $this->platformIcon('macos')
+                . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 No-GUI', 'windows_headless_client')) . '</strong>'
+                . '<div class="muted">无桌面会话也能跑：注册为 launchd 守护进程，与图形客户端共用同一套内核与更新校验。</div>'
+                . '<details open><summary>复制安装命令</summary><pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+                . '<div class="actions">' . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败') . '</div></details>'
+                . '</section>';
+        }
+
+        $windowsSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('windows')
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</strong>'
+            . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . ' · 复制命令</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
             . '<div class="actions">'
-            . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
-            . '</div>'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . '无界面版 No-GUI · Windows 服务</summary>'
+            . '<div class="muted" style="margin:8px 0 8px;">无桌面会话也能跑：注册为 Windows 系统服务，与图形客户端共用同一套内核与更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
-            . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明 / Install guide</a>'
-            . '</div></section>';
+            . '</div></details>'
+            . '</section>';
+
+        $dockerSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('docker')
+            . $this->escape($this->clientAppReleaseLabel('Docker · 全平台 (TCP+UDP)', 'docker_client_installer')) . '</strong>'
+            . '<div class="muted">最纯粹的 TCP+UDP 转发容器，无 GUI、免 TUN：linux/amd64 与 linux/arm64 双架构，含私有 Registry（--image）与全平台宿主支持。</div>'
+            . '<details style="margin-top:10px;" open><summary>一键安装命令 · 复制即用</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($dockerCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 Docker 命令', $dockerCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->dockerClientInstallerUrl()) . '">安装脚本</a>'
+            . '<a class="button secondary" href="' . $this->escape($this->dockerClientComposeUrl()) . '">docker-compose.yml</a>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>docker-compose.yml · 预览</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($dockerComposeSnippet) . '</pre>'
+            . '<div class="muted">完整模板位于 /artifacts/docker-client/docker-compose.yml；安装脚本会自动拉取并校验，支持 LEIKWAN_IMAGE 私有镜像。</div>'
+            . '</div></details>'
+            . '</section>';
+
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
@@ -1325,21 +1369,9 @@ final class TenantController extends BaseController
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
             . '</div></section>'
-            . '<section class="tenant-client-install__platform"><strong>'
-            . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows App', 'windows_client_app')) . '</strong>'
-            . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(127,127,127,0.25);">'
-            . '<strong>' . $this->platformIcon('helper')
-            . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</strong>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
-            . '<div class="muted">老版本客户端卡住时用：一键修复共享权限并更新到当前版本，需以管理员身份运行。</div>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
-            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
-            . '</div></div></section>'
-            . $macosInstallSection
-            . $headlessInstallSection
+            . $windowsSection
+            . $macosSection
+            // Docker installation is hidden until container runtime acceptance passes.
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
             . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'

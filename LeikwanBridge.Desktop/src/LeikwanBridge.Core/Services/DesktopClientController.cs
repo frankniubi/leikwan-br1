@@ -27,6 +27,8 @@ public interface IDesktopClientController : IAsyncDisposable
     Task RefreshAsync(CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
     Task StartForwardAsync(int forwardId, CancellationToken ct = default);
+    Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
+        => RefreshAsync(ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct = default);
     Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
         => throw new InvalidOperationException("proxy_forward_unavailable");
@@ -345,6 +347,9 @@ public sealed class DesktopClientController : IDesktopClientController
 
     public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StartForwardAsync(forwardId, ct));
+
+    public Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
+        => WithRuntimeAsync(runtime => runtime.EnsureForwardAsync(forwardId, ct));
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StopForwardAsync(forwardId, ct));

@@ -16,6 +16,8 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     Task RefreshAsync(CancellationToken ct);
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
+    Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => RefreshAsync(ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
     Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
         => ProxyForwardLease.AcquireAsync(
@@ -238,13 +240,19 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     }
 
     public Task StartForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "manual_apply", ct);
+
+    public Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "automatic_ensure", ct);
+
+    private Task StartForwardCoreAsync(int forwardId, string reason, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
             ?? throw new KeyNotFoundException("forward_not_found");
         return Task.Run(() =>
         {
-            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+            _runtime.RestartForward(forward, force: true, reason: reason);
             PublishCurrentForwards();
         }, ct);
     }
