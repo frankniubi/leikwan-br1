@@ -12,6 +12,7 @@ source_commit="unknown"
 metadata_path=""
 merge_versions=""
 managed_load_receipt=""
+ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals-tiny}"
 dry_run=0
 helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
@@ -401,7 +402,7 @@ dotnet_version="$(dotnet --version 2>/dev/null || printf unknown)"
 
 python3 - "$metadata" "$version" "$architecture" "$suffix" "$source_commit" \
   "$dmg_sha" "$dmg_size" "$zip_sha" "$zip_size" "$resources_dir/helper-manifest.json" \
-  "$go_version" "$rust_version" "$dotnet_version" <<'PY'
+  "$go_version" "$rust_version" "$dotnet_version" "$ultra_hardening" <<'PY'
 import json
 import pathlib
 import sys
@@ -420,6 +421,7 @@ import sys
     go_version,
     rust_version,
     dotnet_version,
+    ultra_hardening,
 ) = sys.argv[1:]
 app_key = "macos_client_app_" + suffix
 update_key = "macos_client_update_" + suffix
@@ -447,7 +449,7 @@ payload = {
             "architecture": architecture,
             "format": "dmg",
             "hardening": {
-                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "ultra_client": ultra_hardening,
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },
@@ -462,7 +464,7 @@ payload = {
             "architecture": architecture,
             "format": "zip",
             "hardening": {
-                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "ultra_client": ultra_hardening,
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },

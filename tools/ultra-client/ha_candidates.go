@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
-	"strings"
 	"time"
 )
 
@@ -51,7 +51,8 @@ func (s *PolicyStore) CandidateSnapshots(protocol string) []RuntimeSnapshot {
 	seen := map[string]bool{}
 	for _, l := range candidates {
 		key := haPathKey(l)
-		if seen[key] || !l.ExpiresAt.After(now) || s.isolated[protocol+":"+key].After(now) {
+		if seen[key] || !l.ExpiresAt.After(now) || s.isolated[protocol+":"+key].After(now) ||
+			operatorQuarantines(s.config, l, protocol, now) {
 			continue
 		}
 		seen[key] = true
@@ -104,23 +105,7 @@ func (s *PolicyStore) FailPath(protocol, key, generation string) bool {
 func (s *PolicyStore) FailSilentPath(protocol, key, generation string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	isolated := s.failPathLocked(protocol, key, generation, pathIsolationMinStrikes)
-	if isolated {
-		if s.businessPathIsolation == nil {
-			s.businessPathIsolation = make(map[string]bool)
-		}
-		s.businessPathIsolation[protocol+":"+key] = true
-	}
-	return isolated
-}
-
-// Probe-only isolation may be a false negative. Repeated business-read resets
-// are stronger evidence and must not be bypassed by the active-path fallback.
-func (s *PolicyStore) businessPathIsIsolated(protocol, key string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	stateKey := protocol + ":" + key
-	return s.businessPathIsolation[stateKey] && s.isolated[stateKey].After(time.Now())
+	return s.failPathLocked(protocol, key, generation, pathIsolationMinStrikes)
 }
 
 // ClearPathFailure forgets both the isolation and the escalation streak: the
@@ -134,7 +119,6 @@ func (s *PolicyStore) ClearPathFailure(protocol, key string) {
 	defer s.mu.Unlock()
 	delete(s.pathFailures, stateKey)
 	delete(s.isolated, stateKey)
-	delete(s.businessPathIsolation, stateKey)
 }
 
 func (s *PolicyStore) failCandidateKey(protocol, key, generation string) {
@@ -156,9 +140,6 @@ func (s *PolicyStore) failPathLocked(protocol, key, generation string, minStrike
 		return false
 	}
 	stateKey := protocol + ":" + key
-	if !s.isolated[stateKey].After(time.Now()) {
-		delete(s.businessPathIsolation, stateKey)
-	}
 	streak := s.pathFailures[stateKey] + 1
 	if streak > 65535 {
 		streak = 65535
@@ -202,13 +183,19 @@ func (s *PolicyStore) authorizedPathKeysLocked() []string {
 // allPathsIsolatedLocked reports whether a protocol has no usable path left,
 // which means the next stream cannot be served at all.
 func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) bool {
-	keys := s.authorizedPathKeysLocked()
-	for _, key := range keys {
+	eligible := 0
+	candidates := append([]*ProviderLease{s.lease}, s.candidates...)
+	for _, lease := range candidates {
+		if lease == nil || operatorQuarantines(s.config, *lease, protocol, now) {
+			continue
+		}
+		eligible++
+		key := haPathKey(*lease)
 		if until, ok := s.isolated[protocol+":"+key]; !ok || !until.After(now) {
 			return false
 		}
 	}
-	return len(keys) > 0
+	return eligible > 0
 }
 
 // collapseGlobalOutageLocked bounds a total outage by the first isolation
@@ -231,11 +218,7 @@ func (s *PolicyStore) allPathsIsolatedLocked(protocol string, now time.Time) boo
 // storm against a pool that really is down, which is what the first window
 // exists to prevent.
 func (s *PolicyStore) collapseGlobalOutageLocked(protocol string, now time.Time) {
-	for key := range s.pathFailures {
-		if strings.HasPrefix(key, protocol+":") {
-			delete(s.pathFailures, key)
-		}
-	}
+	s.pathFailures = map[string]int{}
 	limit := now.Add(pathIsolationWindows[0])
 	for _, key := range s.authorizedPathKeysLocked() {
 		stateKey := protocol + ":" + key
@@ -257,56 +240,27 @@ type candidateStreamDial func(ProviderLease, string, int, time.Duration) (net.Co
 
 var errHACandidatesUnavailable = errors.New("no healthy authorized candidate")
 
-// Both normal and last-resort attempts obey cancellation and own their lease
-// secrets until the dial worker exits, including when a dial ignores its budget.
-func dialCandidateAttempt(ctx context.Context, lease ProviderLease, host string, port int, budget time.Duration, dial candidateStreamDial) (net.Conn, error) {
-	owned := cloneHALease(lease)
-	type dialResult struct {
-		conn net.Conn
-		err  error
-	}
-	result := make(chan dialResult)
-	attempt, stop := context.WithTimeout(ctx, budget)
-	defer stop()
-	go func() {
-		defer owned.wipe()
-		c, e := dial(owned, host, port, budget)
-		select {
-		case result <- dialResult{c, e}:
-		case <-attempt.Done():
-			if c != nil {
-				c.Close()
-			}
-		}
-	}()
-	select {
-	case r := <-result:
-		if err := attempt.Err(); err != nil {
-			if r.conn != nil {
-				r.conn.Close()
-			}
-			return nil, err
-		}
-		return r.conn, r.err
-	case <-attempt.Done():
-		return nil, attempt.Err()
-	}
-}
-
 // No caller payload has been read when this helper retries. Attempts are scoped
 // to one immutable generation; a concurrent refresh cannot widen its authority.
 func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
-	return dialCandidateStreamInHealthDomain(ctx, s, "tcp", host, port, total, dial)
+	return dialCandidateStreamForProtocol(ctx, s, "tcp", host, port, total, dial)
 }
 
-// The transport may be TCP while health belongs to a different endpoint/protocol,
-// such as an external-UoT carrier. Never let that endpoint alter ordinary TCP health.
-func dialCandidateStreamInHealthDomain(ctx context.Context, s *PolicyStore, healthDomain, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
-	candidates := s.CandidateSnapshots(healthDomain)
-	defer wipeSnapshots(candidates)
+// Logical UDP uses the same TCP carrier dialer, but has independent health and
+// quarantine state. A failed user-TCP path must not evict a working UoT carrier.
+func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protocol, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
+	if protocol != "tcp" && protocol != "udp" {
+		return nil, RuntimeSnapshot{}, ErrPolicyInvalid
+	}
+	candidates := s.CandidateSnapshots(protocol)
+	// A setup-only retry may append an owned lease clone below.
+	defer func() { wipeSnapshots(candidates) }()
 	active, activeOK := s.ActiveSnapshot()
 	if activeOK {
 		defer active.Lease.wipe()
+		if operatorQuarantines(s.config, active.Lease, protocol, time.Now()) {
+			activeOK = false // Never bypass operator exclusion through rescue.
+		}
 	}
 	if total <= 0 {
 		total = 15 * time.Second
@@ -316,8 +270,27 @@ func dialCandidateStreamInHealthDomain(ctx context.Context, s *PolicyStore, heal
 		deadline = d
 	}
 	last := error(errHACandidatesUnavailable)
+	var first error
 	activeAttempted := false
-	for i, ss := range candidates {
+	for i := 0; i < len(candidates); i++ {
+		ss := candidates[i]
+		if i > 0 {
+			// Desynchronize a burst of failed 128-worker connections. This is
+			// inside the original setup deadline and never replays user bytes.
+			pause := time.Duration(10+rand.IntN(41)) * time.Millisecond
+			if remaining := time.Until(deadline); pause > remaining/4 {
+				pause = remaining / 4
+			}
+			if pause > 0 {
+				timer := time.NewTimer(pause)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: ctx.Err()}
+				case <-timer.C:
+				}
+			}
+		}
 		if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
 			activeAttempted = true
 		}
@@ -329,7 +302,7 @@ func dialCandidateStreamInHealthDomain(ctx context.Context, s *PolicyStore, heal
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, RuntimeSnapshot{}, context.DeadlineExceeded
+			return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: context.DeadlineExceeded}
 		}
 		budget := remaining / time.Duration(len(candidates)-i)
 		if budget > 3*time.Second {
@@ -341,7 +314,34 @@ func dialCandidateStreamInHealthDomain(ctx context.Context, s *PolicyStore, heal
 		if budget <= 0 {
 			continue
 		}
-		c, e := dialCandidateAttempt(ctx, ss.Lease, host, port, budget, dial)
+		// The worker owns a clone even if cancellation returns before its dial ends.
+		owned := cloneHALease(ss.Lease)
+		type dialResult struct {
+			conn net.Conn
+			err  error
+		}
+		result := make(chan dialResult)
+		attempt, stop := context.WithTimeout(ctx, budget)
+		go func() {
+			defer owned.wipe()
+			c, e := dial(owned, host, port, budget)
+			select {
+			case result <- dialResult{c, e}:
+			case <-attempt.Done():
+				if c != nil {
+					c.Close()
+				}
+			}
+		}()
+		var c net.Conn
+		var e error
+		select {
+		case r := <-result:
+			c, e = r.conn, r.err
+		case <-attempt.Done():
+			e = attempt.Err()
+		}
+		stop()
 		if ctx.Err() != nil {
 			if c != nil {
 				c.Close()
@@ -359,60 +359,53 @@ func dialCandidateStreamInHealthDomain(ctx context.Context, s *PolicyStore, heal
 		if c != nil {
 			c.Close()
 		}
-		s.FailCandidate(healthDomain, ss.Lease)
-		log.Printf("%s candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s", healthDomain, ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e))
+		s.FailCandidate(protocol, ss.Lease)
+		log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e), ss.Lease.CandidateKeyHash, ss.Lease.LeaseHash, haPathKey(ss.Lease), tcpTargetHash(net.JoinHostPort(host, fmt.Sprint(port))))
+		if first == nil {
+			first = e
+		}
 		last = e
+		// With one eligible TCP path, the per-attempt cap used to discard
+		// the rest of the total setup budget after one transient timeout.
+		// Retry at most once, before reading any caller payload. Do not
+		// retry EOF/protocol rejection or replay an established stream.
+		var timeout net.Error
+		if protocol == "tcp" && i == 0 && len(candidates) == 1 &&
+			(errors.Is(e, context.DeadlineExceeded) || (errors.As(e, &timeout) && timeout.Timeout())) &&
+			ctx.Err() == nil && time.Until(deadline) > 100*time.Millisecond && s.acceptsInFlight(ss) {
+			retry := ss
+			retry.Lease = cloneHALease(ss.Lease)
+			candidates = append(candidates, retry)
+		}
 	}
 	// A probe can reject every fresh candidate during a transient false
 	// negative even though the path that was carrying traffic still works. Give
 	// that active path one real target-forwarding attempt before surfacing
 	// no_healthy_candidate. The attempt stays inside the same lease/policy
 	// generation checks and never widens the authorized candidate set.
-	if activeOK && !activeAttempted && s.acceptsInFlight(active) && ctx.Err() == nil &&
-		!s.businessPathIsIsolated(healthDomain, haPathKey(active.Lease)) {
+	if activeOK && !activeAttempted && s.acceptsInFlight(active) && ctx.Err() == nil {
 		remaining := time.Until(deadline)
 		if remaining > 0 {
 			budget := remaining
 			if budget > 3*time.Second {
 				budget = 3 * time.Second
 			}
-			if expiry := time.Until(active.Lease.ExpiresAt); expiry < budget {
-				budget = expiry
-			}
-			if budget <= 0 {
-				return nil, RuntimeSnapshot{}, ErrPolicyExpired
-			}
-			log.Printf("active candidate forwarding test started protocol=%s forward_id=%d selection_ref=%s generation=%s", healthDomain, active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
-			connection, err := dialCandidateAttempt(ctx, active.Lease, host, port, budget, dial)
-			if ctx.Err() != nil {
-				if connection != nil {
-					connection.Close()
-				}
-				return nil, RuntimeSnapshot{}, ctx.Err()
-			}
+			log.Printf("active candidate forwarding test started protocol=tcp forward_id=%d selection_ref=%s generation=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration)
+			connection, err := dial(active.Lease, host, port, budget)
 			if err == nil {
-				if !s.acceptsInFlight(active) {
-					connection.Close()
-					return nil, RuntimeSnapshot{}, ErrPolicyExpired
-				}
-				if s.businessPathIsIsolated(healthDomain, haPathKey(active.Lease)) {
-					connection.Close()
-					return nil, RuntimeSnapshot{}, errHACandidatesUnavailable
-				}
-				// A handshake is not business availability. relayTCP clears the
-				// isolation only after observing actual remote payload bytes.
+				s.ClearPathFailure(protocol, haPathKey(active.Lease))
 				fallback := RuntimeSnapshot{Policy: active.Policy, Lease: cloneHALease(active.Lease)}
 				active.Lease.wipe()
 				active = RuntimeSnapshot{}
-				log.Printf("active candidate handshake succeeded protocol=%s forward_id=%d selection_ref=%s generation=%s business_reply_unverified=true", healthDomain, fallback.Policy.ForwardID, fallback.Lease.SelectionRef, fallback.Policy.PolicyGeneration)
+				log.Printf("active candidate forwarding test succeeded protocol=tcp forward_id=%d selection_ref=%s generation=%s", fallback.Policy.ForwardID, fallback.Lease.SelectionRef, fallback.Policy.PolicyGeneration)
 				return connection, fallback, nil
 			}
-			if connection != nil {
-				connection.Close()
-			}
 			last = err
-			log.Printf("active candidate forwarding test failed protocol=%s forward_id=%d selection_ref=%s generation=%s reason=%s", healthDomain, active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err))
+			if first == nil {
+				first = err
+			}
+			log.Printf("active candidate forwarding test failed protocol=tcp forward_id=%d selection_ref=%s generation=%s reason=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err))
 		}
 	}
-	return nil, RuntimeSnapshot{}, fmt.Errorf("%w: %v", errHACandidatesUnavailable, last)
+	return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: errHACandidatesUnavailable}
 }

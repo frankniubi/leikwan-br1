@@ -85,6 +85,7 @@ public static class ForwardContractSignature
                 externalUot.KeepaliveSeconds,
                 externalUot.ReconnectGraceSeconds,
                 externalUot.FramePayloadMax,
+                externalUot.DeliveryMode,
                 TokenFingerprint = externalUot.TokenFingerprint(),
             },
             Bonding = forward.Bonding is null ? null : new

@@ -35,7 +35,9 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         if ($clientId <= 0) {
             return [];
         }
-        $requested = $this->eligibleForwards($forwards);
+        $requested = $this->eligibleForwards(
+            ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId)
+        );
         if ($requested === []) {
             return [];
         }
@@ -383,7 +385,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         if ($port < 1 || $port > 65535) {
             return null;
         }
-        return [
+        $normalized = [
             'enabled' => true,
             'sidecar_target' => $sidecar,
             'token' => $token,
@@ -393,6 +395,12 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             'frame_payload_max' => max(256, min(65507, (int) ($value['frame_payload_max'] ?? 65507))),
             'target_digest' => hash('sha256', trim($target)),
         ];
+        $deliveryMode = strtolower(trim((string) ($value['delivery_mode'] ?? 'raw')));
+        if ($deliveryMode !== '' && $deliveryMode !== 'raw') {
+            // Preserve unsupported modes so upgraded clients fail closed.
+            $normalized['delivery_mode'] = $deliveryMode;
+        }
+        return $normalized;
     }
 
     /** @param mixed $value @return array<string,mixed> */

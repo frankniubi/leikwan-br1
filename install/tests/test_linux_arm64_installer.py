@@ -63,7 +63,7 @@ class LinuxArm64InstallerTest(unittest.TestCase):
     def test_arm64_bundle_contains_every_nested_installer_dependency(self) -> None:
         build = (ROOT / "tools" / "linux-arm64-installer" / "build.ps1").read_text(encoding="utf-8")
         source = (ROOT / "tools" / "linux-arm64-installer" / "main.go").read_text(encoding="utf-8")
-        self.assertIn('[string]$Version = "2026.09.18.1"', build)
+        self.assertIn('[string]$Version = "2026.09.19.1"', build)
         required = {
             "install/leikwan-linux.sh": "artifacts/leikwan-linux.sh",
             "install/install-tcp-accel.sh": "artifacts/install-tcp-accel.sh",
