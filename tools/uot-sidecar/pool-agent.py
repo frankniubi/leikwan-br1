@@ -54,40 +54,58 @@ def read_frame(conn):
     return kind, sid, body[36:]
 
 
+def probe_forward(config, fid, binding, udp):
+    """One authenticated UOT2 -> local UDP echo -> UOT2 exchange for one binding."""
+    sid = uuid.uuid4().bytes
+    host = config.get('listen_host', '0.0.0.0')
+    host = '127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host
+    with socket.create_connection((host, config['listen_port']), timeout=3) as conn:
+        conn.settimeout(3)
+        hello = {'forward_id': int(fid), 'token': binding['token'],
+                 'target': '127.0.0.1:' + str(udp.getsockname()[1]), 'frame_payload_max': 1200}
+        conn.sendall(wire(1, sid, json.dumps(hello).encode()))
+        kind, received_sid, body = read_frame(conn)
+        if kind != 2 or received_sid != sid or json.loads(body).get('ok') is not True:
+            return False
+        payload = os.urandom(32)
+        conn.sendall(wire(3, sid, payload))
+        received, addr = udp.recvfrom(65535)
+        if received != payload:
+            return False
+        udp.sendto(received, addr)
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            kind, received_sid, body = read_frame(conn)
+            if kind == 6:
+                continue
+            conn.sendall(wire(5, sid))
+            return kind == 4 and received_sid == sid and body == payload
+    return False
+
+
 def probe(config):
-    """Authenticated UOT2 -> local UDP echo -> UOT2. Not public-path proof."""
+    """Authenticated UOT2 -> local UDP echo -> UOT2. Not public-path proof.
+
+    Every advertised binding is probed, not just the lowest forward id. A newly
+    added forward used to be invisible to this health check: the node kept
+    reporting healthy while the new binding was broken, so the pool kept routing
+    that forward to a sidecar that would reject it with "forward is not allowed".
+    """
     forwards = config.get('forwards', {})
     if not forwards:
         return False
-    fid, binding = next(iter(forwards.items()))
-    sid = uuid.uuid4().bytes
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
         udp.bind(('127.0.0.1', 0))
         udp.settimeout(3)
-        host = config.get('listen_host', '0.0.0.0')
-        host = '127.0.0.1' if host == '0.0.0.0' else '::1' if host == '::' else host
-        with socket.create_connection((host, config['listen_port']), timeout=3) as conn:
-            conn.settimeout(3)
-            hello = {'forward_id': int(fid), 'token': binding['token'],
-                     'target': '127.0.0.1:' + str(udp.getsockname()[1]), 'frame_payload_max': 1200}
-            conn.sendall(wire(1, sid, json.dumps(hello).encode()))
-            kind, received_sid, body = read_frame(conn)
-            if kind != 2 or received_sid != sid or json.loads(body).get('ok') is not True:
+        for fid, binding in forwards.items():
+            try:
+                if not probe_forward(config, fid, binding, udp):
+                    return False
+            except (OSError, ValueError, KeyError, TypeError):
+                # A single unprobeable binding makes the node unhealthy rather
+                # than silently reporting healthy on the strength of one peer.
                 return False
-            payload = os.urandom(32)
-            conn.sendall(wire(3, sid, payload))
-            received, addr = udp.recvfrom(65535)
-            if received != payload:
-                return False
-            udp.sendto(received, addr)
-            deadline = time.monotonic() + 4
-            while time.monotonic() < deadline:
-                kind, received_sid, body = read_frame(conn)
-                if kind == 6:
-                    continue
-                conn.sendall(wire(5, sid))
-                return kind == 4 and received_sid == sid and body == payload
-    return False
+    return True
 
 
 def run_once(settings):
