@@ -1,4 +1,4 @@
-﻿# 2026-09-21 — 全方向 × 全平台 E2E 验收矩阵（11 方向，600 秒，TCP+UDP 各 20 Mbps）
+# 2026-09-21 — 全方向 × 全平台 E2E 验收矩阵（11 方向，600 秒，TCP+UDP 各 20 Mbps）
 
 口径：每个方向在其专属 sidecar 上，Linux/macOS/Windows **顺序**各跑 600 秒（并发会把 3 倍负载压在
 同一台 sidecar 上，那测的不是验收口径）。判定 = 20 Mbps 达成 + 窗口 idle 0（无中断）+ UDP 丢包 <0.1%。
@@ -14,7 +14,7 @@
 | CAN→SIN | 52 | FAIL idle 598/600, no_healthy 90, apply_failed 62 | FAIL idle 507/600, UDP 84.1% | FAIL idle 567/600, UDP 64.5% |
 | FOC→TPE | 53 | 阻塞（三次尝试，三平台均无监听） | 阻塞 | 阻塞 |
 | SHA→TYO | 54 | **PASS**（第二次；首次 idle 185） | FAIL idle 599/600, UDP 100% | 无监听 |
-| SHA→LAX | 55 | **PASS** 20.000 / idle 0 / UDP 0% | FAIL UDP 67.3% | 未取到 |
+| SHA→LAX | 55 | **PASS** 20.000 / idle 0 / UDP 0% | FAIL UDP 67.3% | 15.444 Mbps / idle 0 / UDP 0%（无中断，速率欠） |
 | HKG→内地 | 56 | FAIL 6.26 Mbps, UDP 98.0% | 无监听 | 无监听 |
 
 **11 个方向里只有 46 一个在三个平台全部达标。** 51 三平台无中断但 Windows 速率 18.83 Mbps。
