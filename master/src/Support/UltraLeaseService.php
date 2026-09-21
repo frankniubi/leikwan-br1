@@ -865,6 +865,38 @@ final class UltraLeaseService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            // Retire the leases this one replaces, by EXPIRING them rather than
+            // revoking them. Every renewal used to insert a fresh row and leave
+            // the previous one live until its own expiry, so a device's live
+            // count grew with every renewal instead of staying at one per
+            // forward; a device that renewed often reached
+            // ULTRA_MAX_LIVE_LEASES_PER_DEVICE and was then refused every further
+            // lease with lease_device_live_limit -- a lockout the device
+            // inflicted on itself, and the cause of forwards sitting enabled
+            // with no lease.
+            //
+            // It must not be revoked_at: isGenerationRevoked() treats "any row
+            // of this forward+generation carries revoked_at" as the whole
+            // generation being retired, which is how a target change kills the
+            // old scope. Revoking a superseded renewal would therefore make the
+            // CURRENT generation look dead and the panel would refuse it. An
+            // expired lease is simply no longer live, which is exactly what a
+            // superseded renewal is.
+            $this->db->execute(
+                'UPDATE ultra_client_leases
+                 SET expires_at = :expires_at, updated_at = :updated_at
+                 WHERE client_id = :client_id AND device_hash = :device_hash
+                   AND forward_id = :forward_id AND revoked_at IS NULL
+                   AND nonce_hash <> :nonce_hash AND expires_at > :expires_at',
+                [
+                    'expires_at' => $now,
+                    'updated_at' => $now,
+                    'client_id' => $clientId,
+                    'device_hash' => $deviceHash,
+                    'forward_id' => $forwardId,
+                    'nonce_hash' => $nonceHash,
+                ]
+            );
             return true;
         } catch (Throwable $exception) {
             $message = strtolower($exception->getMessage());
