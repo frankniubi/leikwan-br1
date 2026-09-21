@@ -1,0 +1,724 @@
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/AgentConfig.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/AgentConfig.cs
+index e0e1cb42..fffa95d1 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/AgentConfig.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Models/AgentConfig.cs
+@@ -68,7 +68,10 @@ public sealed class AgentConfig
+     public int HealthCheckIntervalSeconds { get; set; } = 20;
+ 
+     [JsonPropertyName("log_level")]
+-    public string LogLevel { get; set; } = "INFO";
++    public string LogLevel { get; set; } = "WARNING";
++
++    [JsonPropertyName("preferred_egress_interface")]
++    public string PreferredEgressInterface { get; set; } = "";
+ 
+     [JsonPropertyName("bond_bin")]
+     public string BondBin { get; set; } = "";
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DebugLogUploader.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DebugLogUploader.cs
+index 96bbd9df..819878e3 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DebugLogUploader.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DebugLogUploader.cs
+@@ -1,14 +1,13 @@
+ using System.Security.Cryptography;
+ using System.Text;
+ using System.Text.Json;
+-using System.Text.RegularExpressions;
+ using LeikwanBridge.Core.Models;
+ using Serilog;
+ 
+ namespace LeikwanBridge.Core.Services;
+ 
+ /// <summary>Background, resumable upload of redacted desktop logs.</summary>
+-public sealed partial class DebugLogUploader
++public sealed class DebugLogUploader
+ {
+     public const int ChunkBytes = 256 * 1024;
+     public const long ByteLimit = 100 * 1024 * 1024;
+@@ -132,14 +131,7 @@ public sealed partial class DebugLogUploader
+         return new("complete", chunks, bytes);
+     }
+ 
+-    public static string Redact(string value)
+-    {
+-        var text = (value ?? string.Empty).Replace("\0", string.Empty);
+-        text = BearerPattern().Replace(text, "$1[REDACTED]");
+-        text = SecretPattern().Replace(text, "$1[REDACTED]");
+-        text = QuerySecretPattern().Replace(text, "$1[REDACTED]");
+-        return string.Join('\n', text.Split('\n').Select(line => new string(line.Where(ch => ch == '\t' || ch == '\r' || ch >= ' ').ToArray())));
+-    }
++    public static string Redact(string value) => LogPrivacy.Redact(value);
+ 
+     private IEnumerable<string> EnumerateLogFiles()
+     {
+@@ -194,14 +186,6 @@ public sealed partial class DebugLogUploader
+         public bool Completed { get; set; }
+     }
+ 
+-    [GeneratedRegex("(?i)(authorization\\s*:\\s*bearer\\s+)[^\\s,;]+", RegexOptions.CultureInvariant)]
+-    private static partial Regex BearerPattern();
+-
+-    [GeneratedRegex("(?i)(\\b(?:password|passwd|secret|token|credential|session[_-]?ticket|private[_-]?key|api[_-]?key)\\b\\s*[:=]\\s*)(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;]+)", RegexOptions.CultureInvariant)]
+-    private static partial Regex SecretPattern();
+-
+-    [GeneratedRegex("(?i)([?&](?:token|password|secret|credential|key)=)[^&\\s]+", RegexOptions.CultureInvariant)]
+-    private static partial Regex QuerySecretPattern();
+ }
+ 
+ public readonly record struct DebugUploadResult(string Status, int Chunks, long Bytes);
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DesktopLogLevel.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DesktopLogLevel.cs
+new file mode 100644
+index 00000000..c6db6fdb
+--- /dev/null
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/DesktopLogLevel.cs
+@@ -0,0 +1,32 @@
++using Serilog.Events;
++
++namespace LeikwanBridge.Core.Services;
++
++/// <summary>Supported desktop log levels and their persisted representation.</summary>
++public static class DesktopLogLevel
++{
++    public const string Critical = "CRITICAL";
++    public const string Warning = "WARNING";
++    public const string Debug = "DEBUG";
++
++    public static IReadOnlyList<string> Options { get; } = [Warning, Critical, Debug];
++
++    public static string Normalize(string? value)
++        => value?.Trim().ToUpperInvariant() switch
++        {
++            Critical or "FATAL" => Critical,
++            Debug => Debug,
++            _ => Warning,
++        };
++
++    public static LogEventLevel ToSerilog(string? value)
++        => Normalize(value) switch
++        {
++            Critical => LogEventLevel.Fatal,
++            Debug => LogEventLevel.Debug,
++            _ => LogEventLevel.Warning,
++        };
++
++    public static bool IsDebug(string? value)
++        => string.Equals(Normalize(value), Debug, StringComparison.Ordinal);
++}
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/EgressInterfaceCatalog.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/EgressInterfaceCatalog.cs
+new file mode 100644
+index 00000000..eaa5d883
+--- /dev/null
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/EgressInterfaceCatalog.cs
+@@ -0,0 +1,150 @@
++using System.Collections.Generic;
++using System.Net;
++using System.Net.NetworkInformation;
++using LeikwanBridge.Core.Services.PanelEgress;
++
++namespace LeikwanBridge.Core.Services;
++
++/// <summary>
++/// A user-selectable physical egress interface. The interface name is used as
++/// the persisted key because it is shared by the managed enumerator, the
++/// native helper configuration, and the platform route planner.
++/// </summary>
++public sealed record EgressInterfaceOption(
++    string Id,
++    string Name,
++    string Description,
++    int Index,
++    IPAddress? LocalAddress,
++    bool IsUp)
++{
++    public string DisplayName
++        => string.IsNullOrWhiteSpace(Description) || string.Equals(Name, Description, StringComparison.OrdinalIgnoreCase)
++            ? Name
++            : $"{Name} - {Description}";
++}
++
++public sealed record EgressInterfaceBinding(
++    string Name,
++    int Index,
++    IPAddress? LocalAddress)
++{
++    public bool IsUsable => !string.IsNullOrWhiteSpace(Name) && Index > 0;
++}
++
++public static class EgressInterfaceConfig
++{
++    public static EgressInterfaceBinding? ResolveOrThrow(string? selection)
++    {
++        var normalized = selection?.Trim() ?? string.Empty;
++        if (normalized.Length == 0)
++            return null;
++        return EgressInterfaceCatalog.Resolve(normalized)
++            ?? throw new InvalidOperationException("egress_interface_unavailable");
++    }
++
++    public static void Apply(
++        IDictionary<string, object?> config,
++        string? selection,
++        EgressInterfaceBinding? binding = null)
++    {
++        ArgumentNullException.ThrowIfNull(config);
++        var resolved = binding ?? ResolveOrThrow(selection);
++        if (resolved is null)
++            return;
++        config["egress_interface"] = resolved.Name;
++        config["egress_interface_index"] = resolved.Index;
++        config["egress_local_address"] = resolved.LocalAddress?.ToString() ?? string.Empty;
++    }
++}
++
++public static class EgressInterfaceCatalog
++{
++    public const string AutomaticId = "";
++
++    public static IReadOnlyList<EgressInterfaceOption> Enumerate()
++    {
++        var options = new List<EgressInterfaceOption>
++        {
++            new(AutomaticId, "Automatic", "", 0, null, true),
++        };
++
++        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
++            return options;
++
++        try
++        {
++            foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
++            {
++                try
++                {
++                    if (networkInterface.OperationalStatus != OperationalStatus.Up
++                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback
++                            or NetworkInterfaceType.Tunnel
++                            or NetworkInterfaceType.Ppp
++                        || TunnelInterfaceHeuristics.IsTunnelLikeName(
++                            networkInterface.Name,
++                            networkInterface.Description))
++                        continue;
++
++                    var properties = networkInterface.GetIPProperties();
++                    var localAddress = SelectLocalAddress(properties);
++                    if (localAddress is null)
++                        continue;
++                    var index = properties.GetIPv4Properties()?.Index
++                        ?? properties.GetIPv6Properties()?.Index
++                        ?? 0;
++                    if (index <= 0)
++                        continue;
++
++                    options.Add(new EgressInterfaceOption(
++                        networkInterface.Name,
++                        networkInterface.Name,
++                        networkInterface.Description,
++                        index,
++                        localAddress,
++                        IsUp: true));
++                }
++                catch
++                {
++                    // One adapter can disappear while the OS snapshot is read.
++                }
++            }
++        }
++        catch
++        {
++            // An unavailable adapter snapshot must not prevent the client from
++            // starting in automatic mode.
++        }
++
++        return options
++            .GroupBy(option => option.Id, StringComparer.OrdinalIgnoreCase)
++            .Select(group => group.First())
++            .ToList();
++    }
++
++    public static EgressInterfaceBinding? Resolve(string? selection)
++    {
++        var normalized = selection?.Trim() ?? string.Empty;
++        if (normalized.Length == 0)
++            return null;
++
++        var option = Enumerate()
++            .Skip(1)
++            .FirstOrDefault(candidate => string.Equals(candidate.Id, normalized, StringComparison.OrdinalIgnoreCase));
++        return option is null
++            ? null
++            : new EgressInterfaceBinding(option.Name, option.Index, option.LocalAddress);
++    }
++
++    private static IPAddress? SelectLocalAddress(IPInterfaceProperties properties)
++    {
++        var addresses = properties.UnicastAddresses
++            .Select(item => item.Address)
++            .Where(address => address is not null && !IPAddress.IsLoopback(address))
++            .ToList();
++        return addresses.FirstOrDefault(address => address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
++                && !address.IsIPv6LinkLocal)
++            ?? addresses.FirstOrDefault();
++    }
++}
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/LogPrivacy.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/LogPrivacy.cs
+new file mode 100644
+index 00000000..335620bd
+--- /dev/null
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/LogPrivacy.cs
+@@ -0,0 +1,53 @@
++using System.Net;
++using System.Text.RegularExpressions;
++
++namespace LeikwanBridge.Core.Services;
++
++/// <summary>Removes credentials, tokens, and literal IP addresses from diagnostics.</summary>
++public static partial class LogPrivacy
++{
++    private const string RedactedIp = "[REDACTED]";
++
++    public static string Redact(string value)
++    {
++        var text = (value ?? string.Empty).Replace("\0", string.Empty);
++        text = BearerPattern().Replace(text, "$1[REDACTED]");
++        text = SecretPattern().Replace(text, "$1[REDACTED]");
++        text = QuerySecretPattern().Replace(text, "$1[REDACTED]");
++        text = Ipv4Pattern().Replace(text, match => IsAddress(match.Value) ? RedactedIp : match.Value);
++        text = Ipv6CandidatePattern().Replace(text, match => IsIpv6(match.Value) ? RedactedIp : match.Value);
++        return string.Join('\n', text.Split('\n').Select(line =>
++            new string(line.Where(ch => ch == '\t' || ch == '\r' || ch >= ' ').ToArray())));
++    }
++
++    private static bool IsAddress(string value)
++        => IPAddress.TryParse(value, out _);
++
++    private static bool IsIpv6(string value)
++    {
++        var normalized = value.Trim('[', ']');
++        var zoneIndex = normalized.IndexOf('%');
++        if (zoneIndex >= 0)
++            normalized = normalized[..zoneIndex];
++        return value.Contains(':')
++            && IPAddress.TryParse(normalized, out var address)
++            && address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
++    }
++
++    [GeneratedRegex("(?i)(authorization\\s*:\\s*bearer\\s+)[^\\s,;]+", RegexOptions.CultureInvariant)]
++    private static partial Regex BearerPattern();
++
++    [GeneratedRegex("(?i)(\\b(?:password|passwd|secret|token|credential|session[_-]?ticket|private[_-]?key|api[_-]?key)\\b\\s*[:=]\\s*)(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;]+)", RegexOptions.CultureInvariant)]
++    private static partial Regex SecretPattern();
++
++    [GeneratedRegex("(?i)([?&](?:token|password|secret|credential|key)=)[^&\\s]+", RegexOptions.CultureInvariant)]
++    private static partial Regex QuerySecretPattern();
++
++    [GeneratedRegex("(?<![A-Za-z0-9])(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}(?![A-Za-z0-9])", RegexOptions.CultureInvariant)]
++    private static partial Regex Ipv4Pattern();
++
++    // Candidate matching keeps the parser authoritative, so timestamps and
++    // ordinary colon-separated values are left alone.
++    [GeneratedRegex("(?<![A-Za-z0-9])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]*(?:%[A-Za-z0-9_.-]+)?(?![A-Za-z0-9])", RegexOptions.CultureInvariant)]
++    private static partial Regex Ipv6CandidatePattern();
++}
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/IPhysicalEgressInterfaceProvider.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/IPhysicalEgressInterfaceProvider.cs
+index 832caec6..ff792e19 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/IPhysicalEgressInterfaceProvider.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/IPhysicalEgressInterfaceProvider.cs
+@@ -18,4 +18,6 @@ public interface IPhysicalEgressInterfaceProvider
+     /// known. In that case no host routes should be added (zero side effects).
+     /// </summary>
+     bool IsDefaultRoutePhysical(AddressFamily family);
++
++    void SetPreferredInterface(string? interfaceName) { }
+ }
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/NetworkAdapterInfo.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/NetworkAdapterInfo.cs
+index 57a2b4b1..96c33aae 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/NetworkAdapterInfo.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/NetworkAdapterInfo.cs
+@@ -45,11 +45,13 @@ public static class TunnelInterfaceHeuristics
+     private static readonly string[] TunnelNamePrefixes =
+     [
+         "utun", "tun", "tap", "wintun", "ppp", "ipsec", "l2tp", "wg", "zt", "tailscale",
++        "bridge", "awdl", "llw", "vmnet", "vboxnet", "docker", "veth", "br-",
+     ];
+ 
+     private static readonly string[] TunnelNameMarkers =
+     [
+         "netch", "wireguard", "openvpn", "nordlynx", "warp", "sstp", "tap-windows", "tap-win32",
++        "docker", "virtualbox", "hyper-v", "vmware",
+     ];
+ 
+     private static readonly string[] TunnelDescriptionMarkers =
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgress.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgress.cs
+index 730b444c..486f018f 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgress.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgress.cs
+@@ -55,6 +55,9 @@ public static class PanelDirectEgress
+ 
+     public static Task RefreshAsync(CancellationToken ct = default) => Engine.RefreshAsync(ct);
+ 
++    public static void SetPreferredInterface(string? interfaceName)
++        => Engine.SetPreferredInterface(interfaceName);
++
+     /// <summary>
+     /// Subscribes network-address changes with a debounced route refresh.
+     /// Idempotent; call once at application startup.
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgressEngine.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgressEngine.cs
+index d13ba041..417a1d90 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgressEngine.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PanelDirectEgressEngine.cs
+@@ -55,6 +55,7 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
+     private long _snapshotTicks;
+     private int _refreshInProgress;
+     private int _disposed;
++    private string _preferredInterfaceName = string.Empty;
+ 
+     public PanelDirectEgressEngine(
+         ILeikwanDnsResolver resolver,
+@@ -104,6 +105,21 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
+         RegisterHost(uri.IdnHost);
+     }
+ 
++    public void SetPreferredInterface(string? interfaceName)
++    {
++        if (_disposed != 0)
++            return;
++        Volatile.Write(ref _preferredInterfaceName, interfaceName?.Trim() ?? string.Empty);
++        _interfaceProvider.SetPreferredInterface(interfaceName);
++        lock (_snapshotLock)
++        {
++            _snapshotV4 = null;
++            _snapshotV6 = null;
++            _snapshotTicks = 0;
++        }
++        ReplanRoutes();
++    }
++
+     public bool IsDirectEgressHost(string host)
+     {
+         var normalized = NormalizeHost(host);
+@@ -219,7 +235,11 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
+ 
+         var egress = GetInterfaceSnapshot(family);
+         if (egress is null || egress.Index <= 0)
++        {
++            if (!string.IsNullOrWhiteSpace(Volatile.Read(ref _preferredInterfaceName)))
++                throw new InvalidOperationException("egress_interface_unavailable");
+             return;
++        }
+         var request = PanelSocketOptionBuilder.Build(
+             PanelSocketOptionBuilder.CurrentPlatform, family, egress.Index);
+         if (request is null)
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PhysicalInterfaceSelector.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PhysicalInterfaceSelector.cs
+index 0648a401..742adaf1 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PhysicalInterfaceSelector.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/PhysicalInterfaceSelector.cs
+@@ -32,16 +32,26 @@ public static class PhysicalInterfaceSelector
+     public static PhysicalEgressInterface? SelectPreferred(
+         IReadOnlyList<NetworkAdapterInfo> adapters,
+         AddressFamily family,
+-        bool preferMacPhysicalNaming = false)
++        bool preferMacPhysicalNaming = false,
++        string? preferredInterfaceName = null)
+     {
+         var holder = FindDefaultRouteHolder(adapters, family);
+-        var best = adapters
++        var eligible = adapters
+             .Where(adapter => adapter.IsUp
+                 && !adapter.IsLoopback
+                 && !adapter.IsTunnelLike
+                 && adapter.Kind is not NetworkAdapterKind.Virtual
+                 && IndexFor(adapter, family) > 0
+                 && HasFamily(adapter, family))
++            .ToList();
++        var hasExplicitPreference = !string.IsNullOrWhiteSpace(preferredInterfaceName);
++        var preferred = eligible.FirstOrDefault(adapter =>
++            hasExplicitPreference
++            && string.Equals(adapter.Name, preferredInterfaceName!.Trim(), StringComparison.OrdinalIgnoreCase));
++        if (hasExplicitPreference && preferred is null)
++            return null;
++        IEnumerable<NetworkAdapterInfo> candidates = preferred is null ? eligible : new[] { preferred };
++        var best = candidates
+             .Select(adapter => new
+             {
+                 Adapter = adapter,
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/SystemPhysicalEgressInterfaceProvider.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/SystemPhysicalEgressInterfaceProvider.cs
+index 320c696c..5daab2d1 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/SystemPhysicalEgressInterfaceProvider.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/PanelEgress/SystemPhysicalEgressInterfaceProvider.cs
+@@ -29,11 +29,15 @@ public sealed class SystemPhysicalEgressInterfaceProvider : IPhysicalEgressInter
+ 
+     public bool IsDefaultRoutePhysical(AddressFamily family)
+         => _inner.IsDefaultRoutePhysical(family);
++
++    public void SetPreferredInterface(string? interfaceName)
++        => _inner.SetPreferredInterface(interfaceName);
+ }
+ 
+ public sealed class WindowsPhysicalEgressProvider : IPhysicalEgressInterfaceProvider
+ {
+     private readonly ISystemInterfaceEnumerator _enumerator;
++    private string _preferredInterface = string.Empty;
+ 
+     public WindowsPhysicalEgressProvider(ISystemInterfaceEnumerator enumerator)
+     {
+@@ -41,16 +45,21 @@ public sealed class WindowsPhysicalEgressProvider : IPhysicalEgressInterfaceProv
+     }
+ 
+     public PhysicalEgressInterface? GetPreferredInterface(AddressFamily family)
+-        => PhysicalInterfaceSelector.SelectPreferred(_enumerator.Enumerate(), family);
++        => PhysicalInterfaceSelector.SelectPreferred(_enumerator.Enumerate(), family,
++            preferredInterfaceName: _preferredInterface);
+ 
+     public bool IsDefaultRoutePhysical(AddressFamily family)
+         => PhysicalInterfaceSelector.IsDefaultRoutePhysical(_enumerator.Enumerate(), family);
++
++    public void SetPreferredInterface(string? interfaceName)
++        => _preferredInterface = interfaceName?.Trim() ?? string.Empty;
+ }
+ 
+ internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvider
+ {
+     private readonly ISystemInterfaceEnumerator _enumerator;
+     private readonly MacDefaultRouteProbe _probe;
++    private string _preferredInterface = string.Empty;
+ 
+     public MacPhysicalEgressProvider(ISystemInterfaceEnumerator enumerator, MacDefaultRouteProbe probe)
+     {
+@@ -62,7 +71,8 @@ internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvid
+     {
+         var familyFlag = family == AddressFamily.InterNetworkV6 ? "-inet6" : "-inet";
+         var selected = PhysicalInterfaceSelector.SelectPreferred(
+-            _enumerator.Enumerate(), family, preferMacPhysicalNaming: true);
++            _enumerator.Enumerate(), family, preferMacPhysicalNaming: true,
++            preferredInterfaceName: _preferredInterface);
+         if (selected is null)
+             return null;
+ 
+@@ -88,6 +98,9 @@ internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvid
+                 adapter.Name, probed.InterfaceName, StringComparison.OrdinalIgnoreCase));
+         return holder is null || !holder.IsTunnelLike;
+     }
++
++    public void SetPreferredInterface(string? interfaceName)
++        => _preferredInterface = interfaceName?.Trim() ?? string.Empty;
+ }
+ 
+ internal sealed class PassivePhysicalEgressProvider : IPhysicalEgressInterfaceProvider
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ProcessSupervisor.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ProcessSupervisor.cs
+index 80f007f5..57cef253 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ProcessSupervisor.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/ProcessSupervisor.cs
+@@ -78,14 +78,20 @@ public class ProcessSupervisor : IProcessSupervisor
+             {
+                 if (e.Data != null)
+                 {
+-                    Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
++                    // Native helpers commonly use stderr for progress and
++                    // connection telemetry. The process exit/health path owns
++                    // actual failures; keep this stream available in Debug.
++                    Log.Debug("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                     _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
+                 }
+             };
+             process.Exited += (_, _) =>
+             {
+-                Log.Warning("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
+-                    forwardId, label, process.ExitCode);
++                var exitCode = process.ExitCode;
++                // HealthCheckService distinguishes an unexpected exit from a
++                // user stop and owns the warning/error decision.
++                Log.Debug("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
++                    forwardId, label, exitCode);
+                 ProcessExited?.Invoke(forwardId, role);
+             };
+ 
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/RedactingTextFormatter.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/RedactingTextFormatter.cs
+new file mode 100644
+index 00000000..4c639b09
+--- /dev/null
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/RedactingTextFormatter.cs
+@@ -0,0 +1,24 @@
++using System.Globalization;
++using Serilog.Events;
++using Serilog.Formatting;
++using Serilog.Formatting.Display;
++
++namespace LeikwanBridge.Core.Services;
++
++/// <summary>Preserves the normal Serilog layout while redacting rendered values.</summary>
++public sealed class RedactingTextFormatter : ITextFormatter
++{
++    private readonly MessageTemplateTextFormatter _inner;
++
++    public RedactingTextFormatter(string outputTemplate)
++    {
++        _inner = new MessageTemplateTextFormatter(outputTemplate, CultureInfo.InvariantCulture);
++    }
++
++    public void Format(LogEvent logEvent, TextWriter output)
++    {
++        using var buffer = new StringWriter(CultureInfo.InvariantCulture);
++        _inner.Format(logEvent, buffer);
++        output.Write(LogPrivacy.Redact(buffer.ToString()));
++    }
++}
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/NativeOutboundRelayHost.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/NativeOutboundRelayHost.cs
+index 1152d4b2..9295f2ee 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/NativeOutboundRelayHost.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/NativeOutboundRelayHost.cs
+@@ -29,6 +29,16 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
+         string runtimeDirectory,
+         CancellationToken ct = default);
+ 
++    Task<NativeOutboundRelayEndpoint> StartWithEgressAsync(
++        int forwardId,
++        string ultraBinaryPath,
++        int listenPort,
++        NativeOutboundLease lease,
++        string runtimeDirectory,
++        CancellationToken ct = default,
++        EgressInterfaceBinding? egressInterface = null)
++        => StartAsync(forwardId, ultraBinaryPath, listenPort, lease, runtimeDirectory, ct);
++
+     /// <summary>
+     /// Starts a relay with a bounded candidate batch. Implementations that do
+     /// not support local probing retain the legacy first-candidate behavior.
+@@ -46,6 +56,16 @@ public interface INativeOutboundRelayHost : IAsyncDisposable
+         return StartAsync(forwardId, ultraBinaryPath, listenPort, leases[0], runtimeDirectory, ct);
+     }
+ 
++    Task<NativeOutboundRelayEndpoint> StartCandidatesWithEgressAsync(
++        int forwardId,
++        string ultraBinaryPath,
++        int listenPort,
++        IReadOnlyList<NativeOutboundLease> leases,
++        string runtimeDirectory,
++        CancellationToken ct = default,
++        EgressInterfaceBinding? egressInterface = null)
++        => StartCandidatesAsync(forwardId, ultraBinaryPath, listenPort, leases, runtimeDirectory, ct);
++
+     /// <summary>
+     /// Delivers a replacement lease to the already-running relay.  Returning
+     /// false means the relay/control channel is no longer usable; callers may
+@@ -142,21 +162,42 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
+         NativeOutboundLease lease,
+         string runtimeDirectory,
+         CancellationToken ct = default)
+-        => StartCandidatesAsync(
++        => StartWithEgressAsync(forwardId, ultraBinaryPath, listenPort, lease, runtimeDirectory, ct, null);
++
++    public Task<NativeOutboundRelayEndpoint> StartWithEgressAsync(
++        int forwardId,
++        string ultraBinaryPath,
++        int listenPort,
++        NativeOutboundLease lease,
++        string runtimeDirectory,
++        CancellationToken ct = default,
++        EgressInterfaceBinding? egressInterface = null)
++        => StartCandidatesWithEgressAsync(
+             forwardId,
+             ultraBinaryPath,
+             listenPort,
+             new[] { lease },
+             runtimeDirectory,
+-            ct);
++            ct,
++            egressInterface);
+ 
+-    public async Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
++    public Task<NativeOutboundRelayEndpoint> StartCandidatesAsync(
+         int forwardId,
+         string ultraBinaryPath,
+         int listenPort,
+         IReadOnlyList<NativeOutboundLease> leases,
+         string runtimeDirectory,
+         CancellationToken ct = default)
++        => StartCandidatesWithEgressAsync(forwardId, ultraBinaryPath, listenPort, leases, runtimeDirectory, ct, null);
++
++    public async Task<NativeOutboundRelayEndpoint> StartCandidatesWithEgressAsync(
++        int forwardId,
++        string ultraBinaryPath,
++        int listenPort,
++        IReadOnlyList<NativeOutboundLease> leases,
++        string runtimeDirectory,
++        CancellationToken ct = default,
++        EgressInterfaceBinding? egressInterface = null)
+     {
+         if (leases is null || leases.Count is < 1 or > 4 || leases.Any(lease => lease is null))
+             throw new ArgumentException("native relay lease batch is invalid", nameof(leases));
+@@ -240,6 +281,7 @@ public sealed class NativeOutboundRelayHost : INativeOutboundRelayHost
+                 ["location_cache_path"] = Path.Combine(root, "location.json"),
+                 ["location_lock_path"] = Path.Combine(root, "location.lock"),
+             };
++            EgressInterfaceConfig.Apply(config, null, egressInterface);
+             var configBytes = JsonSerializer.SerializeToUtf8Bytes(config);
+             try
+             {
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/WindowsUltraRuntimeHost.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/WindowsUltraRuntimeHost.cs
+index 681354c8..2801c31e 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/WindowsUltraRuntimeHost.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/Ultra/WindowsUltraRuntimeHost.cs
+@@ -90,6 +90,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
+                 ["connect_timeout_seconds"] = 5,
+                 ["status_path"] = statusPath,
+             };
++            EgressInterfaceConfig.Apply(staticConfig, _config.PreferredEgressInterface);
+             if (udpCapable)
+             {
+                 staticConfig["udp_prewarm"] = true;
+diff --git a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/WindowsProxyConnectionService.cs b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/WindowsProxyConnectionService.cs
+index e0824e59..c74de5eb 100644
+--- a/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/WindowsProxyConnectionService.cs
++++ b/LeikwanBridge.Desktop/src/LeikwanBridge.Core/Services/WindowsProxyConnectionService.cs
+@@ -29,6 +29,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
+     private readonly INativeOutboundRelayHost _nativeRelayHost;
+     private readonly IWindowsTunMtuReader _tunMtuReader;
+     private readonly TimeSpan _mtuApplyMinInterval;
++    private string _preferredEgressInterface;
+     private readonly SemaphoreSlim _gate = new(1, 1);
+     private readonly List<WindowsProxyProfile> _profiles = [];
+     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
+@@ -65,7 +66,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
+         string? chinaIpListPath = null,
+         INativeOutboundRelayHost? nativeRelayHost = null,
+         IWindowsTunMtuReader? tunMtuReader = null,
+-        TimeSpan? mtuApplyMinInterval = null)
++        TimeSpan? mtuApplyMinInterval = null,
++        string? preferredEgressInterface = null)
+     {
+         _store = store ?? throw new ArgumentNullException(nameof(store));
+         _singBoxPath = singBoxPath ?? string.Empty;
+@@ -89,12 +91,16 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
+         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
+         _tunMtuReader = tunMtuReader ?? new WindowsTunMtuReader();
+         _mtuApplyMinInterval = mtuApplyMinInterval ?? MtuApplyDefaultInterval;
++        _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
+         if (_mtuApplyMinInterval < TimeSpan.Zero)
+             throw new ArgumentOutOfRangeException(nameof(mtuApplyMinInterval));
+     }
+ 
+     public event Action<WindowsProxySnapshot>? SnapshotChanged;
+ 
++    public void SetPreferredEgressInterface(string? interfaceName)
++        => _preferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
++
+     public IReadOnlyList<WindowsProxyProfile> Profiles
+     {
+         get
+@@ -754,13 +760,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
+                 ""));
+             connectionStopped = true;
+             await StopCoreAsync(ct);
+-            await _nativeRelayHost.StartCandidatesAsync(
++            var egressInterface = EgressInterfaceConfig.ResolveOrThrow(_preferredEgressInterface);
++            await _nativeRelayHost.StartCandidatesWithEgressAsync(
+                 lease.ForwardId,
+                 ResolveUltraBinaryPath(),
+                 nativeRelayPort,
+                 leases,
+                 _runtimeDirectory,
+-                ct);
++                ct,
++                egressInterface);
+             Directory.CreateDirectory(_runtimeDirectory);
+             var configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
+             try
