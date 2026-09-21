@@ -178,6 +178,9 @@ func main() {
 			nonzero = append(nonzero, v)
 		}
 	}
+	// Report the REAL count. Truncating the slice before taking its length
+	// under-reported every badly broken run as exactly 40 idle windows.
+	idleCount := len(idle)
 	if len(idle) > 40 {
 		idle = idle[:40]
 	}
@@ -214,7 +217,7 @@ func main() {
 		"tcp_aggregate_mbps":     math.Round(float64(tcpBytes)*8/tcpElapsed/1e6*1000) / 1000,
 		"tcp_bytes_total":        tcpBytes,
 		"windows_total":          n,
-		"windows_idle":           len(idle),
+		"windows_idle":           idleCount,
 		"idle_window_indices":    idle,
 		"window_mbps_min_nonzero": minOrNil(nonzero),
 		"window_mbps_median":     medianOrNil(nonzero),
@@ -224,7 +227,7 @@ func main() {
 		"windows_observed":       observed,
 		"streams_ended_early":    observed < expected,
 		"delivered_fraction":     round4(float64(observed) / float64(expected)),
-		"interruptions":          len(idle),
+		"interruptions":          idleCount,
 		"udp_sent_packets":       uSent,
 		"udp_acked_packets":      uAcked,
 		"udp_loss_pct":           lossPct(uSent, uAcked),
