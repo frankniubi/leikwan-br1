@@ -102,3 +102,4 @@ artifacts/windows/leikwan-bridge-setup.exe
 /tmp/
 /artifacts/
 /LeikwanBridge.Desktop/tests/**/TestResults/
+dsh-session-*/

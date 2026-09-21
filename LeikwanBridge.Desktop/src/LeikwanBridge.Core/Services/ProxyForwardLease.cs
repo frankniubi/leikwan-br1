@@ -1,7 +1,5 @@
-using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Helpers;
-using System.Net;
-using System.Net.NetworkInformation;
+using LeikwanBridge.Core.Models;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
@@ -106,27 +104,16 @@ public sealed class ProxyForwardLease : IAsyncDisposable
         }
     }
 
-    public static async Task<bool> IsListenerReadyAsync(ForwardConfig forward, CancellationToken ct = default)
+    public static Task<bool> IsListenerReadyAsync(ForwardConfig forward, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         var transport = forward.Transport.Trim().ToLowerInvariant();
         if (transport is not ("tcp" or "udp" or "tcp+udp"))
-            return false;
-        if (transport != "udp")
-        {
-            var (ok, _, _) = await NetworkProbe.TcpProbeAsync("127.0.0.1", forward.ListenPort, 300, ct)
-                .ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-            if (!ok) return false;
-        }
-        if (transport == "tcp") return true;
-        try
-        {
-            return IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endpoint =>
-                endpoint.Port == forward.ListenPort
-                && (endpoint.Address.Equals(IPAddress.Loopback) || endpoint.Address.Equals(IPAddress.Any)));
-        }
-        catch (NetworkInformationException) { return false; }
+            return Task.FromResult(false);
+        if (transport != "udp" && !NetworkProbe.IsTcpPortListening(forward.ListenPort))
+            return Task.FromResult(false);
+        if (transport == "tcp") return Task.FromResult(true);
+        return Task.FromResult(NetworkProbe.IsUdpPortListening(forward.ListenPort));
     }
 
     public async ValueTask DisposeAsync()
