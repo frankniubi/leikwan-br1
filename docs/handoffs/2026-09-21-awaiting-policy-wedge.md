@@ -73,10 +73,65 @@ The macOS client is the **.NET** agent; Linux runs the **Python** agent. So the
 "no previous lease snapshot" deferral path is at minimum far more reachable in the Python agent.
 This is the second defect in this session where the Python and .NET agents disagree.
 
+## CORRECTION after deploying the guard fix — the guard is a symptom, not the cause
+
+I fixed the deferral guard (`efd3f967`) so it only defers when the runtime is genuinely
+serving, deployed it to the Linux host, and **the forward still did not recover**. That
+falsified my own first diagnosis, and the reason is the important finding:
+
+```
+installed sha256 = f6d7d9458587baf6...   (the fixed agent, helper present)
+ss -Hlnut | grep -E ':(60501|60502)'  -> 0   (listener genuinely not serving)
+/etc/ultra/forward-201.json -> listen_port=60501 transport=tcp+udp
+                               has_ultra_access = False
+still logged: "deferred because no previous lease snapshot is available"
+```
+
+The listener check therefore *passed* (runtime not serving), and the deferral came from the
+other clause: **no fresh lease exists to apply**. Verified by comparing every config on the host
+— `ultra_access=False` on the healthy forwards too (158/159/170/171/180), so the lease is never
+part of the on-disk render; it is delivered separately. The difference is in the log:
+
+```
+forward 170 independent Ultra lease renewal delivered        <- healthy forwards get leases
+forward 201 ... deferred because no previous lease snapshot  <- this one never does
+```
+
+### Actual root cause: changing a forward's target permanently un-provisions it
+
+The wedge was triggered by my own panel change of forward 201/202 `target_host`
+(`70.36.96.183` → `103.246.219.39`). That bumps `api_revision` and invalidates the lease policy
+for the old target, and **the panel then stops issuing leases for that forward**. So:
+
+1. target changed -> runtime must restart to pick it up
+2. the restart requires a lease to hand the new runtime
+3. no lease is available (old policy invalid, new one never issued) -> agent defers forever
+4. the forward stays `awaiting_policy` with **no listener** while the panel reports it enabled
+
+Removing the guard would not help, because there is still no lease to deliver.
+
+### Recovery
+
+Reverting the target in the panel restored both forwards within one poll cycle:
+
+```
+RESTORED 201 -> 70.36.96.183:62101 / 202 -> 70.36.96.183:62102
+t+45s listeners=4  201=ready  202=ready  cfg_target=70.36.96.183:62101
+13:01:40 forward 201 independent Ultra lease renewal delivered
+13:01:40 forward 202 independent Ultra lease renewal delivered
+```
+
+**A target change is therefore not reversible-by-retry and must be treated as a
+re-provisioning event, not a config edit.** The operator path needs either an explicit
+re-provision that issues a fresh lease for the new target, or a UI guard that refuses the edit
+while the forward is live.
+
 ## Follow-ups
 
-1. The deferral must not be terminal: if no snapshot exists the agent should deliver a **fresh
-   lease** rather than defer indefinitely. At present the forward is simply dead.
+1. **Panel/agent: a target change must issue a fresh lease for the new target, or be refused.**
+   As it stands the forward is silently dead until the target is reverted. This is the real fix;
+   the deferral guard (`efd3f967`) is necessary but not sufficient, and is retained because it
+   stops the agent from deferring for a runtime that is provably not serving.
 2. Surface `awaiting_policy` as a health failure — the panel currently shows the forward
    enabled while it has no listener.
 3. Reconcile the Python and .NET agent behaviour for static runtime changes.
