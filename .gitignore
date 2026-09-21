@@ -100,6 +100,11 @@ artifacts/windows/leikwan-bridge-setup.exe
 # gitignore never applies to already-tracked files. The broad rules win now.
 # ---------------------------------------------------------------------------
 /tmp/
-/artifacts/
+/artifacts/*
+!/artifacts/versions.json
+!/artifacts/cfwg-latency-watchdog.py
 /LeikwanBridge.Desktop/tests/**/TestResults/
 dsh-session-*/
+soak_10min*.json
+tools/acceptance-harness/harness.exe
+tools/uot-sidecar/uot-sidecar.exe
