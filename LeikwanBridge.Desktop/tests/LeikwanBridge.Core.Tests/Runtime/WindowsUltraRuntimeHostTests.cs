@@ -151,6 +151,82 @@ public sealed class WindowsUltraRuntimeHostTests
             ?? throw new InvalidOperationException(failure);
     }
 
+    [Fact]
+    public void Start_RetriesLeaseDeliveryUntilTheRuntimeAcceptsIt()
+    {
+        // The runtime opens its control endpoint a moment after spawn. The first
+        // attempts can legitimately be refused; only a genuinely unusable endpoint
+        // may fail the start, otherwise every slow start becomes a start/stop storm.
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        var forward = CreateForward("198.51.100.199:443", lease);
+        var attempts = 0;
+        var host = new WindowsUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _) =>
+            {
+                attempts++;
+                return Task.FromResult(attempts >= 3);
+            },
+            leaseBatchSender: (_, _, _) => Task.FromResult(true),
+            leaseDeliveryRetryWindow: TimeSpan.FromSeconds(5),
+            leaseDeliveryRetryInterval: TimeSpan.FromMilliseconds(10));
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        Assert.Equal(3, attempts);
+        Assert.True(state.LoadApplied().ContainsKey(forward.ForwardId.ToString()));
+        host.Stop(forward.ForwardId);
+    }
+
+    [Fact]
+    public void Start_GivesUpAfterTheDeliveryWindowAndStopsTheRuntime()
+    {
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        var forward = CreateForward("198.51.100.199:443", lease);
+        var attempts = 0;
+        var host = new WindowsUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _) =>
+            {
+                attempts++;
+                return Task.FromResult(false);
+            },
+            leaseBatchSender: (_, _, _) => Task.FromResult(false),
+            leaseDeliveryRetryWindow: TimeSpan.FromMilliseconds(200),
+            leaseDeliveryRetryInterval: TimeSpan.FromMilliseconds(20));
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => host.Start(forward, lease, "contract-a", "config_sync"));
+
+        Assert.Equal("ultra_runtime_start_failed", exception.Message);
+        Assert.True(attempts > 1, $"expected repeated delivery attempts, saw {attempts}");
+        Assert.False(state.LoadApplied().ContainsKey(forward.ForwardId.ToString()));
+    }
+
     private static WindowsUltraRuntimeHost CreateHost(
         AgentConfig config,
         StateManager state,

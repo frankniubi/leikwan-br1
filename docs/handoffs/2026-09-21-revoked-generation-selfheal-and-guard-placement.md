@@ -125,3 +125,64 @@ Linux agent 只报**一次**拒绝即 `preserving last known-good runtime`，run
 **关 4：plan 变更无影响** — 见第 3 节。
 
 **关 5：素材自愈** — 启用 forward 后 90 秒素材有效。见第 4 节。
+
+
+## 7. 矩阵的真正阻塞点：Windows agent 把"租约投递瞬时失败"当成"启动失败"
+
+启用 11 个方向的 22 个 forward 后，macOS/Windows 的 600 秒验收全面失败：
+
+- Windows 日志 30 分钟内 **486 次整轮 `preparing_routes:0/N`**、**1196 次 `stopping forward`**、39 次 `heartbeat_failed`；
+- macOS 那一轮 **598/600 个窗口是空的**，UDP 100% 丢包，TCP broken pipe；
+- Linux 那一轮出现 `connection refused`（本地 60531 的 UDP socket 被关掉过）。
+
+### 单一变量定位
+
+```
+21:25:09 [INF] ultra runtime process started for forward 221
+21:25:09 [INF] ultra lease delivery begin for forward 221
+21:25:10 [INF] ultra lease delivery result=false for forward 221     <- 1 秒后即判失败
+21:25:32 [INF] ultra runtime process started for forward 221          <- 杀掉重来
+21:25:58 ...                                                          <- 每 ~20 秒一轮
+```
+
+**Windows 的 `WindowsUltraRuntimeHost.Start` 在 spawn 运行时进程之后，立刻投递租约，没有等待运行时把控制端点建起来。**
+且投递只尝试**一次**，返回 false 就 `Stop()` 抛 `ultra_runtime_start_failed`。
+而 macOS 的 `MacUltraRuntimeHost` 在投递前有 `WaitForSocket(socketPath, 2s)`——**这是又一处平台分歧**。
+
+于是在多 forward 同时准备（运行时启动变慢）时，瞬时"还没准备好"被当成永久失败，
+变成"启动→投递失败→杀掉→下轮再启动"的风暴，并且**同一轮 sync 会把健康的 forward 一起停掉重来**，
+所以连没问题的 Linux/macOS 通路也被拖下水。
+
+### 修法
+
+`WindowsUltraRuntimeHost.Start` 的投递改为**有界重试**（默认 20 秒窗口 / 250 ms 间隔，
+两个参数可注入以便测试）；只有整个窗口都用完才判定启动失败。
+`Refresh()`（运行时已在跑的热续期）保持单次尝试不变。
+
+### 逐关证据
+
+回归测试（`Start_RetriesLeaseDeliveryUntilTheRuntimeAcceptsIt`、
+`Start_GivesUpAfterTheDeliveryWindowAndStopsTheRuntime`）在关掉重试后**两个都失败**，打开后 8/8 通过。
+
+部署 `LeikwanBridge.Core.dll` = `2ec6adb07f6f`（asmver 1.0.45.0）到 Windows 与 macOS 后，
+同样条件（方向 46，TCP+UDP 各 20 Mbps，120 秒）：
+
+| 平台 | TCP | 窗口 | idle | interruptions | UDP 丢包 | error_classes |
+|---|---|---|---|---|---|---|
+| Windows | 20.003 Mbps | 120/120 | **0** | **0** | **0.0004%** | `{}` |
+| macOS | 20.002 Mbps | 120/120 | **0** | **0** | **0%** | `{}` |
+
+修前 macOS 是 598/600 空窗口，修后 0。**这是 ③ 从"完全跑不动"到"可跑"的转折点。**
+
+### 方向 46 的 600 秒验收（20 Mbps TCP+UDP，顺序执行）
+
+顺序执行（不并发）是必须的：三台机器同时打同一个方向时，
+一台 sidecar 要同时吃 3×20 Mbps UDP + 3×20 Mbps TCP，会互相挤掉——
+那测的是 3 倍负载，不是验收口径。
+
+| 平台 | TCP | 窗口 | idle | interruptions | UDP 丢包 | error_classes |
+|---|---|---|---|---|---|---|
+| Linux | 20.0 Mbps | 600/600 | **0** | **0** | **0%** (1242870/1242870) | `{}` |
+| macOS | 见下 | | | | | |
+| Windows | 见下 | | | | | |
+

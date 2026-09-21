@@ -15,7 +15,21 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
     private readonly Func<int, bool> _portListeningProbe;
     private readonly Func<int, UltraLease, CancellationToken, Task<bool>> _leaseSender;
     private readonly Func<int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>> _leaseBatchSender;
+    private readonly TimeSpan _leaseDeliveryRetryWindow;
+    private readonly TimeSpan _leaseDeliveryRetryInterval;
     private readonly Func<int, PortPreflightResult>? _portPreflight;
+
+    /// <summary>
+    /// The runtime opens its private control endpoint a moment after the process
+    /// is spawned, so the first delivery attempt can legitimately be refused.
+    /// Treating that as a failed start killed the runtime and respawned it on the
+    /// next sync; with several forwards preparing at once the retries overlapped
+    /// into a start/stop storm that also churned healthy forwards on the same
+    /// agent. Retry inside a bounded window instead.
+    /// </summary>
+    private static readonly TimeSpan DefaultLeaseDeliveryRetryWindow = TimeSpan.FromSeconds(20);
+
+    private static readonly TimeSpan DefaultLeaseDeliveryRetryInterval = TimeSpan.FromMilliseconds(250);
 
     public WindowsUltraRuntimeHost(
         AgentConfig config,
@@ -25,7 +39,9 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         Func<int, bool>? portListeningProbe = null,
         Func<int, UltraLease, CancellationToken, Task<bool>>? leaseSender = null,
         Func<int, PortPreflightResult>? portPreflight = null,
-        Func<int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>>? leaseBatchSender = null)
+        Func<int, IReadOnlyList<UltraLease>, CancellationToken, Task<bool>>? leaseBatchSender = null,
+        TimeSpan? leaseDeliveryRetryWindow = null,
+        TimeSpan? leaseDeliveryRetryInterval = null)
     {
         _config = config;
         _supervisor = supervisor;
@@ -34,6 +50,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
         _leaseSender = leaseSender ?? UltraLeaseClient.SendAsync;
         _leaseBatchSender = leaseBatchSender ?? UltraLeaseClient.SendAsync;
+        _leaseDeliveryRetryWindow = leaseDeliveryRetryWindow ?? DefaultLeaseDeliveryRetryWindow;
+        _leaseDeliveryRetryInterval = leaseDeliveryRetryInterval ?? DefaultLeaseDeliveryRetryInterval;
         _portPreflight = portPreflight;
     }
 
@@ -136,9 +154,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             Log.Information("ultra runtime process started for forward {ForwardId}", forward.ForwardId);
             phase = "deliver_lease";
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
-            var delivered = leases.Count == 1
-                ? _leaseSender(forward.ForwardId, leases[0], CancellationToken.None).GetAwaiter().GetResult()
-                : _leaseBatchSender(forward.ForwardId, leases, CancellationToken.None).GetAwaiter().GetResult();
+            var delivered = DeliverLeaseWithRetry(forward.ForwardId, leases);
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", delivered, forward.ForwardId);
             if (!delivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
@@ -199,6 +215,22 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         finally
         {
             DisposeLeases(leases);
+        }
+    }
+
+    private bool DeliverLeaseWithRetry(int forwardId, IReadOnlyList<UltraLease> leases)
+    {
+        var deadline = DateTimeOffset.UtcNow + _leaseDeliveryRetryWindow;
+        while (true)
+        {
+            var delivered = leases.Count == 1
+                ? _leaseSender(forwardId, leases[0], CancellationToken.None).GetAwaiter().GetResult()
+                : _leaseBatchSender(forwardId, leases, CancellationToken.None).GetAwaiter().GetResult();
+            if (delivered)
+                return true;
+            if (DateTimeOffset.UtcNow >= deadline)
+                return false;
+            Thread.Sleep(_leaseDeliveryRetryInterval);
         }
     }
 
