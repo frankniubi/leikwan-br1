@@ -600,6 +600,9 @@ final class UltraClientStatusService
                     'last_seen_at' => (string) ($session['last_seen_at'] ?? ''),
                     'status_updated_at' => (string) ($session['ultra_status_updated_at'] ?? ''),
                     'error_code' => self::text($status['error_code'] ?? '', 64),
+                    // The runtime's own state, so the operator view can tell an
+                    // enabled-but-not-running forward apart from a serving one.
+                    'runtime_state' => self::text($status['state'] ?? '', 16),
                     // Runtime attestation is session scoped and report-only; the
                     // stored values are re-validated so a legacy row can never
                     // fabricate a "known" state.
@@ -612,6 +615,14 @@ final class UltraClientStatusService
                     'attestation_allowlisted' => $this->isRuntimeFingerprintAllowlisted($sessionFingerprint),
                 ];
             }
+        }
+        $liveLeases = $this->forwardsWithLiveLease(array_column($rows, 'forward_id'));
+        foreach ($rows as $index => $row) {
+            $rows[$index] += self::runtimeHealthVerdict(
+                (string) ($row['runtime_state'] ?? ''),
+                (string) ($row['error_code'] ?? ''),
+                isset($liveLeases[(int) ($row['forward_id'] ?? 0)])
+            );
         }
         return array_slice($rows, $offset, $limit);
     }
@@ -841,6 +852,165 @@ final class UltraClientStatusService
     {
         $zone = strtolower(trim((string) $value));
         return preg_match('/^[a-z0-9-]{1,32}$/', $zone) === 1 ? $zone : 'unknown';
+    }
+
+    /**
+     * Which of these forwards currently hold an unexpired, unrevoked Ultra
+     * lease. An enabled Ultra forward with none of these has been handed nothing
+     * to run, so it cannot be serving.
+     *
+     * @param array<int, mixed> $forwardIds
+     * @return array<int, string> forward_id => lease expiry
+     */
+    public function forwardsWithLiveLease(array $forwardIds): array
+    {
+        $ids = [];
+        foreach ($forwardIds as $forwardId) {
+            $forwardId = (int) $forwardId;
+            if ($forwardId > 0) {
+                $ids[$forwardId] = $forwardId;
+            }
+        }
+        if ($ids === []) {
+            return [];
+        }
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT forward_id, MAX(expires_at) AS live_until
+                 FROM ultra_client_leases
+                 WHERE forward_id IN (' . implode(', ', array_map('intval', array_values($ids))) . ')
+                   AND revoked_at IS NULL
+                   AND expires_at > :now
+                 GROUP BY forward_id',
+                ['now' => gmdate('Y-m-d H:i:s', $this->now())]
+            );
+        } catch (\Throwable) {
+            // Health is observational: a lease lookup failure must not break a page.
+            return [];
+        }
+        $live = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            if ($forwardId > 0) {
+                $live[$forwardId] = self::text($row['live_until'] ?? '', 40);
+            }
+        }
+        return $live;
+    }
+
+    /**
+     * Panel-side health verdict for an ENABLED Ultra forward.
+     *
+     * Ultra is provisioned by a short-lived lease, so "enabled" is never on its
+     * own evidence of health. A forward with no live lease has no runtime at
+     * all, and a runtime that reports degraded/error - notably awaiting_policy,
+     * the state a target change used to wedge a forward into - is a health
+     * failure. The panel used to render both as simply enabled.
+     *
+     * @return array{unhealthy: bool, health_reason: string}
+     */
+    public static function runtimeHealthVerdict(mixed $reportedState, string $errorCode, bool $hasLiveLease): array
+    {
+        $code = strtolower(trim($errorCode));
+        if ($code !== '') {
+            return ['unhealthy' => true, 'health_reason' => self::text($code, 64)];
+        }
+        $state = strtolower(trim((string) $reportedState));
+        if (in_array($state, ['degraded', 'error', 'stopped'], true)) {
+            return ['unhealthy' => true, 'health_reason' => 'runtime_' . $state];
+        }
+        if (!$hasLiveLease) {
+            // Enabled, but the panel holds no unexpired lease for it: the client
+            // agent has nothing to deliver, so the forward cannot be serving.
+            return ['unhealthy' => true, 'health_reason' => 'no_live_lease'];
+        }
+        if ($state !== 'ready') {
+            return ['unhealthy' => true, 'health_reason' => 'runtime_unreported'];
+        }
+        return ['unhealthy' => false, 'health_reason' => 'ready'];
+    }
+
+    /**
+     * Runtime health for a set of forwards, derived from what the panel already
+     * knows: the ingested per-forward runtime status (client-reported state and
+     * error_code) and the Ultra lease row itself.
+     *
+     * @param array<int, mixed> $forwardIds
+     * @return array<int, array<string, mixed>> forward_id => health
+     */
+    public function runtimeHealthForForwards(array $forwardIds): array
+    {
+        $ids = [];
+        foreach ($forwardIds as $forwardId) {
+            $forwardId = (int) $forwardId;
+            if ($forwardId > 0) {
+                $ids[$forwardId] = $forwardId;
+            }
+        }
+        if ($ids === []) {
+            return [];
+        }
+        $health = [];
+        foreach ($ids as $forwardId) {
+            $health[$forwardId] = [
+                'forward_id' => $forwardId,
+                'reported_state' => '',
+                'error_code' => '',
+                'reported_at' => '',
+                'has_live_lease' => false,
+                'lease_expires_at' => '',
+            ];
+        }
+
+        foreach ($this->forwardsWithLiveLease(array_values($ids)) as $forwardId => $liveUntil) {
+            if (isset($health[$forwardId])) {
+                $health[$forwardId]['has_live_lease'] = true;
+                $health[$forwardId]['lease_expires_at'] = self::text($liveUntil, 40);
+            }
+        }
+
+        try {
+            $sessions = $this->db->fetchAll(
+                'SELECT last_seen_at, ultra_status_json, ultra_status_updated_at
+                 FROM client_device_sessions
+                 WHERE last_seen_at >= :since AND ultra_status_json IS NOT NULL
+                 ORDER BY last_seen_at DESC, id DESC
+                 LIMIT 200',
+                ['since' => gmdate('Y-m-d H:i:s', $this->now() - 86400)]
+            );
+            foreach ($sessions as $session) {
+                $decoded = is_string($session['ultra_status_json'] ?? null)
+                    ? json_decode((string) $session['ultra_status_json'], true)
+                    : [];
+                foreach (array_slice(is_array($decoded) ? $decoded : [], 0, self::MAX_STATUSES) as $status) {
+                    if (!is_array($status)) {
+                        continue;
+                    }
+                    $forwardId = (int) ($status['forward_id'] ?? 0);
+                    // Sessions arrive newest first, so the first report wins.
+                    if (!isset($health[$forwardId]) || $health[$forwardId]['reported_state'] !== '') {
+                        continue;
+                    }
+                    $health[$forwardId]['reported_state'] = self::text(strtolower(trim((string) ($status['state'] ?? ''))), 16);
+                    $health[$forwardId]['error_code'] = self::text($status['error_code'] ?? '', 64);
+                    $health[$forwardId]['reported_at'] = self::text(
+                        (string) ($session['ultra_status_updated_at'] ?? $session['last_seen_at'] ?? ''),
+                        40
+                    );
+                }
+            }
+        } catch (\Throwable) {
+            // Health is observational: a status lookup failure must not break a page.
+        }
+
+        foreach ($health as $forwardId => $entry) {
+            $health[$forwardId] += self::runtimeHealthVerdict(
+                $entry['reported_state'],
+                (string) $entry['error_code'],
+                (bool) $entry['has_live_lease']
+            );
+        }
+        return $health;
     }
 
     private function now(): int

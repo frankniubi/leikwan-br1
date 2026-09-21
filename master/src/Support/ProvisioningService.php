@@ -5189,6 +5189,38 @@ final class ProvisioningService
                 false
             );
 
+            // Regression sentinel: ultra_target_change_reprovisions_lease_plane
+            // An Ultra forward is provisioned by a short-lived LEASE, and the
+            // lease scope digest covers the target, transport and port:
+            // LeigodTokenBroker::policyGeneration() folds
+            // hash('sha256', target) (LeigodTokenBroker.php:497) and
+            // UltraLeaseService::loadForwardPolicy() builds the same generation
+            // from the row (UltraLeaseService.php:1066), while
+            // UltraLeaseService::issueLease() refuses any lease whose presented
+            // policy_generation (:146) or target_digest (:189) no longer match.
+            // Writing a new target therefore invalidates every lease and every
+            // "ultra_access" grant the client holds, yet the only re-provisioning
+            // call on this path is the ENDPOINT plane below, and
+            // reconcileForwardEndpoints() is a deliberate no-op for Ultra
+            // (ProvisioningService.php:8740 sets desiredCount = 0, :8776-8793
+            // zeroes endpoint_count). That is how an enabled Ultra forward was
+            // left with no lease and no listener while still reading as enabled.
+            //
+            // So: re-provision the lease plane here, or refuse the edit. A
+            // refusal throws out of the surrounding transaction, so the operator
+            // keeps the previous, still-provisioned target instead of silently
+            // losing the forward.
+            if ($this->ultraLeaseReprovisionRequired($forward, $targetHost, $targetPort, $transportMode)) {
+                $this->reprovisionUltraLeasePlane(
+                    $forward,
+                    $targetHost,
+                    $targetPort,
+                    $transportMode,
+                    $listenPort,
+                    $actor
+                );
+            }
+
             $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
             $this->db->execute(
             'UPDATE forwards
@@ -5223,6 +5255,137 @@ final class ProvisioningService
 
             return $this->buildClientConfig($forwardId);
         });
+    }
+
+    /**
+     * Whether this edit moves an Ultra forward's lease scope.
+     *
+     * Only an ENABLED Ultra forward can be un-provisioned by a target change: a
+     * paused one intentionally holds no lease, and its start path re-provisions
+     * it. Everything else is left on the ordinary config-edit path.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function ultraLeaseReprovisionRequired(
+        array $forward,
+        string $targetHost,
+        int $targetPort,
+        string $transportMode
+    ): bool {
+        if (!UltraMode::isBackendMode($forward['backend_mode'] ?? '')) {
+            return false;
+        }
+        if ((int) ($forward['enabled'] ?? 0) !== 1) {
+            return false;
+        }
+
+        // Exactly the fields the lease scope digest covers. listen_port is
+        // deliberately NOT here: it is a runtime re-apply concern (the runtime
+        // rebinds), it does not appear in policyGeneration() and it does not
+        // invalidate a lease the client already holds, so changing it can never
+        // silently un-provision an Ultra forward.
+        return (string) ($forward['target_host'] ?? '') !== $targetHost
+            || (int) ($forward['target_port'] ?? 0) !== $targetPort
+            || (string) ($forward['transport_mode'] ?? 'tcp') !== $transportMode;
+    }
+
+    /**
+     * Re-provision the Ultra lease plane for a forward whose lease scope just
+     * changed, or refuse the edit.
+     *
+     * The panel cannot push a lease - the agent pulls one - so "re-issue
+     * immediately" means: prove a lease can be issued for the new scope, then
+     * retire every lease that belongs to the superseded scope so the next poll
+     * has to take the new one. If a lease cannot be issued the edit is refused
+     * (ApiException rolls the surrounding transaction back), because the
+     * alternative is an enabled forward with no lease and no listener.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function reprovisionUltraLeasePlane(
+        array $forward,
+        string $targetHost,
+        int $targetPort,
+        string $transportMode,
+        int $listenPort,
+        string $actor
+    ): void {
+        $forwardId = (int) ($forward['id'] ?? 0);
+        if ($forwardId <= 0) {
+            return;
+        }
+
+        $blocker = $this->ultraLeaseReprovisionBlocker($forwardId, (int) ($forward['service_id'] ?? 0));
+        if ($blocker !== null) {
+            throw new ApiException('ultra_reprovision_unavailable', 409, [
+                'forward_id' => $forwardId,
+                'reason' => $blocker,
+            ]);
+        }
+
+        // Fail closed for the old scope: a lease minted for the superseded
+        // target must never be honoured again, and the runtime must come back
+        // through the new grant instead of reusing the one it already holds.
+        $revoked = (new UltraLeaseService($this->config, $this->db))->revokeForwardLeases($forwardId);
+
+        $this->audit('forward.ultra_reprovisioned', [
+            'forward_id' => $forwardId,
+            'service_id' => (int) ($forward['service_id'] ?? 0),
+            'actor' => $actor,
+            'previous_target' => (string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0),
+            'previous_transport' => (string) ($forward['transport_mode'] ?? ''),
+            'target' => $targetHost . ':' . $targetPort,
+            'transport' => $transportMode,
+            'listen_port' => $listenPort,
+            'revoked_leases' => $revoked,
+        ]);
+    }
+
+    /**
+     * Null when a fresh Ultra lease can be issued for this forward right now,
+     * otherwise the reason the edit must be refused.
+     *
+     * Reuses the exact predicate the grant path uses to decide whether an Ultra
+     * forward is leaseable at all
+     * (ProvisioningService::ultraLineMetadataForAssignedForwards(): enabled
+     * line, source present, verified carrier, matching destination zone and
+     * unexpired material), so "green here" and "a lease is issued there" cannot
+     * drift apart.
+     */
+    private function ultraLeaseReprovisionBlocker(int $forwardId, int $serviceId): ?string
+    {
+        $serviceStatus = $serviceId > 0
+            ? $this->db->fetchOne('SELECT status FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId])
+            : null;
+        if (!is_array($serviceStatus) || (string) ($serviceStatus['status'] ?? '') !== 'active') {
+            return 'service_not_active';
+        }
+
+        $metadata = $this->ultraLineMetadataForAssignedForwards([[
+            'forward_id' => $forwardId,
+            'backend_mode' => UltraMode::BACKEND_MODE,
+            'service_status' => 'active',
+        ]]);
+        $lines = $metadata[(string) $forwardId]['lines'] ?? [];
+        if (!is_array($lines) || $lines === []) {
+            return 'no_leaseable_line';
+        }
+
+        // The query above gates on the stored last_material_expires_at; the
+        // material service is the authority on whether a candidate can actually
+        // be resolved from it. An unreadable material service must not block an
+        // operator edit, so only a definitive "no material" refuses.
+        try {
+            $snapshot = (new UltraMaterialService(
+                $this->config,
+                $this->db,
+                new AppSettings($this->db)
+            ))->lineSnapshot($lines);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $snapshot === null ? 'lease_material_unavailable' : null;
     }
 
     public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
