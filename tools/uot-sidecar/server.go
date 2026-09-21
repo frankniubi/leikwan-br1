@@ -90,9 +90,14 @@ type sessionStats struct {
 }
 
 type uotSession struct {
-	reliable        *reliableDatagrams
-	carrierRunMu    sync.Mutex
-	server          *sidecarServer
+	reliable     *reliableDatagrams
+	carrierRunMu sync.Mutex
+	server       *sidecarServer
+	// config is the snapshot this session was admitted under. It is immutable
+	// and stays with the session for its whole life, which is what retains an
+	// established session across a reload that removes or rotates its binding:
+	// only NEW HELLOs ever consult a newer snapshot.
+	config          *sidecarConfig
 	id              [sessionIDBytes]byte
 	binding         forwardBinding
 	target          string
@@ -114,17 +119,21 @@ type uotSession struct {
 	stats         sessionStats
 }
 
-func newUoTSession(server *sidecarServer, id [sessionIDBytes]byte, binding forwardBinding, target string, framePayloadMax int) *uotSession {
+// newUoTSession binds a new session to one configuration snapshot: every
+// limit and timeout it uses for its whole life comes from that snapshot, so a
+// concurrent reload can never be observed half-applied by this session.
+func newUoTSession(config *sidecarConfig, server *sidecarServer, id [sessionIDBytes]byte, binding forwardBinding, target string, framePayloadMax int) *uotSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &uotSession{
 		ctx: ctx, cancel: cancel, budget: newDatagramBudget(datagramQueueBytes),
 		server:          server,
+		config:          config,
 		id:              id,
 		binding:         binding,
 		target:          target,
 		framePayloadMax: framePayloadMax,
-		tuner:           newAdaptiveTuner(framePayloadMax, server.config.queuePackets, server.config.framePayloadMax),
-		outbound:        make(chan frame, server.config.queuePackets),
+		tuner:           newAdaptiveTuner(framePayloadMax, config.queuePackets, config.framePayloadMax),
+		outbound:        make(chan frame, config.queuePackets),
 		udpDone:         make(chan struct{}),
 	}
 }
@@ -347,12 +356,16 @@ func (s *uotSession) snapshotStats() sessionStats {
 	return s.stats
 }
 
-func (s *uotSession) graceExpired(now time.Time, grace time.Duration) bool {
+// graceExpired reports whether a detached session has outlived the grace
+// period of the snapshot it was admitted under, so a reload cannot shorten or
+// extend the life of a session that is already running.
+func (s *uotSession) graceExpired(now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return true
 	}
+	grace := time.Duration(s.config.sessionGraceSeconds * float64(time.Second))
 	return s.carrier == nil && !s.detachedAt.IsZero() && now.Sub(s.detachedAt) >= grace
 }
 
@@ -385,8 +398,8 @@ func (s *uotSession) closeSockets() {
 // carrierReader consumes one carrier connection until it ends.
 func (s *uotSession) carrierReader(carrier net.Conn) error {
 	for {
-		_ = carrier.SetReadDeadline(time.Now().Add(time.Duration(s.server.config.idleTimeoutSeconds * float64(time.Second))))
-		incoming, err := readFrame(carrier, s.server.config.maxFrameBytes)
+		_ = carrier.SetReadDeadline(time.Now().Add(time.Duration(s.config.idleTimeoutSeconds * float64(time.Second))))
+		incoming, err := readFrame(carrier, s.config.maxFrameBytes)
 		if err != nil {
 			if isTimeout(err) {
 				return protocolError{reason: "carrier idle timeout"}
@@ -429,7 +442,7 @@ func (s *uotSession) carrierReader(carrier net.Conn) error {
 // keepalives while the queue is idle. Because the queue belongs to the session,
 // a reattach resumes where the previous carrier stopped.
 func (s *uotSession) carrierWriter(carrier net.Conn, stop <-chan struct{}) error {
-	keepalive := time.Duration(s.server.config.keepaliveSeconds * float64(time.Second))
+	keepalive := time.Duration(s.config.keepaliveSeconds * float64(time.Second))
 	timer := time.NewTimer(keepalive)
 	defer timer.Stop()
 	for {
@@ -469,8 +482,8 @@ func (s *uotSession) carrierWriter(carrier net.Conn, stop <-chan struct{}) error
 }
 
 func (s *uotSession) writeFrame(carrier net.Conn, outgoing frame) error {
-	_ = carrier.SetWriteDeadline(time.Now().Add(time.Duration(s.server.config.idleTimeoutSeconds * float64(time.Second))))
-	if err := writeFrame(carrier, outgoing, s.server.config.maxFrameBytes); err != nil {
+	_ = carrier.SetWriteDeadline(time.Now().Add(time.Duration(s.config.idleTimeoutSeconds * float64(time.Second))))
+	if err := writeFrame(carrier, outgoing, s.config.maxFrameBytes); err != nil {
 		s.server.logger.debugf("external UoT carrier write failed sid=%s: %v", s.shortID(), err)
 		return err
 	}
@@ -492,10 +505,25 @@ func newSessionRegistry(server *sidecarServer) *sessionRegistry {
 	return &sessionRegistry{server: server, sessions: make(map[[sessionIDBytes]byte]*uotSession)}
 }
 
-func (r *sessionRegistry) announce(id [sessionIDBytes]byte, binding forwardBinding, target string, requestedMax int) (*uotSession, bool, error) {
-	return r.announceMode(id, binding, target, requestedMax, "raw")
+// liveSession returns the session established under this id when it is still
+// open and belongs to the requested forward. That is the only session a binding
+// the current configuration no longer carries may keep alive.
+func (r *sessionRegistry) liveSession(id [sessionIDBytes]byte, forwardID int64) *uotSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, present := r.sessions[id]
+	if !present || session.isClosed() || session.binding.forwardID != forwardID {
+		return nil
+	}
+	return session
 }
-func (r *sessionRegistry) announceMode(id [sessionIDBytes]byte, binding forwardBinding, target string, requestedMax int, mode string) (*uotSession, bool, error) {
+
+// announceMode installs the session for one HELLO using exactly the snapshot
+// that authorised it. allowCreate is false for a HELLO authorised only by the
+// binding of a session that already exists: that HELLO may keep the established
+// session alive (a carrier reattach) but must never create a new session, so
+// removing a binding still stops new sessions for that id.
+func (r *sessionRegistry) announceMode(snapshot *sidecarConfig, id [sessionIDBytes]byte, binding forwardBinding, target string, requestedMax int, mode string, allowCreate bool) (*uotSession, bool, error) {
 	r.mu.Lock()
 	existing, present := r.sessions[id]
 	if present && !existing.isClosed() {
@@ -506,21 +534,27 @@ func (r *sessionRegistry) announceMode(id [sessionIDBytes]byte, binding forwardB
 		r.mu.Unlock()
 		return existing, true, nil
 	}
-	if len(r.sessions) >= r.server.config.sessionLimit {
+	if !allowCreate {
+		r.mu.Unlock()
+		return nil, false, protocolError{reason: "forward is not allowed"}
+	}
+	if len(r.sessions) >= snapshot.sessionLimit {
 		r.mu.Unlock()
 		return nil, false, protocolError{reason: "session limit reached"}
 	}
-	negotiated := minInt(requestedMax, r.server.config.framePayloadMax)
+	negotiated := minInt(requestedMax, snapshot.framePayloadMax)
 	if negotiated < minFramePayload {
 		r.mu.Unlock()
 		return nil, false, protocolError{reason: "no usable frame payload size"}
 	}
-	session := newUoTSession(r.server, id, binding, target, negotiated)
+	session := newUoTSession(snapshot, r.server, id, binding, target, negotiated)
 	if mode == reliableDatagramMode {
 		session.reliable = newReliableDatagrams()
 	}
 	r.mu.Unlock()
-	if err := session.open(r.server.dialer()); err != nil {
+	// The UDP dialer is built from the same snapshot, so a reloaded
+	// udp_connect_timeout_seconds is applied whole rather than half.
+	if err := session.open(r.server.dialer(snapshot)); err != nil {
 		return nil, false, connectionError{err: err}
 	}
 	r.mu.Lock()
@@ -535,7 +569,7 @@ func (r *sessionRegistry) announceMode(id [sessionIDBytes]byte, binding forwardB
 		}
 		return existing, true, nil
 	}
-	if len(r.sessions) >= r.server.config.sessionLimit {
+	if len(r.sessions) >= snapshot.sessionLimit {
 		r.mu.Unlock()
 		session.close()
 		return nil, false, protocolError{reason: "session limit reached"}
@@ -549,11 +583,10 @@ func (r *sessionRegistry) announceMode(id [sessionIDBytes]byte, binding forwardB
 
 func (r *sessionRegistry) reap() {
 	now := time.Now()
-	grace := time.Duration(r.server.config.sessionGraceSeconds * float64(time.Second))
 	doomed := make([]*uotSession, 0)
 	r.mu.Lock()
 	for id, session := range r.sessions {
-		if session.graceExpired(now, grace) {
+		if session.graceExpired(now) {
 			delete(r.sessions, id)
 			doomed = append(doomed, session)
 		}
@@ -581,11 +614,12 @@ func (r *sessionRegistry) closeAll() {
 }
 
 type sidecarServer struct {
-	config    sidecarConfig
-	logger    *sidecarLogger
-	registry  *sessionRegistry
-	listener  net.Listener
-	udpDialer net.Dialer
+	// config is the published snapshot store; every request loads it once and
+	// then uses that value for its whole lifetime.
+	config   *configStore
+	logger   *sidecarLogger
+	registry *sessionRegistry
+	listener net.Listener
 
 	mu       sync.Mutex
 	carriers map[net.Conn]struct{}
@@ -593,23 +627,25 @@ type sidecarServer struct {
 	wg       sync.WaitGroup
 }
 
-func newSidecarServer(config sidecarConfig, logger *sidecarLogger) *sidecarServer {
+func newSidecarServer(config *configStore, logger *sidecarLogger) *sidecarServer {
 	server := &sidecarServer{
-		config:    config,
-		logger:    logger,
-		carriers:  make(map[net.Conn]struct{}),
-		udpDialer: net.Dialer{Timeout: time.Duration(config.udpConnectTimeoutSeconds * float64(time.Second))},
+		config:   config,
+		logger:   logger,
+		carriers: make(map[net.Conn]struct{}),
 	}
 	server.registry = newSessionRegistry(server)
 	return server
 }
 
-func (s *sidecarServer) dialer() *net.Dialer {
-	return &s.udpDialer
+// dialer builds the UDP dialer for one HELLO from the snapshot that authorised
+// that HELLO, so a reloaded value is never applied half-way.
+func (s *sidecarServer) dialer(snapshot *sidecarConfig) *net.Dialer {
+	return &net.Dialer{Timeout: time.Duration(snapshot.udpConnectTimeoutSeconds * float64(time.Second))}
 }
 
 func (s *sidecarServer) start() error {
-	listener, err := net.Listen("tcp", net.JoinHostPort(s.config.listenHost, fmt.Sprintf("%d", s.config.listenPort)))
+	snapshot := s.config.snapshot()
+	listener, err := net.Listen("tcp", net.JoinHostPort(snapshot.listenHost, fmt.Sprintf("%d", snapshot.listenPort)))
 	if err != nil {
 		return err
 	}
@@ -653,7 +689,7 @@ func (s *sidecarServer) acceptLoop() {
 }
 
 func (s *sidecarServer) reaperLoop() {
-	interval := time.Duration(minFloat(1.0, maxFloat(0.05, s.config.sessionGraceSeconds/4)) * float64(time.Second))
+	interval := time.Duration(minFloat(1.0, maxFloat(0.05, s.config.snapshot().sessionGraceSeconds/4)) * float64(time.Second))
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -690,17 +726,17 @@ func (s *sidecarServer) releaseCarrier(carrier net.Conn) {
 	s.mu.Unlock()
 }
 
-func (s *sidecarServer) rejectionAck(sessionID [sessionIDBytes]byte, reason string) frame {
+func (s *sidecarServer) rejectionAck(snapshot *sidecarConfig, sessionID [sessionIDBytes]byte, reason string) frame {
 	payload := map[string]any{
 		"ok":                false,
 		"frame_payload_max": 0,
-		"queue_packets":     s.config.queuePackets,
+		"queue_packets":     snapshot.queuePackets,
 		"error":             reason,
 	}
 	return frame{msgType: msgHelloAck, session: sessionID, payload: encodeJSON(payload)}
 }
 
-func (s *sidecarServer) acceptAck(sessionID [sessionIDBytes]byte, session *uotSession, reattached bool) frame {
+func (s *sidecarServer) acceptAck(snapshot *sidecarConfig, sessionID [sessionIDBytes]byte, session *uotSession, reattached bool) frame {
 	marker := "OKN"
 	if reattached {
 		marker = "OKR"
@@ -708,7 +744,7 @@ func (s *sidecarServer) acceptAck(sessionID [sessionIDBytes]byte, session *uotSe
 	payload := map[string]any{
 		"ok":                true,
 		"frame_payload_max": session.framePayloadMax,
-		"queue_packets":     s.config.queuePackets,
+		"queue_packets":     snapshot.queuePackets,
 		"session":           marker,
 	}
 	if session.reliable != nil {
@@ -717,12 +753,40 @@ func (s *sidecarServer) acceptAck(sessionID [sessionIDBytes]byte, session *uotSe
 	return frame{msgType: msgHelloAck, session: sessionID, payload: encodeJSON(payload)}
 }
 
-func (s *sidecarServer) writeRejection(carrier net.Conn, sessionID [sessionIDBytes]byte, reason string) {
+func (s *sidecarServer) writeRejection(snapshot *sidecarConfig, carrier net.Conn, sessionID [sessionIDBytes]byte, reason string) {
 	s.logger.infof("external UoT connection rejected: %s", reason)
-	_ = carrier.SetWriteDeadline(time.Now().Add(time.Duration(s.config.idleTimeoutSeconds * float64(time.Second))))
-	if err := writeFrame(carrier, s.rejectionAck(sessionID, reason), s.config.maxFrameBytes); err != nil {
+	_ = carrier.SetWriteDeadline(time.Now().Add(time.Duration(snapshot.idleTimeoutSeconds * float64(time.Second))))
+	if err := writeFrame(carrier, s.rejectionAck(snapshot, sessionID, reason), snapshot.maxFrameBytes); err != nil {
 		s.logger.debugf("external UoT rejection ack failed: %v", err)
 	}
+}
+
+// authorizeHello selects the binding that authorises one HELLO and reports
+// whether it may create a new session.
+//
+// A live session keeps the binding it was admitted under, so a binding that a
+// reload removed (or whose token it rotated) still authorises a carrier
+// reattach of that exact session: its negotiated state was validated when the
+// session was opened, and removal only stops NEW HELLOs from using the id.
+// The current snapshot is always tried first, so a client that already carries
+// a rotated token is accepted as well.
+func (s *sidecarServer) authorizeHello(snapshot *sidecarConfig, sessionID [sessionIDBytes]byte, hello helloPayload) (forwardBinding, bool, error) {
+	fromSnapshot, inSnapshot := snapshot.forwards[hello.forwardID]
+	if inSnapshot && fromSnapshot.verify(hello.token, hello.target) {
+		return fromSnapshot, true, nil
+	}
+	var retained *forwardBinding
+	if existing := s.registry.liveSession(sessionID, hello.forwardID); existing != nil {
+		binding := existing.binding
+		retained = &binding
+	}
+	if retained != nil && retained.verify(hello.token, hello.target) {
+		return *retained, false, nil
+	}
+	if retained == nil && !inSnapshot {
+		return forwardBinding{}, false, protocolError{reason: "forward is not allowed"}
+	}
+	return forwardBinding{}, false, protocolError{reason: "authentication or target binding failed"}
 }
 
 func (s *sidecarServer) handleConnection(carrier net.Conn) {
@@ -730,14 +794,17 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 		_ = carrier.Close()
 		s.releaseCarrier(carrier)
 	}()
+	// Take the configuration exactly once for this connection: a reload landing
+	// while the HELLO is negotiated must not be observable half-way through it.
+	snapshot := s.config.snapshot()
 	var session *uotSession
 	errorSessionID := [sessionIDBytes]byte{}
-	readTimeout := time.Duration(s.config.idleTimeoutSeconds * float64(time.Second))
+	readTimeout := time.Duration(snapshot.idleTimeoutSeconds * float64(time.Second))
 	_ = carrier.SetReadDeadline(time.Now().Add(readTimeout))
-	hello, err := readFrame(carrier, s.config.maxFrameBytes)
+	hello, err := readFrame(carrier, snapshot.maxFrameBytes)
 	if err != nil {
 		if isProtocolFailure(err) {
-			s.writeRejection(carrier, errorSessionID, err.Error())
+			s.writeRejection(snapshot, carrier, errorSessionID, err.Error())
 			return
 		}
 		if isTimeout(err) {
@@ -750,22 +817,18 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 	errorSessionID = hello.session
 	helloData, err := parseHelloPayload(hello)
 	if err != nil {
-		s.writeRejection(carrier, errorSessionID, err.Error())
+		s.writeRejection(snapshot, carrier, errorSessionID, err.Error())
 		return
 	}
-	binding, present := s.config.forwards[helloData.forwardID]
-	if !present {
-		s.writeRejection(carrier, errorSessionID, "forward is not allowed")
+	binding, allowCreate, err := s.authorizeHello(snapshot, hello.session, helloData)
+	if err != nil {
+		s.writeRejection(snapshot, carrier, errorSessionID, err.Error())
 		return
 	}
-	if !binding.verify(helloData.token, helloData.target) {
-		s.writeRejection(carrier, errorSessionID, "authentication or target binding failed")
-		return
-	}
-	announced, reattached, err := s.registry.announceMode(hello.session, binding, helloData.target, helloData.framePayloadMax, helloData.deliveryMode)
+	announced, reattached, err := s.registry.announceMode(snapshot, hello.session, binding, helloData.target, helloData.framePayloadMax, helloData.deliveryMode, allowCreate)
 	if err != nil {
 		if isProtocolFailure(err) {
-			s.writeRejection(carrier, errorSessionID, err.Error())
+			s.writeRejection(snapshot, carrier, errorSessionID, err.Error())
 			return
 		}
 		// The Python sidecar stays silent when the UDP target cannot be dialled.
@@ -786,7 +849,7 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 		session.attach(carrier)
 	}
 	_ = carrier.SetWriteDeadline(time.Now().Add(readTimeout))
-	if err := writeFrame(carrier, s.acceptAck(hello.session, session, reattached), s.config.maxFrameBytes); err != nil {
+	if err := writeFrame(carrier, s.acceptAck(snapshot, hello.session, session, reattached), snapshot.maxFrameBytes); err != nil {
 		session.detach(carrier)
 		s.logger.debugf("external UoT hello ack failed sid=%s: %v", session.shortID(), err)
 		return
@@ -817,7 +880,7 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 	close(stop)
 	<-writerDone
 	if isProtocolFailure(firstErr) {
-		s.writeRejection(carrier, session.id, firstErr.Error())
+		s.writeRejection(snapshot, carrier, session.id, firstErr.Error())
 	}
 	session.detach(carrier)
 	stats := session.snapshotStats()

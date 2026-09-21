@@ -8,8 +8,9 @@ import (
 )
 
 func queueFixture() *uotSession {
-	server := newSidecarServer(sidecarConfig{queuePackets: 1, framePayloadMax: maxDatagram}, newSidecarLogger("ERROR", io.Discard))
-	return newUoTSession(server, [16]byte{}, forwardBinding{}, "127.0.0.1:1", maxDatagram)
+	config := &sidecarConfig{queuePackets: 1, framePayloadMax: maxDatagram}
+	server := newSidecarServer(newConfigStore("", config), newSidecarLogger("ERROR", io.Discard))
+	return newUoTSession(config, server, [16]byte{}, forwardBinding{}, "127.0.0.1:1", maxDatagram)
 }
 func TestSidecarBlockedEnqueueShutdown(t *testing.T) {
 	s := queueFixture()

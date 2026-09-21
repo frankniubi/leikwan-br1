@@ -8,7 +8,7 @@ import (
 func (s *uotSession) runReliableCarrier(conn net.Conn) error {
 	return runReliableTransport(s.ctx, conn, s.reliable,
 		func() (reliableWireFrame, error) {
-			f, e := readFrame(conn, s.server.config.maxFrameBytes)
+			f, e := readFrame(conn, s.config.maxFrameBytes)
 			if e != nil {
 				return reliableWireFrame{}, e
 			}
@@ -18,7 +18,7 @@ func (s *uotSession) runReliableCarrier(conn net.Conn) error {
 			return reliableWireFrame{kind: f.msgType, seq: f.seq, body: f.payload}, nil
 		},
 		func(f reliableWireFrame) error {
-			return writeFrame(conn, frame{msgType: f.kind, session: s.id, seq: f.seq, payload: f.body}, s.server.config.maxFrameBytes)
+			return writeFrame(conn, frame{msgType: f.kind, session: s.id, seq: f.seq, payload: f.body}, s.config.maxFrameBytes)
 		},
 		func(p []byte) error {
 			if len(p) > s.framePayloadMax {

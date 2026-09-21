@@ -168,7 +168,7 @@ func fixtureServer(t *testing.T, echo *echoServer, mutate func(*sidecarConfig)) 
 	if mutate != nil {
 		mutate(&config)
 	}
-	server := newSidecarServer(config, newSidecarLogger("ERROR", discardWriter{}))
+	server := newSidecarServer(newConfigStore("", &config), newSidecarLogger("ERROR", discardWriter{}))
 	if err := server.start(); err != nil {
 		t.Fatalf("server start failed: %v", err)
 	}

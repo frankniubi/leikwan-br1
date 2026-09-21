@@ -192,17 +192,19 @@ func TestParseHelloPayloadDefaultsAndErrors(t *testing.T) {
 }
 
 func TestAckEncodingMatchesPython(t *testing.T) {
-	server := newSidecarServer(sidecarConfig{queuePackets: 256}, newSidecarLogger("ERROR", discardWriter{}))
+	config := sidecarConfig{queuePackets: 256}
+	server := newSidecarServer(newConfigStore("", &config), newSidecarLogger("ERROR", discardWriter{}))
+	snapshot := server.config.snapshot()
 	session := &uotSession{framePayloadMax: 1200}
-	accepted := server.acceptAck([sessionIDBytes]byte{}, session, false)
+	accepted := server.acceptAck(snapshot, [sessionIDBytes]byte{}, session, false)
 	if string(accepted.payload) != `{"frame_payload_max":1200,"ok":true,"queue_packets":256,"session":"OKN"}` {
 		t.Fatalf("accept ack payload = %s", accepted.payload)
 	}
-	reattached := server.acceptAck([sessionIDBytes]byte{}, session, true)
+	reattached := server.acceptAck(snapshot, [sessionIDBytes]byte{}, session, true)
 	if string(reattached.payload) != `{"frame_payload_max":1200,"ok":true,"queue_packets":256,"session":"OKR"}` {
 		t.Fatalf("reattach ack payload = %s", reattached.payload)
 	}
-	rejection := server.rejectionAck([sessionIDBytes]byte{}, "authentication or target binding failed")
+	rejection := server.rejectionAck(snapshot, [sessionIDBytes]byte{}, "authentication or target binding failed")
 	if string(rejection.payload) != `{"error":"authentication or target binding failed","frame_payload_max":0,"ok":false,"queue_packets":256}` {
 		t.Fatalf("rejection ack payload = %s", rejection.payload)
 	}

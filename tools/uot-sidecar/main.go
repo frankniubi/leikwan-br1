@@ -34,6 +34,7 @@ func main() {
 	forwardID := flag.Int64("forward-id", 0, "forward id (with --print-token)")
 	target := flag.String("target", "", "target host:port (with --print-token)")
 	checkConfig := flag.Bool("check-config", false, "validate --config, print the effective sidecar summary as JSON and exit")
+	reloadFile := flag.String("reload-file", "", "local reload marker file; creating it reloads the configuration (default <config>.reload, \"-\" disables)")
 	flag.Parse()
 
 	if *showVersion {
@@ -64,6 +65,16 @@ func main() {
 		os.Exit(2)
 	}
 
+	// The marker file is the platform-neutral, local-only reload trigger; "-"
+	// disables it. Windows has no SIGHUP, so it is the only trigger there.
+	markerPath := *reloadFile
+	if markerPath == "" {
+		markerPath = *configPath + ".reload"
+	}
+	if markerPath == "-" {
+		markerPath = ""
+	}
+
 	logger := newSidecarLogger(*logLevel, os.Stderr)
 	config, err := loadConfig(*configPath)
 	if err != nil {
@@ -74,7 +85,8 @@ func main() {
 		fmt.Println(strings.TrimSpace(string(summarizeConfig(config))))
 		return
 	}
-	server := newSidecarServer(config, logger)
+	store := newConfigStore(*configPath, &config)
+	server := newSidecarServer(store, logger)
 	if err := server.start(); err != nil {
 		logger.logf(logError, "external UoT sidecar failed to listen: %v", err)
 		os.Exit(1)
@@ -83,12 +95,34 @@ func main() {
 	logger.infof("external UoT sidecar ready build=%s forwards=%d queue_packets=%d keepalive_seconds=%s idle_timeout_seconds=%s session_grace_seconds=%s",
 		sidecarBuildVersion, len(config.forwards), config.queuePackets,
 		formatSeconds(config.keepaliveSeconds), formatSeconds(config.idleTimeoutSeconds), formatSeconds(config.sessionGraceSeconds))
+	if markerPath == "" {
+		logger.infof("external UoT reload triggers: SIGHUP (unix), local reload marker disabled")
+	} else {
+		logger.infof("external UoT reload triggers: SIGHUP (unix), local reload marker path=%s", markerPath)
+	}
 
+	// Reload is local-only by construction: a signal the operator sends, or a
+	// marker file only a local user with write access to the configuration
+	// directory can create. No network path reaches either trigger.
+	stopReloads := make(chan struct{})
+	go runReloadMarkerLoop(stopReloads, markerPath, reloadMarkerPollInterval, logger, func() { applyReload(store, logger) })
+
+	// SIGINT/SIGTERM keep exactly their previous meaning: log and shut down.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	<-signals
-	logger.infof("external UoT sidecar stopping")
-	server.close()
+	reloadSignals := make(chan os.Signal, 1)
+	notifyReloadSignals(reloadSignals)
+	for {
+		select {
+		case <-signals:
+			logger.infof("external UoT sidecar stopping")
+			close(stopReloads)
+			server.close()
+			return
+		case <-reloadSignals:
+			applyReload(store, logger)
+		}
+	}
 }
 
 func formatSeconds(value float64) string {

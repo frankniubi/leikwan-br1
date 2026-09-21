@@ -5,6 +5,7 @@ package main
 // existing /etc/leikwan-external-uot.json can be handed to this binary as-is.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -54,12 +55,26 @@ func loadConfig(path string) (sidecarConfig, error) {
 	return parseConfig(raw)
 }
 
+// loadSnapshot reads and fully validates a configuration file and returns the
+// immutable snapshot a configStore publishes. Every load allocates fresh maps,
+// so a published snapshot never shares mutable state with an older one.
+func loadSnapshot(path string) (*sidecarConfig, error) {
+	config, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
 func parseConfig(raw []byte) (sidecarConfig, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
 	var document map[string]any
 	if err := decoder.Decode(&document); err != nil {
 		return sidecarConfig{}, fmt.Errorf("config is not a JSON object: %w", err)
+	}
+	if err := rejectDuplicateForwardIDs(raw); err != nil {
+		return sidecarConfig{}, err
 	}
 	forwardsRaw, present := document["forwards"]
 	if !present {
@@ -156,6 +171,123 @@ func parseTargets(value any) (map[string]struct{}, error) {
 		targets[normalized] = struct{}{}
 	}
 	return targets, nil
+}
+
+// rejectDuplicateForwardIDs fails a document that declares one forward id
+// twice. encoding/json silently keeps the last duplicate key, so without this
+// scan a hand-edited file with two entries for one forward would load with half
+// of the operator's intent applied. The Python sidecar is equally permissive;
+// rejecting the file outright is the safe behaviour for a reload.
+func rejectDuplicateForwardIDs(raw []byte) error {
+	keys, err := forwardIDsInOrder(raw)
+	if err != nil {
+		// The main decoder reports malformed documents with a better message;
+		// this scan only adds duplicate detection on top of it.
+		return nil
+	}
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("duplicate forward id %q", key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// forwardIDsInOrder returns the keys of the forwards object in file order,
+// duplicates included.
+func forwardIDsInOrder(raw []byte) ([]string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return nil, fmt.Errorf("config is not a JSON object")
+	}
+	ids := []string{}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, fmt.Errorf("config key is invalid")
+		}
+		if key == "forwards" || key == "forward_bindings" {
+			keys, err := objectKeysInOrder(decoder)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, keys...)
+			continue
+		}
+		if err := skipJSONValue(decoder); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// objectKeysInOrder consumes the object at the decoder's cursor and returns its
+// keys in file order.
+func objectKeysInOrder(decoder *json.Decoder) ([]string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return nil, fmt.Errorf("forwards must be an object")
+	}
+	keys := []string{}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, fmt.Errorf("forward id is invalid")
+		}
+		keys = append(keys, strings.TrimSpace(key))
+		if err := skipJSONValue(decoder); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := decoder.Token(); err != nil { // consume the closing brace
+		return nil, err
+	}
+	return keys, nil
+}
+
+// skipJSONValue consumes one complete JSON value (scalar, object or array).
+func skipJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if _, isDelim := token.(json.Delim); !isDelim {
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				depth++
+			default:
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 func stringOrDefault(document map[string]any, key string, fallback string) string {
