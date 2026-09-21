@@ -68,3 +68,29 @@ if chunk.startswith(MAGIC):        # MAGIC = b"LKT1"
 第一次拿到 15 Mbps 时就该问一句"单流在 80 ms RTT 下能跑多少"，第一次看到 CV 159% 时就该怀疑
 测量而不是路径。**用一个自己写错量具的读数去下"硬件不行"的结论，是这次最严重的错误。**
 现在 harness 会自报 `tcp_reply_bytes`，量具本身可被核对。
+
+## 5. 补充：把剩下的 UDP 丢包按段拆开
+
+用目标端计数器 + sidecar 宿主 `/proc/net/snmp`，在 **TCP 20 + UDP 20 并发 90 秒**下同时记账：
+
+```
+client sent         = 187,032
+target received     = 186,944      -> 前向丢包 0.0471%（基本为零）
+client observed loss= 1.4377%      -> 多出来的约 1.4% 在回程（ACK 回客户端）
+sidecar host deltas : OutDatagrams=392,636  RcvbufErrors=0  SndbufErrors=0  MemErrors=0  InErrors=0
+TCP                 : idle 0/90，CV 2.14%，error_classes {}
+```
+
+sidecar 宿主的 socket 计数**全是零**，它发出的包与目标收到的包一致 —— 说明丢包既不发生在
+sidecar 的收发缓冲，也不发生在 sidecar→目标这一段。
+
+而在 **600 秒**那一轮，同一个组合的前向丢包是 3.92%。同一 harness、同一路径，90 秒 0.047%、
+600 秒 3.92% —— **这部分随运行波动，不是固定比例**，而且客户端观察到的数值里还混着回程那 ~1.4%
+（那一部分更可能是客户端 UDP 接收缓冲，属于量具）。
+
+所以现在的准确表述是：
+
+- **TCP 20 Mbps**：idle 0、零错误类，稳定达标（CV 0.88%–2.14%）。
+- **UDP 前向丢包**：90 秒 0.047%、600 秒 3.92%，随运行波动；单跑 20 Mbps 时是 0.0000%。
+- 要把这部分也钉死，需要给 harness 的 UDP 接收侧加接收缓冲/丢包统计，把回程与去程彻底分开 ——
+  目前客户端观察值里这两者是混在一起的。
