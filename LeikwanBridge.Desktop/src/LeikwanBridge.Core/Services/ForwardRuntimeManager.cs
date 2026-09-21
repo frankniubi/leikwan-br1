@@ -225,7 +225,7 @@ public class ForwardRuntimeManager : IDisposable
 
         // Validation above is intentionally complete before replacing the running runtime.
         _supervisor.StopAll(forwardId);
-        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), TimeSpan.FromSeconds(3));
+        WaitForPortsReleased(PortsForReleaseWait(previousState, selectedForward.ListenPort), _portListeningProbe, TimeSpan.FromSeconds(3));
 
         foreach (var file in spec.GeneratedFiles ?? [])
         {
@@ -245,7 +245,7 @@ public class ForwardRuntimeManager : IDisposable
             _supervisor.StartProcess(forwardId, process.Role, process.Label, process.ExePath, process.Arguments);
         }
 
-        if (spec.LegPorts.Count > 0 && !WaitForRequiredPorts(spec.LegPorts, TimeSpan.FromSeconds(15)))
+        if (spec.LegPorts.Count > 0 && !WaitForRequiredPorts(spec.LegPorts, _portListeningProbe, TimeSpan.FromSeconds(15)))
         {
             Log.Error("forward {ForwardId}: required leg ports did not become ready", forwardId);
             _supervisor.StopAll(forwardId);
@@ -601,7 +601,7 @@ public class ForwardRuntimeManager : IDisposable
         }
     }
 
-    private bool WaitForRequiredPorts(IEnumerable<int> ports, TimeSpan timeout)
+    private bool WaitForRequiredPorts(IEnumerable<int> ports, Func<int, bool> probe, TimeSpan timeout)
     {
         if (!ports.Any())
             return true;
@@ -609,16 +609,16 @@ public class ForwardRuntimeManager : IDisposable
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (ports.All(_portListeningProbe))
+            if (ports.All(probe))
                 return true;
 
             Thread.Sleep(100);
         }
 
-        return ports.All(_portListeningProbe);
+        return ports.All(probe);
     }
 
-    private void WaitForPortsReleased(IEnumerable<int> ports, TimeSpan timeout)
+    private void WaitForPortsReleased(IEnumerable<int> ports, Func<int, bool> probe, TimeSpan timeout)
     {
         var requiredPorts = ports.Where(port => port > 0).Distinct().ToList();
         if (requiredPorts.Count == 0)
@@ -627,7 +627,7 @@ public class ForwardRuntimeManager : IDisposable
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (requiredPorts.All(port => !_portListeningProbe(port)))
+            if (requiredPorts.All(port => !probe(port)))
                 return;
 
             Thread.Sleep(100);

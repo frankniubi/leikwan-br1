@@ -187,7 +187,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!leaseDelivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
             phase = "wait_listener";
-            var portReady = WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6));
+            var portReady = WaitForPort(forward.ListenPort, _portListeningProbe, TimeSpan.FromSeconds(6));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
@@ -323,16 +323,16 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         return _socketExists(socketPath);
     }
 
-    private bool WaitForPort(int port, TimeSpan timeout)
+    private bool WaitForPort(int port, Func<int, bool> probe, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (_portListeningProbe(port))
+            if (probe(port))
                 return true;
             Thread.Sleep(25);
         }
-        return _portListeningProbe(port);
+        return probe(port);
     }
 
     private static void DeletePrivateDirectory(string directory, string allowedRoot, string requiredPrefix)
