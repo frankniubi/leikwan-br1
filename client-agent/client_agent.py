@@ -3583,12 +3583,33 @@ class ClientAgent:
             raise RuntimeError("ultra lease delivery failed")
 
         previous_leases = self.cached_ultra_leases(forward_id) if ultra_runtime else []
+        fresh_leases = ultra_lease_candidates(render_forward) if ultra_runtime else []
         if ultra_runtime and previous_runtime_present and not force_runtime_restart and not previous_leases:
+            # The guard exists to avoid tearing down a *working* runtime when we
+            # have no snapshotted lease to put back. previous_runtime_present is
+            # only a metadata flag though, and it is also set when the runtime
+            # identity is merely *inferred from files left on disk* -- including
+            # a runtime that is already dead (process alive, no lease, stuck in
+            # awaiting_policy, nothing bound). Deferring in that state is a
+            # permanent dead end: the forward keeps its enabled status in the
+            # panel while having no listener, and never recovers.
+            #
+            # So defer only when the runtime is genuinely still serving. If there
+            # is no listener, apply normally -- which delivers the fresh lease
+            # from render_forward and brings the forward back.
+            listener_ok = self.ultra_runtime_is_serving(listen_port, transport)
+            if listener_ok or not fresh_leases:
+                logging.warning(
+                    "forward %s Ultra static runtime change deferred because no previous lease snapshot is available",
+                    forward_id,
+                )
+                return
             logging.warning(
-                "forward %s Ultra static runtime change deferred because no previous lease snapshot is available",
+                "forward %s Ultra static runtime change proceeding without a previous lease snapshot: "
+                "no listener on port %s, so the runtime is not serving and the fresh lease will be applied",
                 forward_id,
+                listen_port,
             )
-            return
 
         applied_before = json.loads(json.dumps(applied, ensure_ascii=False))
         previous_paths = {
@@ -3761,6 +3782,24 @@ class ClientAgent:
             "updated_at": int(time.time()),
         }
         self._save_applied_entry(forward_id, applied_entry)
+
+    def ultra_runtime_is_serving(self, listen_port: int, transport: object) -> bool:
+        """Whether an Ultra forward's runtime currently has a bound listener.
+
+        Tells a runtime that is genuinely serving apart from one that only looks
+        present because stale metadata was inferred from files left on disk. A
+        dead runtime (process alive, no lease, awaiting_policy) has no listener,
+        and deferring a runtime change for it strands the forward forever.
+        """
+        if listen_port <= 0:
+            return False
+        for protocol in self.transport_protocols(transport) or ["tcp"]:
+            try:
+                if self.local_listener_present(listen_port, protocol)[0]:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def cached_ultra_leases(self, forward_id: int) -> list[dict]:
         leases = self.last_ultra_leases.get(int(forward_id), [])
