@@ -409,6 +409,7 @@ public sealed class ConfigPollingService
                 // restarted it over and over (the user-visible "Starting routes" flashing).
                 if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
                 {
+                    RecordRefusedPolicyGeneration(forward, ex);
                     RequestControlPlaneRecovery(forward.ForwardId);
                     Log.Information("queued immediate policy refresh after Ultra control-plane failure for forward {ForwardId}", forward.ForwardId);
                     return;
@@ -512,6 +513,28 @@ public sealed class ConfigPollingService
             forward => RefreshUltraForwardAsync(forward, applied, ct), ct);
     }
 
+    /// <summary>
+    /// A policy generation the panel has already refused must never be reused.
+    /// RestoreLastKnownUltraPolicies() recycles the last policy whenever a pull
+    /// arrives without one, and it recycled the very generation the panel was
+    /// rejecting: the panel derives the generation from the request alone, so it
+    /// kept re-minting the dead value, every lease attempt answered 409
+    /// policy_generation_invalid, and the forward stayed enabled with no lease
+    /// for ever. Both lease paths must remember the refusal - the full pull
+    /// reconciles through ReconcileForwardAsync, and a 304 long poll refreshes
+    /// through RefreshUltraForwardAsync.
+    /// </summary>
+    private void RecordRefusedPolicyGeneration(ForwardConfig forward, Exception exception)
+    {
+        if (exception is MasterApiException refused
+            && refused.StatusCode == 409
+            && (refused.Message ?? string.Empty).Contains("policy_generation_invalid", StringComparison.OrdinalIgnoreCase)
+            && forward.UltraAccess is { } refusedPolicy)
+        {
+            _rejectedPolicyGenerations[forward.ForwardId] = refusedPolicy.PolicyGeneration;
+        }
+    }
+
     private async Task RefreshUltraForwardAsync(
         ForwardConfig forward,
         IReadOnlyDictionary<string, AppliedForwardState> applied,
@@ -550,20 +573,7 @@ public sealed class ConfigPollingService
                 BoundErrorCode(ex.Message));
             if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
             {
-                // A generation the panel has already refused must not be reused.
-                // RestoreLastKnownUltraPolicies() recycles the last policy when a
-                // pull arrives without one, and it recycled the very generation
-                // the panel was rejecting: the client retried the same 409 for
-                // ever and every forward on the service stayed enabled with no
-                // lease. Remember the refusal so the reuse path skips it.
-                if (ex is MasterApiException refused
-                    && refused.StatusCode == 409
-                    && (refused.Message ?? string.Empty).Contains("policy_generation_invalid", StringComparison.OrdinalIgnoreCase)
-                    && forward.UltraAccess is { } refusedPolicy)
-                {
-                    _rejectedPolicyGenerations[forward.ForwardId] = refusedPolicy.PolicyGeneration;
-                }
-
+                RecordRefusedPolicyGeneration(forward, ex);
                 RequestControlPlaneRecovery(forward.ForwardId);
                 Log.Information("queued immediate policy refresh after Ultra control-plane failure for forward {ForwardId}", forward.ForwardId);
             }

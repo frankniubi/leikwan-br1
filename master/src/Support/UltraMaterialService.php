@@ -485,6 +485,72 @@ final class UltraMaterialService
         return $this->candidateReputation->snapshotFingerprint($scopes);
     }
 
+    /**
+     * Revocation bookkeeping for the policy-generation derivation.
+     *
+     * A policy generation is a pure function of the request, so a generation the
+     * lease plane has already refused would be re-minted on every pull for ever:
+     * the forward stays enabled with no lease, the agent retries the same dead
+     * generation, and no client-side change can break the loop. The broker needs
+     * to know which generations are dead and how far the forward's revocation
+     * history has advanced so it can hand out one the lease plane will honour.
+     *
+     * @param array<int, int|string> $forwardIds
+     * @return array{epochs: array<int, int>, revoked: array<string, true>}
+     */
+    public function revocationIndex(array $forwardIds): array
+    {
+        $empty = ['epochs' => [], 'revoked' => []];
+        if ($this->db === null) {
+            return $empty;
+        }
+
+        $ids = [];
+        foreach ($forwardIds as $forwardId) {
+            $id = (int) $forwardId;
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
+        }
+        if ($ids === []) {
+            return $empty;
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach (array_values($ids) as $index => $id) {
+            $placeholders[] = ':forward_' . $index;
+            $params['forward_' . $index] = $id;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT forward_id, policy_generation, MAX(id) AS epoch
+             FROM ultra_client_leases
+             WHERE revoked_at IS NOT NULL AND forward_id IN (' . implode(', ', $placeholders) . ')
+             GROUP BY forward_id, policy_generation',
+            $params
+        );
+
+        $epochs = [];
+        $revoked = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            $epoch = (int) ($row['epoch'] ?? 0);
+            if ($epoch > ($epochs[$forwardId] ?? 0)) {
+                $epochs[$forwardId] = $epoch;
+            }
+            $generation = strtolower(trim((string) ($row['policy_generation'] ?? '')));
+            if ($generation !== '') {
+                $revoked[$forwardId . ':' . $generation] = true;
+            }
+        }
+
+        return ['epochs' => $epochs, 'revoked' => $revoked];
+    }
+
     /** @return array<string, array<string, mixed>> */
     public function loadGrantCache(int $clientId, string $deviceId): array
     {

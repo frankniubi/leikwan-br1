@@ -613,6 +613,75 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_NeverReusesAPolicyGenerationThePanelRefused()
+    {
+        // The panel derives policy_generation from the request alone, so once a
+        // generation is refused it is refused on every retry. Recycling it made
+        // the agent answer the same 409 for ever while the forward stayed enabled
+        // with no lease - an outage that needed a restart to clear.
+        using var tempDir = new TempStateDirectory();
+        var payload = BuildUltraPullResponseJson();
+        using var server = new PullApiServer(payload, ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl,
+            AgentToken = "token",
+            ClientId = 1,
+            StateDir = tempDir.Path,
+        };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        var refusedGeneration = service.LatestForwards.Single().UltraAccess!.PolicyGeneration;
+        Assert.Equal(new string('a', 64), refusedGeneration);
+
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new()
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        // The panel now refuses this generation and the pull arrives without a policy.
+        server.SuccessfulUltraLease = false;
+        server.UltraLeaseStatus = 409;
+        server.UltraLeaseErrorCode = "policy_generation_invalid";
+        var missingPolicy = JsonNode.Parse(payload)!.AsObject();
+        missingPolicy["forwards"]![0]!.AsObject().Remove("ultra_access");
+        server.SetPayload(missingPolicy.ToJsonString());
+
+        await service.SyncOnceAsync();
+
+        // Precondition: the last known policy was reused for this round - that is
+        // what made the refusal observable at all - and the lease endpoint was
+        // really asked, so the refusal was recorded by the failure path.
+        Assert.NotNull(service.LatestForwards.Single().UltraAccess);
+        Assert.Contains(42, server.UltraLeaseRequestForwardIds);
+
+        // The panel is healthy again but still publishes no policy for this
+        // forward. The refused generation must not come back: replaying it would
+        // re-enter the same 409 loop for ever.
+        server.SuccessfulUltraLease = true;
+        server.UltraLeaseStatus = 200;
+        await service.SyncOnceAsync();
+
+        Assert.Null(service.LatestForwards.Single().UltraAccess);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PreservesRunningUltraWhenLeaseEndpointHasTransientServerError()
     {
         using var tempDir = new TempStateDirectory();

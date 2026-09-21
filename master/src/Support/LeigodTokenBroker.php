@@ -47,6 +47,9 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         }
         $now = $this->now();
         $cached = $this->materials->loadGrantCache($clientId, $deviceId);
+        // One query for the whole batch: which generations the lease plane has
+        // already refused, and how far each forward's revocation history has run.
+        $revocations = $this->materials->revocationIndex(array_keys($requested));
         $result = [];
         foreach ($requested as $forwardId => $request) {
             $grant = $cached[$forwardId] ?? null;
@@ -57,6 +60,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
                 $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
                 if ($this->grantUsable($grant, $now)
+                    && !isset($revocations['revoked'][((int) $forwardId) . ':' . strtolower(trim((string) ($grant['policy_generation'] ?? '')))])
                     && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
                     && (int) ($grant['quota_remaining_bytes'] ?? 0) > 0
                     && $currentQuota >= (int) ($grant['quota_remaining_bytes'] ?? 0)
@@ -69,7 +73,15 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             $serviceExpiresAt = $this->parseServiceExpiry((string) ($request['service_expire_at'] ?? ''));
             $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
             $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
-            $policyGeneration = $this->policyGeneration($request, (string) $snapshot['fingerprint'], $quotaBytes);
+            $policyGeneration = $this->policyGeneration(
+                $request,
+                (string) $snapshot['fingerprint'],
+                $quotaBytes,
+                [
+                    'epoch' => (int) ($revocations['epochs'][(int) $forwardId] ?? 0),
+                    'revoked' => $revocations['revoked'],
+                ]
+            );
             if ($this->grantUsable($grant, $now)
                 && hash_equals($policyGeneration, (string) ($grant['policy_generation'] ?? ''))
                 && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now
@@ -488,9 +500,16 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         return min(UltraMode::MAX_QUOTA_LEASE_BYTES, $value);
     }
 
-    /** @param array<string, mixed> $request */
-    private function policyGeneration(array $request, string $materialFingerprint, int $quotaBytes): string
-    {
+    /**
+     * @param array<string, mixed> $request
+     * @param array{epoch?: int, revoked?: array<string, true>} $revocation
+     */
+    private function policyGeneration(
+        array $request,
+        string $materialFingerprint,
+        int $quotaBytes,
+        array $revocation = []
+    ): string {
         $parts = [
             (string) ($request['forward_id'] ?? 0),
             'active',
@@ -508,7 +527,32 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         if ($reputationFingerprint !== '') {
             $parts[] = $reputationFingerprint;
         }
-        return hash('sha256', implode("\n", $parts));
+
+        $generation = hash('sha256', implode("\n", $parts));
+        $epoch = (int) ($revocation['epoch'] ?? 0);
+        $revoked = $revocation['revoked'] ?? [];
+        if ($epoch <= 0 || $revoked === []) {
+            // No revocation history for this forward: the plain hash is the
+            // generation every client already holds, so nothing rotates.
+            return $generation;
+        }
+
+        // A revoked generation must never be handed out again, and this hash is
+        // a pure function of the request, so it would be re-minted on every pull
+        // while the lease plane kept refusing it - an enabled forward with no
+        // lease and no way back. Fold the forward's revocation epoch in so the
+        // client always receives a generation the lease plane will honour. The
+        // epoch is the highest revoked row id, so every further revocation
+        // raises it again and can never reproduce an earlier value.
+        $forwardKey = (int) ($request['forward_id'] ?? 0);
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            if (!isset($revoked[$forwardKey . ':' . strtolower($generation)])) {
+                break;
+            }
+            $generation = hash('sha256', implode("\n", [...$parts, 'revocation-epoch:' . $epoch . ':' . $attempt]));
+        }
+
+        return $generation;
     }
 
     private function parseTimestamp(string $value): ?int
