@@ -6,6 +6,12 @@
 /cantons.txt
 /shanghais.txt
 /infoandcredentials.txt
+# These two were documented as gitignored but no rule ever existed for them, so
+# "git add -A" at the repo root would have committed five sidecar host passwords
+# and the panel test credentials. /tmp/ is ignored, so the same files under
+# tmp/ were already safe; only the repo-root copies were exposed.
+/uot-sidecars.txt
+/test-env.txt
 *.env.local
 .env
 /tmp-artifact-config.env
