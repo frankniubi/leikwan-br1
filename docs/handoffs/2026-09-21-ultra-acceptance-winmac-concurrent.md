@@ -125,10 +125,60 @@ helper. Rollback: `/Users/leikwan/backups/winmac-9b484db9-20260920-195053/`.
 files were committed and so were inert — gitignore never applies to already-tracked files.
 Deleted from disk: the 343 MB release zip and four 157–202 MB hang dumps (1.08 GB).
 
+## 7b. RESOLVED — the `wait_listener` root cause and its fix (commit `88644489`)
+
+The cause was **not** in the runtime and **not** the lease limit. It is one line of
+`LeikwanBridge.Core/Helpers/NetworkProbe.cs`:
+
+```csharp
+public static bool IsPortListening(int port)   // was:
+{
+    using var client = new TcpClient();
+    client.Connect("127.0.0.1", port);   // TCP only
+    return true;
+}
+```
+
+`tools/ultra-client` opens its TCP listener **only when the transport includes "tcp"**
+(`main.go`: `if !config.NativeSocks5 && (transport == "udp" || transport == "tcp+udp")`). So for
+`transport=udp`:
+
+| transport | sockets bound | TCP connect | old probe |
+|---|---|---|---|
+| `tcp` | TCP | succeeds | **pass** |
+| `udp` | UDP only | always fails | **fail forever** |
+| `tcp+udp` | TCP + UDP | succeeds | **pass** |
+
+A `transport=udp` forward therefore never passed `wait_listener`, the agent killed a healthy
+runtime after the 6 s timeout (`ultra_listener_not_ready`) and restarted it every ~40 s — 25
+times in the 600 s run. Each restart destroyed the bound UDP socket, so incoming datagrams went
+unanswered: the 95.99% loss. The lease was delivered successfully on every single cycle, which
+is why the lease-limit theory was wrong.
+
+This is a **shared** .NET defect (both `MacUltraRuntimeHost` and `WindowsUltraRuntimeHost` call
+the same probe), but the Linux half of the acceptance run was clean because Linux runs the
+**Python** `client-agent.py`, whose `local_listener_present` already uses `ss -lun` for UDP. That
+is the whole reason Linux passed and macOS failed on the same build.
+
+**Fix:** `IsPortListening` now reports a listener on either protocol the runtime serves. A UDP
+`connect()` proves nothing (connectionless, always succeeds), so the UDP half reads the kernel's
+bound-endpoint table via `IPGlobalProperties.GetActiveUdpListeners()`. Both .NET hosts inherit
+the fix through the shared probe, so neither needed a change.
+
+**Regression coverage:** `NetworkProbeUdpListenerTests` binds a UDP-only socket and asserts it
+reads as listening, plus unbound and out-of-range cases. Core.Tests 610/610, Mac.Tests 227/227,
+solution builds with 0 errors.
+
+**Also relevant to acceptance:** the forwards should use `transport=tcp+udp`. That binds both
+sockets, so a TCP probe succeeds and the UDP half keeps flowing. `transport=udp` exercises the
+edge the fix above repairs, but `tcp+udp` is what the acceptance run should use.
+
+Still unverified: the fix is committed but **not yet deployed to the macOS test agent**, so the
+96% number above is from the pre-fix binary.
+
 ## 8. Open items
 
-1. **Fix macOS `wait_listener` for the UDP/external-UoT forward** — top priority; blocks the
-   macOS half of the acceptance criterion.
+1. ~~Fix macOS `wait_listener`~~ — done in `88644489`; still needs deploy + re-measure.
 2. Investigate `process_group_create_failed errno=13` on macOS spawn.
 3. Add the new runtime fingerprint(s) to `ULTRA_RUNTIME_FINGERPRINTS` before any rollout.
 4. Windows traffic acceptance needs an elevated operator.
