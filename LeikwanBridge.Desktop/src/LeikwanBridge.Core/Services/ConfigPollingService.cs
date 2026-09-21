@@ -33,6 +33,13 @@ public sealed class ConfigPollingService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _ultraRecoveries = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _targetedUltraRefreshes = new();
     private readonly object _recoveryGate = new();
+
+    /// <summary>
+    /// Policy generations the panel has answered with policy_generation_invalid.
+    /// A refused generation must never be handed back to the runtime by the
+    /// last-known-policy fallback, or the refusal repeats for ever.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _rejectedPolicyGenerations = new();
     private ClientMeta? _latestClient;
     private NativeOutboundCapability? _latestNativeOutbound;
     private DateTimeOffset _lastRecoveryTriggerAtUtc = DateTimeOffset.MinValue;
@@ -543,6 +550,20 @@ public sealed class ConfigPollingService
                 BoundErrorCode(ex.Message));
             if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
             {
+                // A generation the panel has already refused must not be reused.
+                // RestoreLastKnownUltraPolicies() recycles the last policy when a
+                // pull arrives without one, and it recycled the very generation
+                // the panel was rejecting: the client retried the same 409 for
+                // ever and every forward on the service stayed enabled with no
+                // lease. Remember the refusal so the reuse path skips it.
+                if (ex is MasterApiException refused
+                    && refused.StatusCode == 409
+                    && (refused.Message ?? string.Empty).Contains("policy_generation_invalid", StringComparison.OrdinalIgnoreCase)
+                    && forward.UltraAccess is { } refusedPolicy)
+                {
+                    _rejectedPolicyGenerations[forward.ForwardId] = refusedPolicy.PolicyGeneration;
+                }
+
                 RequestControlPlaneRecovery(forward.ForwardId);
                 Log.Information("queued immediate policy refresh after Ultra control-plane failure for forward {ForwardId}", forward.ForwardId);
             }
@@ -568,7 +589,10 @@ public sealed class ConfigPollingService
         {
             var renewal = LeaseRenewalDeadline(effectiveForward);
             if (_runtimeManager.RefreshUltraLease(effectiveForward))
+            {
                 _deliveredLeaseRenewals[forward.ForwardId] = renewal;
+                _rejectedPolicyGenerations.TryRemove(forward.ForwardId, out _);
+            }
             else if (!TryPreserveRunningUltra(forward.ForwardId, true, isRunning, "lease delivery failed"))
                 _runtimeManager.StopForwardForPolicy(forward.ForwardId);
             return;
@@ -734,6 +758,13 @@ public sealed class ConfigPollingService
                 || !string.Equals(previousPolicy.Transport, forward.Transport, StringComparison.OrdinalIgnoreCase)
                 || previousPolicy.GetValidationFailure(forward, now) is not null)
                 continue;
+
+            // Never resurrect a generation the panel has already refused.
+            if (_rejectedPolicyGenerations.TryGetValue(forward.ForwardId, out var refusedGeneration)
+                && string.Equals(refusedGeneration, previousPolicy.PolicyGeneration, StringComparison.Ordinal))
+            {
+                continue;
+            }
 
             forward.UltraAccess = previousPolicy;
             QueueConfigRefreshSoon(forward.ForwardId);
