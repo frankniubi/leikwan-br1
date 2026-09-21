@@ -6,13 +6,15 @@
 //   tmp/lk_stream2.py  -> TCP throughput continuity (1s windows, token bucket)
 //   tmp/lk_uot.py      -> UDP rate/loss (1200B payloads, raw, no SS framing)
 //
-// TCP is SEND-ONLY on purpose. The target replies only when a 64 KiB read
-// STARTS with LKT1, so a client that reads partial replies desynchronises and
-// sees an empty_reply storm; throughput needs no reply.
+// The target answers every chunk that STARTS with LKT1. A 1400-byte frame does,
+// because recv(65536) returns whatever has arrived - so the earlier "send only,
+// never read" assumption was wrong and replies piled up unread until TCP flow
+// control throttled the whole path. The TCP workers now drain their socket.
 package main
 
 import (
 	"encoding/binary"
+	"sync/atomic"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -41,6 +43,7 @@ type workerResult struct {
 	sent    int64
 	bytes   int64
 	acked   int64
+	read    int64
 	errs    map[string]int64
 }
 
@@ -184,10 +187,11 @@ func main() {
 	if len(idle) > 40 {
 		idle = idle[:40]
 	}
-	var tcpBytes int64
+	var tcpBytes, tcpReplies int64
 	errs := map[string]int64{}
 	for _, r := range tcpRes {
 		tcpBytes += r.bytes
+		tcpReplies += r.read
 		for k, v := range r.errs {
 			errs[k] += v
 		}
@@ -216,6 +220,7 @@ func main() {
 		"tcp_active_seconds":     math.Round(tcpElapsed*100)/100,
 		"tcp_aggregate_mbps":     math.Round(float64(tcpBytes)*8/tcpElapsed/1e6*1000) / 1000,
 		"tcp_bytes_total":        tcpBytes,
+		"tcp_reply_bytes":        tcpReplies,
 		"windows_total":          n,
 		"windows_idle":           idleCount,
 		"idle_window_indices":    idle,
@@ -262,6 +267,42 @@ func tcpWorker(idx int, addr *net.TCPAddr, stopAt time.Time, windowSec, rateBps,
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}
+	// Drain the responder's replies. The target answers EVERY chunk that starts
+	// with LKT1, and a 1400-byte frame does, because recv(65536) returns whatever
+	// has arrived. Not reading let roughly 0.5% of the offered rate accumulate
+	// unread in the receive buffer until TCP flow control pushed back through the
+	// entire path: throughput collapsed, the "path capacity" being measured was
+	// really the reply backlog filling, and the stream was eventually reset.
+	var replyBytes int64
+	readerStop := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		buf := make([]byte, 65536)
+		for {
+			select {
+			case <-readerStop:
+				return
+			default:
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			n, err := conn.Read(buf)
+			if n > 0 {
+				atomic.AddInt64(&replyBytes, int64(n))
+			}
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(readerStop)
+		<-readerDone
+	}()
+
 	frame := make([]byte, tcpFrame)
 	copy(frame, magic)
 	rnd := rand.New(rand.NewSource(int64(idx)*7919 + time.Now().UnixNano()))
@@ -323,6 +364,7 @@ func tcpWorker(idx int, addr *net.TCPAddr, stopAt time.Time, windowSec, rateBps,
 		})
 	}
 	r.bytes = r.sent * tcpFrame
+	r.read = atomic.LoadInt64(&replyBytes)
 	return r
 }
 
