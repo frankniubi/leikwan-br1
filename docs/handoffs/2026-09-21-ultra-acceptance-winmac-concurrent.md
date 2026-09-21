@@ -176,9 +176,61 @@ edge the fix above repairs, but `tcp+udp` is what the acceptance run should use.
 Still unverified: the fix is committed but **not yet deployed to the macOS test agent**, so the
 96% number above is from the pre-fix binary.
 
+## 7c. RE-MEASURED with `transport=tcp+udp` — UDP 96% → 0.0% on both platforms
+
+Forwards 201/202 were re-pointed from `udp`/`tcp` to **`tcp+udp`**, matching the production
+forwards 170/171/180 which are all `tcp+udp`. This is the right acceptance shape: the runtime
+then binds **both** sockets, so a TCP probe succeeds *and* the UDP half keeps flowing.
+
+With `transport=udp` the runtime binds UDP only, so **no TCP listener exists at all** — that is
+exactly why the old TCP-connect probe could never pass. Same run, same rule, same target:
+
+| macOS forward 201, 600 s | `transport=udp` (before) | `transport=tcp+udp` (after) |
+|---|---|---|
+| UDP sent / acked | 1,215,040 / 48,689 | **1,230,143 / 1,230,143** |
+| UDP loss | **95.9928%** | **0.0%** |
+| `wait_listener` failures | 25 in-window | **0** (last 12:15:20, window began 12:20:13) |
+
+Process continuity is direct evidence the restart loop is gone: PIDs 11069/11082 started
+`12:19:30` and were still alive `16m54s` later — one process each, spanning the entire window.
+`ultra listener ready=true` replaced the old `ready=false`.
+
+### Full concurrent 600 s result (both platforms, both protocols)
+
+| host | UDP | TCP |
+|---|---|---|
+| Linux `2026.09.21.1.localcandidate` | 1,207,676 / 1,207,676 — **0.0%**, 19.254 Mbps | 25,123 ok / **301 fail (1.1839%)** |
+| macOS `2026.09.21.1.9b484db9` | 1,230,143 / 1,230,143 — **0.0%**, 19.613 Mbps | 44,021 ok / 62 fail (**0.1406%**) |
+
+Both platforms ran UDP and TCP concurrently. `queue_drop`/`queue_timeout`/`queue_blocked`/
+`socket_receive_drop` all 0 on Linux; `leikwan-client-agent NRestarts=0`; both `state=ready`.
+Mac status: `201 udp_transport=external_uot`, `202 udp_transport=external_uot`.
+
+**UDP now meets the criterion on both platforms. TCP does not under concurrent load.**
+
+### The remaining TCP gap is sidecar contention, not a code regression
+
+All 301 Linux and all 62 Mac failures are `empty_reply` — the connection is accepted and the
+request written, then the peer closes without replying. This is **load-dependent**, proven by an
+isolated control run:
+
+- Linux TCP-only, 120 s, **no competing UDP**: `tcp_ok 7526 / tcp_fail 0` — **0.0%**
+- Linux TCP with UDP running concurrently: **1.1839%**
+
+Both hosts target the **same** sidecar (`70.36.96.183`), so the concurrent run pushes ~40 Mbps of
+UDP plus the TCP request stream at one host. Note that the earlier "Linux TCP 0 failures" result
+was measured while Linux ran UDP on 60501 and **TCP was on the Mac** — i.e. the load split across
+two hosts. Moving to the concurrent both-platform shape is what surfaced this. It is a shared
+sidecar-capacity limit, not something `tcp+udp` broke.
+
+Also observed: `udp_transport` reads `null` in the *Linux* runtime status while the Mac reads
+`external_uot`. Both delivered 0.0% UDP loss, so the field is a reporting inconsistency in the
+status writer, not a transport regression — worth a follow-up.
+
 ## 8. Open items
 
-1. ~~Fix macOS `wait_listener`~~ — done in `88644489`; still needs deploy + re-measure.
+1. ~~Fix macOS `wait_listener`~~ — done in `88644489`; the `tcp+udp` change above already
+   removes the trigger in practice. Deploying the fix makes `transport=udp` safe as well.
 2. Investigate `process_group_create_failed errno=13` on macOS spawn.
 3. Add the new runtime fingerprint(s) to `ULTRA_RUNTIME_FINGERPRINTS` before any rollout.
 4. Windows traffic acceptance needs an elevated operator.
