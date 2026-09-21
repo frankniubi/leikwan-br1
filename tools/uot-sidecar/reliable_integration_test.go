@@ -20,7 +20,8 @@ func TestReliableConcurrentAnnouncePreservesOneSession(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			s, _, err := server.registry.announceMode(sid, server.config.forwards[170], echo.address(), 1200, reliableDatagramMode)
+			snapshot := server.config.snapshot()
+			s, _, err := server.registry.announceMode(snapshot, sid, snapshot.forwards[170], echo.address(), 1200, reliableDatagramMode, true)
 			if err != nil {
 				t.Errorf("announce: %v", err)
 			}
@@ -48,7 +49,8 @@ func TestReliablePendingReattachIsSuperseded(t *testing.T) {
 	echo := startEchoServer(t)
 	server, address := fixtureServer(t, echo, func(c *sidecarConfig) { c.sessionGraceSeconds = 10 })
 	sid := randomSession(t)
-	s, _, err := server.registry.announceMode(sid, server.config.forwards[170], echo.address(), 1200, reliableDatagramMode)
+	snapshot := server.config.snapshot()
+	s, _, err := server.registry.announceMode(snapshot, sid, snapshot.forwards[170], echo.address(), 1200, reliableDatagramMode, true)
 	if err != nil {
 		t.Fatal(err)
 	}
