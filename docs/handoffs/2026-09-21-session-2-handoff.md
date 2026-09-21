@@ -1,3 +1,5 @@
+⚠ **本文该节的结论已被推翻**：见 `2026-09-21-CORRECTION-windows-capacity-claim-was-wrong.md`
+
 # 会话入口（2026-09-21 第二轮）
 
 上一轮入口是 `2026-09-21-SESSION-FINAL-HANDOFF.md`（第 6 节 "STILL OPEN" 以本文为准更新）。

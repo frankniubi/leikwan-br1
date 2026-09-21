@@ -1,3 +1,5 @@
+⚠ **本文该节的结论已被推翻**：见 `2026-09-21-CORRECTION-windows-capacity-claim-was-wrong.md`
+
 # 三平台验收结果与 Windows 监督级联缺陷
 
 日期：2026-09-21。判定依据：用户给出的验收指标 **"TCP+UDP 测试 20Mbps 10min，无中断无断流算成功"**。
