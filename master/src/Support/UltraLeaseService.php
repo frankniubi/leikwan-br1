@@ -316,6 +316,36 @@ final class UltraLeaseService
         return ['ok' => true, 'revoked' => $count];
     }
 
+    /**
+     * Retire every lease for one forward.
+     *
+     * Used when a forward's lease scope changes (target, transport or listen
+     * port): the policy_generation covers all three, so every lease already
+     * issued for the forward describes a scope the panel no longer honours.
+     * Revoking them is a fail-closed bookkeeping step - issueLease() already
+     * refuses the old generation, and this makes sure a stale lease can never be
+     * replayed back into a valid one.
+     *
+     * @return int number of leases newly revoked
+     */
+    public function revokeForwardLeases(int $forwardId): int
+    {
+        if ($forwardId <= 0 || $this->db === null) {
+            return 0;
+        }
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        return $this->db->execute(
+            'UPDATE ultra_client_leases
+             SET revoked_at = :revoked_at, updated_at = :updated_at
+             WHERE forward_id = :forward_id AND revoked_at IS NULL',
+            [
+                'forward_id' => $forwardId,
+                'revoked_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+    }
+
     public function revokeDevice(int $clientId, string $deviceId): int
     {
         $deviceId = trim($deviceId);

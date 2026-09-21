@@ -1816,12 +1816,42 @@ final class TenantController extends BaseController
         $usageMap = $this->provisioning->forwardCycleUsageMap($serviceId, $cycleStart);
         $includedBytes = max(0, (int) (($summary['billing']['included_bytes'] ?? 0) ?: 0));
         $csrf = $this->escape(SessionAuth::csrfToken());
+        // Regression sentinel: awaiting_policy_is_a_health_failure
+        // "enabled" is only a DB flag. An Ultra forward is provisioned by a
+        // lease, so an enabled Ultra forward that holds no live lease - or whose
+        // runtime reports awaiting_policy/degraded - was rendering below as
+        // running while it carried no traffic at all. Resolve its real health
+        // before the rows are built.
+        $ultraHealth = [];
+        $ultraForwardIds = [];
+        foreach ($forwardRows as $forward) {
+            if ((int) ($forward['enabled'] ?? 0) === 1
+                && \Leikwan\Master\Support\UltraMode::isBackendMode($forward['backend_mode'] ?? '')) {
+                $ultraForwardIds[] = (int) ($forward['id'] ?? 0);
+            }
+        }
+        if ($ultraForwardIds !== []) {
+            try {
+                $ultraHealth = (new \Leikwan\Master\Support\UltraClientStatusService($this->config, $this->db))
+                    ->runtimeHealthForForwards($ultraForwardIds);
+            } catch (\Throwable) {
+                $ultraHealth = [];
+            }
+        }
         $rows = '';
         foreach ($forwardRows as $forward) {
             $isRunning = (int) ($forward['enabled'] ?? 0) === 1;
-            $statusBadge = $isRunning
-                ? '<span class="badge success">运行</span>'
-                : '<span class="badge info">已暂停</span>';
+            $forwardHealth = $ultraHealth[(int) ($forward['id'] ?? 0)] ?? null;
+            $healthFailed = is_array($forwardHealth) && ($forwardHealth['unhealthy'] ?? false) === true;
+            $healthReason = $healthFailed ? trim((string) ($forwardHealth['health_reason'] ?? '')) : '';
+            $statusBadge = !$isRunning
+                ? '<span class="badge info">已暂停</span>'
+                : ($healthFailed
+                    ? '<span class="badge danger">已启用但未运行</span>'
+                    : '<span class="badge success">运行</span>');
+            if ($healthFailed) {
+                $statusBadge .= '<div class="muted">' . $this->escape($healthReason !== '' ? $healthReason : 'unhealthy') . '</div>';
+            }
 
             $usedBytes = (int) ($usageMap[(int) $forward['id']] ?? 0);
             $usedLabel = $this->formatTrafficBytes($usedBytes);
@@ -1842,9 +1872,13 @@ final class TenantController extends BaseController
                     . $this->escape((string) ($endpoint['node_name'] ?? $endpoint['node'] ?? 'Slave endpoint')) . '</div>';
             }
             if ($endpointHtml === '') {
-                $endpointHtml = $isRunning
-                    ? '<div class="muted">No endpoint assigned yet</div>'
-                    : '<div class="muted">Paused — endpoints released</div>';
+                if (!$isRunning) {
+                    $endpointHtml = '<div class="muted">Paused — endpoints released</div>';
+                } elseif ($healthFailed) {
+                    $endpointHtml = '<div class="muted">未运行 · 无有效 Ultra 租约，尚未建立监听</div>';
+                } else {
+                    $endpointHtml = '<div class="muted">No endpoint assigned yet</div>';
+                }
             } else {
                 $endpointHtml = '<div class="muted">Total: ' . count($forward['endpoints']) . ' | Active: ' . $activeEndpointCount . '</div>' . $endpointHtml;
             }

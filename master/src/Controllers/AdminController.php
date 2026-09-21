@@ -3218,7 +3218,18 @@ final class AdminController extends BaseController
                 $fingerprint = trim((string) ($session['runtime_fingerprint'] ?? ''));
                 $runtimeCell = '<span class="badge ' . $attestationBadge . '">' . $this->escape($attestation) . '</span>'
                     . ($fingerprint !== '' ? '<br><span class="muted">' . $this->escape(substr($fingerprint, 0, 16)) . '</span>' : '');
+                // Regression sentinel: awaiting_policy_is_a_health_failure
+                // "Online" above is only heartbeat recency. An enabled Ultra
+                // forward whose runtime reports awaiting_policy (or any other
+                // error) has no lease and no listener, so it must not render as
+                // a healthy row. The ingested error_code used to be dropped here.
+                $unhealthy = (bool) ($session['unhealthy'] ?? false);
+                $healthReason = trim((string) ($session['health_reason'] ?? ''));
+                $healthCell = $unhealthy
+                    ? '<span class="badge danger">' . $this->escape($healthReason !== '' ? $healthReason : 'unhealthy') . '</span>'
+                    : '<span class="badge success">serving</span>';
                 $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
+                    . '<td>' . $healthCell . '</td>'
                     . '<td>' . $this->escape($user) . '</td>'
                     . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
                     . '<td>' . $this->escape((string) ($session['client_ip'] ?? '')) . '</td>'
@@ -3231,9 +3242,10 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="11" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="12" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
             }
-            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Health is derived from the ingested Ultra runtime status and the live lease, not from the forward being enabled: an enabled forward with no live lease, or a runtime reporting <code>degraded</code>/<code>awaiting_policy</code>, is a failure even while the session is still heartbeating.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>Health</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'attestation') {
             $mismatches = $statusService->runtimeAttestationMismatches($limit);
             $allowlistSize = count($statusService->runtimeFingerprintAllowlist());

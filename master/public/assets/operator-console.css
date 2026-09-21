@@ -712,6 +712,13 @@ dialog{max-width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 32px);bor
 .tenant-client-install__platform>strong{display:block;font-size:14px}
 .tenant-client-install__command{margin:10px 0 0;padding:10px;border:0;border-radius:4px;background:#202a33;color:#d9f0ff;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 .tenant-client-install__platform .actions{margin-top:10px}
+.tenant-client-install__platform details{margin-top:10px;padding:0;background:transparent;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.tenant-client-install__platform details[open]{background:rgba(255,255,255,0.96)}
+.tenant-client-install__platform summary{padding:9px 12px;cursor:pointer;font-size:12px;font-weight:700;list-style:none;user-select:none}
+.tenant-client-install__platform summary::-webkit-details-marker{display:none}
+.tenant-client-install__platform details .tenant-client-install__command{margin:0 10px 10px;border-radius:4px}
+.tenant-client-install__platform details .actions{margin:8px 10px 10px}
+.tenant-client-install__platform details .muted{margin:8px 10px 0;font-size:11px;line-height:1.6}
 .tenant-client-install__online{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface);font-size:12px}
 .tenant-client-install__online strong{color:var(--success);font-size:14px;font-variant-numeric:tabular-nums}
 @media (max-width: 700px){

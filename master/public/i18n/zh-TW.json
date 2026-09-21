@@ -828,6 +828,7 @@
     "pending_verification": "pending_verification",
     "plain_tcp_mux": "plain_tcp_mux",
     "self-signed": "self-signed",
+    "serving": "運行中",
     "single": "single",
     "suspended": "suspended",
     "tcp": "tcp",
