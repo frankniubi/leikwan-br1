@@ -562,6 +562,32 @@ public sealed class MasterApiClient : IDisposable
                 return null;
             }
         }
+        var policyExpiresAt = item.TryGetProperty("policy_expires_at", out var policyExpiresAtElement)
+            ? policyExpiresAtElement.GetDateTimeOffset()
+            : default;
+        var policyRenewAfter = item.TryGetProperty("policy_renew_after", out var policyRenewAfterElement)
+            ? policyRenewAfterElement.GetDateTimeOffset()
+            : default;
+        if (policyExpiresAt > policy.ExpiresAt
+            && policyExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(5).AddSeconds(30)
+            && (policyRenewAfter == default || policyRenewAfter < policyExpiresAt))
+        {
+            forward.UltraAccess = new UltraPolicy
+            {
+                ProtocolValue = policy.ProtocolValue,
+                ForwardId = policy.ForwardId,
+                PolicyGeneration = policy.PolicyGeneration,
+                SessionTicket = policy.SessionTicket,
+                IssuedAt = policy.IssuedAt,
+                RenewAfter = policyRenewAfter == default ? policy.RenewAfter : policyRenewAfter,
+                ExpiresAt = policyExpiresAt,
+                ServiceState = policy.ServiceState,
+                Transport = policy.Transport,
+                RateLimitMbps = policy.RateLimitMbps,
+                QuotaRemainingBytes = policy.QuotaRemainingBytes,
+                TargetDigest = policy.TargetDigest,
+            };
+        }
         return new UltraLease
         {
             Protocol = protocol,
@@ -583,6 +609,8 @@ public sealed class MasterApiClient : IDisposable
             User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
             Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
             ExternalUot = externalUot,
+            PolicyExpiresAt = policyExpiresAt,
+            PolicyRenewAfter = policyRenewAfter,
         };
     }
 

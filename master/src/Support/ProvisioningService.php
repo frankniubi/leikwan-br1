@@ -6173,7 +6173,7 @@ final class ProvisioningService
                 }
                 return null;
             });
-        } catch (Throwable $exception) {
+        } catch (\Throwable $exception) {
             $message = strtolower($exception->getMessage());
             if (str_contains($message, 'duplicate') || str_contains($message, 'unique') || str_contains($message, '23000')) {
                 return null;

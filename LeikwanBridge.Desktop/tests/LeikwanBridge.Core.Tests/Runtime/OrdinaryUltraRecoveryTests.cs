@@ -276,6 +276,54 @@ public sealed class OrdinaryUltraRecoveryTests
         Assert.Null(revoked.RuntimeLease);
     }
 
+    [Fact]
+    public void StaleLeaseExpiry_StopsUnverifiedRuntimeAndRequestsFreshPolicy()
+    {
+        using var temp = new TempStateDirectory();
+        using var supervisor = new AlwaysRunningSupervisor();
+        var host = new BlockingHost { Ready = true };
+        var state = new StateManager(temp.Path);
+        using var runtime = new ForwardRuntimeManager(
+            new AgentConfig { StateDir = temp.Path },
+            supervisor,
+            state,
+            portListeningProbe: _ => true,
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward();
+        var policy = forward.UltraAccess!;
+        forward.RuntimeLease!.Dispose();
+        forward.RuntimeLease = new UltraLease
+        {
+            Protocol = UltraPolicy.Protocol,
+            LeaseId = "lease-newer-than-cached-policy",
+            SessionTicket = policy.SessionTicket,
+            ForwardId = forward.ForwardId,
+            PolicyGeneration = policy.PolicyGeneration,
+            TargetDigest = policy.TargetDigest,
+            ExpiresAt = policy.ExpiresAt.AddSeconds(30),
+            Transport = policy.Transport,
+            RateLimitMbps = 20,
+            QuotaRemainingBytes = 1024 * 1024,
+            SelectionRef = new string('r', 43),
+            SelectionTier = UltraLease.SelectionTierPaid,
+            NonceHash = new string('b', 64),
+            ProviderIp = "203.0.113.20",
+            ProviderPort = 5438,
+            User = "line-user"u8.ToArray(),
+            Password = "line-password"u8.ToArray(),
+        };
+        var requests = new List<(int Id, string Reason)>();
+        runtime.UltraRecoveryRequested += (id, reason) => requests.Add((id, reason));
+
+        runtime.ApplyForward(forward, "contract-stale-expiry", "config_sync");
+
+        Assert.Equal([(forward.ForwardId, "stale_policy_or_lease")], requests);
+        Assert.Equal(0, host.Starts);
+        Assert.Equal(1, host.Stops);
+        Assert.False(host.Ready);
+        Assert.Null(forward.RuntimeLease);
+    }
+
     private sealed class FailingStartupHost : IUltraRuntimeHost
     {
         public Dictionary<int, int> Starts { get; } = [];

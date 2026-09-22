@@ -151,6 +151,19 @@ func TestControlDeadlineIncludesProbeWindowAndGrace(t *testing.T) {
 	}
 }
 
+func TestSingleExternalUoTControlDeadlineAllowsVerification(t *testing.T) {
+	config := Config{Transport: "tcp+udp", ConnectTimeoutSecs: 5}
+	config.ExternalUoT.Enabled = true
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
+	if got := controlDeadlineDuration(config); got != want {
+		t.Fatalf("single external-UoT control deadline=%s, want %s; HELLO must have a live context after response grace", got, want)
+	}
+	config.ExternalUoT.Enabled = false
+	if got := controlDeadlineDuration(config); got != 2*time.Second {
+		t.Fatalf("unprobed single lease deadline=%s, want 2s", got)
+	}
+}
+
 func TestHandshakeGreetingOrderForOrdinaryStreamStartsWithLegacy(t *testing.T) {
 	order := handshakeGreetingOrder(ProviderLease{IP: "203.0.113.10", Port: 5438})
 	if len(order) != 2 || !bytes.Equal(order[0], legacyHandshakeGreeting) || !bytes.Equal(order[1], currentHandshakeGreeting) {

@@ -159,7 +159,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             if (!delivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
             phase = "wait_listener";
-            var portReady = _portListeningProbe(forward.ListenPort);
+            var portReady = WaitForPort(forward.ListenPort, _portListeningProbe, TimeSpan.FromSeconds(6));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
@@ -242,6 +242,18 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             if (seen.Add(lease))
                 lease.Dispose();
         }
+    }
+
+    private static bool WaitForPort(int port, Func<int, bool> probe, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (probe(port))
+                return true;
+            Thread.Sleep(25);
+        }
+        return probe(port);
     }
 
     public void Stop(int forwardId)

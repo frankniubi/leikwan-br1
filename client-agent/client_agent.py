@@ -3844,9 +3844,10 @@ class ClientAgent:
             if not 1 <= len(encoded) <= 65536:
                 return False
             frame = struct.pack(">I", len(encoded)) + encoded
-            # Candidate batches allow association setup, a 30-second UDP
-            # window, and response margin; single-lease delivery stays short.
-            timeout = 70.0 if len(wire_leases) > 1 else 3.0
+            # Single external-UoT leases also verify TCP carrier + sidecar
+            # HELLO before ACK. Keep one total verification budget regardless
+            # of candidate count, still capped by the authorization expiry.
+            timeout = 70.0
             expiries = [parse_rfc3339(lease.get("expires_at")) for lease in wire_leases]
             remaining = [expiry - time.time() - 5.0 for expiry in expiries if expiry is not None]
             budget = min([timeout, *remaining]) if remaining else timeout
@@ -3868,7 +3869,7 @@ class ClientAgent:
                     if not socket_path.exists():
                         raise OSError("control socket missing")
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                        connection.settimeout(remaining_timeout())
+                        connection.settimeout(min(3.0, remaining_timeout()))
                         connection.connect(str(socket_path))
                         connection.settimeout(remaining_timeout())
                         connection.sendall(frame)

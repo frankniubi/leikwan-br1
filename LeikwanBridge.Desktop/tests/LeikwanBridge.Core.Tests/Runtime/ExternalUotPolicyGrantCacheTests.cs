@@ -18,17 +18,46 @@ public sealed class ExternalUotPolicyGrantCacheTests
             httpClientFactory: () => http, ownsHttpClient: false);
         var pull = await api.PullConfigsAsync();
         var forward = Assert.Single(pull.Forwards);
+        var originalPolicyExpiry = forward.UltraAccess!.ExpiresAt;
         var unchanged = await api.PullConfigsAsync("revision");
         Assert.True(unchanged.NotModified);
         var leases = await api.ResolveUltraLeasesAsync(forward);
         using var lease = Assert.Single(leases);
         Assert.Equal("reliable_datagram_v1", lease.ExternalUot?.DeliveryMode);
         Assert.Equal("fixture-sidecar-token", Encoding.UTF8.GetString(lease.ExternalUot!.Token));
+        Assert.True(forward.UltraAccess!.ExpiresAt > originalPolicyExpiry);
+        Assert.Equal(lease.PolicyExpiresAt, forward.UltraAccess.ExpiresAt);
+        Assert.Equal(lease.PolicyRenewAfter, forward.UltraAccess.RenewAfter);
+        Assert.True(lease.IsUsable(forward.UltraAccess, forward, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public async Task MismatchedLeaseGenerationCannotExtendCachedPolicyExpiry()
+    {
+        using var handler = new PolicyOnlyGrantHandler(mismatchedLeaseGeneration: true);
+        using var http = new HttpClient(handler);
+        using var api = new MasterApiClient("https://panel.example.test", "fixture-agent", "fixture-device",
+            httpClientFactory: () => http, ownsHttpClient: false);
+
+        var pull = await api.PullConfigsAsync();
+        var forward = Assert.Single(pull.Forwards);
+        var originalPolicyExpiry = forward.UltraAccess!.ExpiresAt;
+
+        var leases = await api.ResolveUltraLeasesAsync(forward);
+
+        Assert.Empty(leases);
+        Assert.Equal(originalPolicyExpiry, forward.UltraAccess!.ExpiresAt);
     }
 
     private sealed class PolicyOnlyGrantHandler : HttpMessageHandler
     {
+        private readonly bool _mismatchedLeaseGeneration;
         private int _pulls;
+
+        public PolicyOnlyGrantHandler(bool mismatchedLeaseGeneration = false)
+        {
+            _mismatchedLeaseGeneration = mismatchedLeaseGeneration;
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -70,8 +99,10 @@ public sealed class ExternalUotPolicyGrantCacheTests
                     {
                         new
                         {
-                            protocol = UltraPolicy.Protocol, forward_id = 170, policy_generation = generation,
+                            protocol = UltraPolicy.Protocol, forward_id = 170,
+                            policy_generation = _mismatchedLeaseGeneration ? new string('c', 64) : generation,
                             session_ticket = "fixture-ticket", target_digest = digest, transport = "tcp+udp",
+                            policy_expires_at = now.AddMinutes(4.5), policy_renew_after = now.AddMinutes(1),
                             lease_id = "fixture-lease", expires_at = now.AddMinutes(3), quota_remaining_bytes = 1048576, rate_limit_mbps = 0,
                             selection_ref = new string('r', 32), nonce_hash = new string('b', 64),
                             endpoint = new { ip = "203.0.113.20", port = 5438 },

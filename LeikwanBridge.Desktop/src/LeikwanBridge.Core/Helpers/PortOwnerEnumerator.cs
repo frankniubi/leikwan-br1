@@ -73,22 +73,29 @@ public static class PortOwnerEnumerator
         if (ret != ErrorInsufficientBuffer || size <= 0)
             return null;
 
-        var ptr = Marshal.AllocHGlobal(size);
-        try
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            ret = call(ptr, ref size, false, family, tableClass, 0);
-            if (ret != ErrorSuccess)
+            var ptr = Marshal.AllocHGlobal(size);
+            try
+            {
+                ret = call(ptr, ref size, false, family, tableClass, 0);
+                if (ret == ErrorSuccess)
+                    return ptr;
+                if (ret == ErrorInsufficientBuffer && size > 0)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                    continue;
+                }
+                Marshal.FreeHGlobal(ptr);
+                return null;
+            }
+            catch
             {
                 Marshal.FreeHGlobal(ptr);
                 return null;
             }
-            return ptr;
         }
-        catch
-        {
-            Marshal.FreeHGlobal(ptr);
-            return null;
-        }
+        return null;
     }
 
     private static void AddTcpOwners(int port, uint family, List<PortOwner> result)

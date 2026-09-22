@@ -154,6 +154,15 @@ func probeExternalUoTLease(ctx context.Context, lease ProviderLease, config Conf
 				}
 			}
 		}
+		if err == nil {
+			// This is a disposable HELLO verification, never a business
+			// association that will reattach. Release its sidecar slot rather
+			// than filling the registry with grace-period probe sessions.
+			_ = connection.SetWriteDeadline(time.Now().Add(probeTimeout(config)))
+			_ = writeExternalUoTCarrierFrame(connection, externalUoTFrame{
+				msgType: externalUoTClose, session: probeSession, sequence: 1,
+			})
+		}
 	}
 	if err != nil {
 		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
@@ -672,8 +681,25 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 		return association.runReliableCarrier(reader, connection)
 	}
 	errCh := make(chan error, 2)
-	go association.externalUoTWriter(connection, errCh)
-	go association.externalUoTReader(reader, connection, errCh)
+	carrierContext, cancelCarrier := context.WithCancel(association.ctx)
+	workersDone := make(chan struct{}, 2)
+	go func() {
+		defer func() { workersDone <- struct{}{} }()
+		association.externalUoTWriter(carrierContext, connection, errCh)
+	}()
+	go func() {
+		defer func() { workersDone <- struct{}{} }()
+		association.externalUoTReader(reader, connection, errCh)
+	}()
+	defer func() {
+		// A disconnected writer waiting on outbound must not survive and steal
+		// a packet from the next carrier. Close unblocks socket I/O; join both
+		// workers before run() may attach a replacement.
+		cancelCarrier()
+		_ = connection.Close()
+		<-workersDone
+		<-workersDone
+	}()
 	keepalive, _, _, _ := association.tuner.snapshot()
 	ticker := time.NewTicker(keepalive)
 	defer ticker.Stop()
@@ -695,7 +721,7 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	}
 }
 
-func (association *externalUoTAssociation) externalUoTWriter(connection net.Conn, errorsOut chan<- error) {
+func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context, connection net.Conn, errorsOut chan<- error) {
 	var pending []byte
 	var pendingSequence uint64
 	for {
@@ -703,13 +729,17 @@ func (association *externalUoTAssociation) externalUoTWriter(connection net.Conn
 			pending, pendingSequence = association.takeRetry()
 			if pending == nil {
 				select {
-				case <-association.ctx.Done():
+				case <-ctx.Done():
 					return
 				case pending = <-association.outbound:
 					association.budget.release(len(pending))
 					pendingSequence = association.nextSequence()
 				}
 			}
+		}
+		if ctx.Err() != nil {
+			association.preserveRetry(pending, pendingSequence)
+			return
 		}
 		frame := externalUoTFrame{msgType: externalUoTData, session: association.session, sequence: pendingSequence, payload: pending}
 		association.writeMu.Lock()
@@ -821,12 +851,14 @@ func serveExternalUoT(ctx context.Context, config Config, store *PolicyStore, st
 		testHookLocalUDPListening(local)
 	}
 	associations := make(map[string]*externalUoTAssociation)
+	maxAssociations, associationIdle := externalUoTAssociationLimits(config)
 	var associationMu sync.Mutex
 	remove := func(key string, association *externalUoTAssociation) {
 		associationMu.Lock()
 		if associations[key] == association {
 			delete(associations, key)
 		}
+		status.UpdateUDPAssociations(len(associations), 0)
 		associationMu.Unlock()
 	}
 	go func() {
@@ -844,7 +876,7 @@ func serveExternalUoT(ctx context.Context, config Config, store *PolicyStore, st
 		}
 	}()
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -852,12 +884,8 @@ func serveExternalUoT(ctx context.Context, config Config, store *PolicyStore, st
 				return
 			case now := <-ticker.C:
 				associationMu.Lock()
-				for key, association := range associations {
-					if association.idleSince(now) > 10*time.Minute {
-						delete(associations, key)
-						association.close()
-					}
-				}
+				pruneIdleExternalUoTAssociations(associations, now, associationIdle)
+				status.UpdateUDPAssociations(len(associations), 0)
 				associationMu.Unlock()
 			}
 		}
@@ -889,10 +917,20 @@ func serveExternalUoT(ctx context.Context, config Config, store *PolicyStore, st
 			association = nil
 		}
 		if association == nil {
+			if len(associations) >= maxAssociations {
+				pruneIdleExternalUoTAssociations(associations, time.Now(), associationIdle)
+				if len(associations) >= maxAssociations {
+					associationMu.Unlock()
+					status.AddUDPQueueDrop()
+					status.UpdateError("external_uot_association_limit")
+					continue
+				}
+			}
 			clientCopy := *client
 			association, err = newExternalUoTAssociation(ctx, config, store, status, local, &clientCopy, socksUDP)
 			if err == nil {
 				associations[key] = association
+				status.UpdateUDPAssociations(len(associations), 0)
 				go func(key string, current *externalUoTAssociation) {
 					current.run()
 					remove(key, current)

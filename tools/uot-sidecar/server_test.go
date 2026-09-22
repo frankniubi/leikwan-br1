@@ -242,6 +242,59 @@ func TestHelloEchoAndAckBytes(t *testing.T) {
 	}
 }
 
+func TestExplicitCloseReleasesSessionSlotWithoutWaitingForGrace(t *testing.T) {
+	echo := startEchoServer(t)
+	server, address := fixtureServer(t, echo, func(config *sidecarConfig) {
+		config.sessionLimit = 1
+		config.sessionGraceSeconds = 60
+	})
+	for index := 0; index < 8; index++ {
+		id := randomSession(t)
+		id[0] = byte(index)
+		carrier := dialCarrier(t, address, id)
+		carrier.send(t, msgHello, 0, helloPayloadFor(t, "fixture-secret", 170, echo.address(), 1200))
+		if ack := decodeAck(t, carrier.mustRead(t, time.Second).payload); ack["ok"] != true {
+			t.Fatalf("probe %d exhausted the session registry: %v", index, ack)
+		}
+		carrier.send(t, msgClose, 1, nil)
+		deadline := time.Now().Add(time.Second)
+		for {
+			server.registry.mu.Lock()
+			remaining := len(server.registry.sessions)
+			server.registry.mu.Unlock()
+			if remaining == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("explicit CLOSE retained its slot for reconnect grace")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func TestStaleCarrierCloseCannotRemoveReplacementSession(t *testing.T) {
+	echo := startEchoServer(t)
+	server, address := fixtureServer(t, echo, nil)
+	id := randomSession(t)
+	first := dialCarrier(t, address, id)
+	first.send(t, msgHello, 0, helloPayloadFor(t, "fixture-secret", 170, echo.address(), 1200))
+	_ = first.mustRead(t, time.Second)
+	session := server.registry.liveSession(id, 170)
+	oldCarrier := session.currentCarrier()
+	second := dialCarrier(t, address, id)
+	second.send(t, msgHello, 0, helloPayloadFor(t, "fixture-secret", 170, echo.address(), 1200))
+	_ = second.mustRead(t, time.Second)
+	server.registry.closeCarrierSession(session, oldCarrier)
+	if server.registry.liveSession(id, 170) != session || session.isClosed() {
+		t.Fatal("stale carrier removed the replacement")
+	}
+	second.send(t, msgData, 1, []byte("still-alive"))
+	if got := second.mustReadUDPData(t, time.Second); string(got.payload) != "still-alive" {
+		t.Fatal("replacement stopped carrying data")
+	}
+}
+
 func TestRejectionMatrix(t *testing.T) {
 	echo := startEchoServer(t)
 	_, address := fixtureServer(t, echo, nil)

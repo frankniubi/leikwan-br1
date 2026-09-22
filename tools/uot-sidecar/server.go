@@ -305,6 +305,11 @@ func (s *uotSession) touch() {
 
 func (s *uotSession) attach(carrier net.Conn) bool {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = carrier.Close()
+		return false
+	}
 	previous := s.carrier
 	reattached := previous != nil || !s.detachedAt.IsZero()
 	s.carrier = carrier
@@ -377,10 +382,16 @@ func (s *uotSession) close() {
 }
 
 func (s *uotSession) closeSockets() {
+	s.closeSocketsForCarrier(nil)
+}
+
+// A stale carrier must not terminate a newer attachment of this session.
+// nil is reserved for unconditional shutdown/reaping.
+func (s *uotSession) closeSocketsForCarrier(expected net.Conn) bool {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || (expected != nil && s.carrier != expected) {
 		s.mu.Unlock()
-		return
+		return false
 	}
 	s.closed = true
 	s.cancel()
@@ -393,6 +404,7 @@ func (s *uotSession) closeSockets() {
 	if s.udpConn != nil {
 		_ = s.udpConn.Close()
 	}
+	return true
 }
 
 // carrierReader consumes one carrier connection until it ends.
@@ -431,6 +443,7 @@ func (s *uotSession) carrierReader(carrier net.Conn) error {
 		case msgKeepalive:
 			continue
 		case msgClose:
+			s.server.registry.closeCarrierSession(s, carrier)
 			return nil
 		default:
 			return protocolError{reason: "unexpected frame type"}
@@ -503,6 +516,17 @@ type sessionRegistry struct {
 
 func newSessionRegistry(server *sidecarServer) *sessionRegistry {
 	return &sessionRegistry{server: server, sessions: make(map[[sessionIDBytes]byte]*uotSession)}
+}
+
+// CLOSE means the client is finished, not a recoverable carrier outage.
+// Release the slot now; HELLO-only probes otherwise consume the full grace
+// period and can prevent business sessions and lease renewals from starting.
+func (r *sessionRegistry) closeCarrierSession(session *uotSession, carrier net.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sessions[session.id] == session && session.closeSocketsForCarrier(carrier) {
+		delete(r.sessions, session.id)
+	}
 }
 
 // liveSession returns the session established under this id when it is still
@@ -847,6 +871,9 @@ func (s *sidecarServer) handleConnection(carrier net.Conn) {
 		}
 	} else {
 		session.attach(carrier)
+	}
+	if session.currentCarrier() != carrier {
+		return
 	}
 	_ = carrier.SetWriteDeadline(time.Now().Add(readTimeout))
 	if err := writeFrame(carrier, s.acceptAck(snapshot, hello.session, session, reattached), snapshot.maxFrameBytes); err != nil {

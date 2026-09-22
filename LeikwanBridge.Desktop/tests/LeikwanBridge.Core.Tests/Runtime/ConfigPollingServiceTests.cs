@@ -1328,7 +1328,7 @@ public sealed class ConfigPollingServiceTests
     private sealed class RecordingForwardRuntimeManager : ForwardRuntimeManager
     {
         public RecordingForwardRuntimeManager(AgentConfig config, StateManager stateManager, ProcessSupervisor supervisor)
-            : base(config, supervisor, stateManager, _ => true, _ => true)
+            : base(config, supervisor, stateManager, binaryExists: _ => true, portListeningProbe: _ => true)
         {
         }
 

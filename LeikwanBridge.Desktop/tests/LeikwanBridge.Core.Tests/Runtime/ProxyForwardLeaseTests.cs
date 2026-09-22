@@ -183,14 +183,16 @@ public sealed class ProxyForwardLeaseTests
     [Fact]
     public async Task UdpOnlyReadinessRequiresUdpListenerNotTcpListener()
     {
-        using var tcp = new TcpListener(IPAddress.Loopback, 0);
-        tcp.Start();
-        var forward = Forward();
-        forward.ListenPort = ((IPEndPoint)tcp.LocalEndpoint).Port;
-        forward.Transport = "udp";
-        Assert.False(await ProxyForwardLease.IsListenerReadyAsync(forward));
-        using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, forward.ListenPort));
-        Assert.True(await ProxyForwardLease.IsListenerReadyAsync(forward));
+        var (tcp, port) = CreateTcpListenerWithUdpBindablePort();
+        using (tcp)
+        {
+            var forward = Forward();
+            forward.ListenPort = port;
+            forward.Transport = "udp";
+            Assert.False(await ProxyForwardLease.IsListenerReadyAsync(forward));
+            using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+            Assert.True(await ProxyForwardLease.IsListenerReadyAsync(forward));
+        }
     }
 
     [Fact]
@@ -217,6 +219,33 @@ public sealed class ProxyForwardLeaseTests
         Target = "198.51.100.9:443",
         Transport = "tcp",
     };
+
+    private static (TcpListener Tcp, int Port) CreateTcpListenerWithUdpBindablePort()
+    {
+        const int maxAttempts = 32;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var tcp = new TcpListener(IPAddress.Loopback, 0);
+            tcp.Start();
+            var port = ((IPEndPoint)tcp.LocalEndpoint).Port;
+            try
+            {
+                using (new UdpClient(new IPEndPoint(IPAddress.Loopback, port)))
+                {
+                }
+                return (tcp, port);
+            }
+            catch (SocketException exception) when (
+                exception.SocketErrorCode is SocketError.AccessDenied or SocketError.AddressAlreadyInUse)
+            {
+                // Windows may assign an excluded/reserved dynamic TCP port. Retry with
+                // another OS-selected port rather than failing this UDP readiness test.
+                tcp.Stop();
+            }
+        }
+
+        throw new InvalidOperationException($"Could not bind TCP and UDP test listeners after {maxAttempts} attempts.");
+    }
 
     private sealed class WrongOwnerSupervisor : ProcessSupervisor
     {

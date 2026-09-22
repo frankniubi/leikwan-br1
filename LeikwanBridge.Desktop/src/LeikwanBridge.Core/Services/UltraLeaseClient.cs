@@ -201,12 +201,13 @@ public sealed class UltraLeaseClient
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)body.Length);
             body.CopyTo(frame, 4);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            // Candidate batches allow association setup, the 30-second probe,
-            // and response/write margin; single-lease delivery remains short.
-            timeout.CancelAfter(leases.Count > 1 ? BatchTimeout : TimeSpan.FromSeconds(2));
+            // Fail fast if the local pipe is absent. Once connected, even one
+            // lease can require carrier/sidecar verification before the ACK.
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
             await using var pipe = new NamedPipeClientStream(
                 ".", PipeName(forwardId), PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync(timeout.Token);
+            timeout.CancelAfter(BatchTimeout);
             await pipe.WriteAsync(frame, timeout.Token);
             await pipe.FlushAsync(timeout.Token);
             var header = new byte[4];

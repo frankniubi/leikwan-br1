@@ -3,13 +3,89 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"testing"
 	"time"
 )
+
+type probeXORReader struct{ io.Reader }
+
+func (r probeXORReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	for i := 0; i < n; i++ {
+		p[i] ^= 1
+	}
+	return n, err
+}
+
+func TestExternalUoTVerificationClosesDisposableSession(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	config := Config{ForwardID: 42, Target: "127.0.0.1:9999", ProbeTimeoutMillis: 1000}
+	config.ExternalUoT = ExternalUoTConfig{
+		Enabled: true, SidecarTarget: "127.0.0.1:9000",
+		Token: "fixture-token", FramePayloadMax: externalUoTMaxDatagramBytes,
+	}
+	lease := ProviderLease{
+		IP: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port,
+		User: []byte("test-user"), Password: []byte("test-credential"),
+	}
+	handshake, err := buildHandshake(string(lease.User), string(lease.Password), 1, "127.0.0.1", 9000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		conn, e := listener.Accept()
+		if e != nil {
+			done <- e
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		if _, e = io.ReadFull(conn, make([]byte, len(handshake))); e != nil {
+			done <- e
+			return
+		}
+		if _, e = conn.Write([]byte{5, 2, 1, 0, 4, 1, 1, 0, 1, 1, 0x12, 0x34, 0, 0}); e != nil {
+			done <- e
+			return
+		}
+		reader := bufio.NewReader(probeXORReader{conn})
+		hello, e := readExternalUoTFrame(reader)
+		if e != nil {
+			done <- e
+			return
+		}
+		ack, _ := json.Marshal(externalUoTHelloAck{OK: true, Session: "OKN", FramePayloadMax: externalUoTMaxDatagramBytes})
+		if e = writeExternalUoTFrame(conn, externalUoTFrame{
+			msgType: externalUoTMsgHelloAck, session: hello.session, payload: ack,
+		}); e != nil {
+			done <- e
+			return
+		}
+		closed, e := readExternalUoTFrame(reader)
+		if e == nil && (closed.msgType != externalUoTClose || closed.session != hello.session) {
+			e = fmt.Errorf("probe did not close its own session")
+		}
+		done <- e
+	}()
+	result := probeExternalUoTLease(context.Background(), lease, config, Policy{})
+	if result.Err != nil || result.TCPReceived != 1 {
+		t.Fatalf("probe failed: %+v", result)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("probe leaked its disposable session: %v", err)
+	}
+}
 
 func TestExternalUoTFrameRoundTripPreservesLargeDatagram(t *testing.T) {
 	var session [16]byte

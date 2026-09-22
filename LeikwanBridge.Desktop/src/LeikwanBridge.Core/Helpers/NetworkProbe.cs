@@ -1,5 +1,6 @@
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using Serilog;
 
 namespace LeikwanBridge.Core.Helpers;
 
@@ -86,9 +87,15 @@ public static class NetworkProbe
                     return true;
             }
         }
-        catch
+        catch (NetworkInformationException ex)
         {
-            // An unreadable connection table must not claim a listener exists.
+            Log.Warning(ex, "IsTcpPortListening failed for port {Port}", port);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "IsTcpPortListening unexpected error for port {Port}", port);
+            throw;
         }
         return false;
     }
@@ -112,9 +119,15 @@ public static class NetworkProbe
                     return true;
             }
         }
-        catch
+        catch (NetworkInformationException ex)
         {
-            // An unreadable endpoint table must not claim a listener exists.
+            Log.Warning(ex, "IsUdpPortListening failed for port {Port}", port);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "IsUdpPortListening unexpected error for port {Port}", port);
+            throw;
         }
         return false;
     }

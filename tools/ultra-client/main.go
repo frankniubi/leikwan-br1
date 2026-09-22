@@ -70,6 +70,7 @@ type Config struct {
 	UDPKeepaliveIntervalSecs int                 `json:"udp_keepalive_interval_seconds"`
 	UDPQueuePackets          int                 `json:"udp_queue_packets"`
 	UDPMaxAssociations       int                 `json:"udp_max_associations"`
+	UDPAssociationIdleSecs   int                 `json:"udp_association_idle_seconds"`
 	UDPSetupWorkers          int                 `json:"udp_setup_workers"`
 	ConnectTimeoutSecs       int                 `json:"connect_timeout_seconds"`
 	LocationCachePath        string              `json:"location_cache_path"`

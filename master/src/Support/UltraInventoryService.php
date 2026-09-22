@@ -18,13 +18,9 @@ final class UltraInventoryService
     public const ISP_CLASSES = ['telecom', 'unicom', 'mobile', 'generic', 'unknown'];
     public const DISPATCH_CLASSES = ['normal', 'low'];
     /**
-     * Formerly: entries whose relay/provider marker contained one of these were
-     * dispatched last (2026-09-11 Tencent, 2026-09-15 UCloud/优云 provider timeout
-     * review). 2026-09-23: all marks lifted for a full-availability batch test —
-     * every line is dispatched as normal until per-line verification via
-     * 10.10.10.171 re-establishes which relays are actually degraded. The constant
-     * is kept (empty) so inventory normalization stays deterministic; restore
-     * markers only after that verification.
+     * Provider/title labels are not per-line transport-health evidence. Keep this
+     * legacy list empty; low priority must be supplied explicitly by the audited
+     * inventory declaration.
      */
     public const LOW_PRIORITY_PROVIDER_MARKERS = [];
     /**
@@ -133,9 +129,8 @@ final class UltraInventoryService
             'in_line_type' => self::nullableUnsigned($raw['in_line_type'] ?? null),
             'isp' => self::normalizeIsp($raw['isp'] ?? null),
             'provider' => self::cleanText($raw['provider'] ?? '', 64) ?: null,
-            // A source may declare the dispatch priority: a line whose relay association
-            // drops big datagrams is dispatched last, exactly like the Tencent ones. An
-            // unknown/absent declaration falls back to the provider/title rule.
+            // Dispatch class is an explicit per-line inventory declaration. Provider
+            // names are not transport-health evidence; absent/unknown defaults to normal.
             'dispatch_class' => self::dispatchClassWithDeclaration($raw),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
@@ -636,32 +631,17 @@ final class UltraInventoryService
      * stable code so filters and route_class derivation do not depend on the
      * source host's locale.
      */
-    /**
-     * Dispatch priority of a catalog entry. "low" entries are ordered after every
-     * "normal" entry in the client-facing candidate list, so a client only falls
-     * back to them when nothing better is available.
-     *
-     * @param array<string, mixed> $raw
-     */
+    /** @param array<string, mixed> $raw */
     public static function dispatchClass(array $raw): string
     {
-        $haystack = self::lower(self::cleanText($raw['provider'] ?? '', 64) . '|' . self::cleanText($raw['title'] ?? '', 255));
-        foreach (self::LOW_PRIORITY_PROVIDER_MARKERS as $marker) {
-            if ($marker !== '' && str_contains($haystack, self::lower($marker))) {
-                return 'low';
-            }
-        }
-        return 'normal';
+        $declared = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
+        return $declared !== 'unknown' ? $declared : 'normal';
     }
 
     /** @param array<string, mixed> $raw */
     private static function dispatchClassWithDeclaration(array $raw): string
     {
-        // 2026-09-23 batch test: force normal for every line. Both the provider-
-        // marker path and a source-declared "low" are ignored so we can probe
-        // every relay at equal priority and re-establish per-line health via
-        // 10.10.10.171 + material freshness, instead of a blanket label.
-        return 'normal';
+        return self::dispatchClass($raw);
     }
 
     /** Direction of a route from its resolved ingress/destination zones. */

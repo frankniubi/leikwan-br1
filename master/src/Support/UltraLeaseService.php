@@ -267,6 +267,8 @@ final class UltraLeaseService
             'lease_id' => $leaseId,
             'policy_generation' => $policyGeneration,
             'expires_at' => $this->formatTimestamp($leaseExpiresAt),
+            'policy_expires_at' => $this->formatTimestamp($expiresAt),
+            'policy_renew_after' => (string) ($policy['renew_after'] ?? ''),
             'transport' => $policyTransport,
             'rate_limit_mbps' => max(0, min(100000, (int) ($policy['rate_limit_mbps'] ?? 0))),
             'quota_remaining_bytes' => $quotaBytes,
@@ -1059,6 +1061,14 @@ final class UltraLeaseService
             )),
         ];
         if (($lease['purpose'] ?? '') !== UltraMode::NATIVE_OUTBOUND_PURPOSE) {
+            // The lease endpoint can renew a policy under the same generation.
+            // Preserve its authenticated bounds through the final wire scrub;
+            // otherwise clients compare the new lease to the old pull expiry.
+            foreach (['policy_expires_at', 'policy_renew_after'] as $key) {
+                if (trim((string) ($lease[$key] ?? '')) !== '') {
+                    $common[$key] = (string) $lease[$key];
+                }
+            }
             return $common;
         }
         return [

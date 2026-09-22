@@ -457,7 +457,7 @@ public sealed class HealthCheckServiceTests
     private sealed class ForceRecordingForwardRuntimeManager : ForwardRuntimeManager
     {
         public ForceRecordingForwardRuntimeManager(StateManager stateManager, ProcessSupervisor supervisor)
-            : base(new AgentConfig(), supervisor, stateManager, _ => true, _ => true)
+            : base(new AgentConfig(), supervisor, stateManager, binaryExists: _ => true, portListeningProbe: _ => true)
         {
         }
 

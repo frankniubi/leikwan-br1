@@ -6,7 +6,7 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 internal sealed class TestForwardRuntimeManager : ForwardRuntimeManager
 {
     public TestForwardRuntimeManager(StateManager stateManager, ProcessSupervisor supervisor)
-        : base(new AgentConfig(), supervisor, stateManager, _ => true, _ => true)
+        : base(new AgentConfig(), supervisor, stateManager, binaryExists: _ => true, portListeningProbe: _ => true)
     {
     }
 

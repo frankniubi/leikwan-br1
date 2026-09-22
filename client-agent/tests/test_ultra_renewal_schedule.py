@@ -100,6 +100,43 @@ class UltraRenewalScheduleTests(unittest.TestCase):
         self.assertLessEqual(clock[0] - 100, 70.01)
         self.assertEqual(1, len(waits), "a full adapter deadline must not be repeated three times")
 
+    def test_single_lease_waits_for_verified_ack(self):
+        agent = object.__new__(MODULE.ClientAgent)
+        agent.remember_ultra_leases = mock.Mock()
+        clock = [100.0]
+        body = b'{"ok":true,"forward_id":42,"policy_generation":"' + b"a" * 64 + b'"}'
+
+        class DelayedAckSocket:
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def settimeout(self, value): self.timeout = value
+            def connect(self, _path): pass
+            def sendall(self, _data): self.header = True
+            def recv(self, _count):
+                if self.header:
+                    if self.timeout < 3.2:
+                        clock[0] += self.timeout
+                        raise TimeoutError("verification still running")
+                    clock[0] += 3.2
+                    self.header = False
+                    return MODULE.struct.pack(">I", len(body))
+                return body
+
+        lease = {
+            "policy_generation": "a" * 64, "lease_id": "single",
+            "expires_at": MODULE.format_rfc3339(190),
+            "endpoint": {"ip": "192.0.2.1", "port": 5438},
+            "credential": {"user": "synthetic", "password": "synthetic"},
+        }
+        with mock.patch.object(MODULE.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(MODULE.time, "time", side_effect=lambda: clock[0]), \
+             mock.patch.object(MODULE.time, "sleep", side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+             mock.patch.object(MODULE.pathlib.Path, "exists", return_value=True), \
+             mock.patch.object(MODULE.socket, "AF_UNIX", 1, create=True), \
+             mock.patch.object(MODULE.socket, "socket", side_effect=lambda *_: DelayedAckSocket()):
+            self.assertTrue(agent.send_ultra_lease(42, lease))
+        agent.remember_ultra_leases.assert_called_once_with(42, [lease])
+
     def test_control_plane_mirrors_are_https_bounded_and_primary_first(self):
         self.assertEqual(
             ["https://primary.example", "https://mirror-a.example", "https://mirror-b.example"],

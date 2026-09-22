@@ -29,6 +29,7 @@ public class ForwardRuntimeManager : IDisposable
     private readonly Func<DateTimeOffset> _startupRetryClock;
     private sealed record UltraStartupFailure(string Contract, int Attempts, DateTimeOffset RetryAfter);
     private readonly ConcurrentDictionary<int, UltraStartupFailure> _ultraStartupFailures = new();
+    private readonly ConcurrentDictionary<int, DateTimeOffset> _lastBreakdownLog = new();
 
     public event Action<int, string>? UltraRecoveryRequested;
 
@@ -68,6 +69,15 @@ public class ForwardRuntimeManager : IDisposable
 
         var pids = _supervisor.GetProcessIds(forward.ForwardId);
         var owners = _proxyPortOwners(forward.ListenPort);
+        if (owners.Count == 0)
+        {
+            Log.Warning(
+                "proxy listener ownership table unreadable for forward {ForwardId} port {Port} transport {Transport}; falling back to listener readiness probe",
+                forward.ForwardId,
+                forward.ListenPort,
+                forward.Transport);
+            return ProxyForwardLease.IsListenerReadyAsync(forward).GetAwaiter().GetResult();
+        }
         var protocols = forward.Transport.Trim().ToLowerInvariant() switch
         {
             "tcp" => new[] { "tcp" },
@@ -340,6 +350,47 @@ public class ForwardRuntimeManager : IDisposable
             : leases.Where(candidate => candidate.IsUsable(policy, forward, now)).ToList();
         if (policy is null || usableLeases.Count == 0 || policyFailure is not null)
         {
+            // Breakdown analysis: identify why leases were rejected
+            Dictionary<string, int>? breakdown = null;
+            if (usableLeases.Count == 0 && policy is not null && leases.Count > 0)
+            {
+                breakdown = leases
+                    .Select(candidate => candidate.GetUsabilityFailureReason(policy, forward, now) ?? "unknown")
+                    .GroupBy(reason => reason)
+                    .OrderBy(group => group.Key)
+                    .ToDictionary(group => group.Key, group => group.Count());
+            }
+
+            // Stale lease material should trigger a targeted refresh, but it is
+            // not proof that the currently running process still holds a valid
+            // authorization. Fail closed until a fresh usable lease arrives.
+            var staleLeaseSet = policy is not null
+                && policyFailure is null
+                && leases.Count > 0
+                && usableLeases.Count == 0
+                && breakdown is not null
+                && breakdown.All(kv => kv.Key is "expiry" or "policyGeneration");
+
+            if (staleLeaseSet)
+            {
+                _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+                UltraRecoveryRequested?.Invoke(forward.ForwardId, "stale_policy_or_lease");
+            }
+
+            if (breakdown is not null)
+            {
+                var canLog = !_lastBreakdownLog.TryGetValue(forward.ForwardId, out var lastLog)
+                    || (now - lastLog).TotalSeconds >= 60;
+                if (canLog)
+                {
+                    _lastBreakdownLog[forward.ForwardId] = now;
+                    var breakdownText = string.Join(", ", breakdown.Select(kv => $"{kv.Key}={kv.Value}"));
+                    Log.Warning(
+                        "Ultra lease usability breakdown for forward {ForwardId}: {Breakdown}",
+                        forward.ForwardId,
+                        breakdownText);
+                }
+            }
             Log.Warning(
                 "Ultra policy or lease rejected for forward {ForwardId}; stopping without legacy fallback (policy_reason={PolicyReason}, lease_count={LeaseCount}, usable_count={UsableCount})",
                 forward.ForwardId,

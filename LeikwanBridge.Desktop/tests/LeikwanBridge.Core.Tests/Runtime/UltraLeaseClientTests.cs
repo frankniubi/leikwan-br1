@@ -13,6 +13,31 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class UltraLeaseClientTests
 {
     [Fact]
+    public async Task SingleOrdinaryLeaseWaitsForVerificationAcknowledgement()
+    {
+        const int forwardId = 924271;
+        using var lease = new UltraLease
+        {
+            ForwardId = forwardId,
+            PolicyGeneration = new string('a', 64),
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(3),
+        };
+        await using var server = new NamedPipeServerStream(
+            UltraLeaseClient.PipeName(forwardId), PipeDirection.InOut, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var send = UltraLeaseClient.SendAsync(forwardId, lease, deadline.Token);
+        await server.WaitForConnectionAsync(deadline.Token);
+        await ReadFrameAsync(server).WaitAsync(deadline.Token);
+        // Even one candidate requires TCP carrier + authenticated sidecar HELLO.
+        await Task.Delay(TimeSpan.FromSeconds(2.3), deadline.Token);
+        Assert.False(send.IsCompleted, "single lease abandoned before runtime verification ACK");
+        await WriteFrameAsync(server,
+            $$"""{"ok":true,"forward_id":{{forwardId}},"policy_generation":"{{lease.PolicyGeneration}}"}""");
+        Assert.True(await send);
+    }
+
+    [Fact]
     public void PolicyIsV2AndContainsNoProviderMaterial()
     {
         var policy = new UltraPolicy
