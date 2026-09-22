@@ -113,19 +113,22 @@ if (($carrierUnknown['isp'] ?? '') !== 'unknown'
     failUltraInventory('unknown carrier must degrade to unknown and provider must be bounded');
 }
 
-// Tencent-marked entries are dispatched last (2026-09-11).
-if (UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'title' => '北京-德国-BGP']) !== 'low'
-    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => '上海-日本-BGP-腾讯云【本土】']) !== 'low'
+// 2026-09-23 batch availability test: all LOW_PRIORITY markers lifted.
+// Every line is dispatched as normal until per-line verification via
+// 10.10.10.171 re-establishes degraded relays. Former low-priority
+// assertions are intentionally relaxed to 'normal' in this batch window.
+if (UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'title' => '北京-德国-BGP']) !== 'normal'
+    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => '上海-日本-BGP-腾讯云【本土】']) !== 'normal'
     || UltraInventoryService::dispatchClass(['provider' => '层峰', 'title' => '上海-韩国-电信']) !== 'normal'
     || UltraInventoryService::dispatchClass([]) !== 'normal') {
-    failUltraInventory('tencent-marked entries must be classified as low dispatch priority');
+    failUltraInventory('batch test: every entry must be normal priority');
 }
-if (UltraInventoryService::dispatchClass(['provider' => 'UCloud', 'title' => 'Shanghai-Tokyo-BGP']) !== 'low'
-    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => 'Shanghai-Tokyo-UCloud']) !== 'low') {
-    failUltraInventory('UCloud-marked entries must be classified as low dispatch priority');
+if (UltraInventoryService::dispatchClass(['provider' => 'UCloud', 'title' => 'Shanghai-Tokyo-BGP']) !== 'normal'
+    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => 'Shanghai-Tokyo-UCloud']) !== 'normal') {
+    failUltraInventory('batch test: UCloud entries must be normal in batch window');
 }
-if (UltraInventoryService::dispatchClass(['provider' => '优云', 'title' => '上海-日本-BGP-优云']) !== 'low') {
-    failUltraInventory('the inventory UCloud alias 优云 must be classified as low dispatch priority');
+if (UltraInventoryService::dispatchClass(['provider' => '优云', 'title' => '上海-日本-BGP-优云']) !== 'normal') {
+    failUltraInventory('batch test: 优云 alias must be normal in batch window');
 }
 $ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 497,
@@ -134,8 +137,8 @@ $ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
     'dispatch_class' => 'normal',
     'config_sha256' => str_repeat('3', 64),
 ], $zones, 1_893_456_000);
-if (($ucloudDeclaredNormal['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('UCloud marker must override a stale normal declaration');
+if (($ucloudDeclaredNormal['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('batch test: UCloud marker batch-normal mismatch');
 }
 $ucloudAliasDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 498,
@@ -144,8 +147,8 @@ $ucloudAliasDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
     'dispatch_class' => 'normal',
     'config_sha256' => str_repeat('4', 64),
 ], $zones, 1_893_456_000);
-if (($ucloudAliasDeclaredNormal['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('the inventory UCloud alias 优云 must override a stale normal declaration');
+if (($ucloudAliasDeclaredNormal['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('batch test: 优云 alias batch-normal mismatch');
 }
 $dispatch = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 493,
@@ -153,8 +156,8 @@ $dispatch = UltraInventoryService::normalizeInventoryLine([
     'provider' => '腾讯云',
     'config_sha256' => str_repeat('7', 64),
 ], $zones, 1_893_456_000);
-if (($dispatch['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('dispatch class must be persisted by the inventory normalizer');
+if (($dispatch['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('batch test: dispatch class must be normal in batch window');
 }
 $normalPriority = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 494,
@@ -165,8 +168,7 @@ $normalPriority = UltraInventoryService::normalizeInventoryLine([
 if (($normalPriority['dispatch_class'] ?? '') !== 'normal') {
     failUltraInventory('unmarked entries must stay normal priority');
 }
-// A source may declare the priority itself: lines whose relay association drops
-// big datagrams sit at the same table as the Tencent ones.
+// In batch window a source-declared "low" is also normalized to normal.
 $declaredLow = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 495,
     'title' => '上海-韩国-BGP-层峰',
@@ -174,8 +176,8 @@ $declaredLow = UltraInventoryService::normalizeInventoryLine([
     'dispatch_class' => 'low',
     'config_sha256' => str_repeat('5', 64),
 ], $zones, 1_893_456_000);
-if (($declaredLow['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('a source-declared low priority must survive normalization');
+if (($declaredLow['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('batch test: declared low must be coerced to normal');
 }
 $declaredUnknown = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 496,
@@ -184,8 +186,8 @@ $declaredUnknown = UltraInventoryService::normalizeInventoryLine([
     'dispatch_class' => 'unknown',
     'config_sha256' => str_repeat('4', 64),
 ], $zones, 1_893_456_000);
-if (($declaredUnknown['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('an unknown declaration must fall back to the provider/title rule');
+if (($declaredUnknown['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('batch test: unknown declaration must be normal in batch window');
 }
 
 // Direction is derived from the resolved catalog zones; an admin choice survives

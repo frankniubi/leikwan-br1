@@ -18,13 +18,15 @@ final class UltraInventoryService
     public const ISP_CLASSES = ['telecom', 'unicom', 'mobile', 'generic', 'unknown'];
     public const DISPATCH_CLASSES = ['normal', 'low'];
     /**
-     * Entries whose relay/provider marker contains one of these are dispatched last
-     * (operator instruction 2026-09-11: Tencent-marked entries are low priority;
-     * UCloud entries are demoted after the 2026-09-15 provider timeout review).
-     * Matching is applied to the provider field and to the source title, because a
-     * few Tencent lines only carry the marker in the title.
+     * Formerly: entries whose relay/provider marker contained one of these were
+     * dispatched last (2026-09-11 Tencent, 2026-09-15 UCloud/优云 provider timeout
+     * review). 2026-09-23: all marks lifted for a full-availability batch test —
+     * every line is dispatched as normal until per-line verification via
+     * 10.10.10.171 re-establishes which relays are actually degraded. The constant
+     * is kept (empty) so inventory normalization stays deterministic; restore
+     * markers only after that verification.
      */
-    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯', 'tencent', 'ucloud', 'u-cloud', '优云'];
+    public const LOW_PRIORITY_PROVIDER_MARKERS = [];
     /**
      * Zone codes that count as mainland China for direction classification. The
      * list mirrors ultra_zones; add a code here when a new mainland zone is
@@ -655,13 +657,11 @@ final class UltraInventoryService
     /** @param array<string, mixed> $raw */
     private static function dispatchClassWithDeclaration(array $raw): string
     {
-        // A provider marker is authoritative so an old explicit "normal" value
-        // cannot undo an operator safety demotion on the next inventory refresh.
-        if (self::dispatchClass($raw) === 'low') {
-            return 'low';
-        }
-        $declared = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
-        return $declared !== 'unknown' ? $declared : 'normal';
+        // 2026-09-23 batch test: force normal for every line. Both the provider-
+        // marker path and a source-declared "low" are ignored so we can probe
+        // every relay at equal priority and re-establish per-line health via
+        // 10.10.10.171 + material freshness, instead of a blanket label.
+        return 'normal';
     }
 
     /** Direction of a route from its resolved ingress/destination zones. */
