@@ -157,3 +157,26 @@ that copy finishes.
 - macOS stays at 1.0.45 (needs the build Mac). The Windows protected install
   was not replaced (no Administrator shell). No same-build acceptance matrix.
 - The four local commits are not pushed.
+
+## Panel migration and end-to-end check (2026-09-24)
+
+The production panel moved from `173.208.183.93` to a new server
+(`117.55.193.164`, same host key). The migration copied the webroot after this
+publish, so nothing had to be re-uploaded:
+
+- The new server's `artifacts/versions.json` is the published file
+  (`2d43d6d2…`). For all 73 manifest entries, the file on disk was hashed and
+  compared on both servers: 65 match. The same 8 do not match on either server
+  (Android APK, the four macOS 1.0.45 files, `gost_linux_amd64`,
+  `leigod_linux_amd64`, `cfwg_latency_watchdog`). That gap already existed
+  before the migration and is not part of this release.
+- Through nginx on the new server, `/api/health` returns 200 and the database is
+  up. Downloading the 14 artifacts this release touched through their
+  `artifact_url` gives the published hashes. That covers the Ultra runtimes
+  (Linux amd64/arm64, Windows), the UoT sidecar, Windows setup/headless
+  zip/headless installer, the agent (source and frozen), the three installers,
+  `client-agent-update.sh` and `install-forward-runtime.py`.
+- Through Cloudflare, `/api/health` returns 200 and the rendered manifest is
+  the same one the new server serves (`06c22805…`). The old server's nginx and
+  cloudflared are stopped; since 19:22 UTC, live client traffic lands on the
+  new server.
