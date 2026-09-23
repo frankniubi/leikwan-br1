@@ -128,7 +128,7 @@
  },
  "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
-  "path": "artifacts/install-forward-runtime.py",
+  "path": "client-agent/install_forward_runtime.py",
   "sha256": "792100e605a2750346360c36dd9b5984bf8890c9b16464984af084908bf9fb20",
   "size": 102032,
   "size_bytes": 102032,

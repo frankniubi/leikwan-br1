@@ -63,3 +63,48 @@ One correction to the earlier draft: the runtime reads its config once, while gr
 ## Release publication
 
 Recorded at the bottom of this file after the artifacts are built and the manifest published.
+
+## Progress checkpoint — 2026-09-24 01:15 +08 (panel down, stopped here)
+
+### Committed locally, not pushed
+
+- `906efe97` — the code: first-flight pilot, stream close-stage + Windows abort class, desktop failure logging, restored Linux runtime-inode refresh, pending-grant cold start. Versions bumped (Windows 0.1.20.53, macOS 1.0.46, agent 2026.09.24.1).
+- `9889cecb` — `artifacts/versions.json` for the release. Payloads are gitignored, as in every previous release.
+
+The branch has no upstream. `origin/master` is 350 commits behind local `master` plus these 74; do not push without deciding that explicitly.
+
+### Built and verified, sitting in `tmp/release-20260924/` and copied into `artifacts/`
+
+| Artifact | SHA-256 |
+|---|---|
+| `ultra-client_windows_amd64.exe` | `f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d` |
+| `ultra-client_linux_amd64` | `d9041df86523aeb5a2ec6044a5acf8fa486c5ee01f5aae75d69aa07035566217` |
+| `ultra-client_linux_arm64` | `2fcc98dbddce53f85a40b22f41bac8b2c9a8911c571dff16006c05a51c68cd2b` |
+| `uot-sidecar_linux_amd64` | `c6b716c94fd012265a51713a9e24b5f740eecb7310d9a9c5bddc17c032370229` |
+| `uot-sidecar_linux_arm64` | `15b8377fef45f8fa91b522c36572e5f526d694720fde2d27a2808c0be3e2303a` |
+| `leikwan-client-agent_linux_amd64` (frozen, PyInstaller 6.16.0 on Debian 12, built twice, byte-identical) | `536e8c212be1af882906a0953ece8e4461721180c97fc33ff47ee6f81de2c9e6` |
+| `leikwan-bridge-setup.exe` (0.1.20.53) | `ae9cc42d09f77a64f60787fabdc17bc3ef199cabee4a37f9a2ffebb87417f440` |
+| `leikwan-bridge-headless-win-x64.zip` | `b58d848ab5b626e787d683b45e2ea09bf74358b54c5164d472fc91a3adf2df41` |
+| `install-client-agent-linux-arm64` (reproducible build) | `907f175472f87d151a71afd27dab2e7acf1434c1ae6bb4e55b27f9f0be0a209e` |
+
+All stamped `2026.09.24.1.906efe97`. The Linux binary was copied to the test host and ran `--version` there. The headless runtime map is in `tmp/release-20260924/windows-build-manifest.json`.
+
+### Publish: NOT done — panel died mid-upload
+
+- `tmp/release-20260924/plan.json` is the validated-shape plan (`release_id=ultra-recovery-20260924-1`, commit pin `9889cecb…`, 15 changed manifest keys, 16 payloads including the `artifacts/client-agent.py` mirror). `stage/` holds the payloads; `parts/` holds the 20 MB splits.
+- The stage tarball upload via paramiko was killed at 120 s and left a **truncated** `/root/ultra-recovery-20260924/stage.tar` on the panel (36 MB of 193 MB; `tar` there reports "Unexpected EOF"). A pscp retry also stalled and was interrupted. Nothing was published: `deploy-client-artifacts.py` never ran, so the live manifest and payloads are unchanged.
+- To resume: re-upload `stage/` (the `parts/p*` splits, then `cat parts/p* | tar -x`), then `python3 deploy-client-artifacts.py --root /www/wwwroot/v3.leikwanhost.com/leikwan-v3 --stage stage --plan plan.json --validate-only` and, if clean, without `--validate-only`. The publisher installs the manifest last and rolls back on failure.
+- The panel was at load average 111 when it stopped answering SSH, 27 when it briefly recovered, then unresponsive again. The user stopped the work here.
+
+### Live state left untouched
+
+- Panel `.env` has `ULTRA_TCP_FIRST_FLIGHT_JSON` for `PEK -> FRA` and `PEK -> MOS` but **without `candidate_hashes`, so the pilot is off in production.** Hashes must be filled in (and php-fpm reloaded) to arm it.
+- Linux test host `172.21.255.189` still runs the dirty candidate `2026.09.23.4.498db829-dirty` with the rollback timer armed. Its `OnActiveSec` was reset by something else during this session: it now elapses at **2026-09-24 02:02 +08** instead of the original 00:45. The binary file itself was not touched (mtime 23:45). Leave the timer armed.
+- The live panel PHP has drifted from this branch (five files differ, three exist only on the server). Copies are in `.tmp/live-panel-20260924/`. Do not publish `ClientAgentController.php` without reconciling that drift; this release does not.
+
+### Not done
+
+- macOS 1.0.46: needs the build Mac (`leikwan@100.103.253.21`), not reached. Manifest macOS entries stay at 1.0.45.
+- Windows install: this shell is not Administrator, so the protected install was not replaced or read back.
+- No same-build acceptance matrix. The 11 x 3 matrix, the per-direction 2026-09-21 Linux re-run, and the CAN -> SIN Windows reproduction are all still open.
+- Two commits are local only.
