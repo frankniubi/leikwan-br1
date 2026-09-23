@@ -157,6 +157,9 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             var externalUot = ExternalUotGrant.Select(leases);
             if (externalUot is not null)
                 bootstrapConfig["external_uot"] = externalUot.ToBootstrapPayload();
+            var firstFlight = forward.UltraAccess?.TCPFirstFlight?.ToBootstrapPayload(forward, leases);
+            if (firstFlight is not null)
+                bootstrapConfig["tcp_first_flight"] = firstFlight;
             phase = "spawn_runtime";
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(

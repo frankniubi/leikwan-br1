@@ -428,6 +428,12 @@ public sealed class ConfigPollingService
             }
             if (leases.Count == 0)
             {
+                // A cold forward has no applied state, so preservation cannot
+                // schedule its retry. Grant readiness is not part of the stable
+                // revision: retry the full payload on the next bounded poll,
+                // rather than first waiting through a known-useless 304.
+                if (effectiveForward.UltraAccess is null)
+                    QueueConfigRefreshSoon(forward.ForwardId);
                 // Name the forward in the refresh. A targeted refresh is the only
                 // thing that bypasses the "config revision unchanged, skip" path, and
                 // a forward can be refused a lease while the config revision stays

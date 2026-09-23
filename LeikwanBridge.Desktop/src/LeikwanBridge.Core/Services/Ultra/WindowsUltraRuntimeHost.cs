@@ -138,6 +138,9 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             var externalUot = ExternalUotGrant.Select(leases);
             if (externalUot is not null)
                 staticConfig["external_uot"] = externalUot.ToBootstrapPayload();
+            var firstFlight = forward.UltraAccess?.TCPFirstFlight?.ToBootstrapPayload(forward, leases);
+            if (firstFlight is not null)
+                staticConfig["tcp_first_flight"] = firstFlight;
             Directory.CreateDirectory(runtimeDirectory);
             File.WriteAllText(configPath, JsonSerializer.Serialize(staticConfig, new JsonSerializerOptions
             {

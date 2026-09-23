@@ -13,6 +13,44 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class ConfigPollingServiceTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task ColdUltraMissingPolicyRetriesFullPayloadOnNextPollWithoutRestart(int missingPolls)
+    {
+        using var tempDir = new TempStateDirectory();
+        var complete = JsonNode.Parse(BuildUltraPullResponseJson())!.AsObject();
+        complete["config_revision"] = "cold-policy-revision";
+        var missing = complete.DeepClone().AsObject();
+        missing["forwards"]![0]!.AsObject().Remove("ultra_access");
+        using var server = new PullApiServer(missing.ToJsonString(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            NotModifiedRevision = "cold-policy-revision",
+        };
+        var config = new AgentConfig
+        {
+            MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path,
+        };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtime, state);
+
+        // Broker material can be temporarily unavailable on a newly enabled route.
+        for (var i = 0; i < missingPolls; i++)
+            await service.SyncOnceAsync();
+        Assert.Empty(runtime.AppliedForwardIds);
+        Assert.Empty(server.UltraLeaseRequestForwardIds);
+        Assert.Equal(missingPolls, server.PullRequestCount); // bounded: no immediate retry loop
+
+        // The stable revision does not change when the broker becomes ready.
+        server.SetPayload(complete.ToJsonString());
+        await service.SyncOnceAsync();
+        Assert.Equal([42], runtime.AppliedForwardIds);
+        Assert.Equal(missingPolls + 1, server.PullRequestCount);
+    }
+
     [Fact]
     public async Task RequestControlPlaneRecoveryTriggersAnImmediateFullPullAfterTransientFailure()
     {

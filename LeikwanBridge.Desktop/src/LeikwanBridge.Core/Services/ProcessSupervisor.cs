@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
@@ -18,6 +19,7 @@ public class ProcessSupervisor : IProcessSupervisor
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
     private readonly ConcurrentDictionary<int, WindowsJobGroup> _jobGroups = new();
     private readonly Action<int, string, string>? _onOutput;
+    private readonly UltraRuntimeFailureLog _ultraFailures = new();
     private bool _disposed;
 
     public event Action<int, string>? ProcessExited;
@@ -82,6 +84,11 @@ public class ProcessSupervisor : IProcessSupervisor
                     // connection telemetry. The process exit/health path owns
                     // actual failures; keep this stream available in Debug.
                     Log.Debug("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                    // Ultra runtime data-plane failures (stream close stage,
+                    // candidate/setup failures) must survive the default log
+                    // level; rate-limited and address-redacted.
+                    if (role == UltraRuntimeFailureLog.RuntimeRole)
+                        ObserveUltraRuntimeFailure(_ultraFailures, forwardId, e.Data);
                     _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
                 }
             };
@@ -199,6 +206,23 @@ public class ProcessSupervisor : IProcessSupervisor
     protected void RaiseProcessExited(int forwardId, string role)
     {
         ProcessExited?.Invoke(forwardId, role);
+    }
+
+    public static void ObserveUltraRuntimeFailure(UltraRuntimeFailureLog failures, int forwardId, string line)
+    {
+        failures.Observe(forwardId, line, DateTimeOffset.UtcNow, (kind, redacted, suppressed) =>
+        {
+            if (suppressed > 0)
+            {
+                Log.Warning("ultra runtime failure forward={ForwardId} kind={Kind} suppressed_previous={Suppressed}: {Line}",
+                    forwardId, kind, suppressed, redacted);
+            }
+            else
+            {
+                Log.Warning("ultra runtime failure forward={ForwardId} kind={Kind}: {Line}",
+                    forwardId, kind, redacted);
+            }
+        });
     }
 
     private static void KillProcess(ManagedProcess mp)

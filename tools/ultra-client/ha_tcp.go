@@ -30,8 +30,13 @@ func haErrorClass(err error) string {
 		return "policy_expired"
 	case errors.Is(err, net.ErrClosed):
 		return "closed"
-	case errors.Is(err, syscall.ECONNRESET):
+	case isTCPReset(err):
 		return "reset"
+	case errors.Is(err, syscall.ECONNABORTED) ||
+		(runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10053))):
+		// WSAECONNABORTED: the local stack aborted the connection (for
+		// example a retransmission timeout or the local peer's abortive close).
+		return "aborted"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "refused"
 	case errors.Is(err, syscall.EPIPE):
@@ -80,6 +85,8 @@ type relayIdentity struct {
 	candidateKey string
 	leaseHash    string
 	targetHash   string
+	firstFlight  TCPFirstFlightConfig
+	target       string
 }
 
 // haDeadStreamMaxAge bounds how young a stream must be for its silence to count
@@ -180,10 +187,13 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 }
 
 func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity) {
+	flightCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	defer local.Close()
 	defer remote.Close()
 	type result struct {
 		direction string
+		stage     string
 		err       error
 		bytes     int64
 		readBytes int64
@@ -198,15 +208,24 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 	var upstreamBytes, downstreamBytes int64
 	var order relayStreamOrder
 	var observedOrder atomic.Uint64
+	outbound := remote
+	if ident.firstFlight.matches(ident.target, ident.candidateKey) {
+		outbound = &firstFlightConn{
+			Conn: remote, ctx: flightCtx, prefix: ident.firstFlight.PrefixBytes,
+			delay: time.Duration(ident.firstFlight.DelayMillis) * time.Millisecond,
+		}
+		log.Printf("tcp first-flight compatibility forward_id=%d prefix_bytes=%d delay_ms=%d candidate_hash=%s target_hash=%s",
+			ident.forward, ident.firstFlight.PrefixBytes, ident.firstFlight.DelayMillis, ident.candidateKey, ident.targetHash)
+	}
 	go func() {
-		moved, err := copyOutbound(remote, local, limiter, status)
+		moved, err, stage := copyOutboundStaged(outbound, local, limiter, status)
 		ordinal := observedOrder.Add(1)
-		done <- result{direction: "upstream", err: err, bytes: moved, ended: time.Now(), order: ordinal}
+		done <- result{direction: "upstream", stage: stage, err: err, bytes: moved, ended: time.Now(), order: ordinal}
 	}()
 	go func() {
 		observed := copyInboundObserved(local, remote, limiter, status)
 		ordinal := observedOrder.Add(1)
-		done <- result{direction: "downstream", err: observed.Err(), bytes: observed.WrittenBytes,
+		done <- result{direction: "downstream", stage: observed.Stage(), err: observed.Err(), bytes: observed.WrittenBytes,
 			readBytes: observed.ReadBytes, readError: observed.ReadError, ended: time.Now(), order: ordinal}
 	}()
 	received := 0
@@ -234,7 +253,7 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 				order.downstreamOrder = r.order
 				order.remoteReadError = r.readError
 			}
-			log.Printf("tcp stream ended forward_id=%d direction=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
+			log.Printf("tcp stream ended forward_id=%d direction=%s stage=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, r.stage, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
 			status.RecordHAEvent("tcp", haErrorClass(r.err), ident.generation)
 			if r.err == nil || errors.Is(r.err, io.EOF) {
 				target := local
@@ -245,6 +264,7 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 					continue
 				}
 			}
+			cancel()
 			local.Close()
 			remote.Close()
 		}

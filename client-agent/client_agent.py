@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.19.1"
+AGENT_VERSION = "2026.09.24.1"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
@@ -2115,6 +2115,122 @@ class ClientAgent:
             "published_mode": "ultra",
         }
 
+    @staticmethod
+    def systemd_main_pid(service_name: str) -> int:
+        result = subprocess.run(
+            ["systemctl", "show", f"{service_name}.service", "--property=MainPID", "--value"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        try:
+            return max(0, int(result.stdout.strip()))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def legacy_ultra_override_path(forward_id: int) -> pathlib.Path:
+        return pathlib.Path(
+            f"/etc/systemd/system/ultra-forward-{int(forward_id)}.service.d/20-extuot.conf"
+        )
+
+    def migrate_legacy_ultra_override(self, forward_id: int) -> bool:
+        """Quarantine the exact pre-release external-UoT canary override."""
+        path = self.legacy_ultra_override_path(forward_id)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return False
+        expected = (
+            "ExecStart=/usr/local/bin/ultra-client-extuot "
+            f"--config /etc/ultra/forward-{int(forward_id)}.json"
+        )
+        exec_lines = {
+            line.strip()
+            for line in content.splitlines()
+            if line.strip().startswith("ExecStart=")
+        }
+        if expected not in exec_lines or not exec_lines.issubset({"ExecStart=", expected}):
+            logging.error(
+                "forward %s has an unknown Ultra systemd override at %s; preserving it",
+                forward_id,
+                path,
+            )
+            return False
+        backup_dir = self.state_dir / "legacy-systemd-overrides"
+        backup = backup_dir / f"ultra-forward-{int(forward_id)}-20-extuot-{time.time_ns()}.conf"
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                backup_dir.chmod(0o700)
+            os.replace(path, backup)
+            if os.name == "posix":
+                backup.chmod(0o600)
+        except OSError:
+            logging.exception("forward %s failed to quarantine legacy Ultra override %s", forward_id, path)
+            return False
+        logging.warning(
+            "forward %s quarantined legacy ultra-client-extuot override to %s",
+            forward_id,
+            backup,
+        )
+        return True
+
+    def ultra_runtime_requires_refresh(self, forward_id: int) -> bool:
+        """A released runtime replaces the file, not the running process.
+
+        Restart an active forward whose process still executes a replaced or
+        deleted inode. A unit that deliberately runs another binary would never
+        converge: once a restart for this installed binary produced a new main
+        PID that still differs, stop forcing restarts until another runtime is
+        installed. An unchanged PID means the restart never happened; retry.
+        """
+        service_name = f"ultra-forward-{int(forward_id)}"
+        override_migrated = self.migrate_legacy_ultra_override(forward_id)
+        if not self.systemd_is_active(service_name):
+            return override_migrated
+        main_pid = self.systemd_main_pid(service_name)
+        installed = self.ultra_binary_path()
+        running = pathlib.Path(f"/proc/{main_pid}/exe")
+        try:
+            current = main_pid > 0 and installed.is_file() and os.path.samefile(running, installed)
+        except OSError:
+            current = False
+        if current and not override_migrated:
+            return False
+        try:
+            stat = installed.stat()
+            identity = (stat.st_dev, stat.st_ino, stat.st_mtime_ns)
+        except OSError:
+            identity = None
+        attempted = self.__dict__.setdefault("_ultra_refresh_attempted", {})
+        previous = attempted.get(int(forward_id))
+        if (
+            not override_migrated
+            and identity is not None
+            and previous is not None
+            and previous[0] == identity
+            and previous[1] != main_pid
+        ):
+            return False
+        if identity is not None:
+            attempted[int(forward_id)] = (identity, main_pid)
+        logging.warning(
+            "forward %s Ultra runtime refresh required (main_pid=%s binary_current=%s override_migrated=%s)",
+            forward_id,
+            main_pid,
+            current,
+            override_migrated,
+        )
+        return True
+
+    def should_force_runtime_restart(self, forward: dict, requested_ids: set[int]) -> bool:
+        forward_id = int(forward.get("forward_id", 0) or 0)
+        requested = forward_id in requested_ids
+        if forward_id <= 0 or str(forward.get("backend_mode", "") or "").strip().lower() != "ultra":
+            return requested
+        return self.ultra_runtime_requires_refresh(forward_id) or requested
+
     def preserve_missing_ultra_forward(self, forward_id: int, previous: dict, snapshot_revision: str) -> bool:
         if not isinstance(previous, dict):
             return False
@@ -2838,7 +2954,10 @@ class ClientAgent:
             desired_ids.add(forward_id)
             try:
                 contract_signature = self.effective_forward_contract_signature(runtime_forward)
-                force_runtime_restart = forward_id in force_runtime_refresh_ids
+                force_runtime_restart = self.should_force_runtime_restart(
+                    runtime_forward,
+                    force_runtime_refresh_ids,
+                )
                 ultra_access_refresh = (
                     str(runtime_forward.get("backend_mode", "") or "").strip().lower() == "ultra"
                     and bool(ultra_lease_candidates(runtime_forward))

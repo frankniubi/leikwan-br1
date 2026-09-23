@@ -39,10 +39,11 @@ const (
 )
 
 type Config struct {
-	ForwardID  int    `json:"forward_id"`
-	ListenHost string `json:"listen_host"`
-	ListenPort int    `json:"listen_port"`
-	Target     string `json:"target"`
+	ForwardID      int                  `json:"forward_id"`
+	ListenHost     string               `json:"listen_host"`
+	ListenPort     int                  `json:"listen_port"`
+	Target         string               `json:"target"`
+	TCPFirstFlight TCPFirstFlightConfig `json:"tcp_first_flight,omitempty"`
 	// Forward-local, bounded operator quarantine. It can only remove candidates
 	// from authenticated grants; it never creates or extends authorization.
 	CandidateQuarantineHashes   []string `json:"candidate_quarantine_hashes,omitempty"`
@@ -690,22 +691,30 @@ func dialNativeStreamConfig(config Config, lease ProviderLease, targetHost strin
 // "the far end took the connection and returned nothing", and only the byte
 // count separates those two EOFs.
 func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
+	total, err, _ := copyOutboundStaged(destination, source, limiter, status)
+	return total, err
+}
+
+// copyOutboundStaged also names the operation that ended the copy, so a stream
+// end can be attributed to the local application (local_read), the relay leg
+// (remote_write) or policy, instead of only an error class.
+func copyOutboundStaged(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error, string) {
 	buffer := make([]byte, 32*1024)
 	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
 			if err := limiter.Consume(count); err != nil {
-				return total, err
+				return total, err, "policy"
 			}
 			status.AddUsage(0, count)
 			if err := writeXor(destination, buffer[:count]); err != nil {
-				return total, err
+				return total, err, "remote_write"
 			}
 			total += int64(count)
 		}
 		if readErr != nil {
-			return total, readErr
+			return total, readErr, "local_read"
 		}
 	}
 }
@@ -718,6 +727,18 @@ type inboundCopyObservation struct {
 	ReadError    error
 	WriteError   error
 	PolicyError  error
+}
+
+// Stage names the operation that ended the inbound copy.
+func (o inboundCopyObservation) Stage() string {
+	switch {
+	case o.PolicyError != nil:
+		return "policy"
+	case o.WriteError != nil:
+		return "local_write"
+	default:
+		return "remote_read"
+	}
 }
 
 func (o inboundCopyObservation) Err() error {
@@ -832,6 +853,8 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					candidateKey: snapshot.Lease.CandidateKeyHash,
 					leaseHash:    snapshot.Lease.LeaseHash,
 					targetHash:   tcpTargetHash(config.Target),
+					firstFlight:  config.TCPFirstFlight,
+					target:       config.Target,
 				})
 
 			}()

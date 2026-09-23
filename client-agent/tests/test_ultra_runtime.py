@@ -46,6 +46,59 @@ def sample_forward():
 
 
 class UltraRuntimeTests(unittest.TestCase):
+    def test_first_flight_is_bound_to_explicit_candidate_target_generation_and_expiry(self):
+        forward = sample_forward()
+        allowed = "b" * 64
+        forward["ultra_access"]["tcp_first_flight"] = {
+            "target": forward["target"],
+            "policy_generation": "a" * 64,
+            "expires_at": "2030-01-01T00:20:00Z",
+            "candidate_hashes": [allowed],
+            "prefix_bytes": 4,
+            "delay_ms": 300,
+        }
+        forward["_ultra_leases"] = [
+            {"candidate_key_hash": allowed, "expires_at": "2030-01-01T00:10:00Z"},
+            {"candidate_key_hash": "c" * 64, "expires_at": "2030-01-01T00:10:00Z"},
+        ]
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        actual = json.loads(config_file["content"])["tcp_first_flight"]
+        self.assertEqual([allowed], actual["candidate_hashes"])
+        self.assertEqual(4, actual["prefix_bytes"])
+        self.assertEqual(300, actual["delay_ms"])
+
+        for key, invalid in (
+            ("target", "other.example:443"),
+            ("policy_generation", "d" * 64),
+            ("expires_at", "2000-01-01T00:00:00Z"),
+        ):
+            with self.subTest(key=key):
+                candidate = sample_forward()
+                candidate["ultra_access"]["tcp_first_flight"] = dict(forward["ultra_access"]["tcp_first_flight"])
+                candidate["ultra_access"]["tcp_first_flight"][key] = invalid
+                candidate["_ultra_leases"] = [{"candidate_key_hash": allowed}]
+                result = MODULE.render_ultra_runtime(candidate, {})
+                payload = next(item for item in result["files"] if item["path"].endswith("forward-42.json"))
+                self.assertNotIn("tcp_first_flight", json.loads(payload["content"]))
+
+        # The rendered block holds only stable fields, so a grant renewal (new
+        # generation/expiry) or a lease rotation cannot restart the forward.
+        self.assertNotIn("policy_generation", actual)
+        self.assertNotIn("expires_at", actual)
+        renewed = sample_forward()
+        renewed["ultra_access"]["policy_generation"] = "e" * 64
+        renewed["ultra_access"]["tcp_first_flight"] = dict(
+            forward["ultra_access"]["tcp_first_flight"],
+            policy_generation="e" * 64,
+            expires_at="2030-01-01T00:25:00Z",
+        )
+        renewed["_ultra_leases"] = [{"candidate_key_hash": "c" * 64}]
+        renewed_config = next(
+            item for item in MODULE.render_ultra_runtime(renewed, {})["files"] if item["path"].endswith("forward-42.json")
+        )
+        self.assertEqual(actual, json.loads(renewed_config["content"])["tcp_first_flight"])
+
     def test_linux_installer_verifies_ultra_artifact_before_agent_restart(self):
         installer = (ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
         download = 'download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"'

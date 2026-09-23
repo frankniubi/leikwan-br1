@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 import ipaddress
 import pathlib
 import re
@@ -1205,6 +1206,47 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "udp_prewarm": transport in {"udp", "tcp+udp"},
         "udp_keepalive_interval_seconds": 5 if transport in {"udp", "tcp+udp"} else 0,
     }
+    raw_first_flight = access.get("tcp_first_flight")
+    if isinstance(raw_first_flight, dict):
+        first_target = str(raw_first_flight.get("target", "") or "").strip()
+        first_generation = str(raw_first_flight.get("policy_generation", "") or "").strip().lower()
+        first_expiry = str(raw_first_flight.get("expires_at", "") or "").strip()
+        allowed_hashes = {
+            str(value or "").strip().lower()
+            for value in (raw_first_flight.get("candidate_hashes", []) if isinstance(raw_first_flight.get("candidate_hashes", []), list) else [])[:4]
+            if re.fullmatch(r"[a-f0-9]{64}", str(value or "").strip().lower())
+        }
+        try:
+            prefix_bytes = int(raw_first_flight.get("prefix_bytes", 0) or 0)
+            delay_ms = int(raw_first_flight.get("delay_ms", 0) or 0)
+            expiry = datetime.datetime.fromisoformat(
+                re.sub(r"\.(\d{6})\d+", r".\1", first_expiry).replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            expiry = None
+            prefix_bytes = 0
+            delay_ms = 0
+        # Generation and expiry are checked at issue time only. The runtime
+        # reads this file once and matches each stream's authenticated
+        # candidate, while grants renew every few minutes: the rendered block
+        # must hold only stable fields, or every renewal would change the
+        # rendered signature and restart the forward.
+        candidate_hashes = sorted(allowed_hashes)
+        if (
+            first_target == config_payload["target"]
+            and first_generation == policy_generation
+            and expiry is not None
+            and expiry > datetime.datetime.now(datetime.timezone.utc).timestamp()
+            and 1 <= prefix_bytes <= 16
+            and 1 <= delay_ms <= 1000
+            and candidate_hashes
+        ):
+            config_payload["tcp_first_flight"] = {
+                "target": first_target,
+                "candidate_hashes": candidate_hashes,
+                "prefix_bytes": prefix_bytes,
+                "delay_ms": delay_ms,
+            }
     # External UoT is an explicit per-forward opt-in. The sidecar token is
     # written only to the root-readable runtime config (mode 0600); ordinary
     # Ultra forwards never receive this block and keep native command-3 UDP.

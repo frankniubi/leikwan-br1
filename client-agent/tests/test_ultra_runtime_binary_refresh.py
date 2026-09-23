@@ -52,6 +52,28 @@ class UltraRuntimeBinaryRefreshTests(unittest.TestCase):
                 )
             )
 
+    def test_unconvergeable_runtime_forces_one_restart_per_installed_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            agent = self.make_agent(root)
+            agent.migrate_legacy_ultra_override = mock.Mock(return_value=False)
+            agent.systemd_is_active = mock.Mock(return_value=True)
+            agent.systemd_main_pid = mock.Mock(return_value=4242)
+            with mock.patch.object(MODULE.os.path, "samefile", return_value=False):
+                # A unit pinned to another binary never converges: after one
+                # restart produced a new PID, stop forcing until a different
+                # runtime is installed. Without a new PID the restart is retried.
+                self.assertTrue(agent.ultra_runtime_requires_refresh(170))
+                self.assertTrue(agent.ultra_runtime_requires_refresh(170))
+                agent.systemd_main_pid.return_value = 5151
+                self.assertFalse(agent.ultra_runtime_requires_refresh(170))
+                self.assertFalse(agent.ultra_runtime_requires_refresh(170))
+                self.assertTrue(agent.ultra_runtime_requires_refresh(171))
+                (root / "ultra-client").unlink()
+                (root / "ultra-client").write_bytes(b"next-runtime-release")
+                os.utime(root / "ultra-client", ns=(1, 1))
+                self.assertTrue(agent.ultra_runtime_requires_refresh(170))
+
     def test_exact_legacy_extuot_override_is_quarantined(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

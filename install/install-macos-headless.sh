@@ -11,7 +11,7 @@
 # self-contained DMG, verifies its size and SHA-256, installs the app bundle,
 # and only then registers launchd. Remove it with --uninstall.
 set -eu
-INSTALLER_VERSION="1.0.45"
+INSTALLER_VERSION="1.0.46"
 
 LABEL="com.leikwan.bridge.headless"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"

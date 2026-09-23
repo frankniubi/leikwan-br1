@@ -495,6 +495,23 @@ type nativeSocks5Runtime struct {
 }
 
 func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
+	return serveNativeSocks5WithListeners(ctx, config, store, status, nil, nil)
+}
+
+func serveNativeSocks5WithListeners(
+	ctx context.Context,
+	config Config,
+	store *PolicyStore,
+	status *StatusWriter,
+	tcpListener net.Listener,
+	udpConn *net.UDPConn,
+) error {
+	if tcpListener != nil {
+		defer tcpListener.Close()
+	}
+	if udpConn != nil {
+		defer udpConn.Close()
+	}
 	if !nativeSocks5ListenHostAllowed(config.ListenHost) {
 		return errors.New("native_socks5_listener_not_loopback")
 	}
@@ -504,22 +521,35 @@ func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, s
 	if status == nil {
 		status = newStatusWriter("", config.ForwardID, time.Second)
 	}
-	tcpListener, err := net.Listen("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
-	if err != nil {
-		return err
+	var err error
+	if tcpListener == nil {
+		tcpListener, err = net.Listen("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
+		if err != nil {
+			return err
+		}
+		defer tcpListener.Close()
 	}
-	defer tcpListener.Close()
-	udpAddress, err := net.ResolveUDPAddr("udp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
-	if err != nil {
-		return err
+	tcpAddress, ok := tcpListener.Addr().(*net.TCPAddr)
+	if !ok || tcpAddress.Port != config.ListenPort {
+		return errors.New("native_socks5_tcp_listener_mismatch")
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddress)
-	if err != nil {
-		return err
+	if udpConn == nil {
+		udpAddress, resolveErr := net.ResolveUDPAddr("udp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		udpConn, err = net.ListenUDP("udp", udpAddress)
+		if err != nil {
+			return err
+		}
+		defer udpConn.Close()
+	}
+	udpAddress, ok := udpConn.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddress.Port != config.ListenPort {
+		return errors.New("native_socks5_udp_listener_mismatch")
 	}
 	_ = udpConn.SetReadBuffer(4 << 20)
 	_ = udpConn.SetWriteBuffer(4 << 20)
-	defer udpConn.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status, udp: udpConn,
 		associations: make(map[string]*nativeSocks5UDPAssociation),

@@ -282,7 +282,7 @@ func TestNativeLeaseFrameDecodesOnlyInNativeRuntime(t *testing.T) {
 
 func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 	provider := newNativeStreamProvider(t)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 174, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
@@ -294,8 +294,10 @@ func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	client, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -431,7 +433,7 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 		}
 	}()
 
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 178, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
@@ -443,8 +445,10 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	connection, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -512,7 +516,7 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 175, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
@@ -524,8 +528,10 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	control, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -592,7 +598,7 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 176, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
@@ -604,8 +610,10 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	control, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -686,7 +694,7 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 177, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
@@ -698,8 +706,10 @@ func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	openControl := func() net.Conn {
 		testControl, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
@@ -911,33 +921,44 @@ func newNativeTestStore(t *testing.T, config Config, providerPort int) *PolicySt
 	return store
 }
 
-func freeNativeTCPPort(t *testing.T) int {
+func reserveNativeSocks5Listeners(t *testing.T) (net.Listener, *net.UDPConn, int) {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 16 {
+		tcpListener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := tcpListener.Addr().(*net.TCPAddr).Port
+		udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		if err == nil {
+			t.Cleanup(func() {
+				_ = tcpListener.Close()
+				_ = udpListener.Close()
+			})
+			return tcpListener, udpListener, port
+		}
+		_ = tcpListener.Close()
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
-	return port
+	t.Fatal("could not reserve matching native SOCKS TCP and UDP ports")
+	return nil, nil, 0
 }
 
-// Listeners are selected by binding ":0" and closing it, so between that close
-// and the server's own bind either an unrelated local process or a sibling test
-// can take both the TCP and the UDP half of the port. A bare TCP dial cannot
-// tell that apart from readiness: it succeeds against whatever won the race, and
-// the test then waits on a SOCKS reply that never arrives and fails at the
-// caller's own timeout. Complete the SOCKS greeting instead, which only the
-// server under test can answer, and stay well inside the callers' 1s dial and
-// 2s port budget so a genuine bind failure still surfaces quickly.
-func waitNativeTCPPort(t *testing.T, port int) {
+// Reserve both protocols before the runtime starts; freeing an ephemeral TCP
+// port before it binds lets another process steal the port and makes this
+// startup test flaky.
+func waitNativeTCPPort(t *testing.T, port int, serveErr <-chan error) {
 	t.Helper()
-	// The caller's dial budget is 1s and its own port budget was 2s, so stay
-	// under the larger of the two while still giving a real bind failure time to
-	// settle. A losing race is normally detectable within a few milliseconds.
 	deadline := time.Now().Add(3 * time.Second)
 	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-serveErr:
+			if err == nil {
+				t.Fatal("native SOCKS runtime exited before becoming ready")
+			}
+			t.Fatalf("native SOCKS runtime failed before becoming ready: %v", err)
+		default:
+		}
 		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
 		if err == nil {
 			if err := completeSocksGreeting(connection); err == nil {

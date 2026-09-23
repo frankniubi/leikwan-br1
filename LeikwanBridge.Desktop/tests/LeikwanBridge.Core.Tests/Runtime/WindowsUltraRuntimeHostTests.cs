@@ -9,6 +9,98 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class WindowsUltraRuntimeHostTests
 {
+    [Fact]
+    public void Start_EmitsFirstFlightOnlyWhenGrantTargetGenerationAndCandidateMatch()
+    {
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig { StateDir = temp.Path, UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe") };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp");
+        lease.CandidateKeyHash = new string('d', 64);
+        var host = CreateHost(config, state, supervisor);
+        var forward = CreateForward("198.51.100.199:443", lease);
+        var policy = forward.UltraAccess!;
+        forward.UltraAccess = new UltraPolicy
+        {
+            ProtocolValue = policy.ProtocolValue,
+            ForwardId = policy.ForwardId,
+            PolicyGeneration = policy.PolicyGeneration,
+            SessionTicket = policy.SessionTicket,
+            IssuedAt = policy.IssuedAt,
+            RenewAfter = policy.RenewAfter,
+            ExpiresAt = policy.ExpiresAt,
+            ServiceState = policy.ServiceState,
+            Transport = policy.Transport,
+            RateLimitMbps = policy.RateLimitMbps,
+            QuotaRemainingBytes = policy.QuotaRemainingBytes,
+            TargetDigest = policy.TargetDigest,
+            TCPFirstFlight = new UltraTCPFirstFlight
+            {
+                Target = forward.Target,
+                PolicyGeneration = lease.PolicyGeneration,
+                CandidateHashes = [lease.CandidateKeyHash],
+                ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(3),
+                PrefixBytes = 4,
+                DelayMillis = 300,
+            },
+        };
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        using var bootstrap = JsonDocument.Parse(File.ReadAllText(GetBootstrapPath(temp.Path, forward.ForwardId)));
+        var firstFlight = bootstrap.RootElement.GetProperty("tcp_first_flight");
+        Assert.Equal(forward.Target, firstFlight.GetProperty("target").GetString());
+        Assert.Equal(lease.PolicyGeneration, firstFlight.GetProperty("policy_generation").GetString());
+        Assert.Equal(4, firstFlight.GetProperty("prefix_bytes").GetInt32());
+        Assert.Equal(300, firstFlight.GetProperty("delay_ms").GetInt32());
+        host.Stop(forward.ForwardId);
+    }
+
+    [Fact]
+    public void Start_OmitsFirstFlightForUnmatchedCandidate()
+    {
+        using var temp = new TempStateDirectory();
+        var config = new AgentConfig { StateDir = temp.Path, UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe") };
+        var state = new StateManager(temp.Path);
+        var supervisor = new TestProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp");
+        lease.CandidateKeyHash = new string('d', 64);
+        var host = CreateHost(config, state, supervisor);
+        var forward = CreateForward("198.51.100.199:443", lease);
+        var policy = forward.UltraAccess!;
+        forward.UltraAccess = new UltraPolicy
+        {
+            ProtocolValue = policy.ProtocolValue,
+            ForwardId = policy.ForwardId,
+            PolicyGeneration = policy.PolicyGeneration,
+            SessionTicket = policy.SessionTicket,
+            IssuedAt = policy.IssuedAt,
+            RenewAfter = policy.RenewAfter,
+            ExpiresAt = policy.ExpiresAt,
+            ServiceState = policy.ServiceState,
+            Transport = policy.Transport,
+            RateLimitMbps = policy.RateLimitMbps,
+            QuotaRemainingBytes = policy.QuotaRemainingBytes,
+            TargetDigest = policy.TargetDigest,
+            TCPFirstFlight = new UltraTCPFirstFlight
+            {
+                Target = forward.Target,
+                PolicyGeneration = lease.PolicyGeneration,
+                CandidateHashes = [new string('e', 64)],
+                ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(3),
+                PrefixBytes = 4,
+                DelayMillis = 300,
+            },
+        };
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        using var bootstrap = JsonDocument.Parse(File.ReadAllText(GetBootstrapPath(temp.Path, forward.ForwardId)));
+        Assert.False(bootstrap.RootElement.TryGetProperty("tcp_first_flight", out _));
+        host.Stop(forward.ForwardId);
+    }
+
     [Theory]
     [InlineData("tcp+udp", true)]
     [InlineData("udp", true)]

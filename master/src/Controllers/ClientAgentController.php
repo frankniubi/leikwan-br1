@@ -697,13 +697,18 @@ final class ClientAgentController extends BaseController
             $deviceId,
             $policyV2 || $this->isAndroidRequest($request)
         );
+        $delivery = self::pullDeliveryMetadata(
+            (string) $snapshot['config_revision'],
+            (int) $snapshot['next_poll_after_ms'],
+            $forwards
+        );
 
         $responsePayload = [
             'ok' => true,
-            'config_revision' => (string) $snapshot['config_revision'],
+            'config_revision' => $delivery['config_revision'],
             'forward_revision' => (string) $snapshot['forward_revision'],
             'force_apply' => (bool) $snapshot['force_apply'],
-            'next_poll_after_ms' => (int) $snapshot['next_poll_after_ms'],
+            'next_poll_after_ms' => $delivery['next_poll_after_ms'],
             'client' => [
                 'id' => (int) $client['id'],
                 'name' => (string) $client['name'],
@@ -746,6 +751,35 @@ final class ClientAgentController extends BaseController
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
+    }
+
+    /**
+     * Grant readiness is not part of the stable config revision. Never let an
+     * incomplete cold-start payload acknowledge that stable revision: a later
+     * material upload would otherwise be hidden behind an unnecessary 304.
+     * The retry revision is deterministic, contains no grant material, and
+     * cannot match stableConfigSnapshot. Native rules have no ordinary grant.
+     *
+     * @param array<int, array<string,mixed>> $forwards
+     * @return array{config_revision:string,next_poll_after_ms:int}
+     */
+    public static function pullDeliveryMetadata(string $revision, int $pollMs, array $forwards): array
+    {
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || ($forward['service_status'] ?? '') !== 'active'
+                || !empty($forward['native_outbound_enabled'])) {
+                continue;
+            }
+            if (!is_array($forward[UltraMode::ACCESS_FIELD] ?? null)) {
+                return [
+                    'config_revision' => hash('sha256', "ultra-grants-pending\n" . $revision),
+                    'next_poll_after_ms' => 5000,
+                ];
+            }
+        }
+        return ['config_revision' => $revision, 'next_poll_after_ms' => $pollMs];
     }
 
     /**
@@ -1004,9 +1038,62 @@ final class ClientAgentController extends BaseController
             if (!$policyV2) {
                 $grant['zone_aliases'] = $zoneAliases;
             }
+            if ($policyV2) {
+                $firstFlight = self::tcpFirstFlightForGrant(
+                    isset($this->config) ? $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '') : '',
+                    $forward,
+                    $grant
+                );
+                if ($firstFlight !== null) {
+                    $grant['tcp_first_flight'] = $firstFlight;
+                }
+            }
             $forwards[$index][UltraMode::ACCESS_FIELD] = $grant;
         }
         return $forwards;
+    }
+
+    /** @param array<string,mixed> $forward @param array<string,mixed> $grant @return array<string,mixed>|null */
+    public static function tcpFirstFlightForGrant(?string $raw, array $forward, array $grant): ?array
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+        try {
+            $rules = json_decode($raw, true, 16, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return null;
+        }
+        $direction = strtoupper(trim((string) ($forward['forward_combination_direction'] ?? '')));
+        $rule = is_array($rules) ? ($rules[$direction] ?? null) : null;
+        $target = trim((string) ($forward['target'] ?? ''));
+        $generation = strtolower(trim((string) ($grant['policy_generation'] ?? '')));
+        $expiresAt = trim((string) ($grant['expires_at'] ?? ''));
+        if (!is_array($rule)
+            || $target === ''
+            || preg_match('/^[a-f0-9]{64}$/', $generation) !== 1
+            || strtotime($expiresAt) === false
+            || strtotime($expiresAt) <= time()) {
+            return null;
+        }
+        $prefixBytes = (int) ($rule['prefix_bytes'] ?? 0);
+        $delayMs = (int) ($rule['delay_ms'] ?? 0);
+        $candidateHashes = array_values(array_unique(array_filter(
+            array_slice(is_array($rule['candidate_hashes'] ?? null) ? $rule['candidate_hashes'] : [], 0, 4),
+            static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-f0-9]{64}$/', strtolower($value)) === 1
+        )));
+        if ($prefixBytes < 1 || $prefixBytes > 16 || $delayMs < 1 || $delayMs > 1000 || $candidateHashes === []) {
+            return null;
+        }
+        return [
+            'target' => $target,
+            'policy_generation' => $generation,
+            'expires_at' => $expiresAt,
+            'candidate_hashes' => array_map('strtolower', $candidateHashes),
+            'prefix_bytes' => $prefixBytes,
+            'delay_ms' => $delayMs,
+        ];
     }
 
     private static function usesUltraPolicyV2(string $platform): bool

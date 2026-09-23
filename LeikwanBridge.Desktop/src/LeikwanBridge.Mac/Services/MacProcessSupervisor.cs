@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
@@ -16,6 +18,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
 
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
     private readonly Action<int, string, string>? _onOutput;
+    private readonly UltraRuntimeFailureLog _ultraFailures = new();
     private readonly Func<ProcessStartInfo, Process> _processStarter;
     private readonly Func<int, int, int> _setProcessGroup;
     private readonly Func<int, int, int> _signalProcessGroup;
@@ -95,6 +98,8 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
                 // Native helpers commonly use stderr for progress and
                 // connection telemetry. Health/exit handling owns failures.
                 Log.Debug("[fwd-{ForwardId}/{Role}] stderr: {Line}", forwardId, role, eventArgs.Data);
+                if (role == UltraRuntimeFailureLog.RuntimeRole)
+                    ProcessSupervisor.ObserveUltraRuntimeFailure(_ultraFailures, forwardId, eventArgs.Data);
                 _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
             };
             process.Exited += (_, _) => ProcessExited?.Invoke(forwardId, role);
