@@ -759,8 +759,8 @@
   "format": "zip",
   "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
   "platform": "windows",
-  "sha256": "e707ca3527fb6f4d60173bd432a6460bbbb37f234333d3022bdadd7feeea4040",
-  "size_bytes": 63641208,
+  "sha256": "b58d848ab5b626e787d683b45e2ea09bf74358b54c5164d472fc91a3adf2df41",
+  "size_bytes": 63662016,
   "version": "0.1.20.53",
   "runtime_sha256": {
    "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
