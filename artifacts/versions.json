@@ -31,29 +31,29 @@
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-  "sha256": "03e5ce4381726c2bf5b25e167076ecccfc9c232ef25e44f1eca8747079dfeb61",
-  "size": 339755,
-  "size_bytes": 339755,
-  "version": "2026.09.19.1"
+  "sha256": "127970dfaba17253bbd0b30ee4b8158bba1ac675afae4d9834a1c83989f8cbc2",
+  "size": 349456,
+  "size_bytes": 349456,
+  "version": "2026.09.24.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
   "install_url": "/artifacts/install-client-agent.sh",
   "path": "install/install-client-agent.sh",
   "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-  "sha256": "d0b729a94ecf0140c1483792258c567ef8425f951a20490e636b10860b13791b",
+  "sha256": "99c07dd86296bc3840f6f214d721494d1c61c15ad341347e11f42162f68e8e5e",
   "size": 38766,
   "size_bytes": 38766,
-  "version": "2026.09.19.1"
+  "version": "2026.09.24.1"
  },
  "client_agent_installer_linux_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/install-client-agent-linux-arm64",
   "format": "binary",
   "path": "artifacts/install-client-agent-linux-arm64",
-  "sha256": "497ffb7f44175cdb9fbd035ace06223fb4e01ba187d857dd81c918d30f8fa679",
-  "size_bytes": 32178302,
-  "version": "2026.09.19.1"
+  "sha256": "907f175472f87d151a71afd27dab2e7acf1434c1ae6bb4e55b27f9f0be0a209e",
+  "size_bytes": 32243838,
+  "version": "2026.09.24.1"
  },
  "client_agent_linux_amd64": {
   "architecture": "amd64",
@@ -61,24 +61,24 @@
   "format": "elf-onefile-pyinstaller",
   "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
   "runtime_mode": "frozen",
-  "sha256": "ad1fcc60055ae9f2f1e6715dae1a4313dc82d92f80196c9b739fded5742debf6",
-  "size_bytes": 8845552,
-  "version": "2026.09.19.1"
+  "sha256": "536e8c212be1af882906a0953ece8e4461721180c97fc33ff47ee6f81de2c9e6",
+  "size_bytes": 8851440,
+  "version": "2026.09.24.1"
  },
  "client_agent_update": {
   "artifact_url": "/artifacts/client-agent-update.sh",
   "path": "install/client-agent-update.sh",
-  "sha256": "20e23fe9a39e04a61d361ae2c94ad3ce5a145c14de9b3fc228dffa76ea40a502",
+  "sha256": "4165d70be9f218c589c3bd76e45a84dcffaa39a05e9645a1b98b322b1dec5a27",
   "size_bytes": 22652,
-  "version": "2026.09.19.1"
+  "version": "2026.09.24.1"
  },
  "client_installer": {
   "install_url": "/artifacts/install-client.sh",
   "path": "install/install-client.sh",
   "remote_install_url": "/artifacts/remote-install-client.sh",
-  "sha256": "26d3b2b573907a9cae9b20183b69821f4a567d41f7670d8a144b7fb644c1b62b",
+  "sha256": "5e6b18809e6faf37d17f3e305b576e2054ec252fa5d1d79d6e7c74291339b537",
   "size_bytes": 19459,
-  "version": "2026.09.19.1",
+  "version": "2026.09.24.1",
   "artifact_url": "/artifacts/install-client.sh"
  },
  "client_installer_windows": {
@@ -128,11 +128,11 @@
  },
  "install_forward_runtime": {
   "artifact_url": "/artifacts/install-forward-runtime.py",
-  "path": "client-agent/install_forward_runtime.py",
-  "sha256": "de6c4277eb949e3bd49a4451e4a868c41320a1602e360edac19890d5fc33f7bd",
-  "size": 99901,
-  "size_bytes": 99901,
-  "version": "2026.09.19.1"
+  "path": "artifacts/install-forward-runtime.py",
+  "sha256": "792100e605a2750346360c36dd9b5984bf8890c9b16464984af084908bf9fb20",
+  "size": 102032,
+  "size_bytes": 102032,
+  "version": "2026.09.24.1"
  },
  "leigod_forward_relay": {
   "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -526,10 +526,10 @@
  "ultra_client_runtime": {
   "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
   "attestation": {
-   "fingerprint": "2026.09.19.1.f18d01fb",
-   "self_sha256": "a391e5b9388b86d53bef9e8cfc44e248bfba9db1a14b903e5863dd37b39acd6e"
+   "fingerprint": "2026.09.24.1.906efe97",
+   "self_sha256": "d9041df86523aeb5a2ec6044a5acf8fa486c5ee01f5aae75d69aa07035566217"
   },
-  "build": "Go, CGO disabled, trimpath, stripped, enterprise UoT 2026.09.19.1",
+  "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "hardening": [
    "cgo-disabled",
    "trimpath",
@@ -537,15 +537,15 @@
   ],
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "a391e5b9388b86d53bef9e8cfc44e248bfba9db1a14b903e5863dd37b39acd6e",
-  "size_bytes": 7037054,
-  "version": "2026.09.19.1",
-  "runtime_build_version": "2026.09.19.1.f18d01fb",
+  "sha256": "d9041df86523aeb5a2ec6044a5acf8fa486c5ee01f5aae75d69aa07035566217",
+  "size_bytes": 7082110,
+  "version": "2026.09.24.1",
+  "runtime_build_version": "2026.09.24.1.906efe97",
   "build_provenance": {
-   "source_commit": "f18d01fb",
+   "source_commit": "906efe97",
    "compiler": "go",
    "obfuscation": "none",
-   "reason": "availability-first enterprise release"
+   "reason": "first-flight pilot and close-stage diagnostics"
   }
  },
  "ultra_client_runtime_android_arm64": {
@@ -603,10 +603,10 @@
   "architecture": "arm64",
   "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
   "attestation": {
-   "fingerprint": "2026.09.19.1.f18d01fb",
-   "self_sha256": "4b692e234731599901f043ab63a53045329a40acba7d85afcd661dec76662ca9"
+   "fingerprint": "2026.09.24.1.906efe97",
+   "self_sha256": "2fcc98dbddce53f85a40b22f41bac8b2c9a8911c571dff16006c05a51c68cd2b"
   },
-  "build": "Go, CGO disabled, trimpath, stripped, enterprise UoT 2026.09.19.1",
+  "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "hardening": [
    "cgo-disabled",
    "trimpath",
@@ -614,15 +614,15 @@
   ],
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_linux_arm64",
-  "sha256": "4b692e234731599901f043ab63a53045329a40acba7d85afcd661dec76662ca9",
-  "size_bytes": 6488190,
-  "version": "2026.09.19.1",
-  "runtime_build_version": "2026.09.19.1.f18d01fb",
+  "sha256": "2fcc98dbddce53f85a40b22f41bac8b2c9a8911c571dff16006c05a51c68cd2b",
+  "size_bytes": 6553726,
+  "version": "2026.09.24.1",
+  "runtime_build_version": "2026.09.24.1.906efe97",
   "build_provenance": {
-   "source_commit": "f18d01fb",
+   "source_commit": "906efe97",
    "compiler": "go",
    "obfuscation": "none",
-   "reason": "availability-first enterprise release"
+   "reason": "first-flight pilot and close-stage diagnostics"
   }
  },
  "ultra_client_runtime_macos_arm64": {
@@ -680,26 +680,26 @@
  "ultra_client_runtime_windows": {
   "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
   "attestation": {
-   "fingerprint": "2026.09.19.1.f18d01fb",
-   "self_sha256": "30185ee26b3828ad4ab391690b8fc5d666c623dad09d36ea4a11934c69cb86a8"
+   "fingerprint": "2026.09.24.1.906efe97",
+   "self_sha256": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
   },
-  "build": "Go, CGO disabled, trimpath, stripped, enterprise UoT 2026.09.19.1",
+  "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-  "sha256": "30185ee26b3828ad4ab391690b8fc5d666c623dad09d36ea4a11934c69cb86a8",
-  "size_bytes": 7315456,
-  "version": "2026.09.19.1",
-  "runtime_build_version": "2026.09.19.1.f18d01fb",
+  "sha256": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d",
+  "size_bytes": 7357440,
+  "version": "2026.09.24.1",
+  "runtime_build_version": "2026.09.24.1.906efe97",
   "hardening": [
    "cgo-disabled",
    "trimpath",
    "stripped"
   ],
   "build_provenance": {
-   "source_commit": "f18d01fb",
+   "source_commit": "906efe97",
    "compiler": "go",
    "obfuscation": "none",
-   "reason": "availability-first enterprise release"
+   "reason": "first-flight pilot and close-stage diagnostics"
   }
  },
  "uot_bond_runtime": {
@@ -720,16 +720,16 @@
  "uot_sidecar_linux_amd64": {
   "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_amd64",
   "path": "artifacts/uot-sidecar/uot-sidecar_linux_amd64",
-  "sha256": "c6d11563b8c1b8a28f2d8b3a9422d4215ccc67755a0d0d32e059eba40dfd5317",
-  "size_bytes": 3063934,
-  "version": "2026.09.19.1"
+  "sha256": "c6b716c94fd012265a51713a9e24b5f740eecb7310d9a9c5bddc17c032370229",
+  "size_bytes": 3092606,
+  "version": "2026.09.24.1"
  },
  "uot_sidecar_linux_arm64": {
   "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_arm64",
   "path": "artifacts/uot-sidecar/uot-sidecar_linux_arm64",
-  "sha256": "2ec110b9c14cc08dca10b5d7de2669e4ed228f6688b2955ebf9cedaf01091c03",
-  "size_bytes": 2949246,
-  "version": "2026.09.19.1"
+  "sha256": "15b8377fef45f8fa91b522c36572e5f526d694720fde2d27a2808c0be3e2303a",
+  "size_bytes": 3014782,
+  "version": "2026.09.24.1"
  },
  "wg_watchdog": {
   "artifact_url": "/artifacts/leikwan-wg-watchdog.sh",
@@ -747,11 +747,11 @@
    "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
    "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
    "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-   "ultra_client_runtime_windows": "30185ee26b3828ad4ab391690b8fc5d666c623dad09d36ea4a11934c69cb86a8"
+   "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
   },
-  "sha256": "cf6d706169f182caad7a209b2132357f5b24d098002a644116f54178e0c6ac2f",
-  "size_bytes": 71530142,
-  "version": "0.1.20.52"
+  "sha256": "ae9cc42d09f77a64f60787fabdc17bc3ef199cabee4a37f9a2ffebb87417f440",
+  "size_bytes": 69728647,
+  "version": "0.1.20.53"
  },
  "windows_headless_client": {
   "architecture": "x86_64",
@@ -761,22 +761,22 @@
   "platform": "windows",
   "sha256": "e707ca3527fb6f4d60173bd432a6460bbbb37f234333d3022bdadd7feeea4040",
   "size_bytes": 63641208,
-  "version": "0.1.20.52",
+  "version": "0.1.20.53",
   "runtime_sha256": {
    "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
    "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
    "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
    "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
    "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-   "ultra_client_runtime_windows": "30185ee26b3828ad4ab391690b8fc5d666c623dad09d36ea4a11934c69cb86a8"
+   "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
   }
  },
  "windows_headless_installer": {
   "install_url": "/artifacts/install-windows-headless.ps1",
   "path": "install/install-windows-headless.ps1",
-  "sha256": "ce937ca8b407199639a9dbc7524304248d96fd845af29c490cf2917c5d6a80c4",
-  "size_bytes": 4502,
-  "version": "0.1.20.52",
+  "sha256": "a1b76825fa316e69bd5f7d4ab58b447e46eb658f99b30da2ceaba0badb8d5dc8",
+  "size_bytes": 4692,
+  "version": "0.1.20.53",
   "artifact_url": "/artifacts/install-windows-headless.ps1"
  },
  "windows_headless_uninstaller": {
