@@ -51,6 +51,7 @@ public static class MacAppBootstrap
         if (string.IsNullOrWhiteSpace(config.MasterUrl))
             config.MasterUrl = PanelEndpoints.Default.Url;
         PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
+        StartOrphanRuntimeReap(paths, config);
         Log.Information("mac_bootstrap_identity_begin");
         var identity = new MacPlatformIdentityProvider(paths).GetOrCreate();
         Log.Information("mac_bootstrap_identity_complete");
@@ -130,6 +131,41 @@ public static class MacAppBootstrap
             diagnostics,
             config.PollIntervalSeconds,
             config.HealthCheckIntervalSeconds);
+    }
+
+    /// <summary>
+    /// A previous host that crashed can leave ultra-client runtimes behind
+    /// (reparented to launchd, still holding relay sessions). Reap them in the
+    /// background: only ppid-1 processes of this bundle's helper binary and this
+    /// uid are touched, so the children this host is about to start are never
+    /// candidates, and startup does not wait on the scan.
+    /// </summary>
+    private static void StartOrphanRuntimeReap(MacPlatformPaths paths, AgentConfig config)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+        var executables = new List<string> { Path.Combine(paths.BinDirectory, "ultra-client") };
+        try
+        {
+            executables.Add(config.GetEffectiveUltraBin());
+        }
+        catch (Exception exception)
+        {
+            Log.Debug("orphan_runtime_path_unavailable type={ErrorType}", exception.GetType().Name);
+        }
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var reaped = MacOrphanRuntimeReaper.CreateDefault().Reap(executables);
+                if (reaped.Count > 0)
+                    Log.Warning("orphan_runtime_reaped count={Count}", reaped.Count);
+            }
+            catch (Exception exception)
+            {
+                Log.Warning("orphan_runtime_reap_failed type={ErrorType}", exception.GetType().Name);
+            }
+        });
     }
 
     private static void KillManagedProcess(int processId)

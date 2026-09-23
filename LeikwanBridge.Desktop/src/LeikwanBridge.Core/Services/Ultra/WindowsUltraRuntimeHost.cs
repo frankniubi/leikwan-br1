@@ -116,6 +116,10 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 ["udp_queue_packets"] = 256,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
+                // Without these the runtime falls back to the Linux paths,
+                // cannot take the lookup lock, and waits ~3.5 s on every start.
+                ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
+                ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
             };
             EgressInterfaceConfig.Apply(staticConfig, _config.PreferredEgressInterface);
             if (udpCapable)
@@ -162,7 +166,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
             if (!delivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
             phase = "wait_listener";
-            var portReady = WaitForPort(forward.ListenPort, _portListeningProbe, TimeSpan.FromSeconds(6));
+            var portReady = WaitForPort(forward.ListenPort, _portListeningProbe, ListenerReadyTimeout,
+                () => _supervisor.IsRunning(forward.ForwardId));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
@@ -247,13 +252,23 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         }
     }
 
-    private static bool WaitForPort(int port, Func<int, bool> probe, TimeSpan timeout)
+    /// <summary>
+    /// A cold start (several forwards starting together, candidate probes,
+    /// antivirus scanning a fresh binary) can take well over the 6 s this used
+    /// to allow; giving up early killed a healthy runtime and restarted it.
+    /// The wait ends as soon as the runtime process exits.
+    /// </summary>
+    public static readonly TimeSpan ListenerReadyTimeout = TimeSpan.FromSeconds(20);
+
+    public static bool WaitForPort(int port, Func<int, bool> probe, TimeSpan timeout, Func<bool> processAlive)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
             if (probe(port))
                 return true;
+            if (!processAlive())
+                return probe(port);
             Thread.Sleep(25);
         }
         return probe(port);
@@ -264,6 +279,11 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         _supervisor.StopAll(forwardId);
         CleanupRuntimeFiles(forwardId);
     }
+
+    public string? GetStatusPath(int forwardId)
+        => forwardId <= 0
+            ? null
+            : Path.Combine(_config.GetEffectiveStateDir(), "runtime", $"ultra-forward-{forwardId}.status.json");
 
     private void CleanupRuntimeFiles(int forwardId)
     {

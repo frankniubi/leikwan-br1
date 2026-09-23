@@ -33,6 +33,46 @@ public class ForwardRuntimeManager : IDisposable
 
     public event Action<int, string>? UltraRecoveryRequested;
 
+    /// <summary>
+    /// Raised instead of <see cref="UltraRecoveryRequested"/> for a runtime that is
+    /// idle on purpose (awaiting or lapsed policy): it needs a lease delivered
+    /// on its control channel, not a restart.
+    /// </summary>
+    public event Action<int, string>? UltraLeaseRefreshRequested;
+
+    /// <summary>
+    /// Restart reason a health check uses once an idle runtime has not come
+    /// back after several lease deliveries; it bypasses the idle exemption.
+    /// </summary>
+    public const string IdleRuntimeUnresponsiveReason = "idle_runtime_unresponsive";
+
+    /// <summary>Policy state the running Ultra runtime last reported in its status file.</summary>
+    public virtual UltraRuntimePolicyState GetUltraRuntimePolicyState(int forwardId)
+    {
+        var statusPath = _ultraRuntimeHost.GetStatusPath(forwardId);
+        if (string.IsNullOrWhiteSpace(statusPath))
+            return UltraRuntimePolicyState.Unknown;
+        // A snapshot older than the last lease delivery can still say
+        // "awaiting"/"lapsed" for a runtime that has just been authorized.
+        return UltraRuntimeStatus.ReadPolicyState(
+            statusPath,
+            _lastUltraLeaseDelivery.TryGetValue(forwardId, out var delivered) ? delivered : null);
+    }
+
+    private readonly ConcurrentDictionary<int, DateTimeOffset> _lastUltraLeaseDelivery = new();
+
+    /// <summary>
+    /// True when the forward's runtime process is alive and reports that it is
+    /// waiting for, or has outlived, its policy. Such a runtime is not broken.
+    /// </summary>
+    public virtual bool IsUltraRuntimeIdleOnPurpose(int forwardId)
+        => IsForwardRunning(forwardId)
+            && UltraRuntimeStatus.IsIdleOnPurpose(GetUltraRuntimePolicyState(forwardId));
+
+    /// <summary>Asks config sync to deliver a fresh lease to the running runtime.</summary>
+    public virtual void RequestUltraLeaseRefresh(int forwardId, string reason)
+        => UltraLeaseRefreshRequested?.Invoke(forwardId, reason);
+
     public Task<ProxyForwardLease> AcquireProxyForwardAsync(ForwardConfig forward, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(forward);
@@ -419,11 +459,13 @@ public class ForwardRuntimeManager : IDisposable
                     forward.ForwardId, failure.RetryAfter);
                 return;
             }
+            var deliveryStartedAt = DateTimeOffset.UtcNow;
             _ultraRuntimeHost.Start(
                 forward,
                 usableLeases,
                 effectiveSignature,
                 string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
+            _lastUltraLeaseDelivery[forward.ForwardId] = deliveryStartedAt;
             _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
         }
         catch (Exception ex)
@@ -509,6 +551,20 @@ public class ForwardRuntimeManager : IDisposable
                 var state = _stateManager.LoadApplied().GetValueOrDefault(forward.ForwardId.ToString());
                 if (!manual && (state?.UserStopped == true || IsForwardReady(forward)))
                     return;
+                // A runtime that waits for (or outlived) its policy is idle on
+                // purpose. Queueing a recovery would make the next reconcile
+                // restart it; it only needs a lease on its control channel.
+                if (!manual
+                    && !string.Equals(reason, IdleRuntimeUnresponsiveReason, StringComparison.Ordinal)
+                    && IsUltraRuntimeIdleOnPurpose(forward.ForwardId))
+                {
+                    Log.Information(
+                        "forward {ForwardId}: Ultra runtime is idle waiting for a policy; requesting a lease instead of a restart (reason={Reason})",
+                        forward.ForwardId,
+                        reason);
+                    RequestUltraLeaseRefresh(forward.ForwardId, reason);
+                    return;
+                }
                 if (manual && state?.UserStopped == true)
                 {
                     state.UserStopped = false;
@@ -562,9 +618,13 @@ public class ForwardRuntimeManager : IDisposable
                     || !policy.IsUsable(forward, DateTimeOffset.UtcNow)
                     || leases.Any(lease => !lease.IsUsable(policy, forward, DateTimeOffset.UtcNow)))
                     return false;
+                var deliveryStartedAt = DateTimeOffset.UtcNow;
                 var refreshed = _ultraRuntimeHost.Refresh(forward, leases);
                 if (refreshed)
+                {
+                    _lastUltraLeaseDelivery[forward.ForwardId] = deliveryStartedAt;
                     _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+                }
                 return refreshed;
             }
             finally

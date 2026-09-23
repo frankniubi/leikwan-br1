@@ -9,33 +9,53 @@ using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
 
+/// <summary>
+/// Runs the forward helpers (ultra-client and friends) as direct children.
+/// <para>
+/// Children deliberately stay in the host's process group. The previous design
+/// called setpgid(child, child) after Process.Start, which can never work: once
+/// the child has exec'd, POSIX refuses setpgid from the parent with EACCES, so
+/// every start logged process_group_create_failed errno=13 and fell back to
+/// the direct pid anyway. Worse, a child in its own group would escape
+/// launchd's job cleanup: when a LaunchDaemon's main process dies, launchd kills
+/// the remaining processes of the job's process group (unless
+/// AbandonProcessGroup is set), which is exactly what reaps a runtime orphaned
+/// by a host crash. Orphans that survive anyway (an interactive run, a GUI
+/// crash) are reaped on the next start by <see cref="MacOrphanRuntimeReaper"/>.
+/// </para>
+/// </summary>
 public sealed class MacProcessSupervisor : IProcessSupervisor
 {
     public const int SigKill = 9;
     public const int SigTerm = 15;
 
-    private sealed record ManagedProcess(int ForwardId, string Role, string Label, Process Process, DateTime StartedAt, bool OwnsProcessGroup);
+    private sealed class ManagedProcess(int forwardId, string role, string label, Process process, DateTime startedAt)
+    {
+        public int ForwardId { get; } = forwardId;
+        public string Role { get; } = role;
+        public string Label { get; } = label;
+        public Process Process { get; } = process;
+        public DateTime StartedAt { get; } = startedAt;
+        public volatile bool Stopping;
+    }
 
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
     private readonly Action<int, string, string>? _onOutput;
     private readonly UltraRuntimeFailureLog _ultraFailures = new();
     private readonly Func<ProcessStartInfo, Process> _processStarter;
-    private readonly Func<int, int, int> _setProcessGroup;
-    private readonly Func<int, int, int> _signalProcessGroup;
+    private readonly Func<int, int, int> _signalProcess;
     private readonly TimeSpan _stopTimeout;
     private bool _disposed;
 
     public MacProcessSupervisor(
         Action<int, string, string>? onOutput = null,
         Func<ProcessStartInfo, Process>? processStarter = null,
-        Func<int, int, int>? setProcessGroup = null,
-        Func<int, int, int>? signalProcessGroup = null,
+        Func<int, int, int>? signalProcess = null,
         TimeSpan? stopTimeout = null)
     {
         _onOutput = onOutput;
         _processStarter = processStarter ?? StartNativeProcess;
-        _setProcessGroup = setProcessGroup ?? NativeSetProcessGroup;
-        _signalProcessGroup = signalProcessGroup ?? NativeSignalProcessGroup;
+        _signalProcess = signalProcess ?? NativeSignalProcess;
         _stopTimeout = stopTimeout ?? TimeSpan.FromSeconds(3);
     }
 
@@ -73,16 +93,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             Log.Information("macOS process spawned for forward {ForwardId} [{Role}] pid={ProcessId}",
                 forwardId, role, process.Id);
             process.EnableRaisingEvents = true;
-            var ownsProcessGroup = _setProcessGroup(process.Id, process.Id) == 0;
-            if (!ownsProcessGroup)
-            {
-                var errno = Marshal.GetLastWin32Error();
-                Log.Warning(
-                    "process_group_create_failed for forward {ForwardId} [{Role}] errno={Errno}; using direct-pid signal fallback",
-                    forwardId,
-                    role,
-                    errno);
-            }
+            var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow);
 
             process.OutputDataReceived += (_, eventArgs) =>
             {
@@ -102,7 +113,17 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
                     ProcessSupervisor.ObserveUltraRuntimeFailure(_ultraFailures, forwardId, eventArgs.Data);
                 _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
             };
-            process.Exited += (_, _) => ProcessExited?.Invoke(forwardId, role);
+            process.Exited += (_, _) =>
+            {
+                if (!managed.Stopping)
+                {
+                    // Unexpected exits must be visible at the default level;
+                    // HealthCheckService decides what to do about them.
+                    Log.Information("macOS process exited for forward {ForwardId} [{Role}] exitCode={ExitCode}",
+                        forwardId, role, TryGetExitCode(process));
+                }
+                ProcessExited?.Invoke(forwardId, role);
+            };
 
             if (standardInput is not null)
             {
@@ -124,7 +145,6 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            var managed = new ManagedProcess(forwardId, role, label, process, DateTime.UtcNow, ownsProcessGroup);
             _processes.AddOrUpdate(
                 forwardId,
                 _ => [managed],
@@ -168,11 +188,13 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         lock (managed)
             snapshot = [.. managed];
 
+        foreach (var item in snapshot)
+            item.Stopping = true;
         foreach (var item in snapshot.Where(item => IsAlive(item.Process)))
         {
             var processId = TryGetProcessId(item.Process);
             if (processId > 0)
-                _signalProcessGroup(item.OwnsProcessGroup ? -processId : processId, SigTerm);
+                _signalProcess(processId, SigTerm);
         }
 
         var deadline = DateTime.UtcNow + _stopTimeout;
@@ -194,7 +216,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         {
             var processId = TryGetProcessId(item.Process);
             if (processId > 0)
-                _signalProcessGroup(item.OwnsProcessGroup ? -processId : processId, SigKill);
+                _signalProcess(processId, SigKill);
         }
         foreach (var item in snapshot)
         {
@@ -288,18 +310,24 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
         }
     }
 
-    private static int NativeSetProcessGroup(int processId, int processGroupId)
+    private static int TryGetExitCode(Process process)
     {
-        return setpgid(processId, processGroupId);
+        try
+        {
+            return process.ExitCode;
+        }
+        catch
+        {
+            return -1;
+        }
     }
 
-    private static int NativeSignalProcessGroup(int processGroupId, int signal)
+    // Only ever called with a positive pid: signalling a (negative) process
+    // group would reach the host itself, which shares the children's group.
+    private static int NativeSignalProcess(int processId, int signal)
     {
-        return kill(processGroupId, signal);
+        return processId > 0 ? kill(processId, signal) : -1;
     }
-
-    [DllImport("libSystem.B.dylib", SetLastError = true)]
-    private static extern int setpgid(int processId, int processGroupId);
 
     [DllImport("libSystem.B.dylib", SetLastError = true)]
     private static extern int kill(int processId, int signal);

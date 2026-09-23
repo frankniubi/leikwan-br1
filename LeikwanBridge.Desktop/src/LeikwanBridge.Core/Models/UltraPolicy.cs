@@ -43,10 +43,11 @@ public sealed class UltraPolicy
             return "target_digest_mismatch";
         if (ExpiresAt <= now)
             return "expired";
-        // The panel caps policy TTL at five minutes. Allow a small amount of
-        // clock skew and request transit time so a valid grant is not rejected
-        // merely because the panel clock is a few seconds ahead.
-        if (ExpiresAt > now.AddMinutes(5).AddSeconds(30))
+        // A client that sends the offline-validity header may be granted up to
+        // an hour (30 min requested); renewal is still driven by renew_after.
+        // Allow a small amount of clock skew and request transit time so a valid
+        // grant is not rejected merely because the panel clock is a few seconds ahead.
+        if (!UltraGrantValidity.IsWithinAcceptedWindow(ExpiresAt, now))
             return "expiry_window";
         if (QuotaRemainingBytes <= 0)
             return "quota";

@@ -18,7 +18,12 @@ public sealed class OrdinaryUltraRecoveryTests
         using var api = new MasterApiClient("http://127.0.0.1:1", "synthetic", httpClientFactory: () => http, ownsHttpClient: false);
         var state = new StateManager(temp.Path);
         using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path }, new ProcessSupervisor(), state);
-        var service = new ConfigPollingService(api, runtime, state);
+        // A failed pull now backs off (5 s .. 60 s with jitter in production);
+        // shrink the sequence so the test still observes the retry quickly.
+        var service = new ConfigPollingService(api, runtime, state, null, TimeProvider.System,
+            new ControlPlaneBackoff(initial: TimeSpan.FromMilliseconds(200), cap: TimeSpan.FromMilliseconds(400),
+                minimumDelay: TimeSpan.FromMilliseconds(50)),
+            leaseBackoff: null);
         var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
         service.SyncError += failures.Enqueue;
         try

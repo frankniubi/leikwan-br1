@@ -134,6 +134,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["status_path"] = statusPath,
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
                 ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
+                // The runtime exits when its parent changes (POSIX re-parenting to
+                // launchd after a host crash), so an orphan cannot keep serving a
+                // forward port. The host and the ultra-client in
+                // Contents/Resources/bin always ship together in one bundle, so the
+                // runtime reading this optional key is the one built with it.
+                ["parent_pid"] = Environment.ProcessId,
             };
             EgressInterfaceConfig.Apply(bootstrapConfig, _config.PreferredEgressInterface);
             if (udpCapable)
@@ -190,7 +196,8 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             if (!leaseDelivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
             phase = "wait_listener";
-            var portReady = WaitForPort(forward.ListenPort, _portListeningProbe, TimeSpan.FromSeconds(6));
+            var portReady = WindowsUltraRuntimeHost.WaitForPort(forward.ListenPort, _portListeningProbe,
+                WindowsUltraRuntimeHost.ListenerReadyTimeout, () => _supervisor.IsRunning(forward.ForwardId));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
@@ -241,6 +248,9 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         => _runtimes.TryGetValue(forwardId, out var runtime)
             ? MacUltraRuntimeStatusReader.ReadPayloadCeiling(runtime.StatusPath)
             : 0;
+
+    public string? GetStatusPath(int forwardId)
+        => _runtimes.TryGetValue(forwardId, out var runtime) ? runtime.StatusPath : null;
 
     public bool Refresh(ForwardConfig forward, UltraLease lease)
         => Refresh(forward, new[] { lease });
@@ -324,18 +334,6 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Thread.Sleep(25);
         }
         return _socketExists(socketPath);
-    }
-
-    private bool WaitForPort(int port, Func<int, bool> probe, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (probe(port))
-                return true;
-            Thread.Sleep(25);
-        }
-        return probe(port);
     }
 
     private static void DeletePrivateDirectory(string directory, string allowedRoot, string requiredPrefix)

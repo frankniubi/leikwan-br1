@@ -10,8 +10,29 @@
 # it reads the public client manifest, downloads the correct architecture's
 # self-contained DMG, verifies its size and SHA-256, installs the app bundle,
 # and only then registers launchd. Remove it with --uninstall.
+#
+# Re-running it is an upgrade/repair: the running daemon is booted out and
+# waited for, the plist and bundle are replaced (the previous ones are kept
+# until the new daemon is verified running), the daemon is bootstrapped again
+# and must stay running for a few seconds. Any failure restores the previous
+# bundle and plist and restarts the previous daemon.
+#
+# launchd supervision: KeepAlive restarts the daemon after a crash or any
+# non-zero exit (a deliberate "leikwan stop" exits 0 and stays stopped),
+# ThrottleInterval spaces restarts, and because AbandonProcessGroup is off,
+# launchd also kills the ultra-client children in the daemon's process group
+# when the daemon dies, so a crash cannot leave orphaned runtimes behind.
+# Soft/HardResourceLimits raise the open-file limit (NumberOfFiles) from
+# launchd's default 256, which a busy forward set exhausts with sockets.
+#
+# Self-update: the daemon checks the panel manifest on its own (first check
+# 1-10 min after start, then every ~6 h, backoff on failure) and applies the
+# verified update zip through a detached helper that boots the daemon out,
+# swaps the bundle (root-only backups in $STATE_DIR/backups, newest 3 kept),
+# restarts it and rolls back if it does not come up connected. Set
+# "disable_auto_updates": true in the daemon config to turn it off.
 set -eu
-INSTALLER_VERSION="1.0.46"
+INSTALLER_VERSION="1.0.47"
 
 LABEL="com.leikwan.bridge.headless"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
@@ -33,6 +54,16 @@ MOUNT_POINT=""
 NEW_APP=""
 OLD_APP_BACKUP=""
 SERVICE_WAS_LOADED=0
+PLIST_BACKUP=""
+PLIST_STAGED=""
+PLIST_CREATED=0
+TOKEN_BACKUP=""
+INSTALL_COMMITTED=0
+# Set right before the first change to the machine; nothing is rolled back
+# for a run that failed earlier (bad arguments, download or checksum errors).
+CHANGES_STARTED=0
+# Seconds the new daemon must keep the same pid before the install counts.
+VERIFY_STABLE_SECONDS="${LEIKWAN_VERIFY_STABLE_SECONDS:-5}"
 
 usage() {
   cat <<'USAGE'
@@ -45,24 +76,134 @@ usage: sudo sh install-macos-headless.sh --panel <url> --client-id <n> \
 USAGE
 }
 
+service_loaded() {
+  launchctl print "system/$LABEL" >/dev/null 2>&1
+}
+
+# bootout returns before launchd has finished tearing the job down; a
+# bootstrap issued in that window fails with "Bootstrap failed: 5: Input/output
+# error". Wait until the label is really gone.
+wait_unloaded() {
+  waited=0
+  while service_loaded; do
+    if [ "$waited" -ge 30 ]; then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+stop_service() {
+  if service_loaded; then
+    launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+  fi
+  wait_unloaded
+}
+
+bootstrap_service() {
+  # A label disabled with "launchctl disable" cannot be bootstrapped.
+  launchctl enable "system/$LABEL" >/dev/null 2>&1 || true
+  attempt=1
+  while [ "$attempt" -le 5 ]; do
+    if launchctl bootstrap system "$PLIST" 2>/dev/null; then
+      return 0
+    fi
+    # Already loaded (a concurrent bootstrap won the race) is success too.
+    service_loaded && return 0
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  launchctl bootstrap system "$PLIST"
+}
+
+service_pid() {
+  launchctl print "system/$LABEL" 2>/dev/null \
+    | awk '/^[[:space:]]*pid = [0-9]+/ { print $3; exit }'
+}
+
+service_running() {
+  launchctl print "system/$LABEL" 2>/dev/null | grep -q 'state = running'
+}
+
+# The daemon counts as installed only when launchd reports it running and the
+# same pid survives VERIFY_STABLE_SECONDS (a crash loop changes the pid or
+# leaves the job waiting out its ThrottleInterval).
+verify_running() {
+  waited=0
+  pid=""
+  while [ "$waited" -lt 30 ]; do
+    if service_running; then
+      pid="$(service_pid)"
+      [ -n "$pid" ] && break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ -z "$pid" ]; then
+    echo "launchd never reported $LABEL running" >&2
+    return 1
+  fi
+  sleep "$VERIFY_STABLE_SECONDS"
+  if ! service_running || [ "$(service_pid)" != "$pid" ]; then
+    echo "$LABEL did not stay running (pid $pid)" >&2
+    launchctl print "system/$LABEL" 2>/dev/null | grep -E 'state =|pid =|last exit code' >&2 || true
+    return 1
+  fi
+  echo "verified $LABEL running (pid $pid)"
+  return 0
+}
+
+# Undo a failed install/upgrade: previous bundle, previous plist, previous
+# daemon. Every step is best effort; the goal is to leave the machine in the
+# state it was in before the installer ran.
+rollback() {
+  echo "install-macos-headless: install failed; restoring the previous installation" >&2
+  launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+  wait_unloaded || true
+  if [ -n "$OLD_APP_BACKUP" ] && [ -e "$OLD_APP_BACKUP" ]; then
+    if [ -e "$APP" ]; then
+      failed_app="$(dirname "$APP")/.LeiKwan Bridge.app.failed.$$"
+      rm -rf "$failed_app"
+      mv "$APP" "$failed_app" && rm -rf "$failed_app"
+    fi
+    mv "$OLD_APP_BACKUP" "$APP" && echo "restored previous app bundle" >&2
+  fi
+  if [ -n "$TOKEN_BACKUP" ] && [ -f "$TOKEN_BACKUP" ]; then
+    mv -f "$TOKEN_BACKUP" "$TOKEN_FILE"
+  fi
+  if [ -n "$PLIST_BACKUP" ] && [ -f "$PLIST_BACKUP" ]; then
+    mv -f "$PLIST_BACKUP" "$PLIST" && echo "restored previous launchd plist" >&2
+  elif [ "$PLIST_CREATED" = "1" ]; then
+    rm -f "$PLIST"
+  fi
+  if [ "$SERVICE_WAS_LOADED" = "1" ] && [ -f "$PLIST" ]; then
+    if bootstrap_service >/dev/null 2>&1; then
+      launchctl kickstart "system/$LABEL" >/dev/null 2>&1 || true
+      echo "restarted the previous $LABEL" >&2
+    else
+      echo "could not restart the previous $LABEL; check: launchctl print system/$LABEL" >&2
+    fi
+  fi
+}
+
 cleanup_downloads() {
   status=$?
   trap - EXIT INT TERM
+  set +e
   if [ -n "$MOUNT_POINT" ]; then
     hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
   fi
   [ -z "$MOUNT_POINT" ] || rmdir "$MOUNT_POINT" >/dev/null 2>&1 || true
   [ -z "$MANIFEST_FILE" ] || rm -f "$MANIFEST_FILE"
   [ -z "$DMG_FILE" ] || rm -f "$DMG_FILE"
+  [ -z "$PLIST_STAGED" ] || rm -f "$PLIST_STAGED"
   if [ "$status" -ne 0 ] && [ -n "$NEW_APP" ] && [ -e "$NEW_APP" ]; then
     rm -rf "$NEW_APP"
   fi
-  if [ "$status" -ne 0 ] && [ -n "$OLD_APP_BACKUP" ] && [ -e "$OLD_APP_BACKUP" ] && [ ! -e "$APP" ]; then
-    mv "$OLD_APP_BACKUP" "$APP" || true
-  fi
-  if [ "$status" -ne 0 ] && [ "$SERVICE_WAS_LOADED" = "1" ]; then
-    launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || true
-    launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || true
+  if [ "$status" -ne 0 ] && [ "$CHANGES_STARTED" = "1" ] && [ "$INSTALL_COMMITTED" != "1" ]; then
+    rollback
   fi
   exit "$status"
 }
@@ -94,7 +235,11 @@ status() {
   else
     echo "plist: missing"
   fi
-  launchctl print "system/$LABEL" 2>/dev/null | grep -E 'state =|pid =|last exit code' || echo "service: not loaded"
+  launchctl print "system/$LABEL" 2>/dev/null | grep -E 'state =|pid =|last exit code|runs =' || echo "service: not loaded"
+  if [ -f "$PLIST" ]; then
+    echo "launchd plist ($PLIST):"
+    plutil -p "$PLIST" 2>/dev/null | grep -E -A3 '"(KeepAlive|RunAtLoad|ThrottleInterval|AbandonProcessGroup|SoftResourceLimits|HardResourceLimits)"' || true
+  fi
   if [ -f "$STATUS_FILE" ]; then
     echo "status:"
     cat "$STATUS_FILE"
@@ -102,8 +247,12 @@ status() {
 }
 
 uninstall() {
-  launchctl bootout "system/$LABEL" 2>/dev/null || true
+  # bootout also stops the ultra-client runtimes in the daemon's process group.
+  stop_service || echo "warning: launchd still lists $LABEL" >&2
   rm -f "$PLIST"
+  if [ -f /usr/local/bin/leikwan ] && grep -q 'LeikwanBridge.Mac' /usr/local/bin/leikwan 2>/dev/null; then
+    rm -f /usr/local/bin/leikwan
+  fi
   echo "removed $LABEL"
   echo "kept state in $STATE_DIR (delete it to forget the client identity)"
 }
@@ -255,10 +404,12 @@ ensure_app_bundle() {
     exit 1
   }
 
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
-    SERVICE_WAS_LOADED=1
-    launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-  fi
+  # From here on the machine changes; a failure restores what was there.
+  CHANGES_STARTED=1
+  stop_service || {
+    echo "launchd did not unload $LABEL within 30 s; not replacing the bundle under it" >&2
+    exit 1
+  }
   app_parent="$(dirname "$APP")"
   mkdir -p "$app_parent"
   NEW_APP="$app_parent/.LeiKwan Bridge.app.new.$$"
@@ -280,6 +431,11 @@ ensure_app_bundle() {
 }
 
 if [ "$MODE" != "print" ]; then
+  # Remember whether a daemon was loaded before anything changes, so a failed
+  # upgrade restarts it and a failed fresh install leaves nothing behind.
+  if service_loaded; then
+    SERVICE_WAS_LOADED=1
+  fi
   ensure_app_bundle
 fi
 
@@ -321,6 +477,20 @@ $egress_plist_args
   </dict>
   <key>ThrottleInterval</key>
   <integer>15</integer>
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+  </dict>
+  <key>AbandonProcessGroup</key>
+  <false/>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/launchd.out.log</string>
   <key>StandardErrorPath</key>
@@ -345,27 +515,60 @@ if [ ! -x "$EXECUTABLE" ]; then
   exit 1
 fi
 
+CHANGES_STARTED=1
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 chmod 700 "$STATE_DIR"
+chmod 755 "$LOG_DIR"
 umask 077
-printf '%s' "$TOKEN" > "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE"
-chown root:wheel "$TOKEN_FILE" 2>/dev/null || true
+if [ -f "$TOKEN_FILE" ]; then
+  TOKEN_BACKUP="$TOKEN_FILE.previous.$$"
+  cp -p "$TOKEN_FILE" "$TOKEN_BACKUP"
+fi
+printf '%s' "$TOKEN" > "$TOKEN_FILE.new.$$"
+chmod 600 "$TOKEN_FILE.new.$$"
+chown root:wheel "$TOKEN_FILE.new.$$" 2>/dev/null || true
+mv -f "$TOKEN_FILE.new.$$" "$TOKEN_FILE"
 
 # A downloaded bundle carries the quarantine bit; launchd cannot start a
 # quarantined binary, so clear it for this app only.
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 
-write_plist > "$PLIST"
+# Stage and lint the new plist before touching the installed one.
+PLIST_STAGED="$PLIST.new.$$"
+write_plist > "$PLIST_STAGED"
+chmod 644 "$PLIST_STAGED"
+chown root:wheel "$PLIST_STAGED" 2>/dev/null || true
+plutil -lint "$PLIST_STAGED" >/dev/null
 
-chmod 644 "$PLIST"
-chown root:wheel "$PLIST" 2>/dev/null || true
-plutil -lint "$PLIST" >/dev/null
+stop_service || {
+  echo "launchd did not unload $LABEL within 30 s" >&2
+  exit 1
+}
+if [ -f "$PLIST" ]; then
+  PLIST_BACKUP="$PLIST.previous.$$"
+  cp -p "$PLIST" "$PLIST_BACKUP"
+else
+  PLIST_CREATED=1
+fi
+mv -f "$PLIST_STAGED" "$PLIST"
+PLIST_STAGED=""
 
-launchctl bootout "system/$LABEL" 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
-launchctl enable "system/$LABEL" 2>/dev/null || true
-launchctl kickstart -k "system/$LABEL"
+bootstrap_service
+# RunAtLoad starts it; kickstart (without -k) only covers a label launchd kept
+# stopped, and never kills the instance that is just starting.
+launchctl kickstart "system/$LABEL" >/dev/null 2>&1 || true
+verify_running
+
+# The new daemon is up: drop the rollback material.
+INSTALL_COMMITTED=1
+[ -z "$PLIST_BACKUP" ] || rm -f "$PLIST_BACKUP"
+PLIST_BACKUP=""
+[ -z "$TOKEN_BACKUP" ] || rm -f "$TOKEN_BACKUP"
+TOKEN_BACKUP=""
+if [ -n "$OLD_APP_BACKUP" ] && [ -e "$OLD_APP_BACKUP" ]; then
+  rm -rf "$OLD_APP_BACKUP"
+fi
+OLD_APP_BACKUP=""
 
 # `leikwan` is the operator surface for this daemon: status/start/stop/restart/
 # logs/doctor/update, implemented by the same binary so it cannot drift from the

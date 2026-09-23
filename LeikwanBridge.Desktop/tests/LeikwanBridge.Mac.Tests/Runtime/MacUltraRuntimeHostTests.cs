@@ -60,6 +60,8 @@ public sealed class MacUltraRuntimeHostTests
         Assert.DoesNotContain("line-password", bootstrapText);
         Assert.Contains("location_cache_path", bootstrapText);
         Assert.Contains("location_lock_path", bootstrapText);
+        // The runtime exits when it is re-parented (host crash); it must be told who its parent is.
+        Assert.Contains($"\"parent_pid\":{Environment.ProcessId}", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"auto_select\":false", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_target", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_samples", bootstrapText, StringComparison.Ordinal);

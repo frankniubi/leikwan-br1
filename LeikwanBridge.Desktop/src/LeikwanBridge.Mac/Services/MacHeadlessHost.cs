@@ -41,6 +41,10 @@ public static class MacHeadlessHost
 
         Log.Information("headless_start version={Version} once={Once}", RuntimeVersion(), options.Once);
         IMacHeadlessClient? client = null;
+        // Self-update runs next to the client and is cancelled with it; it can
+        // never take the tunnel down (see MacHeadlessAutoUpdate).
+        using var updateStop = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+        Task? updateLoop = null;
         try
         {
             client = await deps.Bootstrap(paths, shutdown.Token).ConfigureAwait(false);
@@ -49,6 +53,14 @@ public static class MacHeadlessHost
             // it last (Serilog keeps the final configuration).
             ConfigureLogging(paths, options, deps);
             await ApplyIdentityAsync(client, options, shutdown.Token).ConfigureAwait(false);
+            if (deps.AutoUpdate is { } autoUpdate)
+            {
+                var config = client.Config;
+                updateLoop = Task.Run(
+                    () => autoUpdate(paths, options, () => config.MasterUrl, updateStop.Token),
+                    CancellationToken.None);
+            }
+
             var controller = client.Controller;
             var selection = HeadlessClientOptions.ParseForwardSelection(options.Forwards);
 
@@ -99,6 +111,7 @@ public static class MacHeadlessHost
         }
         finally
         {
+            await StopUpdateLoopAsync(updateStop, updateLoop).ConfigureAwait(false);
             if (client is not null)
             {
                 try
@@ -112,6 +125,24 @@ public static class MacHeadlessHost
             }
 
             Log.CloseAndFlush();
+        }
+    }
+
+    private static async Task StopUpdateLoopAsync(CancellationTokenSource updateStop, Task? updateLoop)
+    {
+        if (updateLoop is null)
+            return;
+        try
+        {
+            updateStop.Cancel();
+            await updateLoop.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is TimeoutException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+        catch (Exception exception)
+        {
+            Log.Warning("headless_update_loop_stop_failed type={ErrorType}", exception.GetType().Name);
         }
     }
 
@@ -539,12 +570,20 @@ public sealed record MacHeadlessDependencies(
     TextWriter Error,
     Func<TimeSpan, CancellationToken, Task> Delay)
 {
+    /// <summary>Service-mode self-update loop, started after sign-in. Null (the
+    /// default for test-built dependencies) runs none; the production default
+    /// only runs it for the root LaunchDaemon.</summary>
+    public Func<MacPlatformPaths, HeadlessClientOptions, Func<string>, CancellationToken, Task>? AutoUpdate { get; init; }
+
     public static MacHeadlessDependencies Default { get; } = new(
         async (paths, ct) => new MacHeadlessClient(await MacAppBootstrap.CreateAsync(paths, ct).ConfigureAwait(false)),
         CreateDefaultPaths,
         Console.Out,
         Console.Error,
-        (delay, ct) => Task.Delay(delay, ct));
+        (delay, ct) => Task.Delay(delay, ct))
+    {
+        AutoUpdate = MacHeadlessAutoUpdate.RunIfDaemonAsync,
+    };
 
     private static MacPlatformPaths CreateDefaultPaths()
     {

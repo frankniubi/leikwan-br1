@@ -18,15 +18,25 @@ internal static class Program
             ShowUnsupportedOsNotice();
             return 1;
         }
+        // Detached swap step of the daemon's self-update and of `leikwan update`.
+        // It runs as root from a copy of the new bundle, in its own session.
+        if (args.Length > 0 && string.Equals(args[0], Services.MacHeadlessUpdatePaths.ApplyCommand, StringComparison.Ordinal))
+            return Services.MacHeadlessUpdateApply.RunAsync(args[1..]).GetAwaiter().GetResult();
         // `leikwan <command>` — the operator surface for the windowless client.
         if (args.Length > 0 && string.Equals(args[0], "--cli", StringComparison.Ordinal))
         {
             var cliHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var cliPaths = new Services.MacPlatformPaths(cliHome, ResolveBundleDirectory());
             var controller = new Services.MacServiceController(cliPaths);
+            // A root CLI (the wrapper runs "update" through sudo) stages into the
+            // daemon's root-only updates directory: what is staged there is what
+            // the daemon runs next.
+            var cliUpdatesRoot = OperatingSystem.IsMacOS() && Services.MacNative.geteuid() == 0
+                ? Services.MacHeadlessUpdatePaths.UpdatesRoot
+                : cliPaths.Root.TrimEnd('/', '\\') + "/updates";
             var updater = new Services.MacClientUpdateService(
                 new Services.MacAppUpdateService(
-                    cliPaths.Root.TrimEnd('/', '\\') + "/updates",
+                    cliUpdatesRoot,
                     cliPaths.BundleDirectory,
                     RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64",
                     // This process is the one being replaced, but it outlives the helper
@@ -34,7 +44,8 @@ internal static class Program
                     // not wait for it to exit (current_process_id = 0).
                     waitForCallerExit: false),
                 controller,
-                Services.MacHeadlessCli.PanelUrl(cliPaths));
+                Services.MacHeadlessCli.PanelUrl(cliPaths),
+                headless: Services.MacHeadlessCliUpdateInstaller.CreateDefault(cliPaths.BundleDirectory));
             using var cliCts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>
             {

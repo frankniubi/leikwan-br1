@@ -130,6 +130,46 @@ public sealed class MacHeadlessHostTests
     }
 
     [Fact]
+    public async Task SupervisedRunRunsTheSelfUpdateLoopBesideTheClientAndStopsIt()
+    {
+        using var workspace = new HeadlessWorkspace();
+        var client = workspace.Client;
+        client.Controller.OnConnect = () => client.Controller.Snapshot = ConnectedSnapshot(running: true);
+        var loopStarted = new TaskCompletionSource();
+        string? panelSeen = null;
+        var loopCancelled = false;
+        workspace.AutoUpdate = async (_, options, panelUrl, ct) =>
+        {
+            Assert.False(options.Once);
+            panelSeen = panelUrl();
+            loopStarted.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                loopCancelled = true;
+            }
+        };
+        workspace.Delay = async (_, token) =>
+        {
+            await loopStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            throw new OperationCanceledException(token);
+        };
+
+        var exit = await workspace.RunAsync("--headless", "--client-id", "5", "--agent-token", "t", "--panel", "https://panel.example/");
+
+        Assert.Equal(0, exit);
+        Assert.Equal("https://panel.example", panelSeen);
+        Assert.True(loopCancelled);
+    }
+
+    [Fact]
+    public void ProductionDependenciesWireTheDaemonSelfUpdate()
+        => Assert.NotNull(MacHeadlessDependencies.Default.AutoUpdate);
+
+    [Fact]
     public async Task LoginWithAgentTokenForwardsThePanelIdentity()
     {
         using var workspace = new HeadlessWorkspace();
@@ -175,6 +215,8 @@ public sealed class MacHeadlessHostTests
 
         public Func<TimeSpan, CancellationToken, Task> Delay { get; set; } = (_, _) => Task.CompletedTask;
 
+        public Func<MacPlatformPaths, HeadlessClientOptions, Func<string>, CancellationToken, Task>? AutoUpdate { get; set; }
+
         public int DelayCalls { get; private set; }
 
         public FakeHeadlessClient Client { get; } = new();
@@ -191,7 +233,10 @@ public sealed class MacHeadlessHostTests
                 {
                     DelayCalls++;
                     return Delay(delay, token);
-                });
+                })
+            {
+                AutoUpdate = AutoUpdate,
+            };
             return MacHeadlessHost.RunAsync([.. args, "--status-file", StatusPath], dependencies);
         }
 

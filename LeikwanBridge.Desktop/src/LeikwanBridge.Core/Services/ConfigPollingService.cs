@@ -45,6 +45,24 @@ public sealed class ConfigPollingService
     private DateTimeOffset _lastRecoveryTriggerAtUtc = DateTimeOffset.MinValue;
     private static readonly TimeSpan RecoveryTriggerThrottle = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// Config pull failures (panel/CDN down, timeouts, 5xx). While this is
+    /// backing off, the polling loop waits the jittered delay instead of the
+    /// 5 s re-arm, and immediate re-syncs requested by health checks, sync
+    /// errors or lease failures only queue a full pull for the next attempt.
+    /// </summary>
+    private readonly ControlPlaneBackoff _pullBackoff;
+
+    /// <summary>
+    /// Transient Ultra lease resolve/renew failures. Kept apart from the pull
+    /// backoff: a panel whose long poll answers while its lease endpoint fails
+    /// must not reset the lease retry sequence on every 304.
+    /// </summary>
+    private readonly ControlPlaneBackoff _leaseBackoff;
+
+    private readonly SemaphoreSlim _loopWake = new(0, 1);
+    private int _loopSleepingInBackoff;
+
     public event Action<List<ForwardConfig>>? ForwardsUpdated;
     public event Action<PullState>? PullStateChanged;
     public event Action<Exception>? SyncError;
@@ -72,14 +90,36 @@ public sealed class ConfigPollingService
         StateManager stateManager,
         IForwardAcceptancePolicy? forwardPolicy,
         TimeProvider timeProvider)
+        : this(api, runtimeManager, stateManager, forwardPolicy, timeProvider, pullBackoff: null, leaseBackoff: null)
+    {
+    }
+
+    public ConfigPollingService(
+        MasterApiClient api,
+        ForwardRuntimeManager runtimeManager,
+        StateManager stateManager,
+        IForwardAcceptancePolicy? forwardPolicy,
+        TimeProvider timeProvider,
+        ControlPlaneBackoff? pullBackoff,
+        ControlPlaneBackoff? leaseBackoff)
     {
         _api = api;
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
         _forwardPolicy = forwardPolicy ?? WindowsForwardAcceptancePolicy.Instance;
         _timeProvider = timeProvider;
+        _pullBackoff = pullBackoff ?? new ControlPlaneBackoff(timeProvider);
+        _leaseBackoff = leaseBackoff ?? new ControlPlaneBackoff(timeProvider);
         _runtimeManager.UltraRecoveryRequested += RequestUltraRecovery;
+        _runtimeManager.UltraLeaseRefreshRequested += RequestUltraLeaseRefresh;
     }
+
+    /// <summary>True while either control-plane retry sequence is waiting.</summary>
+    public bool IsControlPlaneBackingOff => _pullBackoff.IsBackingOff || _leaseBackoff.IsBackingOff;
+
+    public ControlPlaneBackoff PullBackoff => _pullBackoff;
+
+    public ControlPlaneBackoff LeaseBackoff => _leaseBackoff;
 
     public void Start(int intervalSeconds = 30)
     {
@@ -108,10 +148,89 @@ public sealed class ConfigPollingService
                 var delayMs = _lastConfigRevision == ""
                     ? (_nextPollAfterMs > 0 ? _nextPollAfterMs : intervalSeconds * 1000)
                     : ReArmDelayMs;
-                try { await Task.Delay(TimeSpan.FromMilliseconds(delayMs), ct); }
+                var delay = NextLoopDelay(TimeSpan.FromMilliseconds(delayMs), out var backingOff);
+                try { await WaitForNextPollAsync(delay, backingOff, ct); }
                 catch (OperationCanceledException) { break; }
             }
         }, ct);
+    }
+
+    /// <summary>
+    /// A failed pull replaces the fixed re-arm with its jittered backoff (so a
+    /// dead panel is not retried every 5 s); a lease-only outage stretches the
+    /// re-arm to the lease backoff, because each forced full pull would
+    /// otherwise immediately retry the failing lease request.
+    /// </summary>
+    public TimeSpan NextLoopDelay(TimeSpan normal, out bool backingOff)
+    {
+        var pullRemaining = _pullBackoff.RemainingDelay;
+        var leaseRemaining = _leaseBackoff.RemainingDelay;
+        backingOff = pullRemaining > TimeSpan.Zero || leaseRemaining > TimeSpan.Zero;
+        if (pullRemaining > TimeSpan.Zero)
+            return pullRemaining > leaseRemaining ? pullRemaining : leaseRemaining;
+        return leaseRemaining > normal ? leaseRemaining : normal;
+    }
+
+    private async Task WaitForNextPollAsync(TimeSpan delay, bool backingOff, CancellationToken ct)
+    {
+        if (!backingOff)
+        {
+            await Task.Delay(delay, ct);
+            return;
+        }
+        // An out-of-band pull (user refresh) that reaches the panel ends the
+        // backoff early, so the long poll resumes at once instead of after up
+        // to a minute.
+        while (_loopWake.CurrentCount > 0)
+            _loopWake.Wait(0);
+        Interlocked.Exchange(ref _loopSleepingInBackoff, 1);
+        try
+        {
+            await _loopWake.WaitAsync(delay, ct);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _loopSleepingInBackoff, 0);
+        }
+    }
+
+    private void NotePullFailure(string reason)
+    {
+        var delay = _pullBackoff.RecordFailure();
+        Log.Information(
+            "control-plane pull failed ({Reason}); backing off {DelaySeconds:0.0}s (consecutive={Failures})",
+            reason,
+            delay.TotalSeconds,
+            _pullBackoff.ConsecutiveFailures);
+    }
+
+    private void NotePullSuccess()
+    {
+        if (!_pullBackoff.RecordSuccess())
+            return;
+        Log.Information("control-plane pull succeeded again; backoff reset");
+        if (Volatile.Read(ref _loopSleepingInBackoff) != 0)
+        {
+            try { _loopWake.Release(); }
+            catch (SemaphoreFullException) { }
+        }
+    }
+
+    private void NoteLeaseFailure(int forwardId, Exception exception)
+    {
+        var delay = _leaseBackoff.RecordFailure();
+        Log.Information(
+            "Ultra lease request for forward {ForwardId} hit a control-plane failure ({ErrorType}); lease retries back off {DelaySeconds:0.0}s (consecutive={Failures})",
+            forwardId,
+            exception.GetType().Name,
+            delay.TotalSeconds,
+            _leaseBackoff.ConsecutiveFailures);
+    }
+
+    private void NoteLeaseAnswered()
+    {
+        if (_leaseBackoff.RecordSuccess())
+            Log.Information("Ultra lease endpoint answered again; lease backoff reset");
     }
 
     public void Stop()
@@ -139,6 +258,15 @@ public sealed class ConfigPollingService
     {
         var ct = _cts?.Token ?? CancellationToken.None;
         if (ct.IsCancellationRequested) return;
+        // While the control plane is failing, an immediate re-sync (health
+        // check, sync error, lease failure) would hammer it every few seconds.
+        // The caller has already queued a full pull; the polling loop runs it
+        // when the backoff elapses.
+        if (IsControlPlaneBackingOff)
+        {
+            Log.Debug("immediate config sync deferred by control-plane backoff");
+            return;
+        }
         _ = Task.Run(async () =>
         {
             try { await SyncOnceAsync(ct); }
@@ -196,6 +324,21 @@ public sealed class ConfigPollingService
         TriggerImmediateSync();
     }
 
+    /// <summary>
+    /// An idle (awaiting/lapsed) runtime needs a lease on its control channel,
+    /// not a restart: make its renewal due and ask for a targeted full pull,
+    /// which delivers through RefreshUltraLease when the contract is unchanged.
+    /// The request goes through the throttled, backoff-gated recovery path, so
+    /// a panel outage does not turn it into a retry storm.
+    /// </summary>
+    private void RequestUltraLeaseRefresh(int forwardId, string reason)
+    {
+        if (_cts?.IsCancellationRequested == true) return;
+        _deliveredLeaseRenewals.TryRemove(forwardId, out _);
+        Log.Information("Ultra lease delivery requested for idle forward {ForwardId} (reason={Reason})", forwardId, reason);
+        RequestControlPlaneRecovery(forwardId);
+    }
+
     public async Task SyncOnceAsync(CancellationToken ct = default)
     {
         if (Interlocked.CompareExchange(ref _syncInProgress, 1, 0) != 0)
@@ -228,12 +371,33 @@ public sealed class ConfigPollingService
             ? SnapshotTargetedUltraRefreshes()
             : new HashSet<int>();
         var sinceRevision = string.IsNullOrWhiteSpace(_lastConfigRevision) ? null : _lastConfigRevision;
-        var pull = await _api.PullConfigsAsync(sinceRevision, LongPollWaitSeconds, ct);
+        PullResponse pull;
+        try
+        {
+            pull = await _api.PullConfigsAsync(sinceRevision, LongPollWaitSeconds, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // Keep the forced-full-pull marker taken above for the retry, so
+            // it still carries the full policy payload.
+            if (forcedFullPull)
+                Interlocked.Exchange(ref _forceFullPull, 1);
+            NotePullFailure(exception.GetType().Name);
+            throw;
+        }
         if (!pull.Ok)
         {
             Log.Warning("pull response ok=false");
+            if (forcedFullPull)
+                Interlocked.Exchange(ref _forceFullPull, 1);
+            NotePullFailure("ok_false");
             return;
         }
+        NotePullSuccess();
 
         if (pull.NotModified)
         {
@@ -384,10 +548,22 @@ public sealed class ConfigPollingService
                     return;
             }
 
+            if (_leaseBackoff.IsBackingOff)
+            {
+                // The lease endpoint failed moments ago. A running runtime keeps
+                // serving on its current (up to 30 min) lease; retry after the
+                // jittered delay instead of on every re-armed pull.
+                QueueConfigRefreshSoon(forward.ForwardId);
+                Log.Debug("Ultra lease request for forward {ForwardId} deferred by lease backoff (running={Running})",
+                    forward.ForwardId, isRunning);
+                return;
+            }
+
             IReadOnlyList<UltraLease> leases;
             try
             {
                 leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
+                NoteLeaseAnswered();
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -401,6 +577,10 @@ public sealed class ConfigPollingService
                     ex.GetType().Name,
                     ex is MasterApiException apiException ? apiException.StatusCode : 0,
                     BoundErrorCode(ex.Message));
+                // Record before asking for recovery, so the recovery request
+                // sees the backoff and does not trigger an immediate re-sync.
+                if (ControlPlaneBackoff.IsControlPlaneFailure(ex))
+                    NoteLeaseFailure(forward.ForwardId, ex);
                 // A rotated grant/ticket (409 lease_scope_invalid and friends) is repaired by
                 // the next config pull, never by tearing the forward down. Stopping it here
                 // produced an endless start/stop loop - the panel re-mints the lease ticket
@@ -560,10 +740,17 @@ public sealed class ConfigPollingService
             && !DeliveredLeaseRenewalDue(forward.ForwardId))
             return;
 
+        if (_leaseBackoff.IsBackingOff)
+        {
+            Log.Debug("Ultra lease renewal for forward {ForwardId} deferred by lease backoff", forward.ForwardId);
+            return;
+        }
+
         IReadOnlyList<UltraLease> leases;
         try
         {
             leases = await _api.ResolveUltraLeasesAutoAsync(effectiveForward, ct);
+            NoteLeaseAnswered();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -577,6 +764,8 @@ public sealed class ConfigPollingService
                 ex.GetType().Name,
                 ex is MasterApiException apiException ? apiException.StatusCode : 0,
                 BoundErrorCode(ex.Message));
+            if (ControlPlaneBackoff.IsControlPlaneFailure(ex))
+                NoteLeaseFailure(forward.ForwardId, ex);
             if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
             {
                 RecordRefusedPolicyGeneration(forward, ex);
@@ -718,8 +907,12 @@ public sealed class ConfigPollingService
             or "quota_exhausted";
     }
 
+    // Transport errors, gateway errors and timeouts (a lease POST that times
+    // out on every mirror surfaces as TimeoutException) preserve the forward and
+    // ask for a fresh pull. The backoff itself uses the wider
+    // ControlPlaneBackoff.IsControlPlaneFailure set (any 5xx, 429).
     private static bool IsTransientControlPlaneError(Exception exception)
-        => exception is HttpRequestException
+        => exception is HttpRequestException or TimeoutException
             || (exception is MasterApiException apiException
                 && apiException.StatusCode is 502 or 503 or 504 or 530);
 

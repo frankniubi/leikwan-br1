@@ -110,6 +110,7 @@ public sealed class MasterApiClient : IDisposable
 
         Log.Debug("pulling configs from {Url}", url);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        AddOfflineValidityHeader(request);
         var response = await SendAsync(request, ct);
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotModified)
@@ -445,6 +446,7 @@ public sealed class MasterApiClient : IDisposable
             using var content = new ByteArrayContent(requestBytes);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_masterUrl}/api/client/ultra/lease") { Content = content };
+            AddOfflineValidityHeader(request);
             var response = await SendAsync(request, ct);
             await EnsureSuccessOrThrowAsync(response, ct);
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
@@ -569,7 +571,7 @@ public sealed class MasterApiClient : IDisposable
             ? policyRenewAfterElement.GetDateTimeOffset()
             : default;
         if (policyExpiresAt > policy.ExpiresAt
-            && policyExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(5).AddSeconds(30)
+            && UltraGrantValidity.IsWithinAcceptedWindow(policyExpiresAt, DateTimeOffset.UtcNow)
             && (policyRenewAfter == default || policyRenewAfter < policyExpiresAt))
         {
             forward.UltraAccess = new UltraPolicy
@@ -648,7 +650,7 @@ public sealed class MasterApiClient : IDisposable
         var expiresAt = item.GetProperty("expires_at").GetDateTimeOffset();
         var now = DateTimeOffset.UtcNow;
         if (expiresAt <= now || expiresAt > policy.ExpiresAt.AddSeconds(1)
-            || expiresAt > now.AddMinutes(5).AddSeconds(30))
+            || !UltraGrantValidity.IsWithinAcceptedWindow(expiresAt, now))
             return null;
 
         var endpoint = item.GetProperty("endpoint");
@@ -795,6 +797,22 @@ public sealed class MasterApiClient : IDisposable
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"windows|{clientId}|{normalizedMachine}")))
             .ToLowerInvariant()[..16];
         return $"windows-client-{clientId}-{hash}";
+    }
+
+    /// <summary>
+    /// Asks the panel for a grant that outlives a short control-plane outage
+    /// (W1). Only the ordinary Ultra config pull and lease resolve/renew carry
+    /// it: the native-outbound lease keeps today's short grant, and a panel
+    /// that does not know the header answers exactly as before. The header is
+    /// set on the request, so <see cref="SendAsync"/> copies it to every mirror
+    /// attempt.
+    /// </summary>
+    internal static void AddOfflineValidityHeader(HttpRequestMessage request)
+    {
+        request.Headers.Remove(UltraGrantValidity.OfflineValidityHeader);
+        request.Headers.TryAddWithoutValidation(
+            UltraGrantValidity.OfflineValidityHeader,
+            UltraGrantValidity.RequestedOfflineValidityHeaderValue);
     }
 
     private void AddOptionalHeader(string name, string value)

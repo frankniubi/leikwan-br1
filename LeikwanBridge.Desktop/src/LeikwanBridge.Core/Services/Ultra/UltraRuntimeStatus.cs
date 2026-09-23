@@ -3,6 +3,15 @@ using LeikwanBridge.Core.Models;
 
 namespace LeikwanBridge.Core.Services.Ultra;
 
+public enum UltraRuntimePolicyState
+{
+    Unknown,
+    Active,
+    Awaiting,
+    Lapsed,
+    Revoked,
+}
+
 /// <summary>
 /// Reads the non-secret Ultra runtime status snapshot (the file the runtime
 /// config names through "status_path").  The runtime measures the UDP payload
@@ -96,6 +105,116 @@ public static class UltraRuntimeStatus
         result.Debugger = debugger;
         result.Instrumented = instrumented;
         return result;
+    }
+
+    /// <summary>Machine-readable policy state written by runtimes with W1 support.</summary>
+    public const string PolicyStateProperty = "policy_state";
+
+    /// <summary>
+    /// Reads the runtime's policy state. Newer runtimes write "policy_state"
+    /// (active | awaiting | lapsed | revoked); older ones only report the
+    /// condition through "error_code" (or "last_error") = awaiting_policy /
+    /// policy_lapsed. An explicit "policy_state" always wins.
+    /// </summary>
+    public static UltraRuntimePolicyState ReadPolicyState(string? statusPath)
+        => ReadPolicyState(statusPath, notBefore: null);
+
+    /// <summary>
+    /// Like <see cref="ReadPolicyState(string?)"/>, but a snapshot written before
+    /// <paramref name="notBefore"/> (the host's last lease delivery) is ignored:
+    /// the runtime rewrites its status at most every few seconds, so an
+    /// "awaiting"/"lapsed" written just before a delivery would otherwise
+    /// describe a state the runtime has already left. The runtime stamps
+    /// "updated_at" with whole seconds, so the comparison is per second; a
+    /// snapshot without a readable stamp falls back to the file time.
+    /// </summary>
+    public static UltraRuntimePolicyState ReadPolicyState(string? statusPath, DateTimeOffset? notBefore)
+    {
+        if (!TryReadStatusRoot(statusPath, out var root))
+            return UltraRuntimePolicyState.Unknown;
+        if (notBefore is { } threshold)
+        {
+            var written = ReadUpdatedAt(root) ?? TryGetFileTime(statusPath!);
+            var wholeSecond = new DateTimeOffset(threshold.UtcTicks - threshold.UtcTicks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
+            if (written is null || written.Value < wholeSecond)
+                return UltraRuntimePolicyState.Unknown;
+        }
+        return ReadPolicyState(root);
+    }
+
+    private static DateTimeOffset? ReadUpdatedAt(JsonElement root)
+        => TryReadString(root, "updated_at", out var value)
+            && DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed)
+                ? parsed
+                : null;
+
+    private static DateTimeOffset? TryGetFileTime(string path)
+    {
+        try
+        {
+            return new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    public static UltraRuntimePolicyState ReadPolicyState(JsonElement statusRoot)
+    {
+        if (statusRoot.ValueKind != JsonValueKind.Object)
+            return UltraRuntimePolicyState.Unknown;
+        if (TryReadString(statusRoot, PolicyStateProperty, out var explicitState))
+        {
+            var parsed = ParsePolicyState(explicitState);
+            if (parsed != UltraRuntimePolicyState.Unknown)
+                return parsed;
+        }
+        foreach (var property in new[] { "error_code", "last_error" })
+        {
+            if (!TryReadString(statusRoot, property, out var code))
+                continue;
+            switch (code.Trim().ToLowerInvariant())
+            {
+                case "awaiting_policy":
+                    return UltraRuntimePolicyState.Awaiting;
+                case "policy_lapsed":
+                    return UltraRuntimePolicyState.Lapsed;
+                case "policy_revoked":
+                    return UltraRuntimePolicyState.Revoked;
+            }
+        }
+        return UltraRuntimePolicyState.Unknown;
+    }
+
+    /// <summary>
+    /// A runtime that is waiting for, or has outlived, its policy is idle on
+    /// purpose: it refuses connections until a new lease arrives on its control
+    /// channel. Restarting it gains nothing and, while the panel is down,
+    /// turns an outage into a restart storm. A revoked runtime is not idle.
+    /// </summary>
+    public static bool IsIdleOnPurpose(UltraRuntimePolicyState state)
+        => state is UltraRuntimePolicyState.Awaiting or UltraRuntimePolicyState.Lapsed;
+
+    private static UltraRuntimePolicyState ParsePolicyState(string value)
+        => value.Trim().ToLowerInvariant() switch
+        {
+            "active" => UltraRuntimePolicyState.Active,
+            "awaiting" or "awaiting_policy" => UltraRuntimePolicyState.Awaiting,
+            "lapsed" or "policy_lapsed" => UltraRuntimePolicyState.Lapsed,
+            "revoked" or "policy_revoked" => UltraRuntimePolicyState.Revoked,
+            _ => UltraRuntimePolicyState.Unknown,
+        };
+
+    private static bool TryReadString(JsonElement root, string property, out string value)
+    {
+        value = "";
+        if (!root.TryGetProperty(property, out var element) || element.ValueKind != JsonValueKind.String)
+            return false;
+        value = element.GetString() ?? "";
+        return value.Length > 0;
     }
 
     /// <summary>

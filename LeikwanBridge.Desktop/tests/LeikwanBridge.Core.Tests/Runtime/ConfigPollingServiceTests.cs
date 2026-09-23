@@ -54,6 +54,8 @@ public sealed class ConfigPollingServiceTests
     [Fact]
     public async Task RequestControlPlaneRecoveryTriggersAnImmediateFullPullAfterTransientFailure()
     {
+        // After a failed pull the recovery request only queues a full pull; the
+        // polling loop runs it once the (here shortened) backoff elapses.
         using var tempDir = new TempStateDirectory();
         using var server = new PullApiServer(BuildPullResponseJson()) { PullFailuresRemaining = 1 };
         var config = new AgentConfig
@@ -66,7 +68,8 @@ public sealed class ConfigPollingServiceTests
         var state = new StateManager(tempDir.Path);
         var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
         using var api = new MasterApiClient(server.BaseUrl, "token");
-        var service = new ConfigPollingService(api, runtime, state);
+        var service = new ConfigPollingService(api, runtime, state, null, TimeProvider.System,
+            FastBackoff(), leaseBackoff: null);
         var firstFailure = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var recovered = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.SyncError += _ => firstFailure.TrySetResult(null);
@@ -1133,6 +1136,201 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal(renewalDue ? new[] { 42, 43 } : new[] { 42 }, targetedRequestIds);
         Assert.Equal(refreshesBeforeTargetedPull + (renewalDue ? 2 : 1), runtimeManager.RefreshedForwardIds.Count);
         Assert.Equal(renewalDue ? new[] { 42, 43 } : new[] { 42 }, runtimeManager.RefreshedForwardIds.Skip(refreshesBeforeTargetedPull).OrderBy(id => id));
+    }
+
+    private static ControlPlaneBackoff FastBackoff()
+        => new(initial: TimeSpan.FromMilliseconds(200), cap: TimeSpan.FromMilliseconds(400),
+            minimumDelay: TimeSpan.FromMilliseconds(50));
+
+    [Fact]
+    public async Task PullFailure_BacksOffExponentiallyAndDefersImmediateResyncs()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson()) { PullFailuresRemaining = 100 };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var clock = new LeaseTestClock();
+        var pullBackoff = new ControlPlaneBackoff(clock, random: () => 1.0);
+        var service = new ConfigPollingService(api, runtime, state, null, clock, pullBackoff, new ControlPlaneBackoff(clock));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncOnceAsync());
+        Assert.True(service.IsControlPlaneBackingOff);
+        Assert.Equal(TimeSpan.FromSeconds(5), service.NextLoopDelay(TimeSpan.FromSeconds(5), out var backingOff));
+        Assert.True(backingOff);
+
+        // Health checks / sync errors ask for an immediate re-sync: while the
+        // panel is failing that only queues the next (backed-off) pull.
+        var pullsBefore = server.PullRequestCount;
+        service.TriggerImmediateSync();
+        service.RequestControlPlaneRecovery(42);
+        await Task.Delay(300);
+        Assert.Equal(pullsBefore, server.PullRequestCount);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncOnceAsync());
+        Assert.Equal(TimeSpan.FromSeconds(10), service.NextLoopDelay(TimeSpan.FromSeconds(5), out _));
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncOnceAsync());
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncOnceAsync());
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncOnceAsync());
+        // 5, 10, 20, 40, then capped at 60 s.
+        Assert.Equal(TimeSpan.FromSeconds(60), service.NextLoopDelay(TimeSpan.FromSeconds(5), out _));
+
+        // One success resets the sequence and restores the fast re-arm.
+        server.PullFailuresRemaining = 0;
+        clock.Advance(TimeSpan.FromSeconds(61));
+        await service.SyncOnceAsync();
+        Assert.False(service.IsControlPlaneBackingOff);
+        Assert.Equal(0, pullBackoff.ConsecutiveFailures);
+        Assert.Equal(TimeSpan.FromSeconds(5), service.NextLoopDelay(TimeSpan.FromSeconds(5), out backingOff));
+        Assert.False(backingOff);
+    }
+
+    [Fact]
+    public async Task PollingLoop_WaitsTheBackoffInsteadOfTheFixedReArm()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson()) { PullFailuresRemaining = 100 };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        // Initial 1.5 s, full draw: an un-backed-off loop would retry after the
+        // 1 s interval configured below.
+        var service = new ConfigPollingService(api, runtime, state, null, TimeProvider.System,
+            new ControlPlaneBackoff(random: () => 1.0, initial: TimeSpan.FromMilliseconds(1500),
+                cap: TimeSpan.FromSeconds(3), minimumDelay: TimeSpan.FromMilliseconds(100)),
+            leaseBackoff: null);
+
+        service.Start(intervalSeconds: 1);
+        await Task.Delay(2200);
+        await service.StopAsync();
+
+        // t=0 first pull, t≈1.5 s second pull, next one not before t≈4.5 s.
+        Assert.InRange(server.PullRequestCount, 1, 2);
+    }
+
+    [Fact]
+    public async Task LeaseControlPlaneFailure_BacksOffLeaseRetriesAndPreservesRunningUltra()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var clock = new LeaseTestClock();
+        var leaseBackoff = new ControlPlaneBackoff(clock, random: () => 1.0);
+        var service = new ConfigPollingService(api, runtimeManager, stateManager, null, clock,
+            new ControlPlaneBackoff(clock), leaseBackoff);
+
+        await service.SyncOnceAsync();
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        server.SuccessfulUltraLease = false;
+        server.UltraLeaseStatus = 502;
+        await service.SyncOnceAsync();
+        var leaseRequests = server.UltraLeaseRequestForwardIds.Count;
+        Assert.Equal(1, leaseBackoff.ConsecutiveFailures);
+        Assert.True(service.IsControlPlaneBackingOff);
+        // The recovery pull is paced by the lease backoff, not the 5 s re-arm.
+        Assert.Equal(TimeSpan.FromSeconds(5), service.NextLoopDelay(TimeSpan.FromSeconds(1), out _));
+
+        // Within the backoff window the next pull does not retry the lease.
+        await service.SyncOnceAsync();
+        Assert.Equal(leaseRequests, server.UltraLeaseRequestForwardIds.Count);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+
+        // After it the lease is retried; a success resets the sequence.
+        clock.Advance(TimeSpan.FromSeconds(6));
+        server.SuccessfulUltraLease = true;
+        server.UltraLeaseStatus = 200;
+        await service.SyncOnceAsync();
+        Assert.True(server.UltraLeaseRequestForwardIds.Count > leaseRequests);
+        Assert.Equal(0, leaseBackoff.ConsecutiveFailures);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+    }
+
+    [Fact]
+    public async Task IdleRuntimeLeaseRefresh_DeliversALeaseWithoutRestartingTheRuntime()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+        {
+            ["42"] = new AppliedForwardState
+            {
+                ForwardId = 42,
+                Mode = "ultra",
+                ListenPort = 12042,
+                ProcessRoles = ["ultra-runtime"],
+                ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+            },
+        });
+
+        runtimeManager.RequestUltraLeaseRefresh(42, "idle_policy");
+        await service.SyncOnceAsync();
+
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        Assert.Contains(42, runtimeManager.RefreshedForwardIds);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
+    }
+
+    [Fact]
+    public async Task LongOfflineValidityPolicy_IsReusedWhileThePullOmitsIt()
+    {
+        // With the offline-validity header the panel may grant 30 min. The
+        // last-known-policy fallback must keep using such a policy (it used to
+        // reject anything beyond 5m30 as "expiry_window").
+        using var tempDir = new TempStateDirectory();
+        var complete = JsonNode.Parse(BuildUltraPullResponseJson(expiryMinutes: 30))!.AsObject();
+        using var server = new PullApiServer(complete.ToJsonString(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            SuccessfulUltraLeaseExpiryMinutes = 29,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new AlwaysRunningProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var service = new ConfigPollingService(api, runtimeManager, stateManager);
+
+        await service.SyncOnceAsync();
+        Assert.Equal([42], runtimeManager.AppliedForwardIds);
+        var policy = service.LatestForwards[0].UltraAccess;
+        Assert.NotNull(policy);
+
+        var missing = complete.DeepClone().AsObject();
+        missing["forwards"]![0]!.AsObject().Remove("ultra_access");
+        server.SetPayload(missing.ToJsonString());
+        await service.SyncOnceAsync();
+
+        Assert.Same(policy, service.LatestForwards[0].UltraAccess);
+        Assert.Empty(runtimeManager.StoppedForwardIds);
     }
 
     private sealed class LeaseTestClock : TimeProvider

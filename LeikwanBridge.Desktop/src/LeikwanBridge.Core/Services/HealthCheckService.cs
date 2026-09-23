@@ -27,6 +27,21 @@ public sealed class HealthCheckService : IDisposable
     private readonly Dictionary<int, ForwardConfig> _forwards = [];
     private readonly HashSet<int> _restartInProgress = [];
     private readonly HashSet<int> _nativeOutboundNoticed = [];
+    private readonly Dictionary<int, IdleUltraRuntime> _idleUltra = [];
+    private readonly Func<DateTimeOffset> _clock;
+
+    /// <summary>Lease deliveries asked for an idle runtime before the restart path takes over.</summary>
+    public const int MaxIdleLeaseRefreshes = 3;
+
+    /// <summary>Spacing of those deliveries; the health cycle itself runs every ~20 s.</summary>
+    public static readonly TimeSpan IdleLeaseRefreshInterval = TimeSpan.FromSeconds(60);
+
+    private sealed class IdleUltraRuntime(DateTimeOffset since)
+    {
+        public DateTimeOffset Since { get; } = since;
+        public int Refreshes { get; set; }
+        public DateTimeOffset? LastRefreshAt { get; set; }
+    }
 
     private CancellationTokenSource? _cts;
     private Task? _checkTask;
@@ -42,9 +57,11 @@ public sealed class HealthCheckService : IDisposable
         Func<int, bool>? portListeningProbe = null,
         Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)>? bondLegProbe = null,
         AgentConfig? config = null,
-        Func<string, int, bool>? relayHealthProbe = null)
+        Func<string, int, bool>? relayHealthProbe = null,
+        Func<DateTimeOffset>? clock = null)
     {
         _supervisor = supervisor;
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
         _config = config ?? new AgentConfig();
@@ -149,6 +166,8 @@ public sealed class HealthCheckService : IDisposable
 
             if (!_supervisor.IsRunning(fid))
             {
+                lock (_idleUltra)
+                    _idleUltra.Remove(fid);
                 if (ShouldRestart(fid))
                 {
                     Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
@@ -161,6 +180,11 @@ public sealed class HealthCheckService : IDisposable
             int port = forward.ListenPort;
             if (port > 0 && !_portListeningProbe(port))
             {
+                if (IsUltraForward(forward) && _runtimeManager.IsUltraRuntimeIdleOnPurpose(fid))
+                {
+                    HandleIdleUltraRuntime(forward);
+                    continue;
+                }
                 Log.Warning("forward {ForwardId}: local port {Port} not listening", fid, port);
                 if (ShouldRestart(fid))
                 {
@@ -169,6 +193,9 @@ public sealed class HealthCheckService : IDisposable
 
                 continue;
             }
+
+            lock (_idleUltra)
+                _idleUltra.Remove(fid);
 
             if (RequiresBondTopologyRecovery(fid))
             {
@@ -405,6 +432,57 @@ public sealed class HealthCheckService : IDisposable
         Log.Information(
             "native outbound rule forward {ForwardId}: agent-managed runtime not applicable",
             forwardId);
+    }
+
+    private static bool IsUltraForward(ForwardConfig forward)
+        => string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The runtime process is alive and its status says it is waiting for, or
+    /// has outlived, its policy (the panel was unreachable, or the grant has
+    /// not arrived yet). That is idle on purpose, not broken: ask config sync
+    /// for a lease delivery instead of a restart. Only if several deliveries,
+    /// spaced <see cref="IdleLeaseRefreshInterval"/> apart, did not bring the
+    /// listener back does the normal lease-aware restart path take over. That
+    /// path never kills a runtime before a fresh lease is in hand, and it is
+    /// gated by the control-plane backoff, so it cannot storm during an outage.
+    /// </summary>
+    private void HandleIdleUltraRuntime(ForwardConfig forward)
+    {
+        var forwardId = forward.ForwardId;
+        var now = _clock();
+        IdleUltraRuntime? entry;
+        lock (_idleUltra)
+        {
+            if (!_idleUltra.TryGetValue(forwardId, out entry))
+            {
+                entry = new IdleUltraRuntime(now);
+                _idleUltra[forwardId] = entry;
+                Log.Information(
+                    "forward {ForwardId}: Ultra runtime is idle waiting for a policy (state={State}); not restarting it",
+                    forwardId,
+                    _runtimeManager.GetUltraRuntimePolicyState(forwardId));
+            }
+        }
+
+        if (entry.Refreshes < MaxIdleLeaseRefreshes)
+        {
+            if (entry.LastRefreshAt is { } last && now - last < IdleLeaseRefreshInterval)
+                return;
+            entry.Refreshes++;
+            entry.LastRefreshAt = now;
+            _runtimeManager.RequestUltraLeaseRefresh(forwardId, "idle_policy");
+            return;
+        }
+
+        if (ShouldRestart(forwardId))
+        {
+            Log.Warning(
+                "forward {ForwardId}: Ultra runtime stayed idle after {Refreshes} lease deliveries; using the lease-aware restart path",
+                forwardId,
+                entry.Refreshes);
+            RequestRestart(forward, ForwardRuntimeManager.IdleRuntimeUnresponsiveReason, force: true);
+        }
     }
 
     private bool ShouldRestart(int forwardId)

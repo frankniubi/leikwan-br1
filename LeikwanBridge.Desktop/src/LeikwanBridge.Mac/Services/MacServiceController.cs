@@ -107,9 +107,12 @@ public sealed class MacServiceController(MacPlatformPaths paths, string label = 
 }
 
 /// <summary>
-/// `leikwan update` on macOS reuses the windowed client's update path (verified
-/// zip, bundle replacement, relaunch) and then kicks the daemon so the new
-/// bundle is the one running.
+/// `leikwan update` on macOS. With the LaunchDaemon installed, the verified and
+/// validated bundle goes to the same detached apply step the daemon's own
+/// auto-update uses: boot the daemon out, swap the bundle, restart the daemon
+/// and hold it to the health gate, rolling back when it fails. (The windowed
+/// client's helper only relaunched the GUI app and left the daemon running the
+/// old code.) Without the daemon the windowed client's update path is kept.
 /// </summary>
 public sealed class MacClientUpdateService : IClientUpdateService
 {
@@ -117,17 +120,20 @@ public sealed class MacClientUpdateService : IClientUpdateService
     private readonly MacServiceController controller;
     private readonly string panelUrl;
     private readonly TimeSpan applyVerificationTimeout;
+    private readonly IMacHeadlessUpdateInstaller? headless;
     private ClientAppArtifact? _available;
 
     public MacClientUpdateService(
         MacAppUpdateService updater,
         MacServiceController controller,
         string panelUrl,
-        TimeSpan? applyVerificationTimeout = null)
+        TimeSpan? applyVerificationTimeout = null,
+        IMacHeadlessUpdateInstaller? headless = null)
     {
         this.updater = updater;
         this.controller = controller;
         this.panelUrl = panelUrl;
+        this.headless = headless;
         // The helper swaps the bundle after this process is told to keep running and
         // then publishes its outcome; allow for a slow disk before giving up.
         this.applyVerificationTimeout = applyVerificationTimeout ?? TimeSpan.FromSeconds(120);
@@ -169,6 +175,9 @@ public sealed class MacClientUpdateService : IClientUpdateService
             return false;
         }
 
+        if (headless is { IsDaemonInstalled: true })
+            return await ApplyToDaemonAsync(artifact, headless, output, ct).ConfigureAwait(false);
+
         var prepared = await updater.PrepareAsync(artifact, progress: null, ct).ConfigureAwait(false);
         var result = await updater.ApplyAsync(prepared, deferUntilRestart: false, progress: null, ct).ConfigureAwait(false);
         if (result.RequiresManualInstall)
@@ -192,6 +201,56 @@ public sealed class MacClientUpdateService : IClientUpdateService
             ? "apply      : daemon restarted on the new build"
             : "apply      : daemon did not report running; run \"leikwan start\"");
         return restarted;
+    }
+
+    private async Task<bool> ApplyToDaemonAsync(
+        ClientAppArtifact artifact,
+        IMacHeadlessUpdateInstaller installer,
+        TextWriter output,
+        CancellationToken ct)
+    {
+        if (installer.PreconditionError() is { } precondition)
+        {
+            output.WriteLine($"apply     : {precondition}");
+            return false;
+        }
+
+        PreparedAppUpdate prepared;
+        try
+        {
+            // Download + size/sha256 check + extraction + bundle validation
+            // (identity, CFBundleShortVersionString == manifest version, arch).
+            prepared = await updater.PrepareAsync(artifact, progress: null, ct).ConfigureAwait(false);
+        }
+        catch (InvalidDataException exception)
+        {
+            output.WriteLine($"verify    : {exception.Message}");
+            return false;
+        }
+
+        output.WriteLine($"verify    : {artifact.Version} package and bundle verified");
+        var previous = updater.ReadInstalledVersion() ?? controller.Version;
+        var result = await installer.ApplyAsync(prepared, output, ct).ConfigureAwait(false);
+        if (result is null)
+            return false;
+        switch (result.Outcome)
+        {
+            case nameof(UpdateApplyOutcome.Applied):
+                output.WriteLine($"apply     : daemon restarted on {result.NewVersion} and passed the health gate");
+                return true;
+            case nameof(UpdateApplyOutcome.RejectedRolledBack):
+                output.WriteLine($"apply     : {result.NewVersion} failed the health gate; rolled back to {previous} and restarted the daemon");
+                break;
+            case "Locked":
+                output.WriteLine("apply     : another update is being applied; try again later");
+                break;
+            default:
+                output.WriteLine($"apply     : {result.Outcome}; installed bundle is {updater.ReadInstalledVersion() ?? "unreadable"}");
+                break;
+        }
+
+        output.WriteLine($"apply     : log {MacHeadlessUpdatePaths.LogDirectory}/update-*.log");
+        return false;
     }
 
     private async Task<bool> VerifyAppliedAsync(string? expected, TextWriter output, CancellationToken ct)
