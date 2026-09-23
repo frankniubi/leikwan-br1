@@ -336,6 +336,19 @@ download_verified() {
   }
 }
 
+# True when dotted numeric version $1 >= $2 (missing parts count as 0).
+version_at_least() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, "."); n = (na > nb) ? na : nb
+    for (i = 1; i <= n; i++) {
+      if (x[i] !~ /^[0-9]+$/) x[i] = 0; if (y[i] !~ /^[0-9]+$/) y[i] = 0
+      if (x[i] + 0 > y[i] + 0) exit 0
+      if (x[i] + 0 < y[i] + 0) exit 1
+    }
+    exit 0
+  }'
+}
+
 ensure_app_bundle() {
   case "$(uname -m)" in
     arm64|aarch64) manifest_key="macos_client_app_arm64" ;;
@@ -364,11 +377,14 @@ ensure_app_bundle() {
   if [ -f "$APP/Contents/Info.plist" ]; then
     current_version="$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
   fi
-  if [ "$current_version" = "$version" ] \
+  # Never downgrade: a bundle at least as new as the published one (an update
+  # the daemon applied itself, or a candidate under test) is kept as it is.
+  if [ -n "$current_version" ] \
+    && version_at_least "$current_version" "$version" \
     && [ -x "$EXECUTABLE" ] \
     && [ -d "$APP/Contents/Resources/dotnet" ] \
     && [ -d "$APP/Contents/Resources/bin" ]; then
-    echo "macOS app $version already installed at $APP"
+    echo "macOS app $current_version already installed at $APP (published: $version)"
     return 0
   fi
 
