@@ -63,6 +63,7 @@ class UltraClientLeaseTests(unittest.TestCase):
             extra_headers={
                 "x-device-platform": "linux",
                 "x-device-architecture": MODULE.local_runtime_architecture(),
+                "X-Leikwan-Ultra-Offline-Validity": "1800",
             },
         )
 
@@ -179,6 +180,7 @@ class UltraClientLeaseTests(unittest.TestCase):
                 "device_id": "device-a",
                 "forwards": [mock.ANY],
             },
+            extra_headers={"X-Leikwan-Ultra-Offline-Validity": "1800"},
         )
         body = request.call_args.args[3]
         self.assertEqual("device-a", body["device_id"])

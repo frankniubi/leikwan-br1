@@ -107,18 +107,58 @@ if path.exists():
     except Exception:
         existing = {}
 payload = dict(existing)
+now = time.time()
+# Bounded per-token ledger shared with the agent. A single
+# last_completed_request_token let a never-cleared manual token and an
+# auto-release token undo each other; each token now keeps its own outcome.
+LEDGER_MAX_ENTRIES = 16
+ledger = {}
+raw_ledger = payload.get("tokens")
+if isinstance(raw_ledger, dict):
+    for ledger_token, ledger_entry in raw_ledger.items():
+        if isinstance(ledger_token, str) and ledger_token and isinstance(ledger_entry, dict):
+            ledger[ledger_token] = dict(ledger_entry)
+legacy_token = str(payload.get("last_completed_request_token", "") or "")
+if legacy_token and legacy_token not in ledger:
+    try:
+        legacy_at = float(payload.get("last_completed_at", 0) or 0)
+    except (TypeError, ValueError):
+        legacy_at = 0.0
+    ledger[legacy_token] = {
+        "status": "success",
+        "attempts": 1,
+        "last_attempt_at": legacy_at,
+        "completed_at": legacy_at,
+        "source": "legacy",
+    }
 payload["request_token"] = request_token
 payload["status"] = status
-payload["last_attempt_at"] = time.time()
+payload["last_attempt_at"] = now
 payload.setdefault("last_download_bytes", 0)
 payload.setdefault("download_skip", False)
 if error_message:
     payload["last_error"] = error_message
-    payload["last_failed_at"] = time.time()
+    payload["last_failed_at"] = now
 else:
     payload["last_error"] = ""
+entry = dict(ledger.get(request_token) or {}) if request_token else None
+if entry is not None:
+    previous_status = str(entry.get("status", "") or "")
+    try:
+        attempts = int(entry.get("attempts", 0) or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    if status == "running" and previous_status != "scheduled":
+        # The agent counts attempts it schedules; count manual runs here.
+        attempts += 1
+    entry["attempts"] = max(attempts, 1)
+    entry["status"] = status
+    entry["last_attempt_at"] = now
+    entry["last_error"] = error_message
+    if error_message:
+        entry["last_failed_at"] = now
 if status == "running":
-    payload["last_started_at"] = time.time()
+    payload["last_started_at"] = now
 elif status == "success":
     version = ""
     if agent_path.exists():
@@ -135,12 +175,35 @@ elif status == "success":
                 version = match.group(1) if match else ""
             except (OSError, UnicodeError):
                 version = ""
+    # Legacy fields stay for agents that predate the ledger; completed_at in
+    # the ledger and last_completed_at share one timestamp so a newer agent
+    # does not mistake this write for a second, later completion.
     payload["last_completed_request_token"] = request_token
-    payload["last_completed_at"] = time.time()
+    payload["last_completed_at"] = now
     payload["installed_version"] = version
     payload["installed_sha256"] = hashlib.sha256(agent_path.read_bytes()).hexdigest() if agent_path.is_file() else ""
     payload["runtime_binary_mode"] = runtime_mode
     payload["agent_architecture"] = platform.machine().strip().lower()
+    if entry is not None:
+        entry["completed_at"] = now
+        entry["installed_version"] = version
+if entry is not None:
+    ledger[request_token] = entry
+if len(ledger) > LEDGER_MAX_ENTRIES:
+    def _recency(item):
+        value = item[1]
+        stamps = []
+        for field in ("last_attempt_at", "completed_at", "converge_failed_at"):
+            try:
+                stamps.append(float(value.get(field, 0) or 0))
+            except (TypeError, ValueError):
+                stamps.append(0.0)
+        return max(stamps)
+    for evicted_token, _ in sorted((item for item in ledger.items() if item[0] != request_token), key=_recency):
+        if len(ledger) <= LEDGER_MAX_ENTRIES:
+            break
+        ledger.pop(evicted_token, None)
+payload["tokens"] = ledger
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
@@ -441,6 +504,29 @@ if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
   echo "client agent config missing required fields in ${CONFIG_PATH}" >&2
   exit 1
 fi
+
+# The update runs from a transient unit that does not inherit the agent's
+# EnvironmentFile, so a host that reaches the panel only through its proxy
+# would fail every download. Load only the proxy variables from the root-owned
+# proxy.env the installer maintains; an explicitly exported proxy wins.
+load_agent_proxy_env() {
+  local proxy_file line name value
+  proxy_file="$(dirname "$CONFIG_PATH")/proxy.env"
+  [[ -f "$proxy_file" && ! -L "$proxy_file" ]] || return 0
+  [[ "$(stat -c %u "$proxy_file" 2>/dev/null || echo -1)" == "0" ]] || return 0
+  if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy)=(.*)$ ]] || continue
+    name="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#\"}"; value="${value%\"}"
+    [[ -n "$value" ]] && export "$name=$value"
+  done < "$proxy_file"
+  return 0
+}
+load_agent_proxy_env
 
 exec 9>"${STATE_DIR%/}/agent-update.lock"
 flock -n 9 || { rmdir "$UPDATE_TMP"; exit 75; }

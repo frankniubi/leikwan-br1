@@ -100,6 +100,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     {
                         "x-device-platform": "linux",
                         "x-device-architecture": client_agent_module.local_runtime_architecture(),
+                        "X-Leikwan-Ultra-Offline-Validity": "1800",
                     },
                     extra_headers,
                 )

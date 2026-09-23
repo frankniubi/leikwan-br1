@@ -19,6 +19,7 @@ import os
 import pathlib
 import secrets
 import platform
+import random
 import re
 import shutil
 import socket
@@ -41,6 +42,43 @@ AGENT_VERSION = "2026.09.24.1"
 # policy_generation rewrites the file but must not cycle the forward service.
 WRITTEN_RUNTIME_CONTENT: dict[str, str] = {}
 UPDATE_RETRY_SECONDS = 300
+# Per-token update ledger. A panel-issued manual token is never cleared by the
+# panel, so a single "last completed token" field let a manual token and an
+# auto-release token undo each other forever (each completion made the other
+# look pending again).
+UPDATE_LEDGER_MAX_ENTRIES = 16
+# An auto-release token that is computed again after its update reported
+# success did not converge (e.g. a desired hash that the installer can never
+# satisfy). Retry it with exponential backoff instead of every retry window.
+UPDATE_CONVERGE_BACKOFF_BASE_SECONDS = 300
+UPDATE_CONVERGE_BACKOFF_MAX_SECONDS = 24 * 3600
+# W1 offline validity: the longest policy/lease validity this agent accepts.
+# The panel grants min(header, its own limit) and keeps renew_after at its
+# normal interval, so renewal cadence is unchanged while an outage of up to
+# this long no longer stops traffic. Without the header grants stay <= 300 s.
+ULTRA_OFFLINE_VALIDITY_HEADER = "X-Leikwan-Ultra-Offline-Validity"
+ULTRA_OFFLINE_VALIDITY_SECONDS = 1800
+# Highest validity the agent is prepared to hold (runtime/desktop contract).
+ULTRA_MAX_POLICY_VALIDITY_SECONDS = 3600
+# Control-plane retry backoff for network / 5xx failures (full jitter).
+CONTROL_PLANE_BACKOFF_BASE_SECONDS = 5.0
+CONTROL_PLANE_BACKOFF_MAX_SECONDS = 60.0
+CONTROL_PLANE_BACKOFF_MIN_SECONDS = 1.0
+# Runtime status written by the Ultra runtime next to its control socket.
+# The runtime's StatusWriter writes the policy state only when it changes (at
+# most every 5 s), so the file's age says nothing by itself; a status older
+# than the agent's last lease delivery is what no longer counts.
+ULTRA_RUNTIME_DIR = pathlib.Path("/run/ultra")
+# A cached lease is re-delivered to an idle runtime only while it still has
+# this much validity left, and at most once per interval per forward.
+ULTRA_REDELIVERY_MIN_REMAINING_SECONDS = 15.0
+ULTRA_REDELIVERY_INTERVAL_SECONDS = 30.0
+ULTRA_POLICY_STATES = {"active", "awaiting", "lapsed", "revoked"}
+# Policy states in which a runtime has no usable policy but is alive and will
+# recover by itself once the control plane answers again. Restarting it only
+# churns while the panel is unreachable.
+ULTRA_IDLE_POLICY_STATES = {"awaiting", "lapsed"}
+ULTRA_LEGACY_POLICY_ERRORS = {"awaiting_policy": "awaiting", "policy_lapsed": "lapsed"}
 
 
 def agent_artifact_path() -> pathlib.Path:
@@ -48,6 +86,74 @@ def agent_artifact_path() -> pathlib.Path:
     if getattr(sys, "frozen", False):
         return pathlib.Path(sys.executable).resolve()
     return pathlib.Path(__file__).resolve()
+
+
+def helper_artifact_path(name: str) -> pathlib.Path:
+    """Return the installed on-disk location of a helper shipped beside the agent.
+
+    A PyInstaller one-file agent executes from an extracted ``/tmp/_MEIxxxx``
+    directory, so ``__file__``-adjacent paths name files that were never
+    installed. The installer places every helper next to the frozen executable
+    (``/usr/local/bin``); hash gates and heartbeat provenance must read those
+    installed bytes. The Python distribution keeps its source-adjacent layout.
+    """
+    if getattr(sys, "frozen", False):
+        return agent_artifact_path().parent / name
+    return pathlib.Path(__file__).with_name(name)
+
+
+def ultra_offline_validity_headers() -> dict[str, str]:
+    """Headers that ask the panel for a grant that survives a short outage."""
+    return {ULTRA_OFFLINE_VALIDITY_HEADER: str(ULTRA_OFFLINE_VALIDITY_SECONDS)}
+
+
+def ultra_policy_state_from_status(status: object) -> str:
+    """Normalize a runtime status document to active|awaiting|lapsed|revoked.
+
+    New runtimes write ``policy_state``; older ones only report the condition
+    through ``error_code`` (``awaiting_policy``/``policy_lapsed``).
+    Returns "" when the status does not say.
+    """
+    if not isinstance(status, dict):
+        return ""
+    state = str(status.get("policy_state", "") or "").strip().lower()
+    if state in ULTRA_POLICY_STATES:
+        return state
+    for key in ("error_code", "last_error"):
+        legacy = str(status.get(key, "") or "").strip().lower()
+        if legacy in ULTRA_LEGACY_POLICY_ERRORS:
+            return ULTRA_LEGACY_POLICY_ERRORS[legacy]
+    return ""
+
+
+class ControlPlaneBackoff:
+    """Exponential backoff with full jitter for control-plane retries.
+
+    Delay n is uniform in [0, min(cap, base * 2**(n-1))] (floored at 1 s), so a
+    fleet that lost the panel does not retry in lock step when it comes back.
+    """
+
+    def __init__(
+        self,
+        base: float = CONTROL_PLANE_BACKOFF_BASE_SECONDS,
+        cap: float = CONTROL_PLANE_BACKOFF_MAX_SECONDS,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.base = float(base)
+        self.cap = float(cap)
+        self.rng = rng or random.SystemRandom()
+        self.failures = 0
+
+    def ceiling(self) -> float:
+        exponent = min(max(self.failures - 1, 0), 32)
+        return min(self.cap, self.base * (2 ** exponent))
+
+    def next_delay(self) -> float:
+        self.failures += 1
+        return max(CONTROL_PLANE_BACKOFF_MIN_SECONDS, self.rng.uniform(0.0, self.ceiling()))
+
+    def reset(self) -> None:
+        self.failures = 0
 
 
 def agent_artifact_sha256() -> str:
@@ -708,13 +814,30 @@ def _urlopen_for_request(req: urllib.request.Request, timeout: float = 30):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def http_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
+def _apply_extra_headers(headers: dict[str, str], extra_headers: dict[str, str] | None) -> None:
+    for raw_key, raw_value in (extra_headers or {}).items():
+        key = str(raw_key).strip()
+        value = str(raw_value)
+        if key == "" or "\r" in key or "\n" in key or "\r" in value or "\n" in value:
+            raise ValueError("invalid extra HTTP header")
+        headers[key] = value
+
+
+def http_json(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {token}",
         "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
     }
+    _apply_extra_headers(headers, extra_headers)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -744,12 +867,7 @@ def http_json_with_headers(
         "Authorization": f"Bearer {token}",
         "User-Agent": f"Leikwan-Client-Agent/{AGENT_VERSION}",
     }
-    for raw_key, raw_value in (extra_headers or {}).items():
-        key = str(raw_key).strip()
-        value = str(raw_value)
-        if key == "" or "\r" in key or "\n" in key or "\r" in value or "\n" in value:
-            raise ValueError("invalid extra HTTP header")
-        headers[key] = value
+    _apply_extra_headers(headers, extra_headers)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -855,6 +973,20 @@ def _has_control_plane_http_response(error: Exception) -> bool:
     return re.search(r"\bhttp\s+\d{3}\b", str(error), flags=re.IGNORECASE) is not None
 
 
+class ControlPlaneUnavailableError(RuntimeError):
+    """Every control-plane endpoint failed without a business answer."""
+
+
+def is_transient_control_plane_error(error: BaseException) -> bool:
+    """Network failures and 5xx answers back off; 4xx business errors do not."""
+    if isinstance(error, (ControlPlaneUnavailableError, ControlPlaneResponseError)):
+        return True
+    if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout, http.client.HTTPException, ssl.SSLError)):
+        return True
+    codes = [int(code) for code in re.findall(r"\bhttp\s+(\d{3})\b", str(error), flags=re.IGNORECASE)]
+    return bool(codes) and all(500 <= code <= 599 for code in codes)
+
+
 def control_plane_endpoints(config: dict) -> list[str]:
     primary = str(config.get("master_url", "") or "").rstrip("/")
     candidates = [primary] if primary else []
@@ -887,6 +1019,7 @@ def pull_client_configs(
                 extra_headers={
                     "x-device-platform": "linux",
                     "x-device-architecture": local_runtime_architecture(),
+                    **ultra_offline_validity_headers(),
                 },
             )
             selector.success(base_url)
@@ -897,7 +1030,7 @@ def pull_client_configs(
             # Do not hide authentication/authorization or contract errors behind a mirror.
             if _is_control_plane_business_error(exc):
                 raise
-    raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
+    raise ControlPlaneUnavailableError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
 
 def _normalize_ultra_selection(value: object) -> dict | None:
@@ -1079,6 +1212,9 @@ def collect_ultra_status(
             "bytes_in": max(0, int(decoded.get("bytes_in", 0) or 0)),
             "bytes_out": max(0, int(decoded.get("bytes_out", 0) or 0)),
         }
+        policy_state = ultra_policy_state_from_status(decoded)
+        if policy_state:
+            status_entry["policy_state"] = policy_state
         # Measured path ceiling / oversize drops drive the overlay MTU, and the build
         # attestation drives runtime trust. Absent, zero or malformed values are omitted.
         for key, value in (
@@ -1181,6 +1317,7 @@ def resolve_ultra_leases(
                     f"{endpoint}/api/client/ultra/lease",
                     agent_token,
                     {"device_id": device_id, "forwards": batch_requests},
+                    extra_headers=ultra_offline_validity_headers(),
                 )
                 if not isinstance(batch_response, dict) or batch_response.get("ok") is not True:
                     raise ControlPlaneResponseError("invalid ultra lease response")
@@ -1210,7 +1347,7 @@ def resolve_ultra_leases(
     if completed_batches == 0:
         if last_error is not None and (getattr(last_error, "response_received", False) or _has_control_plane_http_response(last_error)):
             raise last_error
-        raise RuntimeError(f"ultra material resolution retries exhausted: {last_error}") from last_error
+        raise ControlPlaneUnavailableError(f"ultra material resolution retries exhausted: {last_error}") from last_error
     if failed_forward_ids:
         logging.warning("Ultra lease batches failed for forwards %s; retaining successful batches", sorted(failed_forward_ids))
     leases_by_forward: dict[int, list[dict]] = {}
@@ -1356,7 +1493,7 @@ class ClientAgent:
                 errors.append(f"{endpoint}: {exc}")
                 if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
                     raise
-        raise RuntimeError("; ".join(errors) if errors else "no control-plane endpoint configured")
+        raise ControlPlaneUnavailableError("; ".join(errors) if errors else "no control-plane endpoint configured")
 
     def _systemd_watchdog_notify(self) -> None:
         notify_socket = os.environ.get("NOTIFY_SOCKET", "").strip()
@@ -1785,7 +1922,17 @@ class ClientAgent:
 
     @staticmethod
     def install_forward_runtime_path() -> pathlib.Path:
-        return pathlib.Path(__file__).with_name("install_forward_runtime.py")
+        return helper_artifact_path("install_forward_runtime.py")
+
+    def helper_artifact_hashes(self) -> dict[str, str]:
+        """SHA-256 of the installed helper files reported to the control plane."""
+        cfwg_watchdog_path = helper_artifact_path("cfwg_latency_watchdog.py")
+        return {
+            "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
+            "mptcp_client_sha256": file_sha256(self.mptcp_client_path()),
+            "wstunnel_sha256": file_sha256(self.wstunnel_binary_path()),
+            "cfwg_watchdog_sha256": file_sha256(cfwg_watchdog_path) if cfwg_watchdog_path.is_file() else "",
+        }
 
     def ultra_selection_mode(self) -> str:
         return normalize_ultra_selection_mode(self.config.get("ultra_selection_mode", "auto"))
@@ -2590,8 +2737,116 @@ class ClientAgent:
         except (TypeError, ValueError):
             return 0.0
 
+    @classmethod
+    def update_token_ledger(cls, update_state: dict) -> dict:
+        """Return (and install) the bounded per-token ledger inside ``update_state``.
+
+        Older agents and update helpers only recorded ``last_completed_request_token``.
+        That completion is folded into the ledger so an old state file never makes
+        an already-completed token look pending, and so a success written by an
+        older helper (which does not know the ledger) is still observed.
+        """
+        raw = update_state.get("tokens")
+        ledger: dict = {}
+        if isinstance(raw, dict):
+            for token, entry in raw.items():
+                if isinstance(token, str) and token != "" and isinstance(entry, dict):
+                    ledger[token] = dict(entry)
+        update_state["tokens"] = ledger
+
+        legacy_token = str(update_state.get("last_completed_request_token", "") or "")
+        if legacy_token != "":
+            legacy_at = cls.state_timestamp(update_state.get("last_completed_at"))
+            entry = ledger.get(legacy_token)
+            if entry is None:
+                ledger[legacy_token] = {
+                    "status": "success",
+                    "attempts": 1,
+                    "last_attempt_at": legacy_at,
+                    "completed_at": legacy_at,
+                    "source": "legacy",
+                }
+            elif str(entry.get("status", "") or "") != "success" and legacy_at > cls.state_timestamp(entry.get("completed_at")):
+                # A helper that predates the ledger reported a newer completion.
+                entry["status"] = "success"
+                entry["completed_at"] = legacy_at
+                entry["last_error"] = ""
+
+        top_token = str(update_state.get("request_token", "") or "")
+        top_status = str(update_state.get("status", "") or "")
+        entry = ledger.get(top_token) if top_token else None
+        if (
+            isinstance(entry, dict)
+            and top_status in {"running", "error"}
+            and str(entry.get("status", "") or "") in {"scheduled", "running"}
+            and cls.state_timestamp(update_state.get("last_attempt_at")) >= cls.state_timestamp(entry.get("last_attempt_at"))
+        ):
+            entry["status"] = top_status
+            if top_status == "error":
+                entry["last_error"] = str(update_state.get("last_error", "") or "")
+        return ledger
+
+    @classmethod
+    def prune_update_ledger(cls, ledger: dict, keep: set[str] | None = None) -> None:
+        keep = {token for token in (keep or set()) if token}
+        if len(ledger) <= UPDATE_LEDGER_MAX_ENTRIES:
+            return
+
+        def recency(token: str) -> float:
+            entry = ledger.get(token) or {}
+            return max(
+                cls.state_timestamp(entry.get("last_attempt_at")),
+                cls.state_timestamp(entry.get("completed_at")),
+                cls.state_timestamp(entry.get("converge_failed_at")),
+            )
+
+        evictable = sorted((token for token in ledger if token not in keep), key=recency)
+        while len(ledger) > UPDATE_LEDGER_MAX_ENTRIES and evictable:
+            ledger.pop(evictable.pop(0), None)
+
+    @staticmethod
+    def update_converge_backoff_seconds(failures: int) -> float:
+        failures = max(1, int(failures))
+        # Cap the exponent before shifting so a long-lived counter cannot overflow.
+        exponent = min(failures - 1, 32)
+        return float(min(UPDATE_CONVERGE_BACKOFF_BASE_SECONDS * (2 ** exponent), UPDATE_CONVERGE_BACKOFF_MAX_SECONDS))
+
+    def update_convergence_summary(self) -> dict:
+        """Compact, heartbeat-safe view of tokens whose update did not converge."""
+        try:
+            update_state = self.load_update_state()
+        except Exception:  # noqa: BLE001
+            return {"status": "unknown", "tokens": []}
+        ledger = self.update_token_ledger(dict(update_state))
+        now = time.time()
+        failed = []
+        for token, entry in ledger.items():
+            if str(entry.get("status", "") or "") != "converge_failed":
+                continue
+            backoff_until = self.state_timestamp(entry.get("backoff_until"))
+            failed.append(
+                {
+                    "token": token[:512],
+                    "converge_failures": int(entry.get("converge_failures", 0) or 0),
+                    "attempts": int(entry.get("attempts", 0) or 0),
+                    "backoff_until": backoff_until,
+                    "backoff_remaining_seconds": max(0.0, round(backoff_until - now, 1)),
+                    "completed_at": self.state_timestamp(entry.get("completed_at")),
+                }
+            )
+        failed.sort(key=lambda item: item["backoff_until"], reverse=True)
+        return {"status": "converge_failed" if failed else "ok", "tokens": failed[:4]}
+
     def should_retry_update(self, update_state: dict, request_token: str, now: float) -> bool:
-        if str(update_state.get("last_completed_request_token", "") or "") == request_token:
+        ledger = update_state.get("tokens")
+        entry = ledger.get(request_token) if isinstance(ledger, dict) else None
+        if isinstance(entry, dict):
+            entry_status = str(entry.get("status", "") or "")
+            if entry_status == "success":
+                return False
+            if entry_status == "converge_failed" and now < self.state_timestamp(entry.get("backoff_until")):
+                return False
+        elif str(update_state.get("last_completed_request_token", "") or "") == request_token:
             return False
 
         tracked_status = str(update_state.get("status", "") or "")
@@ -2626,7 +2881,14 @@ class ClientAgent:
         # Failure retries are bounded; never launch overlapping maintenance cycles.
         for forward in due:
             schedule[int(forward["forward_id"])] = now + 10
-        payload, _headers, master = self.pull_client_configs(self.config["agent_token"])
+        backoff = getattr(self, "_renew_backoff", None)
+        if backoff is None:
+            backoff = self._renew_backoff = ControlPlaneBackoff()
+        try:
+            payload, _headers, master = self.pull_client_configs(self.config["agent_token"])
+        except Exception as exc:  # noqa: BLE001
+            self._schedule_renewal_backoff(schedule, due, now, backoff, exc)
+            raise
         fresh = {int(f.get("forward_id", 0) or 0): f for f in payload.get("forwards", []) if isinstance(f, dict)}
         compatible = []
         for old in due:
@@ -2640,13 +2902,18 @@ class ClientAgent:
         if not compatible:
             return
         client = payload.get("client") or {}
-        resolved = resolve_ultra_leases(
-            master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible,
-            selection_mode=self.ultra_selection_mode(),
-            fallback_endpoints=control_plane_endpoints(self.config),
-            state_path=getattr(self, "endpoint_state_path", None),
-            selector=getattr(self, "endpoint_selector", None),
-        )
+        try:
+            resolved = resolve_ultra_leases(
+                master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible,
+                selection_mode=self.ultra_selection_mode(),
+                fallback_endpoints=control_plane_endpoints(self.config),
+                state_path=getattr(self, "endpoint_state_path", None),
+                selector=getattr(self, "endpoint_selector", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._schedule_renewal_backoff(schedule, due, now, backoff, exc)
+            raise
+        backoff.reset()
         for forward in resolved:
             fid = int(forward["forward_id"])
             lock = self._forward_lock(fid)
@@ -2666,6 +2933,25 @@ class ClientAgent:
                     logging.info("forward %s independent Ultra lease renewal delivered", fid)
             finally:
                 lock.release()
+
+    @staticmethod
+    def _schedule_renewal_backoff(
+        schedule: dict,
+        due: list[dict],
+        now: float,
+        backoff: "ControlPlaneBackoff",
+        error: BaseException,
+    ) -> None:
+        """Space renewal retries out while the control plane is unreachable.
+
+        Business (4xx) answers keep the historical 10 s retry; network and 5xx
+        failures back off exponentially with full jitter (5 s -> 60 s).
+        """
+        if not is_transient_control_plane_error(error):
+            return
+        delay = backoff.next_delay()
+        for forward in due:
+            schedule[int(forward["forward_id"])] = now + delay
 
     def _ultra_renewal_loop(self, stop: threading.Event, interval_seconds: float = 5.0) -> None:
         while not stop.wait(interval_seconds):
@@ -2697,26 +2983,7 @@ class ClientAgent:
             while True:
                 now = time.time()
                 if now >= next_sync:
-                    try:
-                        self.sync_once()
-                    except Exception as exc:  # noqa: BLE001
-                        self.save_pull_state(
-                            {
-                                "status": "error",
-                                "last_attempt_at": now,
-                                "last_error": str(exc),
-                                "agent_version": AGENT_VERSION,
-                            }
-                        )
-                        logging.exception("sync failed: %s", exc)
-                    base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
-                    stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
-                    next_sync = now + ultra_config_poll_delay(
-                        self.latest_forwards,
-                        now=now,
-                        base_delay=base_delay,
-                        stable_key=stable_key,
-                    )
+                    next_sync = now + self.sync_with_backoff(now)
 
                 if now >= next_health:
                     try:
@@ -2736,6 +3003,48 @@ class ClientAgent:
             stop.set()
             renewal.join(timeout=1.0)
 
+    def sync_with_backoff(self, now: float) -> float:
+        """Run one sync and return the delay before the next one.
+
+        Network and 5xx failures back off exponentially with full jitter
+        (5 s -> 60 s, reset on success) so a fleet does not stampede a panel
+        that is coming back; other failures keep the normal poll cadence.
+        """
+        backoff = getattr(self, "_sync_backoff", None)
+        if backoff is None:
+            backoff = self._sync_backoff = ControlPlaneBackoff()
+        try:
+            self.sync_once()
+        except Exception as exc:  # noqa: BLE001
+            self.save_pull_state(
+                {
+                    "status": "error",
+                    "last_attempt_at": now,
+                    "last_error": str(exc),
+                    "agent_version": AGENT_VERSION,
+                }
+            )
+            if is_transient_control_plane_error(exc):
+                delay = backoff.next_delay()
+                logging.warning(
+                    "sync failed (control plane unavailable, attempt %s); retrying in %.1fs: %s",
+                    backoff.failures,
+                    delay,
+                    exc,
+                )
+                return delay
+            logging.exception("sync failed: %s", exc)
+        else:
+            backoff.reset()
+        base_delay = int(self.config.get("poll_interval_seconds", 30) or 30)
+        stable_key = str(self.config.get("client_id", "") or self.config.get("agent_token", "") or "client")
+        return ultra_config_poll_delay(
+            self.latest_forwards,
+            now=now,
+            base_delay=base_delay,
+            stable_key=stable_key,
+        )
+
     def run_cfwg_latency_watchdog(self, forwards: list[dict]) -> None:
         watchdog_config = self.config.get("cfwg_latency_watchdog", {})
         if not isinstance(watchdog_config, dict):
@@ -2745,7 +3054,7 @@ class ClientAgent:
         try:
             from cfwg_latency_watchdog import CfwgLatencyWatchdog
         except Exception:
-            module_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
+            module_path = helper_artifact_path("cfwg_latency_watchdog.py")
             try:
                 spec = importlib.util.spec_from_file_location("cfwg_latency_watchdog", module_path)
                 if spec is None or spec.loader is None:
@@ -3029,7 +3338,7 @@ class ClientAgent:
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
         local_clock = self.time_sync_state()
-        cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
+        helper_hashes = self.helper_artifact_hashes()
         # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
         ultra_status = collect_ultra_status()
         heartbeat_response = self.control_plane_request(
@@ -3048,11 +3357,14 @@ class ClientAgent:
                 "kernel_release": platform.release(),
                 "installer_version": str(self.config.get("installer_version", "") or ""),
                 "installer_sha256": str(self.config.get("installer_sha256", "") or ""),
-                "install_forward_runtime_sha256": file_sha256(self.install_forward_runtime_path()),
-                "mptcp_client_sha256": file_sha256(self.mptcp_client_path()),
-                "wstunnel_sha256": file_sha256(self.wstunnel_binary_path()),
+                # Hashes of the installed helper bytes (next to the frozen
+                # executable in binary mode), never the extracted bundle.
+                "install_forward_runtime_sha256": helper_hashes["install_forward_runtime_sha256"],
+                "mptcp_client_sha256": helper_hashes["mptcp_client_sha256"],
+                "wstunnel_sha256": helper_hashes["wstunnel_sha256"],
                 "wstunnel_version": str(self.config.get("wstunnel_version", "") or ""),
-                "cfwg_watchdog_sha256": file_sha256(cfwg_watchdog_path) if cfwg_watchdog_path.is_file() else "",
+                "cfwg_watchdog_sha256": helper_hashes["cfwg_watchdog_sha256"],
+                "agent_update_convergence": self.update_convergence_summary(),
                 "wireguard_public_key": wireguard_public_key,
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
@@ -3061,6 +3373,11 @@ class ClientAgent:
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
                 "ultra_status": ultra_status,
+                "ultra_policy_states": {
+                    str(entry["forward_id"]): entry["policy_state"]
+                    for entry in ultra_status
+                    if isinstance(entry, dict) and entry.get("policy_state")
+                },
                 "ultra_candidate_feedback": collect_ultra_candidate_feedback(ultra_status),
             },
         )
@@ -3172,16 +3489,36 @@ class ClientAgent:
         explicit_request_token = str(client_meta.get("agent_update_request_token", "") or "")
         auto_request_token = self.auto_update_request_token(client_meta)
         update_state = self.load_update_state()
-        completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
+        ledger = self.update_token_ledger(update_state)
+        keep_tokens = {explicit_request_token, auto_request_token}
+        state_dirty = False
 
         if explicit_request_token != "":
-            if completed_request_token == explicit_request_token:
+            explicit_entry = ledger.get(explicit_request_token)
+            explicit_status = str((explicit_entry or {}).get("status", "") or "")
+            if explicit_status in {"success", "converge_failed"}:
+                # The panel never clears a manual token. Once it completed it
+                # stays completed, whatever other tokens ran afterwards.
                 applied = self.load_applied()
                 if applied.get("_last_agent_update_request_token") != explicit_request_token:
                     applied["_last_agent_update_request_token"] = explicit_request_token
                     self.write_applied_state(applied)
+                explicit_request_token = ""
             elif not self.management_requires_local_update(client_meta):
                 now = time.time()
+                entry = dict(explicit_entry or {})
+                entry.update(
+                    {
+                        "status": "success",
+                        "last_attempt_at": now,
+                        "completed_at": now,
+                        "attempts": int(entry.get("attempts", 0) or 0),
+                        "installed_version": AGENT_VERSION,
+                        "last_error": "",
+                        "note": "already_current",
+                    }
+                )
+                ledger[explicit_request_token] = entry
                 update_state.update(
                     {
                         "request_token": explicit_request_token,
@@ -3193,20 +3530,58 @@ class ClientAgent:
                         "last_error": "",
                     }
                 )
+                self.prune_update_ledger(ledger, keep_tokens)
                 self.save_update_state(update_state)
                 applied = self.load_applied()
                 applied["_last_agent_update_request_token"] = explicit_request_token
                 self.write_applied_state(applied)
                 explicit_request_token = ""
 
-        for request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
-            if completed_request_token == request_token:
-                continue
+        if auto_request_token != "":
+            auto_entry = ledger.get(auto_request_token)
+            if isinstance(auto_entry, dict) and str(auto_entry.get("status", "") or "") == "success":
+                # The updater reported success for exactly this mismatch set,
+                # yet the same mismatch is computed again: the update did not
+                # converge. Relaunching it every retry window is what restarted
+                # agents every few minutes, so back off exponentially instead.
+                now = time.time()
+                failures = int(auto_entry.get("converge_failures", 0) or 0) + 1
+                backoff = self.update_converge_backoff_seconds(failures)
+                auto_entry.update(
+                    {
+                        "status": "converge_failed",
+                        "converge_failures": failures,
+                        "converge_failed_at": now,
+                        "backoff_until": now + backoff,
+                    }
+                )
+                log = logging.info
+                if not bool(auto_entry.get("converge_warned", False)):
+                    auto_entry["converge_warned"] = True
+                    log = logging.warning
+                log(
+                    "agent update did not converge after a successful install token=%s failures=%s; "
+                    "next attempt in %ss",
+                    auto_request_token,
+                    failures,
+                    int(backoff),
+                )
+                state_dirty = True
 
+        for request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
             now = time.time()
             if not self.should_retry_update(update_state, request_token, now):
                 continue
 
+            entry = ledger.setdefault(request_token, {})
+            entry.update(
+                {
+                    "status": "scheduled",
+                    "attempts": int(entry.get("attempts", 0) or 0) + 1,
+                    "last_attempt_at": now,
+                    "last_error": "",
+                }
+            )
             update_state.update(
                 {
                     "request_token": request_token,
@@ -3215,16 +3590,23 @@ class ClientAgent:
                     "last_error": "",
                 }
             )
+            self.prune_update_ledger(ledger, keep_tokens)
             self.save_update_state(update_state)
             try:
                 self.request_self_update(request_token, self.active_control_plane_endpoint)
             except Exception as exc:  # noqa: BLE001
+                entry["status"] = "error"
+                entry["last_error"] = str(exc)
                 update_state["status"] = "error"
                 update_state["last_error"] = str(exc)
                 update_state["last_failed_at"] = now
                 self.save_update_state(update_state)
                 raise
             return
+
+        if state_dirty:
+            self.prune_update_ledger(ledger, keep_tokens)
+            self.save_update_state(update_state)
 
     def auto_update_request_token(self, client_meta: dict) -> str:
         if str(self.config.get("disable_auto_update", "") or "").lower() in {"1", "true", "yes", "on"}:
@@ -3282,7 +3664,7 @@ class ClientAgent:
                 mismatches.append(f"mptcp_runtime={desired_mptcp_runtime_sha256}")
 
         if desired_cfwg_watchdog_sha256:
-            local_cfwg_watchdog_path = pathlib.Path(__file__).with_name("cfwg_latency_watchdog.py")
+            local_cfwg_watchdog_path = helper_artifact_path("cfwg_latency_watchdog.py")
             if local_cfwg_watchdog_path.is_file():
                 local_cfwg_watchdog_sha256 = file_sha256(local_cfwg_watchdog_path).lower()
             else:
@@ -4010,6 +4392,10 @@ class ClientAgent:
                         if not isinstance(decoded, dict) or decoded.get("ok") is not True:
                             raise OSError(str(decoded.get("error", "lease rejected")) if isinstance(decoded, dict) else "lease rejected")
                         self.remember_ultra_leases(forward_id, leases)
+                        delivered = getattr(self, "_ultra_lease_delivered_at", None)
+                        if delivered is None:
+                            delivered = self._ultra_lease_delivered_at = {}
+                        delivered[int(forward_id)] = time.time()
                         return True
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
                     if attempt == 2 or time.monotonic() >= total_deadline:
@@ -4142,6 +4528,123 @@ class ClientAgent:
         if removed_service_units:
             subprocess.run(["systemctl", "daemon-reload"], text=True, capture_output=True, check=False)
 
+    def ultra_status_path(self, forward_id: int) -> pathlib.Path:
+        root = pathlib.Path(getattr(self, "ultra_runtime_dir", ULTRA_RUNTIME_DIR))
+        return root / f"forward-{int(forward_id)}.status.json"
+
+    def read_ultra_runtime_status(self, forward_id: int) -> tuple[dict, float] | None:
+        """Return (status, updated_at_epoch) of a forward's runtime status file.
+
+        Only a regular, root-owned (or ``ultra_status_expected_uid``) file of
+        bounded size is trusted, as in collect_ultra_status: an unprivileged
+        writer must not be able to suppress health restarts.
+        """
+        path = self.ultra_status_path(forward_id)
+        expected_uid = int(getattr(self, "ultra_status_expected_uid", 0))
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size > 64 * 1024:
+                return None
+            if hasattr(os, "getuid") and opened.st_uid != expected_uid:
+                return None
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                descriptor = None
+                decoded = json.load(handle)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if not isinstance(decoded, dict):
+            return None
+        forward_field = decoded.get("forward_id")
+        if forward_field not in (None, "") and int(forward_field or 0) != int(forward_id):
+            return None
+        updated = opened.st_mtime
+        reported = parse_rfc3339(decoded.get("updated_at"))
+        if reported is not None:
+            updated = max(updated, reported)
+        return decoded, updated
+
+    def ultra_runtime_idle_policy_state(self, forward_id: int) -> str:
+        """Policy state when the runtime is alive but idle on purpose, else "".
+
+        Idle means awaiting/lapsed: ``policy_state`` first, then the legacy
+        ``error_code`` (``awaiting_policy``/``policy_lapsed``) of older runtimes.
+        A status written before this agent's last lease delivery predates that
+        lease and proves nothing, so it is ignored.
+        """
+        read = self.read_ultra_runtime_status(forward_id)
+        if read is None:
+            return ""
+        status, updated_at = read
+        delivered_at = (getattr(self, "_ultra_lease_delivered_at", None) or {}).get(int(forward_id))
+        if delivered_at is not None and updated_at < delivered_at:
+            return ""
+        state = ultra_policy_state_from_status(status)
+        return state if state in ULTRA_IDLE_POLICY_STATES else ""
+
+    def valid_cached_ultra_leases(self, forward_id: int) -> list[dict]:
+        """Cached leases that can still be delivered (enough validity left)."""
+        leases = self.cached_ultra_leases(forward_id)
+        if not leases:
+            return []
+        now = time.time()
+        for lease in leases:
+            expires_at = parse_rfc3339(lease.get("expires_at")) if isinstance(lease, dict) else None
+            if expires_at is None or expires_at - now < ULTRA_REDELIVERY_MIN_REMAINING_SECONDS:
+                return []
+        return leases
+
+    def redeliver_cached_ultra_lease(self, forward_id: int) -> bool | None:
+        """Hand a still-valid cached lease to an idle runtime.
+
+        A runtime that systemd restarted on its own comes back ``awaiting`` and
+        would otherwise wait for the next renewal window. Returns None when
+        there is nothing to deliver (or it was tried too recently), else the
+        delivery result.
+        """
+        leases = self.valid_cached_ultra_leases(forward_id)
+        if not leases:
+            return None
+        attempts = getattr(self, "_ultra_redelivery_at", None)
+        if attempts is None:
+            attempts = self._ultra_redelivery_at = {}
+        now = time.monotonic()
+        last = attempts.get(int(forward_id))
+        if last is not None and now - last < ULTRA_REDELIVERY_INTERVAL_SECONDS:
+            return None
+        attempts[int(forward_id)] = now
+        lock = self._forward_lock(forward_id)
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            delivered = self.send_ultra_leases(int(forward_id), leases)
+        finally:
+            lock.release()
+        if delivered:
+            logging.info("forward %s idle Ultra runtime received the cached lease; no restart needed", forward_id)
+        return delivered
+
+    def _note_ultra_idle(self, forward_id: int, state: str) -> None:
+        noted = getattr(self, "_ultra_idle_noted", None)
+        if noted is None:
+            noted = self._ultra_idle_noted = {}
+        previous = noted.get(forward_id, "")
+        if state == previous:
+            return
+        if state:
+            noted[forward_id] = state
+            logging.info(
+                "forward %s Ultra runtime alive with policy %s; not restarting while the control plane is unreachable",
+                forward_id,
+                state,
+            )
+        else:
+            noted.pop(forward_id, None)
+
     def ensure_runtime_health(self, forwards: list[dict]) -> None:
         if not forwards:
             return
@@ -4186,6 +4689,16 @@ class ClientAgent:
                 streaks = getattr(self, "_ultra_listener_failures", None)
                 if streaks is None:
                     streaks = self._ultra_listener_failures = {}
+                idle_state = self.ultra_runtime_idle_policy_state(forward_id)
+                redelivered: bool | None = None
+                if idle_state:
+                    # Awaiting right after a restart, or lapsed: give it the
+                    # current lease now instead of restarting it.
+                    redelivered = self.redeliver_cached_ultra_lease(forward_id)
+                    if redelivered:
+                        streaks.pop(forward_id, None)
+                        self._note_ultra_idle(forward_id, "")
+                        continue
                 age = self.service_active_age_seconds(service_name)
                 if age is not None and age < 90.0:
                     streaks.pop(forward_id, None)
@@ -4195,7 +4708,18 @@ class ClientAgent:
                           for protocol in self.transport_protocols(forward.get("transport", "tcp+udp"))]
                 if probes and all(item[0] for item in probes):
                     streaks.pop(forward_id, None)
+                    self._note_ultra_idle(forward_id, "")
                     continue
+                if idle_state and redelivered is not False:
+                    # Alive, and waiting for (or past) its policy because the
+                    # control plane is unreachable and no valid lease is at
+                    # hand. A restart cannot fix that and only churns; it
+                    # recovers as soon as a lease is delivered. (A runtime
+                    # that refuses a valid lease falls through to the restart.)
+                    streaks.pop(forward_id, None)
+                    self._note_ultra_idle(forward_id, idle_state)
+                    continue
+                self._note_ultra_idle(forward_id, "")
                 now = time.monotonic()
                 count, first = streaks.get(forward_id, (0, now))
                 streaks[forward_id] = (count + 1, first)

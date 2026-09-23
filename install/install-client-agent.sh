@@ -14,6 +14,12 @@ SERVICE_NAME="leikwan-client-agent"
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 REQUIRE_MPTCP=0
+# Restart/reload the agent even when every artifact, config.json and the unit
+# file are already current (--force-restart or LEIKWAN_INSTALL_FORCE_RESTART=1).
+FORCE_RESTART="${LEIKWAN_INSTALL_FORCE_RESTART:-0}"
+# auto (preserve proxy.env unless HTTP(S)_PROXY is exported), set or clear.
+PROXY_MODE="auto"
+PROXY_URL=""
 TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
 STATE_DIR="/var/lib/leikwan-client-agent"
 RUNTIME_ARCH="amd64"
@@ -314,9 +320,29 @@ while [[ $# -gt 0 ]]; do
     --require-mptcp) REQUIRE_MPTCP=1; shift ;;
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
     --reboot-after-mptcp-kernel-install) REBOOT_AFTER_MPTCP_KERNEL_INSTALL=1; shift ;;
+    --force-restart) FORCE_RESTART=1; shift ;;
+    # --proxy <url> writes proxy.env and uses it for this run; --proxy "" or
+    # --clear-proxy empties it. Without either, proxy.env is left as is unless
+    # HTTP(S)_PROXY is set in the environment.
+    --proxy)
+      [[ $# -ge 2 ]] || { echo "--proxy needs a value (use \"\" to clear)" >&2; exit 1; }
+      PROXY_URL="$2"
+      if [[ -z "$PROXY_URL" ]]; then PROXY_MODE="clear"; else PROXY_MODE="set"; fi
+      shift 2
+      ;;
+    --clear-proxy) PROXY_MODE="clear"; PROXY_URL=""; shift ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+if [[ "$PROXY_MODE" == "set" ]]; then
+  if [[ "$PROXY_URL" == *$'\n'* || "$PROXY_URL" == *$'\r'* ]]; then
+    echo "invalid newline in --proxy" >&2
+    exit 1
+  fi
+  # The same proxy carries this run's downloads.
+  export HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" http_proxy="$PROXY_URL" https_proxy="$PROXY_URL"
+fi
 
 if [[ -z "$MASTER_URL" || -z "$CLIENT_ID" || -z "$AGENT_TOKEN" ]]; then
   echo "usage: install-client-agent.sh --master <url> --client-id <id> --agent-token <token>" >&2
@@ -386,6 +412,39 @@ install -d -m 0700 "$ROLLBACK_DIR"
 declare -a BACKUP_PATHS=()
 declare -A BACKUP_EXISTS=()
 INSTALL_COMMITTED=0
+# Change tracking: an update run whose artifacts, config and unit are all
+# current must not restart the agent (a no-op update used to restart it every
+# retry window). Anything that changes what the service runs marks it here.
+INSTALL_CHANGED=0
+UNIT_CHANGED=0
+declare -a INSTALL_CHANGE_REASONS=()
+
+mark_install_changed() {
+  INSTALL_CHANGED=1
+  INSTALL_CHANGE_REASONS+=("$1")
+}
+
+files_identical() {
+  local left="$1" right="$2" left_sum right_sum
+  [[ -f "$left" && -f "$right" ]] || return 1
+  left_sum="$(sha256sum "$left" | awk '{print $1}')"
+  right_sum="$(sha256sum "$right" | awk '{print $1}')"
+  [[ -n "$left_sum" && "$left_sum" == "$right_sum" ]]
+}
+
+# Replace target with staged only when the bytes differ; records the change.
+install_file_if_changed() {
+  local staged="$1" target="$2" mode="$3" reason="$4"
+  if files_identical "$staged" "$target"; then
+    rm -f "$staged"
+    chmod "$mode" "$target"
+    return 0
+  fi
+  backup_existing "$target"
+  chmod "$mode" "$staged"
+  mv "$staged" "$target"
+  mark_install_changed "$reason"
+}
 
 backup_existing() {
   local path="$1" rel backup
@@ -450,19 +509,72 @@ finish_install() {
 trap finish_install EXIT
 
 PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
-backup_existing "$PROXY_ENV_FILE"
-: > "$PROXY_ENV_FILE"
-for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
-  proxy_value="${!proxy_name:-}"
-  if [[ -n "$proxy_value" ]]; then
-    if [[ "$proxy_value" == *$'\n'* || "$proxy_value" == *$'\r'* ]]; then
-      echo "invalid newline in $proxy_name" >&2
-      exit 1
-    fi
-    printf '%s=%s\n' "$proxy_name" "$proxy_value" >> "$PROXY_ENV_FILE"
+PROXY_ENV_STAGED="$CONFIG_DIR/proxy.env.new.$$"
+
+append_proxy_env_line() {
+  local staged="$1" name="$2" value="$3"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "invalid newline in $name" >&2
+    rm -f "$staged"
+    exit 1
   fi
-done
-chmod 0600 "$PROXY_ENV_FILE"
+  printf '%s=%s\n' "$name" "$value" >> "$staged"
+}
+
+# Decide what proxy.env must contain; sets PROXY_ENV_ACTION to write or keep.
+# A self-update runs from a transient systemd unit whose environment has no
+# proxy variables at all, so "no proxy given" must preserve the operator's
+# proxy.env rather than clear it. Only --proxy/--clear-proxy or an explicit
+# HTTP(S)_PROXY in the environment may change it.
+stage_proxy_env() {
+  local staged="$1" proxy_name explicit_env=0
+  PROXY_ENV_ACTION=write
+  : > "$staged"
+  case "$PROXY_MODE" in
+    clear)
+      return 0
+      ;;
+    set)
+      for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+        append_proxy_env_line "$staged" "$proxy_name" "$PROXY_URL"
+      done
+      for proxy_name in NO_PROXY no_proxy; do
+        if [[ -n "${!proxy_name:-}" ]]; then
+          append_proxy_env_line "$staged" "$proxy_name" "${!proxy_name}"
+        fi
+      done
+      return 0
+      ;;
+  esac
+  for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+    if [[ -n "${!proxy_name:-}" ]]; then
+      explicit_env=1
+    fi
+  done
+  if [[ "$explicit_env" != "1" && -f "$PROXY_ENV_FILE" ]]; then
+    PROXY_ENV_ACTION=keep
+    rm -f "$staged"
+    return 0
+  fi
+  for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
+    if [[ -n "${!proxy_name:-}" ]]; then
+      append_proxy_env_line "$staged" "$proxy_name" "${!proxy_name}"
+    fi
+  done
+}
+
+install_proxy_env() {
+  stage_proxy_env "$PROXY_ENV_STAGED"
+  if [[ "$PROXY_ENV_ACTION" == "write" ]]; then
+    # proxy.env is the service's EnvironmentFile: a change needs a restart.
+    install_file_if_changed "$PROXY_ENV_STAGED" "$PROXY_ENV_FILE" 0600 proxy.env
+  else
+    echo "  no proxy given; keeping the existing proxy.env"
+  fi
+  chmod 0600 "$PROXY_ENV_FILE"
+}
+
+install_proxy_env
 
 leikwan_protected_download() {
   local url="$1"
@@ -818,6 +930,7 @@ download_manifest_artifact() {
   chmod 0755 "$staged"
   backup_existing "$path"
   mv "$staged" "$path"
+  mark_install_changed "$key"
 }
 
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
@@ -871,12 +984,11 @@ download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_P
 download_manifest_artifact forward_strategy "$DOWNLOAD_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
 download_manifest_artifact tcp_race_runtime "$DOWNLOAD_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
 download_manifest_artifact udp_fanout_runtime "$DOWNLOAD_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
-backup_existing "$BIN_DIR/leikwan-client-strategy"
-cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
+cat > "$BIN_DIR/leikwan-client-strategy.new.$$" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
 WRAPPER
-chmod 0755 "$BIN_DIR/leikwan-client-strategy"
+install_file_if_changed "$BIN_DIR/leikwan-client-strategy.new.$$" "$BIN_DIR/leikwan-client-strategy" 0755 leikwan-client-strategy
 download_manifest_artifact client_rate_limit "$DOWNLOAD_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
 download_manifest_artifact uot_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_manifest_artifact uot_bond_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
@@ -901,9 +1013,9 @@ download_manifest_artifact "$BOND_RUNTIME_KEY" "$DOWNLOAD_BASE/$BOND_RUNTIME_PAT
 # download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 WSTUNNEL_VERSION="$(_vers_value "$WSTUNNEL_RUNTIME_KEY" version)"
 
-CONFIG_TMP="$CONFIG_DIR/config.json.new"
-backup_existing "$CONFIG_DIR/config.json"
-MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" AGENT_RUNTIME_MODE="$AGENT_RUNTIME_MODE" AGENT_BINARY_PATH="$AGENT_BINARY_PATH" python3 - "$CONFIG_TMP" <<'PY'
+render_agent_config() {
+  local target="$1"
+  MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" AGENT_RUNTIME_MODE="$AGENT_RUNTIME_MODE" AGENT_BINARY_PATH="$AGENT_BINARY_PATH" python3 - "$target" <<'PY'
 import json
 import os
 import pathlib
@@ -933,10 +1045,14 @@ payload = {
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
-if [[ ! -s "$CONFIG_TMP" ]]; then
-  die "generated client-agent config is empty; refusing to replace the current config"
-fi
-if ! python3 - "$CONFIG_TMP" <<'PYCONFIG'
+}
+
+validate_agent_config() {
+  local staged="$1"
+  if [[ ! -s "$staged" ]]; then
+    die "generated client-agent config is empty; refusing to replace the current config"
+  fi
+  if ! python3 - "$staged" <<'PYCONFIG'
 import json
 import pathlib
 import sys
@@ -949,25 +1065,86 @@ for key in ("master_url", "artifact_base_url", "client_id", "agent_token", "stat
     if document.get(key) in (None, ""):
         raise SystemExit(f"generated client-agent config missing {key}")
 PYCONFIG
-then
-  die "generated client-agent config failed validation; refusing to replace the current config"
-fi
-mv "$CONFIG_TMP" "$CONFIG_DIR/config.json"
-chmod 0600 "$CONFIG_DIR/config.json"
+  then
+    die "generated client-agent config failed validation; refusing to replace the current config"
+  fi
+}
 
-SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
-backup_existing "$SERVICE_UNIT_PATH"
-if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
-  AGENT_EXEC_START="$AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
-  # PyInstaller one-file uses a bootloader process and sends sd_notify from
-  # the extracted Python child.  NotifyAccess=main rejects that heartbeat and
-  # makes an otherwise healthy frozen agent hit WatchdogSec after 180 seconds.
-  AGENT_NOTIFY_ACCESS="all"
-else
-  AGENT_EXEC_START="/usr/bin/python3 $AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
-  AGENT_NOTIFY_ACCESS="main"
-fi
-cat > "$SERVICE_UNIT_PATH" <<UNIT
+# Exit 0 when the installed config already carries every installer-owned value
+# of the staged config. AGENT_MANAGED_KEYS are owned by the control plane once
+# the agent is enrolled: the agent rewrites them from agent_config_json
+# (apply_config_patch), so their on-disk values legitimately differ from what
+# this installer renders. Counting them as a change would restart the agent on
+# every no-op update. --force-restart still rewrites the whole file.
+agent_config_current() {
+  local staged="$1" current="$2"
+  [[ -f "$current" ]] || return 1
+  python3 - "$staged" "$current" <<'PYCURRENT'
+import json
+import pathlib
+import sys
+
+AGENT_MANAGED_KEYS = {
+    "master_url",
+    "artifact_base_url",
+    "panel_mirror_urls",
+    "disable_auto_update",
+    "poll_interval_seconds",
+    "health_check_interval_seconds",
+    "log_level",
+    "state_dir",
+    "udp_uot_sidepath",
+    "cfwg_latency_watchdog",
+    "runtime_refresh",
+    "cfwg_edge_pins",
+    "ultra_selection_mode",
+}
+try:
+    staged = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    current = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(staged, dict) or not isinstance(current, dict):
+    raise SystemExit(1)
+for key in ("master_url", "artifact_base_url", "client_id", "agent_token", "state_dir"):
+    if current.get(key) in (None, ""):
+        raise SystemExit(1)
+for key, value in staged.items():
+    if key in AGENT_MANAGED_KEYS:
+        continue
+    if current.get(key) != value:
+        raise SystemExit(1)
+raise SystemExit(0)
+PYCURRENT
+}
+
+install_agent_config() {
+  local staged="$1" target="$CONFIG_DIR/config.json"
+  validate_agent_config "$staged"
+  if [[ "$FORCE_RESTART" != "1" ]] && agent_config_current "$staged" "$target"; then
+    rm -f "$staged"
+    chmod 0600 "$target"
+    echo "  client-agent config.json up to date, keeping current file"
+    return 0
+  fi
+  backup_existing "$target"
+  mv "$staged" "$target"
+  chmod 0600 "$target"
+  mark_install_changed config.json
+}
+
+render_agent_unit() {
+  if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+    AGENT_EXEC_START="$AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+    # PyInstaller one-file uses a bootloader process and sends sd_notify from
+    # the extracted Python child.  NotifyAccess=main rejects that heartbeat and
+    # makes an otherwise healthy frozen agent hit WatchdogSec after 180 seconds.
+    AGENT_NOTIFY_ACCESS="all"
+  else
+    AGENT_EXEC_START="/usr/bin/python3 $AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+    AGENT_NOTIFY_ACCESS="main"
+  fi
+  cat <<UNIT
 [Unit]
 Description=Leikwan Client Agent
 After=network.target
@@ -985,39 +1162,52 @@ NotifyAccess=$AGENT_NOTIFY_ACCESS
 [Install]
 WantedBy=multi-user.target
 UNIT
+}
 
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME.service"
-systemctl restart "$SERVICE_NAME.service"
-
-SERVICE_READY=0
-for _ in $(seq 1 30); do
-  if systemctl is-active --quiet "$SERVICE_NAME.service"; then
-    SERVICE_READY=1
-    break
+install_agent_unit() {
+  local unit_path="$1" staged
+  staged="$(mktemp "$STATE_DIR/.agent-unit.XXXXXX")"
+  render_agent_unit > "$staged"
+  if files_identical "$staged" "$unit_path"; then
+    rm -f "$staged"
+    return 0
   fi
-  sleep 1
-done
-if [[ "$SERVICE_READY" != "1" ]]; then
-  systemctl status "$SERVICE_NAME.service" --no-pager >&2 || true
-  journalctl -u "$SERVICE_NAME.service" -n 40 --no-pager >&2 || true
-  die "client-agent service did not become active"
-fi
+  backup_existing "$unit_path"
+  chmod 0644 "$staged"
+  mv "$staged" "$unit_path"
+  UNIT_CHANGED=1
+  mark_install_changed "$(basename "$unit_path")"
+}
 
-HEALTH_PATH="$STATE_DIR/install-health.json"
-backup_existing "$HEALTH_PATH"
-if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
-  AGENT_HEALTH_CMD=("$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
-else
-  AGENT_HEALTH_CMD=(/usr/bin/python3 "$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
-fi
-if ! "${AGENT_HEALTH_CMD[@]}" > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
-  cat "$STATE_DIR/install-health.stderr" >&2 || true
-  cat "$HEALTH_PATH" >&2 || true
-  die "client-agent live health check failed"
-fi
-chmod 0600 "$HEALTH_PATH" "$STATE_DIR/install-health.stderr"
-python3 - "$HEALTH_PATH" <<'PY'
+verify_agent_service() {
+  local service_ready=0
+  for _ in $(seq 1 30); do
+    if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+      service_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$service_ready" != "1" ]]; then
+    systemctl status "$SERVICE_NAME.service" --no-pager >&2 || true
+    journalctl -u "$SERVICE_NAME.service" -n 40 --no-pager >&2 || true
+    die "client-agent service did not become active"
+  fi
+
+  HEALTH_PATH="$STATE_DIR/install-health.json"
+  backup_existing "$HEALTH_PATH"
+  if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+    AGENT_HEALTH_CMD=("$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+  else
+    AGENT_HEALTH_CMD=(/usr/bin/python3 "$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+  fi
+  if ! "${AGENT_HEALTH_CMD[@]}" > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
+    cat "$STATE_DIR/install-health.stderr" >&2 || true
+    cat "$HEALTH_PATH" >&2 || true
+    die "client-agent live health check failed"
+  fi
+  chmod 0600 "$HEALTH_PATH" "$STATE_DIR/install-health.stderr"
+  python3 - "$HEALTH_PATH" <<'PY'
 import json
 import pathlib
 import sys
@@ -1032,6 +1222,44 @@ runtime = payload.get("runtime", {})
 if runtime.get("wstunnel_bin_present") is not True:
     raise SystemExit("wstunnel binary is not present")
 PY
+}
+
+# Restart, reload and health-check only when something the service runs
+# actually changed (an artifact, config.json, proxy.env or the unit file), the
+# service is not running, or --force-restart was given.
+finalize_agent_service() {
+  local restart_reason=""
+  if [[ "$FORCE_RESTART" == "1" ]]; then
+    restart_reason="forced"
+  elif [[ "$INSTALL_CHANGED" == "1" ]]; then
+    restart_reason="changed: ${INSTALL_CHANGE_REASONS[*]}"
+  elif ! systemctl is-active --quiet "$SERVICE_NAME.service"; then
+    restart_reason="service inactive"
+  fi
+  if [[ "$UNIT_CHANGED" == "1" || "$FORCE_RESTART" == "1" ]]; then
+    systemctl daemon-reload
+  fi
+  if [[ "$UNIT_CHANGED" == "1" || "$FORCE_RESTART" == "1" ]] || ! systemctl is-enabled --quiet "$SERVICE_NAME.service"; then
+    systemctl enable "$SERVICE_NAME.service"
+  fi
+  if [[ -z "$restart_reason" ]]; then
+    AGENT_SERVICE_RESTARTED=0
+    echo "$SERVICE_NAME already current and active; skipping restart and live health check"
+    return 0
+  fi
+  echo "restarting $SERVICE_NAME ($restart_reason)"
+  systemctl restart "$SERVICE_NAME.service"
+  AGENT_SERVICE_RESTARTED=1
+  verify_agent_service
+}
+
+CONFIG_TMP="$CONFIG_DIR/config.json.new"
+render_agent_config "$CONFIG_TMP"
+install_agent_config "$CONFIG_TMP"
+
+SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
+install_agent_unit "$SERVICE_UNIT_PATH"
+finalize_agent_service
 
 INSTALL_COMMITTED=1
 
