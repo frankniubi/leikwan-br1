@@ -931,13 +931,23 @@ class TunnelOrchestratorTest {
         })
 
         orchestrator.refreshNativeForTest(now.plusSeconds(61))
-        orchestrator.refreshNativeForTest(now.plusSeconds(100))
+        // Renewal is due at min(lease expiry - 90 s, renew_after - 30 s) = +90 s here.
+        orchestrator.refreshNativeForTest(now.plusSeconds(85))
 
         assertEquals(1, processRunner.started.size)
         assertEquals(stopAllCallsAfterStart, processRunner.stopAllCalls)
         assertEquals(2, deliveredBatches.size)
         assertEquals(deliveredPaths.first(), deliveredPaths.last())
         assertEquals(2, panelApi.resolveUltraLeaseCalls)
+
+        // The refreshed lease runs to +240 s, but renew_after (+120 s) still drives the cadence,
+        // so a long (offline-capable) lease does not delay the next online renewal.
+        orchestrator.refreshNativeForTest(now.plusSeconds(95))
+        assertEquals(1, processRunner.started.size)
+        assertEquals(stopAllCallsAfterStart, processRunner.stopAllCalls)
+        assertEquals(3, deliveredBatches.size)
+        assertEquals(deliveredPaths.first(), deliveredPaths.last())
+        assertEquals(3, panelApi.resolveUltraLeaseCalls)
         assertTrue(deliveredBatches.flatten().all { lease ->
             lease.user.all { it.toInt() == 0 } && lease.password.all { it.toInt() == 0 }
         })

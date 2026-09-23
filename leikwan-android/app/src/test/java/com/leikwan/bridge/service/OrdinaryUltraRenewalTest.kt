@@ -220,14 +220,7 @@ class OrdinaryUltraRenewalTest {
             }
         )
 
-        val refreshMethod = TunnelOrchestrator::class.java.declaredMethods.single {
-            it.name == "refreshUltraIfDue"
-        }.also { it.isAccessible = true }
-        suspend fun refreshForAudit() {
-            kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
-                refreshMethod.invoke(orchestrator, continuation)
-            }
-        }
+        suspend fun refreshForAudit() = orchestrator.refreshUltraForTest()
         val stopsBeforeRefresh = processRunner.stopAllCalls
         refreshForAudit()
         assertEquals("same generation must hot refresh", 1, processRunner.started.size)

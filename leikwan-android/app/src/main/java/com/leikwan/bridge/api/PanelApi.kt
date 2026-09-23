@@ -5,6 +5,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.Headers
 import retrofit2.http.DELETE
 import retrofit2.http.POST
 import retrofit2.http.PUT
@@ -20,6 +21,17 @@ import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
+
+/**
+ * Longest Ultra policy/lease validity (seconds) this client accepts while the panel is
+ * unreachable. Advertised on the config pull and on every Ultra lease resolve/renew so the
+ * panel may issue a grant that survives a control-plane outage (W1, 2026-09-24). A panel that
+ * does not know the header keeps issuing <= 300 s grants, which this client still accepts.
+ */
+const val ULTRA_OFFLINE_VALIDITY_SECONDS: Long = 1800L
+const val ULTRA_OFFLINE_VALIDITY_HEADER_NAME: String = "X-Leikwan-Ultra-Offline-Validity"
+// Retrofit @Headers needs a compile-time literal; keep it in sync with the two constants above.
+const val ULTRA_OFFLINE_VALIDITY_HEADER: String = "X-Leikwan-Ultra-Offline-Validity: 1800"
 
 interface PanelApi {
     @POST("api/client/devices/challenge")
@@ -59,12 +71,14 @@ interface PanelApi {
     ): HeartbeatResponse
 
     @POST("api/client/ultra/lease")
+    @Headers(ULTRA_OFFLINE_VALIDITY_HEADER)
     suspend fun resolveUltraLease(
         @Header("Authorization") auth: String,
         @Body request: UltraLeaseRequest,
     ): Response<UltraLeaseResponse>
 
     @GET("api/client/configs/pull")
+    @Headers(ULTRA_OFFLINE_VALIDITY_HEADER)
     suspend fun pullConfigs(@Header("Authorization") auth: String): PullConfigsResponse
 
     @POST("api/client/client-rules")

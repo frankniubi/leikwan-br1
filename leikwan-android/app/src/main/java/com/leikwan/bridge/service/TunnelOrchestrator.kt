@@ -42,6 +42,7 @@ import com.leikwan.bridge.runtime.UltraForwardRunner
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraLeaseClient
 import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraRuntimeStatus
 import com.leikwan.bridge.session.ClientControlLoop
 import com.leikwan.bridge.session.ControlPlaneState
 import com.leikwan.bridge.session.PanelControlException
@@ -56,6 +57,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.io.IOException
@@ -76,6 +78,8 @@ internal class ApplicationScoped<T> {
 
 private const val TAG = "TunnelOrchestrator"
 private const val NATIVE_REFRESH_MARGIN_SECONDS = 90L
+/** Renew this long before the panel's `renew_after`; the control loop ticks every 30 s. */
+private const val ULTRA_RENEW_MARGIN_SECONDS = 30L
 
 data class NodeLegsResult(
     val legs: Map<Long, NodeLeg>,
@@ -87,6 +91,10 @@ private data class ActiveUltraRuntime(
     val policy: UltraPolicy,
     val controlSocketPath: String,
     val protectedConnectivity: ProtectedConnectivitySet,
+    /** Runtime status file; read to spot a runtime that lost its policy (e.g. a guard restart). */
+    val statusPath: String = "",
+    /** When the current lease batch was accepted by the runtime. */
+    val leaseSentAt: Instant = Instant.EPOCH,
 )
 
 private data class ActiveNativeRuntime(
@@ -98,6 +106,8 @@ private data class ActiveNativeRuntime(
     val expiresAt: Instant,
     val controlSocketPath: String,
     val policyGeneration: String,
+    /** Panel `renew_after` of the policy the lease is bound to; drives the online cadence. */
+    val renewAfter: Instant = Instant.MAX,
 )
 
 class TunnelOrchestrator internal constructor(
@@ -169,11 +179,14 @@ class TunnelOrchestrator internal constructor(
         ClientControlLoop(
             scope = controlScope,
             poll = {
-                if (!panelRepo.heartbeat()) {
-                    throw IOException("control_plane_unavailable")
-                }
+                // A failed heartbeat must not skip a due renewal: the pull/lease endpoints may
+                // still answer, and each renewal attempt is what keeps the grant alive offline.
+                val heartbeatOk = panelRepo.heartbeat()
                 refreshUltraIfDue()
                 refreshNativeIfDue()
+                if (!heartbeatOk) {
+                    throw IOException("control_plane_unavailable")
+                }
             },
             onTerminal = ::revokeFromPanel,
             shouldContinue = { LeikwanVpnService.isRunning },
@@ -407,6 +420,7 @@ class TunnelOrchestrator internal constructor(
                         expiresAt = leaseExpiresAt,
                         controlSocketPath = nativeControlSocketPath,
                         policyGeneration = nativePolicyGeneration,
+                        renewAfter = policy.renewAfter,
                     )
                     controlLoop.start()
                 }
@@ -553,6 +567,8 @@ class TunnelOrchestrator internal constructor(
                         policy = policy,
                         controlSocketPath = planned.controlSocketFile.absolutePath,
                         protectedConnectivity = protectedConnectivity,
+                        statusPath = planned.statusFile.absolutePath,
+                        leaseSentAt = Instant.now(),
                     )
                     return@run runtime
                 } catch (error: Exception) {
@@ -789,44 +805,84 @@ class TunnelOrchestrator internal constructor(
         }
     }
 
-    /** Refreshes an in-memory Ultra lease before it reaches its policy renewal point. */
-    private suspend fun refreshUltraIfDue() {
+    /** Test seam for Ultra renewal; [now] only moves the due-time gate. */
+    internal suspend fun refreshUltraForTest(now: Instant = Instant.now()) = refreshUltraIfDue(now)
+
+    /**
+     * Refreshes an in-memory Ultra lease before it reaches its policy renewal point.
+     *
+     * Offline survival (W1): any non-terminal failure here (panel unreachable, 5xx, a lease the
+     * runtime did not accept) leaves the running runtime and [activeUltra] untouched and is
+     * rethrown so [ClientControlLoop] retries with jittered backoff. The runtime keeps serving on
+     * its current policy until that policy really expires; past expiry the Go runtime keeps its
+     * listeners, fails connections closed and reports `policy_lapsed`, and the next successful
+     * renewal is injected in place. Only a terminal panel control (revocation) or a changed
+     * static contract after a successful pull stops or restarts it.
+     */
+    private suspend fun refreshUltraIfDue(now: Instant = Instant.now()) {
         val active = activeUltra ?: return
-        if (Instant.now().isBefore(active.policy.renewAfter.minusSeconds(30))) return
+        val renewalDue = !now.isBefore(active.policy.renewAfter.minusSeconds(ULTRA_RENEW_MARGIN_SECONDS))
+        if (!renewalDue && !runtimeLostPolicy(active)) return
 
-        panelRepo.pullCatalog(active.forwardId)
-        val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
-            ?: throw IllegalStateException("ultra_policy_unavailable")
-        val nextPolicy = UltraPolicy.from(forward) ?: throw IllegalStateException("ultra_policy_unavailable")
-        // Generation and ticket rotate with provider material/quota. The adapter
-        // can replace them in place; only static forwarding bindings need a restart.
-        if (nextPolicy.forwardId != active.policy.forwardId
-            || nextPolicy.targetDigest != active.policy.targetDigest
-            || nextPolicy.transport != active.policy.transport) {
-            startForForward(active.forwardId, preserveControlLoop = true)
-            return
-        }
-
-        val leases = panelRepo.resolveUltraLeases(nextPolicy, maxCandidates = 4)
-        val nextProtectedConnectivity = leases
-            .map(UltraLease::directConnectivity)
-            .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
-        if (nextProtectedConnectivity != active.protectedConnectivity) {
-            leases.forEach(UltraLease::wipe)
-            startForForward(active.forwardId, preserveControlLoop = true)
-            return
-        }
-        val accepted = try {
-            if (leases.size == 1) {
-                ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
-            } else {
-                ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
+        try {
+            panelRepo.pullCatalog(active.forwardId)
+            val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
+                ?: throw IllegalStateException("ultra_policy_unavailable")
+            val nextPolicy = UltraPolicy.from(forward) ?: throw IllegalStateException("ultra_policy_unavailable")
+            // Generation and ticket rotate with provider material/quota. The adapter
+            // can replace them in place; only static forwarding bindings need a restart.
+            if (nextPolicy.forwardId != active.policy.forwardId
+                || nextPolicy.targetDigest != active.policy.targetDigest
+                || nextPolicy.transport != active.policy.transport) {
+                startForForward(active.forwardId, preserveControlLoop = true)
+                return
             }
-        } finally {
-            leases.forEach(UltraLease::wipe)
+
+            val leases = panelRepo.resolveUltraLeases(nextPolicy, maxCandidates = 4)
+            val nextProtectedConnectivity = leases
+                .map(UltraLease::directConnectivity)
+                .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
+            if (nextProtectedConnectivity != active.protectedConnectivity) {
+                leases.forEach(UltraLease::wipe)
+                startForForward(active.forwardId, preserveControlLoop = true)
+                return
+            }
+            val accepted = try {
+                if (leases.size == 1) {
+                    ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
+                } else {
+                    ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
+                }
+            } finally {
+                leases.forEach(UltraLease::wipe)
+            }
+            if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
+            activeUltra = active.copy(policy = nextPolicy, leaseSentAt = Instant.now())
+        } catch (error: Exception) {
+            if (error is CancellationException || error is PanelControlException) throw error
+            val remaining = active.policy.expiresAt.epochSecond - now.epochSecond
+            Log.w(
+                TAG,
+                "Ultra renewal failed; keeping the runtime on its current policy " +
+                    "(${if (remaining > 0) "expires in ${remaining}s" else "lapsed"})",
+                error,
+            )
+            throw error
         }
-        if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
-        activeUltra = active.copy(policy = nextPolicy)
+    }
+
+    /**
+     * True when the runtime reports it holds no policy (`awaiting` after a guard restart, or
+     * `lapsed`) in a status written after our last accepted lease. That is idle on purpose, not
+     * broken: the fix is a fresh lease, never a process restart.
+     */
+    private fun runtimeLostPolicy(active: ActiveUltraRuntime): Boolean {
+        val status = UltraRuntimeStatus.read(active.statusPath) ?: return false
+        if (!status.needsLease) return false
+        // The status writer is throttled, so the file can still show the pre-injection
+        // `awaiting` for a few seconds. Only a status written after the injection counts.
+        val updatedAt = status.updatedAt ?: return false
+        return updatedAt.isAfter(active.leaseSentAt.truncatedTo(ChronoUnit.SECONDS))
     }
 
     /** Test seam for exercising renewal without waiting for the short lease TTL. */
@@ -835,7 +891,14 @@ class TunnelOrchestrator internal constructor(
     /** Renews native credentials in place; the adapter accepts safe generation rotation. */
     private suspend fun refreshNativeIfDue(now: Instant = Instant.now()) {
         val active = activeNative ?: return
-        if (now.isBefore(active.expiresAt.minusSeconds(NATIVE_REFRESH_MARGIN_SECONDS))) return
+        // With long offline grants the lease can outlive renew_after by many minutes. Renew on
+        // the panel's cadence (renew_after) so revocation/suspension still land promptly, and
+        // fall back to the expiry margin for panels that send a short grant.
+        val renewAt = minOf(
+            active.expiresAt.minusSeconds(NATIVE_REFRESH_MARGIN_SECONDS),
+            active.renewAfter.minusSeconds(ULTRA_RENEW_MARGIN_SECONDS),
+        )
+        if (now.isBefore(renewAt)) return
         try {
             panelRepo.pullCatalog(active.forwardId)
             val forward = panelRepo.getCachedEffectiveForward(active.forwardId)?.runtimeContract
@@ -905,6 +968,7 @@ class TunnelOrchestrator internal constructor(
                     routePolicy = normalizedRoutePolicy,
                     expiresAt = refreshedExpiry,
                     policyGeneration = policy.policyGeneration,
+                    renewAfter = policy.renewAfter,
                 )
             } finally {
                 leases.forEach(NativeOutboundLease::wipe)

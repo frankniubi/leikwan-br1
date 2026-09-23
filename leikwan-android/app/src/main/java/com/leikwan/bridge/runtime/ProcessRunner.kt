@@ -6,6 +6,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "ProcessRunner"
@@ -24,16 +25,24 @@ open class ProcessRunner {
             AndroidRuntimeJanitor.cleanupStaleRuntimeProcesses()
         }
         val fatalError = AtomicReference<IOException?>(null)
+        val starting = AtomicBoolean(true)
         val pool = GuardedProcessPool(
-            onFatal = { error -> fatalError.compareAndSet(null, error) },
+            onFatal = { error ->
+                fatalError.compareAndSet(null, error)
+                if (!starting.get()) Log.w(TAG, "$forwardId runtime process gave up", error)
+            },
             logLine = { line -> Log.d(TAG, "$forwardId $line") },
+            // A crash during startup still fails the start (as before). Once the forward is up,
+            // fast exits only trigger the pool's bounded restart backoff.
+            onFastExit = { error -> if (starting.get()) fatalError.compareAndSet(null, error) },
         )
         try {
             runtimeContext.processPlans.forEach { plan ->
-                pool.start(plan.command)
+                pool.start(plan.command, permanentExitCodes = plan.permanentExitCodes)
                 plan.readyPort?.let { awaitLocalPort(it) }
                 fatalError.get()?.let { throw it }
             }
+            starting.set(false)
             pools[forwardId] = pool
             if (runtimeContext.privateRuntimePaths.isNotEmpty()) {
                 privateRuntimePaths[forwardId] = runtimeContext.privateRuntimePaths

@@ -13,7 +13,11 @@ enum class ControlPlaneState {
     STOPPED,
 }
 
-/** One bounded foreground control poller. Network failures wait for the next interval; terminal controls stop. */
+/**
+ * One bounded foreground control poller. A successful poll waits [intervalMs]; a transient
+ * failure retries after [retryBackoff] (exponential, full jitter, 5 s -> 60 s by default, reset on
+ * the next success) and never tears down the data plane. Terminal controls stop the loop.
+ */
 class ClientControlLoop(
     private val scope: CoroutineScope,
     private val intervalMs: Long = 30_000L,
@@ -21,6 +25,8 @@ class ClientControlLoop(
     private val onTerminal: (PanelControlException) -> Unit,
     private val shouldContinue: () -> Boolean = { true },
     private val onStateChanged: (ControlPlaneState) -> Unit = {},
+    private val retryBackoff: ControlPlaneBackoff = ControlPlaneBackoff(),
+    private val onRetryScheduled: (Long) -> Unit = {},
 ) {
     private val lock = Any()
     private var job: Job? = null
@@ -39,10 +45,13 @@ class ClientControlLoop(
         synchronized(lock) {
             if (job?.isActive == true) return
             val next = scope.launch(start = CoroutineStart.LAZY) {
+                retryBackoff.reset()
                 while (shouldContinue()) {
-                    try {
+                    val waitMs = try {
                         poll()
+                        retryBackoff.reset()
                         updateState(ControlPlaneState.READY)
+                        intervalMs
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (terminal: PanelControlException) {
@@ -52,8 +61,9 @@ class ClientControlLoop(
                     } catch (_: Exception) {
                         // A transient control-plane failure must not tear down a healthy data plane.
                         updateState(ControlPlaneState.RECONNECTING)
+                        retryBackoff.nextDelayMs().also(onRetryScheduled)
                     }
-                    delay(intervalMs)
+                    delay(waitMs)
                 }
                 updateState(ControlPlaneState.STOPPED)
             }

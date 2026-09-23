@@ -106,6 +106,7 @@ object UltraForwardRunner {
                 RuntimeProcessPlan(
                     role = RuntimeProcessRole.ULTRA,
                     command = listOf(binary, "--config", configFile.absolutePath),
+                    permanentExitCodes = ULTRA_PERMANENT_EXIT_CODES,
                 )
             ),
             bypassHosts = emptySet(),

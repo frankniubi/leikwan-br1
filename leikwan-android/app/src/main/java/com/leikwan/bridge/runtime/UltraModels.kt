@@ -9,11 +9,17 @@ import java.time.Instant
 
 private const val ULTRA_POLICY_PROTOCOL = "leikwan-ultra-policy-v2"
 private const val ULTRA_MAX_SESSION_TICKET_LENGTH = 4096
-private const val ULTRA_MAX_TTL_SECONDS = 300L
+/**
+ * Upper bound on how far in the future a policy (and therefore any lease bound to it) may
+ * expire. The panel clamps offline validity to 300..3600 s and this client asks for 1800 s
+ * (see ULTRA_OFFLINE_VALIDITY_SECONDS); the runtime (Go) and desktop hosts use the same 3600 s
+ * ceiling. Older panels keep issuing <= 300 s grants, which remain valid.
+ */
+internal const val ULTRA_MAX_TTL_SECONDS = 3600L
 private const val ULTRA_MAX_QUOTA_BYTES = 107_374_182_400L
 private const val ULTRA_MAX_RATE_MBPS = 100_000L
 
-/** A short-lived, forward-bound authorization returned from the Panel. */
+/** A bounded (<= [ULTRA_MAX_TTL_SECONDS]), forward-bound authorization returned from the Panel. */
 data class UltraPolicy(
     val forwardId: Long,
     val sessionTicket: String,
