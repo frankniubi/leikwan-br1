@@ -108,3 +108,52 @@ All stamped `2026.09.24.1.906efe97`. The Linux binary was copied to the test hos
 - Windows install: this shell is not Administrator, so the protected install was not replaced or read back.
 - No same-build acceptance matrix. The 11 x 3 matrix, the per-direction 2026-09-21 Linux re-run, and the CAN -> SIN Windows reproduction are all still open.
 - Two commits are local only.
+
+## Published — 2026-09-24 01:57 +08
+
+The panel VM came back and the staged release was published with
+`deploy-client-artifacts.py` (`release_id=ultra-recovery-20260924-1`,
+`status=committed` at 17:56:33 UTC, backup `/root/codex-backups/ultra-recovery-20260924-1`,
+health check `php-fpm active` + `/api/health` ok). The plan validated clean
+(`STAGED_RELEASE_VALIDATED`) before the commit. Public file hashes were then
+read back from disk and match the build:
+
+| Artifact | SHA-256 |
+|---|---|
+| `artifacts/versions.json` | `2d43d6d2a41549200446b69365a965f1ed57bbcdd8f821f247afb6b433d97dd5` |
+| `ultra-client_linux_amd64` | `d9041df86523aeb5a2ec…` |
+| `ultra-client_windows_amd64.exe` | `f01d503a97d25a20…` |
+| `leikwan-bridge-setup.exe` (0.1.20.53) | `ae9cc42d09f77a64…` |
+| `leikwan-client-agent_linux_amd64` | `536e8c212be1af88…` |
+| `install_forward_runtime.py` | `792100e605a27503…` |
+| `leikwan-bridge-headless-win-x64.zip` | `b58d848ab5b626e7…` |
+
+Two corrections during publish:
+
+- The manifest's `install_forward_runtime.path` said `artifacts/install-forward-runtime.py`; the publisher's canonical contract requires `client-agent/install_forward_runtime.py` (same bytes). Fixed, and the release commit was amended to `ad44577d`.
+- The headless zip on disk was still the 0.1.20.52 build (`e707ca35`); the publisher therefore kept it. The 0.1.20.53 zip (`b58d848a`) was copied in afterwards and the manifest hash updated (`93b007b5`).
+
+### Not verified, deliberately
+
+Another session is copying the live MySQL datadir off the panel
+(`tar --one-file-system /var/lib/mysql | zstd | ssh root@117.55.193.164`),
+holding the database. Every API request currently fails with
+`migration_failed` (PDOException) at `MigrationRunner.php:115`, including
+client config pulls and node task pulls. That started at the VM reboot and is
+the other session's lock, not this publish: the publish touched no PHP and no
+table. No database statement was run after noticing it, and no public HTTP
+re-check was made, so this release is **not** verified end to end through the
+API. Re-check `/api/health` and a real `/artifacts/versions.json` download once
+that copy finishes.
+
+### Still open
+
+- The first-flight pilot is published but **not armed**: the panel `.env`
+  `ULTRA_TCP_FIRST_FLIGHT_JSON` has `PEK -> FRA` and `PEK -> MOS` without
+  `candidate_hashes`, so no grant carries the block until hashes are added and
+  php-fpm reloaded.
+- Linux test host `172.21.255.189` still runs the dirty candidate
+  `2026.09.23.4.498db829-dirty`; its rollback timer elapses at 02:02 +08.
+- macOS stays at 1.0.45 (needs the build Mac). The Windows protected install
+  was not replaced (no Administrator shell). No same-build acceptance matrix.
+- The four local commits are not pushed.
