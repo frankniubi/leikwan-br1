@@ -256,7 +256,7 @@ final class UltraLeaseService
         }
 
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
-        $leaseExpiresAt = min($expiresAt, $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS);
+        $leaseExpiresAt = min($expiresAt, $this->now() + $this->leaseTtlSeconds($policy));
         $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt, $candidateKeyHash);
         $this->rememberIssuedLease($clientId, $deviceHash, $leaseExpiresAt);
         $lease = $this->scrubLease([
@@ -291,6 +291,25 @@ final class UltraLeaseService
             'direct_ip_cidrs' => $this->directIpCidrsForCandidate($candidate),
         ]);
         return ['ok' => true, 'lease' => $lease];
+    }
+
+    /**
+     * Lease lifetime ceiling. The short path (no offline validity on the
+     * policy) keeps MAX_POLICY_TTL_SECONDS exactly as before. A policy built for
+     * a client that announced UltraMode::OFFLINE_VALIDITY_HEADER carries the
+     * effective ceiling in 'offline_validity_seconds' (set server-side by the
+     * lease controller, never taken from the request body); the lease is then
+     * min(policy expiry, now + that ceiling).
+     *
+     * @param array<string,mixed> $policy
+     */
+    private function leaseTtlSeconds(array $policy): int
+    {
+        $validity = (int) ($policy['offline_validity_seconds'] ?? 0);
+        if ($validity >= UltraMode::MIN_OFFLINE_VALIDITY_SECONDS && $validity <= UltraMode::MAX_OFFLINE_VALIDITY_SECONDS) {
+            return $validity;
+        }
+        return UltraMode::MAX_POLICY_TTL_SECONDS;
     }
 
     /** @return array<string,mixed> */

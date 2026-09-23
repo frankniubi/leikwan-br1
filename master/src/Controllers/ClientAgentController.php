@@ -17,6 +17,7 @@ use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\LeigodTokenBroker;
+use Leikwan\Master\Support\UltraOfflineValidityTokenProvider;
 use Leikwan\Master\Support\LeigodTokenProvider;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\UltraClientStatusService;
@@ -416,7 +417,9 @@ final class ClientAgentController extends BaseController
             $forwards = [$request->body()];
         }
         $forwards = array_slice(array_values($forwards), 0, 4);
-        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true);
+        $offlineValidity = UltraMode::parseOfflineValidityHeader($request->header(UltraMode::OFFLINE_VALIDITY_HEADER));
+        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true, $offlineValidity);
+        $leaseValidityCap = UltraMode::offlineValidityCapSeconds($this->config, $offlineValidity);
         $grantsById = [];
         foreach ($granted as $grantedForward) {
             if (!is_array($grantedForward)) {
@@ -499,6 +502,12 @@ final class ClientAgentController extends BaseController
                 'quota_remaining_bytes' => (int) ($grant['quota_remaining_bytes'] ?? 0),
                 'expires_at' => (string) ($grant['expires_at'] ?? ''),
             ];
+            if ($leaseValidityCap > 0 && !$isNative) {
+                // Only a client that announced the offline-validity header gets
+                // a lease longer than the short-path ceiling; it is still capped
+                // by the grant's own expires_at above.
+                $policy['offline_validity_seconds'] = $leaseValidityCap;
+            }
             if ($isNative) {
                 $direction = trim((string) ($nativeCarrier['direction'] ?? ''));
                 $routeScope = UltraMode::normalizeNativeRouteScope(
@@ -695,7 +704,8 @@ final class ClientAgentController extends BaseController
             $forwards,
             (int) $client['id'],
             $deviceId,
-            $policyV2 || $this->isAndroidRequest($request)
+            $policyV2 || $this->isAndroidRequest($request),
+            UltraMode::parseOfflineValidityHeader($request->header(UltraMode::OFFLINE_VALIDITY_HEADER))
         );
         $delivery = self::pullDeliveryMetadata(
             (string) $snapshot['config_revision'],
@@ -963,8 +973,13 @@ final class ClientAgentController extends BaseController
      * @param array<int, array<string, mixed>> $forwards
      * @return array<int, array<string, mixed>>
      */
-    private function attachUltraAccessGrants(array $forwards, int $clientId, string $deviceId, bool $policyV2 = false): array
-    {
+    private function attachUltraAccessGrants(
+        array $forwards,
+        int $clientId,
+        string $deviceId,
+        bool $policyV2 = false,
+        int $offlineValiditySeconds = 0,
+    ): array {
         $brokerForwards = $forwards;
         if (isset($this->provisioning)) {
             $metadata = $this->provisioning->ultraLineMetadataForAssignedForwards($forwards);
@@ -993,7 +1008,18 @@ final class ClientAgentController extends BaseController
             }
         }
         try {
-            $grants = $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
+            // Long grants only for a client that sent the offline-validity
+            // header; without it (or with a provider that cannot mint them) the
+            // call is exactly the short-path call it always was.
+            $grants = $offlineValiditySeconds > 0 && $this->ultraTokenProvider instanceof UltraOfflineValidityTokenProvider
+                ? $this->ultraTokenProvider->grantsForClientForwardsWithOfflineValidity(
+                    $clientId,
+                    $deviceId,
+                    $brokerForwards,
+                    $policyV2,
+                    $offlineValiditySeconds
+                )
+                : $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
         } catch (\Throwable) {
             return $policyV2 ? $this->scrubUltraForwards($forwards) : $forwards;
         }

@@ -9,7 +9,7 @@ use Leikwan\Master\Config;
 use Throwable;
 
 /** Compatibility class name; all behavior and persisted state are Ultra-only. */
-final class LeigodTokenBroker implements LeigodTokenProvider
+final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
 {
     /** @var callable(): int */
     private $clock;
@@ -32,6 +32,36 @@ final class LeigodTokenBroker implements LeigodTokenProvider
      */
     public function grantsForClientForwards(int $clientId, string $deviceId, array $forwards, bool $policyV2 = false): array
     {
+        return $this->grantsForClientForwardsWithOfflineValidity($clientId, $deviceId, $forwards, $policyV2, 0);
+    }
+
+    /**
+     * Same as grantsForClientForwards(), plus the client's announced offline
+     * validity (UltraMode::OFFLINE_VALIDITY_HEADER, already parsed; 0 = absent).
+     *
+     * Header absent (or long grants switched off): exactly the short path.
+     * Header present on policy v2: expires_at = now + V where
+     * V = min(header, ULTRA_OFFLINE_VALIDITY_SECONDS, material expiry - now,
+     * service expiry - now); renew_after = now + ULTRA_RENEW_INTERVAL_SECONDS;
+     * quota_remaining_bytes = min(remaining, slice). The capability-v1 path
+     * ignores the header.
+     *
+     * policy_generation is deliberately the same for both paths: it describes
+     * the scope (target, transport, rate, remaining quota, material), not the
+     * lifetime. A runtime refuses a generation it has seen before once it has
+     * moved on (ErrPolicyRollback), so a client that alternates between a long
+     * and a short grant must never see the generation flip back and forth.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<string, array<string, mixed>>
+     */
+    public function grantsForClientForwardsWithOfflineValidity(
+        int $clientId,
+        string $deviceId,
+        array $forwards,
+        bool $policyV2,
+        int $offlineValiditySeconds,
+    ): array {
         if ($clientId <= 0) {
             return [];
         }
@@ -46,7 +76,11 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             return $this->legacyGrantsForClientForwards($clientId, $deviceId, $requested);
         }
         $now = $this->now();
-        $cached = $this->materials->loadGrantCache($clientId, $deviceId);
+        // 0 = short legacy grants. Otherwise the ceiling for this request; it
+        // also names the grant cache, so short and long grants never mix.
+        $validityCap = UltraMode::offlineValidityCapSeconds($this->config, $offlineValiditySeconds);
+        $validityClass = $validityCap > 0 ? 'ov' . $validityCap : '';
+        $cached = $this->materials->loadGrantCache($clientId, $deviceId, $validityClass);
         // One query for the whole batch: which generations the lease plane has
         // already refused, and how far each forward's revocation history has run.
         $revocations = $this->materials->revocationIndex(array_keys($requested));
@@ -99,7 +133,10 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             if ($quotaBytes <= 0 || ($serviceExpiresAt !== null && $serviceExpiresAt <= $now)) {
                 continue;
             }
-            $expiryCandidates = [$now + $this->maxTtlSeconds(), (int) $snapshot['expires_at']];
+            $expiryCandidates = [
+                $now + ($validityCap > 0 ? $validityCap : $this->maxTtlSeconds()),
+                (int) $snapshot['expires_at'],
+            ];
             if ($serviceExpiresAt !== null) {
                 $expiryCandidates[] = $serviceExpiresAt;
             }
@@ -107,7 +144,21 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             if ($expiresAt <= $now + 30) {
                 continue;
             }
-            $renewAfter = max($now + 30, $expiresAt - $this->refreshSkewSeconds());
+            $grantQuotaBytes = $quotaBytes;
+            if ($validityCap > 0) {
+                // Long grant: renew on the same cadence as the short path so
+                // revocation, suspension and quota changes still land on the
+                // next pull, while an unreachable panel leaves the client
+                // serving until expires_at.
+                $renewAfter = $now + $this->renewIntervalSeconds($expiresAt - $now);
+                $grantQuotaBytes = $this->grantQuotaSliceBytes(
+                    $quotaBytes,
+                    (int) $request['speed_limit_mbps'],
+                    $expiresAt - $now
+                );
+            } else {
+                $renewAfter = max($now + 30, $expiresAt - $this->refreshSkewSeconds());
+            }
             if ($renewAfter >= $expiresAt) {
                 $renewAfter = max($now, $expiresAt - 1);
             }
@@ -143,13 +194,13 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'service_state' => 'active',
                 'transport' => $request['transport'],
                 'rate_limit_mbps' => $request['speed_limit_mbps'],
-                'quota_remaining_bytes' => $quotaBytes,
+                'quota_remaining_bytes' => $grantQuotaBytes,
                 'target_digest' => hash('sha256', (string) $request['target']),
             ];
             $result[$forwardId] = $this->attachExternalUoT($result[$forwardId], $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
         }
         try {
-            $this->materials->saveGrantCache($clientId, $deviceId, $result);
+            $this->materials->saveGrantCache($clientId, $deviceId, $result, $validityClass);
         } catch (Throwable) {
             // A cache write failure must not invalidate a freshly minted grant.
         }
@@ -463,6 +514,63 @@ final class LeigodTokenBroker implements LeigodTokenProvider
     private function refreshSkewSeconds(): int
     {
         return max(30, min($this->maxTtlSeconds() - 1, $this->config->getInt(UltraMode::REFRESH_SKEW_KEY, 60)));
+    }
+
+    /**
+     * Renewal cadence of a long grant: ULTRA_RENEW_INTERVAL_SECONDS (default
+     * 240, the short path's effective cadence), clamped to [30, V - 60] so a
+     * renewal always has a minute of slack before the grant lapses.
+     */
+    private function renewIntervalSeconds(int $validitySeconds): int
+    {
+        $raw = trim((string) $this->config->get(UltraMode::RENEW_INTERVAL_KEY, ''));
+        $configured = ($raw !== '' && preg_match('/^[0-9]+$/', $raw) === 1)
+            ? (int) $raw
+            : UltraMode::DEFAULT_RENEW_INTERVAL_SECONDS;
+        $ceiling = $validitySeconds - UltraMode::RENEW_EXPIRY_MARGIN_SECONDS;
+        return max(UltraMode::MIN_RENEW_INTERVAL_SECONDS, min($configured, $ceiling));
+    }
+
+    /**
+     * Quota carried by a long grant: min(remaining, slice), so a device that
+     * loses the panel can overspend by at most one slice. Online, every lease
+     * the runtime receives resets its local limiter to this value and every
+     * renewal re-slices from the reconciled remaining quota, so the slice only
+     * has to outlast one renewal interval at the forward's top speed: it is
+     * never smaller than two renewal intervals at that speed (an unlimited
+     * forward is assumed to run at ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS,
+     * default 1000). Default slice: max(1 GiB, rate * V) with a rate limit,
+     * 10 GiB without one (raised to the floor: ~56 GiB at 1000 Mbps).
+     * ULTRA_GRANT_QUOTA_SLICE_ENABLED=0 hands out the full remaining quota.
+     */
+    private function grantQuotaSliceBytes(int $quotaBytes, int $rateLimitMbps, int $validitySeconds): int
+    {
+        if ($quotaBytes <= 0 || !$this->config->getBool(UltraMode::GRANT_QUOTA_SLICE_ENABLED_KEY, true)) {
+            return $quotaBytes;
+        }
+        $validitySeconds = max(1, $validitySeconds);
+        $rateLimitMbps = max(0, $rateLimitMbps);
+        $assumedMbps = $rateLimitMbps;
+        if ($assumedMbps <= 0) {
+            $rawRate = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_UNLIMITED_RATE_KEY, ''));
+            $assumedMbps = ($rawRate !== '' && preg_match('/^[0-9]+$/', $rawRate) === 1)
+                ? max(100, min(100000, (int) $rawRate))
+                : UltraMode::DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS;
+        }
+        $bytesPerSecond = $assumedMbps * 125000;
+        $floor = $bytesPerSecond * 2 * $this->renewIntervalSeconds($validitySeconds);
+
+        $rawSlice = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_SLICE_KEY, ''));
+        if ($rawSlice !== '' && preg_match('/^[0-9]+$/', $rawSlice) === 1 && (int) $rawSlice > 0) {
+            $slice = (int) $rawSlice;
+        } elseif ($rateLimitMbps > 0) {
+            $slice = $bytesPerSecond * $validitySeconds;
+        } else {
+            $slice = UltraMode::DEFAULT_UNLIMITED_RATE_QUOTA_SLICE_BYTES;
+        }
+        $slice = max(UltraMode::MIN_GRANT_QUOTA_SLICE_BYTES, $floor, $slice);
+        $slice = min(UltraMode::MAX_QUOTA_LEASE_BYTES, $slice);
+        return min($quotaBytes, $slice);
     }
 
     private function legacyMaxTtlSeconds(): int

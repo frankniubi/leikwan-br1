@@ -30,6 +30,81 @@ final class UltraMode
     public const MAX_TTL_KEY = 'ULTRA_MAX_TTL_SECONDS';
     public const REFRESH_SKEW_KEY = 'ULTRA_REFRESH_SKEW_SECONDS';
 
+    /**
+     * Long ("offline-capable") policy-v2 grants. A client that can keep
+     * serving through a control-plane outage announces the longest validity
+     * it accepts in OFFLINE_VALIDITY_HEADER; without the header every grant and
+     * lease stays on the short path above (MIN/MAX_POLICY_TTL_SECONDS).
+     */
+    public const OFFLINE_VALIDITY_HEADER = 'X-Leikwan-Ultra-Offline-Validity';
+    public const OFFLINE_VALIDITY_KEY = 'ULTRA_OFFLINE_VALIDITY_SECONDS';
+    public const MIN_OFFLINE_VALIDITY_SECONDS = 300;
+    public const MAX_OFFLINE_VALIDITY_SECONDS = 3600;
+    public const DEFAULT_OFFLINE_VALIDITY_SECONDS = 1800;
+    /** Online renewal cadence of a long grant: issue + this, so revocation lands as fast as today. */
+    public const RENEW_INTERVAL_KEY = 'ULTRA_RENEW_INTERVAL_SECONDS';
+    public const MIN_RENEW_INTERVAL_SECONDS = 30;
+    public const DEFAULT_RENEW_INTERVAL_SECONDS = 240;
+    /** A renewal must land at least this long before a long grant expires. */
+    public const RENEW_EXPIRY_MARGIN_SECONDS = 60;
+    /**
+     * Quota slice of a long grant: the most an offline device can overspend.
+     * ULTRA_GRANT_QUOTA_SLICE_BYTES overrides the computed default, but never
+     * below the renewal-safety floor (2 renew intervals at the forward's rate).
+     */
+    public const GRANT_QUOTA_SLICE_ENABLED_KEY = 'ULTRA_GRANT_QUOTA_SLICE_ENABLED';
+    public const GRANT_QUOTA_SLICE_KEY = 'ULTRA_GRANT_QUOTA_SLICE_BYTES';
+    public const GRANT_QUOTA_UNLIMITED_RATE_KEY = 'ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS';
+    public const MIN_GRANT_QUOTA_SLICE_BYTES = 1073741824;
+    public const DEFAULT_UNLIMITED_RATE_QUOTA_SLICE_BYTES = 10737418240;
+    public const DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS = 1000;
+    /** How long before material expiry the panel asks the source agent for fresh material. */
+    public const MATERIAL_REFRESH_WINDOW_KEY = 'ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS';
+    public const DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS = 600;
+
+    /**
+     * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in
+     * [MIN, MAX]_OFFLINE_VALIDITY_SECONDS. Anything else (absent, empty, signed,
+     * fractional, padded with zeros, out of range) is treated as absent: 0.
+     */
+    public static function parseOfflineValidityHeader(?string $value): int
+    {
+        if ($value === null) {
+            return 0;
+        }
+        $value = trim($value);
+        if (preg_match('/^[1-9][0-9]{2,3}$/', $value) !== 1) {
+            return 0;
+        }
+        $seconds = (int) $value;
+        return $seconds >= self::MIN_OFFLINE_VALIDITY_SECONDS && $seconds <= self::MAX_OFFLINE_VALIDITY_SECONDS
+            ? $seconds
+            : 0;
+    }
+
+    /**
+     * Validity ceiling for a capable client: min(header, panel setting).
+     * 0 means "use the short legacy path": no header, or the operator switched
+     * long grants off with ULTRA_OFFLINE_VALIDITY_SECONDS=0.
+     */
+    public static function offlineValidityCapSeconds(\Leikwan\Master\Config $config, int $headerSeconds): int
+    {
+        if ($headerSeconds < self::MIN_OFFLINE_VALIDITY_SECONDS || $headerSeconds > self::MAX_OFFLINE_VALIDITY_SECONDS) {
+            return 0;
+        }
+        $raw = trim((string) $config->get(self::OFFLINE_VALIDITY_KEY, ''));
+        if ($raw === '' || preg_match('/^-?[0-9]+$/', $raw) !== 1) {
+            $configured = self::DEFAULT_OFFLINE_VALIDITY_SECONDS;
+        } else {
+            $configured = (int) $raw;
+            if ($configured === 0) {
+                return 0;
+            }
+            $configured = max(self::MIN_OFFLINE_VALIDITY_SECONDS, min(self::MAX_OFFLINE_VALIDITY_SECONDS, $configured));
+        }
+        return min($headerSeconds, $configured);
+    }
+
     public static function isBackendMode(mixed $value): bool
     {
         return strtolower(trim((string) $value)) === self::BACKEND_MODE;

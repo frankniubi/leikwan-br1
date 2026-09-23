@@ -25,7 +25,7 @@ final class UltraSourceController extends BaseController
     public function jobs(Request $request, array $params): Response
     {
         $sourceId = $this->materials->verifySourceRequest($request);
-        $lineIds = $this->materials->dueLineIds($sourceId, 600);
+        $lineIds = $this->materials->dueLineIds($sourceId, $this->materials->materialRefreshWindowSeconds());
         // A quarantined line can have been condemned by a client whose own
         // network is broken. The source host is the only vantage point that can
         // disprove that, so it is handed the review alongside its material work.
