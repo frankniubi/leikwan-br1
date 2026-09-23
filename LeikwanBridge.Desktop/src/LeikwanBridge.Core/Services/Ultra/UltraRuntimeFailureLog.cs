@@ -58,6 +58,12 @@ public sealed partial class UltraRuntimeFailureLog
                 var reason = ReasonPattern().Match(message);
                 if (!reason.Success || BenignStreamReasons.Contains(reason.Groups[1].Value))
                     return null;
+                // The local application resetting or aborting its own socket
+                // (browsers and probes do this routinely) says nothing about
+                // the data plane.
+                var stage = StagePattern().Match(message);
+                if (stage.Success && stage.Groups[1].Value.StartsWith("local_", StringComparison.Ordinal))
+                    return null;
             }
             return kind;
         }
@@ -130,6 +136,9 @@ public sealed partial class UltraRuntimeFailureLog
 
     [GeneratedRegex(@" reason=([A-Za-z0-9_]+)")]
     private static partial Regex ReasonPattern();
+
+    [GeneratedRegex(@" stage=([A-Za-z0-9_]+)")]
+    private static partial Regex StagePattern();
 
     [GeneratedRegex(@"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b")]
     private static partial Regex Ipv4Pattern();

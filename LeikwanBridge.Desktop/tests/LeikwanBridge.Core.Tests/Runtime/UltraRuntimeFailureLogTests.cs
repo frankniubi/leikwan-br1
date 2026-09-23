@@ -21,6 +21,8 @@ public sealed class UltraRuntimeFailureLogTests
     [InlineData("2026/09/24 00:10:01 tcp stream ended forward_id=158 direction=upstream stage=local_read reason=eof generation=g")]
     [InlineData("2026/09/24 00:10:01 tcp stream ended forward_id=158 direction=downstream stage=remote_read reason=complete generation=g")]
     [InlineData("2026/09/24 00:10:01 tcp stream ended forward_id=158 direction=upstream stage=local_read reason=canceled generation=g")]
+    [InlineData("2026/09/24 07:17:01 tcp stream ended forward_id=170 direction=upstream stage=local_read reason=reset generation=g")]
+    [InlineData("2026/09/24 07:17:01 tcp stream ended forward_id=170 direction=downstream stage=local_write reason=aborted generation=g")]
     [InlineData("2026/09/24 00:10:01 external UoT carrier attached forward_id=170 sid=01 logical_protocol=udp")]
     [InlineData("2026/09/24 00:10:01 ultra lease selection started forward_id=170 candidates=2")]
     [InlineData("")]
