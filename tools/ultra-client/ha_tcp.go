@@ -87,6 +87,10 @@ type relayIdentity struct {
 	targetHash   string
 	firstFlight  TCPFirstFlightConfig
 	target       string
+	// replay, when set, may reopen the stream once on another authorized
+	// candidate after the relay explicitly refused to open the target. nil
+	// disables replay (every stream after the first attempt, and tests).
+	replay tcpReplayDial
 }
 
 // haDeadStreamMaxAge bounds how young a stream must be for its silence to count
@@ -187,23 +191,55 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 }
 
 func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity) {
+	defer local.Close()
+	var cleanups []func()
+	defer func() {
+		for _, cleanup := range cleanups {
+			cleanup()
+		}
+	}()
+	var prelude []byte
+	for {
+		next := relayTCPAttempt(ctx, local, remote, limiter, status, store, ident, prelude)
+		clearBytes(prelude)
+		if next.remote == nil {
+			return
+		}
+		if next.cleanup != nil {
+			cleanups = append(cleanups, next.cleanup)
+		}
+		log.Printf("tcp first flight replayed forward_id=%d reason=target_connect_rejected from_candidate_hash=%s to_candidate_hash=%s bytes=%d", ident.forward, ident.candidateKey, next.ident.candidateKey, len(next.payload))
+		status.RecordHAEvent("tcp", "target_connect_rejected_replayed", next.ident.generation)
+		remote, ident, prelude = next.remote, next.ident, next.payload
+		// Replay at most once per local connection.
+		ident.replay = nil
+	}
+}
+
+// tcpReplayResult is a stream to continue on: a fresh relay connection whose
+// target has not yet seen any byte of this local connection, and the first
+// flight to send on it. A zero value ends the local connection.
+type tcpReplayResult struct {
+	remote  net.Conn
+	ident   relayIdentity
+	cleanup func()
+	payload []byte
+}
+
+// relayTCPAttempt relays one provider stream. prelude, when not empty, is the
+// first flight of the local connection that a previous relay refused before it
+// opened the target: it is written first, ahead of anything read from local,
+// and was already charged to the policy limiter when it was first read.
+func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity, prelude []byte) (replay tcpReplayResult) {
 	flightCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer local.Close()
+	defer func() {
+		if replay.remote == nil {
+			local.Close()
+		}
+	}()
 	defer remote.Close()
-	type result struct {
-		direction string
-		stage     string
-		err       error
-		bytes     int64
-		readBytes int64
-		readError error
-		order     uint64
-		// ended is stamped by the copy goroutine itself, so the ordering of the
-		// two ends is not distorted by how relayTCP happens to receive them.
-		ended time.Time
-	}
-	done := make(chan result, 2)
+	done := make(chan relayCopyResult, 2)
 	started := time.Now()
 	var upstreamBytes, downstreamBytes int64
 	var order relayStreamOrder
@@ -217,18 +253,46 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 		log.Printf("tcp first-flight compatibility forward_id=%d prefix_bytes=%d delay_ms=%d candidate_hash=%s target_hash=%s",
 			ident.forward, ident.firstFlight.PrefixBytes, ident.firstFlight.DelayMillis, ident.candidateKey, ident.targetHash)
 	}
+	// Keep the first flight only while a replay could still be safe (see
+	// tcpReplayEligible): the first downstream byte proves the target answered
+	// and drops it.
+	var capture *tcpFirstFlightCapture
+	upstreamSource, downstreamSource := local, remote
+	if ident.replay != nil && store != nil && ident.pathKey != "" {
+		capture = &tcpFirstFlightCapture{Conn: local}
+		upstreamSource = capture
+		downstreamSource = &tcpFirstReadNotifier{Conn: remote, notify: capture.disarm}
+		defer capture.disarm()
+	}
 	go func() {
-		moved, err, stage := copyOutboundStaged(outbound, local, limiter, status)
+		moved, err, stage := copyOutboundWithPrelude(outbound, upstreamSource, limiter, status, prelude)
 		ordinal := observedOrder.Add(1)
-		done <- result{direction: "upstream", stage: stage, err: err, bytes: moved, ended: time.Now(), order: ordinal}
+		done <- relayCopyResult{direction: "upstream", stage: stage, err: err, bytes: moved, ended: time.Now(), order: ordinal}
 	}()
 	go func() {
-		observed := copyInboundObserved(local, remote, limiter, status)
+		observed := copyInboundObserved(local, downstreamSource, limiter, status)
 		ordinal := observedOrder.Add(1)
-		done <- result{direction: "downstream", stage: observed.Stage(), err: observed.Err(), bytes: observed.WrittenBytes,
+		done <- relayCopyResult{direction: "downstream", stage: observed.Stage(), err: observed.Err(), bytes: observed.WrittenBytes,
 			readBytes: observed.ReadBytes, readError: observed.ReadError, ended: time.Now(), order: ordinal}
 	}()
+	record := func(r relayCopyResult, event bool) {
+		if r.direction == "upstream" {
+			upstreamBytes = r.bytes
+			order.upstreamEnded = r.ended
+			order.upstreamOrder = r.order
+		} else {
+			downstreamBytes = r.bytes
+			order.downstreamEnded = r.ended
+			order.downstreamOrder = r.order
+			order.remoteReadError = r.readError
+		}
+		log.Printf("tcp stream ended forward_id=%d direction=%s stage=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, r.stage, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
+		if event {
+			status.RecordHAEvent("tcp", haErrorClass(r.err), ident.generation)
+		}
+	}
 	received := 0
+	upstreamDone := false
 	for received < 2 {
 		select {
 		case <-ctx.Done():
@@ -240,21 +304,45 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 			}
 			status.RecordHAEvent("tcp", haErrorClass(ctx.Err()), ident.generation)
 			log.Printf("tcp stream closed forward_id=%d direction=runtime reason=canceled generation=%s selection_ref=%s duration_ms=%d", ident.forward, ident.generation, ident.selection, time.Since(started).Milliseconds())
-			return
+			return tcpReplayResult{}
 		case r := <-done:
 			received++
+			record(r, true)
 			if r.direction == "upstream" {
-				upstreamBytes = r.bytes
-				order.upstreamEnded = r.ended
-				order.upstreamOrder = r.order
-			} else {
-				downstreamBytes = r.bytes
-				order.downstreamEnded = r.ended
-				order.downstreamOrder = r.order
-				order.remoteReadError = r.readError
+				upstreamDone = true
 			}
-			log.Printf("tcp stream ended forward_id=%d direction=%s stage=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, r.stage, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
-			status.RecordHAEvent("tcp", haErrorClass(r.err), ident.generation)
+			if r.direction == "downstream" && !upstreamDone && capture != nil && ctx.Err() == nil &&
+				tcpReplayEligible(r.readError, r.readBytes, r.bytes) {
+				// Stop the upstream copy without closing the local socket: the
+				// read deadline unblocks a pending local read (the capture has
+				// already kept whatever it returned) and closing the refused
+				// relay fails a pending write.
+				if local.SetReadDeadline(time.Now()) == nil {
+					cancel()
+					remote.Close()
+					up := <-done
+					received++
+					upstreamDone = true
+					// This end was forced here; it is not a stream failure.
+					record(up, false)
+					_ = local.SetReadDeadline(time.Time{})
+					payload, kept := capture.take()
+					// A local half-close or a policy stop means this is not a
+					// plain unanswered first flight any more.
+					localEnded := up.stage == "local_read" && (up.err == nil || errors.Is(up.err, io.EOF))
+					if kept && !localEnded && up.stage != "policy" && ctx.Err() == nil {
+						next, nextIdent, cleanup, err := ident.replay(ctx, ident.pathKey)
+						if err == nil {
+							noteRelayOutcome(store, status, ident, started, upstreamBytes, downstreamBytes, order)
+							return tcpReplayResult{remote: next, ident: nextIdent, cleanup: cleanup, payload: payload}
+						}
+						log.Printf("tcp first flight replay unavailable forward_id=%d candidate_hash=%s reason=%s", ident.forward, ident.candidateKey, haErrorClass(err))
+					}
+					clearBytes(payload)
+					local.Close()
+					continue
+				}
+			}
 			if r.err == nil || errors.Is(r.err, io.EOF) {
 				target := local
 				if r.direction == "upstream" {
@@ -270,4 +358,18 @@ func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimite
 		}
 	}
 	noteRelayOutcome(store, status, ident, started, upstreamBytes, downstreamBytes, order)
+	return tcpReplayResult{}
+}
+
+type relayCopyResult struct {
+	direction string
+	stage     string
+	err       error
+	bytes     int64
+	readBytes int64
+	readError error
+	order     uint64
+	// ended is stamped by the copy goroutine itself, so the ordering of the
+	// two ends is not distorted by how relayTCP happens to receive them.
+	ended time.Time
 }

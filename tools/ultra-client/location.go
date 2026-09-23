@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -62,6 +63,18 @@ func parseZoneResponse(reader io.Reader) (LocationResult, error) {
 	}
 	result.Code = classifyLocation(result, nil)
 	return result, nil
+}
+
+// defaultLocationPaths keeps the Linux layout, but hosts that give the runtime
+// its own state directory (Windows/macOS status files) get the cache beside the
+// status file: the Linux paths do not exist there, so every start used to pay
+// a network lookup and every lock attempt failed.
+func defaultLocationPaths(statusPath string) (string, string) {
+	if runtime.GOOS == "linux" || strings.TrimSpace(statusPath) == "" {
+		return "/var/lib/ultra/location.json", "/run/ultra/location.lock"
+	}
+	directory := filepath.Dir(statusPath)
+	return filepath.Join(directory, "location.json"), filepath.Join(directory, "location.lock")
 }
 
 func DetectLocation(ctx context.Context, cachePath, lockPath string, aliases map[string][]string) LocationResult {

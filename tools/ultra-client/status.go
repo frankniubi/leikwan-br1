@@ -48,26 +48,35 @@ type RuntimeStatus struct {
 	UoTSocketSndbuf            int            `json:"socket_sndbuf"`
 	UoTSocketBufferError       bool           `json:"socket_buffer_error"`
 
-	UDPRuntimeSession      *SelectionStatus `json:"udp_runtime_session,omitempty"`
-	HAEvents               []HAEvent        `json:"ha_events,omitempty"`
-	HAFailures             int64            `json:"ha_failures,omitempty"`
-	UDPKeepaliveACKs       int64            `json:"udp_keepalive_acks,omitempty"`
-	UDPLastACKAt           string           `json:"udp_last_ack_at,omitempty"`
-	ForwardID              int              `json:"forward_id"`
-	State                  string           `json:"state"`
-	DetectedIngressZone    string           `json:"detected_ingress_zone"`
-	LocationSource         string           `json:"location_source"`
-	LatestTCP              *SelectionStatus `json:"latest_tcp,omitempty"`
-	ActiveUDP              *SelectionStatus `json:"active_udp,omitempty"`
-	UpdatedAt              string           `json:"updated_at"`
-	ErrorCode              string           `json:"error_code,omitempty"`
-	PolicyGeneration       string           `json:"policy_generation,omitempty"`
-	BytesIn                int64            `json:"bytes_in,omitempty"`
-	BytesOut               int64            `json:"bytes_out,omitempty"`
-	UDPActiveAssociations  int              `json:"udp_active_associations,omitempty"`
-	UDPPendingAssociations int              `json:"udp_pending_associations,omitempty"`
-	UDPQueueDrops          int64            `json:"udp_queue_drops,omitempty"`
-	UDPSetupFailures       int64            `json:"udp_setup_failures,omitempty"`
+	UDPRuntimeSession   *SelectionStatus `json:"udp_runtime_session,omitempty"`
+	HAEvents            []HAEvent        `json:"ha_events,omitempty"`
+	HAFailures          int64            `json:"ha_failures,omitempty"`
+	UDPKeepaliveACKs    int64            `json:"udp_keepalive_acks,omitempty"`
+	UDPLastACKAt        string           `json:"udp_last_ack_at,omitempty"`
+	ForwardID           int              `json:"forward_id"`
+	State               string           `json:"state"`
+	DetectedIngressZone string           `json:"detected_ingress_zone"`
+	LocationSource      string           `json:"location_source"`
+	LatestTCP           *SelectionStatus `json:"latest_tcp,omitempty"`
+	ActiveUDP           *SelectionStatus `json:"active_udp,omitempty"`
+	UpdatedAt           string           `json:"updated_at"`
+	ErrorCode           string           `json:"error_code,omitempty"`
+	PolicyGeneration    string           `json:"policy_generation,omitempty"`
+	// PolicyState is active, awaiting (no policy yet), lapsed (the last
+	// policy expired and none replaced it; listeners stay bound and fail each
+	// connection closed) or revoked. Hosts must not restart a runtime that
+	// reports awaiting or lapsed: it is idle on purpose and resumes as soon
+	// as a valid lease is delivered on the control socket.
+	PolicyState string `json:"policy_state,omitempty"`
+	// PolicyExpiresAt is the expiry of the current (or, when lapsed, the last)
+	// policy in RFC 3339 UTC.
+	PolicyExpiresAt        string `json:"policy_expires_at,omitempty"`
+	BytesIn                int64  `json:"bytes_in,omitempty"`
+	BytesOut               int64  `json:"bytes_out,omitempty"`
+	UDPActiveAssociations  int    `json:"udp_active_associations,omitempty"`
+	UDPPendingAssociations int    `json:"udp_pending_associations,omitempty"`
+	UDPQueueDrops          int64  `json:"udp_queue_drops,omitempty"`
+	UDPSetupFailures       int64  `json:"udp_setup_failures,omitempty"`
 	// UDPPayloadCeiling is the largest datagram payload the current association was
 	// measured to carry (0 = not measured yet, or the association is unusable).
 	// Hosts size the TUN MTU from this instead of guessing a fixed value.
@@ -141,8 +150,67 @@ func (writer *StatusWriter) UpdateLocation(location LocationResult) {
 	writer.update(func(status *RuntimeStatus) {
 		status.DetectedIngressZone = normalizeRuntimeZone(location.Code)
 		status.LocationSource = boundedStatusText(location.Source, 32)
+		// Location detection runs beside the listeners, so it can finish
+		// after the policy already lapsed: never let it report "ready" then.
+		if policyStateIdle(status.PolicyState) {
+			return
+		}
 		status.State = "ready"
 		status.ErrorCode = ""
+	})
+}
+
+const (
+	policyStateActive   = "active"
+	policyStateAwaiting = "awaiting"
+	policyStateLapsed   = "lapsed"
+	policyStateRevoked  = "revoked"
+)
+
+func policyStateIdle(state string) bool {
+	return state == policyStateAwaiting || state == policyStateLapsed || state == policyStateRevoked
+}
+
+// UpdatePolicyState records the machine-readable policy state. It writes only
+// on a change, so the policy watcher may call it on every tick.
+//
+// awaiting and lapsed also set error_code (awaiting_policy / policy_lapsed),
+// which hosts already key on. Going back to active clears only the error codes
+// that a missing policy causes; any other data-plane error stays visible.
+func (writer *StatusWriter) UpdatePolicyState(state string, expiresAt time.Time) {
+	if writer == nil {
+		return
+	}
+	expires := ""
+	if !expiresAt.IsZero() {
+		expires = expiresAt.UTC().Format(time.RFC3339)
+	}
+	writer.mu.Lock()
+	unchanged := writer.status.PolicyState == state && writer.status.PolicyExpiresAt == expires
+	writer.mu.Unlock()
+	if unchanged {
+		return
+	}
+	writer.update(func(status *RuntimeStatus) {
+		status.PolicyState = state
+		status.PolicyExpiresAt = expires
+		switch state {
+		case policyStateAwaiting:
+			status.State = "degraded"
+			status.ErrorCode = "awaiting_policy"
+		case policyStateLapsed:
+			status.State = "degraded"
+			status.ErrorCode = "policy_lapsed"
+		case policyStateActive:
+			switch status.ErrorCode {
+			case "awaiting_policy", "policy_lapsed", "policy_stopped", "policy_revoked":
+				status.State = "ready"
+				status.ErrorCode = ""
+			}
+		case policyStateRevoked:
+			status.State = "degraded"
+			status.ErrorCode = "policy_revoked"
+		}
 	})
 }
 
@@ -362,6 +430,14 @@ func (writer *StatusWriter) AddUDPSetupFailure() {
 
 func (writer *StatusWriter) UpdateError(code string) {
 	writer.update(func(status *RuntimeStatus) {
+		// While the policy is lapsed every refused connection or datagram
+		// reports its own consequence (tcp_connect_failed, policy_stopped,
+		// ...). Keep policy_lapsed as the root cause so a host health check
+		// does not read those as a broken runtime and restart it. Lifecycle
+		// codes still win.
+		if status.PolicyState == policyStateLapsed && code != "runtime_stopped" && code != "control_socket_failed" {
+			return
+		}
 		status.State = "degraded"
 		status.ErrorCode = boundedStatusText(code, 64)
 	})

@@ -77,6 +77,7 @@ type Config struct {
 	LocationCachePath        string              `json:"location_cache_path"`
 	LocationLockPath         string              `json:"location_lock_path"`
 	StatusPath               string              `json:"status_path"`
+	ParentPID                int                 `json:"parent_pid,omitempty"`
 	AutoSelect               bool                `json:"auto_select"`
 	ProbeDurationSecs        int                 `json:"probe_duration_seconds"`
 	ProbeTimeoutMillis       int                 `json:"probe_timeout_ms"`
@@ -437,6 +438,7 @@ var (
 // sizes on the sockets the runtime itself configures (4MB datagram buffers).
 var (
 	testHookLocalUDPListening func(local *net.UDPConn)
+	testHookTCPListening      func(listener net.Listener)
 	testHookDatagramArmed     func(remote *net.UDPConn)
 	testHookRuntimeQueueDepth func(depth int)
 )
@@ -806,10 +808,15 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 		return err
 	}
 	defer listener.Close()
+	if testHookTCPListening != nil {
+		testHookTCPListening(listener)
+	}
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
+	dial := dialStreamForConfig(config)
+	replay := tcpReplayDialerFor(config, store, status, targetHost, targetPort, dial)
 	limit := config.MaxTCPConnections
 	if limit < 1 || limit > 4096 {
 		limit = 512
@@ -835,7 +842,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 					targetHost,
 					targetPort,
 					time.Duration(config.ConnectTimeoutSecs)*time.Second,
-					dialStreamForConfig(config),
+					dial,
 				)
 				if dialErr != nil {
 					status.RecordHAEvent("tcp", haErrorClass(dialErr), "")
@@ -845,17 +852,9 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				}
 				defer snapshot.Lease.wipe()
 				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
-				relayTCP(ctx, local, remote, store.Limiter(), status, store, relayIdentity{
-					forward:      config.ForwardID,
-					generation:   snapshot.Policy.PolicyGeneration,
-					selection:    snapshot.Lease.SelectionRef,
-					pathKey:      haPathKey(snapshot.Lease),
-					candidateKey: snapshot.Lease.CandidateKeyHash,
-					leaseHash:    snapshot.Lease.LeaseHash,
-					targetHash:   tcpTargetHash(config.Target),
-					firstFlight:  config.TCPFirstFlight,
-					target:       config.Target,
-				})
+				ident := tcpRelayIdentity(config, snapshot)
+				ident.replay = replay
+				relayTCP(ctx, local, remote, store.Limiter(), status, store, ident)
 
 			}()
 		default:
@@ -1592,61 +1591,96 @@ func resolveIPv4(host string) (string, error) {
 	return "", errors.New("datagram target has no IPv4 address")
 }
 
-// policyGapGrace bounds how long the runtime keeps its listeners bound while
-// no valid policy is held.
+// watchRuntimePolicy keeps the listeners bound for as long as the runtime is
+// authorized to exist, which is not the same as "holds a valid policy".
 //
-// Cancelling the runtime the moment the policy lapses is what closes the local
-// listeners, and the outer loop then parks in store.WaitValid until a
-// replacement lease arrives. Measured on 2026-09-14: a panel pull returning
-// ultra_access = null cost 37 seconds in which every local connection was
-// refused (ports 30522/32469/10002 returned ECONNREFUSED while the runtime
-// processes stayed alive and later re-bound the same sockets). Serving needs no
-// policy - dialCandidateStream already fails closed with "no healthy authorized
-// candidate" while CandidateSnapshots has nothing valid - so the listeners may
-// as well stay bound and the forward resumes the instant the lease lands.
-// A gap longer than this grace still tears the runtime down, which keeps the
-// fail-safe for an account that really is gone.
-const policyGapGrace = 90 * time.Second
-
+// A policy that merely lapses never closes the listeners. Serving needs no
+// policy to fail safely: dialCandidateStream and the UDP paths already refuse
+// every new connection with "no healthy authorized candidate" / policy_stopped
+// while CandidateSnapshots has nothing valid, the limiter cuts existing streams
+// at the policy expiry (ErrPolicyStopped), and ClearExpired below wipes the
+// lease secrets the moment they expire. What closing the listeners added was
+// only harm:
+//
+//   - On 2026-09-14 a panel pull that returned ultra_access = null cost 37 s of
+//     ECONNREFUSED on ports 30522/32469/10002 while the runtime processes stayed
+//     alive and later re-bound the same sockets.
+//   - The panel can be unreachable for longer than any grace (the 2026-09-24
+//     panel migration). Hosts then saw a runtime without listeners, judged it
+//     broken and restarted it, so a control-plane outage turned into restart
+//     storms on idle forwards. The panel now issues up to 30 min of offline
+//     validity; a lapse beyond that is still an outage, not a verdict.
+//
+// While lapsed the status file reports policy_state=lapsed and error_code
+// policy_lapsed, so a host can tell "idle on purpose" from "broken". When a new
+// valid lease arrives on the control socket, the next stream is served by the
+// same listeners without a restart.
+//
+// Only an authorization decision tears the runtime down: a Revoke issued after
+// this runtime started. A change of the authorized transport (tcp <-> udp) also
+// restarts the runtime, because the listener set itself has to change.
 func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *PolicyStore) {
-	ticker := time.NewTicker(250 * time.Millisecond)
+	watchRuntimePolicyStatus(ctx, cancel, store, nil, "")
+}
+
+// runtimePolicyTick is how often the watcher expires secrets and refreshes the
+// reported policy state when no control update arrives.
+const runtimePolicyTick = 250 * time.Millisecond
+
+func watchRuntimePolicyStatus(ctx context.Context, cancel context.CancelFunc, store *PolicyStore, status *StatusWriter, transport string) {
+	ticker := time.NewTicker(runtimePolicyTick)
 	defer ticker.Stop()
-	var lostAt time.Time
+	revocations := store.RevocationCount()
+	lapsed := false
+	var lastExpiry time.Time
+	check := func() bool {
+		store.ClearExpired()
+		if store.RevocationCount() != revocations {
+			log.Printf("policy revoked; stopping the runtime")
+			status.UpdatePolicyState(policyStateRevoked, time.Time{})
+			cancel()
+			return true
+		}
+		view := store.View()
+		if view.Valid {
+			if transport != "" && !strings.EqualFold(view.Transport, transport) {
+				log.Printf("policy transport changed from %s to %s; restarting the runtime", transport, view.Transport)
+				cancel()
+				return true
+			}
+			if lapsed {
+				log.Printf("policy resumed; serving on the existing listeners")
+			}
+			lapsed = false
+			lastExpiry = view.ExpiresAt
+			status.UpdatePolicyState(policyStateActive, view.ExpiresAt)
+			return false
+		}
+		if view.Held && view.ExpiresAt.After(lastExpiry) {
+			lastExpiry = view.ExpiresAt
+		}
+		if !lapsed {
+			log.Printf("policy lapsed; listeners stay bound and refuse connections until a new lease arrives")
+			lapsed = true
+		}
+		status.UpdatePolicyState(policyStateLapsed, lastExpiry)
+		return false
+	}
+	if check() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-store.Updates():
-			if store.HasValid() {
-				lostAt = time.Time{}
-				continue
-			}
-			if store.RevokedAny() {
-				cancel()
-				return
-			}
-			if lostAt.IsZero() {
-				lostAt = time.Now()
-			}
 		case <-ticker.C:
-			store.ClearExpired()
-			if store.HasValid() {
-				lostAt = time.Time{}
-				continue
-			}
-			if store.RevokedAny() {
-				cancel()
-				return
-			}
-			if lostAt.IsZero() {
-				lostAt = time.Now()
-				continue
-			}
-			if time.Since(lostAt) >= policyGapGrace {
-				log.Printf("policy has been missing for %s; stopping the runtime", policyGapGrace)
-				cancel()
-				return
-			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if check() {
+			return
 		}
 	}
 }
@@ -2429,11 +2463,14 @@ func main() {
 			config.NativeFilterProfile = routePolicy.FilterProfile()
 		}
 	}
-	if config.LocationCachePath == "" {
-		config.LocationCachePath = "/var/lib/ultra/location.json"
-	}
-	if config.LocationLockPath == "" {
-		config.LocationLockPath = "/run/ultra/location.lock"
+	if config.LocationCachePath == "" || config.LocationLockPath == "" {
+		cachePath, lockPath := defaultLocationPaths(config.StatusPath)
+		if config.LocationCachePath == "" {
+			config.LocationCachePath = cachePath
+		}
+		if config.LocationLockPath == "" {
+			config.LocationLockPath = lockPath
+		}
 	}
 	if config.StatusPath == "" && config.ForwardID > 0 {
 		config.StatusPath = fmt.Sprintf("/run/ultra/forward-%d.status.json", config.ForwardID)
@@ -2459,7 +2496,7 @@ func main() {
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
 	status.RecordTransportConfig(config)
-	status.UpdateError("awaiting_policy")
+	status.UpdatePolicyState(policyStateAwaiting, time.Time{})
 	control := NewControlServer(config.ControlSocket, config, store, status)
 	if err := control.Listen(); err != nil {
 		status.UpdateError("control_socket_failed")
@@ -2468,6 +2505,7 @@ func main() {
 	}
 	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer cancelRoot()
+	go watchParentProcess(rootContext, cancelRoot, config.ParentPID)
 	go func() {
 		if err := control.Serve(); err != nil && rootContext.Err() == nil {
 			log.Printf("control socket stopped: %v", err)
@@ -2481,6 +2519,17 @@ func main() {
 		status.Close()
 	}()
 
+	runRuntimeLoop(rootContext, config, store, status)
+}
+
+// runRuntimeLoop starts the data plane once a valid policy is held and keeps it
+// until the root context ends. A runtime is restarted only when it stops by
+// itself (listener error), on a revocation, or when the authorized transport
+// changes; a lapsed policy keeps the listeners bound (see watchRuntimePolicy).
+// runtimeRestartDelay spaces restarts of a runtime whose listener failed.
+const runtimeRestartDelay = time.Second
+
+func runRuntimeLoop(rootContext context.Context, config Config, store *PolicyStore, status *StatusWriter) {
 	for rootContext.Err() == nil {
 		snapshot, err := store.WaitValid(rootContext)
 		if err != nil {
@@ -2488,13 +2537,22 @@ func main() {
 		}
 		policy := snapshot.Policy
 		snapshot.Lease.wipe()
-		locationContext, cancelLocation := context.WithTimeout(rootContext, locationRequestTimeout+time.Second)
-		location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
-		cancelLocation()
-		status.UpdateLocation(location)
 		status.UpdatePolicy(policy.PolicyGeneration)
+		status.UpdatePolicyState(policyStateActive, policy.ExpiresAt)
 		runtimeContext, cancelRuntime := context.WithCancel(rootContext)
+		// The detected zone is reported telemetry only. Detect it beside the
+		// listeners rather than before them: a network lookup of up to 3.5 s
+		// ahead of the bind made hosts time out waiting for the listener.
+		go func(ctx context.Context) {
+			locationContext, cancelLocation := context.WithTimeout(ctx, locationRequestTimeout+time.Second)
+			defer cancelLocation()
+			location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
+			if ctx.Err() == nil {
+				status.UpdateLocation(location)
+			}
+		}(runtimeContext)
 		runtimeErrors := make(chan error, 2)
+		selfStopped := false
 		var runtimeWait sync.WaitGroup
 		transport := strings.ToLower(policy.Transport)
 		if config.NativeSocks5 {
@@ -2524,7 +2582,7 @@ func main() {
 				}
 			}()
 		}
-		go watchRuntimePolicy(runtimeContext, cancelRuntime, store)
+		go watchRuntimePolicyStatus(runtimeContext, cancelRuntime, store, status, transport)
 		select {
 		case <-rootContext.Done():
 		case <-runtimeContext.Done():
@@ -2534,11 +2592,21 @@ func main() {
 			}
 			if err != nil && rootContext.Err() == nil {
 				status.UpdateError("runtime_stopped")
+				selfStopped = true
 			}
 			cancelRuntime()
 		}
 		cancelRuntime()
 		runtimeWait.Wait()
 		store.ClearExpired()
+		if selfStopped {
+			// A listener that failed by itself (for example a port another
+			// process holds) would otherwise be retried in a tight loop while
+			// the policy stays valid.
+			select {
+			case <-rootContext.Done():
+			case <-time.After(runtimeRestartDelay):
+			}
+		}
 	}
 }

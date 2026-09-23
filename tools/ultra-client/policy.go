@@ -14,10 +14,17 @@ import (
 )
 
 const (
-	policyProtocol             = "leikwan-ultra-policy-v2"
-	nativeSocks5Protocol       = "leikwan-ultra-native-socks5-v1"
-	nativeSocks5Purpose        = "native_outbound"
-	maxPolicyTTL               = 5 * time.Minute
+	policyProtocol       = "leikwan-ultra-policy-v2"
+	nativeSocks5Protocol = "leikwan-ultra-native-socks5-v1"
+	nativeSocks5Purpose  = "native_outbound"
+	// maxPolicyTTL is the longest validity a grant may carry. Clients that
+	// announce X-Leikwan-Ultra-Offline-Validity get up to 30 minutes (panel
+	// ceiling 3600 s) so a panel outage does not stop a working forward; online
+	// clients still renew every few minutes, so revocation lands just as fast.
+	maxPolicyTTL = 3600 * time.Second
+	// maxPolicyTTLSkew absorbs RFC 3339 second rounding and a small clock
+	// offset between the panel and this host on top of maxPolicyTTL.
+	maxPolicyTTLSkew           = 30 * time.Second
 	maxQuotaBytes        int64 = 107374182400
 	maxRateMbps          int64 = 100000
 	selectionTierPaid          = "paid"
@@ -81,7 +88,7 @@ func (p Policy) Validate(config Config, now time.Time) error {
 			return ErrPolicyInvalid
 		}
 	}
-	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+time.Second)) {
+	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+maxPolicyTTLSkew)) {
 		return ErrPolicyExpired
 	}
 	if !p.Native && p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
@@ -320,6 +327,7 @@ type PolicyStore struct {
 	seenNonces            map[string]struct{}
 	seenGens              map[string]struct{}
 	revoked               map[string]struct{}
+	revocations           uint64
 	limiter               *PolicyLimiter
 	updates               chan struct{}
 }
@@ -423,6 +431,7 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 func (s *PolicyStore) Revoke(generation string) {
 	s.mu.Lock()
 	s.revoked[generation] = struct{}{}
+	s.revocations++
 	if s.policy != nil && (generation == "" || s.policy.PolicyGeneration == generation) {
 		s.wipeCandidatesLocked()
 		s.policy = nil
@@ -442,6 +451,42 @@ func (s *PolicyStore) RevokedAny() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.revoked) > 0
+}
+
+// RevocationCount counts Revoke calls. A runtime compares it with the value it
+// saw when it started, so a revocation that happened before the current policy
+// was installed does not make every later lapse look like a revocation.
+func (s *PolicyStore) RevocationCount() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revocations
+}
+
+// PolicyView is the non-secret state a host needs to tell a runtime that is
+// idle on purpose (no or lapsed policy) from one that is broken.
+type PolicyView struct {
+	Valid     bool
+	Held      bool // a policy is installed, valid or not
+	Transport string
+	ExpiresAt time.Time
+}
+
+// View reports whether a usable policy and lease are held, plus the policy's
+// transport and expiry. It never exposes lease material.
+func (s *PolicyStore) View() PolicyView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectActiveLocked("")
+	now := time.Now()
+	if s.policy == nil {
+		return PolicyView{}
+	}
+	return PolicyView{
+		Valid:     s.lease != nil && s.policy.ExpiresAt.After(now) && s.lease.ExpiresAt.After(now),
+		Held:      true,
+		Transport: s.policy.Transport,
+		ExpiresAt: s.policy.ExpiresAt,
+	}
 }
 
 func (s *PolicyStore) ClearExpired() {
