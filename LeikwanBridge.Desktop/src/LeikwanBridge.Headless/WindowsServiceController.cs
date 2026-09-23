@@ -92,8 +92,10 @@ internal sealed class WindowsServiceController(string serviceName) : IClientServ
 
 /// <summary>Windows applier: extract the verified zip, then hand the swap to a
 /// detached copy of the new executable (a running service cannot overwrite its
-/// own install directory).</summary>
-internal sealed class WindowsHeadlessUpdateApplier(string installDirectory, string serviceName) : IClientUpdateApplier
+/// own install directory). The detached step (Program "apply-update") stops the
+/// service and everything under the install directory, backs it up, swaps,
+/// health-checks the new build and rolls back when it is unhealthy.</summary>
+internal sealed class WindowsHeadlessUpdateApplier(string installDirectory, string serviceName, string updatesRoot) : IClientUpdateApplier
 {
     public async Task<bool> ApplyAsync(
         string stagedFile,
@@ -102,23 +104,52 @@ internal sealed class WindowsHeadlessUpdateApplier(string installDirectory, stri
         TextWriter output,
         CancellationToken ct)
     {
-        var stagingRoot = Path.Combine(Path.GetTempPath(), "leikwan-update-" + version);
-        if (Directory.Exists(stagingRoot))
-            Directory.Delete(stagingRoot, recursive: true);
-        Directory.CreateDirectory(stagingRoot);
-        System.IO.Compression.ZipFile.ExtractToDirectory(stagedFile, stagingRoot, overwriteFiles: true);
-
-        // The published zip wraps the payload in one folder.
-        var payloadRoot = Directory.EnumerateDirectories(stagingRoot).FirstOrDefault() ?? stagingRoot;
-        var newExecutable = Directory.EnumerateFiles(payloadRoot, "leikwan-bridge-headless.exe", SearchOption.AllDirectories)
-            .FirstOrDefault();
-        if (newExecutable is null)
+        // Extract under the SYSTEM/Administrators-only updates root: the
+        // extracted executable is what LocalSystem runs next.
+        var extractName = "extract-" + string.Concat(version.Select(character => char.IsLetterOrDigit(character) || character == '.' ? character : '_'));
+        var stagingRoot = Path.Combine(updatesRoot, extractName);
+        try
         {
-            output.WriteLine("staged package does not contain leikwan-bridge-headless.exe");
+            SecureDirectory.EnsureAdminOnly(updatesRoot);
+            PruneOldExtracts(updatesRoot, extractName, stagedFile, output);
+            if (Directory.Exists(stagingRoot))
+                Directory.Delete(stagingRoot, recursive: true);
+            Directory.CreateDirectory(stagingRoot);
+            System.IO.Compression.ZipFile.ExtractToDirectory(stagedFile, stagingRoot, overwriteFiles: true);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            output.WriteLine($"apply     : cannot write {updatesRoot}; run the update from an elevated shell");
+            return false;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            output.WriteLine($"apply     : could not extract the package ({exception.GetType().Name})");
             return false;
         }
 
-        output.WriteLine($"apply     : staging in {Path.GetDirectoryName(newExecutable)}");
+        // The published zip wraps the payload in one folder.
+        var payloadRoot = Directory.EnumerateDirectories(stagingRoot).FirstOrDefault() ?? stagingRoot;
+        var newExecutable = Directory.EnumerateFiles(payloadRoot, HeadlessUpdatePaths.ExecutableName, SearchOption.AllDirectories)
+            .FirstOrDefault();
+        if (newExecutable is null)
+        {
+            output.WriteLine($"staged package does not contain {HeadlessUpdatePaths.ExecutableName}");
+            return false;
+        }
+
+        // The manifest version must be the payload's own version; otherwise a
+        // mislabelled publish would be "applied" every cycle without ever
+        // becoming the installed version.
+        var payloadVersion = HeadlessUpdatePaths.ReadFileVersion(newExecutable) ?? string.Empty;
+        if (!HeadlessUpdatePolicy.IsSameVersion(payloadVersion, version))
+        {
+            output.WriteLine($"apply     : refused, payload is {payloadVersion} but the manifest says {version}");
+            return false;
+        }
+
+        var previousVersion = HeadlessUpdatePaths.ReadFileVersion(Path.Combine(installDirectory, HeadlessUpdatePaths.ExecutableName)) ?? service.Version;
+        output.WriteLine($"apply     : {previousVersion} -> {version}, staging in {Path.GetDirectoryName(newExecutable)}");
         var startInfo = new ProcessStartInfo(newExecutable)
         {
             UseShellExecute = false,
@@ -130,8 +161,12 @@ internal sealed class WindowsHeadlessUpdateApplier(string installDirectory, stri
                      "--cli", "apply-update",
                      "--staged", Path.GetDirectoryName(newExecutable)!,
                      "--install-dir", installDirectory,
-                     "--service", serviceName,
+                     // --service-name, not --service: Main treats a bare
+                     // --service as "run as the SCM service" and eats it.
+                     "--service-name", serviceName,
                      "--wait-pid", Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                     "--version", version,
+                     "--previous-version", previousVersion,
                  })
         {
             startInfo.ArgumentList.Add(argument);
@@ -144,8 +179,42 @@ internal sealed class WindowsHeadlessUpdateApplier(string installDirectory, stri
             return false;
         }
 
-        output.WriteLine("apply     : service will restart with the new build in a few seconds");
+        output.WriteLine($"apply     : detached updater pid {applier.Id}; the service restarts on {version} and is rolled back to {previousVersion} if it does not come up healthy");
         await Task.CompletedTask.ConfigureAwait(false);
         return true;
+    }
+
+    private static void PruneOldExtracts(string updatesRoot, string keep, string currentPackage, TextWriter output)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(updatesRoot, "extract-*"))
+        {
+            if (string.Equals(Path.GetFileName(directory), keep, StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                output.WriteLine($"apply     : could not remove old staging {Path.GetFileName(directory)} ({exception.GetType().Name})");
+            }
+        }
+
+        var staging = Path.Combine(updatesRoot, "staging");
+        if (!Directory.Exists(staging))
+            return;
+        var current = Path.GetFullPath(currentPackage);
+        foreach (var file in Directory.EnumerateFiles(staging).OrderByDescending(File.GetLastWriteTimeUtc).Skip(2))
+        {
+            if (string.Equals(Path.GetFullPath(file), current, StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                File.Delete(file);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
     }
 }

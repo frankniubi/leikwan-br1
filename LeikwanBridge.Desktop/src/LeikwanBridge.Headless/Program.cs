@@ -12,12 +12,14 @@ internal static class Program
     private const string ServiceNameFlag = "--service-name";
     private const string CliFlag = "--cli";
     private const string ApplyUpdateCommand = "apply-update";
+    private const string NoStartFlag = "--no-start";
 
     private static async Task<int> Main(string[] args)
     {
         var mode = ServiceMode.Console;
         var serviceName = WindowsServiceInstaller.DefaultServiceName;
         var clientArguments = new List<string>();
+        var startAfterInstall = true;
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -30,6 +32,11 @@ internal static class Program
                     break;
                 case UninstallServiceFlag:
                     mode = ServiceMode.Uninstall;
+                    break;
+                case NoStartFlag:
+                    // Installer-driven: register/update only; the installer
+                    // starts the service itself and verifies it.
+                    startAfterInstall = false;
                     break;
                 case ServiceNameFlag:
                     if (index + 1 >= args.Length)
@@ -47,7 +54,7 @@ internal static class Program
         }
 
         if (mode == ServiceMode.Install)
-            return WindowsServiceInstaller.Install(serviceName, clientArguments.ToArray());
+            return WindowsServiceInstaller.Install(serviceName, clientArguments.ToArray(), startAfterInstall);
 
         if (mode == ServiceMode.Uninstall)
             return WindowsServiceInstaller.Uninstall(serviceName);
@@ -76,7 +83,7 @@ internal static class Program
         ConfigureLogging(options);
 
         if (mode == ServiceMode.Service)
-            return WindowsServiceHost.Run(serviceName, ct => RunClientAsync(options, ct));
+            return WindowsServiceHost.Run(serviceName, ct => RunServiceAsync(options, serviceName, ct));
 
         using var shutdown = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
@@ -107,13 +114,13 @@ internal static class Program
     {
         var controller = new WindowsServiceController(serviceName);
         var config = TryLoadPanelConfig();
-        var installDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var installDirectory = HeadlessUpdatePaths.InstallDirectory;
         var updater = new PanelClientUpdateService(
             config.MasterUrl,
-            "windows_headless_client",
+            HeadlessUpdatePaths.ManifestKey,
             controller.Version,
             Path.Combine(Path.GetTempPath(), "leikwan-update"),
-            new WindowsHeadlessUpdateApplier(installDirectory, serviceName));
+            new WindowsHeadlessUpdateApplier(installDirectory, serviceName, HeadlessUpdatePaths.UpdatesRoot));
         using var shutdown = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
         {
@@ -125,59 +132,109 @@ internal static class Program
     }
 
     /// <summary>
-    /// Detached swap step of `leikwan update`: this process runs from the staged
-    /// copy, so it can stop the service and replace the install directory that
-    /// the old build is still occupying.
+    /// Detached swap step of `leikwan update` and of the service's auto-update:
+    /// this process runs from the staged copy, so it can stop the service and
+    /// replace the install directory the old build is still occupying. It
+    /// backs the install up first, holds the new build to a health gate, and
+    /// restores the backup (recording the version as rejected) when the new
+    /// build does not come up connected.
     /// </summary>
     private static async Task<int> ApplyUpdateAsync(IReadOnlyList<string> arguments, string defaultServiceName)
     {
-        var staged = ReadOption(arguments, "--staged") ?? AppContext.BaseDirectory;
-        var installDirectory = ReadOption(arguments, "--install-dir");
-        var serviceName = ReadOption(arguments, "--service") ?? defaultServiceName;
-        var waitPid = int.TryParse(ReadOption(arguments, "--wait-pid"), out var parsedPid) ? parsedPid : 0;
-        if (string.IsNullOrWhiteSpace(installDirectory) || !Directory.Exists(installDirectory))
+        ConfigureUpdateLogging();
+        try
         {
-            Console.Error.WriteLine("apply-update: --install-dir is required and must exist");
-            return 2;
-        }
-
-        var controller = new WindowsServiceController(serviceName);
-        await controller.StopAsync(CancellationToken.None).ConfigureAwait(false);
-        if (waitPid > 0)
-        {
-            for (var attempt = 0; attempt < 60; attempt++)
+            var staged = (ReadOption(arguments, "--staged") ?? AppContext.BaseDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var installDirectory = ReadOption(arguments, "--install-dir");
+            // The service name arrives as the global --service-name (parsed by
+            // Main into defaultServiceName); "--service" is kept for old launchers.
+            var serviceName = ReadOption(arguments, "--service") ?? defaultServiceName;
+            var waitPid = int.TryParse(ReadOption(arguments, "--wait-pid"), out var parsedPid) ? parsedPid : 0;
+            if (string.IsNullOrWhiteSpace(installDirectory) || !Directory.Exists(installDirectory))
             {
-                try
-                {
-                    using var parent = System.Diagnostics.Process.GetProcessById(waitPid);
-                    if (parent.HasExited)
-                        break;
-                }
-                catch (ArgumentException)
-                {
-                    break;
-                }
+                Console.Error.WriteLine("apply-update: --install-dir is required and must exist");
+                Log.Warning("update_apply_invalid reason=install_dir_missing");
+                return 2;
+            }
 
-                await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            installDirectory = installDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            // Older launchers do not pass versions: read them from the binaries.
+            var newVersion = ReadOption(arguments, "--version")
+                ?? HeadlessUpdatePaths.ReadFileVersion(Path.Combine(staged, HeadlessUpdatePaths.ExecutableName))
+                ?? HeadlessUpdatePaths.ProductVersion;
+            var previousVersion = ReadOption(arguments, "--previous-version")
+                ?? HeadlessUpdatePaths.ReadFileVersion(Path.Combine(installDirectory, HeadlessUpdatePaths.ExecutableName))
+                ?? "unknown";
+
+            SecureDirectory.EnsureAdminOnly(HeadlessUpdatePaths.UpdatesRoot);
+            SecureDirectory.EnsureAdminOnly(HeadlessUpdatePaths.BackupRoot);
+            using var applyLock = await UpdateApplyLock.AcquireAsync(HeadlessUpdatePaths.LockPath, TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+            if (applyLock is null)
+            {
+                Console.Error.WriteLine("apply-update: another update is being applied");
+                Log.Warning("update_apply_locked from={OldVersion} to={NewVersion}", previousVersion, newVersion);
+                return 3;
+            }
+
+            var statusFile = new WindowsServiceController(serviceName).StatusFilePath;
+            var orchestrator = new UpdateApplyOrchestrator(
+                new WindowsUpdateApplyEnvironment(serviceName, statusFile, waitPid),
+                new UpdateApplyOptions
+                {
+                    StagedDirectory = staged,
+                    InstallDirectory = installDirectory,
+                    BackupRoot = HeadlessUpdatePaths.BackupRoot,
+                    StatePath = HeadlessUpdatePaths.StatePath,
+                    PreviousVersion = previousVersion,
+                    NewVersion = newVersion,
+                    SentinelFileName = HeadlessUpdatePaths.ExecutableName,
+                });
+            var outcome = await orchestrator.RunAsync(CancellationToken.None).ConfigureAwait(false);
+            Log.Information("update_apply_finished outcome={Outcome} from={OldVersion} to={NewVersion}", outcome, previousVersion, newVersion);
+            Console.WriteLine($"apply-update: {outcome} ({previousVersion} -> {newVersion})");
+            return outcome switch
+            {
+                UpdateApplyOutcome.Applied => 0,
+                UpdateApplyOutcome.InvalidRequest => 2,
+                _ => 1,
+            };
+        }
+        catch (Exception exception)
+        {
+            Log.Error("update_apply_crashed type={ErrorType}", exception.GetType().Name);
+            Console.Error.WriteLine($"apply-update: failed ({exception.GetType().Name})");
+            return 1;
+        }
+        finally
+        {
+            Log.CloseAndFlush();
+        }
+    }
+
+    /// <summary>
+    /// Service mode: the client plus, next to it, the auto-update loop. The loop
+    /// is cancelled with the service and can never take the client down.
+    /// </summary>
+    private static async Task<int> RunServiceAsync(HeadlessClientOptions options, string serviceName, CancellationToken ct)
+    {
+        using var updateStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var updateLoop = HeadlessAutoUpdateHost.StartLoop(options, serviceName, updateStop.Token);
+        try
+        {
+            return await RunClientAsync(options, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            updateStop.Cancel();
+            try
+            {
+                await updateLoop.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
+            {
             }
         }
-
-        var copied = 0;
-        foreach (var source in Directory.EnumerateFiles(staged, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(staged, source);
-            var target = Path.Combine(installDirectory, relative);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(source, target, overwrite: true);
-            copied++;
-        }
-
-        Console.WriteLine($"apply-update: replaced {copied} file(s) in {installDirectory}");
-        var started = await controller.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        Console.WriteLine(started
-            ? $"apply-update: {serviceName} restarted on the new build"
-            : $"apply-update: {serviceName} did not report running; start it with \"leikwan start\"");
-        return started ? 0 : 1;
     }
 
     private static string? ReadOption(IReadOnlyList<string> arguments, string name)
@@ -237,6 +294,29 @@ internal static class Program
                 rollOnFileSizeLimit: true,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
+    }
+
+    private static void ConfigureUpdateLogging()
+    {
+        try
+        {
+            var directory = Path.Combine(ClientDefaults.ResolveSharedStateDirectory(), "logs");
+            Directory.CreateDirectory(directory);
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .WriteTo.File(
+                    Path.Combine(directory, "update-.log"),
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 14,
+                    fileSizeLimitBytes: 5 * 1024 * 1024,
+                    rollOnFileSizeLimit: true,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                .CreateLogger();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Logging is best effort; the swap itself must still run.
+        }
     }
 
     private enum ServiceMode

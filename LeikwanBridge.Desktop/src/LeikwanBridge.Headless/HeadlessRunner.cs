@@ -349,7 +349,7 @@ public static class HeadlessRunner
                 session.IsForwardRunning(forward.ForwardId) ? "running" : "stopped"))
             .ToList();
         return new HeadlessClientStatus(
-            typeof(HeadlessRunner).Assembly.GetName().Version?.ToString(3) ?? "0.0.0",
+            typeof(HeadlessRunner).Assembly.GetName().Version?.ToString() ?? "0.0.0", // four-part: the update health gate matches it
             true,
             "connected",
             string.Empty,
