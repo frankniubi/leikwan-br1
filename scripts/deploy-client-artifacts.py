@@ -166,11 +166,40 @@ def validate_plan(root, stage, plan):
         linux = [e['after']['sha256'] for e in entries if e['path'] in ('client-agent/client_agent.py', 'artifacts/client-agent.py')]
         if len(set(linux)) != 1:
             raise ValueError('Linux mirror mismatch')
+    verify_untouched_entries(root, after, plan)
     for path, expected in plan['preserved'].items():
         if path in expected_paths or path == MANIFEST:
             raise ValueError('preserved path overlaps write set')
         verify(guarded_path(root, path), expected)
     return entries
+
+
+def verify_untouched_entries(root, manifest, plan):
+    """Refuse to publish a manifest whose other entries do not match their files.
+
+    A release that only replaces some artifacts still republishes the whole
+    manifest, so a stale hash elsewhere would keep sending clients a file that
+    fails their check. A known gap may be carried only by naming the entry and
+    the hash actually on disk in plan['acknowledged_mismatches'], so a later
+    change to that file is still caught.
+    """
+    acknowledged = plan.get('acknowledged_mismatches', {})
+    problems = []
+    for key, info in sorted(manifest.items()):
+        if key in plan['versions'] or not isinstance(info, dict) or 'path' not in info or 'sha256' not in info:
+            continue
+        try:
+            actual = metadata(guarded_path(root, info['path']))['sha256']
+        except (OSError, ValueError):
+            actual = 'missing'
+        if actual == info['sha256']:
+            if key in acknowledged:
+                problems.append(key + ': acknowledged mismatch no longer exists')
+            continue
+        if acknowledged.get(key) != actual:
+            problems.append(key + ': manifest ' + info['sha256'][:12] + ' disk ' + actual[:12])
+    if problems:
+        raise ValueError('manifest integrity: ' + '; '.join(problems))
 
 
 def publish(root, stage, backup_base, plan, health, min_free=1024**3):

@@ -81,6 +81,32 @@ class GuardedDeployTests(unittest.TestCase):
         self.plan['manifest']['after']=deploy.metadata(p)
         with self.assertRaisesRegex(ValueError,'unexpected manifest'):self.run_release()
 
+    def add_untouched_entry(self, content, manifest_bytes):
+        target=self.root/'artifacts/other.bin'; target.parent.mkdir(exist_ok=True); target.write_bytes(content)
+        info={'version':'1','path':'artifacts/other.bin','sha256':deploy.hashlib.sha256(manifest_bytes).hexdigest()}
+        for directory,name in ((self.root,deploy.MANIFEST),(self.stage,'versions.json')):
+            p=directory/name; m=json.loads(p.read_text()); m['other']=info; p.write_text(json.dumps(m))
+        self.plan['manifest']['before']=deploy.metadata(self.root/deploy.MANIFEST)
+        self.plan['manifest']['after']=deploy.metadata(self.stage/'versions.json')
+        return deploy.hashlib.sha256(content).hexdigest()
+
+    def test_untouched_entry_hash_mismatch_is_refused(self):
+        self.add_untouched_entry(b'served', b'something else')
+        with self.assertRaisesRegex(ValueError,'manifest integrity: other'):self.run_release()
+        self.assertEqual(b'old binary',(self.root/self.path).read_bytes())
+
+    def test_acknowledged_mismatch_must_name_the_disk_hash(self):
+        actual=self.add_untouched_entry(b'served', b'something else')
+        self.plan['acknowledged_mismatches']={'other':'0'*64}
+        with self.assertRaisesRegex(ValueError,'manifest integrity'):self.run_release()
+        self.plan['acknowledged_mismatches']={'other':actual}
+        self.assertEqual('committed',self.run_release()['status'])
+
+    def test_stale_acknowledgement_is_refused(self):
+        actual=self.add_untouched_entry(b'served', b'served')
+        self.plan['acknowledged_mismatches']={'other':actual}
+        with self.assertRaisesRegex(ValueError,'no longer exists'):self.run_release()
+
     def test_noncanonical_route_rejected(self):
         p=self.stage/'versions.json'; m=json.loads(p.read_text());m['windows_client_app']['artifact_url']='/wrong';p.write_text(json.dumps(m))
         self.plan['manifest']['after']=deploy.metadata(p)
