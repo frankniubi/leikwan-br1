@@ -68,6 +68,32 @@ class UltraModelsTest {
     }
 
     @Test
+    fun `policy carries the panel tcp first flight with every direction candidate`() {
+        val hashes = (1..7).map { it.toString().repeat(64) }
+        fun firstFlight(target: String = "origin.example:443", generation: String = "a".repeat(64)) =
+            policyJson().deepCopy().apply {
+                add("tcp_first_flight", JsonParser.parseString(
+                    """{"target":"$target","policy_generation":"$generation","expires_at":"2026-08-27T00:04:00Z",
+                       "candidate_hashes":${hashes.joinToString(",", "[", "]") { "\"$it\"" }},"prefix_bytes":4,"delay_ms":300}"""
+                ).asJsonObject)
+            }
+
+        val accepted = UltraPolicy.from(sampleForward(firstFlight()), now)!!.tcpFirstFlight!!
+        assertEquals(hashes, accepted.candidateHashes)
+        assertEquals(4, accepted.prefixBytes)
+        assertEquals(300, accepted.delayMillis)
+        val bootstrap = accepted.toBootstrapJson()
+        assertEquals(7, bootstrap.getAsJsonArray("candidate_hashes").size())
+        assertNull(bootstrap.get("policy_generation"))
+
+        // Bound to this forward's target and this grant's generation; the policy
+        // itself stays valid when the compatibility block does not apply.
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(target = "other.example:443")), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(generation = "d".repeat(64))), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(policyJson()), now)!!.tcpFirstFlight)
+    }
+
+    @Test
     fun `policy accepts a 30 minute offline grant and the 3600 s ceiling`() {
         val offline = sampleForward(policyJson(expiresAt = "2026-08-27T00:30:00Z"))
         val ceiling = sampleForward(policyJson(expiresAt = "2026-08-27T01:00:00Z"))

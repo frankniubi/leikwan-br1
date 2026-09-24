@@ -20,6 +20,7 @@ use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\UltraOfflineValidityTokenProvider;
 use Leikwan\Master\Support\LeigodTokenProvider;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\UltraCandidateReputationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraInventoryService;
 use Leikwan\Master\Support\UltraLeaseService;
@@ -1068,7 +1069,8 @@ final class ClientAgentController extends BaseController
                 $firstFlight = self::tcpFirstFlightForGrant(
                     isset($this->config) ? $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '') : '',
                     $forward,
-                    $grant
+                    $grant,
+                    is_array($brokerForwards[$index]['_ultra_lines'] ?? null) ? $brokerForwards[$index]['_ultra_lines'] : []
                 );
                 if ($firstFlight !== null) {
                     $grant['tcp_first_flight'] = $firstFlight;
@@ -1079,8 +1081,13 @@ final class ClientAgentController extends BaseController
         return $forwards;
     }
 
-    /** @param array<string,mixed> $forward @param array<string,mixed> $grant @return array<string,mixed>|null */
-    public static function tcpFirstFlightForGrant(?string $raw, array $forward, array $grant): ?array
+    /**
+     * @param array<string,mixed> $forward
+     * @param array<string,mixed> $grant
+     * @param array<int, array<string,mixed>> $lines the forward's Ultra lines (source, line, zones)
+     * @return array<string,mixed>|null
+     */
+    public static function tcpFirstFlightForGrant(?string $raw, array $forward, array $grant, array $lines = []): ?array
     {
         $raw = trim((string) $raw);
         if ($raw === '') {
@@ -1105,10 +1112,17 @@ final class ClientAgentController extends BaseController
         }
         $prefixBytes = (int) ($rule['prefix_bytes'] ?? 0);
         $delayMs = (int) ($rule['delay_ms'] ?? 0);
-        $candidateHashes = array_values(array_unique(array_filter(
-            array_slice(is_array($rule['candidate_hashes'] ?? null) ? $rule['candidate_hashes'] : [], 0, 4),
+        // Without an explicit allowlist the rule covers every candidate the
+        // forward's own lines produce, so forwards and lines added later
+        // inherit it; the hashes are the ones the lease plane issues.
+        $explicit = $rule['candidate_hashes'] ?? null;
+        $rawHashes = is_array($explicit)
+            ? $explicit
+            : self::firstFlightCandidateHashes($lines, (string) ($grant['transport'] ?? $forward['transport_mode'] ?? 'tcp+udp'));
+        $candidateHashes = array_values(array_unique(array_map('strtolower', array_filter(
+            array_slice($rawHashes, 0, 16),
             static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-f0-9]{64}$/', strtolower($value)) === 1
-        )));
+        ))));
         if ($prefixBytes < 1 || $prefixBytes > 16 || $delayMs < 1 || $delayMs > 1000 || $candidateHashes === []) {
             return null;
         }
@@ -1127,10 +1141,42 @@ final class ClientAgentController extends BaseController
             'target' => $target,
             'policy_generation' => $generation,
             'expires_at' => $expiresAt,
-            'candidate_hashes' => array_map('strtolower', $candidateHashes),
+            'candidate_hashes' => $candidateHashes,
             'prefix_bytes' => $prefixBytes,
             'delay_ms' => $delayMs,
         ];
+    }
+
+    /**
+     * Candidate hashes for a forward's lines, as UltraMaterialService derives
+     * them when it issues leases (source, line, zones, lease protocol).
+     *
+     * @param array<int, array<string,mixed>> $lines
+     * @return array<int, string>
+     */
+    private static function firstFlightCandidateHashes(array $lines, string $transport): array
+    {
+        $protocol = strtolower(trim($transport));
+        if (!in_array($protocol, ['tcp', 'tcp+udp'], true)) {
+            return [];
+        }
+        $hashes = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $hash = UltraCandidateReputationService::candidateKeyHash([
+                'source_id' => (string) ($line['source_id'] ?? ''),
+                'line_id' => (int) ($line['line_id'] ?? 0),
+                'ingress_zone' => (string) ($line['ingress_zone'] ?? 'unknown'),
+                'destination_zone' => (string) ($line['destination_zone'] ?? 'unknown'),
+                'protocol' => $protocol,
+            ]);
+            if ($hash !== '') {
+                $hashes[$hash] = $hash;
+            }
+        }
+        return array_values($hashes);
     }
 
     private static function usesUltraPolicyV2(string $platform): bool

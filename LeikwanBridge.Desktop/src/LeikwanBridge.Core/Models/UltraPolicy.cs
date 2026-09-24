@@ -67,6 +67,11 @@ public sealed class UltraPolicy
 
 public sealed class UltraTCPFirstFlight
 {
+    // The panel derives the list from all of a forward's lines when a rule
+    // names none, so a direction can carry more than the 4 leases one
+    // grant holds.
+    public const int MaxCandidateHashes = 16;
+
     [JsonPropertyName("target")] public string Target { get; init; } = "";
     [JsonPropertyName("policy_generation")] public string PolicyGeneration { get; init; } = "";
     [JsonPropertyName("candidate_hashes")] public List<string> CandidateHashes { get; init; } = [];
@@ -85,7 +90,7 @@ public sealed class UltraTCPFirstFlight
         var candidateHashes = CandidateHashes
             .Where(value => value.Length == 64 && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))
             .Distinct(StringComparer.Ordinal)
-            .Take(4)
+            .Take(MaxCandidateHashes)
             .ToArray();
         var eligibleLeases = leases
             .Where(item => candidateHashes.Contains(item.CandidateKeyHash, StringComparer.Ordinal))
@@ -100,7 +105,7 @@ public sealed class UltraTCPFirstFlight
             || effectiveExpiry <= DateTimeOffset.UtcNow
             || PrefixBytes is < 1 or > 16
             || DelayMillis is < 1 or > 1000
-            || candidateHashes.Length is < 1 or > 4)
+            || candidateHashes.Length is < 1 or > MaxCandidateHashes)
             return null;
         return new
         {

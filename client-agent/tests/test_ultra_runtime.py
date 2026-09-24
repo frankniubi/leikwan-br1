@@ -46,6 +46,23 @@ def sample_forward():
 
 
 class UltraRuntimeTests(unittest.TestCase):
+    def test_first_flight_keeps_every_direction_candidate_beyond_four(self):
+        # The panel derives the list from all of a forward's lines when the
+        # rule names none; a direction such as PEK -> FRA has seven.
+        forward = sample_forward()
+        hashes = [format(index, "x") * 64 for index in range(1, 8)]
+        forward["ultra_access"]["tcp_first_flight"] = {
+            "target": forward["target"],
+            "policy_generation": "a" * 64,
+            "expires_at": "2030-01-01T00:20:00Z",
+            "candidate_hashes": hashes,
+            "prefix_bytes": 4,
+            "delay_ms": 300,
+        }
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        self.assertEqual(sorted(hashes), json.loads(config_file["content"])["tcp_first_flight"]["candidate_hashes"])
+
     def test_first_flight_is_bound_to_explicit_candidate_target_generation_and_expiry(self):
         forward = sample_forward()
         allowed = "b" * 64

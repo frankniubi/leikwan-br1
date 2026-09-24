@@ -1213,7 +1213,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         first_expiry = str(raw_first_flight.get("expires_at", "") or "").strip()
         allowed_hashes = {
             str(value or "").strip().lower()
-            for value in (raw_first_flight.get("candidate_hashes", []) if isinstance(raw_first_flight.get("candidate_hashes", []), list) else [])[:4]
+            for value in (raw_first_flight.get("candidate_hashes", []) if isinstance(raw_first_flight.get("candidate_hashes", []), list) else [])[:16]
             if re.fullmatch(r"[a-f0-9]{64}", str(value or "").strip().lower())
         }
         try:

@@ -41,6 +41,34 @@ public sealed class UltraPolicyTests
     }
 
     [Fact]
+    public void TCPFirstFlight_KeepsEveryDirectionCandidateBeyondFour()
+    {
+        // A rule without an explicit allowlist covers all of a direction's
+        // lines (PEK -> FRA has seven); the lease may be on any of them.
+        var hashes = Enumerable.Range(1, 7).Select(i => new string((char)('0' + i), 64)).ToList();
+        var grant = new UltraTCPFirstFlight
+        {
+            Target = "198.51.100.10:443",
+            PolicyGeneration = new string('a', 64),
+            CandidateHashes = hashes,
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(1),
+            PrefixBytes = 4,
+            DelayMillis = 300,
+        };
+        var lease = new UltraLease
+        {
+            ForwardId = 42,
+            PolicyGeneration = grant.PolicyGeneration,
+            CandidateKeyHash = hashes[6],
+            ExpiresAt = grant.ExpiresAt,
+        };
+        var payload = grant.ToBootstrapPayload(CreateForward(), [lease]);
+        Assert.NotNull(payload);
+        var emitted = (string[])payload!.GetType().GetProperty("candidate_hashes")!.GetValue(payload)!;
+        Assert.Equal(hashes, emitted);
+    }
+
+    [Fact]
     public void GetValidationFailure_AllowsPanelTtlWithSmallClockSkew()
     {
         var now = DateTimeOffset.UtcNow;
