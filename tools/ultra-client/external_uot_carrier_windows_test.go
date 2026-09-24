@@ -4,14 +4,22 @@ package main
 
 import "testing"
 
-// Windows keeps one small overlapped send in flight per carrier, so the carrier
-// asks for a send buffer that covers 10 Mbit/s at the longest measured RTTs.
-func TestExternalUoTCarrierSendBufferRaisedOnWindows(t *testing.T) {
+// The carrier leg ends at a nearby provider relay, so the carrier keeps
+// Windows' dynamic send buffering instead of a fixed buffer that would hide a
+// lagging carrier's backlog in the kernel.
+func TestExternalUoTCarrierKeepsWindowsDynamicSendBuffer(t *testing.T) {
 	left, _ := tcpPair(t)
-	if size := tuneExternalUoTCarrier(relayConn(left)); size < externalUoTCarrierSendBuffer {
-		t.Fatalf("carrier SO_SNDBUF=%d, want at least %d", size, externalUoTCarrierSendBuffer)
+	before, lowat := tuneExternalUoTCarrier(relayConn(left))
+	if before <= 0 || lowat != 0 {
+		t.Fatalf("carrier SO_SNDBUF unreadable: %d", before)
 	}
-	if tuneExternalUoTCarrier(&recordingCarrier{}) != 0 {
+	if before >= 2<<20 {
+		t.Fatalf("carrier SO_SNDBUF=%d: a fixed multi-megabyte buffer is set again", before)
+	}
+	if after, _ := tuneExternalUoTCarrier(relayConn(left)); after != before {
+		t.Fatalf("reporting the send buffer changed it: %d -> %d", before, after)
+	}
+	if size, _ := tuneExternalUoTCarrier(&recordingCarrier{}); size != 0 {
 		t.Fatal("a non-TCP carrier reported a send buffer")
 	}
 }

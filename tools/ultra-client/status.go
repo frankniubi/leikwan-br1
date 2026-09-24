@@ -47,6 +47,9 @@ type RuntimeStatus struct {
 	UoTSocketRcvbuf            int            `json:"socket_rcvbuf"`
 	UoTSocketSndbuf            int            `json:"socket_sndbuf"`
 	UoTSocketBufferError       bool           `json:"socket_buffer_error"`
+	// UoTCarrierLagFailovers counts carriers left because they kept a
+	// standing queue (external_uot_carrier_lagging).
+	UoTCarrierLagFailovers uint64 `json:"carrier_lag_failovers,omitempty"`
 
 	UDPRuntimeSession   *SelectionStatus `json:"udp_runtime_session,omitempty"`
 	HAEvents            []HAEvent        `json:"ha_events,omitempty"`
@@ -656,6 +659,9 @@ func (writer *StatusWriter) AddUoTQueueBlocked() {
 }
 func (writer *StatusWriter) AddUoTQueueTimeout() {
 	writer.update(func(s *RuntimeStatus) { s.UoTQueueTimeout++; s.UoTQueueDrop++; s.UDPQueueDrops++ })
+}
+func (writer *StatusWriter) AddUoTCarrierLagFailover() {
+	writer.update(func(s *RuntimeStatus) { s.UoTCarrierLagFailovers++ })
 }
 func (writer *StatusWriter) SetUoTSocketBuffers(recv, send int, failed bool) {
 	writer.update(func(s *RuntimeStatus) {

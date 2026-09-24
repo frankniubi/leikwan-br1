@@ -8,31 +8,31 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// tuneExternalUoTCarrier raises the carrier's send buffer and reports the size
-// the socket accepted (0 when it could not be read).
+// tuneExternalUoTCarrier reports the carrier's send buffer (0 when it cannot be
+// read) and deliberately leaves it to Windows' dynamic send buffering, which
+// sizes the send backlog to the connection (ideal send backlog). Windows has no
+// TCP_NOTSENT_LOWAT, so the second result is always 0.
 //
-// Go keeps one overlapped send outstanding per socket, and a carrier datagram
-// is about 1.2 KB, so on Windows what can be in flight is essentially the socket
-// send buffer. With the default buffer the SHA->LAX carriers (306 ms RTT) moved
-// about 2.2 Mbit/s each against 2.5 Mbit/s offered, queued for the rest of the
-// 180 s run and dropped (queue_blocked=1994, queue_timeout=296), while the TCP
-// forward on the same relay, writing 32 KB at a time, kept up. Linux and macOS
-// autotune the buffer and were not affected.
-func tuneExternalUoTCarrier(connection net.Conn) int {
+// A fixed 2 MiB SO_SNDBUF was set here for a 306 ms carrier RTT, but that RTT
+// is the HELLO round trip through the relay (which connects upstream lazily).
+// The carrier TCP connection itself ends at the provider relay, 19-20 ms from
+// the SHA test host (TCP connect 19 ms), and the relay terminates it, so the
+// client's send window never limited the carrier. The fixed buffer only hid up
+// to 2 MiB (6.7 s at 2.5 Mbit/s) of backlog in the kernel, where the lag
+// detector cannot see it and a carrier handover cannot recover it.
+func tuneExternalUoTCarrier(connection net.Conn) (sendBuffer, notSentLowat int) {
 	tcp := carrierTCPConn(connection)
 	if tcp == nil {
-		return 0
+		return 0, 0
 	}
-	_ = tcp.SetWriteBuffer(externalUoTCarrierSendBuffer)
 	raw, err := tcp.SyscallConn()
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	size := 0
 	_ = raw.Control(func(fd uintptr) {
 		if value, getErr := windows.GetsockoptInt(windows.Handle(fd), windows.SOL_SOCKET, windows.SO_SNDBUF); getErr == nil {
-			size = value
+			sendBuffer = value
 		}
 	})
-	return size
+	return sendBuffer, 0
 }

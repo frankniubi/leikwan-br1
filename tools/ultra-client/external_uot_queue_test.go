@@ -10,7 +10,7 @@ import (
 func TestExternalUoTBlockedEnqueueStopsOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := &externalUoTAssociation{ctx: ctx, cancel: cancel, outbound: make(chan []byte, 1), budget: newDatagramBudget(32)}
+	a := &externalUoTAssociation{ctx: ctx, cancel: cancel, outbound: make(chan externalUoTQueued, 1), budget: newDatagramBudget(32)}
 	if !a.enqueue([]byte("one")) {
 		t.Fatal("initial admission")
 	}
@@ -32,7 +32,7 @@ func TestExternalUoTBlockedEnqueueStopsOnShutdown(t *testing.T) {
 }
 func TestExternalUoTQueueTimeoutCounters(t *testing.T) {
 	w := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
-	a := &externalUoTAssociation{ctx: context.Background(), outbound: make(chan []byte, 1), budget: newDatagramBudget(32), status: w}
+	a := &externalUoTAssociation{ctx: context.Background(), outbound: make(chan externalUoTQueued, 1), budget: newDatagramBudget(32), status: w}
 	if !a.enqueue([]byte("one")) || a.enqueue([]byte("two")) {
 		t.Fatal("admission result")
 	}

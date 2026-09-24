@@ -80,7 +80,7 @@ func (c *recordingCarrier) waitFrames(t *testing.T, want int, within time.Durati
 
 func testUoTAssociation(ctx context.Context, queue int, status *StatusWriter) *externalUoTAssociation {
 	association := &externalUoTAssociation{
-		ctx: ctx, cancel: func() {}, outbound: make(chan []byte, queue),
+		ctx: ctx, cancel: func() {}, outbound: make(chan externalUoTQueued, queue),
 		budget: newDatagramBudget(datagramQueueBytes), status: status,
 	}
 	for i := range association.session {
@@ -155,15 +155,21 @@ func TestExternalUoTWriterCoalescesQueuedDatagrams(t *testing.T) {
 		association.externalUoTWriter(ctx, carrier, errs)
 	}()
 	checkFrames(t, carrier.waitFrames(t, 300, 2*time.Second), 300, association.session)
-	if writes, _ := carrier.snapshot(); writes != 2 {
-		t.Fatalf("300 queued datagrams took %d writes, want 2 (batches of %d)", writes, externalUoTBatchFrames)
+	frameBytes := externalUoTFramePrefixSize + externalUoTHeaderSize + len(datagram(0))
+	perBatch := (externalUoTBatchBytes + frameBytes - 1) / frameBytes // the frame that crosses the bound still goes
+	if perBatch > externalUoTBatchFrames {
+		perBatch = externalUoTBatchFrames
+	}
+	want := (300 + perBatch - 1) / perBatch
+	if writes, _ := carrier.snapshot(); writes != want {
+		t.Fatalf("300 queued datagrams took %d writes, want %d (batches of %d)", writes, want, perBatch)
 	}
 	if association.budget.bytes() != 0 {
 		t.Fatalf("written datagrams still hold %d budget bytes", association.budget.bytes())
 	}
 	association.enqueue(datagram(300))
 	frames := carrier.waitFrames(t, 301, time.Second)
-	if writes, _ := carrier.snapshot(); writes != 3 || frames[300].sequence != 301 {
+	if writes, _ := carrier.snapshot(); writes != want+1 || frames[300].sequence != 301 {
 		t.Fatalf("a lone datagram was not written on its own (writes=%d)", writes)
 	}
 	cancel()
@@ -202,9 +208,9 @@ func TestExternalUoTWriterKeepsUpAt10MbpsWithPerWriteCost(t *testing.T) {
 				select {
 				case <-ctx.Done():
 					return
-				case payload := <-association.outbound:
-					association.budget.release(len(payload))
-					_ = writeExternalUoTFrame(carrier, externalUoTFrame{msgType: externalUoTData, payload: payload})
+				case queued := <-association.outbound:
+					association.budget.release(len(queued.payload))
+					_ = writeExternalUoTFrame(carrier, externalUoTFrame{msgType: externalUoTData, payload: queued.payload})
 				}
 			}
 		}()

@@ -14,6 +14,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -290,9 +291,12 @@ const externalUoTCarrierWriteStall = remoteWriteProgressTimeout
 // Batching bounds for the carrier writer. A batch only ever holds datagrams
 // that were already queued when the previous write finished, so an idle
 // carrier still writes each datagram immediately; under backlog it catches up
-// in few large writes instead of two small ones per datagram.
+// in few large writes instead of two small ones per datagram. 64 KiB is still
+// ~50 datagrams per write, and it bounds how long one write can keep the
+// writer from measuring a slow carrier: a 256 KiB write into a carrier moving
+// 110 KB/s blocked for 2.3 s while the queue behind it overflowed.
 const (
-	externalUoTBatchBytes  = 256 * 1024
+	externalUoTBatchBytes  = 64 * 1024
 	externalUoTBatchFrames = 256
 )
 
@@ -440,7 +444,7 @@ type externalUoTAssociation struct {
 	target            string
 	sidecar           string
 	session           [16]byte
-	outbound          chan []byte
+	outbound          chan externalUoTQueued
 	budget            *datagramBudget
 	reliable          *reliableDatagrams
 	reliableAttached  bool
@@ -454,8 +458,34 @@ type externalUoTAssociation struct {
 	tuner             *externalUoTTuner
 	retryMu           sync.Mutex
 	retry             []externalUoTPending
+	// unconfirmed holds the datagrams most recently written to the carrier
+	// (bounded by externalUoTResendBytes / externalUoTResendAge). A carrier
+	// can take a write and still lose it: the kernel and the provider relay
+	// buffer it, and the sidecar drops the old carrier as soon as the session
+	// reattaches on a new one. The next carrier resends them; the sidecar
+	// suppresses every sequence it already delivered.
+	unconfirmedMu    sync.Mutex
+	unconfirmed      []externalUoTSent
+	unconfirmedBytes int
+	// queueOverflows counts datagrams refused because the queue was full. The
+	// lag detector reads it to skip the attach grace once data is being lost.
+	queueOverflows atomic.Int64
+	// lag bounds the standing queue a carrier may build before the
+	// association moves to another carrier. Zero disables the detector
+	// (unit tests that drive the writer directly).
+	lag externalUoTLagBounds
+	// lagStreak counts consecutive carriers left for lagging. Owned by run();
+	// the writer of the next carrier reads it after run() started it.
+	lagStreak int
 	// writeStall overrides externalUoTCarrierWriteStall (tests only).
 	writeStall time.Duration
+}
+
+// externalUoTQueued is one admitted datagram and the time it was admitted, so
+// the writer can tell how long datagrams wait for the carrier.
+type externalUoTQueued struct {
+	payload  []byte
+	queuedAt time.Time
 }
 
 // externalUoTPending is a datagram the writer took from the queue together
@@ -463,6 +493,132 @@ type externalUoTAssociation struct {
 type externalUoTPending struct {
 	payload  []byte
 	sequence uint64
+}
+
+// externalUoTSent is a datagram the carrier accepted, kept for a resend.
+type externalUoTSent struct {
+	externalUoTPending
+	writtenAt time.Time
+}
+
+// Resend window. What a lagging carrier holds below the writer is bounded by
+// the kernel send buffer and the relay's forwarding buffers; 2 MiB covers
+// 6.7 s of a 2.5 Mbit/s association, and datagrams older than 10 s are not
+// worth delivering. All associations of the runtime together keep at most
+// externalUoTResendTotalBytes; one that pushes the total over it evicts its own
+// oldest datagrams.
+const (
+	externalUoTResendBytes      = 2 << 20
+	externalUoTResendTotalBytes = 32 << 20
+	externalUoTResendAge        = 10 * time.Second
+)
+
+var externalUoTResendHeld atomic.Int64
+
+// errExternalUoTCarrierLagging ends a carrier that keeps a standing queue: it
+// still moves data, so it is not a write stall, but it moves less than the
+// association offers.
+var errExternalUoTCarrierLagging = errors.New("external UoT carrier lagging")
+
+// externalUoTLagBounds decides when a carrier that still makes progress is too
+// slow to keep.
+//
+// The 2026-09-24 SHA->LAX probes (combo 55, Windows host, 1200 B datagrams)
+// showed the loss is per carrier, not per client OS: one carrier on line 694
+// fell from 2.5 to 1.3-2.0 Mbit/s for more than 50 s and its datagrams waited
+// up to 15 s, while its sibling through the same relay IP at the same time
+// stayed at 2.5 Mbit/s with 160 ms latency; the same four-sender load through
+// line 431 ran 180 s without a single loss. The carrier leg to the relay is a
+// 20 ms TCP connection the relay terminates, so no client socket option changes
+// what the relay's own per-connection path does. One UDP association is one
+// carrier, so the only remedy the client has is to leave a carrier that has
+// fallen behind: the association keeps its session (the sidecar reattaches the
+// same UDP socket) and its queue, and the path is isolated so the next carrier
+// prefers a sibling.
+//
+// A fresh carrier through that relay can also take up to ~7 s to reach
+// 2.5 Mbit/s, queueing up to ~2.8 s on the way, and then catches up. The
+// attach grace keeps that ramp from being mistaken for a lagging carrier,
+// unless the queue already overflowed.
+type externalUoTLagBounds struct {
+	// target is the queueing delay a datagram may see without counting
+	// against the carrier.
+	target time.Duration
+	// interval is how long every datagram the writer takes must have waited
+	// at least target before the carrier is declared lagging. A carrier that
+	// drains its queue even once resets the clock.
+	interval time.Duration
+	// grace is how long after attach a carrier may ramp up.
+	grace time.Duration
+	// drain bounds how long the lagging carrier may keep delivering what the
+	// relay already holds after its write side is closed.
+	drain time.Duration
+}
+
+var externalUoTDefaultLagBounds = externalUoTLagBounds{
+	target:   time.Second,
+	interval: 3 * time.Second,
+	grace:    10 * time.Second,
+	drain:    3 * time.Second,
+}
+
+func (bounds externalUoTLagBounds) enabled() bool {
+	return bounds.target > 0 && bounds.interval > 0
+}
+
+// externalUoTLagStreakReset is how long a carrier must carry traffic without
+// lagging before a lag streak is forgotten.
+const externalUoTLagStreakReset = time.Minute
+
+// forStreak stretches the interval and the grace after consecutive lagging
+// carriers (x2, x4, x8). When every carrier lags, the association offers more
+// than any path carries; leaving carriers then only adds reconnects to the
+// loss the queue already shows, so the detector backs off instead.
+func (bounds externalUoTLagBounds) forStreak(streak int) externalUoTLagBounds {
+	if streak > 3 {
+		streak = 3
+	}
+	if streak > 0 {
+		bounds.interval <<= streak
+		bounds.grace <<= streak
+	}
+	return bounds
+}
+
+// externalUoTLagTracker is the writer's view of one carrier's standing queue.
+type externalUoTLagTracker struct {
+	bounds         externalUoTLagBounds
+	attachedAt     time.Time
+	overflowsAtAtt int64
+	aboveSince     time.Time
+	worst          time.Duration
+}
+
+// observe records the queueing delay of the oldest datagram of a batch that was
+// just written, and reports whether the carrier has kept a standing queue for
+// the whole interval, or keeps one while the queue is three quarters full: a
+// fast association fills its 4096 datagrams sooner than the interval (3.9 s at
+// 10 Mbit/s), and waiting longer would only turn the lag into drops.
+func (tracker *externalUoTLagTracker) observe(now time.Time, waited time.Duration, overflows int64, queued, capacity int) bool {
+	if !tracker.bounds.enabled() {
+		return false
+	}
+	if waited < tracker.bounds.target {
+		tracker.aboveSince = time.Time{}
+		tracker.worst = 0
+		return false
+	}
+	if waited > tracker.worst {
+		tracker.worst = waited
+	}
+	if tracker.aboveSince.IsZero() {
+		tracker.aboveSince = now
+	}
+	nearlyFull := capacity > 0 && 4*queued >= 3*capacity
+	if now.Sub(tracker.aboveSince) < tracker.bounds.interval && !nearlyFull {
+		return false
+	}
+	return now.Sub(tracker.attachedAt) >= tracker.bounds.grace || overflows != tracker.overflowsAtAtt
 }
 
 func newExternalUoTAssociation(parent context.Context, config Config, store *PolicyStore, status *StatusWriter, local *net.UDPConn, client *net.UDPAddr, socksUDP bool) (*externalUoTAssociation, error) {
@@ -485,8 +641,9 @@ func newExternalUoTAssociation(parent context.Context, config Config, store *Pol
 		cancel()
 		return nil, err
 	}
-	association.outbound = make(chan []byte, normalized.QueuePackets)
+	association.outbound = make(chan externalUoTQueued, normalized.QueuePackets)
 	association.budget = newDatagramBudget(datagramQueueBytes)
+	association.lag = externalUoTDefaultLagBounds
 	association.config.ExternalUoT = normalized
 	if normalized.DeliveryMode == reliableDatagramMode {
 		association.reliable = newReliableDatagrams()
@@ -541,7 +698,7 @@ func (association *externalUoTAssociation) enqueue(payload []byte) bool {
 	if association.budget.tryReserve(len(payload)) {
 		copyPayload := append([]byte(nil), payload...)
 		select {
-		case association.outbound <- copyPayload:
+		case association.outbound <- externalUoTQueued{payload: copyPayload, queuedAt: time.Now()}:
 			return true
 		default:
 		}
@@ -550,6 +707,7 @@ func (association *externalUoTAssociation) enqueue(payload []byte) bool {
 	if association.ctx.Err() != nil {
 		return false
 	}
+	association.queueOverflows.Add(1)
 	association.status.AddUoTQueueBlocked()
 	association.tuner.observeDrop()
 	association.status.AddUoTQueueTimeout()
@@ -595,9 +753,92 @@ func (association *externalUoTAssociation) preserveRetry(batch []externalUoTPend
 	association.retryMu.Unlock()
 }
 
+// confirmWritten records a batch the carrier accepted in the resend window and
+// evicts what falls outside it.
+func (association *externalUoTAssociation) confirmWritten(batch []externalUoTPending, now time.Time) {
+	association.unconfirmedMu.Lock()
+	defer association.unconfirmedMu.Unlock()
+	for _, item := range batch {
+		if len(item.payload) == 0 || item.sequence == 0 {
+			continue
+		}
+		association.unconfirmed = append(association.unconfirmed, externalUoTSent{externalUoTPending: item, writtenAt: now})
+		association.unconfirmedBytes += len(item.payload)
+		externalUoTResendHeld.Add(int64(len(item.payload)))
+	}
+	drop := 0
+	for drop < len(association.unconfirmed) &&
+		(association.unconfirmedBytes > externalUoTResendBytes || externalUoTResendHeld.Load() > externalUoTResendTotalBytes ||
+			now.Sub(association.unconfirmed[drop].writtenAt) > externalUoTResendAge) {
+		size := len(association.unconfirmed[drop].payload)
+		association.unconfirmedBytes -= size
+		externalUoTResendHeld.Add(-int64(size))
+		association.unconfirmed[drop] = externalUoTSent{}
+		drop++
+	}
+	if drop > 0 {
+		association.unconfirmed = append(association.unconfirmed[:0], association.unconfirmed[drop:]...)
+	}
+}
+
+// requeueUnconfirmed puts the resend window ahead of the retry batch, so the
+// next carrier writes it first and in sequence order.
+func (association *externalUoTAssociation) requeueUnconfirmed(now time.Time) {
+	association.unconfirmedMu.Lock()
+	window := association.unconfirmed
+	association.unconfirmed = nil
+	externalUoTResendHeld.Add(-int64(association.unconfirmedBytes))
+	association.unconfirmedBytes = 0
+	association.unconfirmedMu.Unlock()
+	resend := make([]externalUoTPending, 0, len(window))
+	for _, item := range window {
+		if now.Sub(item.writtenAt) <= externalUoTResendAge {
+			resend = append(resend, item.externalUoTPending)
+		}
+	}
+	if len(resend) == 0 {
+		return
+	}
+	association.retryMu.Lock()
+	defer association.retryMu.Unlock()
+	for _, item := range association.retry {
+		if item.sequence > resend[len(resend)-1].sequence {
+			resend = append(resend, item)
+		}
+	}
+	association.retry = resend
+}
+
+func (association *externalUoTAssociation) discardUnconfirmed() {
+	association.unconfirmedMu.Lock()
+	association.unconfirmed = nil
+	externalUoTResendHeld.Add(-int64(association.unconfirmedBytes))
+	association.unconfirmedBytes = 0
+	association.unconfirmedMu.Unlock()
+}
+
+// rotateSession starts a new sidecar session (and so a new UDP socket there)
+// after the reconnect grace ran out. Sequence numbers restart with it, so a
+// retry batch or resend window numbered in the old space is dropped: sent
+// first, it would set the new session's replay floor above every new datagram
+// and have all of them suppressed as replays.
+func (association *externalUoTAssociation) rotateSession() bool {
+	if _, err := rand.Read(association.session[:]); err != nil {
+		return false
+	}
+	association.sequenceMu.Lock()
+	association.sequence = 0
+	association.sequenceMu.Unlock()
+	association.takeRetry()
+	association.discardUnconfirmed()
+	return true
+}
+
 func (association *externalUoTAssociation) run() {
 	defer close(association.done)
 	defer association.cancel()
+	// Release this association's share of the runtime-wide resend budget.
+	defer association.discardUnconfirmed()
 	if association.reliable != nil {
 		defer func() {
 			association.status.SetReliableStats(association.session, association.reliable.snapshot(), true)
@@ -606,16 +847,14 @@ func (association *externalUoTAssociation) run() {
 	backoff := externalUoTReconnectBackoffInitial
 	var disconnectedAt time.Time
 	for association.ctx.Err() == nil {
+		lagged := false
 		if !disconnectedAt.IsZero() && time.Since(disconnectedAt) >= time.Duration(association.config.ExternalUoT.ReconnectGraceSeconds)*time.Second {
 			if association.reliable != nil {
 				association.reliable.fail(errors.New("reliable reconnect grace exhausted"))
 				association.status.UpdateError("external_uot_reliable_failed")
 				return
 			}
-			if _, rotateErr := rand.Read(association.session[:]); rotateErr == nil {
-				association.sequenceMu.Lock()
-				association.sequence = 0
-				association.sequenceMu.Unlock()
+			if association.rotateSession() {
 				log.Printf("external UoT session rotated after grace forward_id=%d", association.config.ForwardID)
 			}
 			disconnectedAt = time.Time{}
@@ -631,6 +870,10 @@ func (association *externalUoTAssociation) run() {
 		if err == nil {
 			started := time.Now()
 			err = association.runCarrier(connection, snapshot.Lease)
+			if !errors.Is(err, errExternalUoTCarrierLagging) && !association.carrierAttachedAt.Before(started) &&
+				time.Since(association.carrierAttachedAt) >= externalUoTLagStreakReset {
+				association.lagStreak = 0
+			}
 			if err != nil && association.ctx.Err() == nil && association.carrierAttachedAt.Before(started) {
 				// A relay may authenticate successfully yet reset the actual
 				// sidecar HELLO. Do not keep retrying that same path forever.
@@ -644,6 +887,18 @@ func (association *externalUoTAssociation) run() {
 				association.status.UpdateError("external_uot_carrier_write_stall")
 				log.Printf("external UoT carrier write stalled forward_id=%d stage=remote_write reason=stall stall_ms=%d candidate_hash=%s",
 					association.config.ForwardID, association.carrierStall().Milliseconds(), snapshot.Lease.CandidateKeyHash)
+			} else if errors.Is(err, errExternalUoTCarrierLagging) && association.ctx.Err() == nil {
+				// The carrier still moves data, only too little of it. Local
+				// isolation steers the replacement to a sibling path when there
+				// is one; a single-path forward redials the same relay, and a
+				// fresh connection through it is usually healthy again.
+				lagged = true
+				association.lagStreak++
+				association.store.FailCandidate("udp", snapshot.Lease)
+				association.status.AddUoTCarrierLagFailover()
+				association.status.UpdateError("external_uot_carrier_lagging")
+				log.Printf("external UoT carrier lagging forward_id=%d stage=remote_write reason=lagging queued=%d streak=%d candidate_hash=%s: %v",
+					association.config.ForwardID, len(association.outbound), association.lagStreak, snapshot.Lease.CandidateKeyHash, err)
 			}
 			snapshot.Lease.wipe()
 			connection.Close()
@@ -666,6 +921,11 @@ func (association *externalUoTAssociation) run() {
 			association.tuner.observeReconnect()
 			_, _, reconnects, drops := association.tuner.snapshot()
 			log.Printf("external UoT carrier reconnect forward_id=%d elapsed=%s reconnects=%d drops=%d reason=%v", association.config.ForwardID, time.Since(started), reconnects, drops, err)
+			if lagged {
+				// Datagrams are queueing right now; the backoff is for dead
+				// paths, not for leaving a slow one.
+				continue
+			}
 		} else if association.ctx.Err() != nil {
 			return
 		} else {
@@ -755,6 +1015,15 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 		return association.reliable.fail(errors.New("reliable peer session state lost"))
 	}
 	association.tuner.setMaxDatagram(helloAck.FramePayloadMax)
+	if helloAck.Session == "OKR" {
+		// The sidecar kept the session and its replay floor: resend what the
+		// previous carrier accepted but may not have delivered.
+		association.requeueUnconfirmed(time.Now())
+	} else {
+		// A new sidecar session has no delivery history, so a resend could
+		// only duplicate.
+		association.discardUnconfirmed()
+	}
 	_ = connection.SetReadDeadline(time.Time{})
 	_ = connection.SetWriteDeadline(time.Time{})
 	statusRTT := time.Since(helloStarted)
@@ -762,9 +1031,9 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	association.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, statusRTT, lease.LeaseHash)
 	association.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
 	association.store.ClearPathFailure("udp", haPathKey(lease))
-	carrierSendBuffer := tuneExternalUoTCarrier(connection)
-	log.Printf("external UoT carrier attached forward_id=%d sid=%x logical_protocol=udp carrier=tcp carrier_sndbuf=%d candidate_hash=%s lease_hash=%s target_hash=%s",
-		association.config.ForwardID, association.session[:4], carrierSendBuffer, lease.CandidateKeyHash, lease.LeaseHash, tcpTargetHash(association.config.Target))
+	carrierSendBuffer, carrierNotSentLowat := tuneExternalUoTCarrier(connection)
+	log.Printf("external UoT carrier attached forward_id=%d sid=%x logical_protocol=udp carrier=tcp carrier_sndbuf=%d carrier_notsent_lowat=%d candidate_hash=%s lease_hash=%s target_hash=%s",
+		association.config.ForwardID, association.session[:4], carrierSendBuffer, carrierNotSentLowat, lease.CandidateKeyHash, lease.LeaseHash, tcpTargetHash(association.config.Target))
 	association.carrierAttachedAt = time.Now()
 
 	if association.reliable != nil {
@@ -774,12 +1043,14 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	errCh := make(chan error, 2)
 	carrierContext, cancelCarrier := context.WithCancel(association.ctx)
 	workersDone := make(chan struct{}, 2)
+	readerDone := make(chan struct{})
 	go func() {
 		defer func() { workersDone <- struct{}{} }()
 		association.externalUoTWriter(carrierContext, connection, errCh)
 	}()
 	go func() {
 		defer func() { workersDone <- struct{}{} }()
+		defer close(readerDone)
 		association.externalUoTReader(reader, connection, errCh)
 	}()
 	defer func() {
@@ -799,6 +1070,9 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 		case <-association.ctx.Done():
 			return association.ctx.Err()
 		case err := <-errCh:
+			if errors.Is(err, errExternalUoTCarrierLagging) {
+				association.drainLaggingCarrier(connection, readerDone)
+			}
 			return err
 		case <-ticker.C:
 			frame := externalUoTFrame{msgType: externalUoTKeepalive, session: association.session, sequence: association.nextSequence()}
@@ -813,22 +1087,34 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 // carries the datagram it waited for plus whatever else was already queued (up
 // to externalUoTBatchFrames / externalUoTBatchBytes): it never waits to fill a
 // batch, so it adds no latency, but a backlog is cleared in a few large writes.
-// One datagram used to be two small writes (prefix, then frame), which kept the
-// Windows carrier below the offered rate on long paths (SHA->LAX at 306 ms:
-// 201.1 of 224.6 MB delivered): with tiny overlapped sends almost nothing
-// beyond the socket send buffer is ever in flight.
+//
+// It also measures how long the oldest datagram of each batch waited until its
+// write completed. A carrier that keeps every datagram waiting longer than the
+// lag target for the lag interval ends with errExternalUoTCarrierLagging, and
+// the queue it leaves behind goes to the next carrier.
 func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context, connection net.Conn, errorsOut chan<- error) {
 	var encoded []byte
 	defer func() { clearBytes(encoded) }()
+	lag := externalUoTLagTracker{
+		bounds: association.lag.forStreak(association.lagStreak), attachedAt: association.carrierAttachedAt,
+		overflowsAtAtt: association.queueOverflows.Load(),
+	}
 	for {
+		var oldest time.Time
+		take := func(queued externalUoTQueued) {
+			association.budget.release(len(queued.payload))
+			if oldest.IsZero() {
+				oldest = queued.queuedAt
+			}
+		}
 		batch := association.takeRetry()
 		if len(batch) == 0 {
 			select {
 			case <-ctx.Done():
 				return
-			case payload := <-association.outbound:
-				association.budget.release(len(payload))
-				batch = append(batch, externalUoTPending{payload: payload, sequence: association.nextSequence()})
+			case queued := <-association.outbound:
+				take(queued)
+				batch = append(batch, externalUoTPending{payload: queued.payload, sequence: association.nextSequence()})
 			}
 		}
 		size := 0
@@ -838,10 +1124,10 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 	collect:
 		for len(batch) < externalUoTBatchFrames && size < externalUoTBatchBytes {
 			select {
-			case payload := <-association.outbound:
-				association.budget.release(len(payload))
-				batch = append(batch, externalUoTPending{payload: payload, sequence: association.nextSequence()})
-				size += externalUoTFramePrefixSize + externalUoTHeaderSize + len(payload)
+			case queued := <-association.outbound:
+				take(queued)
+				batch = append(batch, externalUoTPending{payload: queued.payload, sequence: association.nextSequence()})
+				size += externalUoTFramePrefixSize + externalUoTHeaderSize + len(queued.payload)
 			default:
 				break collect
 			}
@@ -876,11 +1162,69 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 			return
 		}
 		association.status.AddUsage(0, usage)
+		association.confirmWritten(batch, time.Now())
 		if cap(encoded) > 2*externalUoTBatchBytes {
 			// One batch of very large datagrams must not pin its buffer for the
 			// carrier's lifetime.
 			clearBytes(encoded)
 			encoded = nil
+		}
+		if !oldest.IsZero() {
+			now := time.Now()
+			if lag.observe(now, now.Sub(oldest), association.queueOverflows.Load(), len(association.outbound), cap(association.outbound)) {
+				select {
+				case errorsOut <- fmt.Errorf("%w: every datagram waited at least %s for %s (worst %s, carrier age %s)",
+					errExternalUoTCarrierLagging, lag.bounds.target, now.Sub(lag.aboveSince).Round(time.Millisecond),
+					lag.worst.Round(time.Millisecond), now.Sub(lag.attachedAt).Round(time.Second)):
+				default:
+				}
+				return
+			}
+		}
+	}
+}
+
+// drainLaggingCarrier half-closes a lagging carrier and lets it deliver what
+// the kernel and the relay already hold before the replacement attaches: the
+// sidecar drops the old carrier the moment the same session says HELLO on a
+// new one, so switching at once would discard everything still in flight. A
+// relay that forwards the half-close lets the sidecar read to the end and
+// close, which the reader sees as EOF; the resend window is then redundant and
+// is dropped, so the next carrier does not spend its ramp re-sending datagrams
+// the sidecar already has. When the drain bound expires first, the next
+// carrier resends the window instead, and so it does as soon as half of the
+// queue has filled while waiting, so that waiting never costs a drop. Datagrams
+// arriving meanwhile stay queued for the next carrier, and replies keep being
+// delivered from this one.
+func (association *externalUoTAssociation) drainLaggingCarrier(connection net.Conn, readerDone <-chan struct{}) {
+	tcp := carrierTCPConn(connection)
+	if tcp == nil || association.lag.drain <= 0 {
+		return
+	}
+	association.writeMu.Lock()
+	err := tcp.CloseWrite()
+	association.writeMu.Unlock()
+	if err != nil {
+		return
+	}
+	timer := time.NewTimer(association.lag.drain)
+	defer timer.Stop()
+	headroom := time.NewTicker(20 * time.Millisecond)
+	defer headroom.Stop()
+	for {
+		select {
+		case <-readerDone:
+			association.discardUnconfirmed()
+			return
+		case <-timer.C:
+			return
+		case <-association.ctx.Done():
+			return
+		case <-headroom.C:
+			if 2*len(association.outbound) >= cap(association.outbound) ||
+				(association.budget != nil && 2*association.budget.bytes() >= association.budget.limit) {
+				return
+			}
 		}
 	}
 }

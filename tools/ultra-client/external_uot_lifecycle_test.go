@@ -12,7 +12,7 @@ func TestExternalUoTCarrierWriterStopsBeforeReplacement(t *testing.T) {
 	defer cancelAssociation()
 	carrierCtx, cancelCarrier := context.WithCancel(associationCtx)
 	association := &externalUoTAssociation{
-		ctx: associationCtx, outbound: make(chan []byte, 1), budget: newDatagramBudget(32),
+		ctx: associationCtx, outbound: make(chan externalUoTQueued, 1), budget: newDatagramBudget(32),
 	}
 	client, peer := net.Pipe()
 	defer client.Close()
@@ -31,7 +31,7 @@ func TestExternalUoTCarrierWriterStopsBeforeReplacement(t *testing.T) {
 	if associationCtx.Err() != nil {
 		t.Fatal("carrier stop canceled the logical association")
 	}
-	association.outbound <- []byte("next-carrier")
+	association.outbound <- externalUoTQueued{payload: []byte("next-carrier"), queuedAt: time.Now()}
 	if len(association.outbound) != 1 {
 		t.Fatal("old carrier consumed queued replacement data")
 	}
