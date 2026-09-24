@@ -4333,7 +4333,12 @@ final class ProvisioningService
      * @param array<int, array<string, mixed>> $forwards
      * @return array<string, array<string, mixed>>
      */
-    public function ultraLineMetadataForAssignedForwards(array $forwards): array
+    /**
+     * @param bool $requireFreshMaterial false lists every enabled line of each
+     *        forward's combination, material or not (used for rules that must cover
+     *        the whole direction, e.g. TCP first-flight), with a cap of 16 lines.
+     */
+    public function ultraLineMetadataForAssignedForwards(array $forwards, bool $requireFreshMaterial = true): array
     {
         $eligible = [];
         foreach ($forwards as $forward) {
@@ -4399,7 +4404,7 @@ final class ProvisioningService
              WHERE f.id IN (' . implode(', ', $placeholders) . ')
                AND fc.backend_mode = :ultra_backend_mode
                AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
-               AND ul.last_material_expires_at > UTC_TIMESTAMP()
+               ' . ($requireFreshMaterial ? 'AND ul.last_material_expires_at > UTC_TIMESTAMP()' : '') . '
              ORDER BY f.id ASC, us.priority ASC,
                       CASE WHEN ul.dispatch_class = \'low\' THEN 1 ELSE 0 END ASC,
                       CASE WHEN ul.pricing_class IN (\'paid\', \'mixed\') THEN 0 WHEN ul.pricing_class = \'unknown\' THEN 1 ELSE 2 END ASC,
@@ -4410,7 +4415,7 @@ final class ProvisioningService
         $seenByForward = [];
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
-            if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= 8) {
+            if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= ($requireFreshMaterial ? 8 : 16)) {
                 continue;
             }
             $key = (string) $forwardId;

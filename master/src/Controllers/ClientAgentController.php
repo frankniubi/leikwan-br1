@@ -982,8 +982,22 @@ final class ClientAgentController extends BaseController
         int $offlineValiditySeconds = 0,
     ): array {
         $brokerForwards = $forwards;
+        $firstFlightRaw = isset($this->config) ? trim((string) $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '')) : '';
+        $firstFlightLines = [];
         if (isset($this->provisioning)) {
             $metadata = $this->provisioning->ultraLineMetadataForAssignedForwards($forwards);
+            // First-flight covers the whole direction: every enabled line, not
+            // only those whose material is fresh right now, or a line that gets
+            // material after the runtime starts would stay uncovered.
+            if ($firstFlightRaw !== '') {
+                try {
+                    foreach ($this->provisioning->ultraLineMetadataForAssignedForwards($forwards, false) as $id => $entry) {
+                        $firstFlightLines[(string) $id] = is_array($entry['lines'] ?? null) ? $entry['lines'] : [];
+                    }
+                } catch (\Throwable) {
+                    $firstFlightLines = [];
+                }
+            }
             foreach ($brokerForwards as $index => $forward) {
                 if (!is_array($forward)) {
                     continue;
@@ -1070,7 +1084,8 @@ final class ClientAgentController extends BaseController
                     isset($this->config) ? $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '') : '',
                     $forward,
                     $grant,
-                    is_array($brokerForwards[$index]['_ultra_lines'] ?? null) ? $brokerForwards[$index]['_ultra_lines'] : []
+                    $firstFlightLines[$forwardId]
+                        ?? (is_array($brokerForwards[$index]['_ultra_lines'] ?? null) ? $brokerForwards[$index]['_ultra_lines'] : [])
                 );
                 if ($firstFlight !== null) {
                     $grant['tcp_first_flight'] = $firstFlight;
