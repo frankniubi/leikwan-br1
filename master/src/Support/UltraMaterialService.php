@@ -458,6 +458,7 @@ final class UltraMaterialService
         if ($this->candidateDynamicQuarantineEnabled()) {
             $candidates = $this->candidateReputation->filterCandidates($candidates, 1);
         }
+        $candidates = $this->interleaveCandidatesByLine($candidates);
         $candidate = $candidates[$candidateOffset] ?? [];
         if (is_array($candidate)) {
             unset($candidate['_candidate_scope']);
@@ -951,6 +952,33 @@ final class UltraMaterialService
             $key .= '.' . $validityClass;
         }
         return $key;
+    }
+
+    /**
+     * Round-robin the candidates across lines, keeping the line order and each
+     * line's relay order. A client is leased only the first few offsets, and
+     * re-acquiring a line kills the credential of every relay of that line, so
+     * those offsets must span as many lines as possible.
+     *
+     * @param array<int, array<string, mixed>> $candidates
+     * @return array<int, array<string, mixed>>
+     */
+    private function interleaveCandidatesByLine(array $candidates): array
+    {
+        $byLine = [];
+        foreach ($candidates as $candidate) {
+            $scope = is_array($candidate['_candidate_scope'] ?? null) ? $candidate['_candidate_scope'] : [];
+            $byLine[($scope['source_id'] ?? '') . ':' . ($scope['line_id'] ?? '')][] = $candidate;
+        }
+        $interleaved = [];
+        for ($round = 0; count($interleaved) < count($candidates); $round++) {
+            foreach ($byLine as $lineCandidates) {
+                if (isset($lineCandidates[$round])) {
+                    $interleaved[] = $lineCandidates[$round];
+                }
+            }
+        }
+        return $interleaved;
     }
 
     private function candidateDynamicQuarantineEnabled(): bool
