@@ -40,12 +40,22 @@ final class UltraSourceController extends BaseController
             'requested' => count($lineIds),
             'reviews' => count($reviews),
         ]);
+        // A review acquires its line, which invalidates the credential clients
+        // hold for it; the ticket covers review lines too so the source can
+        // upload that fresh material straight away.
+        $ticketLineIds = $lineIds;
+        foreach ($reviews as $review) {
+            $reviewLine = (int) (is_array($review) ? ($review['line_id'] ?? 0) : 0);
+            if ($reviewLine > 0 && !in_array($reviewLine, $ticketLineIds, true)) {
+                $ticketLineIds[] = $reviewLine;
+            }
+        }
         return $this->json([
             'ok' => true,
             'source_id' => $sourceId,
             'line_ids' => $lineIds,
             'reviews' => $reviews,
-            'upload_ticket' => $lineIds !== [] ? $this->materials->issueUploadTicket($sourceId, $lineIds) : '',
+            'upload_ticket' => $ticketLineIds !== [] ? $this->materials->issueUploadTicket($sourceId, $ticketLineIds) : '',
         ])->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',

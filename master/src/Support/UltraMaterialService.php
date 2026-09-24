@@ -141,17 +141,27 @@ final class UltraMaterialService
             throw new ApiException('ultra_source_ticket_invalid', 401);
         }
         $ticketNonce = trim((string) ($ticketPayload['nonce'] ?? ''));
-        if ($ticketNonce === '' || !$this->consumeReplayValue(self::TICKET_NONCE_PREFIX . hash('sha256', $sourceId), $ticketNonce, 300)) {
+        if ($ticketNonce === '') {
             throw new ApiException('ultra_source_ticket_replayed', 409);
         }
+        // Acquiring a line invalidates the credential clients currently hold
+        // for it, so the source uploads each line the moment it has it rather
+        // than batching the cycle. A ticket therefore admits several uploads,
+        // but each of its lines at most once.
+        $replayScope = self::TICKET_NONCE_PREFIX . hash('sha256', $sourceId);
         $allowed = array_fill_keys($this->normalizeLineIds((array) ($ticketPayload['line_ids'] ?? [])), true);
         $accepted = [];
+        $replayed = 0;
         foreach (array_slice($materials, 0, 8) as $raw) {
             if (!is_array($raw)) {
                 continue;
             }
             $material = $this->normalizeMaterial($raw, $now);
             if ($material === null || !isset($allowed[$material['line_id']])) {
+                continue;
+            }
+            if (!$this->consumeReplayValue($replayScope, $ticketNonce . ':' . $material['line_id'], 300)) {
+                $replayed++;
                 continue;
             }
             $existing = $this->loadMaterial($sourceId, $material['line_id'], false);
@@ -182,6 +192,9 @@ final class UltraMaterialService
                 }
             }
             $accepted[$material['line_id']] = $material['line_id'];
+        }
+        if ($accepted === [] && $replayed > 0) {
+            throw new ApiException('ultra_source_ticket_replayed', 409);
         }
         ksort($accepted, SORT_NUMERIC);
         return array_values($accepted);
@@ -859,7 +872,7 @@ final class UltraMaterialService
             }
         }
         ksort($result, SORT_NUMERIC);
-        return array_slice(array_values($result), 0, 8);
+        return array_slice(array_values($result), 0, 16);
     }
 
     private function materialKey(string $sourceId, int $lineId): string

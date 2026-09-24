@@ -673,6 +673,66 @@ class UltraSourceAgentTests(unittest.TestCase):
             reauth.assert_called_once_with()
             self.assertEqual("/api/ultra/source/materials", request.call_args.args[4])
 
+    def _uploader_agent(self, root):
+        lines = root / "lines"
+        lines.mkdir(exist_ok=True)
+        config = root / "agent.json"
+        config.write_text(json.dumps({
+            "panel_url": "https://panel.example", "source_id": "source-a", "source_secret": "source-secret",
+            "binary_path": "/runtime/line-client", "lines_dir": str(lines),
+            "inventory_path": str(lines / "index.json"), "state_dir": str(root / "state"),
+        }), encoding="utf-8")
+        return MODULE.SourceAgent(config)
+
+    def test_each_line_is_uploaded_right_after_it_is_acquired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            events = []
+
+            def fake_acquire(line_id, *_args, **_kwargs):
+                events.append(("acquire", line_id))
+                return {"line_id": line_id}
+
+            def fake_request(*args, **_kwargs):
+                body = args[5]
+                ids = [m["line_id"] for m in body["materials"]]
+                events.append(("upload", tuple(ids)))
+                return {"ok": True, "accepted_line_ids": ids}
+
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}),                     mock.patch.object(MODULE, "inventory_due", return_value=False),                     mock.patch.object(MODULE, "request_json_with_retries", return_value={"ok": True, "upload_ticket": "t", "line_ids": [1, 2, 3]}),                     mock.patch.object(MODULE, "acquire_line", side_effect=fake_acquire),                     mock.patch.object(MODULE, "request_json", side_effect=fake_request),                     mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                self.assertEqual(3, agent.run_cycle())
+            self.assertEqual(
+                [("acquire", 1), ("upload", (1,)), ("acquire", 2), ("upload", (2,)), ("acquire", 3), ("upload", (3,))],
+                events,
+            )
+
+    def test_single_use_ticket_panel_falls_back_to_one_batch_under_a_fresh_ticket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            tickets = []
+
+            def fake_request(*args, **_kwargs):
+                body = args[5]
+                tickets.append((body["upload_ticket"], [m["line_id"] for m in body["materials"]]))
+                if body["upload_ticket"] == "t1" and len(tickets) > 1:
+                    raise RuntimeError("control request failed with HTTP 409: replayed")
+                return {"ok": True, "accepted_line_ids": [m["line_id"] for m in body["materials"]]}
+
+            jobs = [{"ok": True, "upload_ticket": "t1", "line_ids": [1, 2, 3]}, {"ok": True, "upload_ticket": "t2", "line_ids": [2, 3]}]
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}),                     mock.patch.object(MODULE, "inventory_due", return_value=False),                     mock.patch.object(MODULE, "request_json_with_retries", side_effect=jobs),                     mock.patch.object(MODULE, "acquire_line", side_effect=lambda line_id, *a, **k: {"line_id": line_id}),                     mock.patch.object(MODULE, "request_json", side_effect=fake_request),                     mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                self.assertEqual(3, agent.run_cycle())
+            self.assertEqual([("t1", [1]), ("t1", [2]), ("t2", [2, 3])], tickets)
+
+    def test_review_material_is_uploaded_before_the_probe_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            order = []
+            uploader = MODULE.MaterialUploader(agent, "t")
+            with mock.patch.object(MODULE, "acquire_line", return_value={"line_id": 453, "relays": []}),                     mock.patch.object(MODULE, "request_json", side_effect=lambda *a, **k: order.append("upload") or {"ok": True, "accepted_line_ids": [453]}),                     mock.patch.object(Path, "is_file", return_value=True):
+                agent.run_review(41, 453, 600, advertised=[], target="198.51.100.1:443", uploader=uploader)
+            self.assertEqual(["upload"], order)
+            self.assertEqual({453}, uploader.accepted)
+
     def test_agent_hardens_existing_session_and_same_path_reauthentication(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -874,7 +934,7 @@ class UltraSourceSignatureTests(unittest.TestCase):
     def test_review_capacity_is_advertised_in_the_jobs_request(self):
         source = (ROOT / "source-agent" / "ultra_source_agent.py").read_text(encoding="utf-8")
         self.assertIn("reviews_capacity=", source, "the panel hands out no review to an agent that does not ask")
-        self.assertEqual("2026.09.13.1", MODULE.AGENT_VERSION)
+        self.assertEqual("2026.09.24.1", MODULE.AGENT_VERSION)
 
 
 class UltraSourceAgentReviewTests(unittest.TestCase):
@@ -1012,7 +1072,7 @@ class UltraSourceAgentReviewTests(unittest.TestCase):
             agent = self._agent(root)
             calls = []
 
-            def fake_run_review(review_id, line_id, seconds, advertised=None, target=""):
+            def fake_run_review(review_id, line_id, seconds, advertised=None, target="", uploader=None):
                 calls.append((review_id, line_id, seconds, advertised, target))
                 return {"review_id": review_id, "passed": False}
 

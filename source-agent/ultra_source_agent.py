@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.09.13.1"
+AGENT_VERSION = "2026.09.24.1"
 MAX_INVENTORY_BYTES = 256 * 1024
 INVENTORY_SCHEMA_VERSION = 3
 MAX_INVENTORY_RECORDS = 1024
@@ -994,6 +994,82 @@ def non_discriminating_review_detail(reason: str, target: str = "", relay: str =
     }
 
 
+class MaterialUploader:
+    """Uploads acquired line material to the panel one line at a time.
+
+    Acquiring a line invalidates the credential clients currently hold for it,
+    so every line is uploaded the moment it is acquired instead of in one
+    batch at the end of the cycle. A panel that still allows one upload per
+    ticket answers a second upload with 409; the remaining lines are then
+    sent in one batch under a fresh ticket from the jobs endpoint.
+    """
+
+    def __init__(self, agent: "SourceAgent", ticket: str):
+        self.agent = agent
+        self.ticket = ticket
+        self.per_line = True
+        self.pending: list[dict] = []
+        self.accepted: set[int] = set()
+
+    def _post(self, materials: list[dict]) -> dict:
+        return request_json(
+            self.agent.base_url,
+            self.agent.source_id,
+            self.agent.source_secret,
+            "POST",
+            "/api/ultra/source/materials",
+            {"upload_ticket": self.ticket, "materials": materials},
+            self.agent.timeout,
+        )
+
+    def _record(self, result: dict) -> None:
+        ids = result.get("accepted_line_ids", []) if isinstance(result, dict) else []
+        for line_id in ids if isinstance(ids, list) else []:
+            try:
+                self.accepted.add(int(line_id))
+            except (TypeError, ValueError):
+                continue
+
+    def upload(self, material: dict) -> None:
+        if not self.ticket:
+            return
+        if not self.per_line:
+            self.pending.append(material)
+            return
+        try:
+            self._record(self._post([material]))
+        except Exception as exc:  # noqa: BLE001
+            if "HTTP 409" in str(exc) and self.accepted:
+                logging.info("panel accepts one upload per ticket; batching the rest of this cycle")
+                self.per_line = False
+            else:
+                logging.warning("line %s material upload failed: %s", material.get("line_id"), exc)
+            self.pending.append(material)
+
+    def flush(self) -> None:
+        if not self.pending or not self.ticket:
+            return
+        materials, self.pending = self.pending, []
+        try:
+            if not self.per_line:
+                jobs = request_json_with_retries(
+                    self.agent.base_url,
+                    self.agent.source_id,
+                    self.agent.source_secret,
+                    "GET",
+                    "/api/ultra/source/jobs?reviews_capacity=0",
+                    None,
+                    self.agent.timeout,
+                    attempts=3,
+                )
+                self.ticket = str(jobs.get("upload_ticket", "") or "")
+                if not self.ticket:
+                    return
+            self._record(self._post(materials))
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("material upload of %s lines failed: %s", len(materials), exc)
+
+
 class SourceAgent:
     def __init__(self, config_path: Path):
         self.config = json.loads(config_path.read_text(encoding="utf-8-sig"))
@@ -1099,29 +1175,34 @@ class SourceAgent:
                 line_ids.append(line_id)
         line_ids = line_ids[: self.max_lines]
         if not line_ids:
-            self.process_reviews(reviews)
+            self.process_reviews(reviews, MaterialUploader(self, ticket))
             self.refresh_catalog()
             return 0
+        uploader = MaterialUploader(self, ticket)
+
         def acquire_requested(requested_ids: list[int] | None = None) -> tuple[list[dict], list[int]]:
             pending_ids = line_ids if requested_ids is None else requested_ids
             acquired: list[dict] = []
             failed: list[int] = []
             for line_id in pending_ids:
                 try:
-                    acquired.append(
-                        acquire_line(
-                            line_id,
-                            self.binary_path,
-                            self.lines_dir,
-                            self.state_dir / f"line-{line_id}.json.tmp",
-                            session_path=self.session_path,
-                            timeout=self.acquire_timeout,
-                            lifetime_seconds=self.material_lifetime,
-                        )
+                    material = acquire_line(
+                        line_id,
+                        self.binary_path,
+                        self.lines_dir,
+                        self.state_dir / f"line-{line_id}.json.tmp",
+                        session_path=self.session_path,
+                        timeout=self.acquire_timeout,
+                        lifetime_seconds=self.material_lifetime,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logging.warning("line %s acquisition failed: %s", line_id, exc)
                     failed.append(line_id)
+                    continue
+                acquired.append(material)
+                # The acquisition has just invalidated the credential clients
+                # hold for this line; hand the panel the new one right away.
+                uploader.upload(material)
             return acquired, failed
 
         materials, failed_line_ids = acquire_requested()
@@ -1134,21 +1215,12 @@ class SourceAgent:
             materials.extend(retried)
         if not materials:
             raise RuntimeError("no requested material could be acquired")
-        result = request_json(
-            self.base_url,
-            self.source_id,
-            self.source_secret,
-            "POST",
-            "/api/ultra/source/materials",
-            {"upload_ticket": ticket, "materials": materials},
-            self.timeout,
-        )
-        accepted = len(result.get("accepted_line_ids", [])) if isinstance(result.get("accepted_line_ids"), list) else 0
-        self.process_reviews(reviews)
+        uploader.flush()
+        self.process_reviews(reviews, uploader)
         self.refresh_catalog()
-        return accepted
+        return len(uploader.accepted)
 
-    def process_reviews(self, reviews: list[dict]) -> int:
+    def process_reviews(self, reviews: list[dict], uploader: "MaterialUploader | None" = None) -> int:
         """Run the reviews the panel asked for and report each outcome back.
 
         Reviews are serial and happen after the material work, so a long review
@@ -1172,6 +1244,7 @@ class SourceAgent:
                 seconds,
                 advertised=review.get("relays"),
                 target=str(review.get("target", "") or ""),
+                uploader=uploader,
             )
             try:
                 request_json(
@@ -1211,6 +1284,7 @@ class SourceAgent:
         seconds: int,
         advertised: object = None,
         target: str = "",
+        uploader: "MaterialUploader | None" = None,
     ) -> dict:
         """Acquire the line and probe the client's target through an advertised relay.
 
@@ -1245,6 +1319,11 @@ class SourceAgent:
                 "note": note,
                 "detail": non_discriminating_review_detail(note, target_text),
             }
+        # Acquiring the line for the review invalidated the credential clients
+        # hold for it; publish the fresh material before the probe window.
+        if uploader is not None:
+            uploader.upload(material)
+            uploader.flush()
         relays = material.get("relays") if isinstance(material.get("relays"), list) else []
         mandate = advertised_relay_ips(advertised)
         relay, reason = select_review_relay(relays, mandate)
