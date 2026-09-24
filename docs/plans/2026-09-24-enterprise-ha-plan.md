@@ -202,3 +202,14 @@ Disk space: 2.7 GB free (93% used). A build needs about 1.4 GB. The old `~/mac-b
   1. Minimum: acquire, upload and wake clients per line in one step, to shrink the gap to seconds.
   2. Proper: keep two independent provider sessions per line and hand clients both as HA candidates (the runtime already accepts up to 4). Re-acquisitions alternate, so a live credential always exists. This removes the online gap and gives offline survival of up to two re-acquisition intervals.
 - Whether option 2 needs a second LeiGod account depends on whether one account can hold two concurrent credentials for the same line.
+
+## Fix deployed: publish each re-acquired line credential immediately (commit 91a9d7c8)
+
+- **Decision (2026-09-24):** shrink the gap first; defer dual sessions.
+- **Panel:** `UltraMaterialService.php` and `UltraSourceController.php` deployed at about 11:12 +08.
+  - Backup and `rollback.sh` are in `/root/codex-backups/panel-per-line-upload-20260924/`.
+  - A ticket now admits several uploads, each line at most once. The jobs ticket also covers review lines.
+- **Source agent** 2026.09.24.1 on `10.10.10.171` (`/usr/local/bin/ultra-source-agent.py`, sha `cbc04361…`).
+  - The previous copy matched git `86c87831` exactly.
+  - Backup and `rollback.sh` are in `/root/codex-backups/source-agent-per-line-20260924/`.
+  - Each line is uploaded right after it is acquired. A review uploads its fresh material before the probe runs; previously review material was never uploaded, which left clients on a dead credential for up to ~20 min.
