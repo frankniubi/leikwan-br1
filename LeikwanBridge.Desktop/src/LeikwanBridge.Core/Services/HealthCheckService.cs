@@ -170,8 +170,19 @@ public sealed class HealthCheckService : IDisposable
                     _idleUltra.Remove(fid);
                 if (ShouldRestart(fid))
                 {
-                    Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
-                    RequestRestart(forward, "process_dead", force: true);
+                    // An Ultra runtime that never started (no applied state yet)
+                    // is waiting for its first policy and lease, not dead; say
+                    // so, since "restarting" sends operators after a crash.
+                    if (IsUltraForward(forward) && appliedState is null)
+                    {
+                        Log.Information("forward {ForwardId}: Ultra runtime not started yet, waiting for its first policy", fid);
+                        RequestRestart(forward, "awaiting_first_policy", force: true);
+                    }
+                    else
+                    {
+                        Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
+                        RequestRestart(forward, "process_dead", force: true);
+                    }
                 }
                 continue;
             }
