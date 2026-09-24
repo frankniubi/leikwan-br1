@@ -2,10 +2,10 @@
  "android_client_apk": {
   "artifact_url": "/artifacts/leikwan-android-client.apk",
   "path": "artifacts/android/leikwan-android-client.apk",
-  "sha256": "f72912d52fa9f3709d74988ac654d22bd4838bbd0c748f8996fc1afb5d3bf182",
-  "size_bytes": 90579291,
-  "version": "0.2.33",
-  "version_code": 35
+  "sha256": "8d536eb4d804fd44e651322edb4e1613ac774ceab9f585a320493850d755cd29",
+  "size_bytes": 91111771,
+  "version": "0.2.34",
+  "version_code": 36
  },
  "bond_sidecar_installer": {
   "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -51,7 +51,7 @@
   "artifact_url": "/artifacts/install-client-agent-linux-arm64",
   "format": "binary",
   "path": "artifacts/install-client-agent-linux-arm64",
-  "sha256": "49a6ba70eeb599cf19222f57f60240a47fdcd759d1a8484e8d35157f7d35a782",
+  "sha256": "063353e1a5ee46e213679cb48114788dd92ee1bea4368db4617751c1afb370c5",
   "size_bytes": 32374910,
   "version": "2026.09.24.3"
  },
@@ -306,9 +306,9 @@
    "bin/ultra-client": "a02191fbd33910b6e611e13f77f1891ddcefc0319903450aa28cd896f667066f",
    "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
   },
-  "sha256": "1c55e02442c2fb46d4387901e995ba8cfb5ce8d751bb6535258e8bb66f8cba03",
-  "size_bytes": 74201725,
-  "version": "1.0.50",
+  "sha256": "2de9faa9cf47ea054cbbd1d832b59abc93ef018ca70ab8a3ada81617aea73301",
+  "size_bytes": 74202116,
+  "version": "1.0.51",
   "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
  },
  "macos_client_app_x64": {
@@ -329,9 +329,9 @@
    "bin/ultra-client": "df2f9604c2ac358df55eb96c18f8a3050ffbd9cbfff7eb7ded068a24a02ba43a",
    "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
   },
-  "sha256": "bf876ee8938be16069f2734513e67df51151e2984dfdfb458216bc5a9aaf2a9c",
-  "size_bytes": 78843606,
-  "version": "1.0.50",
+  "sha256": "000f65ab301a36f578fb5142b3a85ddbf27400974db128fa03e5e01ad8cf5bb2",
+  "size_bytes": 78843754,
+  "version": "1.0.51",
   "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
  },
  "macos_client_update_arm64": {
@@ -352,9 +352,9 @@
    "bin/ultra-client": "a02191fbd33910b6e611e13f77f1891ddcefc0319903450aa28cd896f667066f",
    "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
   },
-  "sha256": "f8e85bd34d56c870db7e1c7cfd34dc78dbbf0a357c3cdd7b2b1a04b65650770f",
-  "size_bytes": 65965952,
-  "version": "1.0.50",
+  "sha256": "a156d77c11d9062676ce6b9f5dd2139ecaf7ff889179bf511ccb6b88f19ae778",
+  "size_bytes": 65966174,
+  "version": "1.0.51",
   "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
  },
  "macos_client_update_x64": {
@@ -375,17 +375,17 @@
    "bin/ultra-client": "df2f9604c2ac358df55eb96c18f8a3050ffbd9cbfff7eb7ded068a24a02ba43a",
    "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
   },
-  "sha256": "d2212d93e94f90ee0d1ef101a13d133af7812c665604880c75250ff7a8ecfbb1",
-  "size_bytes": 70030234,
-  "version": "1.0.50",
+  "sha256": "427403b2854c9862131cacffa5e0e918efa78be85393d33574bc45df1b568478",
+  "size_bytes": 70030497,
+  "version": "1.0.51",
   "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
  },
  "macos_headless_installer": {
   "install_url": "/artifacts/install-macos-headless.sh",
   "path": "install/install-macos-headless.sh",
-  "sha256": "d9c85f67b9ef5b15008e284a5cd13898f8635024444748b5458f39f0883f999e",
+  "sha256": "b70693b08fb49d40a8c67e5dc4ec3d8e0d0462faf623254f28adcd7e33529ab2",
   "size_bytes": 20601,
-  "version": "1.0.50",
+  "version": "1.0.51",
   "artifact_url": "/artifacts/install-macos-headless.sh"
  },
  "macos_headless_uninstaller": {
@@ -393,7 +393,7 @@
   "path": "install/uninstall-macos-headless.sh",
   "sha256": "8afbdf619d3ecde9d48f242d59c4c05c3c48865230d5e9fd6152ff5cac25ba10",
   "size_bytes": 1236,
-  "version": "1.0.50",
+  "version": "1.0.51",
   "artifact_url": "/artifacts/uninstall-macos-headless.sh"
  },
  "mptcp_client_runtime": {
@@ -527,8 +527,8 @@
  "ultra_client_runtime": {
   "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "b6cafab33f345b5216dfa3e55419d43d21bd8dfd8a67e3731444fd54902fed4e"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "e96e77a1b03e76cce7360ae1f6ab99c6783ee52faa071fb662517ba2c23eefb1"
   },
   "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "hardening": [
@@ -538,10 +538,10 @@
   ],
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "b6cafab33f345b5216dfa3e55419d43d21bd8dfd8a67e3731444fd54902fed4e",
+  "sha256": "e96e77a1b03e76cce7360ae1f6ab99c6783ee52faa071fb662517ba2c23eefb1",
   "size_bytes": 7164030,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e",
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1",
   "build_provenance": {
    "source_commit": "906efe97",
    "compiler": "go",
@@ -553,10 +553,10 @@
   "architecture": "arm64",
   "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "13401e61903557aea7de851d0bd1c09ce0e1ce7cad65252153c71c81dfb42680"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "ea3b7b15b79d9dd0598f66a793b2b0ce4c563b010065329e39ba2a1ac6aaf7e1"
   },
-  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.24.4",
+  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.25.1",
   "hardening": [
    "cgo-disabled",
    "pie",
@@ -570,19 +570,19 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_android_arm64",
-  "sha256": "13401e61903557aea7de851d0bd1c09ce0e1ce7cad65252153c71c81dfb42680",
-  "size_bytes": 15401220,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e"
+  "sha256": "ea3b7b15b79d9dd0598f66a793b2b0ce4c563b010065329e39ba2a1ac6aaf7e1",
+  "size_bytes": 15663364,
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1"
  },
  "ultra_client_runtime_android_x86_64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "de988438bc3bd83b35a2040aca450a4a31f00894d74fc1def77224bc52b99867"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "c4bb737686953abe2e087f9e5d2fde4d6551a802eb4ac9c7d13df470e85fbf18"
   },
-  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.24.4",
+  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.25.1",
   "hardening": [
    "pie",
    "relro",
@@ -597,17 +597,17 @@
   "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_android_x86_64",
-  "sha256": "de988438bc3bd83b35a2040aca450a4a31f00894d74fc1def77224bc52b99867",
-  "size_bytes": 17121056,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e"
+  "sha256": "c4bb737686953abe2e087f9e5d2fde4d6551a802eb4ac9c7d13df470e85fbf18",
+  "size_bytes": 17443008,
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1"
  },
  "ultra_client_runtime_linux_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "cff51b926dedb52b04aa54dac6ed2be26b6ad81e3e104653ac8f3b569afd6d8f"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "79495ce4373b0c23b4d244a08effd84c8a759539fc6382d24e60fc55c7c9d104"
   },
   "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "hardening": [
@@ -617,10 +617,10 @@
   ],
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_linux_arm64",
-  "sha256": "cff51b926dedb52b04aa54dac6ed2be26b6ad81e3e104653ac8f3b569afd6d8f",
+  "sha256": "79495ce4373b0c23b4d244a08effd84c8a759539fc6382d24e60fc55c7c9d104",
   "size_bytes": 6619262,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e",
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1",
   "build_provenance": {
    "source_commit": "906efe97",
    "compiler": "go",
@@ -632,16 +632,16 @@
   "architecture": "arm64",
   "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "efeb43d584e626e89a936c7f42a01dd0349443f4d146afadf49144713977d33c"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "aedc18f730859d02abf60e4fa57b08f06356077e24dd1468a83babf62a58f7bf"
   },
   "build": "Go, CGO disabled, trimpath, stripped, enterprise UoT 2026.09.19.1",
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_macos_arm64",
-  "sha256": "efeb43d584e626e89a936c7f42a01dd0349443f4d146afadf49144713977d33c",
+  "sha256": "aedc18f730859d02abf60e4fa57b08f06356077e24dd1468a83babf62a58f7bf",
   "size_bytes": 6722464,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e",
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1",
   "hardening": [
    "cgo-disabled",
    "trimpath",
@@ -658,16 +658,16 @@
   "architecture": "x86_64",
   "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "a64d0d3382ed8f855f2953143abad4c4d3492beada0d9ab3584c20c222e5838e"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "a24afa13dd35fd4ceb19e64bd06340d2905780c8d9d6682f0d983c353e1f7480"
   },
   "build": "Go, CGO disabled, trimpath, stripped, enterprise UoT 2026.09.19.1",
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_macos_amd64",
-  "sha256": "a64d0d3382ed8f855f2953143abad4c4d3492beada0d9ab3584c20c222e5838e",
+  "sha256": "a24afa13dd35fd4ceb19e64bd06340d2905780c8d9d6682f0d983c353e1f7480",
   "size_bytes": 7381392,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e",
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1",
   "hardening": [
    "cgo-disabled",
    "trimpath",
@@ -683,16 +683,16 @@
  "ultra_client_runtime_windows": {
   "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
   "attestation": {
-   "fingerprint": "2026.09.24.4.64fc750e",
-   "self_sha256": "a7d7da61194bd7e8b65ca024abbaf3d312e7ac86ec463f29b2bcfe9ea9172175"
+   "fingerprint": "2026.09.25.1.c10e11f1",
+   "self_sha256": "63dda7a7e32bf12a902beb6871b5ddf852b6927426c6431d93f896b8cfa4b684"
   },
   "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
   "obfuscator": "none",
   "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-  "sha256": "a7d7da61194bd7e8b65ca024abbaf3d312e7ac86ec463f29b2bcfe9ea9172175",
+  "sha256": "63dda7a7e32bf12a902beb6871b5ddf852b6927426c6431d93f896b8cfa4b684",
   "size_bytes": 7443456,
-  "version": "2026.09.24.4",
-  "runtime_build_version": "2026.09.24.4.64fc750e",
+  "version": "2026.09.25.1",
+  "runtime_build_version": "2026.09.25.1.c10e11f1",
   "hardening": [
    "cgo-disabled",
    "trimpath",
@@ -752,9 +752,9 @@
    "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
    "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
   },
-  "sha256": "4f9912c534c1c7a5c12345038b654329d8bb45ae20af0b4edcf930b0a555c4e9",
-  "size_bytes": 69769097,
-  "version": "0.1.20.57"
+  "sha256": "8ba057b080b2c506b2588247e5fbf1f4bfb1e8abbc84f45ee5bedc898ff303cf",
+  "size_bytes": 69773572,
+  "version": "0.1.20.58"
  },
  "windows_headless_client": {
   "architecture": "x86_64",
@@ -762,9 +762,9 @@
   "format": "zip",
   "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
   "platform": "windows",
-  "sha256": "7f07bb930192162cd6d30b411fd5cfa78019e47dceb01856c4adff0ad22d252f",
-  "size_bytes": 63728888,
-  "version": "0.1.20.57",
+  "sha256": "6781997730059d26e623af86713778b2157200dc970497eb19121695e3ad9ebc",
+  "size_bytes": 63729331,
+  "version": "0.1.20.58",
   "runtime_sha256": {
    "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
    "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -777,9 +777,9 @@
  "windows_headless_installer": {
   "install_url": "/artifacts/install-windows-headless.ps1",
   "path": "install/install-windows-headless.ps1",
-  "sha256": "d373a0646512cb82f7551797618430d81bdbe5c871eff1d4b3ec9655a9454c8d",
+  "sha256": "436597d8556c717844f8326844b8168fcd8d60c81fd549da21aba14e9507abcc",
   "size_bytes": 16815,
-  "version": "0.1.20.57",
+  "version": "0.1.20.58",
   "artifact_url": "/artifacts/install-windows-headless.ps1"
  },
  "windows_headless_uninstaller": {
@@ -787,7 +787,7 @@
   "path": "install/uninstall-windows-headless.ps1",
   "sha256": "79f2cabf046bb908fd61713dc48cd28cac4e40c0ac313fd940775bdcf058d178",
   "size_bytes": 2630,
-  "version": "0.1.20.57",
+  "version": "0.1.20.58",
   "artifact_url": "/artifacts/uninstall-windows-headless.ps1"
  },
  "windows_update_helper": {
