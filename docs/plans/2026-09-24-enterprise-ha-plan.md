@@ -226,3 +226,29 @@ Disk space: 2.7 GB free (93% used). A build needs about 1.4 GB. The old `~/mac-b
 | Ultra runtime Linux amd64 / Windows | 2026.09.24.2.5462fcaf | `1c1e88c8…` / `77d2aa44…` |
 
 Installed on the test hosts: Linux (agent + runtime, updater hold), Windows 0.1.20.55 (upgraded over 0.1.20.54 by the new installer in 31 s), and macOS 1.0.48 (launchd daemon).
+
+## Acceptance matrix on the final candidate (2026-09-24, 180 s, 10+10 Mbps, 4+4 streams, serial)
+
+Raw data is in `tmp/matrix-20260924/`.
+
+- 23 of 33 cells pass; 8 of 11 directions pass on all three platforms. On 09-21 it was 1 of 11.
+  - 47, 48, 52, 53 and 54 went from fail or blocked to pass on every platform.
+  - No crash, restart or listener churn in the candidate.
+- Failures:
+  - **49 PEK→FRA and 50 PEK→MOS, TCP, all platforms:** cold-send stall. Fixed by the pilot, see below.
+  - **56 HKG→mainland, all platforms:** its only provider line is broken (probe timeouts, the relay stops reading, UoT hello fails). The same target passes from 46 and 51. This is a provider/line issue, not a client one.
+  - **55 SHA→LAX, Windows UDP:** 13.9 % loss from External-UoT queue timeouts under carrier backpressure. Linux and macOS on the same carrier: 0 %. This is a runtime fix, in progress.
+- Candidate defects found and being fixed:
+  - A dead relay stream (write stall) is not scored, so there is no failover.
+  - A stuck stream is not torn down after the local client closes.
+  - The Windows UoT queue drops packets.
+  - The desktop hosts logged `process_dead` for runtimes that were only waiting for a policy (fixed in `e04c8187`).
+- Time to listener:
+  - Warm lines: macOS/Windows 2–10 s, Linux 30–45 s (poll interval). SHA→TYO was 3.6 / 5.1 / 34.5 s.
+  - Cold lines wait for on-demand material, which added 29–211 s.
+- **First-flight pilot A/B** (armed 06:47 UTC for target `157.228.138.23:62102` only, with 4 FRA and 4 MOS TCP candidates):
+  - 49 and 50 go from 6/6 TCP FAIL to 6/6 PASS: 9.99–10.00 Mbps, 0 idle windows, 0 stalls, ~1 MB of target replies.
+  - On the same candidate `d414cb74`, replies went from 0–14 B to about 1.07 MB.
+  - Linux and Windows logged `tcp first-flight compatibility` once per stream. macOS gets the config over stdin, so the evidence there is behavioural.
+  - UDP was clean in both arms.
+  - Next: decide whether to widen the target allowlist. The evidence so far is one target reached through two directions.
