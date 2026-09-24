@@ -241,7 +241,7 @@ foreach ([
     'provider = VALUES(provider)',
     'dispatch_class = VALUES(dispatch_class)',
     "'ul.isp = :isp'",
-    "'ul.dispatch_class = :dispatch_class'",
+    "'COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = :dispatch_class'",
     "'direction_class' => self::deriveDirection(",
     "WHEN ultra_lines.direction_class = \'unknown\' THEN VALUES(direction_class)",
 ] as $needle) {

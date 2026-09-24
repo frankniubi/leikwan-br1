@@ -373,7 +373,7 @@ final class UltraInventoryService
         }
         $dispatchFilter = self::normalizeEnum($filters['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
         if ($dispatchFilter !== 'unknown' && $dispatchFilter !== '') {
-            $where[] = 'ul.dispatch_class = :dispatch_class';
+            $where[] = 'COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = :dispatch_class';
             $params['dispatch_class'] = $dispatchFilter;
         }
         $ispFilter = self::normalizeIsp($filters['isp'] ?? null);
@@ -398,6 +398,7 @@ final class UltraInventoryService
         $materialRequired = self::materialRequiredSql();
         return $this->db->fetchAll(
             'SELECT ul.*,
+                    COALESCE(ul.admin_dispatch_class, ul.dispatch_class) AS dispatch_class,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone,
                     CASE WHEN ' . $materialRequired . ' THEN 1 ELSE 0 END AS material_required

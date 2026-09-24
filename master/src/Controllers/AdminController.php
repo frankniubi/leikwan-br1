@@ -3373,7 +3373,11 @@ final class AdminController extends BaseController
                 $carrierCell = $this->escape($carrierLabel)
                     . ($providerLabel !== '' ? '<br><span class="muted">' . $this->escape($providerLabel) . '</span>' : '')
                     . ($inLineType !== null ? '<br><span class="muted">in_type: ' . (int) $inLineType . '</span>' : '')
-                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '');
+                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '')
+                    . (trim((string) ($line['admin_dispatch_class'] ?? '')) !== ''
+                        ? '<br><span class="muted" title="' . $this->escape((string) ($line['admin_dispatch_note'] ?? '')) . '">operator: '
+                            . $this->escape((string) $line['admin_dispatch_class']) . '</span>'
+                        : '');
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
                     . '<td>' . $carrierCell . '</td>'

@@ -1335,6 +1335,8 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     isp VARCHAR(32) NOT NULL DEFAULT 'unknown',
     provider VARCHAR(64) NULL,
     dispatch_class VARCHAR(16) NOT NULL DEFAULT 'normal',
+    admin_dispatch_class VARCHAR(16) NULL DEFAULT NULL,
+    admin_dispatch_note VARCHAR(255) NULL DEFAULT NULL,
     discovery_ip VARCHAR(64) NULL,
     catalog_ingress_label VARCHAR(191) NULL,
     catalog_destination_label VARCHAR(191) NULL,

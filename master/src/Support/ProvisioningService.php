@@ -4385,7 +4385,7 @@ final class ProvisioningService
                     ul.route_class,
                     ul.pricing_class,
                     ul.pricing_evidence,
-                    ul.dispatch_class,
+                    COALESCE(ul.admin_dispatch_class, ul.dispatch_class) AS dispatch_class,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS destination_zone
              FROM forwards f
@@ -4406,7 +4406,7 @@ final class ProvisioningService
                AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
                ' . ($requireFreshMaterial ? 'AND ul.last_material_expires_at > UTC_TIMESTAMP()' : '') . '
              ORDER BY f.id ASC, us.priority ASC,
-                      CASE WHEN ul.dispatch_class = \'low\' THEN 1 ELSE 0 END ASC,
+                      CASE WHEN COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = \'low\' THEN 1 ELSE 0 END ASC,
                       CASE WHEN ul.pricing_class IN (\'paid\', \'mixed\') THEN 0 WHEN ul.pricing_class = \'unknown\' THEN 1 ELSE 2 END ASC,
                       fcul.sort_order ASC, fcul.id ASC',
             $params + ['ultra_backend_mode' => UltraMode::BACKEND_MODE]
