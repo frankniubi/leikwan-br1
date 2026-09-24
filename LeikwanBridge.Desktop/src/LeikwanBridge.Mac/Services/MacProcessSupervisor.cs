@@ -24,7 +24,7 @@ namespace LeikwanBridge.Mac.Services;
 /// crash) are reaped on the next start by <see cref="MacOrphanRuntimeReaper"/>.
 /// </para>
 /// </summary>
-public sealed class MacProcessSupervisor : IProcessSupervisor
+public sealed class MacProcessSupervisor : IProcessSupervisor, IUltraRuntimeFailureSource
 {
     public const int SigKill = 9;
     public const int SigTerm = 15;
@@ -60,6 +60,9 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
     }
 
     public event Action<int, string>? ProcessExited;
+
+    /// <inheritdoc />
+    public event Action<int, string>? UltraCredentialSuspect;
 
     public Process StartProcess(
         int forwardId,
@@ -110,7 +113,7 @@ public sealed class MacProcessSupervisor : IProcessSupervisor
                 // connection telemetry. Health/exit handling owns failures.
                 Log.Debug("[fwd-{ForwardId}/{Role}] stderr: {Line}", forwardId, role, eventArgs.Data);
                 if (role == UltraRuntimeFailureLog.RuntimeRole)
-                    ProcessSupervisor.ObserveUltraRuntimeFailure(_ultraFailures, forwardId, eventArgs.Data);
+                    ProcessSupervisor.ObserveUltraRuntimeLine(_ultraFailures, forwardId, eventArgs.Data, UltraCredentialSuspect);
                 _onOutput?.Invoke(forwardId, label, $"[stderr] {eventArgs.Data}");
             };
             process.Exited += (_, _) =>

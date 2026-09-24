@@ -235,6 +235,148 @@ class OrdinaryUltraRenewalTest {
         orchestrator.stop()
     }
 
+    @Test
+    fun `credential-suspect runtime failures renew the lease once per burst without a restart`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-ultra-failure-renewal-prefs", Context.MODE_PRIVATE))
+        val deviceId = "android-client-ultra-failure-test"
+        prefs.clientId = 7L
+        prefs.agentToken = "test-agent-token"
+        prefs.enrolledDeviceId = deviceId
+        prefs.deviceSessionToken = "test-device-session"
+        prefs.deviceSessionExpiresAtMs = System.currentTimeMillis() + 300_000L
+
+        val now = java.time.Instant.now()
+        val target = "origin.example:443"
+        val generation = "a".repeat(64)
+        val digest = com.leikwan.bridge.runtime.UltraPolicy.targetDigest(target)
+        // renew_after is minutes away: only the failure signal can make a renewal due.
+        val forward = JsonParser.parseString(
+            """
+            {
+              "forward_id":90, "service_name":"Ultra service", "target":"$target", "listen_port":11090,
+              "mode":"ultra", "backend_mode":"ultra", "client_mode":"ultra", "transport":"tcp",
+              "service_status":"active", "endpoint_mode":"managed", "endpoints":[],
+              "ultra_access":{
+                "protocol":"leikwan-ultra-policy-v2", "forward_id":90, "session_ticket":"ticket-90",
+                "policy_generation":"$generation", "issued_at":"${now.minusSeconds(20)}",
+                "renew_after":"${now.plusSeconds(600)}", "expires_at":"${now.plusSeconds(1500)}",
+                "service_state":"active", "transport":"tcp", "rate_limit_mbps":20,
+                "quota_remaining_bytes":1048576, "target_digest":"$digest"
+              }
+            }
+            """.trimIndent(),
+        )
+        val lease = JsonParser.parseString(
+            """
+            {
+              "protocol":"leikwan-ultra-policy-v2", "forward_id":90, "session_ticket":"ticket-90",
+              "policy_generation":"$generation", "lease_id":"ul2_test_lease_1234567890",
+              "expires_at":"${now.plusSeconds(1500)}", "transport":"tcp", "rate_limit_mbps":20,
+              "quota_remaining_bytes":1048576, "selection_ref":"selection_ref_1234567890",
+              "target_digest":"$digest", "nonce_hash":"${"b".repeat(64)}",
+              "endpoint":{"ip":"203.0.113.90","port":5438},
+              "credential":{"user":"line-user","password":"line-password"},
+              "direct_ip_cidrs":["203.0.113.90/32"]
+            }
+            """.trimIndent(),
+        ).asJsonObject
+        val panelApi = FakePanelApi(
+            forwards = listOf(forward),
+            ultraLeaseResponse = Response.success(
+                com.leikwan.bridge.api.UltraLeaseResponse(ok = true, leases = listOf(lease)),
+            ),
+        )
+        val panelRepo = PanelRepository(
+            context = context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            deviceIdProvider = { deviceId },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+        )
+        val processRunner = RecordingProcessRunner()
+        var leaseInjections = 0
+        var clock = now
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            panelRepoFactory = { panelRepo },
+            binaryInstallerFactory = {
+                RecordingBinaryInstaller(
+                    context,
+                    RuntimeBinaryPaths(
+                        wstunnelBinary = "/runtime/wstunnel",
+                        ingressBinary = "/runtime/leikwan-ingress",
+                        bondBinary = "/runtime/leikwan-bond",
+                        ultraBinary = "/runtime/ultra-client",
+                    ),
+                )
+            },
+            processRunnerFactory = { processRunner },
+            ultraLeaseSender = { _, _, _ ->
+                leaseInjections += 1
+                true
+            },
+            vpnServiceStarter = { _ -> },
+            vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
+            ultraFailureClock = { clock },
+        )
+
+        orchestrator.startForForward(90L)
+        assertEquals(1, panelApi.resolveUltraLeaseCalls)
+        assertEquals(1, leaseInjections)
+        val stopsAfterStart = processRunner.stopAllCalls
+
+        // Not due and no failure: no renewal.
+        orchestrator.refreshUltraForTest()
+        assertEquals(1, panelApi.resolveUltraLeaseCalls)
+
+        // Ordinary telemetry and local-side closes do not renew.
+        processRunner.publishRuntimeLine(90L, "[ultra-client] 2026/09/24 17:02:22 tcp stream ended forward_id=90 direction=upstream stage=local_read reason=reset generation=g")
+        processRunner.publishRuntimeLine(90L, "[ultra-client] 2026/09/24 17:02:22 active candidate forwarding test succeeded protocol=tcp forward_id=90")
+        orchestrator.refreshUltraForTest()
+        assertEquals(1, panelApi.resolveUltraLeaseCalls)
+
+        // A line re-acquisition: every stream is aborted by the relay at once -> one renewal.
+        repeat(40) {
+            processRunner.publishRuntimeLine(
+                90L,
+                "[ultra-client] 2026/09/24 17:02:22 tcp stream ended forward_id=90 direction=upstream stage=remote_write reason=aborted generation=g",
+            )
+        }
+        orchestrator.refreshUltraForTest()
+        assertEquals(2, panelApi.resolveUltraLeaseCalls)
+        assertEquals(2, leaseInjections)
+        assertEquals("renewal is injected in place", 1, processRunner.started.size)
+        assertEquals(stopsAfterStart, processRunner.stopAllCalls)
+        orchestrator.refreshUltraForTest()
+        assertEquals("the signal is consumed by one renewal", 2, panelApi.resolveUltraLeaseCalls)
+
+        // More failures inside the 20 s window: no second renewal.
+        clock = now.plusSeconds(10)
+        processRunner.publishRuntimeLine(90L, "[ultra-client] 2026/09/24 17:02:32 tcp stream setup failed forward_id=90: provider handshake failed")
+        orchestrator.refreshUltraForTest()
+        assertEquals(2, panelApi.resolveUltraLeaseCalls)
+
+        // Still failing after the window (the first renewal raced the upload): renew again.
+        clock = now.plusSeconds(21)
+        processRunner.publishRuntimeLine(90L, "[ultra-client] 2026/09/24 17:02:43 external UoT carrier reconnect forward_id=90 elapsed=1s reconnects=2 drops=16 reason=EOF")
+        orchestrator.refreshUltraForTest()
+        assertEquals(3, panelApi.resolveUltraLeaseCalls)
+        assertEquals(1, processRunner.started.size)
+
+        orchestrator.stop()
+    }
+
     private class RecordingProcessRunner(
         private val failForProcessKeys: Set<Long> = emptySet(),
     ) : ProcessRunner() {

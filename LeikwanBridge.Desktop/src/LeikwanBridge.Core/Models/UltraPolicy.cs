@@ -92,17 +92,16 @@ public sealed class UltraTCPFirstFlight
             .Distinct(StringComparer.Ordinal)
             .Take(MaxCandidateHashes)
             .ToArray();
-        var eligibleLeases = leases
-            .Where(item => candidateHashes.Contains(item.CandidateKeyHash, StringComparer.Ordinal))
-            .ToArray();
-        if (eligibleLeases.Length == 0)
-            return null;
-        var effectiveExpiry = eligibleLeases.Min(item => item.ExpiresAt);
-        if (ExpiresAt < effectiveExpiry)
-            effectiveExpiry = ExpiresAt;
+        // The leases the runtime starts with do not have to be on the list.
+        // The payload is bootstrap-only and lives for the runtime's lifetime,
+        // so gating it on the first leases (or bounding its expiry by them)
+        // lost the pilot for good whenever the runtime happened to start on
+        // another line and later rotated onto a listed one. The runtime only
+        // applies it to streams whose authenticated candidate is listed.
+        // Expiry is checked here, at issue time, like on Android.
         if (!string.Equals(Target, forward.Target, StringComparison.Ordinal)
             || !string.Equals(PolicyGeneration, lease.PolicyGeneration, StringComparison.Ordinal)
-            || effectiveExpiry <= DateTimeOffset.UtcNow
+            || ExpiresAt <= DateTimeOffset.UtcNow
             || PrefixBytes is < 1 or > 16
             || DelayMillis is < 1 or > 1000
             || candidateHashes.Length is < 1 or > MaxCandidateHashes)
@@ -112,7 +111,7 @@ public sealed class UltraTCPFirstFlight
             target = Target,
             policy_generation = PolicyGeneration,
             candidate_hashes = candidateHashes,
-            expires_at = effectiveExpiry.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            expires_at = ExpiresAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
             prefix_bytes = PrefixBytes,
             delay_ms = DelayMillis,
         };

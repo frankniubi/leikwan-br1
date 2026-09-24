@@ -6,39 +6,75 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class UltraPolicyTests
 {
     [Fact]
-    public void TCPFirstFlight_IsRestrictedToTheAuthorizedCandidateAndCurrentScope()
+    public void TCPFirstFlight_IsRestrictedToTheCurrentScope()
     {
         var candidate = new string('b', 64);
-        var grant = new UltraTCPFirstFlight
-        {
-            Target = "198.51.100.10:443",
-            PolicyGeneration = new string('a', 64),
-            CandidateHashes = [candidate],
-            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(1),
-            PrefixBytes = 4,
-            DelayMillis = 300,
-        };
-        var lease = new UltraLease
-        {
-            ForwardId = 42,
-            PolicyGeneration = grant.PolicyGeneration,
-            CandidateKeyHash = candidate,
-            ExpiresAt = grant.ExpiresAt,
-        };
+        var grant = CreateFirstFlight([candidate], DateTimeOffset.UtcNow.AddMinutes(1));
+        var lease = CreateLease(grant, candidate);
         var forward = CreateForward();
         Assert.NotNull(grant.ToBootstrapPayload(forward, [lease]));
-        lease.CandidateKeyHash = new string('c', 64);
-        Assert.Null(grant.ToBootstrapPayload(forward, [lease]));
-        lease.CandidateKeyHash = candidate;
-        var wrongGeneration = new UltraLease
+
+        var wrongGeneration = CreateLease(grant, candidate, policyGeneration: new string('d', 64));
+        Assert.Null(grant.ToBootstrapPayload(forward, [wrongGeneration]));
+
+        Assert.Null(CreateFirstFlight([candidate], DateTimeOffset.UtcNow.AddSeconds(-1)).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([candidate], grant.ExpiresAt, target: "198.51.100.11:443").ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([candidate], grant.ExpiresAt, prefixBytes: 0).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([candidate], grant.ExpiresAt, prefixBytes: 17).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([candidate], grant.ExpiresAt, delayMillis: 0).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([candidate], grant.ExpiresAt, delayMillis: 1001).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight([], grant.ExpiresAt).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(CreateFirstFlight(["not-a-hash", new string('B', 64)], grant.ExpiresAt).ToBootstrapPayload(forward, [lease]));
+        Assert.Null(grant.ToBootstrapPayload(forward, []));
+    }
+
+    [Fact]
+    public void TCPFirstFlight_IsEmittedWhenTheStartingLeaseIsOnAnotherLine()
+    {
+        // The runtime matches each stream's authenticated candidate against the
+        // list. A runtime that starts on an unlisted line and later rotates onto
+        // a listed one must still carry the pilot (macOS PEK->FRA, 2026-09-24).
+        var listed = new string('b', 64);
+        var grant = CreateFirstFlight([listed], DateTimeOffset.UtcNow.AddMinutes(20));
+        var unlisted = CreateLease(grant, new string('c', 64), expiresAt: DateTimeOffset.UtcNow.AddMinutes(4));
+
+        var payload = grant.ToBootstrapPayload(CreateForward(), [unlisted]);
+
+        Assert.NotNull(payload);
+        var emitted = (string[])payload!.GetType().GetProperty("candidate_hashes")!.GetValue(payload)!;
+        Assert.Equal([listed], emitted);
+        // Bootstrap-only and runtime-lifetime: the grant's own expiry, not the
+        // (shorter, rotating) lease expiry.
+        var expiresAt = (string)payload.GetType().GetProperty("expires_at")!.GetValue(payload)!;
+        Assert.Equal(grant.ExpiresAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), expiresAt);
+    }
+
+    private static UltraTCPFirstFlight CreateFirstFlight(
+        List<string> hashes,
+        DateTimeOffset expiresAt,
+        string target = "198.51.100.10:443",
+        int prefixBytes = 4,
+        int delayMillis = 300) => new()
+        {
+            Target = target,
+            PolicyGeneration = new string('a', 64),
+            CandidateHashes = hashes,
+            ExpiresAt = expiresAt,
+            PrefixBytes = prefixBytes,
+            DelayMillis = delayMillis,
+        };
+
+    private static UltraLease CreateLease(
+        UltraTCPFirstFlight grant,
+        string candidateKeyHash,
+        string? policyGeneration = null,
+        DateTimeOffset? expiresAt = null) => new()
         {
             ForwardId = 42,
-            PolicyGeneration = new string('d', 64),
-            CandidateKeyHash = candidate,
-            ExpiresAt = grant.ExpiresAt,
+            PolicyGeneration = policyGeneration ?? grant.PolicyGeneration,
+            CandidateKeyHash = candidateKeyHash,
+            ExpiresAt = expiresAt ?? grant.ExpiresAt,
         };
-        Assert.Null(grant.ToBootstrapPayload(forward, [wrongGeneration]));
-    }
 
     [Fact]
     public void TCPFirstFlight_KeepsEveryDirectionCandidateBeyondFour()

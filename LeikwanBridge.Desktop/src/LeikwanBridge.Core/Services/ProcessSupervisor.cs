@@ -7,7 +7,7 @@ using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
-public class ProcessSupervisor : IProcessSupervisor
+public class ProcessSupervisor : IProcessSupervisor, IUltraRuntimeFailureSource
 {
     public record ManagedProcess(
         int ForwardId,
@@ -23,6 +23,9 @@ public class ProcessSupervisor : IProcessSupervisor
     private bool _disposed;
 
     public event Action<int, string>? ProcessExited;
+
+    /// <inheritdoc />
+    public event Action<int, string>? UltraCredentialSuspect;
 
     public ProcessSupervisor(Action<int, string, string>? onOutput = null)
     {
@@ -88,7 +91,7 @@ public class ProcessSupervisor : IProcessSupervisor
                     // candidate/setup failures) must survive the default log
                     // level; rate-limited and address-redacted.
                     if (role == UltraRuntimeFailureLog.RuntimeRole)
-                        ObserveUltraRuntimeFailure(_ultraFailures, forwardId, e.Data);
+                        ObserveUltraRuntimeStderr(forwardId, e.Data);
                     _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
                 }
             };
@@ -203,14 +206,43 @@ public class ProcessSupervisor : IProcessSupervisor
             .ToList();
     }
 
+    /// <summary>Handles one Ultra runtime stderr line (failure log + credential-suspect event).</summary>
+    protected void ObserveUltraRuntimeStderr(int forwardId, string line)
+        => ObserveUltraRuntimeLine(_ultraFailures, forwardId, line, UltraCredentialSuspect);
+
     protected void RaiseProcessExited(int forwardId, string role)
     {
         ProcessExited?.Invoke(forwardId, role);
     }
 
-    public static void ObserveUltraRuntimeFailure(UltraRuntimeFailureLog failures, int forwardId, string line)
+    /// <summary>
+    /// Logs a runtime failure line (rate-limited) and raises
+    /// <paramref name="credentialSuspect"/> for every line that suggests a dead
+    /// provider credential. Shared by the Windows and macOS supervisors.
+    /// </summary>
+    public static void ObserveUltraRuntimeLine(
+        UltraRuntimeFailureLog failures,
+        int forwardId,
+        string line,
+        Action<int, string>? credentialSuspect)
     {
-        failures.Observe(forwardId, line, DateTimeOffset.UtcNow, (kind, redacted, suppressed) =>
+        var kind = ObserveUltraRuntimeFailure(failures, forwardId, line);
+        if (kind is null || credentialSuspect is null || !UltraRuntimeFailureLog.IsCredentialSuspect(kind, line))
+            return;
+        try
+        {
+            credentialSuspect(forwardId, kind);
+        }
+        catch (Exception ex)
+        {
+            // Never let a subscriber break the output reader.
+            Log.Warning(ex, "ultra credential-suspect handler failed for forward {ForwardId}", forwardId);
+        }
+    }
+
+    public static string? ObserveUltraRuntimeFailure(UltraRuntimeFailureLog failures, int forwardId, string line)
+    {
+        return failures.ObserveKind(forwardId, line, DateTimeOffset.UtcNow, (kind, redacted, suppressed) =>
         {
             if (suppressed > 0)
             {

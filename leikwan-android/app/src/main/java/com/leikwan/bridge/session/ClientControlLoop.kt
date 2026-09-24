@@ -4,8 +4,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class ControlPlaneState {
     READY,
@@ -30,6 +32,7 @@ class ClientControlLoop(
 ) {
     private val lock = Any()
     private var job: Job? = null
+    private val wake = Channel<Unit>(Channel.CONFLATED)
 
     var startCount: Int = 0
         private set
@@ -47,10 +50,14 @@ class ClientControlLoop(
             val next = scope.launch(start = CoroutineStart.LAZY) {
                 retryBackoff.reset()
                 while (shouldContinue()) {
+                    // This poll serves every wake requested before it starts.
+                    wake.tryReceive()
+                    var healthy = false
                     val waitMs = try {
                         poll()
                         retryBackoff.reset()
                         updateState(ControlPlaneState.READY)
+                        healthy = true
                         intervalMs
                     } catch (cancelled: CancellationException) {
                         throw cancelled
@@ -63,7 +70,13 @@ class ClientControlLoop(
                         updateState(ControlPlaneState.RECONNECTING)
                         retryBackoff.nextDelayMs().also(onRetryScheduled)
                     }
-                    delay(waitMs)
+                    if (healthy) {
+                        // requestPollSoon() may cut a healthy interval short; a retry backoff
+                        // is never shortened, so a dead panel is not hammered.
+                        withTimeoutOrNull(waitMs) { wake.receive() }
+                    } else {
+                        delay(waitMs)
+                    }
                 }
                 updateState(ControlPlaneState.STOPPED)
             }
@@ -72,6 +85,17 @@ class ClientControlLoop(
             updateState(ControlPlaneState.RECONNECTING)
             next.start()
         }
+    }
+
+    /**
+     * Asks for the next poll now instead of at the end of the interval (a failure-driven lease
+     * renewal). Honoured only while the control plane is [ControlPlaneState.READY]: during a
+     * retry backoff the request waits for the scheduled retry, which does the same work. Repeated
+     * requests coalesce into one poll. Returns true when the wake was accepted.
+     */
+    fun requestPollSoon(): Boolean {
+        if (!isRunning || state != ControlPlaneState.READY) return false
+        return wake.trySend(Unit).isSuccess
     }
 
     fun stop() {

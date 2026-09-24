@@ -1300,6 +1300,125 @@ public sealed class ConfigPollingServiceTests
         Assert.Empty(runtimeManager.StoppedForwardIds);
     }
 
+    // Windows combo 54, 2026-09-24: a line re-acquisition killed the credential
+    // and every stream on forward 243 ended like this for minutes.
+    private const string RelayAbortLine =
+        "2026/09/24 17:02:22 tcp stream ended forward_id=42 direction=upstream stage=remote_write reason=aborted generation=g selection_ref=r duration_ms=21 bytes=32200";
+
+    [Fact]
+    public async Task CredentialSuspectFailures_RenewTheLeaseOncePerBurstWithoutRestart()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new AlwaysRunningProcessSupervisor();
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var clock = new LeaseTestClock();
+        var service = new ConfigPollingService(api, runtimeManager, stateManager, null, clock,
+            new ControlPlaneBackoff(clock), new ControlPlaneBackoff(clock));
+
+        // The loop pulls once, then sleeps its 30 s interval: any further lease
+        // request inside this test comes from the failure-driven path.
+        service.Start(intervalSeconds: 30);
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(
+                () => server.UltraLeaseRequestForwardIds.Count == 1 && service.LatestForwards.Count == 1,
+                TimeSpan.FromSeconds(10)));
+            Assert.True(SpinWait.SpinUntil(() => { lock (runtimeManager.AppliedForwardIds) return runtimeManager.AppliedForwardIds.Count == 1; },
+                TimeSpan.FromSeconds(5)));
+            stateManager.SaveApplied(new Dictionary<string, AppliedForwardState>
+            {
+                ["42"] = new AppliedForwardState
+                {
+                    ForwardId = 42,
+                    Mode = "ultra",
+                    ListenPort = 12042,
+                    ProcessRoles = ["ultra-runtime"],
+                    ContractSignature = runtimeManager.ComputeContractSignature(service.LatestForwards[0]),
+                },
+            });
+
+            // Every stream on the line fails at once: one renewal.
+            for (var i = 0; i < 50; i++)
+                supervisor.EmitUltraRuntimeStderr(42, RelayAbortLine);
+            Assert.Equal(1, service.FailureDrivenRenewalCount);
+            Assert.True(SpinWait.SpinUntil(() => { lock (runtimeManager.RefreshedForwardIds) return runtimeManager.RefreshedForwardIds.Contains(42); },
+                TimeSpan.FromSeconds(10)));
+            Assert.Equal(2, server.UltraLeaseRequestForwardIds.Count);
+            // Delivered on the control channel: no re-apply, no stop.
+            Assert.Equal([42], runtimeManager.AppliedForwardIds);
+            Assert.Empty(runtimeManager.StoppedForwardIds);
+
+            // More failures inside the 20 s window do not renew again.
+            for (var i = 0; i < 50; i++)
+                supervisor.EmitUltraRuntimeStderr(42, RelayAbortLine);
+            // Ordinary telemetry and local-side closes never renew.
+            supervisor.EmitUltraRuntimeStderr(42, "2026/09/24 17:02:22 tcp stream ended forward_id=42 direction=upstream stage=local_read reason=reset generation=g");
+            supervisor.EmitUltraRuntimeStderr(42, "2026/09/24 17:02:22 active candidate forwarding test succeeded protocol=tcp forward_id=42");
+            await Task.Delay(500);
+            Assert.Equal(1, service.FailureDrivenRenewalCount);
+            Assert.Equal(2, server.UltraLeaseRequestForwardIds.Count);
+
+            // Still failing after the window (the first renewal raced the upload).
+            clock.Advance(TimeSpan.FromSeconds(21));
+            supervisor.EmitUltraRuntimeStderr(42, "2026/09/24 17:02:43 tcp stream setup failed forward_id=42: provider handshake failed");
+            Assert.Equal(2, service.FailureDrivenRenewalCount);
+            Assert.True(SpinWait.SpinUntil(() => server.UltraLeaseRequestForwardIds.Count == 3, TimeSpan.FromSeconds(10)));
+            Assert.Equal([42], runtimeManager.AppliedForwardIds);
+            Assert.Empty(runtimeManager.StoppedForwardIds);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CredentialSuspectFailures_WaitForTheControlPlaneBackoff()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildUltraPullResponseJson(), ultraLeaseStatus: 200)
+        {
+            SuccessfulUltraLease = true,
+            PullFailuresRemaining = 1,
+        };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var supervisor = new AlwaysRunningProcessSupervisor();
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, supervisor);
+        using var api = new MasterApiClient(server.BaseUrl, "token", "device-a");
+        var clock = new LeaseTestClock();
+        // The frozen clock keeps the first failure's backoff in effect.
+        var service = new ConfigPollingService(api, runtimeManager, stateManager, null, clock,
+            new ControlPlaneBackoff(clock, random: () => 1.0), new ControlPlaneBackoff(clock));
+
+        service.Start(intervalSeconds: 30);
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(() => service.IsControlPlaneBackingOff, TimeSpan.FromSeconds(10)));
+            var pulls = server.PullRequestCount;
+
+            for (var i = 0; i < 20; i++)
+                supervisor.EmitUltraRuntimeStderr(42, RelayAbortLine);
+            await Task.Delay(700);
+
+            // The renewal is queued (one), but the panel is not hit during the backoff.
+            Assert.Equal(1, service.FailureDrivenRenewalCount);
+            Assert.Equal(pulls, server.PullRequestCount);
+            Assert.Empty(server.UltraLeaseRequestForwardIds);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
     [Fact]
     public async Task LongOfflineValidityPolicy_IsReusedWhileThePullOmitsIt()
     {
@@ -1610,6 +1729,9 @@ public sealed class ConfigPollingServiceTests
         public bool Running { get; set; } = true;
 
         public override bool IsRunning(int forwardId) => Running;
+
+        /// <summary>Feeds a line through the real Ultra runtime stderr path.</summary>
+        public void EmitUltraRuntimeStderr(int forwardId, string line) => ObserveUltraRuntimeStderr(forwardId, line);
     }
 
     private sealed class PullApiServer : IDisposable

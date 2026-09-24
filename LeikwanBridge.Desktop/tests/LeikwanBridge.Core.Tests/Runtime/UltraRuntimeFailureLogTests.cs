@@ -65,4 +65,35 @@ public sealed class UltraRuntimeFailureLogTests
         Assert.False(log.Observe(158, "2026/09/24 00:10:01 ultra lease selection started forward_id=158", start, (_, _, _) => emitted.Add(default)));
         Assert.Equal(4, emitted.Count);
     }
+    // Lines as the runtime emitted them on the Windows test host when line
+    // re-acquisition killed the credential (combo 54, forward 243/242).
+    [Theory]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=upstream stage=remote_write reason=aborted generation=g selection_ref=r duration_ms=21 bytes=32200")]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=remote_read reason=reset generation=g")]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=upstream stage=remote_write reason=broken_pipe generation=g")]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=upstream stage=remote_write reason=stall generation=g")]
+    [InlineData("tcp stream setup failed forward_id=243: provider handshake failed")]
+    [InlineData("2026/09/24 17:02:23 external UoT carrier reconnect forward_id=242 elapsed=1.000108s reconnects=1 drops=16 reason=read tcp4 172.21.255.4:57971->106.75.231.207:5438: wsarecv: An existing connection was forcibly closed by the remote host.")]
+    [InlineData("2026/09/24 17:02:23 tcp stream remote write stalled forward_id=243 stage=remote_write reason=stall selection_ref=r candidate_hash=c stall_ms=5000")]
+    public void CredentialSuspectFailuresAreRecognised(string line)
+    {
+        var kind = UltraRuntimeFailureLog.Classify(line);
+        Assert.NotNull(kind);
+        Assert.True(UltraRuntimeFailureLog.IsCredentialSuspect(kind!, line));
+    }
+
+    [Theory]
+    // Ordinary target behaviour, or failures that say nothing about the relay credential.
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=remote_read reason=timeout generation=g")]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=remote_read reason=io_error generation=g")]
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=upstream stage=relay_setup reason=reset generation=g")]
+    [InlineData("2026/09/24 17:02:22 tcp stream had no downstream bytes forward_id=243 selection_ref=r remote_stopped_first=true")]
+    [InlineData("2026/09/24 00:10:01 udp candidate failed forward_id=170 selection_ref=r generation=g attempt=1 reason=timeout")]
+    [InlineData("2026/09/24 00:10:01 runtime stopped: policy expired")]
+    public void OtherFailuresAreNotCredentialSuspect(string line)
+    {
+        var kind = UltraRuntimeFailureLog.Classify(line);
+        Assert.NotNull(kind);
+        Assert.False(UltraRuntimeFailureLog.IsCredentialSuspect(kind!, line));
+    }
 }

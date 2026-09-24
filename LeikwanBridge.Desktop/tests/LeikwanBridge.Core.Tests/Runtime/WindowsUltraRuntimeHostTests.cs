@@ -58,7 +58,10 @@ public sealed class WindowsUltraRuntimeHostTests
     }
 
     [Fact]
-    public void Start_OmitsFirstFlightForUnmatchedCandidate()
+    // The starting lease is not on the list; the runtime still gets the
+    // pilot, because it matches each stream's authenticated candidate and the
+    // bootstrap cannot be updated when the lease later rotates onto a listed line.
+    public void Start_EmitsFirstFlightWhenTheStartingCandidateIsNotListed()
     {
         using var temp = new TempStateDirectory();
         var config = new AgentConfig { StateDir = temp.Path, UltraBin = Path.Combine(temp.Path, "bin", "ultra-client.exe") };
@@ -97,7 +100,10 @@ public sealed class WindowsUltraRuntimeHostTests
         host.Start(forward, lease, "contract-a", "config_sync");
 
         using var bootstrap = JsonDocument.Parse(File.ReadAllText(GetBootstrapPath(temp.Path, forward.ForwardId)));
-        Assert.False(bootstrap.RootElement.TryGetProperty("tcp_first_flight", out _));
+        var firstFlight = bootstrap.RootElement.GetProperty("tcp_first_flight");
+        Assert.Equal(
+            [new string('e', 64)],
+            firstFlight.GetProperty("candidate_hashes").EnumerateArray().Select(item => item.GetString()!).ToArray());
         host.Stop(forward.ForwardId);
     }
 

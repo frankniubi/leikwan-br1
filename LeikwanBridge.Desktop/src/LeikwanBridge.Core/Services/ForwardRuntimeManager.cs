@@ -41,6 +41,14 @@ public class ForwardRuntimeManager : IDisposable
     public event Action<int, string>? UltraLeaseRefreshRequested;
 
     /// <summary>
+    /// Raised for every runtime failure line that suggests the relay stopped
+    /// accepting the forward's provider credential (the source host
+    /// invalidates it when it re-acquires the line). Unthrottled: the
+    /// subscriber (config sync) rate-limits the renewal per forward.
+    /// </summary>
+    public event Action<int, string>? UltraCredentialSuspected;
+
+    /// <summary>
     /// Restart reason a health check uses once an idle runtime has not come
     /// back after several lease deliveries; it bypasses the idle exemption.
     /// </summary>
@@ -170,6 +178,8 @@ public class ForwardRuntimeManager : IDisposable
             _portListeningProbe,
             ultraLeaseSender,
             portPreflight);
+        if (supervisor is IUltraRuntimeFailureSource failures)
+            failures.UltraCredentialSuspect += (forwardId, kind) => UltraCredentialSuspected?.Invoke(forwardId, kind);
     }
 
     public virtual void ApplyForward(ForwardConfig forward)

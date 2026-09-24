@@ -37,6 +37,26 @@ public sealed partial class UltraRuntimeFailureLog
     private static readonly HashSet<string> BenignStreamReasons =
         new(StringComparer.Ordinal) { "complete", "eof", "canceled", "closed" };
 
+    // Failures that follow when the source host re-acquires a line and the
+    // relay stops accepting the credential this runtime holds: the relay
+    // resets or aborts established streams, new streams cannot be set up, the
+    // UoT carrier is dropped, or relay writes stop making progress.
+    private static readonly HashSet<string> CredentialSuspectKinds =
+        new(StringComparer.Ordinal)
+        {
+            "tcp_stream_setup_failed",
+            "tcp_remote_write_stall",
+            "external_uot_carrier_reconnect",
+        };
+
+    // Reason tokens are haErrorClass() in tools/ultra-client/ha_tcp.go. A
+    // relay-side close shows up as reset (ECONNRESET/WSAECONNRESET), aborted
+    // (WSAECONNABORTED, the Windows form of a relay RST during a write),
+    // broken_pipe (EPIPE) or stall (errRemoteWriteStall). eof and timeout are
+    // ordinary target behaviour and are not treated as credential evidence.
+    private static readonly HashSet<string> CredentialSuspectStreamReasons =
+        new(StringComparer.Ordinal) { "reset", "aborted", "broken_pipe", "stall" };
+
     private readonly ConcurrentDictionary<(int ForwardId, string Kind), Window> _windows = new();
     private readonly int _maxPerWindow;
     private readonly TimeSpan _window;
@@ -70,6 +90,26 @@ public sealed partial class UltraRuntimeFailureLog
             return kind;
         }
         return null;
+    }
+
+    /// <summary>
+    /// True when a classified failure suggests the relay no longer accepts the
+    /// provider credential, so the host should renew the forward's lease now
+    /// instead of waiting for <c>renew_after</c>. Only relay-side stages of an
+    /// ended stream count; local stages are already filtered by <see cref="Classify"/>.
+    /// </summary>
+    public static bool IsCredentialSuspect(string kind, string line)
+    {
+        if (CredentialSuspectKinds.Contains(kind))
+            return true;
+        if (kind != "tcp_stream_ended")
+            return false;
+        var message = StripGoLogTimestamp(line);
+        var stage = StagePattern().Match(message);
+        if (!stage.Success || stage.Groups[1].Value is not ("remote_read" or "remote_write"))
+            return false;
+        var reason = ReasonPattern().Match(message);
+        return reason.Success && CredentialSuspectStreamReasons.Contains(reason.Groups[1].Value);
     }
 
     public static string Redact(string line)
@@ -111,13 +151,21 @@ public sealed partial class UltraRuntimeFailureLog
     /// failure. Returns true when the line was classified as a failure.
     /// </summary>
     public bool Observe(int forwardId, string line, DateTimeOffset now, Action<string, string, int> warn)
+        => ObserveKind(forwardId, line, now, warn) is not null;
+
+    /// <summary>
+    /// Same as <see cref="Observe"/>, returning the failure kind (null when the
+    /// line is not a failure). The kind is returned for every failure line,
+    /// including ones the log rate limit suppresses.
+    /// </summary>
+    public string? ObserveKind(int forwardId, string line, DateTimeOffset now, Action<string, string, int> warn)
     {
         var kind = Classify(line);
         if (kind is null)
-            return false;
+            return null;
         if (TryAdmit(forwardId, kind, now, out var suppressed))
             warn(kind, Redact(StripGoLogTimestamp(line)), suppressed);
-        return true;
+        return kind;
     }
 
     private static string StripGoLogTimestamp(string line)

@@ -1,5 +1,6 @@
 using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
@@ -60,6 +61,13 @@ public sealed class ConfigPollingService
     /// </summary>
     private readonly ControlPlaneBackoff _leaseBackoff;
 
+    /// <summary>
+    /// Paces lease renewals triggered by runtime failures that suggest a dead
+    /// provider credential (see <see cref="RequestFailureDrivenUltraRenewal"/>).
+    /// </summary>
+    private readonly UltraFailureRenewalLimiter _failureRenewals;
+    private int _failureDrivenRenewals;
+
     private readonly SemaphoreSlim _loopWake = new(0, 1);
     private int _loopSleepingInBackoff;
 
@@ -102,6 +110,19 @@ public sealed class ConfigPollingService
         TimeProvider timeProvider,
         ControlPlaneBackoff? pullBackoff,
         ControlPlaneBackoff? leaseBackoff)
+        : this(api, runtimeManager, stateManager, forwardPolicy, timeProvider, pullBackoff, leaseBackoff, failureRenewals: null)
+    {
+    }
+
+    public ConfigPollingService(
+        MasterApiClient api,
+        ForwardRuntimeManager runtimeManager,
+        StateManager stateManager,
+        IForwardAcceptancePolicy? forwardPolicy,
+        TimeProvider timeProvider,
+        ControlPlaneBackoff? pullBackoff,
+        ControlPlaneBackoff? leaseBackoff,
+        UltraFailureRenewalLimiter? failureRenewals)
     {
         _api = api;
         _runtimeManager = runtimeManager;
@@ -110,9 +131,14 @@ public sealed class ConfigPollingService
         _timeProvider = timeProvider;
         _pullBackoff = pullBackoff ?? new ControlPlaneBackoff(timeProvider);
         _leaseBackoff = leaseBackoff ?? new ControlPlaneBackoff(timeProvider);
+        _failureRenewals = failureRenewals ?? new UltraFailureRenewalLimiter();
         _runtimeManager.UltraRecoveryRequested += RequestUltraRecovery;
         _runtimeManager.UltraLeaseRefreshRequested += RequestUltraLeaseRefresh;
+        _runtimeManager.UltraCredentialSuspected += RequestFailureDrivenUltraRenewal;
     }
+
+    /// <summary>Failure-driven lease renewals admitted so far (diagnostics and tests).</summary>
+    public int FailureDrivenRenewalCount => Volatile.Read(ref _failureDrivenRenewals);
 
     /// <summary>True while either control-plane retry sequence is waiting.</summary>
     public bool IsControlPlaneBackingOff => _pullBackoff.IsBackingOff || _leaseBackoff.IsBackingOff;
@@ -337,6 +363,45 @@ public sealed class ConfigPollingService
         _deliveredLeaseRenewals.TryRemove(forwardId, out _);
         Log.Information("Ultra lease delivery requested for idle forward {ForwardId} (reason={Reason})", forwardId, reason);
         RequestControlPlaneRecovery(forwardId);
+    }
+
+    /// <summary>
+    /// The runtime reported a failure that suggests the relay no longer accepts
+    /// this forward's provider credential. The source host invalidates a
+    /// line's credential when it re-acquires the line (about every 20 min) and
+    /// uploads the new one within seconds, so waiting for renew_after left the
+    /// runtime on a dead credential for minutes (Windows forward 243,
+    /// 2026-09-24). Fetch a fresh policy and lease for this forward now and
+    /// deliver it on the control channel: a targeted full pull, reconciled
+    /// through RefreshUltraLease when the contract is unchanged (no restart).
+    /// <para>
+    /// Paced per forward by <see cref="UltraFailureRenewalLimiter"/> so a burst
+    /// of stream failures is one renewal. The immediate sync is skipped while
+    /// the control plane is backing off (TriggerImmediateSync defers it); the
+    /// queued targeted pull then runs when the backoff allows.
+    /// </para>
+    /// </summary>
+    private void RequestFailureDrivenUltraRenewal(int forwardId, string kind)
+    {
+        var cts = _cts;
+        if (cts?.IsCancellationRequested == true) return;
+        if (!_failureRenewals.TryAdmit(forwardId, _timeProvider.GetUtcNow(), out var nextIn))
+            return;
+        Interlocked.Increment(ref _failureDrivenRenewals);
+        _deliveredLeaseRenewals.TryRemove(forwardId, out _);
+        QueueConfigRefreshSoon(forwardId);
+        var backingOff = IsControlPlaneBackingOff;
+        Log.Information(
+            "Ultra runtime reported {Kind} for forward {ForwardId}; renewing its lease now (backing_off={BackingOff}, next failure-driven renewal in >= {NextSeconds:0}s)",
+            kind,
+            forwardId,
+            backingOff,
+            nextIn.TotalSeconds);
+        // Not started (tests, shutdown): the queued pull is picked up by the
+        // next SyncOnceAsync. Concurrent requests coalesce in SyncOnceAsync
+        // (one running sync plus at most one pending re-run).
+        if (cts is null) return;
+        TriggerImmediateSync();
     }
 
     public async Task SyncOnceAsync(CancellationToken ct = default)

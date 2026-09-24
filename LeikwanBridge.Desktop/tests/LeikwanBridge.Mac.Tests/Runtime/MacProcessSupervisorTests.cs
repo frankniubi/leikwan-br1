@@ -162,6 +162,41 @@ public sealed class MacProcessSupervisorTests
     }
 
     [Fact]
+    public void UltraRuntimeRelayReset_RaisesCredentialSuspectForFailureDrivenRenewal()
+    {
+        // A line re-acquisition kills the credential; the relay then aborts
+        // every stream. ConfigPollingService renews on this event.
+        var raised = new List<(int ForwardId, string Kind)>();
+        using var supervisor = new MacProcessSupervisor(signalProcess: (_, _) => 0);
+        supervisor.UltraCredentialSuspect += (forwardId, kind) =>
+        {
+            lock (raised)
+                raised.Add((forwardId, kind));
+        };
+        var (executable, arguments) = StderrCommand(
+            "tcp stream ended forward_id=46 direction=upstream stage=remote_write reason=reset generation=g");
+        using var process = supervisor.StartProcess(46, "ultra-runtime", "Ultra runtime", executable, arguments);
+        process.WaitForExit(3000);
+        Assert.True(SpinWait.SpinUntil(() => { lock (raised) return raised.Count == 1; }, TimeSpan.FromSeconds(3)));
+        lock (raised)
+            Assert.Equal((46, "tcp_stream_ended"), raised[0]);
+    }
+
+    [Fact]
+    public void UltraRuntimeLocalClose_DoesNotRaiseCredentialSuspect()
+    {
+        var raised = 0;
+        using var supervisor = new MacProcessSupervisor(signalProcess: (_, _) => 0);
+        supervisor.UltraCredentialSuspect += (_, _) => Interlocked.Increment(ref raised);
+        var (executable, arguments) = StderrCommand(
+            "tcp stream ended forward_id=47 direction=upstream stage=local_read reason=reset generation=g");
+        using var process = supervisor.StartProcess(47, "ultra-runtime", "Ultra runtime", executable, arguments);
+        process.WaitForExit(3000);
+        Thread.Sleep(300);
+        Assert.Equal(0, Volatile.Read(ref raised));
+    }
+
+    [Fact]
     public void Reaper_SelectsOnlyOrphansOfThisBundleAndUid()
     {
         const string exe = "/Applications/LeiKwan Bridge.app/Contents/Resources/bin/ultra-client";

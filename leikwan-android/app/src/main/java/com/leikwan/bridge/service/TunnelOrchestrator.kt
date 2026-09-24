@@ -38,6 +38,8 @@ import com.leikwan.bridge.runtime.RuntimeBinaryInstaller
 import com.leikwan.bridge.runtime.RuntimeBinaryPaths
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.runtime.SingleForwardRunner
+import com.leikwan.bridge.runtime.UltraCredentialFailureSignal
+import com.leikwan.bridge.runtime.UltraFailureRenewalGate
 import com.leikwan.bridge.runtime.UltraForwardRunner
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraLeaseClient
@@ -62,6 +64,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.io.IOException
 import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** Keeps one runtime owner per Android application process. */
 internal class ApplicationScoped<T> {
@@ -147,6 +150,8 @@ class TunnelOrchestrator internal constructor(
     private val ultraLeaseBatchSender: (String, UltraPolicy, List<UltraLease>) -> Boolean = { socketPath, policy, leases ->
         UltraLeaseClient().send(socketPath, policy, leases)
     },
+    /** Clock for pacing failure-driven renewals (test seam). */
+    private val ultraFailureClock: () -> Instant = Instant::now,
 ) {
     companion object {
         private val applicationInstances = ApplicationScoped<TunnelOrchestrator>()
@@ -173,7 +178,15 @@ class TunnelOrchestrator internal constructor(
 
     private val panelRepo: PanelRepository by lazy(panelRepoFactory)
     private val binaryInstaller: RuntimeBinaryInstaller by lazy(binaryInstallerFactory)
-    private val processRunner: ProcessRunner by lazy(processRunnerFactory)
+    private val processRunner: ProcessRunner by lazy {
+        processRunnerFactory().also { runner -> runner.runtimeLineObserver = ::onRuntimeLine }
+    }
+
+    /** Paces failure-driven Ultra renewals: one per burst, >= 20 s apart per forward. */
+    private val ultraFailureRenewals = UltraFailureRenewalGate()
+
+    /** Forward whose runtime reported a credential-suspect failure; 0 when none is pending. */
+    private val ultraFailureRenewalForward = AtomicLong(0L)
     private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val controlLoop by lazy {
         ClientControlLoop(
@@ -805,6 +818,24 @@ class TunnelOrchestrator internal constructor(
         }
     }
 
+    /**
+     * Runtime output hook. When the source host re-acquires a line it invalidates the credential
+     * the runtime holds and uploads the new one within seconds; the relay then resets or aborts
+     * every stream on that line. Waiting for `renew_after` kept a dead credential for minutes, so a
+     * credential-suspect failure makes the next renewal due and wakes the control loop. The wake
+     * is ignored during a control-plane retry backoff (the scheduled retry renews instead), and
+     * [ultraFailureRenewals] turns a burst of failures into one renewal.
+     */
+    private fun onRuntimeLine(processKey: Long, line: String) {
+        val active = activeUltra ?: return
+        if (processKey != active.forwardId) return
+        val kind = UltraCredentialFailureSignal.credentialSuspectKind(line) ?: return
+        if (!ultraFailureRenewals.tryAdmit(processKey, ultraFailureClock())) return
+        ultraFailureRenewalForward.set(processKey)
+        val woke = controlLoop.requestPollSoon()
+        Log.i(TAG, "Ultra runtime reported $kind for forward $processKey; renewing its lease (immediate=$woke)")
+    }
+
     /** Test seam for Ultra renewal; [now] only moves the due-time gate. */
     internal suspend fun refreshUltraForTest(now: Instant = Instant.now()) = refreshUltraIfDue(now)
 
@@ -821,8 +852,11 @@ class TunnelOrchestrator internal constructor(
      */
     private suspend fun refreshUltraIfDue(now: Instant = Instant.now()) {
         val active = activeUltra ?: return
+        val pending = ultraFailureRenewalForward.get()
+        if (pending != 0L && pending != active.forwardId) ultraFailureRenewalForward.compareAndSet(pending, 0L)
+        val failureDriven = ultraFailureRenewalForward.compareAndSet(active.forwardId, 0L)
         val renewalDue = !now.isBefore(active.policy.renewAfter.minusSeconds(ULTRA_RENEW_MARGIN_SECONDS))
-        if (!renewalDue && !runtimeLostPolicy(active)) return
+        if (!renewalDue && !failureDriven && !runtimeLostPolicy(active)) return
 
         try {
             panelRepo.pullCatalog(active.forwardId)
@@ -860,6 +894,8 @@ class TunnelOrchestrator internal constructor(
             activeUltra = active.copy(policy = nextPolicy, leaseSentAt = Instant.now())
         } catch (error: Exception) {
             if (error is CancellationException || error is PanelControlException) throw error
+            // Keep a failure-driven renewal pending: the loop's retry (after its backoff) renews.
+            if (failureDriven) ultraFailureRenewalForward.compareAndSet(0L, active.forwardId)
             val remaining = active.policy.expiresAt.epochSecond - now.epochSecond
             Log.w(
                 TAG,
