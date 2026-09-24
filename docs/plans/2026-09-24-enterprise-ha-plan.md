@@ -273,3 +273,11 @@ Raw data is in `tmp/matrix-20260924/`.
   - Multi-line forwards last longer, because the new write-stall detection moves streams to lines whose re-acquisition is at a different phase.
   - A guaranteed 10-minute floor would need dual sessions per line. **Accepted by the owner (option A):** about 10 min on average, longer on multi-line forwards, and close to 0 in the worst case on a single-line forward. No credential-side change in this release.
 - **HKG→mainland (combo 56) deferred.** It is excluded from the acceptance gate. Its only line is broken, which is a provider/line issue, not a client one.
+
+## Final acceptance on candidate 2026.09.24.4 (Windows 0.1.20.57, macOS 1.0.50, Linux runtime 2026.09.24.4.64fc750e)
+
+- **Phase 1** (180 s, 10+10 Mbps, 4+4 streams, serial; 10 directions × 3 platforms, HKG→mainland deferred): **30 of 30 cells PASS on the first run**, with no re-runs.
+  - Every cell: TCP 9.99–10.00 Mbps, 0 idle windows. UDP loss was ≤ 0.01 %.
+  - This includes SHA→LAX on Windows (was 7.9 / 13.9 %), and PEK→FRA/MOS with the direction-wide first-flight rule.
+  - Raw data is in `tmp/matrix-20260924/<combo>-<os>-v4.json`.
+- **Phase 2** (release gate, 600 s at 20+20 Mbps; 46 SHA→HKG, 54 SHA→TYO and 49 PEK→FRA × 3 platforms): the first attempt was cut off, leaving test forwards 226/227 enabled. They were disabled at 14:21 UTC, and the gate is being re-run with the Phase 1 runner.
