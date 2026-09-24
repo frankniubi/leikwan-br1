@@ -325,3 +325,23 @@ Raw data is in `tmp/matrix-20260924/`.
 - Line 120's credential still authenticated at 40 min. A stream opened at acquisition stayed alive, heartbeating every 10 s, for the whole 42 min.
 - **So the lifetime is not a fixed 30 min, and an established stream outlives at least 40 minutes of credential age.** The rotation resets come from re-acquisition.
 - Alternating two provider accounts per line would therefore allow make-before-break rotation. This needs a second account and is the owner's decision.
+
+## Stopping point (2026-09-25 ~02:10 +08) — release NOT published
+
+- **Candidate 2026.09.25.1:** runtime `c10e11f1`, Windows 0.1.20.58, macOS 1.0.51, Android 0.2.34 (versionCode 36, same signers).
+  - Staged on the panel at `/root/release-ultra-recovery-20260925-1` with `STAGED_RELEASE_VALIDATED`, but held.
+- **Gate on it:**
+  - 49 PEK→FRA: PASS on all three OS. Windows UDP loss 0.001 %, was 25–46 %; the lag-cascade fix is confirmed.
+  - 46 SHA→HKG: PASS on Linux and macOS. **Windows FAIL twice:** 2.4 % UDP loss with TCP at 18.8 Mbps, then 10.6 % UDP loss.
+  - The failures began after the candidate interleave (e1766df3) went live, which is now rolled back on the panel and reverted (42652e2e).
+  - The loss was a lag burst over every new line in the first minute of the run.
+  - 54 SHA→TYO was still running unattended; the script disables its test forwards when it ends.
+- **Also deployed tonight:** the quota-bucketed policy generation (c6f9aeee), which ends generation churn on every usage report.
+- **Not deployed:** d49d1fc0 (leave expired services out of client configs).
+  - Root cause of the lease storm: service 11 expired at 14:43 but keeps `status=active`. Its 4 forwards get no grant, so clients re-pull and re-lease everything every 2–12 s.
+- **Next:**
+  1. Re-run 46 and 54 on Windows without the interleave.
+  2. If clean, deploy d49d1fc0 and publish the staged release (re-validate first).
+  3. Then verify D2: reinstall Windows 0.1.20.57 and macOS 1.0.50 and watch them self-update within 10 min.
+  4. Fault injection: kill the runtime, then a 10-min panel block.
+  5. Revisit the interleave only with a Windows-specific test.
