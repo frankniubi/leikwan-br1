@@ -238,21 +238,91 @@ func writeExternalUoTFrame(writer io.Writer, frame externalUoTFrame) error {
 
 // Command-1 application bytes use the same XOR stream transform as the
 // existing Ultra TCP forward. The handshake is plaintext; UoT frames are not.
-type externalUoTXorWriter struct {
-	connection net.Conn
-}
-
-func (writer externalUoTXorWriter) Write(payload []byte) (int, error) {
-	encoded := xorOne(payload)
-	defer clearBytes(encoded)
-	return writer.connection.Write(encoded)
+//
+// appendExternalUoTCarrierFrame appends one length-prefixed, XOR-transformed
+// frame to dst. The carrier writer builds whole batches this way so that a frame
+// and its length prefix, and several queued frames, leave in one socket write:
+// writing the 4-byte prefix and the frame separately cost two syscalls and, with
+// TCP_NODELAY, two TCP segments per datagram.
+func appendExternalUoTCarrierFrame(dst []byte, frame externalUoTFrame) ([]byte, error) {
+	if len(frame.payload) > externalUoTMaxDatagramBytes {
+		return dst, errors.New("external UoT payload too large")
+	}
+	start := len(dst)
+	frameLength := externalUoTHeaderSize + len(frame.payload)
+	dst = append(dst, make([]byte, externalUoTFramePrefixSize+externalUoTHeaderSize)...)
+	encoded := dst[start:]
+	binary.BigEndian.PutUint32(encoded[0:4], uint32(frameLength))
+	header := encoded[externalUoTFramePrefixSize:]
+	copy(header[:4], externalUoTMagic)
+	header[4] = externalUoTVersion
+	header[5] = frame.msgType
+	binary.BigEndian.PutUint16(header[6:8], frame.flags)
+	copy(header[8:24], frame.session[:])
+	binary.BigEndian.PutUint64(header[24:32], frame.sequence)
+	binary.BigEndian.PutUint32(header[32:36], uint32(len(frame.payload)))
+	dst = append(dst, frame.payload...)
+	for index := start; index < len(dst); index++ {
+		dst[index] ^= 1
+	}
+	return dst, nil
 }
 
 func writeExternalUoTCarrierFrame(connection net.Conn, frame externalUoTFrame) error {
 	if connection == nil {
 		return net.ErrClosed
 	}
-	return writeExternalUoTFrame(externalUoTXorWriter{connection: connection}, frame)
+	encoded, err := appendExternalUoTCarrierFrame(nil, frame)
+	if err != nil {
+		return err
+	}
+	defer clearBytes(encoded)
+	return writeAll(connection, encoded)
+}
+
+// externalUoTCarrierWriteStall bounds how long a carrier write may make no
+// progress. A carrier whose relay stopped reading used to pin the writer, and
+// with it the keepalive and every queued datagram, until the association was
+// torn down; the stall now ends the carrier so run() reconnects on another
+// candidate. It is the same bound as the user-TCP stall.
+const externalUoTCarrierWriteStall = remoteWriteProgressTimeout
+
+// Batching bounds for the carrier writer. A batch only ever holds datagrams
+// that were already queued when the previous write finished, so an idle
+// carrier still writes each datagram immediately; under backlog it catches up
+// in few large writes instead of two small ones per datagram.
+const (
+	externalUoTBatchBytes  = 256 * 1024
+	externalUoTBatchFrames = 256
+)
+
+func (association *externalUoTAssociation) carrierStall() time.Duration {
+	if association.writeStall > 0 {
+		return association.writeStall
+	}
+	return externalUoTCarrierWriteStall
+}
+
+// writeCarrier writes pre-encoded carrier bytes under the carrier write lock,
+// with the write-progress bound. Every carrier write goes through here, so a
+// blocked keepalive can no longer hold the lock forever either.
+func (association *externalUoTAssociation) writeCarrier(connection net.Conn, encoded []byte) error {
+	if connection == nil {
+		return net.ErrClosed
+	}
+	stall := association.carrierStall()
+	association.writeMu.Lock()
+	defer association.writeMu.Unlock()
+	return writeAllProgress(connection, encoded, func() time.Time { return time.Now().Add(stall) })
+}
+
+func (association *externalUoTAssociation) writeCarrierFrame(connection net.Conn, frame externalUoTFrame) error {
+	encoded, err := appendExternalUoTCarrierFrame(nil, frame)
+	if err != nil {
+		return err
+	}
+	defer clearBytes(encoded)
+	return association.writeCarrier(connection, encoded)
 }
 
 type externalUoTHello struct {
@@ -383,8 +453,16 @@ type externalUoTAssociation struct {
 	sequence          uint64
 	tuner             *externalUoTTuner
 	retryMu           sync.Mutex
-	retryBody         []byte
-	retrySeq          uint64
+	retry             []externalUoTPending
+	// writeStall overrides externalUoTCarrierWriteStall (tests only).
+	writeStall time.Duration
+}
+
+// externalUoTPending is a datagram the writer took from the queue together
+// with the sequence number it was assigned.
+type externalUoTPending struct {
+	payload  []byte
+	sequence uint64
 }
 
 func newExternalUoTAssociation(parent context.Context, config Config, store *PolicyStore, status *StatusWriter, local *net.UDPConn, client *net.UDPAddr, socksUDP bool) (*externalUoTAssociation, error) {
@@ -429,6 +507,14 @@ func (association *externalUoTAssociation) idleSince(now time.Time) time.Duratio
 	return now.Sub(last)
 }
 
+// enqueue admits one datagram without blocking. It runs on the single read loop
+// that serves every association of the forward, so it must never wait: the
+// previous bounded wait (up to 250 ms per packet) let one association
+// whose carrier had fallen behind stall reading for all of them, and the
+// datagrams behind it were then dropped silently by the kernel (152,499 socket
+// receive drops next to 707 counted ones on Linux in the 2026-09-24 matrix,
+// uncountable on Windows and macOS). A full queue now drops only that
+// association's datagram, and the drop is counted.
 func (association *externalUoTAssociation) enqueue(payload []byte) bool {
 	association.touch()
 	if !association.tuner.acceptsPayload(len(payload)) {
@@ -449,33 +535,22 @@ func (association *externalUoTAssociation) enqueue(payload []byte) bool {
 		}
 		return true
 	}
-	ctx, cancel := context.WithTimeout(association.ctx, datagramQueueDeadline)
-	defer cancel()
-	blocked, err := association.budget.reserve(ctx, len(payload))
-	if blocked {
-		association.status.AddUoTQueueBlocked()
+	if association.ctx.Err() != nil {
+		return false
 	}
-	if err == nil {
+	if association.budget.tryReserve(len(payload)) {
 		copyPayload := append([]byte(nil), payload...)
 		select {
 		case association.outbound <- copyPayload:
 			return true
 		default:
 		}
-		if !blocked {
-			association.status.AddUoTQueueBlocked()
-		}
-		select {
-		case association.outbound <- copyPayload:
-			return true
-		case <-ctx.Done():
-			err = ctx.Err()
-		}
 		association.budget.release(len(payload))
 	}
-	if errors.Is(err, context.Canceled) {
+	if association.ctx.Err() != nil {
 		return false
 	}
+	association.status.AddUoTQueueBlocked()
 	association.tuner.observeDrop()
 	association.status.AddUoTQueueTimeout()
 	association.status.UpdateError("external_uot_queue_timeout")
@@ -489,26 +564,33 @@ func (association *externalUoTAssociation) nextSequence() uint64 {
 	return association.sequence
 }
 
-func (association *externalUoTAssociation) takeRetry() ([]byte, uint64) {
+// takeRetry hands the next carrier the batch the previous carrier failed to
+// write, in order and with its original sequence numbers.
+func (association *externalUoTAssociation) takeRetry() []externalUoTPending {
 	association.retryMu.Lock()
 	defer association.retryMu.Unlock()
-	if association.retryBody == nil {
-		return nil, 0
-	}
-	payload, sequence := association.retryBody, association.retrySeq
-	association.retryBody = nil
-	association.retrySeq = 0
-	return payload, sequence
+	batch := association.retry
+	association.retry = nil
+	return batch
 }
 
-func (association *externalUoTAssociation) preserveRetry(payload []byte, sequence uint64) {
-	if len(payload) == 0 || sequence == 0 {
+// preserveRetry keeps a batch that was taken from the queue but not written, so
+// a disconnect does not lose it. The batch is bounded by the writer's batching
+// limits, and only one batch is ever held.
+func (association *externalUoTAssociation) preserveRetry(batch []externalUoTPending) {
+	kept := make([]externalUoTPending, 0, len(batch))
+	for _, item := range batch {
+		if len(item.payload) == 0 || item.sequence == 0 {
+			continue
+		}
+		kept = append(kept, externalUoTPending{payload: append([]byte(nil), item.payload...), sequence: item.sequence})
+	}
+	if len(kept) == 0 {
 		return
 	}
 	association.retryMu.Lock()
-	if association.retryBody == nil {
-		association.retryBody = append([]byte(nil), payload...)
-		association.retrySeq = sequence
+	if association.retry == nil {
+		association.retry = kept
 	}
 	association.retryMu.Unlock()
 }
@@ -554,6 +636,14 @@ func (association *externalUoTAssociation) run() {
 				// sidecar HELLO. Do not keep retrying that same path forever.
 				association.store.FailCandidate("udp", snapshot.Lease)
 				association.status.RecordCandidateFailure(snapshot.Lease.CandidateKeyHash, "udp", "external_uot_hello_failed", snapshot.Lease.LeaseHash)
+			} else if errors.Is(err, errRemoteWriteStall) && association.ctx.Err() == nil {
+				// The relay stopped reading the carrier. Move the reconnect to
+				// another candidate instead of re-dialling the same dead path.
+				// Local isolation only, like every data-plane verdict.
+				association.store.FailCandidate("udp", snapshot.Lease)
+				association.status.UpdateError("external_uot_carrier_write_stall")
+				log.Printf("external UoT carrier write stalled forward_id=%d stage=remote_write reason=stall stall_ms=%d candidate_hash=%s",
+					association.config.ForwardID, association.carrierStall().Milliseconds(), snapshot.Lease.CandidateKeyHash)
 			}
 			snapshot.Lease.wipe()
 			connection.Close()
@@ -672,8 +762,9 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 	association.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, statusRTT, lease.LeaseHash)
 	association.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
 	association.store.ClearPathFailure("udp", haPathKey(lease))
-	log.Printf("external UoT carrier attached forward_id=%d sid=%x logical_protocol=udp carrier=tcp candidate_hash=%s lease_hash=%s target_hash=%s",
-		association.config.ForwardID, association.session[:4], lease.CandidateKeyHash, lease.LeaseHash, tcpTargetHash(association.config.Target))
+	carrierSendBuffer := tuneExternalUoTCarrier(connection)
+	log.Printf("external UoT carrier attached forward_id=%d sid=%x logical_protocol=udp carrier=tcp carrier_sndbuf=%d candidate_hash=%s lease_hash=%s target_hash=%s",
+		association.config.ForwardID, association.session[:4], carrierSendBuffer, lease.CandidateKeyHash, lease.LeaseHash, tcpTargetHash(association.config.Target))
 	association.carrierAttachedAt = time.Now()
 
 	if association.reliable != nil {
@@ -711,51 +802,86 @@ func (association *externalUoTAssociation) runCarrier(connection net.Conn, lease
 			return err
 		case <-ticker.C:
 			frame := externalUoTFrame{msgType: externalUoTKeepalive, session: association.session, sequence: association.nextSequence()}
-			association.writeMu.Lock()
-			writeErr := writeExternalUoTCarrierFrame(connection, frame)
-			association.writeMu.Unlock()
-			if writeErr != nil {
+			if writeErr := association.writeCarrierFrame(connection, frame); writeErr != nil {
 				return writeErr
 			}
 		}
 	}
 }
 
+// externalUoTWriter drains the association queue onto the carrier. Each write
+// carries the datagram it waited for plus whatever else was already queued (up
+// to externalUoTBatchFrames / externalUoTBatchBytes): it never waits to fill a
+// batch, so it adds no latency, but a backlog is cleared in a few large writes.
+// One datagram used to be two small writes (prefix, then frame), which kept the
+// Windows carrier below the offered rate on long paths (SHA->LAX at 306 ms:
+// 201.1 of 224.6 MB delivered): with tiny overlapped sends almost nothing
+// beyond the socket send buffer is ever in flight.
 func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context, connection net.Conn, errorsOut chan<- error) {
-	var pending []byte
-	var pendingSequence uint64
+	var encoded []byte
+	defer func() { clearBytes(encoded) }()
 	for {
-		if pending == nil {
-			pending, pendingSequence = association.takeRetry()
-			if pending == nil {
-				select {
-				case <-ctx.Done():
-					return
-				case pending = <-association.outbound:
-					association.budget.release(len(pending))
-					pendingSequence = association.nextSequence()
-				}
+		batch := association.takeRetry()
+		if len(batch) == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case payload := <-association.outbound:
+				association.budget.release(len(payload))
+				batch = append(batch, externalUoTPending{payload: payload, sequence: association.nextSequence()})
+			}
+		}
+		size := 0
+		for _, item := range batch {
+			size += externalUoTFramePrefixSize + externalUoTHeaderSize + len(item.payload)
+		}
+	collect:
+		for len(batch) < externalUoTBatchFrames && size < externalUoTBatchBytes {
+			select {
+			case payload := <-association.outbound:
+				association.budget.release(len(payload))
+				batch = append(batch, externalUoTPending{payload: payload, sequence: association.nextSequence()})
+				size += externalUoTFramePrefixSize + externalUoTHeaderSize + len(payload)
+			default:
+				break collect
 			}
 		}
 		if ctx.Err() != nil {
-			association.preserveRetry(pending, pendingSequence)
+			association.preserveRetry(batch)
 			return
 		}
-		frame := externalUoTFrame{msgType: externalUoTData, session: association.session, sequence: pendingSequence, payload: pending}
-		association.writeMu.Lock()
-		err := writeExternalUoTCarrierFrame(connection, frame)
-		association.writeMu.Unlock()
+		encoded = encoded[:0]
+		usage := 0
+		for _, item := range batch {
+			next, encodeErr := appendExternalUoTCarrierFrame(encoded, externalUoTFrame{
+				msgType: externalUoTData, session: association.session, sequence: item.sequence, payload: item.payload,
+			})
+			if encodeErr != nil {
+				// Admission already bounds datagram size; a datagram that still
+				// cannot be framed is dropped, never retried forever.
+				association.status.AddUDPOversizeDrop()
+				continue
+			}
+			encoded = next
+			usage += len(item.payload)
+		}
+		err := association.writeCarrier(connection, encoded)
+		clearBytes(encoded)
 		if err != nil {
-			association.preserveRetry(pending, pendingSequence)
+			association.preserveRetry(batch)
 			select {
 			case errorsOut <- err:
 			default:
 			}
 			return
 		}
-		association.status.AddUsage(0, len(pending))
-		pending = nil
-		pendingSequence = 0
+		association.status.AddUsage(0, usage)
+		if cap(encoded) > 2*externalUoTBatchBytes {
+			// One batch of very large datagrams must not pin its buffer for the
+			// carrier's lifetime.
+			clearBytes(encoded)
+			encoded = nil
+		}
 	}
 }
 
@@ -777,9 +903,7 @@ func (association *externalUoTAssociation) externalUoTReader(reader *bufio.Reade
 			association.deliver(frame.payload)
 		case externalUoTKeepalive:
 			association.tuner.observeRTT(time.Millisecond)
-			association.writeMu.Lock()
-			_ = writeExternalUoTCarrierFrame(connection, externalUoTFrame{msgType: externalUoTKeepalive, session: association.session, sequence: frame.sequence})
-			association.writeMu.Unlock()
+			_ = association.writeCarrierFrame(connection, externalUoTFrame{msgType: externalUoTKeepalive, session: association.session, sequence: frame.sequence})
 		case externalUoTClose:
 			select {
 			case errorsOut <- errors.New("sidecar closed external UoT session"):

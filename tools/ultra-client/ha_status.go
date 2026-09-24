@@ -65,6 +65,29 @@ func (w *StatusWriter) RecordTCPOutcome(ident relayIdentity, upstreamBytes, remo
 	})
 }
 
+// RecordTCPWriteStall records a stream torn down because its write to the relay
+// made no progress while the local side still had bytes to send. Like
+// RecordTCPOutcome it carries only opaque identities and is never global
+// candidate feedback; remote_read_bytes is what the relay returned before it
+// stopped reading.
+func (w *StatusWriter) RecordTCPWriteStall(ident relayIdentity, upstreamBytes, remoteReadBytes int64, localPathAvoided bool) {
+	upstreamBytes = maxInt64(upstreamBytes, 0)
+	remoteReadBytes = maxInt64(remoteReadBytes, 0)
+	event := HAEvent{
+		Protocol: "tcp", Reason: "remote_write_stall",
+		Generation: boundedStatusText(ident.generation, 64), At: time.Now().UTC().Format(time.RFC3339Nano),
+		CandidateKeyHash: normalizedCandidateKeyHash(ident.candidateKey), LeaseHash: normalizedLeaseHash(ident.leaseHash),
+		UpstreamBytes: &upstreamBytes, RemoteReadBytes: &remoteReadBytes, LocalPathAvoided: &localPathAvoided,
+	}
+	w.update(func(s *RuntimeStatus) {
+		s.HAEvents = append(append([]HAEvent(nil), s.HAEvents...), event)
+		if len(s.HAEvents) > 16 {
+			s.HAEvents = append([]HAEvent(nil), s.HAEvents[len(s.HAEvents)-16:]...)
+		}
+		s.HAFailures++
+	})
+}
+
 func (w *StatusWriter) RecordUDPKeepaliveACK() {
 	w.update(func(s *RuntimeStatus) {
 		s.UDPKeepaliveACKs++

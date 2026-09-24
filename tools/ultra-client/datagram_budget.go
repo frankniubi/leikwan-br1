@@ -50,6 +50,18 @@ func (b *datagramBudget) reserve(ctx context.Context, n int) (bool, error) {
 		}
 	}
 }
+
+// tryReserve is reserve without waiting: it admits n bytes only if they fit now.
+func (b *datagramBudget) tryReserve(n int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > b.limit || b.used+n > b.limit {
+		return false
+	}
+	b.used += n
+	return true
+}
+
 func (b *datagramBudget) release(n int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

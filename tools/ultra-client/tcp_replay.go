@@ -123,15 +123,18 @@ func (c *tcpFirstReadNotifier) Read(p []byte) (int, error) {
 // copyOutboundWithPrelude writes a replayed first flight before the ordinary
 // upstream copy. The prelude was charged to the limiter and to usage when it
 // was first read from the application, so it is not charged again.
-func copyOutboundWithPrelude(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter, prelude []byte) (int64, error, string) {
+//
+// deadline, when set, bounds each write to the relay by write progress (see
+// writeAllProgress); the prelude is held to the same bound.
+func copyOutboundWithPrelude(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter, prelude []byte, deadline progressWriteDeadline) (int64, error, string) {
 	var total int64
 	if len(prelude) > 0 {
-		if err := writeXor(destination, prelude); err != nil {
+		if err := writeXorProgress(destination, prelude, deadline); err != nil {
 			return 0, err, "remote_write"
 		}
 		total = int64(len(prelude))
 	}
-	moved, err, stage := copyOutboundStaged(destination, source, limiter, status)
+	moved, err, stage := copyOutboundStagedWithDeadline(destination, source, limiter, status, deadline)
 	return total + moved, err, stage
 }
 
@@ -205,6 +208,7 @@ func tcpRelayIdentity(config Config, snapshot RuntimeSnapshot) relayIdentity {
 		targetHash:   tcpTargetHash(config.Target),
 		firstFlight:  config.TCPFirstFlight,
 		target:       config.Target,
+		writeStall:   resolveTCPWriteStall(config),
 	}
 }
 

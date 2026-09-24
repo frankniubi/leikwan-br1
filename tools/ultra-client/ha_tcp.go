@@ -41,6 +41,12 @@ func haErrorClass(err error) string {
 		return "refused"
 	case errors.Is(err, syscall.EPIPE):
 		return "broken_pipe"
+	case errors.Is(err, errRemoteWriteStall):
+		// A write that made no progress while bytes were pending. This is the
+		// one stall signal that is unambiguous: an idle stream and an upload
+		// that simply gets no reply never block a write, so they never land
+		// here.
+		return "stall"
 	case errors.Is(err, ErrQuotaExhausted):
 		return "quota_exhausted"
 	case errors.Is(err, errStreamCommandRejected):
@@ -91,6 +97,21 @@ type relayIdentity struct {
 	// candidate after the relay explicitly refused to open the target. nil
 	// disables replay (every stream after the first attempt, and tests).
 	replay tcpReplayDial
+	// writeStall is how long a write to the relay may make no progress before
+	// the stream is torn down. Zero uses remoteWriteProgressTimeout; a negative
+	// value disables the timer (tcp_write_stall_seconds < 0).
+	writeStall time.Duration
+}
+
+// remoteWriteStallTimeout resolves the per-stream stall bound.
+func remoteWriteStallTimeout(ident relayIdentity) time.Duration {
+	if ident.writeStall < 0 {
+		return 0
+	}
+	if ident.writeStall == 0 {
+		return remoteWriteProgressTimeout
+	}
+	return ident.writeStall
 }
 
 // haDeadStreamMaxAge bounds how young a stream must be for its silence to count
@@ -142,6 +163,9 @@ func (o relayStreamOrder) remoteStoppedFirst() bool {
 // protocol context to distinguish that from a broken target. Explicit TCP/UDP
 // probes own availability decisions; the remote/local end ordering is logged
 // for diagnosis only.
+//
+// A stream that ended in a remote write stall is not scored here: that signal
+// is unambiguous and noteRemoteWriteStall owns it.
 func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdentity, started time.Time, upstreamBytes, downstreamBytes int64, order ...relayStreamOrder) {
 	if store == nil || ident.pathKey == "" {
 		return
@@ -264,8 +288,19 @@ func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *Polic
 		downstreamSource = &tcpFirstReadNotifier{Conn: remote, notify: capture.disarm}
 		defer capture.disarm()
 	}
+	// A write to the relay that makes no progress for the stall bound ends the
+	// stream (stage=remote_write reason=stall). This is also what frees a stream
+	// whose local client went away while the upstream copy sat in a blocked
+	// write: the copy cannot observe the local close from inside that write, and
+	// a local FIN cannot be told from a half-close without writing to the
+	// client, so the bounded write is the one signal that is always available.
+	stallBound := remoteWriteStallTimeout(ident)
+	var writeDeadline progressWriteDeadline
+	if stallBound > 0 {
+		writeDeadline = func() time.Time { return time.Now().Add(stallBound) }
+	}
 	go func() {
-		moved, err, stage := copyOutboundWithPrelude(outbound, upstreamSource, limiter, status, prelude)
+		moved, err, stage := copyOutboundWithPrelude(outbound, upstreamSource, limiter, status, prelude, writeDeadline)
 		ordinal := observedOrder.Add(1)
 		done <- relayCopyResult{direction: "upstream", stage: stage, err: err, bytes: moved, ended: time.Now(), order: ordinal}
 	}()
@@ -293,6 +328,7 @@ func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *Polic
 	}
 	received := 0
 	upstreamDone := false
+	stalled := false
 	for received < 2 {
 		select {
 		case <-ctx.Done():
@@ -307,7 +343,11 @@ func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *Polic
 			return tcpReplayResult{}
 		case r := <-done:
 			received++
-			record(r, true)
+			// A stall is recorded once, with its path verdict, by
+			// noteRemoteWriteStall below instead of as a bare event here.
+			stall := r.direction == "upstream" && errors.Is(r.err, errRemoteWriteStall)
+			stalled = stalled || stall
+			record(r, !stall)
 			if r.direction == "upstream" {
 				upstreamDone = true
 			}
@@ -352,13 +392,50 @@ func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *Polic
 					continue
 				}
 			}
+			// Any other end is an error, or a half-close that could not be
+			// forwarded: close both sides so the other copy returns at once,
+			// including one blocked in a write to the relay.
 			cancel()
 			local.Close()
 			remote.Close()
 		}
 	}
+	if stalled {
+		noteRemoteWriteStall(store, status, ident, started, upstreamBytes, downstreamBytes, stallBound)
+		return tcpReplayResult{}
+	}
 	noteRelayOutcome(store, status, ident, started, upstreamBytes, downstreamBytes, order)
 	return tcpReplayResult{}
+}
+
+// noteRemoteWriteStall scores a stream whose write to the relay made no
+// progress for stallBound while the local side still had bytes to send.
+//
+// Unlike a silent stream this is unambiguous: the relay stopped reading. It is a
+// no-response strike against the local path (pathIsolationMinStrikes in a row
+// isolate it, with the usual escalation, and any stream that later carries
+// downstream bytes on the path clears it), so repeated stalls move new streams
+// to another healthy candidate. It is taken only when such a candidate exists:
+// isolating the sole authorized path cannot move anything and would only fail
+// the next streams closed. It is never global candidate reputation: a target
+// that stops reading looks the same through every relay.
+func noteRemoteWriteStall(store *PolicyStore, status *StatusWriter, ident relayIdentity, started time.Time, upstreamBytes, downstreamBytes int64, stallBound time.Duration) {
+	isolated := false
+	alternative := false
+	if store != nil && ident.pathKey != "" {
+		alternative = store.hasOtherUsablePath("tcp", ident.pathKey)
+		if alternative {
+			isolated = store.FailSilentPath("tcp", ident.pathKey, ident.generation)
+		}
+	}
+	if status != nil {
+		status.RecordTCPWriteStall(ident, upstreamBytes, downstreamBytes, isolated)
+		status.UpdateError("tcp_remote_write_stall")
+	}
+	log.Printf(
+		"tcp stream remote write stalled forward_id=%d stage=remote_write reason=stall selection_ref=%s candidate_hash=%s stall_ms=%d lifetime_ms=%d upstream_bytes=%d downstream_bytes=%d alternative_path=%t local_path_avoided=%t global_scored=false",
+		ident.forward, ident.selection, ident.candidateKey, stallBound.Milliseconds(), time.Since(started).Milliseconds(),
+		upstreamBytes, downstreamBytes, alternative, isolated)
 }
 
 type relayCopyResult struct {

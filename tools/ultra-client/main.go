@@ -85,6 +85,10 @@ type Config struct {
 	ProbeSamples             int                 `json:"probe_samples"`
 	ProbeIntervalMillis      int                 `json:"probe_interval_ms"`
 	ZoneAliases              map[string][]string `json:"zone_aliases"`
+	// TCPWriteStallSeconds bounds how long a write to the relay may make no
+	// progress before the stream is torn down and scored against its path.
+	// 0 = default (10 s), negative = disabled, otherwise clamped to [3, 300].
+	TCPWriteStallSeconds int `json:"tcp_write_stall_seconds,omitempty"`
 	// ExternalUoT is an explicit opt-in UDP-over-TCP path which terminates at
 	// an operator-owned sidecar over the existing Ultra command-1 carrier.
 	// Native command-3 UDP remains the default when this is disabled.
@@ -421,6 +425,96 @@ func writeXor(writer io.Writer, payload []byte) error {
 	return writeAll(writer, encoded)
 }
 
+// remoteWriteProgressTimeout is how long a write to the relay may make no
+// progress while the local side still has bytes to send. A provider that
+// accepted the connection and then stopped reading used to pin the stream in a
+// blocking write until the runtime stopped (452-673 s in the 2026-09-24
+// matrix), and every later stream kept choosing the same dead candidate. The
+// deadline is re-armed whenever the socket accepts a byte, so it measures time
+// without progress, never the duration of a slow write. Silence the other way
+// (an upload that gets no reply, or a stream with nothing to send) never
+// blocks a write and never trips it.
+const remoteWriteProgressTimeout = 10 * time.Second
+
+// Bounds for the operator-configurable tcp_write_stall_seconds.
+const (
+	remoteWriteStallMin = 3 * time.Second
+	remoteWriteStallMax = 300 * time.Second
+)
+
+// resolveTCPWriteStall turns tcp_write_stall_seconds into the per-stream bound:
+// 0 is the default, a negative value disables the timer, and anything else is
+// clamped to [remoteWriteStallMin, remoteWriteStallMax].
+func resolveTCPWriteStall(config Config) time.Duration {
+	switch seconds := config.TCPWriteStallSeconds; {
+	case seconds < 0:
+		return -1
+	case seconds == 0:
+		return remoteWriteProgressTimeout
+	default:
+		value := time.Duration(seconds) * time.Second
+		return min(max(value, remoteWriteStallMin), remoteWriteStallMax)
+	}
+}
+
+// progressWriteDeadline returns the deadline for the next attempt of a remote
+// write. nil keeps the socket's own deadline, which is what the handshake and
+// the callers that do not opt in rely on.
+type progressWriteDeadline func() time.Time
+
+// errRemoteWriteStall is a write to the relay that made no progress for the
+// stall bound while the local side still had bytes to send.
+var errRemoteWriteStall = errors.New("remote write stalled")
+
+// isWriteTimeout reports whether err is a deadline expiry rather than a
+// connection failure.
+func isWriteTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
+}
+
+// writeAllProgress writes payload, re-arming the deadline before every attempt.
+// A deadline that expires after the socket accepted at least one byte is
+// progress, so the remainder is retried under a fresh deadline; only an attempt
+// that accepted nothing for the whole bound is a stall.
+func writeAllProgress(destination net.Conn, payload []byte, deadline progressWriteDeadline) error {
+	if deadline == nil {
+		return writeAll(destination, payload)
+	}
+	for len(payload) > 0 {
+		if err := destination.SetWriteDeadline(deadline()); err != nil {
+			return err
+		}
+		count, err := destination.Write(payload)
+		if count < 0 || count > len(payload) {
+			return errors.New("writer returned invalid count")
+		}
+		payload = payload[count:]
+		if err != nil {
+			if isWriteTimeout(err) {
+				if count > 0 {
+					continue
+				}
+				return fmt.Errorf("%w: %w", errRemoteWriteStall, err)
+			}
+			return err
+		}
+		if count == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func writeXorProgress(destination net.Conn, payload []byte, deadline progressWriteDeadline) error {
+	encoded := xorOne(payload)
+	defer clearBytes(encoded)
+	return writeAllProgress(destination, encoded, deadline)
+}
+
 var (
 	errStreamAuthenticationRejected   = errors.New("stream authentication rejected")
 	errStreamCommandRejected          = errors.New("stream command rejected")
@@ -701,6 +795,13 @@ func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter,
 // end can be attributed to the local application (local_read), the relay leg
 // (remote_write) or policy, instead of only an error class.
 func copyOutboundStaged(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error, string) {
+	return copyOutboundStagedWithDeadline(destination, source, limiter, status, nil)
+}
+
+// copyOutboundStagedWithDeadline is copyOutboundStaged with a progress deadline
+// on every write to the relay (see writeAllProgress). A nil deadline keeps the
+// previous behaviour exactly.
+func copyOutboundStagedWithDeadline(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter, deadline progressWriteDeadline) (int64, error, string) {
 	buffer := make([]byte, 32*1024)
 	var total int64
 	for {
@@ -710,7 +811,7 @@ func copyOutboundStaged(destination net.Conn, source net.Conn, limiter *PolicyLi
 				return total, err, "policy"
 			}
 			status.AddUsage(0, count)
-			if err := writeXor(destination, buffer[:count]); err != nil {
+			if err := writeXorProgress(destination, buffer[:count], deadline); err != nil {
 				return total, err, "remote_write"
 			}
 			total += int64(count)

@@ -266,6 +266,32 @@ func (s *PolicyStore) collapseGlobalOutageLocked(protocol string, now time.Time)
 	}
 }
 
+// hasOtherUsablePath reports whether a new stream could be served by an
+// authorized, unexpired, non-isolated path other than key. Evidence against a
+// path only helps when there is somewhere else to go.
+func (s *PolicyStore) hasOtherUsablePath(protocol, key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	if s.policy == nil || !s.policy.ExpiresAt.After(now) {
+		return false
+	}
+	for _, lease := range append([]*ProviderLease{s.lease}, s.candidates...) {
+		if lease == nil || !lease.ExpiresAt.After(now) || operatorQuarantines(s.config, *lease, protocol, now) {
+			continue
+		}
+		other := haPathKey(*lease)
+		if other == key {
+			continue
+		}
+		if until, isolated := s.isolated[protocol+":"+other]; isolated && until.After(now) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (s *PolicyStore) pathIsAuthorizedLocked(key string) bool {
 	matched := s.lease != nil && haPathKey(*s.lease) == key
 	for _, l := range s.candidates {
