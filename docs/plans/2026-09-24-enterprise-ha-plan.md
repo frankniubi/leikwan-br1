@@ -345,3 +345,14 @@ Raw data is in `tmp/matrix-20260924/`.
   3. Then verify D2: reinstall Windows 0.1.20.57 and macOS 1.0.50 and watch them self-update within 10 min.
   4. Fault injection: kill the runtime, then a 10-min panel block.
   5. Revisit the interleave only with a Windows-specific test.
+
+## Re-run without the interleave (2026-09-25 02:28-03:02 +08) — release still held
+
+- The interleave rollback landed on the panel at 18:07:59 UTC (the deployed `UltraMaterialService.php` matches 42652e2e byte for byte). Both runs below started after it. Windows was on 0.1.20.58; the HK and TYO pumps answered `LKSTAT`.
+- **54 SHA→TYO, Windows (gate5, the cell cut off last night): PASS.** TCP 19.996 Mbps, UDP loss 0.0105 %. 54 now passes on all three OS. Test forwards 242/243, left enabled by the interrupted run, were disabled when it ended.
+- **46 SHA→HKG, Windows (gate6): FAIL twice** without the interleave. UDP loss 5.36 %, then 8.24 %; TCP 20.00, then 18.96 Mbps. **The interleave was not the cause.**
+  - Signature: the same UoT lag cascade as before. Carriers on both UDP candidates (`551e7a4c`, `96027ab4`) are condemned 2–7 s after attach with `every datagram waited at least 1s … worst 1.7–6.7 s`. It comes in bursts (the first minute, then 02:45–02:47 in run 1; 02:52–02:58 in run 2) and is clean in between.
+  - `carrier_sndbuf=65536` is not the cause: every Windows run reports it, including those that passed, because Windows sizes the buffer dynamically by design.
+- **Confound, present during every run tonight:** service 11 expired at 14:43 UTC but keeps `status=active`. Its enabled forwards 158/159/170/171 are on the Windows and Linux test hosts. The Windows host re-reconciles every 2–3 s (`preparing_routes 0/7→7/7`, stop/start of those 4 forwards). The panel issued ~1,870 leases each for 226 and 227 in 11.5 min across 4 devices; the last 20 k requests were 6,697 lease and 5,753 config pulls. Linux has the same forwards and passed 46, so this is not proven to cause the Windows loss, but the gate is not clean while it runs. d49d1fc0 removes it; it uses the broker's own expiry test, so it only omits forwards the broker already refuses.
+- Side finding, not changed: `LeigodTokenBroker::parseServiceExpiry` uses `strtotime()` under PRC. If `services.expire_at` is UTC (the DB session is UTC), the broker refuses a service 8 h before it expires. d49d1fc0 copies that test on purpose, so config and broker agree.
+- **Next:** deploy d49d1fc0, then re-run 46 Windows. If it still fails, investigate the Windows carrier on the HK relays (per-candidate A/B, send-queue timeline) before any publish.
