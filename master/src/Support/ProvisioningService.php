@@ -3860,9 +3860,8 @@ final class ProvisioningService
             // clients such a forward as active made every one of them treat it as
             // a dead runtime and re-pull and re-lease every forward every few
             // seconds. Same expiry test as the broker (LeigodTokenBroker).
-            $serviceExpiry = trim((string) ($forward['service_expire_at'] ?? ''));
-            $serviceExpiresAt = $serviceExpiry !== '' ? strtotime($serviceExpiry) : false;
-            if ($serviceExpiresAt !== false && $serviceExpiresAt <= time()) {
+            $serviceExpiresAt = $this->serviceExpiryTimestamp((string) ($forward['service_expire_at'] ?? ''));
+            if ($serviceExpiresAt !== null && $serviceExpiresAt <= time()) {
                 continue;
             }
             $row = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
@@ -6106,8 +6105,8 @@ final class ProvisioningService
         if (!is_array($forward) || (string) ($forward['service_status'] ?? '') !== 'active') {
             return null;
         }
-        $serviceExpiry = trim((string) ($forward['expire_at'] ?? ''));
-        if ($serviceExpiry !== '' && ($expiry = strtotime($serviceExpiry)) !== false && $expiry <= time()) {
+        $serviceExpiry = $this->serviceExpiryTimestamp((string) ($forward['expire_at'] ?? ''));
+        if ($serviceExpiry !== null && $serviceExpiry <= time()) {
             return null;
         }
         $client = $this->db->fetchOne('SELECT group_id FROM clients WHERE id = :client_id LIMIT 1', ['client_id' => $clientId]);
@@ -10911,6 +10910,24 @@ final class ProvisioningService
     private function nextBillingCycleStart(DateTimeImmutable $cycleStart): DateTimeImmutable
     {
         return $cycleStart->modify('+1 month');
+    }
+
+    /**
+     * services.expire_at is written in UTC. strtotime() would read it in
+     * date.timezone, which is PRC for the panel's CLI workers, and treat a
+     * service as expired eight hours early. Same parse as LeigodTokenBroker.
+     */
+    private function serviceExpiryTimestamp(string $value): ?int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function asUtcDateTime(string $value): DateTimeImmutable

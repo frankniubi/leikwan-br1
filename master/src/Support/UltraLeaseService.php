@@ -1153,9 +1153,26 @@ final class UltraLeaseService
             'native_unrestricted_allowed' => $this->planFlagsAllowUnrestricted($row),
             'rate_limit_mbps' => 0,
             'quota_remaining_bytes' => UltraMode::MAX_QUOTA_LEASE_BYTES,
-            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', strtotime((string) ($row['expire_at'] ?? '')) ?: $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $this->serviceExpiryTimestamp((string) ($row['expire_at'] ?? '')) ?? $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS),
             'policy_generation' => hash('sha256', implode("\n", [$forwardId, $state, hash('sha256', $target), $transport, '0', (string) UltraMode::MAX_QUOTA_LEASE_BYTES])),
         ];
+    }
+
+    /**
+     * services.expire_at is written in UTC; strtotime() would read it in
+     * date.timezone (PRC for the panel's CLI workers).
+     */
+    private function serviceExpiryTimestamp(string $value): ?int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function parseTimestamp(string $value): ?int

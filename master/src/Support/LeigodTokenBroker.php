@@ -696,14 +696,22 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         }
     }
 
+    /**
+     * services.expire_at is written in UTC. strtotime() would read it in
+     * date.timezone, which is PRC for the panel's CLI workers, and refuse a
+     * service eight hours before it expires.
+     */
     private function parseServiceExpiry(string $value): ?int
     {
         $value = trim($value);
         if ($value === '') {
             return null;
         }
-        $timestamp = strtotime($value);
-        return $timestamp === false ? null : (int) $timestamp;
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function formatTimestamp(int $timestamp): string
