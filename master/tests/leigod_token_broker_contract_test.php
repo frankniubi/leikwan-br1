@@ -193,6 +193,24 @@ $quotaForward = [
 ];
 $quotaGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(isset($quotaGrant['44']), 'quota canary grant was not issued');
+// Ordinary usage must not rotate the policy generation: every usage report
+// moved the remaining quota, minted a new generation and revoked the leases of
+// every active device every few seconds under load.
+$usageForward = $quotaForward;
+$usageForward['quota_remaining_bytes'] = 1536 * 1024 * 1024;
+$usageBase = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+$usageForward['quota_remaining_bytes'] -= 10 * 1024 * 1024;
+$usedGrant = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+assertUltraContract(
+    ($usedGrant['44']['policy_generation'] ?? '') === ($usageBase['44']['policy_generation'] ?? 'x'),
+    'ten megabytes of usage rotated the policy generation'
+);
+$usageForward['quota_remaining_bytes'] = 400 * 1024 * 1024;
+$halvedGrant = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+assertUltraContract(
+    ($halvedGrant['44']['policy_generation'] ?? '') !== ($usageBase['44']['policy_generation'] ?? ''),
+    'a quota that fell by more than half kept the policy generation'
+);
 $quotaForward['quota_remaining_bytes'] = 0;
 $exhaustedGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(!isset($exhaustedGrant['44']), 'cached grant survived an exhausted Panel quota');

@@ -584,6 +584,26 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
     }
 
     /** @param array<string, mixed> $request */
+    /**
+     * The quota as the policy generation sees it: exhausted, or the power of
+     * two it falls in. The exact remaining bytes move with every usage report;
+     * hashing them rotated the generation, and revoked every active device's
+     * leases, every few seconds under load. Grant reuse still requires the
+     * remaining quota to cover the cached grant's slice, and an exhausted quota
+     * still ends the grant, so only the churn goes away.
+     */
+    private function quotaGenerationBucket(int $quotaBytes): string
+    {
+        if ($quotaBytes <= 0) {
+            return '0';
+        }
+        $bits = 0;
+        for ($value = $quotaBytes; $value > 1; $value >>= 1) {
+            $bits++;
+        }
+        return 'q' . $bits;
+    }
+
     private function quotaBytes(array $request): int
     {
         $keys = ['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'];
@@ -624,7 +644,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             hash('sha256', (string) ($request['target'] ?? '')),
             (string) ($request['transport'] ?? ''),
             (string) ($request['speed_limit_mbps'] ?? 0),
-            (string) $quotaBytes,
+            $this->quotaGenerationBucket($quotaBytes),
             (string) ($request['service_expire_at'] ?? ''),
             $materialFingerprint,
         ];
