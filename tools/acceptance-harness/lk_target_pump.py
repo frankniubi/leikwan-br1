@@ -24,6 +24,7 @@ UDP_PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 62101
 TCP_PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 62102
 MAGIC = b"LKT1"
 STAT_QUERY = b"LKSTAT"
+IDLE_TIMEOUT_SECONDS = 60
 stats = {"udp_rx": 0, "udp_tx": 0, "udp_bytes": 0, "tcp_conns": 0, "tcp_bytes": 0,
          "stat_queries": 0, "started": time.time()}
 
@@ -73,6 +74,10 @@ def udp_pump():
 class TcpHandler(socketserver.BaseRequestHandler):
     def handle(self):
         stats["tcp_conns"] += 1
+        # A peer that vanished without a FIN (a relay that dropped the stream,
+        # a client that went away) must not pin a thread forever: 128 such
+        # threads wedged the Frankfurt pump and falsified a line sweep.
+        self.request.settimeout(IDLE_TIMEOUT_SECONDS)
         first = True
         try:
             while True:
