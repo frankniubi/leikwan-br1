@@ -188,3 +188,17 @@ Disk space: 2.7 GB free (93% used). A build needs about 1.4 GB. The old `~/mac-b
   - Guaranteeing 30 min needs a provider-side change: either a longer real token lifetime, or two independent sessions per line, alternated, so a re-acquisition never kills the credential clients hold. Both need a controlled experiment on a line no production forward depends on.
 
 - Online check with Linux connected (08:03:22 re-acquisition of line 325): the new policy generation reached the runtime 32 s later and the SS-none canary had no failure. Online clients are therefore unaffected by re-acquisition. Only offline survival is bounded by it.
+
+## Result: enforced Windows blackout (07:49-08:19 +08) and the root cause of the credential gap
+
+- Windows, blocked with the program-scoped firewall rule and the Public profile enabled:
+  - 0 policy-generation changes, so the block held.
+  - Original runtime PIDs throughout.
+  - TCP failed from 08:02:59 with the policy still `active` (542 s left). UDP over the existing UoT carrier held until about 08:05.
+  - The policy lapsed at 08:12. Service resumed 55 s after unblock; the control-plane backoff was at its 60 s cap.
+- Line 325 was re-acquired at 07:52:23 and again at 08:03:22 (the panel upload time; the source-side acquisition is ~20-30 s earlier). The Windows failure began when the credential was 11 minutes old. **Re-acquiring a line invalidates the credential previously issued for it.** Token age is not the cause.
+- Online impact: Linux was online at the 08:23:31 re-acquisition. One canary failed at 08:23:52, and the new generation reached the runtime at about 08:24:00. **Every re-acquisition leaves online clients a ~30-60 s window** in which new TCP connections on that line fail. This happens about every 20 min per line. It is present in production today, is independent of this candidate, and plausibly explains the periodic `tcp_http_response_invalid` clusters and the macOS probe's 88.9 % availability.
+- A fix lives on the material source side, not in the clients:
+  1. Minimum: acquire, upload and wake clients per line in one step, to shrink the gap to seconds.
+  2. Proper: keep two independent provider sessions per line and hand clients both as HA candidates (the runtime already accepts up to 4). Re-acquisitions alternate, so a live credential always exists. This removes the online gap and gives offline survival of up to two re-acquisition intervals.
+- Whether option 2 needs a second LeiGod account depends on whether one account can hold two concurrent credentials for the same line.
