@@ -252,3 +252,16 @@ Raw data is in `tmp/matrix-20260924/`.
   - Linux and Windows logged `tcp first-flight compatibility` once per stream. macOS gets the config over stdin, so the evidence there is behavioural.
   - UDP was clean in both arms.
   - Next: decide whether to widen the target allowlist. The evidence so far is one target reached through two directions.
+
+## Regression on candidate 2026.09.24.3 (Windows 0.1.20.56, macOS 1.0.49, Linux agent 2026.09.24.3)
+
+- Confirmed fixes:
+  - A stuck relay stream now ends after 10 s without progress (`stage=remote_write reason=stall`, `remote_write_stall` HA events). On 56 the longest stream lasted 43 s; before, streams lingered 452–673 s.
+  - FRA and MOS pass on all platforms under the direction-wide rule.
+  - Controls 46 and 54 pass; the one 54 Windows failure is explained below and passed on repeat.
+  - No restarts; all 20 PID checks matched.
+- Found and being fixed before release:
+  1. The first-flight list was built from lines with fresh material at pull time; MOS got 4–6 of its 8 lines. Fixed in `f2216c17` (all enabled lines, cap 16) and deployed at about 17:40 +08.
+  2. The Desktop `ToBootstrapPayload` drops the pilot for the runtime's whole lifetime when the starting lease is not on the list. This is the likely cause of one unexplained macOS FRA stall (runs went pass, fail, pass). Removing the gate is in progress.
+  3. After a line re-acquisition, the Windows client kept a dead credential for about 130 s; it renews only on `renew_after`. Failure-driven renewal on Desktop and Android is in progress.
+  4. Windows External-UoT on SHA→LAX still loses 7.93 % (was 13.9 %), with 8,636 queue drops and `carrier_sndbuf=2097152`. The same carrier on macOS lost 0.055 %. Root-cause work is in progress.
