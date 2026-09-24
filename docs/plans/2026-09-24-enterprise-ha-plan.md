@@ -356,3 +356,39 @@ Raw data is in `tmp/matrix-20260924/`.
 - **Confound, present during every run tonight:** service 11 expired at 14:43 UTC but keeps `status=active`. Its enabled forwards 158/159/170/171 are on the Windows and Linux test hosts. The Windows host re-reconciles every 2–3 s (`preparing_routes 0/7→7/7`, stop/start of those 4 forwards). The panel issued ~1,870 leases each for 226 and 227 in 11.5 min across 4 devices; the last 20 k requests were 6,697 lease and 5,753 config pulls. Linux has the same forwards and passed 46, so this is not proven to cause the Windows loss, but the gate is not clean while it runs. d49d1fc0 removes it; it uses the broker's own expiry test, so it only omits forwards the broker already refuses.
 - Side finding, not changed: `LeigodTokenBroker::parseServiceExpiry` uses `strtotime()` under PRC. If `services.expire_at` is UTC (the DB session is UTC), the broker refuses a service 8 h before it expires. d49d1fc0 copies that test on purpose, so config and broker agree.
 - **Next:** deploy d49d1fc0, then re-run 46 Windows. If it still fails, investigate the Windows carrier on the HK relays (per-candidate A/B, send-queue timeline) before any publish.
+
+## Released 2026.09.25.1 (2026-09-25 05:16 +08)
+
+Published with `deploy-client-artifacts.py` (`status=committed`, 21:16:37–21:16:49 UTC). Backup: `/root/codex-backups/ultra-recovery-20260925-1`. The public manifest and downloaded payloads (headless zip, Linux runtime, `client-agent.py`, Linux agent) match the plan hashes.
+
+**Release gate, final (600 s, 20+20 Mbps):** 49 PEK→FRA ×3 PASS, 54 SHA→TYO ×3 PASS, 46 SHA→HKG ×3 PASS (Windows and Linux first run; macOS on the allowed rerun).
+
+What was changed on the way:
+
+1. **Lease storm fixed.** d49d1fc0 plus 5514f728 were deployed at 19:32:54 UTC. Backup and `rollback.sh` are in `/root/codex-backups/panel-expiry-utc-20260925/`.
+   - Clients stopped the four expired service-11 forwards right away.
+   - Config pulls fell from ~72/min to ~25/min, leases from ~15/min to ~8/min.
+2. **Timezone fixed (5514f728).** `services.expire_at` is UTC, but the broker, the config filter and the plan lease parsed it with `strtotime()`.
+   - The web FPM (PHP 8.3) is UTC. The CLI (`/usr/bin/php`, 8.2, used by crons, workers and scripts) is PRC, so every CLI-built grant or config expired a service 8 h early.
+   - All three now parse it as UTC. A regression test forces `Asia/Shanghai`.
+   - The full PHP suite shows the same 24 failures before and after, all of them pre-existing.
+3. **The real cause of 46 Windows was the backup lines added last night, not the interleave or the storm.**
+   - The passing run (14:25 UTC) used line 818 (Shanghai ingress).
+   - Every failing run used line 197 (Guangzhou ingress) and line 15 (Beijing ingress). The client ranks candidates by probe quality, so these cross-region lines won over 818.
+   - From the Windows test host, UoT carriers through them fall behind at 20 Mbps in bursts. Linux passes on the same line.
+   - Fix: lines 15, 684 and 197 are disabled in combo 46 (`forward_combination_ultra_lines.enabled=0`), leaving 818 only. Rollback: `/root/codex-backups/combo46-primary-only-20260925/rollback.sh`.
+   - With 818 only, Windows passed 20.001 Mbps with 0 % UDP loss.
+4. **Panel host outage, 20:00–20:24 UTC.** 8 GB RAM and no swap: MariaDB 3.7 GB (buffer pool 4 GB, data 2.8 GB), 77 php-fpm workers 2.8 GB, postgres 0.7 GB.
+   - Page cache was starved to ~300 MB and the box thrashed (load 57).
+   - cloudflared stalled (log lines written 2 min late, QUIC handshakes timing out), and the public endpoint returned 530. Clients' policies lapsed.
+   - Fix: a 4 GB swap file `/swapfile-lk` (in fstab) and `vm.swappiness=10`. Rollback: `/root/codex-backups/panel-swap-20260925/rollback.sh`.
+   - Load was back to <1.5 within 5 min. About 2.8 GB of MariaDB's cold buffer pool now sits in swap, and the box has been stable since.
+   - **The owner should right-size this box:** `innodb_buffer_pool_size` about 2.5–3 G, lower `pm.max_children` (php83=120, php82=200), or more RAM. This was not changed tonight.
+
+Open items:
+
+- **Windows UoT carrier on ~30 ms (cross-region) ingress at 20 Mbps** falls behind in bursts where Linux does not. This needs runtime work (Windows send-buffer and ISB behaviour; see the history of the fixed 2 MiB `SO_SNDBUF` that fc77c20d removed).
+  - Combos 47 (SHA→SIN) and 53 (FOC→TPE) still carry cross-region backup lines. They have no enabled forwards today.
+- **Combo 46 is single-line again.** A re-acquisition of line 818 resets every stream on it, as seen in the macOS first run at 20:54:10 UTC: 4 TCP resets, harness idle. This is the accepted single-line limitation until same-ingress backup lines, or dual sessions, exist.
+- The first-run macOS reset at 20:54:10 did not line up with a material upload (uploads came in batches at 20:47–20:51 and 21:08–21:12). Most likely the 20:51 re-acquisition of 818 plus Desktop renewing only on `renew_after`; not proven.
+- Remaining plan steps: watch the fleet converge (D2), then fault injection (kill the runtime, a 10-min panel block).
