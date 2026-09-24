@@ -213,3 +213,16 @@ Disk space: 2.7 GB free (93% used). A build needs about 1.4 GB. The old `~/mac-b
   - The previous copy matched git `86c87831` exactly.
   - Backup and `rollback.sh` are in `/root/codex-backups/source-agent-per-line-20260924/`.
   - Each line is uploaded right after it is acquired. A review uploads its fresh material before the probe runs; previously review material was never uploaded, which left clients on a dead credential for up to ~20 min.
+
+## Final candidate artifacts (tmp/candidate-20260924-3, source 5e96069c + runtime 2026.09.24.2.5462fcaf)
+
+| Artifact | Version | SHA-256 |
+|---|---|---|
+| Windows setup (GUI) | 0.1.20.55 | `3b78e53a2e319dd52910adda6b31b1b1d2d6f6f797eceae8e2440858e0ff3b99` |
+| Windows headless zip | 0.1.20.55 | `0c1d87b1002a99f2b9a928932acc7de5e9fce86fc7807d989f3fcedee5f6657c` |
+| macOS arm64 / x64 DMG + update zips | 1.0.48 | built on the remote Mac (`~/mac-build-1.0.48/artifacts/macos/`) |
+| Android APK | 0.2.31 (33) | `741f209cf8226b49fee8dd47409b735d9c1ff6ecb04eb7489b9cb3fdbbc54d60`; v3.1 release cert `700adc0a…`, v2/v3.0 legacy `2fde6e1e…` |
+| Linux frozen agent | 2026.09.24.2 | `0a72759c…` (two byte-identical builds) |
+| Ultra runtime Linux amd64 / Windows | 2026.09.24.2.5462fcaf | `1c1e88c8…` / `77d2aa44…` |
+
+Installed on the test hosts: Linux (agent + runtime, updater hold), Windows 0.1.20.55 (upgraded over 0.1.20.54 by the new installer in 31 s), and macOS 1.0.48 (launchd daemon).
