@@ -271,5 +271,5 @@ Raw data is in `tmp/matrix-20260924/`.
 - **Offline survival target: 10 min** (lowered from 30).
   - Current behaviour: a line is re-acquired about every 20 min, and each re-acquisition invalidates the credential clients hold for that line. An outage starting at a random moment therefore gets 0–20 min on a single-line forward, about 10 min on average; 16 min was measured.
   - Multi-line forwards last longer, because the new write-stall detection moves streams to lines whose re-acquisition is at a different phase.
-  - A guaranteed 10-minute floor needs dual sessions per line. The owner still has to choose between accepting the average (A) and building dual sessions (B).
+  - A guaranteed 10-minute floor would need dual sessions per line. **Accepted by the owner (option A):** about 10 min on average, longer on multi-line forwards, and close to 0 in the worst case on a single-line forward. No credential-side change in this release.
 - **HKG→mainland (combo 56) deferred.** It is excluded from the acceptance gate. Its only line is broken, which is a provider/line issue, not a client one.
