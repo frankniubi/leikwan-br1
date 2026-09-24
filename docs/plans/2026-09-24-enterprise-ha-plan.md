@@ -138,3 +138,53 @@ The remote Mac (`leikwan@100.103.253.21`) has Go 1.26.8 at `~/.go126/bin` and th
 3. Sign (ad-hoc, rcodesign) and repackage on Windows with `scripts/build-macos-client-bundle.py`. Build the DMG with `package-macos-client.sh` (hdiutil) on the Mac.
 
 Disk space: 2.7 GB free (93% used). A build needs about 1.4 GB. The old `~/mac-build-1.0.27`, `1.0.43` and `1.0.45` directories take about 1.5 GB and can be removed if space runs out; they are old build outputs, and the installed app does not depend on them.
+
+## Candidate 2026.09.24.2 (commit 5462fcaf): deployment log
+
+- **Panel:** 7 files deployed on 2026-09-24 at about 06:05 +08.
+  - Backup and `rollback.sh` are in `/root/codex-backups/panel-offline-validity-20260924/`.
+  - `/api/health` returned 200 afterwards; the access log shows no new 5xx.
+  - `.env`: `ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS=1200` was set at 06:10 and **reverted at 08:05**. Re-acquiring earlier makes grants look longer. But re-acquisition is what kills an offline client's credential, and at 1200 lines were re-acquired every ~11 min instead of ~21. Both `.env` versions are in the backup directory.
+  - The material lifetime on the source agent (`10.10.10.171`) is unchanged at 1800 s. LeiGod's real token lifetime is unconfirmed, so it should not be raised to 3600 s until a token-age test proves the relay still accepts it.
+- **Linux test host:** candidate agent `0a72759c…` and runtime `1c1e88c8…`.
+  - Backup and `rollback.sh` are in `/root/cand-backup-20260924-2/`.
+  - An updater hold is active for 23 h. The agent ignores holds longer than 24 h: the first attempt used 72 h, the hold was ignored, and 2026.09.24.1 was reinstalled.
+  - After the move, all 5 forwards were on the new runtime with grants of 1300–1600 s.
+- **Windows test host:** headless 0.1.20.54 (zip `c4832ec6…`), installed over the live 0.1.20.53 service with the new installer.
+  - 31 s: stop, drain, backup, swap, service update, and a health gate that reported RUNNING and connected. Before this fix, the same reinstall failed with a locked `clrjit.dll` and error 1073.
+  - Forwards 158/159/170/171 are running, with 17–22 min grants after the first renew.
+- **Correction: the first two Linux blackouts (10 min and a partial 30 min) are invalid as outage tests.** The hosts entries blocked only IPv4, and the agent kept renewing over IPv6 (Cloudflare AAAA records). What those runs do show is that the runtimes stayed up with 0 restarts for 26 min while the agent lost IPv4 to the panel. The retries with `100::1` entries (Linux) and a firewall block on resolved addresses (Windows) leaked too: both clients resolve the panel through their own anti-pollution DoH, and the CDN returns different addresses per resolver, so renewals kept succeeding. Address lists cannot simulate an outage. The valid method cuts the control-plane process itself off the network:
+  - Linux: `iptables`/`ip6tables -m cgroup --path system.slice/leikwan-client-agent.service ! -o lo -j REJECT`.
+  - Windows: an outbound firewall block for `leikwan-bridge-headless.exe` only; the runtimes are a separate program.
+
+  The data plane (`ultra-forward-*` units, `ultra-client.exe`) is untouched, which is exactly the situation of a dead panel. Each test runs as a systemd unit or SYSTEM scheduled task with a timed auto-unblock. The first Windows attempt died with its SSH session, leaving its (leaky) firewall rule in place for about 32 min; it has since been removed.
+- **macOS test host:** 1.0.47 (arm64 DMG `b46ee534…`) installed as a launchd daemon (KeepAlive, 65536 files). The hand-started 1.0.46 headless it replaced is backed up in `~/backups/pre-1.0.47-20260924-061646`.
+  - The first install attempt exposed an installer defect: it tried to downgrade to the published 1.0.45 and aborted on the mismatched published DMG. Fixed in `c1fa8663`. The Mac forwards were down for about 2 minutes.
+  - SS-none canary 3/3.
+- **Fault: SIGKILL of the host process.**
+
+  | Platform | Old runtimes exit | Host back | 10001 serving |
+  |---|---|---|---|
+  | Windows | 1 s (job object) | SCM restart at 6 s | 11 s |
+  | macOS | 2 s (`parent_pid` watch) | launchd respawn 1-126 s | host start + 6-7 s |
+
+  The slow macOS respawns are launchd waiting to reap the killed .NET process, which sat in state `U`. This happened in 3 of 4 runs and is not in our code.
+- **Fault: kill one runtime (forward 170).** Windows 11 s, macOS 11 s, then the SS-none canary passes.
+
+## Result: first valid 30-min panel blackout (Linux, agent cgroup cut off, 07:16-07:46 +08)
+
+- 0 renewals reached the agent, so the block held.
+- 0 runtime restarts; all 5 runtimes kept their original PIDs.
+- Service resumed 18 s after the block lifted, with a fresh grant.
+- The canary passed 67 times and failed 30:
+  - Serving was clean for the first ~16 min.
+  - Failures flickered from 07:32:39, and were continuous from 07:34:08. The policy was still `active` at that point, with 5.5 min left.
+  - The policy lapsed on schedule at 07:39:30, listeners stayed bound, and connections failed closed.
+- Forward 170's only active candidate is line 325 (`7fb395f1…`). The panel recorded a re-acquisition of line 325's provider material at 07:31:17, 82 s before the first failure. The next re-acquisition came at 07:52:23, a cadence of about 21 min.
+- The Mac is on the same line and was online throughout. Its SS-none probe (30 s) saw no failure around either re-acquisition, so online clients receive the replacement credential in time.
+- **Conclusion:** the client side now does what W1 asked for: no churn, fail-closed, and self-resume. The offline window, however, is bounded by the provider credential, not by the 30-min grant.
+  - Once a line is re-acquired, or once its token reaches roughly 21-22 min of age, the credential an offline client holds stops working. The two causes cannot be told apart yet.
+  - An outage starting at a random moment therefore gets between 0 and ~21 min of service.
+  - Guaranteeing 30 min needs a provider-side change: either a longer real token lifetime, or two independent sessions per line, alternated, so a re-acquisition never kills the credential clients hold. Both need a controlled experiment on a line no production forward depends on.
+
+- Online check with Linux connected (08:03:22 re-acquisition of line 325): the new policy generation reached the runtime 32 s later and the SS-none canary had no failure. Online clients are therefore unaffected by re-acquisition. Only offline survival is bounded by it.
