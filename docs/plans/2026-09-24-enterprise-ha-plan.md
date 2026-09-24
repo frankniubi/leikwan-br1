@@ -281,3 +281,47 @@ Raw data is in `tmp/matrix-20260924/`.
   - This includes SHA→LAX on Windows (was 7.9 / 13.9 %), and PEK→FRA/MOS with the direction-wide first-flight rule.
   - Raw data is in `tmp/matrix-20260924/<combo>-<os>-v4.json`.
 - **Phase 2** (release gate, 600 s at 20+20 Mbps; 46 SHA→HKG, 54 SHA→TYO and 49 PEK→FRA × 3 platforms): the first attempt was cut off, leaving test forwards 226/227 enabled. They were disabled at 14:21 UTC, and the gate is being re-run with the Phase 1 runner.
+- **Phase 2 result (2026-09-24 14:25–16:23 UTC):** 8 of 9 PASS (TCP 20.0 Mbps, 0 idle windows, 0 % UDP loss). 46 SHA→HKG passed on all three platforms; Linux passed only on its re-run. 54 SHA→TYO passed on all three. 49 PEK→FRA passed on Linux and macOS.
+  - **46 Linux, first run:** all four TCP streams were reset 1 s in. The direction's only line (818) was re-acquired in that same second. The harness does not reconnect, so every window after it counted as idle. This is the accepted single-line rotation limitation, not a new defect.
+  - **49 Windows:** UDP loss was 24.7 %, and 46.0 % on the re-run. Root cause and fix are below; the release is held for them.
+
+## UoT carrier lag cascade (found by the 49 Windows gate, fixed in 04cb156c)
+
+- One Frankfurt-side relay (candidate 6580fe8e) really does fall behind. The runtime correctly left it.
+- It then condemned every replacement carrier within 1–2 s of attach: `for 0s … worst 2–6 s, carrier age 1 s`. The result was 155 failovers bouncing between the two verified UDP candidates, and 330 k queue drops.
+- **Cause:** a replacement first replays the resend window (up to 2 MiB). The queue it inherits waited through the previous carrier's drain, the HELLO and that replay, and overflowed meanwhile. The writer charged that wait to the new carrier, and the overflow bypassed the 10 s attach grace.
+- **Fix:** a datagram's wait counts only from when this carrier's own work starts (attach, or the end of its replay). The overflow baseline is taken at the same point. A carrier whose own writes fall behind is still left.
+- **Test:** the regression test reproduces the production signature before the fix and passes after it. The full ultra-client suite passes.
+- Linux and macOS passed only because they started on the healthy sibling (747b53e3) and never lagged.
+
+## Full line sweep from the source host (2026-09-24/25)
+
+- **Method:**
+  - The sweep ran from the mainland source host (10.10.10.171).
+  - For every relay of every enabled line (59 in use or candidate lines, 162 relays) it ran the client's own stream handshake, then 2 paced TCP streams at 20 Mbps for 12 s. Each line pushed to the acceptance pump in its own destination region.
+  - It used the panel's current material for lines in use, and a local acquisition, never uploaded, for idle lines. No client credential was touched.
+  - Scripts: `tmp/matrix-20260924/linesweep.py`, `lk-line-export.php`, `run_sweep.sh`.
+- **Result:** 153 of 162 relays sustain ≥ 17 Mbps.
+- **Genuinely weak:**
+  - Line 41 (FOC→TPE, its only line): all relays 3–4 Mbps, measured from Shanghai.
+  - Line 653 (SHA→TYO): 2 of 3 relays at about 5.5 Mbps.
+  - Line 380 (北京-德国【WireGuard模式】): the stream handshake is refused on every attempt.
+  - One relay each on lines 347, 696 and 598 runs at 8–14 Mbps.
+- **Test-infrastructure faults found and fixed:**
+  - The first pass used the HK pump for every direction, which made Korea and US lines look slow.
+  - The LA and Frankfurt pumps had wedged. Frankfurt held 128 half-open connections, one parked thread each, and every PEK→FRA relay looked dead.
+  - Fix in 8c377468: 60 s idle timeout per pump connection, deployed to all six sidecars (`lk-pump.service`). The production UoT services were not touched.
+- **Applied to the panel 2026-09-25 with the owner's approval:**
+  - Backup lines for the single-line directions:
+    - 46 SHA→HKG: add 15, 684, 197.
+    - 47 SHA→SIN: add 399, 464, 433, 463.
+    - 53 FOC→TPE: add 120, 467, 625, 695, 900.
+  - Line 653 demoted (`admin_dispatch_class=low`).
+  - Backup and one-command rollback: `/root/codex-backups/backup-lines-20260925/rollback.sh`.
+
+## Credential lifetime (experiments on the source host)
+
+- Line 10's credential was rejected ("line not live") between 25.7 and 30.2 min after a single acquisition. Nothing re-acquired it in between.
+- Line 120's credential still authenticated at 40 min. A stream opened at acquisition stayed alive, heartbeating every 10 s, for the whole 42 min.
+- **So the lifetime is not a fixed 30 min, and an established stream outlives at least 40 minutes of credential age.** The rotation resets come from re-acquisition.
+- Alternating two provider accounts per line would therefore allow make-before-break rotation. This needs a second account and is the owner's decision.
