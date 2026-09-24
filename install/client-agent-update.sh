@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Release: 2026.09.24.2
+# Release: 2026.09.24.3
 umask 077
 CONFIG_PATH="/etc/leikwan-client-agent/config.json"
 REQUEST_TOKEN=""

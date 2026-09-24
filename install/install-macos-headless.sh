@@ -32,7 +32,7 @@
 # restarts it and rolls back if it does not come up connected. Set
 # "disable_auto_updates": true in the daemon config to turn it off.
 set -eu
-INSTALLER_VERSION="1.0.48"
+INSTALLER_VERSION="1.0.49"
 
 LABEL="com.leikwan.bridge.headless"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"

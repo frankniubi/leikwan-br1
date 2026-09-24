@@ -35,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-AGENT_VERSION = "2026.09.24.2"
+AGENT_VERSION = "2026.09.24.3"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
