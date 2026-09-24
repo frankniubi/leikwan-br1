@@ -3843,7 +3843,7 @@ final class ProvisioningService
         }
 
         $forwards = $this->db->fetchAll(
-            'SELECT f.id, f.service_id, s.status AS service_status
+            'SELECT f.id, f.service_id, s.status AS service_status, s.expire_at AS service_expire_at
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.enabled = 1
@@ -3855,6 +3855,16 @@ final class ProvisioningService
         $matched = [];
         foreach ($forwards as $forward) {
             $forwardId = (int) $forward['id'];
+            // A service past its expiry keeps status 'active' until billing
+            // catches up, but the Ultra broker already refuses it a grant. Handing
+            // clients such a forward as active made every one of them treat it as
+            // a dead runtime and re-pull and re-lease every forward every few
+            // seconds. Same expiry test as the broker (LeigodTokenBroker).
+            $serviceExpiry = trim((string) ($forward['service_expire_at'] ?? ''));
+            $serviceExpiresAt = $serviceExpiry !== '' ? strtotime($serviceExpiry) : false;
+            if ($serviceExpiresAt !== false && $serviceExpiresAt <= time()) {
+                continue;
+            }
             $row = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
             if ($row === null) {
                 continue;
