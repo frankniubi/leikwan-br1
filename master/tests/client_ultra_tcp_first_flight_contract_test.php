@@ -39,4 +39,16 @@ if (ClientAgentController::tcpFirstFlightForGrant($raw, $forward, [
 ]) !== null) {
     throw new RuntimeException('expired grant received compatibility mode');
 }
+$scoped = static fn (array $targets): string => json_encode([
+    'PEK -> FRA' => ['prefix_bytes' => 4, 'delay_ms' => 300, 'candidate_hashes' => [$candidate], 'targets' => $targets],
+], JSON_THROW_ON_ERROR);
+if (!is_array(ClientAgentController::tcpFirstFlightForGrant($scoped([strtoupper($forward['target'])]), $forward, $grant))) {
+    throw new RuntimeException('a listed target did not receive compatibility mode');
+}
+if (ClientAgentController::tcpFirstFlightForGrant($scoped(['198.51.100.9:443']), $forward, $grant) !== null) {
+    throw new RuntimeException('an unlisted target received compatibility mode');
+}
+if (ClientAgentController::tcpFirstFlightForGrant($scoped([]), $forward, $grant) !== null) {
+    throw new RuntimeException('an empty target allowlist received compatibility mode');
+}
 echo "PASS\n";

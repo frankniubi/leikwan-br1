@@ -1112,6 +1112,17 @@ final class ClientAgentController extends BaseController
         if ($prefixBytes < 1 || $prefixBytes > 16 || $delayMs < 1 || $delayMs > 1000 || $candidateHashes === []) {
             return null;
         }
+        // An optional target allowlist keeps a pilot to the targets the
+        // evidence came from instead of every forward of the direction.
+        if (array_key_exists('targets', $rule)) {
+            $targets = array_map(
+                static fn (mixed $value): string => strtolower(trim((string) $value)),
+                is_array($rule['targets']) ? array_slice($rule['targets'], 0, 16) : []
+            );
+            if (!in_array(strtolower($target), $targets, true)) {
+                return null;
+            }
+        }
         return [
             'target' => $target,
             'policy_generation' => $generation,
