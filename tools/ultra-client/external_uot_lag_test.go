@@ -144,6 +144,46 @@ func TestExternalUoTWriterLeavesALaggingCarrierAndKeepsTheQueue(t *testing.T) {
 	}
 }
 
+// A replacement carrier inherits a queue that already waited through the
+// previous carrier's drain and its own HELLO, and it first replays the resend
+// window; the queue waits and overflows behind that replay. A carrier fast
+// enough for the offered load is healthy; judging it by the age the datagrams
+// brought with them condemned every replacement within a second or two and
+// turned one slow relay into a failover loop.
+func TestExternalUoTWriterDoesNotChargeAFreshCarrierForItsInheritedBacklog(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	association := testUoTAssociation(ctx, 256, nil)
+	association.lag = externalUoTLagBounds{target: 300 * time.Millisecond, interval: 600 * time.Millisecond, grace: 10 * time.Second}
+	stale := time.Now().Add(-5 * time.Second)
+	for index := 0; index < 250; index++ {
+		association.budget.tryReserve(1200)
+		association.outbound <- externalUoTQueued{payload: datagram(index), queuedAt: stale}
+	}
+	// What the lagging carrier left unconfirmed: 2 MiB to replay first.
+	association.preserveRetry(pendingRange(1, uint64(externalUoTResendBytes/1200), 1200))
+	association.carrierAttachedAt = time.Now()
+	carrier := &slowCarrier{bytesPerSecond: 1_500_000} // ~12 Mbit/s against ~4.8 offered
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		association.externalUoTWriter(ctx, carrier, errs)
+	}()
+	deadline := time.Now().Add(4 * time.Second)
+	for index := 250; time.Now().Before(deadline); index++ {
+		association.enqueue(datagram(index))
+		time.Sleep(2 * time.Millisecond)
+		select {
+		case err := <-errs:
+			t.Fatalf("a fresh carrier working through its inherited backlog was left: %v", err)
+		default:
+		}
+	}
+	cancel()
+	<-done
+}
+
 func pendingRange(first, last uint64, size int) []externalUoTPending {
 	batch := make([]externalUoTPending, 0, last-first+1)
 	for sequence := first; sequence <= last; sequence++ {

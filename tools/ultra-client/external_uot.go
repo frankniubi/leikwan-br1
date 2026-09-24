@@ -1099,6 +1099,8 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 		bounds: association.lag.forStreak(association.lagStreak), attachedAt: association.carrierAttachedAt,
 		overflowsAtAtt: association.queueOverflows.Load(),
 	}
+	// countFrom is when this carrier's own queueing delay starts to count.
+	countFrom := lag.attachedAt
 	for {
 		var oldest time.Time
 		take := func(queued externalUoTQueued) {
@@ -1108,6 +1110,7 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 			}
 		}
 		batch := association.takeRetry()
+		replay := len(batch) > 0
 		if len(batch) == 0 {
 			select {
 			case <-ctx.Done():
@@ -1169,8 +1172,25 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 			clearBytes(encoded)
 			encoded = nil
 		}
+		if replay {
+			// A replacement carrier first replays what the previous one left
+			// unconfirmed (up to externalUoTResendBytes). The queue waits and
+			// overflows behind that replay; neither says anything about this
+			// carrier, so its clock and its overflow baseline start after it.
+			countFrom = time.Now()
+			lag.overflowsAtAtt = association.queueOverflows.Load()
+		}
 		if !oldest.IsZero() {
 			now := time.Now()
+			// The queue a carrier inherits waited while the previous carrier
+			// drained, while this one said HELLO, and while it replayed; that
+			// wait is not this carrier's lag. Counting it condemned every
+			// replacement within a second or two of attach (PEK->FRA on Windows,
+			// 2026-09-24: one slow relay became 155 back-to-back failovers and
+			// 25-46 % loss while the sibling relay was healthy).
+			if oldest.Before(countFrom) {
+				oldest = countFrom
+			}
 			if lag.observe(now, now.Sub(oldest), association.queueOverflows.Load(), len(association.outbound), cap(association.outbound)) {
 				select {
 				case errorsOut <- fmt.Errorf("%w: every datagram waited at least %s for %s (worst %s, carrier age %s)",
