@@ -11,7 +11,7 @@
     <!-- Native apphost/runtime select the architecture; keep managed IL portable
          so cross-architecture packaging can execute a real managed-load probe. -->
     <PlatformTarget>AnyCPU</PlatformTarget>
-    <Version>1.0.49</Version>
+    <Version>1.0.50</Version>
   </PropertyGroup>
 
   <Target Name="CreateMacBundleAppHost" AfterTargets="_CreateAppHost"
