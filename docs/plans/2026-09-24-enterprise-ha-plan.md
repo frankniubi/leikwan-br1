@@ -265,3 +265,11 @@ Raw data is in `tmp/matrix-20260924/`.
   2. The Desktop `ToBootstrapPayload` drops the pilot for the runtime's whole lifetime when the starting lease is not on the list. This is the likely cause of one unexplained macOS FRA stall (runs went pass, fail, pass). Removing the gate is in progress.
   3. After a line re-acquisition, the Windows client kept a dead credential for about 130 s; it renews only on `renew_after`. Failure-driven renewal on Desktop and Android is in progress.
   4. Windows External-UoT on SHA→LAX still loses 7.93 % (was 13.9 %), with 8,636 queue drops and `carrier_sndbuf=2097152`. The same carrier on macOS lost 0.055 %. Root-cause work is in progress.
+
+## Decisions (2026-09-24 evening)
+
+- **Offline survival target: 10 min** (lowered from 30).
+  - Current behaviour: a line is re-acquired about every 20 min, and each re-acquisition invalidates the credential clients hold for that line. An outage starting at a random moment therefore gets 0–20 min on a single-line forward, about 10 min on average; 16 min was measured.
+  - Multi-line forwards last longer, because the new write-stall detection moves streams to lines whose re-acquisition is at a different phase.
+  - A guaranteed 10-minute floor needs dual sessions per line. The owner still has to choose between accepting the average (A) and building dual sessions (B).
+- **HKG→mainland (combo 56) deferred.** It is excluded from the acceptance gate. Its only line is broken, which is a provider/line issue, not a client one.
