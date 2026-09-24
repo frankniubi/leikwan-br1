@@ -20,6 +20,8 @@ public sealed partial class UltraRuntimeFailureLog
         ("tcp stream ended ", "tcp_stream_ended"),
         ("tcp stream setup failed ", "tcp_stream_setup_failed"),
         ("tcp stream had no downstream bytes ", "tcp_stream_silent"),
+        ("tcp stream remote write stalled ", "tcp_remote_write_stall"),
+        ("external UoT carrier write stalled ", "external_uot_carrier_stall"),
         ("tcp candidate failed ", "tcp_candidate_failed"),
         ("udp candidate failed ", "udp_candidate_failed"),
         ("udp session failed ", "udp_session_failed"),

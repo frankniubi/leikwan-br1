@@ -1275,7 +1275,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
             "enabled": True,
             "sidecar_target": sidecar_target,
             "token": token,
-            "queue_packets": _bounded_external_int("queue_packets", 256, 1, 4096),
+            "queue_packets": _bounded_external_int("queue_packets", 4096, 1, 4096),
             "keepalive_seconds": _bounded_external_int("keepalive_seconds", 10, 5, 30),
             "reconnect_grace_seconds": _bounded_external_int("reconnect_grace_seconds", 30, 5, 300),
             "frame_payload_max": _bounded_external_int("frame_payload_max", 65507, 256, 65507),
