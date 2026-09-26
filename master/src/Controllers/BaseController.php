@@ -1940,7 +1940,7 @@ HTML;
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
-  <link rel="stylesheet" href="/assets/console.css?v=20260926">
+  <link rel="stylesheet" href="/assets/console.css?v=20260926b">
 </head>
 <body class="pg-app">
   <div class="shell">
