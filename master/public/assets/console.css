@@ -1613,3 +1613,72 @@ html body.pg-app label:has(> input[type="radio"]) {
 html body.pg-app td > input[type="checkbox"] {
   display: block;
 }
+
+/* ------------------------------------------------------ admin overview -- */
+
+html body.pg-app .grid.five {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
+}
+
+html body.pg-app .grid.one {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+html body.pg-app .console-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+html body.pg-app .console-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius-sm);
+  background: var(--c-surface);
+  color: var(--c-ink-2);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+html body.pg-app .console-total strong {
+  color: var(--c-ink);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+html body.pg-app a.console-total:hover {
+  border-color: var(--c-brand-line);
+  color: var(--c-brand);
+}
+
+html body.pg-app #recent-failed-tasks > .card {
+  height: 100%;
+  margin-top: 0 !important;
+}
+
+html body.pg-app details.console-danger-zone {
+  margin-top: 16px !important;
+  padding: 0 !important;
+  border: 1px solid var(--c-line) !important;
+  background: var(--c-surface) !important;
+}
+
+html body.pg-app details.console-danger-zone > summary {
+  padding: 14px 20px !important;
+  color: var(--c-ink) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app details.console-danger-zone > .card {
+  margin: 16px 20px !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app details.console-danger-zone > .card:last-child {
+  margin-bottom: 20px !important;
+}

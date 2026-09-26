@@ -63,63 +63,84 @@ final class AdminController extends BaseController
         }
         $csrf = $this->escape(SessionAuth::csrfToken());
 
-        $cards = [
-            ['label' => 'Tenants', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])['total'] ?? 0)],
-            ['label' => 'Services', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM services')['total'] ?? 0)],
-            ['label' => 'Plans', 'value' => count($this->provisioning?->listPlans() ?? [])],
-            ['label' => 'Slave Groups', 'value' => count($this->provisioning?->listNodeGroups() ?? [])],
-            ['label' => 'Nodes', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM nodes')['total'] ?? 0)],
-            ['label' => 'Queued Tasks', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM provision_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])['total'] ?? 0)],
-            ['label' => 'SSL Tasks', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM ssl_certificate_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])['total'] ?? 0)],
-        ];
-
-        $cardHtml = '';
-        foreach ($cards as $card) {
-            $cardHtml .= '<section class="card"><div class="muted">' . $this->escape($card['label']) . '</div><div class="stats">' . $card['value'] . '</div></section>';
-        }
-        $reputationService = new BondLegReputationService($this->db);
+        $count = fn(string $sql, array $bind = []): int => (int) ($this->db->fetchOne($sql, $bind)['total'] ?? 0);
         $queueHealth = $this->taskQueueHealth();
         $recentFailedTasks = $this->recentFailedProvisionTasks();
+        $nodesTotal = $count('SELECT COUNT(*) AS total FROM nodes');
+        $nodesActive = $count('SELECT COUNT(*) AS total FROM nodes WHERE status = :status', ['status' => 'active']);
+        $activeServices = $count('SELECT COUNT(*) AS total FROM services WHERE status = :status', ['status' => 'active']);
+        $queued = (int) $queueHealth['pending_count'] + (int) $queueHealth['running_count'];
+
+        // Health first: each tile links to the page where the operator acts on it.
+        $tile = fn(string $href, string $label, string $value, string $state): string => '<a class="card console-stat" href="' . $href . '">'
+            . '<span class="console-service-head"><span class="muted">' . $label . '</span>'
+            . ($state !== '' ? '<span class="badge ' . $state . '">' . ($state === 'success' ? 'OK' : 'Check') . '</span>' : '')
+            . '</span><span class="stats">' . $value . '</span></a>';
+        $healthTiles = $tile('#recent-failed-tasks', 'Failed tasks', (string) count($recentFailedTasks), $recentFailedTasks === [] ? 'success' : 'danger')
+            . $tile('#queue-maintenance', 'Queued tasks', (string) $queued, (int) $queueHealth['pending_count'] > 50 ? 'warning' : 'success')
+            . $tile('/admin/nodes', 'Nodes online', $nodesActive . ' / ' . $nodesTotal, $nodesTotal > 0 && $nodesActive < $nodesTotal ? 'warning' : 'success')
+            . $tile('/admin/services', 'Active services', (string) $activeServices, '');
+
+        $totals = [
+            ['/admin/tenants', 'Tenants', $count('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])],
+            ['/admin/services', 'Services', $count('SELECT COUNT(*) AS total FROM services')],
+            ['/admin/plans', 'Plans', count($this->provisioning?->listPlans() ?? [])],
+            ['/admin/node-groups', 'Slave Groups', count($this->provisioning?->listNodeGroups() ?? [])],
+            ['/admin/credentials', 'SSL Tasks', $count('SELECT COUNT(*) AS total FROM ssl_certificate_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])],
+        ];
+        $totalsHtml = '';
+        foreach ($totals as [$href, $label, $value]) {
+            $totalsHtml .= '<a class="console-total" href="' . $href . '"><span>' . $label . '</span><strong>' . (int) $value . '</strong></a>';
+        }
+
+        $shortcuts = [
+            ['/admin/tenants?view=create', 'Create Tenant'],
+            ['/admin/services?view=create', 'Activate Service'],
+            ['/admin/plans', 'Create Plan'],
+            ['/admin/forward-combinations?backend_mode=ultra', 'New Ultra Combination'],
+            ['/admin/nodes?view=install', 'Install a node'],
+            ['/admin/knowledgebase', 'Edit user guides'],
+        ];
+        $shortcutHtml = '';
+        foreach ($shortcuts as [$href, $label]) {
+            $shortcutHtml .= '<li><a href="' . $href . '">' . $label . '</a></li>';
+        }
+
+        $reputationService = new BondLegReputationService($this->db);
         $worstLegs = $reputationService->latestGlobalRows(10);
 
         $body = '
-            <div class="hero">
+            <div class="console-welcome">
               <div>
-                <h2>Admin Overview</h2>
-                <p class="muted">Use the left navigation to manage tenants, plans, credentials, clients, slave groups and slave nodes.</p>
-                <div class="actions" style="margin-top:16px;">
-                  <form class="inline" method="post" action="/admin/republish/all">
-                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                    <button type="submit" class="button danger" onclick="return confirm(\'Republish all forwards?\');">Republish All Forwards</button>
-                  </form>
-                  <a class="button secondary" href="/admin/diagnostics">Diagnostics</a>
-                </div>
+                <h2>Today at a glance</h2>
+                <p>Check health first; daily management lives in the left navigation.</p>
+              </div>
+              <div class="actions">
+                <a class="button" href="/admin/diagnostics">Diagnostics</a>
               </div>
             </div>
-            <div class="grid three">' . $cardHtml . '</div>
-            ' . $this->renderTaskQueueHealthSection($queueHealth, $csrf) . '
-            ' . $this->renderRecentFailedTasksSection($recentFailedTasks) . '
+            <div class="grid four">' . $healthTiles . '</div>
+            <div class="console-totals">' . $totalsHtml . '</div>
+            <div class="grid two" style="margin-top:16px;">
+              <section class="card">
+                <h3>Shortcuts</h3>
+                <ul class="console-links">' . $shortcutHtml . '</ul>
+              </section>
+              <div id="recent-failed-tasks">' . $this->renderRecentFailedTasksSection($recentFailedTasks) . '</div>
+            </div>
             ' . $this->renderWorstLegsSection($worstLegs) . '
-            <div class="grid two" style="margin-top:20px;">
-              <section class="card">
-                <h3>First Forward Quick Start</h3>
-                <ol class="list">
-                  <li>Create one slave group in <code>Slave Groups</code>, for example <code>hk-edge</code>.</li>
-                  <li>Install one online slave into that group from <code>Slave Nodes</code>.</li>
-                  <li>Create one client in <code>Clients</code> and set its default route mode to <code>slave_group</code> plus the same default slave group.</li>
-                  <li>Bind the plan to the same slave group and client group, then activate one tenant service on that plan.</li>
-                  <li>Ask the tenant to open <code>Guided Setup</code> and keep these defaults for the first rule: <code>slave_group</code>, <code>single</code>, <code>tcp</code>. The panel now assigns the endpoint set automatically.</li>
-                </ol>
+            <details class="card console-danger-zone" id="queue-maintenance">
+              <summary>Queue maintenance and bulk actions <span class="muted">(use with care)</span></summary>
+              ' . $this->renderTaskQueueHealthSection($queueHealth, $csrf) . '
+              <section class="card" style="margin-top:16px;">
+                <h3>Republish All Forwards</h3>
+                <p class="muted">Re-sends the desired state of every forward to its nodes. Use only after a platform-wide change.</p>
+                <form class="inline" method="post" action="/admin/republish/all">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <button type="submit" class="button danger" onclick="return confirm(\'Republish all forwards?\');">Republish All Forwards</button>
+                </form>
               </section>
-              <section class="card">
-                <h3>When To Use Advanced Options</h3>
-                <ul class="list">
-                  <li>Use <code>forward_chain</code> only when you already want a deliberate multi-hop route.</li>
-                  <li>Use <code>race / failover</code> when you want multiple slave endpoints for redundancy and per-connection distribution.</li>
-                  <li>Do not expect <code>race / failover</code> to provide true single-stream <code>本地汇聚</code> yet.</li>
-                </ul>
-              </section>
-            </div>';
+            </details>';
 
         return $this->adminPage('Admin Overview', $body, $viewer, 'overview');
     }
@@ -292,7 +313,7 @@ final class AdminController extends BaseController
               ' . $this->renderBondLegReputationDiagnosticsSection($reputationRows, $reputationEvents) . '
             </div>';
 
-        return $this->adminPage('Diagnostics', $body, $viewer, 'overview');
+        return $this->adminPage('Diagnostics', $body, $viewer, 'diagnostics');
     }
 
 
@@ -5721,7 +5742,7 @@ final class AdminController extends BaseController
               </div>
             </section>';
 
-        return $this->adminPage('Knowledgebase Topics', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Knowledgebase Topics', $body, $viewer, 'knowledgebase-admin');
     }
 
     public function knowledgebaseTopicEditorPage(Request $request, array $params): Response
@@ -5791,7 +5812,7 @@ final class AdminController extends BaseController
             </script>
         HTML;
 
-        return $this->adminPage($pageTitle, $body, $viewer, 'knowledgebase');
+        return $this->adminPage($pageTitle, $body, $viewer, 'knowledgebase-admin');
     }
 
     public function saveKnowledgebaseTopic(Request $request, array $params): Response
@@ -5966,7 +5987,7 @@ final class AdminController extends BaseController
             <script src="/assets/knowledgebase-admin.js?v=20260729"></script>
         HTML;
 
-        return $this->adminPage('Edit Language Version', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Edit Language Version', $body, $viewer, 'knowledgebase-admin');
     }
 
     public function saveKnowledgebaseArticle(Request $request, array $params): Response

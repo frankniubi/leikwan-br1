@@ -1644,25 +1644,29 @@ abstract class BaseController
      */
     protected function adminNavigationItems(string $active = ''): array
     {
+        // Grouped by task: customers, what they buy, what carries it, then
+        // day-to-day operations. Rarely used pages sit under More.
         return [
-            ['group' => 'Operations', 'href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
-            ['group' => 'Operations', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
-            ['group' => 'Operations', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['group' => 'Operations', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
-            ['group' => 'Security', 'href' => '/admin/access-control', 'label' => 'Access Control', 'active' => $active === 'access-control'],
+            ['group' => '', 'href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
             ['group' => 'Customers', 'href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
+            ['group' => 'Customers', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
+            ['group' => 'Customers', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
             ['group' => 'Customers', 'href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
-            ['group' => 'Customers', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
-            ['group' => 'Products', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
-            ['group' => 'Infrastructure', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
-            ['group' => 'Infrastructure', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
-            ['group' => 'Infrastructure', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
-            ['group' => 'Infrastructure', 'href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
-            ['group' => 'Infrastructure', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
-            ['group' => 'Infrastructure', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
-            ['group' => 'Infrastructure', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
-            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
-            ['group' => 'Context', 'href' => '/tenant', 'label' => 'Tenant Area'],
+            ['group' => 'Products & Lines', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
+            ['group' => 'Products & Lines', 'href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
+            ['group' => 'Products & Lines', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
+            ['group' => 'Products & Lines', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
+            ['group' => 'Nodes', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['group' => 'Nodes', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
+            ['group' => 'Nodes', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
+            ['group' => 'Operations', 'href' => '/admin/diagnostics', 'label' => 'Diagnostics', 'active' => $active === 'diagnostics'],
+            ['group' => 'Operations', 'href' => '/admin/access-control', 'label' => 'Access Control', 'active' => $active === 'access-control'],
+            ['group' => 'Operations', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
+            ['group' => 'Operations', 'href' => '/admin/knowledgebase', 'label' => 'Knowledgebase Editor', 'active' => $active === 'knowledgebase-admin'],
+            ['group' => 'More', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
+            ['group' => 'More', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
+            ['group' => 'More', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
+            ['group' => 'More', 'href' => '/tenant', 'label' => 'Tenant Area'],
         ];
     }
 
@@ -1940,7 +1944,7 @@ HTML;
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
-  <link rel="stylesheet" href="/assets/console.css?v=20260926b">
+  <link rel="stylesheet" href="/assets/console.css?v=20260926c">
 </head>
 <body class="pg-app">
   <div class="shell">
