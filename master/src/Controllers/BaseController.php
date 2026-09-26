@@ -1913,7 +1913,9 @@ HTML;
                 default => ucfirst((string) ($viewer['role'] ?? 'user')),
             };
             $viewerName = trim((string) ($viewer['name'] ?? ''));
-            $viewerInitial = mb_strtoupper(mb_substr($viewerName !== '' ? $viewerName : (string) ($viewer['email'] ?? '?'), 0, 1));
+            // The panel host has no mbstring; PCRE's /u takes the first character.
+            $viewerSource = $viewerName !== '' ? $viewerName : (string) ($viewer['email'] ?? '?');
+            $viewerInitial = preg_match('/^./u', $viewerSource, $firstChar) === 1 ? strtoupper($firstChar[0]) : '?';
             $viewerHtml = '
                 <div class="viewer">
                     <span class="viewer-avatar" aria-hidden="true">' . $this->escape($viewerInitial) . '</span>
