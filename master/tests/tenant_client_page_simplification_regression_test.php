@@ -31,11 +31,11 @@ foreach ([
     'Android (Unstable)',
     'Download APK',
     '最大在线',
-    '在线客户端',
+    '在线设备',
     '客户端版本',
-    '踢走',
+    '踢下线',
     '复制命令',
-    '下载 installer',
+    '下载安装包',
     '/tenant/clients/reset-token',
 ] as $required) {
     if (!str_contains($clientsPage, $required)) {

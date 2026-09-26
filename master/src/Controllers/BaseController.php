@@ -1620,6 +1620,26 @@ abstract class BaseController
     }
 
     /**
+     * Tenant sidebar, shared by the tenant pages and the knowledgebase.
+     * The first item has no group so "Overview" is not printed twice.
+     *
+     * @return array<int, array{group:string,href:string,label:string,active:bool}>
+     */
+    protected function tenantNavigationItems(string $active = ''): array
+    {
+        return [
+            ['group' => '', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
+            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'My Services', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
+            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Buy Packages', 'active' => $active === 'plans'],
+            ['group' => 'Services', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Balance & Billing', 'active' => $active === 'account'],
+            ['group' => 'Account', 'href' => '/tenant/security', 'label' => 'Account Security', 'active' => $active === 'security'],
+            ['group' => 'More', 'href' => '/knowledgebase', 'label' => 'Help Center', 'active' => $active === 'knowledgebase'],
+            ['group' => 'More', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
+        ];
+    }
+
+    /**
      * @return array<int, array{href:string,label:string,active?:bool}>
      */
     protected function adminNavigationItems(string $active = ''): array
@@ -1847,8 +1867,6 @@ HTML;
     protected function page(string $title, string $body, ?array $viewer = null, array $nav = []): Response
     {
         $escapedTitle = $this->escape($title);
-        $appName = $this->appName();
-        $escapedAppName = $this->escape($appName);
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $csrfToken = $this->escape(SessionAuth::csrfToken());
@@ -1882,24 +1900,30 @@ HTML;
         if ($viewer !== null && (int) ($viewer['wallet_warning_sent'] ?? 0) === 1) {
             $balance = number_format((float) ($viewer['wallet_balance'] ?? 0), 2);
             $curr = strtoupper(trim((string) ($viewer['wallet_currency'] ?? 'CNY')));
-            $lowBalanceHtml = '<div class="flash danger" style="margin-bottom:18px;">Your balance is low (' . $this->escape($curr) . ' ' . $this->escape($balance) . '). <a href="/tenant/account" style="text-decoration:underline;">Top up</a> to avoid service interruption.</div>';
+            $lowBalanceHtml = '<div class="flash danger"><span>Your balance is low:</span> ' . $this->escape($curr) . ' ' . $this->escape($balance) . ' · <a href="/tenant/account">Top up now</a> <span>to avoid service interruption.</span></div>';
         }
 
         $navHtml = PrecisionGridUi::groupNavigation($nav);
 
         $viewerHtml = '';
         if ($viewer !== null) {
-            $viewerRole = strtoupper($this->escape((string) ($viewer['role'] ?? 'user')));
+            $viewerRole = match ((string) ($viewer['role'] ?? '')) {
+                'admin' => 'Administrator',
+                'tenant' => 'Member',
+                default => ucfirst((string) ($viewer['role'] ?? 'user')),
+            };
+            $viewerName = trim((string) ($viewer['name'] ?? ''));
+            $viewerInitial = mb_strtoupper(mb_substr($viewerName !== '' ? $viewerName : (string) ($viewer['email'] ?? '?'), 0, 1));
             $viewerHtml = '
                 <div class="viewer">
+                    <span class="viewer-avatar" aria-hidden="true">' . $this->escape($viewerInitial) . '</span>
                     <div class="viewer-meta">
-                        <strong>' . $this->escape((string) $viewer['name']) . '</strong>
+                        <strong>' . $this->escape($viewerName) . ' <span class="viewer-role">' . $this->escape($viewerRole) . '</span></strong>
                         <span>' . $this->escape((string) $viewer['email']) . '</span>
-                        <span class="viewer-role">' . $viewerRole . '</span>
                     </div>
                     <form method="post" action="/logout">
                         <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
-                        <button type="submit" class="button danger">Logout</button>
+                        <button type="submit" class="button ghost logout-button">Logout</button>
                     </form>
                 </div>';
         }
@@ -1914,6 +1938,7 @@ HTML;
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
+  <link rel="stylesheet" href="/assets/console.css?v=20260926">
 </head>
 <body class="pg-app">
   <div class="shell">
@@ -1922,7 +1947,7 @@ HTML;
         <div class="brand-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></div>
         <div class="brand-copy">
           <h1>{$escapedBrandName}</h1>
-          <p>{$escapedAppName} control plane for IXP ingress, compliant routing and tenant delivery</p>
+          <p>Console</p>
         </div>
       </div>
       <div class="toolbar">
@@ -1933,10 +1958,6 @@ HTML;
     </div>
     <div class="layout">
       <aside class="sidebar" id="workspace-navigation" data-open="false">
-        <div class="sidebar-panel">
-          <strong>Workspace Shell</strong>
-          <p>Use the public homepage as the front door, then jump back into the console you need.</p>
-        </div>
         {$navHtml}
       </aside>
       <main class="content-card">

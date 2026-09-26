@@ -884,15 +884,7 @@ final class AuthController extends BaseController
             return $this->adminNavigationItems('knowledgebase');
         }
 
-        return [
-            ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview'],
-            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards'],
-            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages'],
-            ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients'],
-            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account'],
-            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
-            ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups'],
-        ];
+        return $this->tenantNavigationItems('knowledgebase');
     }
 
     private function knowledgebaseStyles(): string
