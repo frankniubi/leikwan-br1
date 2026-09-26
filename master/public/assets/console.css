@@ -1569,3 +1569,47 @@ html body.pg-app .console-kv + form,
 html body.pg-app .console-kv + .actions {
   margin-top: 16px !important;
 }
+
+/* ------------------------------------------------- checkboxes / radios -- */
+
+/* Older sheets size every input like a text field, which blew native
+   checkboxes up to a full-width 44px box with a giant check mark. */
+html body.pg-app input[type="checkbox"],
+html body.pg-app input[type="radio"] {
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  flex: none !important;
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+  outline-offset: 2px;
+  accent-color: var(--c-brand);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+html body.pg-app label:has(> input[type="checkbox"]),
+html body.pg-app label:has(> input[type="radio"]) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  width: auto;
+  min-height: 32px;
+  padding: 4px 0 !important;
+  color: var(--c-ink) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  text-align: left !important;
+  cursor: pointer;
+}
+
+html body.pg-app td > input[type="checkbox"] {
+  display: block;
+}
