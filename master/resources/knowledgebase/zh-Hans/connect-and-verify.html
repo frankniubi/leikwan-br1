@@ -5,7 +5,7 @@
 
 <h2>开始前准备</h2>
 <ul>
-<li>一条保存好的转发，以及面板分配的本地端口。</li>
+<li>一条保存好的转发，以及系统分配的本地端口。</li>
 <li>运行客户端的那台设备上，客户端已经装好并登录。</li>
 <li>游戏开着的时候留几分钟做测试。</li>
 </ul>
@@ -27,10 +27,10 @@ B --> D[启动游戏]
 C --> D
 </pre>
 <p>同一台设备时端口只留在回环地址上；跨设备时需要在中间的网络里放行一条路径。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发列表显示分配的本地端口和实时流量"><figcaption>转发列表上能看到本地端口和它承载的流量。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result-zh-hans.png" width="1440" height="960" alt="服务详情页的转发规则表，显示本地端口、目标、协议和本期用量"><figcaption>服务详情页的「转发规则」里能看到本地端口和它的本期用量。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>看两处。客户端显示这条线路 running，转发列表在你玩的时候有进来的流量。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
+<p>看两处。客户端显示这条线路 running；你玩的时候，「转发规则」里这条转发的「本期用量」在增加。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
 
 <h2>如果没有成功</h2>
 <p><strong>先停止</strong>，先核对地址。按可能性排：端口和分配的本地端口不一致；跨设备时被防火墙或 NAT 挡住了；目标服务本身没起来——从目标服务自己的主机测试目标服务，再看目标日志。测试时要测实际应用协议，不要只 ping。</p>

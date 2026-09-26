@@ -1,43 +1,43 @@
-<p>一条转发就是你在面板上画的一条线：你的游戏或服务在哪里，以及本机用哪个端口去连它。</p>
+<p>一条转发就是你在控制台上画的一条线：你的游戏或服务在哪里，以及本机用哪个端口去连它。</p>
 
 <h2>你将完成什么</h2>
-<p>一条保存好的转发，加上一个分配给你的本地端口。下一条指南要用这个端口，先记下来。</p>
+<p>一条保存好的转发，加上一个分配给你的本地端口。下一篇指南要用这个端口，先记下来。</p>
 
 <h2>开始前准备</h2>
 <ul>
-<li>一个有效套餐，面板才允许保存转发。</li>
+<li>一个使用中的套餐，控制台才允许保存转发。</li>
 <li>你的游戏或服务真正监听的地址和端口。</li>
-<li>它需要哪种传输方式：TCP、UDP 还是两者都要。游戏一般是 UDP。</li>
+<li>它需要哪种协议：TCP、UDP 还是两者都要。游戏一般是 UDP。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-<li><strong>打开 Forwards，点 Create Forward。</strong></li>
-<li><strong>选择 Forward Route。</strong>挑离目标最近的那条线路。所有线路都用 ultra，这里不需要再决定别的。</li>
-<li><strong>填写 Target Host 和 Target Port。</strong>这里要填游戏自己连的地址，不是你下载游戏的网站地址。</li>
-<li><strong>选择 Transport</strong>，也就是你的服务需要的传输方式：TCP、UDP 或 TCP + UDP。</li>
-<li><strong>保存。</strong>Local Listen Port 用默认建议值就行，除非你有特别的理由要改。</li>
-<li><strong>记下分配给你的本地端口。</strong>几秒后它会显示在这一行上。</li>
+<li><strong>打开「我的服务」，在套餐卡片上点「新建转发」。</strong>在服务详情页里点「新建转发」也是同一个表单。</li>
+<li><strong>选择线路。</strong>挑离目标最近的那条线路。所有线路都用 ultra，这里不需要再决定别的。</li>
+<li><strong>填写目标地址和目标端口。</strong>这里要填游戏自己连的地址，不是你下载游戏的网站地址。</li>
+<li><strong>选择协议</strong>，也就是你的服务需要的传输方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>点「新建转发」保存。</strong>本地监听端口留空就行，系统会自动分配，除非你有特别的理由要指定。</li>
+<li><strong>记下分配给你的本地端口。</strong>保存后会回到服务详情页，新转发出现在「转发规则」表里，「本地端口」一列就是它。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 第一条转发的表单路径
-accDescr: 打开有效套餐，选择转发线路，填写目标和传输方式，保存后记下分配的本地端口
-A[打开有效套餐] --> B[选择 Forward Route]
-B --> C[填写 Target Host 和 Target Port]
-C --> D[选择 Transport]
-D --> E[保存]
-E --> F[等待转发可用]
+accDescr: 打开使用中的套餐，选择线路，填写目标和协议，保存后记下分配的本地端口
+A[打开我的服务] --> B[点新建转发]
+B --> C[选择线路]
+C --> D[填写目标地址和目标端口]
+D --> E[选择协议]
+E --> F[保存]
 F --> G[记下分配的本地端口]
 </pre>
-<p>表单只问线路、目标、传输方式和本地端口，其余都替你填好了。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单，包含线路、目标地址、目标端口和传输方式"><figcaption>Create Forward 表单，真正要你决定的只有四个字段。</figcaption></figure>
+<p>表单只问线路、目标、协议和本地端口，其余都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-zh-hans.png" width="1440" height="960" alt="新建转发表单，包含线路、目标地址、目标端口、本地监听端口和协议"><figcaption>「新建转发」表单，真正要你决定的只有四个字段。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>这一行会稳定停在已保存状态，而不是反复显示预配中，并且本地端口已经填好。接着去 Clients 页面，能看到准备承载这条转发的设备有最近同步时间。</p>
+<p>在「转发规则」表里，这一行的状态是「运行中」，「本地端口」已经有数字，「节点状态」不再一直显示「正在分配节点」。接着去「客户端」页面，确认准备承载这条转发的设备出现在「在线设备」里。</p>
 
 <h2>如果没有成功</h2>
-<p>面板不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经失效；目标地址或端口填错；你填的本地端口已经被占用——清空它，让面板重新分配一个。</p>
+<p>控制台不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经到期；目标地址或端口填错；你填的本地端口已经被占用——清空它，让系统重新分配一个。如果「线路」下拉框是空的，说明你的套餐还没有开放线路，请联系客服。</p>
 
 <h2>相关指南</h2>
 <p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。客户端还没装的话，先看<a href="/knowledgebase?thread=install-client">安装客户端</a>。</p>

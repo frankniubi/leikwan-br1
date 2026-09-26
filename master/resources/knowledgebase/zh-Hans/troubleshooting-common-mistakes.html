@@ -5,38 +5,38 @@
 
 <h2>开始前准备</h2>
 <ul>
-<li>打开面板，并且保证你玩游戏那台设备上的客户端在运行。</li>
+<li>打开控制台，并且保证你玩游戏那台设备上的客户端在运行。</li>
 <li>你之前跟着做的那篇指南，万一要再查一次本地端口。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-<li><strong>客户端同步正常吗？</strong>Clients 页面应该显示最近同步。没有的话，重启客户端，等几秒。</li>
+<li><strong>客户端在线吗？</strong>「客户端」页面底部的「在线设备」里应该能看到这台设备。没有的话，重启客户端，等几秒再刷新页面；如果「最大在线」已经满了，先在列表里把不用的设备「踢下线」。</li>
 <li><strong>地址是否正确？</strong>和客户端同一台设备就用 127.0.0.1 加本地端口；不同设备就用客户端主机地址。</li>
 <li><strong>端口已放行吗？</strong>只需要放行你真正用的那个端口，防火墙、安全组或 NAT 上放行一条就够。</li>
-<li><strong>转发和线路健康吗？</strong>这一行不应该停在预配中，并且从目标服务自己的主机测试目标服务时应该有回应。</li>
-<li><strong>还是不行？</strong>打开 View Diagnostics，把结果和转发名称一起发给支持。</li>
+<li><strong>转发和线路正常吗？</strong>在服务详情页的「转发规则」里，这一行的状态应该是「运行中」，「节点状态」不应该一直停在「正在分配节点」；从目标服务自己的主机测试目标服务时也应该有回应。</li>
+<li><strong>还是不行？</strong>把转发的编号、用的是哪台设备、出问题的大概时间一起发给客服。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 从症状开始排查
-accDescr: 从游戏连不上开始，依次检查客户端同步、地址，最后检查目标服务
-A[游戏连不上] --> B[客户端同步正常吗？]
+accDescr: 从游戏连不上开始，依次检查客户端在线、地址，最后检查目标服务
+A[游戏连不上] --> B[客户端在线吗？]
 B -- 否 --> C[重启客户端再试]
 B -- 是 --> D[地址和端口正确吗？]
 D -- 否 --> E[改用 127.0.0.1 或客户端主机地址]
 E --> C
 D -- 是 --> F[从目标服务自己的主机测试目标服务]
-F --> G[打开 View Diagnostics 并联系支持]
+F --> G[带上转发编号联系客服]
 </pre>
 <p>从头到尾走一遍，别跳步。跳过的步骤通常最后还要回来补。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="诊断页面显示客户端同步状态和转发健康摘要"><figcaption>View Diagnostics 会把客户端同步、转发状态和最后一次错误放在一起。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-zh-hans.png" width="1440" height="960" alt="客户端页面的在线设备列表，显示设备 IP、系统和客户端版本"><figcaption>「在线设备」列出当前登录的每台设备；设备不在这里，转发就不会通。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>客户端显示这条线路 running，你玩的时候转发列表又出现流量。</p>
+<p>客户端显示这条线路 running，你玩的时候「转发规则」里的「本期用量」又开始增加。</p>
 
 <h2>如果没有成功</h2>
-<p>在改别的东西之前，<strong>先停止</strong>。不要随机修改拓扑——那样只会盖住真正的原因，让下一次排查更慢。上面四项都干净的话，把诊断结果发给支持，这是从这里出发最快的路。</p>
+<p>在改别的东西之前，<strong>先停止</strong>。不要随手改一堆设置——那样只会盖住真正的原因，让下一次排查更慢。上面四项都没问题的话，直接联系客服，这是从这里出发最快的路。</p>
 
 <h2>相关指南</h2>
 <p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。</p>

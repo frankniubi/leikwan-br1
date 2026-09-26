@@ -11,11 +11,11 @@
 
 <h2>Steps</h2>
 <ol>
-<li><strong>Is the client in sync?</strong> The Clients page should show a recent sync. If it does not, restart the app and give it a few seconds.</li>
+<li><strong>Is the client online?</strong> The online devices list at the bottom of the Clients page should show this device. If it does not, restart the app, wait a few seconds and reload; if the online limit is full, kick a device you no longer use.</li>
 <li><strong>Is the address correct?</strong> Same device as the client means 127.0.0.1 plus the local port; another device means the client host address.</li>
 <li><strong>Is the port allowed?</strong> Only the port you actually use has to be open through the firewall, security group, or NAT.</li>
-<li><strong>Are the forward and route healthy?</strong> The row must not sit in provisioning, and the target service should answer when you test it from its own host.</li>
-<li><strong>Still stuck?</strong> Open View Diagnostics and send the result to support with the name of the forward.</li>
+<li><strong>Are the forward and route healthy?</strong> In Forward Rules the row should read Running and Endpoint Status should not stay on "No endpoint assigned yet"; the target service should answer when you test it from its own host.</li>
+<li><strong>Still stuck?</strong> Send support the forward ID, the device you used, and roughly when it failed.</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
@@ -27,16 +27,16 @@ B -- Yes --> D[Is the address and port correct?]
 D -- No --> E[Use 127.0.0.1 or the client host address]
 E --> C
 D -- Yes --> F[Test the target service from its own host]
-F --> G[Open View Diagnostics and contact support]
+F --> G[Contact support with the forward ID]
 </pre>
 <p>Work down the list once, in order. Skipping a step usually means coming back to it later.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="Diagnostics page with the client sync state and the forward health summary"><figcaption>View Diagnostics collects the client sync, the forward state, and the last error in one place.</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-en.png" width="1440" height="960" alt="Online devices list on the Clients page with each device IP, system and app version"><figcaption>Online devices lists every signed-in device; if yours is missing, the forward will not work.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The app shows the line as running, and the forward row shows traffic again while you play.</p>
+<p>The app shows the line as running, and Usage this cycle in Forward Rules goes up again while you play.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop</strong> before changing anything else. Do not make random topology changes - they hide the real cause and make the next round slower. If all four checks are clean, send support the diagnostics output; that is the fastest path from there.</p>
+<p><strong>Stop</strong> before changing anything else. Do not change settings at random - it hides the real cause and makes the next round slower. If all four checks are clean, contact support; that is the fastest path from there.</p>
 
 <h2>Related guides</h2>
 <p><a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a>, or <a href="/knowledgebase?thread=getting-started-first-forward-checklist">create your first forward</a> if the row itself looks wrong.</p>

@@ -1,42 +1,42 @@
-<p>遊戲連不上的時候，幾乎都是這三個原因之一。依序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
+<p>遊戲連不上的時候，幾乎都是這三個原因之一。按順序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
 
 <h2>你將完成什麼</h2>
 <p>找出這三個常見原因裡屬於你的那一個，修好它，重新進遊戲。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>打開面板，並且保證你玩遊戲那台裝置上的用戶端在執行。</li>
+<li>開啟控制台，並且保證你玩遊戲那臺裝置上的用戶端在執行。</li>
 <li>你之前跟著做的那篇指南，萬一要再查一次本機連接埠。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>用戶端同步正常嗎？</strong>Clients 頁面應該顯示最近同步。沒有的話，重新啟動用戶端，等幾秒。</li>
-<li><strong>位址是否正確？</strong>和用戶端同一台裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
-<li><strong>連接埠已開放嗎？</strong>只需要開放你真正用的那個連接埠，防火牆、安全群組或 NAT 上開放一條就夠。</li>
-<li><strong>轉發和線路健康嗎？</strong>這一列不應該停在佈建中，並且從目標服務所在主機測試目標服務時應該有回應。</li>
-<li><strong>還是不行？</strong>打開 View Diagnostics，把結果和轉發名稱一起送給支援。</li>
+<li><strong>用戶端線上嗎？</strong>「用戶端」頁面底部的「線上裝置」裡應該能看到這臺裝置。沒有的話，重啟用戶端，等幾秒再重新整理頁面；如果「最大線上」已經滿了，先在列表裡把不用的裝置「踢下線」。</li>
+<li><strong>位址是否正確？</strong>和用戶端同一臺裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
+<li><strong>連接埠已放行嗎？</strong>只需要放行你真正用的那個連接埠，防火牆、安全組或 NAT 上放行一條就夠。</li>
+<li><strong>轉發和線路正常嗎？</strong>在服務詳情頁的「轉發規則」裡，這一行的狀態應該是「執行中」，「節點狀態」不應該一直停在「正在分配節點」；從目標服務自己的主機測試目標服務時也應該有回應。</li>
+<li><strong>還是不行？</strong>把轉發的編號、用的是哪臺裝置、出問題的大概時間一起發給客服。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 從症狀開始排查
-accDescr: 從遊戲連不上開始，依序檢查用戶端同步、位址，最後檢查目標服務
-A[遊戲連不上] --> B[用戶端同步正常嗎？]
-B -- 否 --> C[重新啟動用戶端再試]
+accDescr: 從遊戲連不上開始，依次檢查用戶端線上、位址，最後檢查目標服務
+A[遊戲連不上] --> B[用戶端線上嗎？]
+B -- 否 --> C[重啟用戶端再試]
 B -- 是 --> D[位址和連接埠正確嗎？]
 D -- 否 --> E[改用 127.0.0.1 或用戶端主機位址]
 E --> C
-D -- 是 --> F[從目標服務所在主機測試目標服務]
-F --> G[開啟 View Diagnostics 並聯絡支援]
+D -- 是 --> F[從目標服務自己的主機測試目標服務]
+F --> G[帶上轉發編號聯絡客服]
 </pre>
 <p>從頭到尾走一遍，別跳步。跳過的步驟通常最後還要回來補。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="診斷頁面顯示用戶端同步狀態和轉發健康摘要"><figcaption>View Diagnostics 會把用戶端同步、轉發狀態和最後一次錯誤放在一起。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-zh-tw.png" width="1440" height="960" alt="用戶端頁面的線上裝置列表，顯示裝置 IP、系統和用戶端版本"><figcaption>「線上裝置」列出當前登入的每臺裝置；裝置不在這裡，轉發就不會通。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>用戶端顯示這條線路 running，你玩的時候轉發列表又出現流量。</p>
+<p>用戶端顯示這條線路 running，你玩的時候「轉發規則」裡的「本期用量」又開始增加。</p>
 
 <h2>如果沒有成功</h2>
-<p>在改別的東西之前，<strong>請先停止</strong>。不要隨意變更拓撲——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都乾淨的話，把診斷結果送給支援，這是從這裡出發最快的路。</p>
+<p>在改別的東西之前，<strong>先停止</strong>。不要隨手改一堆設定——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都沒問題的話，直接聯絡客服，這是從這裡出發最快的路。</p>
 
 <h2>相關指南</h2>
-<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一列本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一行本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
