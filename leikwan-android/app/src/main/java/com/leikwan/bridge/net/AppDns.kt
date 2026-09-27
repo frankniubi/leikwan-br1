@@ -5,6 +5,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
+import java.net.Proxy
 
 /**
  * Builds the application's shared DNS resolver: DoH providers reachable inside mainland
@@ -24,18 +25,31 @@ object AppDns {
 
     /** Shared DoH-first resolver, built once and reused across OkHttp clients. */
     fun shared(): Dns = cached ?: synchronized(this) {
-        cached ?: build(includeSystemFallback = true).also { cached = it }
+        cached ?: build(includeSystemFallback = true, bindToPanelNetwork = false).also { cached = it }
     }
 
-    /** DoH-only resolver for panel control-plane requests on poisoned networks. */
+    /**
+     * DoH-only resolver for panel control-plane requests on poisoned networks. Its DoH requests
+     * leave on the same physical network as the panel sockets ([PanelNetwork]).
+     */
     fun strict(): Dns = strictCached ?: synchronized(this) {
-        strictCached ?: build(includeSystemFallback = false).also { strictCached = it }
+        strictCached ?: build(includeSystemFallback = false, bindToPanelNetwork = true).also { strictCached = it }
     }
 
-    private fun build(includeSystemFallback: Boolean): Dns {
-        // One bootstrap client carries the DoH HTTPS requests for every provider, so all
-        // resolvers share its connection pool.
-        val bootstrapClient = OkHttpClient.Builder().build()
+    /**
+     * One bootstrap client carries the DoH HTTPS requests for every provider, so all resolvers
+     * share its connection pool. It never uses an HTTP proxy: a proxy another app advertised
+     * (often a 127.0.0.1 port of a VPN app) would both break DoH when that app stops and move the
+     * lookup off the network the caller connects on.
+     */
+    internal fun newBootstrapClient(bindToPanelNetwork: Boolean): OkHttpClient {
+        val builder = OkHttpClient.Builder().proxy(Proxy.NO_PROXY)
+        if (bindToPanelNetwork) builder.socketFactory(PanelNetwork.socketFactory)
+        return builder.build()
+    }
+
+    private fun build(includeSystemFallback: Boolean, bindToPanelNetwork: Boolean): Dns {
+        val bootstrapClient = newBootstrapClient(bindToPanelNetwork)
         val resolvers = DohEndpoints.CHINA_FIRST.map { endpoint ->
             DnsOverHttps.Builder()
                 .client(bootstrapClient)

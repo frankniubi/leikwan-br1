@@ -10,6 +10,7 @@ import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.net.PanelNetwork
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardListItem
 import com.leikwan.bridge.runtime.NativeOutboundCapability
@@ -20,13 +21,23 @@ import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.TunnelOrchestrator
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitNotice
+import com.leikwan.bridge.session.DeviceLimitReachedException
+import com.leikwan.bridge.session.PanelControlException
+import com.leikwan.bridge.ui.shared.thirdPartyVpnHintOrNull
+import com.leikwan.bridge.ui.shared.withThirdPartyVpnHint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private const val TAG = "ConnectionsViewModel"
+private const val DEVICE_LIMIT_RETRY_MS = 60_000L
 
 enum class VpnStatus { DISCONNECTED, CONNECTING, CONNECTED }
 
@@ -57,6 +68,8 @@ data class ConnectionsUiState(
     val nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
     val isLoading: Boolean = false,
     val error: String? = null,
+    /** Set while the panel refuses this device because the online device limit is full. */
+    val deviceLimit: DeviceLimitNotice? = null,
 ) {
     val hasNode: Boolean get() = nodes.isNotEmpty()
     val nativeVisible: Boolean get() = nativeOutbound?.isUsable() == true
@@ -97,9 +110,15 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val startNativeConnect: suspend (Long, String, Boolean, String) -> Unit = { id, scope, bypass, policy ->
         TunnelOrchestrator.forApplication(app).startNativeForForward(id, scope, bypass, policy)
     },
+    private val deviceLimitState: StateFlow<DeviceLimitNotice?> = DeviceLimitGate.state,
+    private val deviceLimitRetryMs: Long = DEVICE_LIMIT_RETRY_MS,
+    private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
+
+    /** Pending retry after a device-limit refusal; the running VPN's control loop covers itself. */
+    private var deviceLimitRetry: Job? = null
 
     private val _state = MutableStateFlow(
         ConnectionsUiState(
@@ -115,6 +134,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     val state = _state.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            deviceLimitState.collect { notice -> _state.update { it.copy(deviceLimit = notice) } }
+        }
         viewModelScope.launch {
             nodeFlows().collect { all ->
                 val enabled = all.filter { it.enabled }
@@ -236,7 +258,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message, isLoading = false) }
+                _state.update { it.copy(error = userError(e), isLoading = false) }
+                if (e is DeviceLimitReachedException) retryAfterDeviceLimit(::refreshForwards)
             }
         }
     }
@@ -323,6 +346,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     }
 
     fun toggleConnect() {
+        deviceLimitRetry?.cancel()
         viewModelScope.launch {
             val s = _state.value
             if (s.vpnStatus != VpnStatus.DISCONNECTED) {
@@ -373,7 +397,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                     startNativeConnect(nativeId, scope, bypass, routePolicy)
                     _state.update { it.copy(vpnStatus = VpnStatus.CONNECTED) }
                 } catch (e: Exception) {
-                    _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = e.message) }
+                    _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = userError(e)) }
+                    if (e is DeviceLimitReachedException) retryConnectAfterDeviceLimit()
                 }
                 return@launch
             }
@@ -391,8 +416,37 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 startConnect(forwardId)
                 _state.update { it.copy(vpnStatus = VpnStatus.CONNECTED) }
             } catch (e: Exception) {
-                _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = e.message) }
+                _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = userError(e)) }
+                if (e is DeviceLimitReachedException) retryConnectAfterDeviceLimit()
             }
+        }
+    }
+
+    /**
+     * A device-limit refusal is shown by the persistent device-limit card, not as a raw error
+     * line. Reported here too in case the refusal came from a call that does not publish it.
+     */
+    private fun userError(e: Exception): String? {
+        if (e is DeviceLimitReachedException) {
+            DeviceLimitGate.report(e)
+            return null
+        }
+        // A terminal control is the panel answering; only other failures may be another VPN's doing.
+        if (e is PanelControlException) return e.message
+        val hint = getApplication<Application>().thirdPartyVpnHintOrNull(thirdPartyVpnBlocking())
+        return withThirdPartyVpnHint(e.message, hint)
+    }
+
+    /** The user asked to connect; keep trying at the control loop's steady cadence until a slot frees. */
+    private fun retryConnectAfterDeviceLimit() = retryAfterDeviceLimit {
+        if (_state.value.vpnStatus == VpnStatus.DISCONNECTED) toggleConnect()
+    }
+
+    private fun retryAfterDeviceLimit(action: () -> Unit) {
+        deviceLimitRetry?.cancel()
+        deviceLimitRetry = viewModelScope.launch {
+            delay(deviceLimitRetryMs)
+            action()
         }
     }
 

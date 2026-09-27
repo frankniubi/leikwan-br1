@@ -13,6 +13,9 @@ import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.runtime.NativeOutboundCarrier
 import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.service.ProxyConnectionMode
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitNotice
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
@@ -53,6 +56,7 @@ class ConnectionsViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        DeviceLimitGate.clear()
     }
 
     private fun forward(
@@ -154,6 +158,46 @@ class ConnectionsViewModelTest {
         assertEquals(6L, viewModel.state.value.nodeFor(10L)?.id)
         assertEquals(5L, viewModel.state.value.nodeFor(11L)?.id)
         assertEquals(6L, prefs.selectedProxyId)
+    }
+
+    @Test
+    fun `device limit refusal shows the persistent notice and retries at the steady cadence`() {
+        var attempts = 0
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            startConnect = {
+                attempts += 1
+                if (attempts == 1) throw DeviceLimitReachedException(limit = 2, active = 2)
+            },
+            deviceLimitRetryMs = 60_000,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.runCurrent()
+
+        var state = viewModel.state.value
+        assertEquals(VpnStatus.DISCONNECTED, state.vpnStatus)
+        assertNull(state.error)
+        assertEquals(DeviceLimitNotice(limit = 2, active = 2), state.deviceLimit)
+        assertEquals(1, attempts)
+
+        dispatcher.scheduler.advanceTimeBy(59_000)
+        dispatcher.scheduler.runCurrent()
+        assertEquals(1, attempts)
+
+        dispatcher.scheduler.advanceTimeBy(1_001)
+        dispatcher.scheduler.runCurrent()
+        state = viewModel.state.value
+        assertEquals(2, attempts)
+        assertEquals(VpnStatus.CONNECTED, state.vpnStatus)
+
+        DeviceLimitGate.clear()
+        dispatcher.scheduler.runCurrent()
+        assertNull(viewModel.state.value.deviceLimit)
     }
 
     @Test

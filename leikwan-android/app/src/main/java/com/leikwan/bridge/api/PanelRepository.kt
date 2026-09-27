@@ -27,6 +27,8 @@ import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
+import com.leikwan.bridge.net.PanelNetwork
+import com.leikwan.bridge.net.PanelNetworkFallbackInterceptor
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
 import com.leikwan.bridge.security.AndroidDeviceIdentity
 import com.leikwan.bridge.security.AttestationProof
@@ -38,6 +40,8 @@ import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
 import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
@@ -100,6 +104,11 @@ class PanelRepository(
             MirrorNoSni.applyTo(clientBuilder)
         }
 
+        // Panel traffic never follows another app's HTTP proxy, and leaves on a physical
+        // (non-VPN) network when one can be bound, so the panel sees this device's own address.
+        val networkBinder = if (httpClientOverride == null) PanelNetwork.ensureInstalled(context) else null
+        PanelNetwork.applyTo(clientBuilder, networkBinder)
+
         clientBuilder
             .addInterceptor(
                 PanelDeviceInterceptor(
@@ -110,6 +119,10 @@ class PanelRepository(
                 ),
             )
             .addInterceptor(PanelControlInterceptor())
+        if (networkBinder != null) {
+            // Innermost, so panel refusals thrown above never count as a network failure.
+            clientBuilder.addInterceptor(PanelNetworkFallbackInterceptor { networkBinder })
+        }
 
         val client = clientBuilder.build()
         return Retrofit.Builder()
@@ -373,7 +386,10 @@ class PanelRepository(
         }
     }
 
-    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog {
+    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog =
+        reportingDeviceLimit { pullCatalogOnce(selectedForwardId) }
+
+    private suspend fun pullCatalogOnce(selectedForwardId: Long): ForwardCatalog {
         requireActiveSession()
         try {
             api.heartbeat(authHeader(), HeartbeatRequest())
@@ -381,12 +397,15 @@ class PanelRepository(
             throw e
         } catch (e: PanelControlException) {
             throw e
+        } catch (e: DeviceLimitReachedException) {
+            throw e
         } catch (_: Exception) {
             // Capability advertisement is best-effort; older or temporarily unavailable
             // panels must not block the authoritative pull.
         }
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
+        DeviceLimitGate.clear()
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
             entitlements = resp.routeRuleEntitlements.orEmpty(),
@@ -425,17 +444,31 @@ class PanelRepository(
 
     fun getCachedNativeOutbound(): NativeOutboundCapability? = cachedNativeOutbound
 
-    suspend fun heartbeat(): Boolean {
+    /**
+     * Returns false for a transient failure. A terminal control or a full online device limit is
+     * thrown instead, so the caller can tell "panel unreachable" from "panel refused this device".
+     */
+    suspend fun heartbeat(): Boolean = reportingDeviceLimit {
         requireActiveSession()
-        return try {
-            api.heartbeat(authHeader()).ok
+        try {
+            api.heartbeat(authHeader()).ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: PanelControlException) {
             throw e
+        } catch (e: DeviceLimitReachedException) {
+            throw e
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** Publishes a device-limit refusal (from the session renewal or the call itself) to the UI. */
+    private suspend fun <T> reportingDeviceLimit(block: suspend () -> T): T = try {
+        block()
+    } catch (limit: DeviceLimitReachedException) {
+        DeviceLimitGate.report(limit)
+        throw limit
     }
 
     /** Resolves one ephemeral Ultra lease for the currently trusted device session. */

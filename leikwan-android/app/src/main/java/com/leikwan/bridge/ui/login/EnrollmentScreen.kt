@@ -67,11 +67,14 @@ fun EnrollmentScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var method by remember { mutableStateOf(EnrollmentMethod.TOKEN) }
-    var clientId by remember(prefilledClientId, state.savedClientId) {
+    // The prefill LaunchedEffect below copies a deep link into these fields and then consumes it.
+    // Keying them on the prefill would reset them to blank the moment it is consumed, losing the
+    // code the user needs to retry after a refused sign-in (e.g. a full device limit).
+    var clientId by remember(state.savedClientId) {
         mutableStateOf((prefilledClientId.ifBlank { state.savedClientId }).filter(Char::isDigit))
     }
     var agentToken by remember(state.savedAgentToken) { mutableStateOf(state.savedAgentToken) }
-    var enrollmentCode by remember(prefilledEnrollmentCode) { mutableStateOf(prefilledEnrollmentCode) }
+    var enrollmentCode by remember { mutableStateOf(prefilledEnrollmentCode) }
     var rememberLoginInfo by remember(state.rememberLoginInfo) { mutableStateOf(state.rememberLoginInfo) }
     var endpointExpanded by remember { mutableStateOf(false) }
 

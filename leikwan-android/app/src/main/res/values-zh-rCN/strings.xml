@@ -313,4 +313,11 @@
     <string name="connections_native_no_node">无需自带节点</string>
     <string name="connections_native_unknown">原生线路</string>
     <string name="connections_error_native_unavailable">当前转发不可用原生出口</string>
+    <string name="device_limit_title">设备数量已达上限</string>
+    <string name="device_limit_message_counts">设备数量已达上限（当前在线 %1$d / 上限 %2$d）。请先断开其他设备上的连接，或联系服务商提高设备数量上限。其他设备断开约 3 分钟后，本设备会自动恢复连接。</string>
+    <string name="device_limit_message">设备数量已达上限。请先断开其他设备上的连接，或联系服务商提高设备数量上限。其他设备断开约 3 分钟后，本设备会自动恢复连接。</string>
+    <string name="device_limit_enroll_message_counts">设备数量已达上限（当前在线 %1$d / 上限 %2$d）。请先断开其他设备上的连接，或联系服务商提高设备数量上限，然后重新登录。其他设备断开约 3 分钟后即可空出名额。</string>
+    <string name="device_limit_enroll_message">设备数量已达上限。请先断开其他设备上的连接，或联系服务商提高设备数量上限，然后重新登录。其他设备断开约 3 分钟后即可空出名额。</string>
+    <string name="vpn_notification_device_limit">设备数量已达上限，正在等待空出名额</string>
+    <string name="network_third_party_vpn_hint">检测到其他 VPN/代理正在运行，可能导致登录失败或地区判断错误。请先关闭后重试。</string>
 </resources>

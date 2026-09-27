@@ -16,7 +16,9 @@ import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.R
+import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.deviceLimitMessage
 import io.nekohasekai.libbox.CommandClient
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -370,7 +372,20 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         }
     }
 
-    private fun buildNotification(status: String): Notification {
+    /**
+     * Shows (or, with null, withdraws) the device-limit refusal on the ongoing VPN notification so
+     * the user sees it without opening the app. The full guidance goes in the expanded text.
+     */
+    fun showDeviceLimitNotice(notice: DeviceLimitNotice?) {
+        if (!isRunning) return
+        if (notice == null) {
+            updateNotification(getString(R.string.vpn_notification_connected))
+        } else {
+            updateNotification(getString(R.string.vpn_notification_device_limit), deviceLimitMessage(notice))
+        }
+    }
+
+    private fun buildNotification(status: String, detail: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pending = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
@@ -380,6 +395,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(status)
+            .apply { detail?.let { setStyle(NotificationCompat.BigTextStyle().bigText(it)) } }
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pending)
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.vpn_notification_disconnect), stopPending)
@@ -387,9 +403,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .build()
     }
 
-    private fun updateNotification(status: String) {
+    private fun updateNotification(status: String, detail: String? = null) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(status))
+            .notify(NOTIFICATION_ID, buildNotification(status, detail))
     }
 
     private fun mainActivityPendingIntent(): PendingIntent {

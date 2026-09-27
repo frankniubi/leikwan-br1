@@ -8,6 +8,9 @@ import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.security.AttestationProof
 import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitNotice
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.PanelControlException
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -82,6 +85,7 @@ class AndroidEnrollmentRepositoryTest {
     @After
     fun tearDown() {
         server.shutdown()
+        DeviceLimitGate.clear()
     }
 
     @Test
@@ -202,12 +206,65 @@ class AndroidEnrollmentRepositoryTest {
         }
     }
 
+    @Test
+    fun `heartbeat does not swallow a device limit refusal and keeps enrollment`() = runBlocking {
+        seedActiveEnrollment()
+        server.enqueue(json(429, LIMIT_BODY))
+
+        val thrown = runCatching { repository.heartbeat() }.exceptionOrNull()
+
+        assertTrue(thrown is DeviceLimitReachedException)
+        thrown as DeviceLimitReachedException
+        assertEquals(2, thrown.limit)
+        assertEquals(3, thrown.active)
+        assertEquals(DeviceLimitNotice(limit = 2, active = 3), DeviceLimitGate.state.value)
+        assertEquals(17L, prefs.clientId)
+        assertEquals("agent-token", prefs.agentToken)
+        assertEquals(deviceId, prefs.enrolledDeviceId)
+        assertTrue(prefs.isLoggedIn(nowMs))
+    }
+
+    @Test
+    fun `plain config pull refusal becomes a device limit and a later pull clears it`() = runBlocking {
+        seedActiveEnrollment()
+        server.enqueue(json(200, """{"ok":true}"""))
+        server.enqueue(json(429, """{"ok":false,"error":"client_online_limit_reached","details":{"online_device_limit":1,"active_online_devices":1}}"""))
+
+        val thrown = runCatching { repository.pullCatalog() }.exceptionOrNull()
+
+        assertTrue("got $thrown", thrown is DeviceLimitReachedException)
+        assertEquals(DeviceLimitNotice(limit = 1, active = 1), DeviceLimitGate.state.value)
+        assertTrue(prefs.isLoggedIn(nowMs))
+
+        server.enqueue(json(200, """{"ok":true}"""))
+        server.enqueue(json(200, """{"ok":true,"client":{},"forwards":[]}"""))
+        repository.pullCatalog()
+
+        assertNull(DeviceLimitGate.state.value)
+    }
+
+    @Test
+    fun `refused enrollment reports the device limit instead of the raw code`() = runBlocking {
+        server.enqueue(json(200, """{"ok":true,"nonce":"challenge-a","expires_at":"2030-01-01T00:05:00Z"}"""))
+        server.enqueue(json(429, LIMIT_BODY))
+
+        val thrown = runCatching { repository.enroll(17L, "agent-token") }.exceptionOrNull()
+
+        assertTrue("got $thrown", thrown is DeviceLimitReachedException)
+        assertEquals(3, (thrown as DeviceLimitReachedException).active)
+    }
+
     private fun seedActiveEnrollment() {
         prefs.clientId = 17L
         prefs.agentToken = "agent-token"
         prefs.enrolledDeviceId = deviceId
         prefs.deviceSessionToken = "device-session"
         prefs.deviceSessionExpiresAtMs = Instant.parse("2030-01-01T00:15:00Z").toEpochMilli()
+    }
+
+    private companion object {
+        const val LIMIT_BODY =
+            """{"ok":false,"error":"client_online_limit_reached","protocol_version":1,"online_device_limit":2,"active_online_devices":3,"details":{"online_device_limit":2,"active_online_devices":3}}"""
     }
 
     private fun json(status: Int, body: String): MockResponse = MockResponse()

@@ -19,6 +19,11 @@ enum class ControlPlaneState {
  * One bounded foreground control poller. A successful poll waits [intervalMs]; a transient
  * failure retries after [retryBackoff] (exponential, full jitter, 5 s -> 60 s by default, reset on
  * the next success) and never tears down the data plane. Terminal controls stop the loop.
+ *
+ * A full online device limit ([DeviceLimitReachedException]) is neither: the device stays
+ * enrolled, [onDeviceLimitChanged] tells the UI, and the poll repeats every [deviceLimitRetryMs]
+ * so the device recovers on its own once a slot frees (the panel frees one after ~180 s of
+ * silence). The fast backoff would only hammer a panel whose answer cannot change that quickly.
  */
 class ClientControlLoop(
     private val scope: CoroutineScope,
@@ -29,6 +34,9 @@ class ClientControlLoop(
     private val onStateChanged: (ControlPlaneState) -> Unit = {},
     private val retryBackoff: ControlPlaneBackoff = ControlPlaneBackoff(),
     private val onRetryScheduled: (Long) -> Unit = {},
+    private val deviceLimitRetryMs: Long = 60_000L,
+    /** Called with the refusal when the limit is hit and with null when a poll succeeds again. */
+    private val onDeviceLimitChanged: (DeviceLimitReachedException?) -> Unit = {},
 ) {
     private val lock = Any()
     private var job: Job? = null
@@ -49,6 +57,7 @@ class ClientControlLoop(
             if (job?.isActive == true) return
             val next = scope.launch(start = CoroutineStart.LAZY) {
                 retryBackoff.reset()
+                var limited = false
                 while (shouldContinue()) {
                     // This poll serves every wake requested before it starts.
                     wake.tryReceive()
@@ -56,6 +65,10 @@ class ClientControlLoop(
                     val waitMs = try {
                         poll()
                         retryBackoff.reset()
+                        if (limited) {
+                            limited = false
+                            onDeviceLimitChanged(null)
+                        }
                         updateState(ControlPlaneState.READY)
                         healthy = true
                         intervalMs
@@ -65,6 +78,14 @@ class ClientControlLoop(
                         onTerminal(terminal)
                         updateState(ControlPlaneState.STOPPED)
                         return@launch
+                    } catch (refused: DeviceLimitReachedException) {
+                        // Recoverable but user-visible: keep enrollment and the data plane, and
+                        // retry at a steady cadence rather than the fast transient backoff.
+                        limited = true
+                        onDeviceLimitChanged(refused)
+                        retryBackoff.reset()
+                        updateState(ControlPlaneState.RECONNECTING)
+                        deviceLimitRetryMs.also(onRetryScheduled)
                     } catch (_: Exception) {
                         // A transient control-plane failure must not tear down a healthy data plane.
                         updateState(ControlPlaneState.RECONNECTING)

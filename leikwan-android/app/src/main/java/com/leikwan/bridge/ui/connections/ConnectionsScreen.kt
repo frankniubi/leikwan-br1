@@ -55,7 +55,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.deviceLimitMessage
 
 @Composable
 fun ConnectionsScreen(
@@ -121,6 +123,11 @@ internal fun ConnectionsScreenContent(
     onNativeRoutePolicy: (String) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        state.deviceLimit?.let { notice ->
+            DeviceLimitCard(notice)
+            Spacer(Modifier.height(16.dp))
+        }
+
         MasterSwitchCard(state = state, onToggle = onToggle)
         Spacer(Modifier.height(16.dp))
 
@@ -151,6 +158,25 @@ internal fun ConnectionsScreenContent(
 
         Spacer(Modifier.height(16.dp))
         SecurityNoteCard()
+    }
+}
+
+/** Persistent while the panel refuses this device for a full online device limit. */
+@Composable
+private fun DeviceLimitCard(notice: DeviceLimitNotice) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+            Text(stringResource(R.string.device_limit_title), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text(context.deviceLimitMessage(notice), style = MaterialTheme.typography.bodyMedium)
+        }
     }
 }
 

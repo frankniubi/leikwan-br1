@@ -47,6 +47,7 @@ import com.leikwan.bridge.runtime.UltraPolicy
 import com.leikwan.bridge.runtime.UltraRuntimeStatus
 import com.leikwan.bridge.session.ClientControlLoop
 import com.leikwan.bridge.session.ControlPlaneState
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.session.SessionGate
 import com.leikwan.bridge.session.SessionRevocationCoordinator
@@ -194,9 +195,24 @@ class TunnelOrchestrator internal constructor(
             poll = {
                 // A failed heartbeat must not skip a due renewal: the pull/lease endpoints may
                 // still answer, and each renewal attempt is what keeps the grant alive offline.
-                val heartbeatOk = panelRepo.heartbeat()
-                refreshUltraIfDue()
-                refreshNativeIfDue()
+                var refused: DeviceLimitReachedException? = null
+                val heartbeatOk = try {
+                    panelRepo.heartbeat()
+                } catch (limit: DeviceLimitReachedException) {
+                    refused = limit
+                    false
+                }
+                try {
+                    refreshUltraIfDue()
+                    refreshNativeIfDue()
+                } catch (error: Exception) {
+                    // While the device limit refuses this device, the renewal endpoints refuse
+                    // it too; report the limit (what the user must act on), not their failure.
+                    if (refused == null || error is CancellationException || error is PanelControlException) {
+                        throw error
+                    }
+                }
+                refused?.let { throw it }
                 if (!heartbeatOk) {
                     throw IOException("control_plane_unavailable")
                 }
@@ -206,6 +222,11 @@ class TunnelOrchestrator internal constructor(
             onStateChanged = { state ->
                 controlPlaneState = state
                 Log.i(TAG, "control plane state: $state")
+            },
+            onDeviceLimitChanged = { refused ->
+                // PanelRepository already published the refusal to DeviceLimitGate for the UI.
+                Log.w(TAG, "online device limit ${if (refused != null) "reached (${refused.active}/${refused.limit})" else "cleared"}")
+                LeikwanVpnService.instance?.showDeviceLimitNotice(refused?.notice)
             },
         )
     }

@@ -117,6 +117,59 @@ class ClientControlLoopTest {
         loop.stop()
     }
 
+    @Test
+    fun `device limit keeps polling at the steady cadence without revoking`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var terminal: PanelControlException? = null
+        val retries = mutableListOf<Long>()
+        val limits = mutableListOf<DeviceLimitReachedException?>()
+        val loop = ClientControlLoop(
+            scope = scope,
+            intervalMs = 30_000,
+            poll = { throw DeviceLimitReachedException(limit = 2, active = 2) },
+            onTerminal = { terminal = it },
+            onRetryScheduled = retries::add,
+            retryBackoff = ControlPlaneBackoff(randomUpTo = { 0L }),
+            deviceLimitRetryMs = 60_000,
+            onDeviceLimitChanged = limits::add,
+        )
+
+        loop.start()
+
+        assertEquals(null, terminal)
+        assertTrue(loop.isRunning)
+        assertEquals(ControlPlaneState.RECONNECTING, loop.state)
+        // The fast backoff would schedule 0 ms here (randomUpTo = 0); the limit uses its own cadence.
+        assertEquals(listOf(60_000L), retries)
+        assertEquals(2, limits.single()?.limit)
+        loop.stop()
+    }
+
+    @Test
+    fun `device limit clears on the next successful poll`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val polls = AtomicInteger(0)
+        val limits = java.util.Collections.synchronizedList(mutableListOf<DeviceLimitReachedException?>())
+        val loop = ClientControlLoop(
+            scope = scope,
+            intervalMs = 60_000,
+            poll = {
+                if (polls.incrementAndGet() == 1) throw DeviceLimitReachedException(limit = 1, active = 1)
+            },
+            onTerminal = {},
+            deviceLimitRetryMs = 10,
+            onDeviceLimitChanged = limits::add,
+        )
+
+        loop.start()
+        waitUntil { polls.get() >= 2 && loop.state == ControlPlaneState.READY }
+
+        assertEquals(2, limits.size)
+        assertEquals(1, limits[0]?.limit)
+        assertEquals(null, limits[1])
+        loop.stop()
+    }
+
     private fun waitUntil(timeoutMs: Long = 5_000, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (!condition()) {
