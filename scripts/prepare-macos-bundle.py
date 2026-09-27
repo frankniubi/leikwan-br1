@@ -5,6 +5,7 @@ This provides bundle integrity, not Developer ID trust or notarization.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -42,12 +43,20 @@ def seal(app):
     if unexpected:
         raise ValueError('non-launcher content in MacOS must move to Resources: ' + ', '.join(unexpected))
     clean_metadata(app)
+    preserved = {value.strip().lower() for value in os.environ.get('LEIKWAN_PRESERVE_SIGNED_SHA256', '').split(',') if value.strip()}
     for path in sorted(app.rglob('*')):
         if not path.is_file() or path.is_symlink() or path == main:
             continue
         with path.open('rb') as stream:
             magic = stream.read(4)
         if magic in MACHO:
+            if digest(path) in preserved and subprocess.run(
+                    ['codesign', '--verify', '--strict', str(path)], capture_output=True).returncode == 0:
+                # A released, already-signed helper reused unchanged (e.g. the
+                # Ultra runtime) must stay byte-identical: re-signing it with a
+                # different codesign produces new bytes the panel's runtime
+                # attestation no longer recognises.
+                continue
             subprocess.run(['codesign', '--force', '--sign', '-', str(path)], check=True)
     # Signing native helpers changes their bytes. Seal their final hashes before
     # signing the outer bundle, which in turn covers this manifest.
