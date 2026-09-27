@@ -2,10 +2,10 @@
  "android_client_apk": {
   "artifact_url": "/artifacts/leikwan-android-client.apk",
   "path": "artifacts/android/leikwan-android-client.apk",
-  "sha256": "8d536eb4d804fd44e651322edb4e1613ac774ceab9f585a320493850d755cd29",
-  "size_bytes": 91111771,
-  "version": "0.2.34",
-  "version_code": 36
+  "sha256": "5b6f8553637736e42cd907686bb4a2948149b02d934a6939ecf94338f4c59e8a",
+  "size_bytes": 91136347,
+  "version": "0.2.35",
+  "version_code": 37
  },
  "bond_sidecar_installer": {
   "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -26,34 +26,34 @@
   "path": "client-agent/cfwg_latency_watchdog.py",
   "sha256": "749eb27aa835cabc14eb8067cbc77f0c4e87c5c10b92157737791d9051373694",
   "size_bytes": 32373,
-  "version": "2026.09.24.3"
+  "version": "2026.09.27.1"
  },
  "client_agent": {
   "artifact_url": "/artifacts/client-agent.py",
   "path": "client-agent/client_agent.py",
-  "sha256": "18e01da89747b4f4304430bbe0c5146564178e6b9d73dd21b5e3c3bf8d2f1253",
-  "size": 373672,
-  "size_bytes": 373672,
-  "version": "2026.09.24.3"
+  "sha256": "54e3c501a780c4ad468e6c71c84770fa3b5981d63426205e45c5a33d321f8e5c",
+  "size": 402204,
+  "size_bytes": 402204,
+  "version": "2026.09.27.1"
  },
  "client_agent_installer": {
   "artifact_url": "/artifacts/install-client-agent.sh",
   "install_url": "/artifacts/install-client-agent.sh",
   "path": "install/install-client-agent.sh",
   "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-  "sha256": "f5c5e7900ea1ab590c942efa6e923d893de3b0e9d901a0dc8f163371d541fb5c",
-  "size": 46341,
-  "size_bytes": 46341,
-  "version": "2026.09.24.3"
+  "sha256": "098fac32ba3608f68e75ca6c980705eae124c739a395d232ce3fb4ab36fdf545",
+  "size": 44804,
+  "size_bytes": 44804,
+  "version": "2026.09.27.1"
  },
  "client_agent_installer_linux_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/install-client-agent-linux-arm64",
   "format": "binary",
   "path": "artifacts/install-client-agent-linux-arm64",
-  "sha256": "063353e1a5ee46e213679cb48114788dd92ee1bea4368db4617751c1afb370c5",
+  "sha256": "bfe45246c1a6266261029049e520dd26ed6a8ec1116261a8856eeea7a6159416",
   "size_bytes": 32374910,
-  "version": "2026.09.24.3"
+  "version": "2026.09.27.1"
  },
  "client_agent_linux_amd64": {
   "architecture": "amd64",
@@ -61,24 +61,24 @@
   "format": "elf-onefile-pyinstaller",
   "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
   "runtime_mode": "frozen",
-  "sha256": "0fbbb87ef82c91128a2261daecf12d69db12130367c878326454392bd8337dee",
-  "size_bytes": 8864008,
-  "version": "2026.09.24.3"
+  "sha256": "518b8fc33f43a0f59523b74700e2fdd7ea4f41e9746c31d5306378f943a261a1",
+  "size_bytes": 8912296,
+  "version": "2026.09.27.1"
  },
  "client_agent_update": {
   "artifact_url": "/artifacts/client-agent-update.sh",
   "path": "install/client-agent-update.sh",
-  "sha256": "d4d49d8819e89fc0e161e63528eccae62c1f539a0b0d7d067c66a74554f9fb42",
-  "size_bytes": 26254,
-  "version": "2026.09.24.3"
+  "sha256": "0c61870322f84c32c5680a408732affb269bd5f631744a5359fc6b336f8308d5",
+  "size_bytes": 25624,
+  "version": "2026.09.27.1"
  },
  "client_installer": {
   "install_url": "/artifacts/install-client.sh",
   "path": "install/install-client.sh",
   "remote_install_url": "/artifacts/remote-install-client.sh",
-  "sha256": "150c2aebfb2675150be7e7e0f68dc6a316c683e65c166c229cc8f1cfd05eef82",
+  "sha256": "6a71a0f584ebb4f47464cf97fb98f5d96ad46a1b21944b919a9d1f6172643851",
   "size_bytes": 19459,
-  "version": "2026.09.24.3",
+  "version": "2026.09.27.1",
   "artifact_url": "/artifacts/install-client.sh"
  },
  "client_installer_windows": {
@@ -132,7 +132,7 @@
   "sha256": "d5ee20b47b27435d2eefa61977267a1782e1e4cff4c35173a1d30e7f31d7caaa",
   "size": 102034,
   "size_bytes": 102034,
-  "version": "2026.09.24.3"
+  "version": "2026.09.27.1"
  },
  "leigod_forward_relay": {
   "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
@@ -490,7 +490,7 @@
   "sha256": "b57da37a24e4066d8508493f39ced6eec38c9cd510bd170e27b1858004ae62c5",
   "size": 10212,
   "size_bytes": 10212,
-  "version": "2026.09.24.3"
+  "version": "2026.09.27.1"
  },
  "tcp_accel_runtime": {
   "artifact_url": "/artifacts/leikwan-tcp-accel.py",
@@ -752,9 +752,9 @@
    "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
    "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
   },
-  "sha256": "8ba057b080b2c506b2588247e5fbf1f4bfb1e8abbc84f45ee5bedc898ff303cf",
-  "size_bytes": 69773572,
-  "version": "0.1.20.58"
+  "sha256": "a4b23effe2797cdfd333f3d1ced7bb167be6c6c0a61b2bf4ff78078d4057ad81",
+  "size_bytes": 69781328,
+  "version": "0.1.20.59"
  },
  "windows_headless_client": {
   "architecture": "x86_64",
@@ -762,9 +762,9 @@
   "format": "zip",
   "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
   "platform": "windows",
-  "sha256": "6781997730059d26e623af86713778b2157200dc970497eb19121695e3ad9ebc",
-  "size_bytes": 63729331,
-  "version": "0.1.20.58",
+  "sha256": "5116332b46397b7b705f549b62caf234e72a8944e09c0cfa64a0b35afb3da2d3",
+  "size_bytes": 63733587,
+  "version": "0.1.20.59",
   "runtime_sha256": {
    "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
    "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -777,9 +777,9 @@
  "windows_headless_installer": {
   "install_url": "/artifacts/install-windows-headless.ps1",
   "path": "install/install-windows-headless.ps1",
-  "sha256": "436597d8556c717844f8326844b8168fcd8d60c81fd549da21aba14e9507abcc",
+  "sha256": "0c17efa35debf894cf418e6ed1b3bd654690a0955edd19707144c49ae1fb90e9",
   "size_bytes": 16815,
-  "version": "0.1.20.58",
+  "version": "0.1.20.59",
   "artifact_url": "/artifacts/install-windows-headless.ps1"
  },
  "windows_headless_uninstaller": {
@@ -787,7 +787,7 @@
   "path": "install/uninstall-windows-headless.ps1",
   "sha256": "79f2cabf046bb908fd61713dc48cd28cac4e40c0ac313fd940775bdcf058d178",
   "size_bytes": 2630,
-  "version": "0.1.20.58",
+  "version": "0.1.20.59",
   "artifact_url": "/artifacts/uninstall-windows-headless.ps1"
  },
  "windows_update_helper": {
