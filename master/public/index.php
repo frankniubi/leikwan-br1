@@ -64,6 +64,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'device_banned',
         'device_untrusted',
         'account_banned',
+        'client_online_limit_reached',
         'debug_collection_invalid',
         'debug_collection_not_found',
         'debug_collection_expired',
@@ -99,10 +100,18 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         foreach ([
             'challenge_token', 'challenge_expires_at', 'attempt_id', 'required_collection_mode',
             'retry_after_seconds', 'blocked_until', 'next_location_check_at', 'matched_entity_type',
+            'online_device_limit', 'active_online_devices',
         ] as $field) {
             if (array_key_exists($field, $details)) {
                 $payload[$field] = $details[$field];
             }
+        }
+        if (array_key_exists('online_device_limit', $details)) {
+            // Shipped desktop builds read the counts from a nested object.
+            $payload['details'] = [
+                'online_device_limit' => $details['online_device_limit'],
+                'active_online_devices' => $details['active_online_devices'] ?? 0,
+            ];
         }
         if (isset($details['violation_count'])) {
             $payload['remaining_geo_violations'] = max(0, 3 - (int) $details['violation_count']);

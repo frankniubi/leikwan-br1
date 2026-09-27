@@ -1381,7 +1381,11 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
-            . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
+            . $onlineCount . ' / ' . $onlineLimit . '</strong>'
+            . ($onlineCount >= $onlineLimit
+                ? '<div class="muted">已达上限：新设备会被拒绝连接并提示“设备数量已达上限”。在线设备不受影响；可移除下方设备，或等其他设备断开约 3 分钟后自动释放名额。</div>'
+                : '')
+            . '</div></div></div>'
             . $credentialPanel
             . $onlineList
             . '</div>';

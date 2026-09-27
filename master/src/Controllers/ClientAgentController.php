@@ -149,6 +149,7 @@ final class ClientAgentController extends BaseController
         $this->assertRequestedClientId($client, $request);
         $deviceId = $this->requestedDeviceId($request);
         $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
         $enrollment = $this->deviceControls->renew(
             $client,
             $deviceId,
@@ -175,6 +176,7 @@ final class ClientAgentController extends BaseController
         }
         $deviceId = $this->requestedDeviceId($request);
         $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
         $proof['access_policy_protocol_version'] = 1;
         $enrollment = $this->deviceControls->enroll(
             $client,
@@ -196,6 +198,7 @@ final class ClientAgentController extends BaseController
         $this->assertRequestedClientId($client, $request);
         $deviceId = $this->requestedDeviceId($request);
         $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
         $enrollment = $this->deviceControls->enrollIdentity(
             $client,
             $deviceId,
@@ -248,6 +251,7 @@ final class ClientAgentController extends BaseController
         $policyClient = $this->activeClientForEnrollmentCode($code);
         $deviceId = $this->requestedDeviceId($request);
         $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
         $proof['access_policy_protocol_version'] = 1;
         [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $proof): array {
             $codeRow = $this->enrollmentCodes->findActive($code);
@@ -282,6 +286,7 @@ final class ClientAgentController extends BaseController
         $policyClient = $this->activeClientForEnrollmentCode($code);
         $deviceId = $this->requestedDeviceId($request);
         $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
         [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $identityPublicKey): array {
             $codeRow = $this->enrollmentCodes->findActive($code);
             if ($codeRow === null) {
@@ -330,6 +335,7 @@ final class ClientAgentController extends BaseController
             throw new ApiException('client_id_mismatch', 403);
         }
         $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
         $client = $this->db->transaction(function () use ($pairingCodes, $code): array {
             $row = $pairingCodes->findByCode($code);
             if ($row === null || $pairingCodes->isUsed($row)) {
@@ -1544,6 +1550,10 @@ final class ClientAgentController extends BaseController
         if ($client === null) {
             return $this->json(['ok' => false, 'error' => 'client not found'], 404);
         }
+        // The online device limit is enforced on the config pull that follows
+        // select, not here: released desktop builds read this response with
+        // EnsureSuccessStatusCode and would show a bare HTTP 429, while they
+        // already explain client_online_limit_reached when the pull returns it.
         $deviceId = $this->clientOnlineSessions()->deviceIdFromRequest($request);
         $this->accessPolicy->authorizeClientRequest($client, $request, 'login', $deviceId);
 

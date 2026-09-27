@@ -9,6 +9,11 @@ use Leikwan\Master\Http\Request;
 final class ClientOnlineSessionService
 {
     public const ACTIVE_WINDOW_SECONDS = 180;
+    public const LIMIT_REACHED_ERROR = 'client_online_limit_reached';
+    // Fallback ids derived from user-agent|ip when a client sends no device id.
+    // They change whenever the IP changes, so one machine can appear as several
+    // devices; they are neither counted toward nor refused by the online limit.
+    private const LEGACY_DEVICE_PREFIX = 'legacy-';
 
     private TrustedClientIpResolver $clientIpResolver;
 
@@ -51,6 +56,7 @@ final class ClientOnlineSessionService
                 'device_id' => $deviceId,
             ]
         );
+        $this->enforceOnlineLimit($client, $clientId, $deviceId, $existing);
 
         if ($existing === null) {
             $this->db->insert('client_device_sessions', [
@@ -102,6 +108,68 @@ final class ClientOnlineSessionService
         );
 
         return $deviceId;
+    }
+
+    /**
+     * Refuse a device that is not already online when the client's online
+     * device limit is full. Devices that are already online are never kicked,
+     * even if the limit was lowered after they connected.
+     *
+     * @param array<string, mixed> $client
+     */
+    public function assertCanComeOnline(array $client, string $deviceId): void
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return;
+        }
+        $existing = $this->db->fetchOne(
+            'SELECT * FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+            [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+            ]
+        );
+        $this->enforceOnlineLimit($client, $clientId, $deviceId, $existing);
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @param array<string, mixed>|null $existing
+     */
+    private function enforceOnlineLimit(array $client, int $clientId, string $deviceId, ?array $existing): void
+    {
+        if (str_starts_with($deviceId, self::LEGACY_DEVICE_PREFIX)) {
+            return;
+        }
+        $cutoff = gmdate('Y-m-d H:i:s', time() - self::ACTIVE_WINDOW_SECONDS);
+        if ($existing !== null && (string) ($existing['last_seen_at'] ?? '') >= $cutoff) {
+            return;
+        }
+
+        $limit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total
+             FROM client_device_sessions
+             WHERE client_id = :client_id
+               AND last_seen_at >= :cutoff
+               AND device_id <> :device_id
+               AND device_id NOT LIKE :legacy_prefix',
+            [
+                'client_id' => $clientId,
+                'cutoff' => $cutoff,
+                'device_id' => $deviceId,
+                'legacy_prefix' => self::LEGACY_DEVICE_PREFIX . '%',
+            ]
+        );
+        $activeCount = max(0, (int) ($row['total'] ?? 0));
+        if ($activeCount >= $limit) {
+            throw new ApiException(self::LIMIT_REACHED_ERROR, 429, [
+                'online_device_limit' => $limit,
+                'active_online_devices' => $activeCount,
+            ]);
+        }
     }
 
     public function activeCountForClient(int $clientId): int
