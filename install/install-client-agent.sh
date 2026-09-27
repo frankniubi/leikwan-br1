@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.27.2"
+INSTALLER_VERSION="2026.09.28.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -546,6 +546,19 @@ STRICT_DOH_PROVIDERS = [
 LEIKWAN_PROTECTED_APEX = "leikwanhost.com"
 LEIKWAN_PROTECTED_SUFFIX = ".leikwanhost.com"
 USER_AGENT = "Leikwan-Client-Agent-Installer/strict-doh"
+# A panel host that is blackholed (Cloudflare seen from a mainland-only network)
+# must fail fast so the installer can move on to the other artifact source.
+CONNECT_TIMEOUT_SECONDS = 8.0
+
+
+def open_resolved_socket(address, timeout, source_address):
+    connect_timeout = CONNECT_TIMEOUT_SECONDS
+    if isinstance(timeout, (int, float)):
+        connect_timeout = min(float(timeout), CONNECT_TIMEOUT_SECONDS)
+    sock = socket.create_connection(address, connect_timeout, source_address)
+    if isinstance(timeout, (int, float)):
+        sock.settimeout(timeout)
+    return sock
 
 
 class StrictDoHError(RuntimeError):
@@ -656,7 +669,7 @@ class ResolvedHTTPConnection(http.client.HTTPConnection):
         self.resolved_ip = resolved_ip
 
     def connect(self):
-        self.sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        self.sock = open_resolved_socket((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self._tunnel()
 
@@ -667,7 +680,7 @@ class ResolvedHTTPSConnection(http.client.HTTPSConnection):
         self.resolved_ip = resolved_ip
 
     def connect(self):
-        sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        sock = open_resolved_socket((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
@@ -760,7 +773,7 @@ def fetch_protected(url, redirects=5):
 
 def curl_download(url, path):
     # Non-protected URL fallback: curl -fsSL, never through a proxy.
-    cmd = ["curl", "--noproxy", "*", "-fsSL", url]
+    cmd = ["curl", "--noproxy", "*", "--connect-timeout", "10", "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -887,8 +900,44 @@ download_manifest_artifact() {
   mark_install_changed "$key"
 }
 
+# The panel publishes the same artifacts through Cloudflare (international)
+# and the Aliyun CDN (mainland). Some hosts can reach only one of them, so an
+# official source that does not answer falls back to the other one. Every
+# artifact is still checked against the manifest hash.
+PANEL_ARTIFACT_SOURCES=("https://v3.leikwanhost.com" "https://api-leikwanbridge.nbwly.com")
+
+artifact_source_candidates() {
+  local base="${1%/}" source official=0
+  printf '%s\n' "$base"
+  case "$base" in
+    https://v3.leikwanhost.com|https://v3-mirror.leikwanhost.com|https://api-leikwanbridge.nbwly.com) official=1 ;;
+  esac
+  ((official)) || return 0
+  for source in "${PANEL_ARTIFACT_SOURCES[@]}"; do
+    [[ "$source" == "$base" ]] || printf '%s\n' "$source"
+  done
+}
+
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
-leikwan_protected_download "$DOWNLOAD_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
+_VERSIONS_ERR="$STATE_DIR/versions.json.err"
+_SELECTED_DOWNLOAD_BASE=""
+while IFS= read -r _source; do
+  if leikwan_protected_download "$_source/artifacts/versions.json" "$_VERSIONS_PATH" 2>"$_VERSIONS_ERR"; then
+    _SELECTED_DOWNLOAD_BASE="$_source"
+    break
+  fi
+  echo "artifact source $_source is unreachable: $(tail -n 1 "$_VERSIONS_ERR" 2>/dev/null)" >&2
+done < <(artifact_source_candidates "$DOWNLOAD_BASE")
+rm -f "$_VERSIONS_ERR"
+[[ -n "$_SELECTED_DOWNLOAD_BASE" ]] || die "no artifact source answered (tried: $(artifact_source_candidates "$DOWNLOAD_BASE" | tr '\n' ' '))"
+if [[ "$_SELECTED_DOWNLOAD_BASE" != "${DOWNLOAD_BASE%/}" ]]; then
+  echo "using artifact source $_SELECTED_DOWNLOAD_BASE"
+  # Persist the reachable source too, so later self-updates start from it.
+  if [[ "${ARTIFACT_BASE%/}" == "${DOWNLOAD_BASE%/}" ]]; then
+    ARTIFACT_BASE="$_SELECTED_DOWNLOAD_BASE"
+  fi
+  DOWNLOAD_BASE="$_SELECTED_DOWNLOAD_BASE"
+fi
 _VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
 rm -f "$_VERSIONS_PATH"
 if [[ -z "$INSTALLER_SHA256" ]]; then

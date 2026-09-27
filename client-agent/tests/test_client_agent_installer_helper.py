@@ -1,11 +1,77 @@
 import pathlib
+import shutil
+import subprocess
 import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+def _artifact_source_selection(source: str) -> str:
+    start = source.index("PANEL_ARTIFACT_SOURCES=(")
+    end = source.index('_VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"')
+    return source[start:end]
+
+
+def _run_bash(script: str) -> subprocess.CompletedProcess:
+    # Bytes on stdin: text mode would turn LF into CRLF on Windows.
+    completed = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, check=False)
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode, completed.stdout.decode("utf-8"), completed.stderr.decode("utf-8")
+    )
+
+
 class ClientAgentInstallerHelperTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_unreachable_cloudflare_falls_back_to_the_aliyun_artifact_source(self) -> None:
+        # A mainland-only host cannot reach Cloudflare; the Aliyun CDN serves
+        # the same artifacts and becomes the download and persisted base.
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() {",
+            "  case \"$1\" in https://v3.leikwanhost.com/*) echo 'connect timed out' >&2; return 1 ;; esac",
+            "  echo '{}' > \"$2\"",
+            "}",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=https://v3.leikwanhost.com",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            _artifact_source_selection(source),
+            "echo \"download=$DOWNLOAD_BASE artifact=$ARTIFACT_BASE\"",
+        ])
+        completed = _run_bash(script)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("artifact source https://v3.leikwanhost.com is unreachable: connect timed out", completed.stderr)
+        self.assertIn(
+            "download=https://api-leikwanbridge.nbwly.com artifact=https://api-leikwanbridge.nbwly.com",
+            completed.stdout,
+        )
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_custom_artifact_source_has_no_fallback(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() { echo \"fetch $1\" >&2; return 1; }",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=http://127.0.0.1:8080",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            _artifact_source_selection(source),
+        ])
+        completed = _run_bash(script)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("fetch http://127.0.0.1:8080/artifacts/versions.json", completed.stderr)
+        self.assertNotIn("fetch https://", completed.stderr)
+        self.assertIn("die: no artifact source answered (tried: http://127.0.0.1:8080 )", completed.stderr)
+
+    def test_panel_connections_fail_fast_so_the_other_source_is_tried(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertIn("CONNECT_TIMEOUT_SECONDS = 8.0", source)
+        self.assertNotIn("socket.create_connection((self.resolved_ip", source)
+        self.assertIn('"curl", "--noproxy", "*", "--connect-timeout", "10"', source)
+
     def test_installer_deploys_update_helper(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 

@@ -342,15 +342,70 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = (string) ($client['agent_token'] ?? '');
 
-        $command = 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-client-agent.sh')
-            . ' | bash -s -- --master ' . $this->shellQuote($masterUrl);
+        $arguments = ' --master ' . $this->shellQuote($masterUrl);
         if ($artifactBase !== $masterUrl) {
-            $command .= ' --artifact-base ' . $this->shellQuote($artifactBase);
+            $arguments .= ' --artifact-base ' . $this->shellQuote($artifactBase);
+        }
+        $arguments .= ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+
+        return $this->linuxScriptCommand($artifactBase . '/artifacts/install-client-agent.sh', $arguments);
+    }
+
+    /**
+     * The same artifacts are published through Cloudflare and the Aliyun CDN.
+     * Some Linux hosts can reach only mainland networks, so the displayed
+     * commands retry through the Aliyun CDN when the Cloudflare base does not
+     * answer; the installer then picks whichever source works for the rest.
+     */
+    protected function artifactMirrorBaseUrl(): string
+    {
+        $configured = trim((string) ($this->config->get('ARTIFACT_MIRROR_BASE_URL', '') ?? ''));
+        if ($configured !== '') {
+            return rtrim($configured, '/');
         }
 
-        return $command
-            . ' --client-id ' . $clientId
-            . ' --agent-token ' . $this->shellQuote($agentToken);
+        return $this->artifactBaseUrl() === 'https://v3.leikwanhost.com' ? 'https://api-leikwanbridge.nbwly.com' : '';
+    }
+
+    protected function artifactMirrorUrl(string $url): string
+    {
+        $base = $this->artifactBaseUrl();
+        $mirror = $this->artifactMirrorBaseUrl();
+        if ($mirror === '' || $mirror === $base || !str_starts_with($url, $base . '/')) {
+            return '';
+        }
+
+        return $mirror . substr($url, strlen($base));
+    }
+
+    /**
+     * curl command that writes $url to $target, falling back to the mirror.
+     */
+    protected function linuxFetchCommand(string $url, string $target): string
+    {
+        $mirror = $this->artifactMirrorUrl($url);
+        if ($mirror === '') {
+            return 'curl -fsSL ' . $this->shellQuote($url) . ' -o ' . $target;
+        }
+
+        return '{ curl -fsSL --connect-timeout 10 ' . $this->shellQuote($url) . ' -o ' . $target
+            . ' || curl -fsSL --connect-timeout 10 ' . $this->shellQuote($mirror) . ' -o ' . $target . '; }';
+    }
+
+    /**
+     * Download a shell script and run it with $arguments. Without a mirror this
+     * stays the familiar "curl | bash"; with one the script is saved first so a
+     * failed first attempt never feeds a partial script to bash.
+     */
+    protected function linuxScriptCommand(string $url, string $arguments): string
+    {
+        if ($this->artifactMirrorUrl($url) === '') {
+            return 'curl -fsSL ' . $this->shellQuote($url) . ' | bash -s --' . $arguments;
+        }
+
+        return 'f="$(mktemp)" && ' . $this->linuxFetchCommand($url, '"$f"')
+            . ' && bash "$f"' . $arguments . '; rm -f "$f"';
     }
 
     protected function androidClientApkUrl(): string
@@ -464,8 +519,8 @@ abstract class BaseController
      */
     protected function linuxArm64ClientInstallCommand(?array $client = null): string
     {
-        $command = 'curl -fsSL ' . $this->shellQuote($this->linuxArm64ClientInstallerUrl())
-            . ' -o install-client-agent-linux-arm64 && chmod 0755 install-client-agent-linux-arm64 && sudo ./install-client-agent-linux-arm64'
+        $command = $this->linuxFetchCommand($this->linuxArm64ClientInstallerUrl(), 'install-client-agent-linux-arm64')
+            . ' && chmod 0755 install-client-agent-linux-arm64 && sudo ./install-client-agent-linux-arm64'
             . ' --master ' . $this->shellQuote($this->agentBaseUrl());
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = trim((string) ($client['agent_token'] ?? ''));
@@ -745,9 +800,10 @@ abstract class BaseController
 
     protected function clientAgentUninstallCommand(string $configDir = '/etc/leikwan-client-agent', bool $purge = true): string
     {
-        return 'curl -fsSL ' . $this->artifactBaseUrl() . '/artifacts/uninstall-client-agent.sh | bash -s -- --config-dir '
-            . $configDir
-            . ($purge ? ' --purge' : '');
+        return $this->linuxScriptCommand(
+            $this->artifactBaseUrl() . '/artifacts/uninstall-client-agent.sh',
+            ' --config-dir ' . $configDir . ($purge ? ' --purge' : '')
+        );
     }
 
     protected function clientAgentInstallerUrl(): string

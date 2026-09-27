@@ -125,5 +125,27 @@ namespace {
         fail('expected the concise command to keep master and client id arguments');
     }
 
+    // The production Cloudflare base retries through the Aliyun CDN, so a
+    // mainland-only host can still install; the script is saved before it runs.
+    $cfEnvPath = tempnam(sys_get_temp_dir(), 'lw-base-controller-cf-');
+    if ($cfEnvPath === false) {
+        fail('failed to create Cloudflare temp env');
+    }
+    file_put_contents($cfEnvPath, "APP_URL=https://v3.leikwanhost.com\nARTIFACT_BASE_URL=https://v3.leikwanhost.com\n");
+    $cfController = new BaseControllerProbe(new Config($cfEnvPath), new Database());
+    $cfCommand = $cfController->linuxInstallCommandForClient([
+        'id' => 42,
+        'agent_token' => 'tok-42',
+    ]);
+    $expected = 'f="$(mktemp)" && { curl -fsSL --connect-timeout 10 \'https://v3.leikwanhost.com/artifacts/install-client-agent.sh\' -o "$f"'
+        . ' || curl -fsSL --connect-timeout 10 \'https://api-leikwanbridge.nbwly.com/artifacts/install-client-agent.sh\' -o "$f"; }'
+        . ' && bash "$f" --master \'https://v3.leikwanhost.com\' --client-id 42 --agent-token \'tok-42\'; rm -f "$f"';
+    if ($cfCommand !== $expected) {
+        fail('expected the Cloudflare install command to fall back to the Aliyun CDN: ' . $cfCommand);
+    }
+    if (strlen($cfCommand) >= 500) {
+        fail('expected the fallback install command to stay concise');
+    }
+
     echo "ok\n";
 }

@@ -32,7 +32,7 @@ foreach ([
     'LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"',
     'rm -f "$LEGACY_PROXY_ENV_FILE"',
     'mark_install_changed "proxy.env removed"',
-    'cmd = ["curl", "--noproxy", "*", "-fsSL", url]',
+    'cmd = ["curl", "--noproxy", "*", "--connect-timeout", "10", "-fsSL", url]',
 ] as $snippet) {
     if (!str_contains($clientInstaller, $snippet)) {
         fail('install-client-agent missing retired-proxy handling: ' . $snippet);
