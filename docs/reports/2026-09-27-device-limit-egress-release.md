@@ -9,7 +9,7 @@
 | Android | 0.2.34 (36) | **0.2.35 (37)** |
 | Linux agent | 2026.09.24.3 | **2026.09.27.1** |
 | Linux installer, tcp-accel installer, arm64 offline installer | 2026.09.24.3 | **2026.09.27.2** |
-| macOS | 1.0.51 | 1.0.51 (not built: build Mac offline, see below) |
+| macOS | 1.0.51 | **1.0.52** (release -3, replacement build Mac) |
 | Ultra runtime | 2026.09.25.1 | unchanged |
 | OpenWrt | — | not released (owner's decision) |
 
@@ -56,15 +56,25 @@
 - **Error rates:** no 429 and no 5xx since the deploy, apart from the reload second.
 - **Desktop:** the Windows and macOS GUIs still send the stale `AgentVersion` 2026.04.09.1 in their user agent, so the panel cannot show whether desktop builds have updated.
 
+## macOS 1.0.52 (release -3)
+
+- **Build Mac:** a new VM, `100.113.36.55` (macOS 26.6.2 on Apple M4). The old build Mac is offline.
+  - Toolchain installed there: Command Line Tools 27.0, .NET SDK 8.0.425 in `~/.sdk`, Go 1.26.8 in `~/.go126`.
+  - Source: 4edcf79f. All six helpers are taken from the published 1.0.51 update zips.
+- **Runtime attestation risk, caught before release:**
+  - `prepare-macos-bundle.py` re-signs every Mach-O. On the new Mac that rewrote the reused `ultra-client` (`aedc18f7` became `4cfa57d4`).
+  - That hash is not listed for fingerprint `2026.09.25.1.c10e11f1`, and production enforces attestation for macOS (`ULTRA_ATTESTATION_ENFORCE_PLATFORMS=linux,windows,macos`). 1.0.52 would have been refused leases.
+  - Fix (4edcf79f): helpers listed in `LEIKWAN_PRESERVE_SIGNED_SHA256` that already verify are not re-signed.
+  - Verified: the bundled `ultra-client` equals the released runtime (arm64 `aedc18f7`, x64 `a24afa13`). The other five helpers are byte-identical to 1.0.51. `codesign` verifies, and the file layout matches (234 files).
+- **Manifest:** the 1.0.51 `runtime_sha256` tables listed the pre-signing `ultra-client` hash. 1.0.52 records the hashes actually in the bundles.
+- **Transfer:** the Mac is reachable only through Tailscale DERP (hkg), at about 60–190 KB/s. The packages reached the panel by combining two routes:
+  - the parts already downloaded, sent on from the local machine;
+  - the missing tail bytes, pulled from the Mac through DERP to the local machine and then uploaded.
+  - Each file was checked against the package metadata before staging.
+- **Published:** status `committed`. All 6 public URLs match their manifest hashes.
+
 ## Not done / follow-ups
 
-- **macOS 1.0.52:** the build Mac `leikwan@100.103.253.21` has been offline for about a day (Tailscale last seen).
-  - A prepared source tarball and a build script (helpers reused from 1.0.51, no runtime rebuild) are in `tmp/candidate-20260927-1/macos/`.
-  - When the Mac is back:
-    1. Re-bump the macOS version (held at 1.0.51 in d7fea743).
-    2. Build.
-    3. Publish the four `macos_client_*` keys together with `macos_headless_installer`.
-  - Until then, macOS users over the device limit see the old generic connection error.
 - **Live drift, pre-existing and not changed here:** the deployed `ClientAgentController` calls `AccessPolicyService::isRouterPlatform()`, but the deployed `AccessPolicyService` predates that method.
   - It only matters on the location endpoints, which no client calls.
   - `ExternalUoTPool`, `HomePageContent`, `UltraCandidateReviewService` and `home-preview.php` also differ from git, and four live-only files exist.
