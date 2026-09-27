@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -145,6 +146,7 @@ class ClientAgentInstallerNoopRestartTests(unittest.TestCase):
         "files_identical",
         "install_file_if_changed",
         "backup_existing",
+        "remove_legacy_proxy_env",
         "check_binary_current",
         "download_manifest_artifact",
         "validate_agent_config",
@@ -207,7 +209,7 @@ class ClientAgentInstallerNoopRestartTests(unittest.TestCase):
             'SERVICE_NAME="leikwan-client-agent"\n'
             'AGENT_RUNTIME_MODE="frozen"\n'
             f'AGENT_BINARY_PATH="{posix(self.bin_dir / "leikwan-client-agent")}"\n'
-            'PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"\n'
+            'LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"\n'
             f'FORCE_RESTART="{1 if force else 0}"\n'
             "INSTALL_CHANGED=0\n"
             "UNIT_CHANGED=0\n"
@@ -223,6 +225,7 @@ class ClientAgentInstallerNoopRestartTests(unittest.TestCase):
             f'  cp "{posix(self.artifacts)}/$(basename "$1")" "$2"\n'
             "}\n"
             + self.functions
+            + "remove_legacy_proxy_env\n"
             + 'download_manifest_artifact install_forward_runtime "https://v3.leikwanhost.com/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"\n'
             f'cp "{posix(staged)}" "$CONFIG_DIR/config.json.new"\n'
             'install_agent_config "$CONFIG_DIR/config.json.new"\n'
@@ -303,112 +306,159 @@ class ClientAgentInstallerNoopRestartTests(unittest.TestCase):
         self.assertIn("RESTARTED=1", output)
         self.assertNotIn("daemon-reload", self.systemctl_calls())
 
+    def test_rendered_unit_has_no_proxy_environment_file(self) -> None:
+        self.run_install()
+        unit = self.unit_path.read_text(encoding="utf-8")
+        self.assertNotIn("EnvironmentFile", unit)
+        self.assertNotIn("proxy", unit.lower())
+        self.assertFalse((self.config_dir / "proxy.env").exists())
 
-PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")
-
-
-@unittest.skipIf(BASH is None, "POSIX bash (Git for Windows bash on Windows) is not available")
-class ProxyEnvPreservationTests(unittest.TestCase):
-    """A self-update runs from a transient unit with no proxy env: keep proxy.env."""
-
-    FUNCTIONS = [
-        "mark_install_changed",
-        "files_identical",
-        "install_file_if_changed",
-        "backup_existing",
-        "append_proxy_env_line",
-        "stage_proxy_env",
-        "install_proxy_env",
-    ]
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.base = pathlib.Path(self._tmp.name)
-        self.config_dir = self.base / "etc"
-        self.state_dir = self.base / "state"
-        self.stub_dir = self.base / "stubs"
-        for path in (self.config_dir, self.state_dir):
-            path.mkdir(parents=True, exist_ok=True)
-        write_common_stubs(self.stub_dir)
-        self.functions = extract_shell_functions(CLIENT_INSTALLER.read_text(encoding="utf-8"), self.FUNCTIONS)
-        self.proxy_env = self.config_dir / "proxy.env"
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def run_proxy_step(self, *, mode: str = "auto", url: str = "", env: dict[str, str] | None = None) -> str:
-        driver = self.base / "driver.sh"
-        driver.write_text(
-            "set -euo pipefail\n"
-            f'export PATH="$(cd "{posix(self.stub_dir)}" && pwd):$PATH"\n'
-            f'CONFIG_DIR="{posix(self.config_dir)}"\n'
-            f'STATE_DIR="{posix(self.state_dir)}"\n'
-            'PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"\n'
-            'PROXY_ENV_STAGED="$CONFIG_DIR/proxy.env.new.$$"\n'
-            f'PROXY_MODE="{mode}"\n'
-            f'PROXY_URL="{url}"\n'
-            "INSTALL_CHANGED=0\n"
-            "declare -a INSTALL_CHANGE_REASONS=()\n"
-            'ROLLBACK_DIR="$STATE_DIR/.rollback-test"\n'
-            'mkdir -p "$ROLLBACK_DIR"\n'
-            "declare -a BACKUP_PATHS=()\n"
-            "declare -A BACKUP_EXISTS=()\n"
-            + self.functions
-            + "install_proxy_env\n"
-            'echo "CHANGED=$INSTALL_CHANGED"\n',
-            encoding="utf-8",
-            newline="\n",
+    def test_upgrade_from_proxy_install_removes_proxy_env_and_restarts_once(self) -> None:
+        self.run_install()
+        # Recreate what the retired --proxy installer left behind: proxy.env,
+        # a stale staged copy and the unit's EnvironmentFile line.
+        current_unit = self.unit_path.read_text(encoding="utf-8")
+        legacy_unit = current_unit.replace(
+            "Environment=PYTHONUNBUFFERED=1\n",
+            f"Environment=PYTHONUNBUFFERED=1\nEnvironmentFile=-{posix(self.config_dir)}/proxy.env\n",
         )
-        child_env = {key: value for key, value in os.environ.items() if key not in PROXY_VARIABLES and key.upper() not in {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}}
-        child_env.update(env or {})
-        completed = subprocess.run([BASH, posix(driver)], capture_output=True, text=True, timeout=60, env=child_env)
-        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-        self.assertEqual([], [path.name for path in self.config_dir.iterdir() if ".new." in path.name])
-        return completed.stdout
+        self.assertNotEqual(current_unit, legacy_unit)
+        self.unit_path.write_text(legacy_unit, encoding="utf-8", newline="\n")
+        proxy_env = self.config_dir / "proxy.env"
+        proxy_env.write_text("HTTPS_PROXY=http://proxy.corp:3128\n", encoding="utf-8", newline="\n")
+        staged = self.config_dir / "proxy.env.new.4242"
+        staged.write_text("HTTPS_PROXY=http://proxy.corp:3128\n", encoding="utf-8", newline="\n")
 
-    def test_update_without_proxy_env_preserves_existing_proxy_env(self) -> None:
-        original = "HTTPS_PROXY=http://proxy.corp:3128\nNO_PROXY=10.0.0.0/8\n"
-        self.proxy_env.write_text(original, encoding="utf-8", newline="\n")
-        output = self.run_proxy_step()
-        self.assertIn("CHANGED=0", output)
-        self.assertEqual(original, self.proxy_env.read_text(encoding="utf-8"))
+        upgraded = self.run_install()
+        self.assertIn("RESTARTED=1", upgraded)
+        self.assertIn("removed retired proxy.env", upgraded)
+        calls = self.systemctl_calls()
+        self.assertEqual(1, calls.count("daemon-reload"), calls)
+        self.assertEqual(1, calls.count("restart leikwan-client-agent.service"), calls)
+        self.assertFalse(proxy_env.exists())
+        self.assertFalse(staged.exists())
+        self.assertEqual(current_unit, self.unit_path.read_text(encoding="utf-8"))
+        self.assertNotIn("EnvironmentFile", self.unit_path.read_text(encoding="utf-8"))
 
-    def test_no_proxy_alone_does_not_count_as_an_explicit_proxy(self) -> None:
-        original = "HTTPS_PROXY=http://proxy.corp:3128\n"
-        self.proxy_env.write_text(original, encoding="utf-8", newline="\n")
-        self.run_proxy_step(env={"NO_PROXY": "localhost"})
-        self.assertEqual(original, self.proxy_env.read_text(encoding="utf-8"))
+        second = self.run_install()
+        self.assertIn("RESTARTED=0", second)
+        self.assertNotIn("removed retired proxy.env", second)
+        calls = self.systemctl_calls()
+        self.assertFalse([call for call in calls if call.startswith(("restart", "daemon-reload", "start", "stop"))], calls)
 
-    def test_explicit_proxy_env_rewrites_proxy_env(self) -> None:
-        self.proxy_env.write_text("HTTPS_PROXY=http://old:3128\n", encoding="utf-8", newline="\n")
-        output = self.run_proxy_step(env={"HTTPS_PROXY": "http://new:8080"})
-        self.assertIn("CHANGED=1", output)
-        self.assertEqual("HTTPS_PROXY=http://new:8080\n", self.proxy_env.read_text(encoding="utf-8"))
+    def test_leftover_proxy_env_alone_restarts_without_daemon_reload(self) -> None:
+        self.run_install()
+        proxy_env = self.config_dir / "proxy.env"
+        proxy_env.write_text("", encoding="utf-8")
+        output = self.run_install()
+        self.assertIn("RESTARTED=1", output)
+        calls = self.systemctl_calls()
+        self.assertIn("restart leikwan-client-agent.service", calls)
+        self.assertNotIn("daemon-reload", calls)
+        self.assertFalse(proxy_env.exists())
 
-    def test_proxy_flag_sets_every_proxy_variable(self) -> None:
-        output = self.run_proxy_step(mode="set", url="http://flag:3128", env={"no_proxy": "127.0.0.1"})
-        self.assertIn("CHANGED=1", output)
-        self.assertEqual(
-            "HTTP_PROXY=http://flag:3128\nHTTPS_PROXY=http://flag:3128\nhttp_proxy=http://flag:3128\n"
-            "https_proxy=http://flag:3128\nno_proxy=127.0.0.1\n",
-            self.proxy_env.read_text(encoding="utf-8"),
+
+RETIRED_PROXY_MESSAGE = "--proxy is no longer supported; the agent reaches the panel directly"
+CLIENT_UPDATE_HELPER = REPO_ROOT / "install" / "client-agent-update.sh"
+
+
+def load_download_helper(script: pathlib.Path) -> dict:
+    """Load the Python body of a script's leikwan_protected_download()."""
+    source = script.read_text(encoding="utf-8")
+    start = source.index("leikwan_protected_download() {")
+    body_start = source.index("<<'PY'\n", start) + len("<<'PY'\n")
+    body_end = source.index("\nPY\n", body_start)
+    namespace: dict = {"__name__": "leikwan_protected_download_under_test"}
+    exec(compile(source[body_start:body_end], str(script), "exec"), namespace)  # noqa: S102
+    return namespace
+
+
+class RetiredInstallerProxyTests(unittest.TestCase):
+    """The installer proxy (--proxy / proxy.env) is retired: panel traffic is direct."""
+
+    def run_installer_arguments(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [BASH, posix(CLIENT_INSTALLER), *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
 
-    def test_clear_proxy_empties_proxy_env(self) -> None:
-        self.proxy_env.write_text("HTTPS_PROXY=http://old:3128\n", encoding="utf-8", newline="\n")
-        output = self.run_proxy_step(mode="clear")
-        self.assertIn("CHANGED=1", output)
-        self.assertEqual("", self.proxy_env.read_text(encoding="utf-8"))
+    @unittest.skipIf(BASH is None, "POSIX bash (Git for Windows bash on Windows) is not available")
+    def test_proxy_flag_is_accepted_ignored_and_its_value_consumed(self) -> None:
+        # Without --master the installer stops at the usage check, after the
+        # whole argument list was parsed. An unconsumed value would instead be
+        # reported as an unknown argument.
+        completed = self.run_installer_arguments("--proxy", "http://proxy.corp:3128", "--clear-proxy")
+        self.assertEqual(1, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual([RETIRED_PROXY_MESSAGE, RETIRED_PROXY_MESSAGE], completed.stdout.splitlines())
+        self.assertNotIn("unknown argument", completed.stderr)
+        self.assertIn("usage: install-client-agent.sh", completed.stderr)
 
-    def test_fresh_install_without_proxy_creates_empty_proxy_env(self) -> None:
-        self.run_proxy_step()
-        self.assertTrue(self.proxy_env.is_file())
-        self.assertEqual("", self.proxy_env.read_text(encoding="utf-8"))
+    @unittest.skipIf(BASH is None, "POSIX bash (Git for Windows bash on Windows) is not available")
+    def test_empty_or_trailing_proxy_flag_is_also_ignored(self) -> None:
+        for args in (("--proxy", ""), ("--proxy",)):
+            with self.subTest(args=args):
+                completed = self.run_installer_arguments(*args)
+                self.assertEqual(1, completed.returncode, completed.stdout + completed.stderr)
+                self.assertEqual([RETIRED_PROXY_MESSAGE], completed.stdout.splitlines())
+                self.assertNotIn("unknown argument", completed.stderr)
+                self.assertIn("usage: install-client-agent.sh", completed.stderr)
 
-    def test_proxy_arguments_are_parsed(self) -> None:
+    def test_installer_no_longer_persists_or_exports_a_proxy(self) -> None:
         source = CLIENT_INSTALLER.read_text(encoding="utf-8")
-        self.assertIn("--clear-proxy) PROXY_MODE=\"clear\"", source)
-        self.assertIn('if [[ -z "$PROXY_URL" ]]; then PROXY_MODE="clear"; else PROXY_MODE="set"; fi', source)
+        for retired in (
+            "PROXY_MODE",
+            "PROXY_URL",
+            "stage_proxy_env",
+            "install_proxy_env",
+            "EnvironmentFile=",
+            "export HTTP_PROXY",
+            "export HTTPS_PROXY",
+            '--proxy "$',
+        ):
+            self.assertNotIn(retired, source)
+        # Only the legacy path used for the one-time cleanup may remain.
+        self.assertIsNone(re.search(r"PROXY_ENV_(FILE|STAGED)", source))
+        self.assertIn('LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"', source)
+        self.assertIn('for staged in "$LEGACY_PROXY_ENV_FILE".new.*; do', source)
+        self.assertIn("\nremove_legacy_proxy_env\n", source)
+
+    def test_update_helper_does_not_load_proxy_env(self) -> None:
+        source = CLIENT_UPDATE_HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("load_agent_proxy_env", source)
+        self.assertNotIn("proxy_file", source)
+        self.assertNotIn('"--proxy"', source)
+        self.assertIn("unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy", source)
+        self.assertLess(
+            source.index("unset HTTP_PROXY HTTPS_PROXY"),
+            source.index('leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/install-client-agent.sh"'),
+        )
+
+    def test_curl_fallback_uses_noproxy_even_with_proxy_env(self) -> None:
+        proxy_env = {
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+            "http_proxy": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9",
+            "ALL_PROXY": "socks5://127.0.0.1:9",
+        }
+        for script in (CLIENT_INSTALLER, CLIENT_UPDATE_HELPER):
+            with self.subTest(script=script.name):
+                helper = load_download_helper(script)
+                with tempfile.TemporaryDirectory() as tmp, \
+                     unittest.mock.patch.dict(os.environ, proxy_env), \
+                     unittest.mock.patch.object(helper["subprocess"], "run") as run_mock, \
+                     unittest.mock.patch.object(sys, "argv", ["-", "http://artifacts.test/artifacts/versions.json", str(pathlib.Path(tmp) / "out")]):
+                    helper["main"]()
+                    helper["curl_download"]("http://artifacts.test/next", None)
+                self.assertEqual(2, run_mock.call_count)
+                for call in run_mock.call_args_list:
+                    command = call.args[0]
+                    self.assertEqual("curl", command[0])
+                    self.assertEqual(["--noproxy", "*"], command[1:3])
+                    self.assertNotIn("--proxy", command)
+                    self.assertNotIn("-x", command)
 
 
 @unittest.skipIf(BASH is None, "POSIX bash (Git for Windows bash on Windows) is not available")

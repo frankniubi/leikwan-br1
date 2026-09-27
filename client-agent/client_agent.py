@@ -8,6 +8,7 @@ import email.message
 import email.utils
 import contextlib
 import datetime
+import errno
 import hashlib
 import http.client
 import importlib.util
@@ -34,6 +35,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 AGENT_VERSION = "2026.09.24.3"
 
@@ -64,6 +66,13 @@ ULTRA_MAX_POLICY_VALIDITY_SECONDS = 3600
 CONTROL_PLANE_BACKOFF_BASE_SECONDS = 5.0
 CONTROL_PLANE_BACKOFF_MAX_SECONDS = 60.0
 CONTROL_PLANE_BACKOFF_MIN_SECONDS = 1.0
+# The panel refuses a device that is not already online once the client's
+# online device limit is full. A slot frees when another device goes silent
+# (180 s), is kicked, or the limit is raised, so retry at a steady cadence.
+DEVICE_LIMIT_ERROR_CODE = "client_online_limit_reached"
+DEVICE_LIMIT_RETRY_SECONDS = 60.0
+# Stable per-install device identity sent as X-Device-Id on every panel call.
+DEVICE_ID_FILENAME = "device-id"
 # Runtime status written by the Ultra runtime next to its control socket.
 # The runtime's StatusWriter writes the policy state only when it changes (at
 # most every 5 s), so the file's age says nothing by itself; a status older
@@ -270,6 +279,7 @@ def upload_debug_collection(
     state_dir: pathlib.Path,
     config: dict | None = None,
     post=None,
+    device_id: str = "",
 ) -> dict:
     """Upload a resumable, sanitized collection without blocking sync_once."""
     collection = client_meta.get("debug_collection") if isinstance(client_meta, dict) else None
@@ -298,11 +308,9 @@ def upload_debug_collection(
         f"{master.rstrip('/')}/api/client/debug/log",
         token,
         payload,
-        extra_headers={
-            "x-device-platform": "linux",
-            "x-device-architecture": local_runtime_architecture(),
-            "x-device-id": str(client_meta.get("current_device_id", "") or ""),
-        },
+        extra_headers=device_request_headers(
+            device_id or load_or_create_device_id(state_dir) or str(client_meta.get("current_device_id", "") or "")
+        ),
     )[0])
     total_bytes = 0
     chunks_sent = 0
@@ -688,13 +696,420 @@ def resolve_a_via_doh_provider(host: str, provider_url: str, bootstrap_ip: str, 
         conn.close()
 
 
+# Panel egress: the no-GUI client talks to the panel (and its mirrors and the
+# strict-DoH providers) directly, like the desktop client (UseProxy=false +
+# socket bound to the physical NIC). Users commonly run Clash/Mihomo/sing-box/
+# v2ray/OpenVPN/Tailscale/ZeroTier on the same box; their proxy env vars and
+# TUN/TAP default routes must not capture control-plane traffic.
+PANEL_EGRESS_AUTO = "auto"
+PANEL_EGRESS_CONFIG_KEY = "panel_egress_interface"
+PANEL_EGRESS_CACHE_SECONDS = 30.0
+# Linux interface-name prefixes that are never a physical uplink: VPN/proxy TUN
+# devices, overlay meshes, container/VM bridges and tunnel pseudo-devices.
+# ppp* is deliberately NOT here: on Linux ppp0 is usually the PPPoE WAN itself.
+# PPP devices only rank after other physical default routes, so a PPTP/L2TP VPN
+# that leaves the LAN default route in place does not win.
+PANEL_EGRESS_EXCLUDED_NAME_PREFIXES = (
+    "tun", "tap", "utun", "wg", "meta", "mihomo", "clash", "sing", "xray", "v2ray",
+    "tailscale", "zt", "nordlynx", "warp", "ipsec", "vti", "gre", "erspan", "ip6tnl",
+    "ip6gre", "sit", "tunl", "docker", "br-", "veth", "virbr", "vmnet", "vboxnet",
+    "lxcbr", "lxdbr", "incusbr", "podman", "cni", "flannel", "cali", "cilium",
+    "weave", "vxlan", "kube", "dummy", "ifb", "nlmon",
+)
+PANEL_EGRESS_LOW_PRIORITY_NAME_PREFIXES = ("ppp",)
+# ARPHRD types of point-to-point tunnel devices (sysfs "type"): NONE (TUN and
+# WireGuard, whatever they are named), TUNNEL, TUNNEL6, SIT, IPGRE, IP6GRE.
+PANEL_EGRESS_EXCLUDED_ARPHRD_TYPES = frozenset({65534, 768, 769, 776, 778, 823})
+# Clash/Mihomo/sing-box fake-ip DNS answers from 198.18.0.0/15. Such an address
+# is only reachable through the TUN, never through a bound physical socket.
+PANEL_EGRESS_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_PANEL_EGRESS_INTERFACE_NAME = re.compile(r"^[A-Za-z0-9_.:@+-]{1,15}$")
+
+
+def panel_egress_interface_is_tunnel_like(name: str, info: dict | None = None) -> bool:
+    normalized = str(name or "").strip().lower()
+    if normalized == "" or normalized == "lo":
+        return True
+    if normalized.startswith(PANEL_EGRESS_EXCLUDED_NAME_PREFIXES):
+        return True
+    info = info if isinstance(info, dict) else {}
+    if info.get("tun_flags"):
+        return True
+    try:
+        arphrd_type = int(info.get("type", -1))
+    except (TypeError, ValueError):
+        arphrd_type = -1
+    return arphrd_type in PANEL_EGRESS_EXCLUDED_ARPHRD_TYPES
+
+
+def _read_sysfs_text(path: pathlib.Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return ""
+
+
+def _parse_proc_net_route(text: str) -> list[dict]:
+    """Return the IPv4 default routes of the main table from /proc/net/route."""
+    defaults: list[dict] = []
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        name, destination, gateway, flags, metric, mask = fields[0], fields[1], fields[2], fields[3], fields[6], fields[7]
+        try:
+            flag_bits = int(flags, 16)
+            metric_value = int(metric)
+            gateway_ip = socket.inet_ntoa(struct.pack("<I", int(gateway, 16)))
+        except (ValueError, struct.error, OSError):
+            continue
+        if flag_bits & 0x1 == 0:  # RTF_UP
+            continue
+        if destination == "00000000" and mask == "00000000":
+            defaults.append({"interface": name, "metric": metric_value, "gateway": gateway_ip, "table": "main"})
+    return defaults
+
+
+def _parse_ip_route_default(text: str) -> list[dict]:
+    """Parse `ip -4 -o route show default table all`, keeping non-main tables only."""
+    routes: list[dict] = []
+    for line in text.splitlines():
+        tokens = line.split()
+        if not tokens or tokens[0] != "default":
+            continue
+        values: dict[str, str] = {}
+        for index in range(1, len(tokens) - 1):
+            if tokens[index] in {"via", "dev", "metric", "table"}:
+                values.setdefault(tokens[index], tokens[index + 1])
+        table = values.get("table", "main")
+        if table in {"main", "local", "254", "255"} or values.get("dev", "") == "":
+            continue
+        try:
+            metric_value = int(values.get("metric", "0"))
+        except ValueError:
+            metric_value = 0
+        routes.append({"interface": values["dev"], "metric": metric_value, "gateway": values.get("via", ""), "table": table})
+    return routes
+
+
+def read_linux_egress_snapshot(
+    sys_class_net: str = "/sys/class/net",
+    proc_route: str = "/proc/net/route",
+    run=subprocess.run,
+) -> dict:
+    interfaces: dict[str, dict] = {}
+    base = pathlib.Path(sys_class_net)
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        names = []
+    for name in names:
+        entry = base / name
+        raw_type = _read_sysfs_text(entry / "type")
+        interfaces[name] = {
+            "operstate": _read_sysfs_text(entry / "operstate").lower() or "unknown",
+            "tun_flags": (entry / "tun_flags").exists(),
+            "type": int(raw_type) if raw_type.isdigit() else -1,
+        }
+    try:
+        main_defaults = _parse_proc_net_route(pathlib.Path(proc_route).read_text(encoding="utf-8", errors="ignore"))
+    except OSError:
+        main_defaults = []
+    other_defaults: list[dict] = []
+    ip_bin = shutil.which("ip")
+    if ip_bin:
+        try:
+            result = run([ip_bin, "-4", "-o", "route", "show", "default", "table", "all"], text=True, capture_output=True, timeout=3, check=False)
+            if result.returncode == 0:
+                other_defaults = _parse_ip_route_default(result.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            other_defaults = []
+    return {
+        "interfaces": interfaces,
+        "main_default_routes": main_defaults,
+        "other_default_routes": other_defaults,
+    }
+
+
+def normalize_panel_egress_override(value: object) -> tuple[str, str]:
+    """Return (override, problem); override is "auto" or a syntactically valid interface name."""
+    text = str(value if value is not None else "").strip()
+    if text == "" or text.lower() == PANEL_EGRESS_AUTO:
+        return PANEL_EGRESS_AUTO, ""
+    if not _PANEL_EGRESS_INTERFACE_NAME.match(text) or text in {".", ".."}:
+        return PANEL_EGRESS_AUTO, f"invalid {PANEL_EGRESS_CONFIG_KEY} {text!r}"
+    return text, ""
+
+
+def select_panel_egress_interface(snapshot: dict, override: str = PANEL_EGRESS_AUTO) -> tuple[str, str]:
+    """Pick the physical interface for panel sockets.
+
+    Returns (interface, detail); interface is "" when panel sockets stay unbound.
+    An explicit override is honored when the interface exists (the operator's
+    choice wins even if it looks like a tunnel); a missing one falls back to
+    auto. Auto picks the eligible interface holding the lowest-metric main table
+    default route, else the lowest-metric eligible default route of any other
+    routing table (policy-routing setups).
+    """
+    interfaces = snapshot.get("interfaces") if isinstance(snapshot.get("interfaces"), dict) else {}
+    notes: list[str] = []
+    override_name, problem = normalize_panel_egress_override(override)
+    if problem:
+        notes.append(problem)
+    elif override_name != PANEL_EGRESS_AUTO:
+        if override_name in interfaces and override_name != "lo":
+            return override_name, f"{PANEL_EGRESS_CONFIG_KEY} override"
+        notes.append(f"{PANEL_EGRESS_CONFIG_KEY} {override_name!r} not found")
+
+    def eligible(name: str) -> bool:
+        info = interfaces.get(name)
+        if not isinstance(info, dict):
+            return False
+        if str(info.get("operstate", "unknown")).lower() in {"down", "lowerlayerdown", "notpresent"}:
+            return False
+        return not panel_egress_interface_is_tunnel_like(name, info)
+
+    def rank(route: dict) -> tuple[int, int, str]:
+        name = str(route.get("interface", ""))
+        low_priority = 1 if name.lower().startswith(PANEL_EGRESS_LOW_PRIORITY_NAME_PREFIXES) else 0
+        try:
+            metric = int(route.get("metric", 0))
+        except (TypeError, ValueError):
+            metric = 0
+        return (low_priority, metric, name)
+
+    for key, label in (("main_default_routes", "default route"), ("other_default_routes", "policy default route")):
+        routes = [route for route in snapshot.get(key) or [] if isinstance(route, dict) and eligible(str(route.get("interface", "")))]
+        if routes:
+            best = min(routes, key=rank)
+            detail = f"auto: {label} via {best.get('gateway') or '-'} metric {best.get('metric', 0)}"
+            if str(best.get("table", "main")) != "main":
+                detail += f" table {best.get('table')}"
+            if notes:
+                detail = "; ".join(notes) + "; " + detail
+            return str(best["interface"]), detail
+    notes.append("no physical interface holds a default route")
+    return "", "; ".join(notes)
+
+
+class PanelEgress:
+    """Chosen panel egress interface plus SO_BINDTODEVICE with a safe fallback.
+
+    Binding is best effort: an unsupported platform, a missing privilege or a
+    vanished interface leaves panel sockets unbound (logged once) instead of
+    breaking control-plane connectivity.
+    """
+
+    def __init__(self, snapshot_reader=None, cache_seconds: float = PANEL_EGRESS_CACHE_SECONDS, platform_supported=None):
+        self.snapshot_reader = snapshot_reader or read_linux_egress_snapshot
+        self.cache_seconds = cache_seconds
+        self.platform_supported = platform_supported
+        self.override = PANEL_EGRESS_AUTO
+        self._override_problem = ""
+        self._lock = threading.Lock()
+        self._cached: tuple[float, str, str] | None = None
+        self._bind_disabled_reason = ""
+        self._warned: set[str] = set()
+
+    def configure(self, config: dict | None) -> None:
+        raw = config.get(PANEL_EGRESS_CONFIG_KEY, PANEL_EGRESS_AUTO) if isinstance(config, dict) else PANEL_EGRESS_AUTO
+        override, problem = normalize_panel_egress_override(raw)
+        with self._lock:
+            if override != self.override or problem != self._override_problem:
+                self._cached = None
+            self.override = override
+            self._override_problem = problem
+        if problem:
+            self._warn_once(problem, "%s; using auto panel egress selection", problem)
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cached = None
+
+    def platform_supports_binding(self) -> bool:
+        if self.platform_supported is not None:
+            return bool(self.platform_supported)
+        return sys.platform.startswith("linux")
+
+    def _warn_once(self, key: str, message: str, *args) -> None:
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        logging.warning(message, *args)
+
+    def resolve(self) -> tuple[str, str]:
+        """Return (interface, detail); interface "" means unbound and detail says why."""
+        if not self.platform_supports_binding():
+            return "", "platform lacks SO_BINDTODEVICE"
+        with self._lock:
+            if self._bind_disabled_reason:
+                return "", self._bind_disabled_reason
+            cached = self._cached
+            override = self.override
+            override_problem = self._override_problem
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1], cached[2]
+        try:
+            interface, detail = select_panel_egress_interface(self.snapshot_reader(), override)
+        except Exception as exc:  # noqa: BLE001 - selection must never break the control plane.
+            interface, detail = "", f"interface discovery failed: {exc}"
+        if override_problem and override_problem not in detail:
+            detail = f"{override_problem}; {detail}"
+        with self._lock:
+            self._cached = (now + self.cache_seconds, interface, detail)
+        if cached is None or cached[1] != interface:
+            if interface:
+                logging.info("panel egress interface %s (%s)", interface, detail)
+            else:
+                logging.info("panel egress unbound: %s", detail)
+        return interface, detail
+
+    def interface_for_socket(self) -> str:
+        return self.resolve()[0]
+
+    def bind_socket(self, sock: socket.socket, interface: str) -> bool:
+        option = getattr(socket, "SO_BINDTODEVICE", 25)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, option, interface.encode("ascii") + b"\0")
+            return True
+        except (OSError, UnicodeEncodeError) as exc:
+            code = getattr(exc, "errno", None)
+            if code in {errno.EPERM, errno.EACCES, errno.ENOPROTOOPT}:
+                with self._lock:
+                    self._bind_disabled_reason = f"SO_BINDTODEVICE not permitted ({exc})"
+                self._warn_once("bind-disabled", "panel egress: SO_BINDTODEVICE %s failed (%s); panel sockets stay unbound", interface, exc)
+            else:
+                # ENODEV and friends: the interface vanished or was renamed.
+                self.invalidate()
+                self._warn_once(f"bind-{interface}-{code}", "panel egress: cannot bind to %s (%s); this connection stays unbound", interface, exc)
+            return False
+
+    def status(self) -> dict:
+        interface, detail = self.resolve()
+        return {
+            "proxies_ignored": True,
+            "mode": PANEL_EGRESS_AUTO if self.override == PANEL_EGRESS_AUTO else "override",
+            "configured": self.override,
+            "interface": interface,
+            "bound": interface != "",
+            "detail": detail,
+            "summary": interface if interface else f"unbound: {detail}",
+        }
+
+
+PANEL_EGRESS = PanelEgress()
+
+
+def configure_panel_egress(config: dict | None) -> None:
+    PANEL_EGRESS.configure(config)
+
+
+def _panel_addresses_for_bound_socket(host: str, port: int) -> list[tuple]:
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    if host_is_ip_literal(str(host)) or not infos:
+        return infos
+
+    def fake(info: tuple) -> bool:
+        try:
+            return ipaddress.ip_address(info[4][0]) in PANEL_EGRESS_FAKE_IP_NETWORK
+        except (ValueError, IndexError, TypeError):
+            return False
+
+    if not all(fake(info) for info in infos):
+        return infos
+    # The system resolver is a TUN tool's fake-ip DNS. Its answers are only
+    # routable through the TUN, so ask the strict DoH providers (dialed by IP,
+    # over the bound physical interface) for the real address instead.
+    try:
+        addresses = _STRICT_DOH_RESOLVER.resolve_a(host)
+    except StrictDoHError as exc:
+        logging.warning("panel egress: %s resolves to fake-ip %s and strict DoH failed: %s", host, infos[0][4][0], exc)
+        return infos
+    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, port)) for address in addresses] or infos
+
+
+def _panel_destination_is_loopback(host: object) -> bool:
+    # A loopback panel (local testing, an SSH tunnel) is unreachable through a
+    # socket bound to the physical NIC.
+    try:
+        return ipaddress.ip_address(str(host).split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def panel_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    """socket.create_connection for panel traffic, bound to the physical egress interface."""
+    interface = PANEL_EGRESS.interface_for_socket()
+    if not interface:
+        return socket.create_connection(address, timeout, source_address)
+    host, port = address[0], address[1]
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in _panel_addresses_for_bound_socket(host, port):
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            if not _panel_destination_is_loopback(sockaddr[0]):
+                PANEL_EGRESS.bind_socket(sock, interface)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            if sock is not None:
+                sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"getaddrinfo returned no addresses for {host}")
+
+
+class PanelHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = panel_create_connection
+
+
+class PanelHTTPSConnection(http.client.HTTPSConnection):
+    # TLS, SNI and certificate verification stay the stdlib's; only the TCP
+    # dial is replaced.
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = panel_create_connection
+
+
+class PanelHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(PanelHTTPConnection, req)
+
+
+class PanelHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(PanelHTTPSConnection, req, context=self._context)
+
+
+def build_panel_opener() -> urllib.request.OpenerDirector:
+    # An explicit empty ProxyHandler replaces the default one, which would read
+    # http_proxy/https_proxy/all_proxy from the environment.
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), PanelHTTPHandler(), PanelHTTPSHandler())
+
+
+PANEL_OPENER = build_panel_opener()
+
+
+def panel_urlopen(req: urllib.request.Request, timeout: float = 30):
+    return PANEL_OPENER.open(req, timeout=timeout)
+
+
 class ResolvedHTTPConnection(http.client.HTTPConnection):
     def __init__(self, host: str, port: int | None = None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, resolved_ip: str):
         super().__init__(host, port=port, timeout=timeout, source_address=source_address)
         self.resolved_ip = resolved_ip
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        self.sock = panel_create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self._tunnel()
 
@@ -714,7 +1129,7 @@ class ResolvedHTTPSConnection(http.client.HTTPSConnection):
         self.resolved_ip = resolved_ip
 
     def connect(self) -> None:
-        sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        sock = panel_create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
@@ -759,7 +1174,7 @@ def _request_headers_for_http_client(req: urllib.request.Request, host_header: s
 def urlopen_with_leikwan_doh(req: urllib.request.Request, timeout: float = 30, resolver: StrictDoHResolver | None = None):
     url = req.full_url
     if not is_protected_leikwan_url(url):
-        return urllib.request.urlopen(req, timeout=timeout)
+        return panel_urlopen(req, timeout=timeout)
     resolver = resolver or _STRICT_DOH_RESOLVER
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or ""
@@ -803,15 +1218,15 @@ def urlopen_with_leikwan_doh(req: urllib.request.Request, timeout: float = 30, r
 
 
 def _urlopen_for_request(req: urllib.request.Request, timeout: float = 30):
-    proxy_url = next(
-        (os.environ.get(name, "").strip() for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") if os.environ.get(name, "").strip()),
-        "",
-    )
-    if proxy_url:
-        return urllib.request.urlopen(req, timeout=timeout)
+    """Open a panel/control-plane request directly.
+
+    Proxy environment variables are ignored on purpose (a local Clash/v2ray
+    proxy must not carry panel traffic) and sockets are bound to the physical
+    egress interface (see PanelEgress).
+    """
     if is_protected_leikwan_url(req.full_url):
         return urlopen_with_leikwan_doh(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+    return panel_urlopen(req, timeout=timeout)
 
 
 def _apply_extra_headers(headers: dict[str, str], extra_headers: dict[str, str] | None) -> None:
@@ -821,6 +1236,155 @@ def _apply_extra_headers(headers: dict[str, str], extra_headers: dict[str, str] 
         if key == "" or "\r" in key or "\n" in key or "\r" in value or "\n" in value:
             raise ValueError("invalid extra HTTP header")
         headers[key] = value
+
+
+def _valid_device_id(value: str) -> bool:
+    # Same bounds the panel enforces for X-Device-Id.
+    return 0 < len(value) <= 191 and re.search(r"[\x00-\x20\x7f]", value) is None
+
+
+_DEVICE_ID_WARNED_PATHS: set[str] = set()
+
+
+def load_or_create_device_id(state_dir: pathlib.Path | str) -> str:
+    """Return the persisted device id, creating ``linux-<uuid4 hex>`` once.
+
+    The panel counts this id against the client's online device limit. An id
+    that could not be persisted is never sent: every restart would otherwise
+    look like a new device. Returns "" in that case (panel falls back to its
+    legacy, limit-exempt identity).
+    """
+    path = pathlib.Path(state_dir) / DEVICE_ID_FILENAME
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        if str(path) not in _DEVICE_ID_WARNED_PATHS:
+            _DEVICE_ID_WARNED_PATHS.add(str(path))
+            logging.warning("device id unreadable at %s: %s", path, exc)
+        return ""
+    if _valid_device_id(existing):
+        return existing
+    candidate = f"linux-{uuid.uuid4().hex}"
+    temporary_name = ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(candidate + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        with contextlib.suppress(OSError):
+            os.chmod(temporary_name, 0o600)
+        if existing == "":
+            try:
+                # Publish without clobbering an id another process created
+                # concurrently (e.g. `check --live` racing the agent).
+                os.link(temporary_name, path)
+            except FileExistsError:
+                winner = path.read_text(encoding="utf-8").strip()
+                if _valid_device_id(winner):
+                    return winner
+                os.replace(temporary_name, path)
+            except OSError:
+                os.replace(temporary_name, path)
+        else:
+            os.replace(temporary_name, path)
+    except OSError as exc:
+        if str(path) not in _DEVICE_ID_WARNED_PATHS:
+            _DEVICE_ID_WARNED_PATHS.add(str(path))
+            logging.warning("device id could not be persisted at %s: %s", path, exc)
+        return ""
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            with contextlib.suppress(OSError):
+                os.unlink(temporary_name)
+    logging.info("created device id %s at %s", candidate, path)
+    return candidate
+
+
+def device_request_headers(device_id: str = "") -> dict[str, str]:
+    headers = {
+        "x-device-platform": "linux",
+        "x-device-architecture": local_runtime_architecture(),
+    }
+    if device_id:
+        headers["x-device-id"] = device_id
+    return headers
+
+
+class DeviceLimitReachedError(RuntimeError):
+    """The panel refused this device: the client's online device limit is full.
+
+    This is a business answer, not an outage: it must not rotate mirrors,
+    penalize an endpoint or trigger network backoff.
+    """
+
+    response_received = True
+    error_code = DEVICE_LIMIT_ERROR_CODE
+
+    def __init__(
+        self,
+        url: str = "",
+        status: int = 429,
+        online_device_limit: int | None = None,
+        active_online_devices: int | None = None,
+    ):
+        self.url = url
+        self.status = int(status)
+        self.online_device_limit = online_device_limit
+        self.active_online_devices = active_online_devices
+        super().__init__(f"http {self.status} {url}: {DEVICE_LIMIT_ERROR_CODE} ({self.counts_text() or 'counts unknown'})")
+
+    def counts_text(self) -> str:
+        if self.online_device_limit is None or self.active_online_devices is None:
+            return ""
+        return f"{self.active_online_devices} of {self.online_device_limit} devices online"
+
+    def user_message(self, retry_seconds: float | None = None) -> str:
+        counts = self.counts_text()
+        message = "device limit reached" + (f" ({counts})" if counts else "")
+        message += ": disconnect another device or ask your provider to raise the device limit"
+        if retry_seconds is not None:
+            message += f"; retrying in {int(retry_seconds)}s"
+        return message
+
+
+def parse_device_limit_error(status: int, body: str, url: str = "") -> DeviceLimitReachedError | None:
+    """Recognize the panel's online-device-limit refusal in an HTTP error body."""
+    if not 400 <= int(status) <= 499:
+        return None
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("error") != DEVICE_LIMIT_ERROR_CODE:
+        return None
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+
+    def count(key: str) -> int | None:
+        for source in (payload, details):
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number >= 0:
+                return number
+        return None
+
+    return DeviceLimitReachedError(url, int(status), count("online_device_limit"), count("active_online_devices"))
+
+
+def _raise_for_http_error(exc: urllib.error.HTTPError, url: str) -> None:
+    body = exc.read().decode("utf-8", errors="ignore")
+    limit_error = parse_device_limit_error(exc.code, body, url)
+    if limit_error is not None:
+        raise limit_error from exc
+    raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
 
 
 def http_json(
@@ -849,8 +1413,7 @@ def http_json(
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ControlPlaneResponseError(f"invalid JSON response from {url}") from exc
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
+        _raise_for_http_error(exc, url)
 
 
 def http_json_with_headers(
@@ -877,8 +1440,7 @@ def http_json_with_headers(
             content = resp.read().decode("utf-8")
             response_headers = {key.lower(): value for key, value in resp.headers.items()}
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"http {exc.code} {url}: {body}") from exc
+        _raise_for_http_error(exc, url)
     try:
         return json.loads(content), response_headers
     except json.JSONDecodeError as exc:
@@ -1006,6 +1568,7 @@ def pull_client_configs(
     *,
     state_path: pathlib.Path | None = None,
     selector: ControlPlaneEndpointState | None = None,
+    device_id: str = "",
 ) -> tuple[dict, dict[str, str], str]:
     endpoints = control_plane_endpoints(config)
     selector = selector or ControlPlaneEndpointState(state_path)
@@ -1017,13 +1580,15 @@ def pull_client_configs(
                 f"{base_url}/api/client/configs/pull",
                 token,
                 extra_headers={
-                    "x-device-platform": "linux",
-                    "x-device-architecture": local_runtime_architecture(),
+                    **device_request_headers(device_id),
                     **ultra_offline_validity_headers(),
                 },
             )
             selector.success(base_url)
             return payload, headers, base_url
+        except DeviceLimitReachedError:
+            # The panel answered; another mirror would give the same answer.
+            raise
         except Exception as exc:  # noqa: BLE001
             selector.failure(base_url, exc)
             errors.append(f"{base_url}: {exc}")
@@ -1317,7 +1882,10 @@ def resolve_ultra_leases(
                     f"{endpoint}/api/client/ultra/lease",
                     agent_token,
                     {"device_id": device_id, "forwards": batch_requests},
-                    extra_headers=ultra_offline_validity_headers(),
+                    extra_headers={
+                        **({"x-device-id": device_id} if device_id else {}),
+                        **ultra_offline_validity_headers(),
+                    },
                 )
                 if not isinstance(batch_response, dict) or batch_response.get("ok") is not True:
                     raise ControlPlaneResponseError("invalid ultra lease response")
@@ -1332,6 +1900,9 @@ def resolve_ultra_leases(
                 batch_completed = True
                 selector.success(endpoint)
                 break
+            except DeviceLimitReachedError:
+                # A refused device gets no lease from any mirror or batch.
+                raise
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 selector.failure(endpoint, exc)
@@ -1418,6 +1989,7 @@ class ClientAgent:
     def __init__(self, config_path: pathlib.Path):
         self.config_path = config_path
         self.config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        configure_panel_egress(self.config)
         self.state_dir = pathlib.Path(self.config.get("state_dir", "/var/lib/leikwan-client-agent"))
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.applied_path = self.state_dir / "applied.json"
@@ -1444,12 +2016,25 @@ class ClientAgent:
             format="%(asctime)s %(levelname)s %(message)s",
         )
 
+    def device_id(self) -> str:
+        """Stable panel device identity persisted under state_dir ("" if unavailable)."""
+        state_dir = getattr(self, "state_dir", None)
+        if state_dir is None:
+            return ""
+        cached = getattr(self, "_device_id_cache", None)
+        if isinstance(cached, tuple) and cached[0] == str(state_dir) and cached[1]:
+            return cached[1]
+        value = load_or_create_device_id(state_dir)
+        self._device_id_cache = (str(state_dir), value)
+        return value
+
     def pull_client_configs(self, token: str) -> tuple[dict, dict[str, str], str]:
         payload, headers, endpoint = pull_client_configs(
             self.config,
             token,
             state_path=getattr(self, "endpoint_state_path", None),
             selector=getattr(self, "endpoint_selector", None),
+            device_id=self.device_id(),
         )
         self.active_control_plane_endpoint = endpoint
         return payload, headers, endpoint
@@ -1467,6 +2052,8 @@ class ClientAgent:
             getattr(self, "endpoint_state_path", None)
         )
         endpoints = selector.ordered(control_plane_endpoints(self.config))
+        # Every panel call carries this install's device identity.
+        headers = {**device_request_headers(self.device_id()), **(extra_headers or {})}
         errors: list[str] = []
         for endpoint in endpoints:
             try:
@@ -1476,7 +2063,7 @@ class ClientAgent:
                         f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
                         token,
                         payload,
-                        extra_headers=extra_headers,
+                        extra_headers=headers,
                     )[0]
                 else:
                     result = http_json(
@@ -1484,10 +2071,13 @@ class ClientAgent:
                         f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
                         token,
                         payload,
+                        extra_headers=headers,
                     )
                 selector.success(endpoint)
                 self.active_control_plane_endpoint = endpoint
                 return result
+            except DeviceLimitReachedError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 selector.failure(endpoint, exc)
                 errors.append(f"{endpoint}: {exc}")
@@ -1582,11 +2172,9 @@ class ClientAgent:
                     "/api/client/debug/log",
                     token,
                     payload,
-                    extra_headers={
-                        "x-device-platform": "linux",
-                        "x-device-architecture": local_runtime_architecture(),
-                        "x-device-id": str(client_meta.get("current_device_id", "") or ""),
-                    },
+                    extra_headers=device_request_headers(
+                        self.device_id() or str(client_meta.get("current_device_id", "") or "")
+                    ),
                 ),
             )
             if result.get("status") not in {"not_requested", "inactive", "expired", "complete"}:
@@ -2653,8 +3241,12 @@ class ClientAgent:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def save_pull_state(self, payload: dict) -> None:
+    PULL_STATE_DEVICE_LIMIT_KEYS = ("error_code", "online_device_limit", "active_online_devices")
+
+    def save_pull_state(self, payload: dict, drop_keys: tuple[str, ...] = ()) -> None:
         existing = self.load_pull_state()
+        for key in drop_keys:
+            existing.pop(key, None)
         existing.update(payload)
         self.pull_state_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -2904,7 +3496,7 @@ class ClientAgent:
         client = payload.get("client") or {}
         try:
             resolved = resolve_ultra_leases(
-                master, self.config["agent_token"], str(client.get("current_device_id", "")), compatible,
+                master, self.config["agent_token"], self.device_id() or str(client.get("current_device_id", "")), compatible,
                 selection_mode=self.ultra_selection_mode(),
                 fallback_endpoints=control_plane_endpoints(self.config),
                 state_path=getattr(self, "endpoint_state_path", None),
@@ -2947,6 +3539,11 @@ class ClientAgent:
         Business (4xx) answers keep the historical 10 s retry; network and 5xx
         failures back off exponentially with full jitter (5 s -> 60 s).
         """
+        if isinstance(error, DeviceLimitReachedError):
+            # Refused, not unreachable: poll at the steady device-limit cadence.
+            for forward in due:
+                schedule[int(forward["forward_id"])] = now + DEVICE_LIMIT_RETRY_SECONDS
+            return
         if not is_transient_control_plane_error(error):
             return
         delay = backoff.next_delay()
@@ -3015,6 +3612,23 @@ class ClientAgent:
             backoff = self._sync_backoff = ControlPlaneBackoff()
         try:
             self.sync_once()
+        except DeviceLimitReachedError as exc:
+            # The panel is reachable and refuses this device until a slot
+            # frees; keep the applied forwards and poll at a steady cadence.
+            backoff.reset()
+            self.save_pull_state(
+                {
+                    "status": "device_limit_reached",
+                    "last_attempt_at": now,
+                    "last_error": exc.user_message(),
+                    "error_code": DEVICE_LIMIT_ERROR_CODE,
+                    "online_device_limit": exc.online_device_limit,
+                    "active_online_devices": exc.active_online_devices,
+                    "agent_version": AGENT_VERSION,
+                }
+            )
+            logging.warning("%s", exc.user_message(DEVICE_LIMIT_RETRY_SECONDS))
+            return DEVICE_LIMIT_RETRY_SECONDS
         except Exception as exc:  # noqa: BLE001
             self.save_pull_state(
                 {
@@ -3022,7 +3636,8 @@ class ClientAgent:
                     "last_attempt_at": now,
                     "last_error": str(exc),
                     "agent_version": AGENT_VERSION,
-                }
+                },
+                drop_keys=self.PULL_STATE_DEVICE_LIMIT_KEYS,
             )
             if is_transient_control_plane_error(exc):
                 delay = backoff.next_delay()
@@ -3135,7 +3750,11 @@ class ClientAgent:
             if unsupported_client_backend_mode(forward) == ""
         ]
         client_meta = payload.get("client", {})
-        device_id = str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
+        # The stable persisted id; the panel's echo of its derived (legacy) id
+        # is only a fallback when the id file cannot be written.
+        device_id = self.device_id() or (
+            str(client_meta.get("current_device_id", "") or "") if isinstance(client_meta, dict) else ""
+        )
         lease_resolution_failed = False
         try:
             runtime_forwards = resolve_ultra_leases(
@@ -3402,7 +4021,8 @@ class ClientAgent:
                 "agent_update_request_token": str(client_meta.get("agent_update_request_token", "") or ""),
                 "diag_request_token": str(client_meta.get("diag_request_token", "") or ""),
                 "clock": self.panel_clock_state_from_headers(response_headers),
-            }
+            },
+            drop_keys=self.PULL_STATE_DEVICE_LIMIT_KEYS,
         )
 
     def apply_ultra_actions(self, response: object) -> None:
@@ -3746,6 +4366,14 @@ class ClientAgent:
                 target_endpoint_state = new_state_dir / "control-plane-endpoint.json"
                 if not target_endpoint_state.exists():
                     target_endpoint_state.write_text(self.endpoint_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+            # Keep the panel device identity: a new id would occupy another
+            # online-device slot.
+            source_device_id = self.state_dir / DEVICE_ID_FILENAME
+            target_device_id = new_state_dir / DEVICE_ID_FILENAME
+            if source_device_id.exists() and not target_device_id.exists():
+                target_device_id.write_text(source_device_id.read_text(encoding="utf-8"), encoding="utf-8")
+                with contextlib.suppress(OSError):
+                    os.chmod(target_device_id, 0o600)
             self.state_dir = new_state_dir
             self.applied_path = new_state_dir / "applied.json"
             self.pull_state_path = new_state_dir / "config_pull_state.json"
@@ -7643,9 +8271,11 @@ class ClientAgent:
         mptcp_capability = self.mptcp_capability()
         mptcp_kernel_supported = bool(mptcp_capability.get("supported", False))
         wireguard_public_key = self.ensure_wireguard_identity()
+        configure_panel_egress(getattr(self, "config", None))
         summary = {
             "ok": True,
             "agent_version": AGENT_VERSION,
+            "panel_egress": PANEL_EGRESS.status(),
             "config_path": str(self.config_path),
             "state_dir": str(getattr(self, "state_dir", "/var/lib/leikwan-client-agent")),
             "master_url": str(self.config.get("master_url", "")),
@@ -7675,6 +8305,13 @@ class ClientAgent:
         if summary["service_active"] is not True:
             summary["ok"] = False
             summary["service_error"] = "leikwan-client-agent.service is not active"
+        pull_state = summary["pull_state"]
+        if isinstance(pull_state, dict) and pull_state.get("status") == "device_limit_reached":
+            summary["ok"] = False
+            summary["device_limit_error"] = str(pull_state.get("last_error", "") or "") or DeviceLimitReachedError(
+                online_device_limit=pull_state.get("online_device_limit"),
+                active_online_devices=pull_state.get("active_online_devices"),
+            ).user_message()
 
         if live:
             try:
@@ -7687,10 +8324,13 @@ class ClientAgent:
                             "GET",
                             f"{endpoint}/api/client/configs/pull",
                             str(self.config["agent_token"]),
+                            extra_headers=device_request_headers(self.device_id()),
                         )
                         selector.success(endpoint)
                         self.active_control_plane_endpoint = endpoint
                         break
+                    except DeviceLimitReachedError:
+                        raise
                     except Exception as exc:  # noqa: BLE001
                         selector.failure(endpoint, exc)
                         live_errors.append(f"{endpoint}: {exc}")
@@ -7773,6 +8413,16 @@ class ClientAgent:
                         summary["live_pull"]["mptcp_dependency_error"] = "mptcp mode forwards require a running kernel with CONFIG_MPTCP unless allow_tcp_fallback is enabled"
                     else:
                         summary["live_pull"]["mptcp_dependency_warning"] = "running kernel lacks MPTCP; configured forwards can run in TCP fallback mode"
+            except DeviceLimitReachedError as exc:
+                summary["ok"] = False
+                summary["device_limit_error"] = exc.user_message()
+                summary["live_pull"] = {
+                    "ok": False,
+                    "error": exc.user_message(),
+                    "error_code": DEVICE_LIMIT_ERROR_CODE,
+                    "online_device_limit": exc.online_device_limit,
+                    "active_online_devices": exc.active_online_devices,
+                }
             except Exception as exc:  # noqa: BLE001
                 summary["ok"] = False
                 summary["live_pull"] = {
@@ -7809,6 +8459,9 @@ def main() -> int:
     agent = ClientAgent(pathlib.Path(args.config))
     if args.command == "check":
         summary = agent.check(live=args.live)
+        if summary.get("device_limit_error"):
+            # Human line on stderr; stdout stays machine-readable JSON.
+            print(f"leikwan-client-agent: {summary['device_limit_error']}", file=sys.stderr)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary.get("ok", False) else 1
     agent.run()

@@ -17,9 +17,6 @@ REQUIRE_MPTCP=0
 # Restart/reload the agent even when every artifact, config.json and the unit
 # file are already current (--force-restart or LEIKWAN_INSTALL_FORCE_RESTART=1).
 FORCE_RESTART="${LEIKWAN_INSTALL_FORCE_RESTART:-0}"
-# auto (preserve proxy.env unless HTTP(S)_PROXY is exported), set or clear.
-PROXY_MODE="auto"
-PROXY_URL=""
 TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
 STATE_DIR="/var/lib/leikwan-client-agent"
 RUNTIME_ARCH="amd64"
@@ -321,28 +318,21 @@ while [[ $# -gt 0 ]]; do
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
     --reboot-after-mptcp-kernel-install) REBOOT_AFTER_MPTCP_KERNEL_INSTALL=1; shift ;;
     --force-restart) FORCE_RESTART=1; shift ;;
-    # --proxy <url> writes proxy.env and uses it for this run; --proxy "" or
-    # --clear-proxy empties it. Without either, proxy.env is left as is unless
-    # HTTP(S)_PROXY is set in the environment.
+    # Retired installer proxy (2026-07-28 .. 2026-09-27). The panel is
+    # reachable directly through its Cloudflare and Aliyun CDNs, so the agent
+    # never uses a proxy for panel traffic. Both flags stay accepted so old
+    # scripted invocations do not fail; --proxy still consumes its value.
     --proxy)
-      [[ $# -ge 2 ]] || { echo "--proxy needs a value (use \"\" to clear)" >&2; exit 1; }
-      PROXY_URL="$2"
-      if [[ -z "$PROXY_URL" ]]; then PROXY_MODE="clear"; else PROXY_MODE="set"; fi
-      shift 2
+      echo "--proxy is no longer supported; the agent reaches the panel directly"
+      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
       ;;
-    --clear-proxy) PROXY_MODE="clear"; PROXY_URL=""; shift ;;
+    --clear-proxy)
+      echo "--proxy is no longer supported; the agent reaches the panel directly"
+      shift
+      ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
-
-if [[ "$PROXY_MODE" == "set" ]]; then
-  if [[ "$PROXY_URL" == *$'\n'* || "$PROXY_URL" == *$'\r'* ]]; then
-    echo "invalid newline in --proxy" >&2
-    exit 1
-  fi
-  # The same proxy carries this run's downloads.
-  export HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" http_proxy="$PROXY_URL" https_proxy="$PROXY_URL"
-fi
 
 if [[ -z "$MASTER_URL" || -z "$CLIENT_ID" || -z "$AGENT_TOKEN" ]]; then
   echo "usage: install-client-agent.sh --master <url> --client-id <id> --agent-token <token>" >&2
@@ -508,82 +498,34 @@ finish_install() {
 }
 trap finish_install EXIT
 
-PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
-PROXY_ENV_STAGED="$CONFIG_DIR/proxy.env.new.$$"
+# A retired installer feature persisted a proxy here and fed it to the agent
+# service as an EnvironmentFile. The agent never proxies panel traffic now:
+# drop the file and any staged copy. Removing it counts as an install change;
+# the unit loses its EnvironmentFile line in the same run, so the service is
+# reloaded and restarted exactly once and later runs are no-ops.
+LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
 
-append_proxy_env_line() {
-  local staged="$1" name="$2" value="$3"
-  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
-    echo "invalid newline in $name" >&2
+remove_legacy_proxy_env() {
+  local staged
+  for staged in "$LEGACY_PROXY_ENV_FILE".new.*; do
+    [[ -e "$staged" || -L "$staged" ]] || continue
     rm -f "$staged"
-    exit 1
-  fi
-  printf '%s=%s\n' "$name" "$value" >> "$staged"
-}
-
-# Decide what proxy.env must contain; sets PROXY_ENV_ACTION to write or keep.
-# A self-update runs from a transient systemd unit whose environment has no
-# proxy variables at all, so "no proxy given" must preserve the operator's
-# proxy.env rather than clear it. Only --proxy/--clear-proxy or an explicit
-# HTTP(S)_PROXY in the environment may change it.
-stage_proxy_env() {
-  local staged="$1" proxy_name explicit_env=0
-  PROXY_ENV_ACTION=write
-  : > "$staged"
-  case "$PROXY_MODE" in
-    clear)
-      return 0
-      ;;
-    set)
-      for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
-        append_proxy_env_line "$staged" "$proxy_name" "$PROXY_URL"
-      done
-      for proxy_name in NO_PROXY no_proxy; do
-        if [[ -n "${!proxy_name:-}" ]]; then
-          append_proxy_env_line "$staged" "$proxy_name" "${!proxy_name}"
-        fi
-      done
-      return 0
-      ;;
-  esac
-  for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
-    if [[ -n "${!proxy_name:-}" ]]; then
-      explicit_env=1
-    fi
   done
-  if [[ "$explicit_env" != "1" && -f "$PROXY_ENV_FILE" ]]; then
-    PROXY_ENV_ACTION=keep
-    rm -f "$staged"
-    return 0
+  if [[ -e "$LEGACY_PROXY_ENV_FILE" || -L "$LEGACY_PROXY_ENV_FILE" ]]; then
+    backup_existing "$LEGACY_PROXY_ENV_FILE"
+    rm -f "$LEGACY_PROXY_ENV_FILE"
+    mark_install_changed "proxy.env removed"
+    echo "  removed retired proxy.env; the agent reaches the panel directly"
   fi
-  for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
-    if [[ -n "${!proxy_name:-}" ]]; then
-      append_proxy_env_line "$staged" "$proxy_name" "${!proxy_name}"
-    fi
-  done
 }
 
-install_proxy_env() {
-  stage_proxy_env "$PROXY_ENV_STAGED"
-  if [[ "$PROXY_ENV_ACTION" == "write" ]]; then
-    # proxy.env is the service's EnvironmentFile: a change needs a restart.
-    install_file_if_changed "$PROXY_ENV_STAGED" "$PROXY_ENV_FILE" 0600 proxy.env
-  else
-    echo "  no proxy given; keeping the existing proxy.env"
-  fi
-  chmod 0600 "$PROXY_ENV_FILE"
-}
+remove_legacy_proxy_env
 
-install_proxy_env
-
+# Panel/CDN downloads always go direct: http.client never reads proxy
+# variables and the curl fallback passes --noproxy '*'.
 leikwan_protected_download() {
   local url="$1"
   local path="$2"
-  local proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
-  if [[ -n "$proxy_url" ]]; then
-    curl -fsSL --proxy "$proxy_url" "$url" -o "$path"
-    return 0
-  fi
   python3 - "$url" "$path" <<'PY'
 import http.client
 import ipaddress
@@ -817,8 +759,8 @@ def fetch_protected(url, redirects=5):
 
 
 def curl_download(url, path):
-    # Non-protected URL fallback intentionally stays equivalent to curl -fsSL.
-    cmd = ["curl", "-fsSL", url]
+    # Non-protected URL fallback: curl -fsSL, never through a proxy.
+    cmd = ["curl", "--noproxy", "*", "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -976,7 +918,8 @@ fi
 download_manifest_artifact leikwan_cli_linux "$DOWNLOAD_BASE/artifacts/leikwan-linux.sh" "$BIN_DIR/leikwan"
 chmod 0755 "$BIN_DIR/leikwan"
 download_manifest_artifact tcp_accel_installer "$DOWNLOAD_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
-"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy \
+  "$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
 download_manifest_artifact install_forward_runtime "$DOWNLOAD_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_PATH" "$BIN_DIR/ultra-client"
 # Legacy amd64 route contract retained for older static tooling:
@@ -1152,7 +1095,6 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-$PROXY_ENV_FILE
 ExecStart=$AGENT_EXEC_START
 Restart=always
 RestartSec=5
@@ -1225,8 +1167,8 @@ PY
 }
 
 # Restart, reload and health-check only when something the service runs
-# actually changed (an artifact, config.json, proxy.env or the unit file), the
-# service is not running, or --force-restart was given.
+# actually changed (an artifact, config.json, the unit file or removal of the
+# retired proxy.env), the service is not running, or --force-restart was given.
 finalize_agent_service() {
   local restart_reason=""
   if [[ "$FORCE_RESTART" == "1" ]]; then

@@ -109,7 +109,7 @@ class OfflineValidityHeaderTests(unittest.TestCase):
             [url for url, _ in calls],
         )
         for _url, headers in calls:
-            self.assertEqual({HEADER: "1800"}, headers)
+            self.assertEqual({HEADER: "1800", "x-device-id": "device"}, headers)
 
     def test_http_json_rejects_header_injection(self) -> None:
         with self.assertRaises(ValueError):

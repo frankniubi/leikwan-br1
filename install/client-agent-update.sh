@@ -473,7 +473,7 @@ def fetch_protected(url, redirects=5):
 
 
 def curl_download(url, path):
-    cmd = ["curl", "--connect-timeout", "15", "--max-time", "300", "--retry", "3", "--retry-delay", "2", "-fsSL", url]
+    cmd = ["curl", "--noproxy", "*", "--connect-timeout", "15", "--max-time", "300", "--retry", "3", "--retry-delay", "2", "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -505,28 +505,11 @@ if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
   exit 1
 fi
 
-# The update runs from a transient unit that does not inherit the agent's
-# EnvironmentFile, so a host that reaches the panel only through its proxy
-# would fail every download. Load only the proxy variables from the root-owned
-# proxy.env the installer maintains; an explicitly exported proxy wins.
-load_agent_proxy_env() {
-  local proxy_file line name value
-  proxy_file="$(dirname "$CONFIG_PATH")/proxy.env"
-  [[ -f "$proxy_file" && ! -L "$proxy_file" ]] || return 0
-  [[ "$(stat -c %u "$proxy_file" 2>/dev/null || echo -1)" == "0" ]] || return 0
-  if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then
-    return 0
-  fi
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy)=(.*)$ ]] || continue
-    name="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
-    value="${value#\"}"; value="${value%\"}"
-    [[ -n "$value" ]] && export "$name=$value"
-  done < "$proxy_file"
-  return 0
-}
-load_agent_proxy_env
+# Panel/CDN downloads never use a proxy: the panel is reachable directly
+# through its Cloudflare and Aliyun CDNs. The retired installer proxy.env is
+# not read (the installer run below deletes it), and proxy variables are
+# dropped so neither this helper nor the installer it runs can pick one up.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 
 exec 9>"${STATE_DIR%/}/agent-update.lock"
 flock -n 9 || { rmdir "$UPDATE_TMP"; exit 75; }

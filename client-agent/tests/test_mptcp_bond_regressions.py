@@ -100,15 +100,25 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     {
                         "x-device-platform": "linux",
                         "x-device-architecture": client_agent_module.local_runtime_architecture(),
+                        "x-device-id": agent.device_id(),
                         "X-Leikwan-Ultra-Offline-Validity": "1800",
                     },
                     extra_headers,
                 )
+                self.assertRegex(agent.device_id(), r"^linux-[0-9a-f]{32}$")
                 return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
 
-            def fake_post(method: str, url: str, token: str, payload: dict | None = None):
+            def fake_post(
+                method: str,
+                url: str,
+                token: str,
+                payload: dict | None = None,
+                *,
+                extra_headers: dict[str, str] | None = None,
+            ):
                 self.assertEqual(method, "POST")
                 self.assertTrue(url.endswith("/api/client/heartbeat"))
+                self.assertEqual(agent.device_id(), (extra_headers or {}).get("x-device-id"))
                 captured["payload"] = payload or {}
                 return {"ok": True}
 

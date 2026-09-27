@@ -124,7 +124,7 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                 },
             }
 
-            def http_json_side_effect(method, url, token, payload=None):
+            def http_json_side_effect(method, url, token, payload=None, *, extra_headers=None):
                 if url.endswith("/api/client/ultra/lease"):
                     raise RuntimeError("http 503 panel unavailable")
                 return {"ok": True}

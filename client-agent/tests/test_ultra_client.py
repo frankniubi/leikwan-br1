@@ -180,7 +180,7 @@ class UltraClientLeaseTests(unittest.TestCase):
                 "device_id": "device-a",
                 "forwards": [mock.ANY],
             },
-            extra_headers={"X-Leikwan-Ultra-Offline-Validity": "1800"},
+            extra_headers={"x-device-id": "device-a", "X-Leikwan-Ultra-Offline-Validity": "1800"},
         )
         body = request.call_args.args[3]
         self.assertEqual("device-a", body["device_id"])
