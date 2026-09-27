@@ -41,19 +41,19 @@
   "install_url": "/artifacts/install-client-agent.sh",
   "path": "install/install-client-agent.sh",
   "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-  "sha256": "098fac32ba3608f68e75ca6c980705eae124c739a395d232ce3fb4ab36fdf545",
-  "size": 44804,
-  "size_bytes": 44804,
-  "version": "2026.09.27.1"
+  "sha256": "fe41adb93e6e670533549bfbcfc2dccedad3f3f33a1cfdecd3f5e96305961da8",
+  "size": 45556,
+  "size_bytes": 45556,
+  "version": "2026.09.27.2"
  },
  "client_agent_installer_linux_arm64": {
   "architecture": "arm64",
   "artifact_url": "/artifacts/install-client-agent-linux-arm64",
   "format": "binary",
   "path": "artifacts/install-client-agent-linux-arm64",
-  "sha256": "bfe45246c1a6266261029049e520dd26ed6a8ec1116261a8856eeea7a6159416",
+  "sha256": "76b1a3314ef0ce4e75080b7958e2411c90f621735c9b34b2b7449e5ca169ee66",
   "size_bytes": 32374910,
-  "version": "2026.09.27.1"
+  "version": "2026.09.27.2"
  },
  "client_agent_linux_amd64": {
   "architecture": "amd64",
@@ -487,10 +487,10 @@
   "install_url": "/artifacts/install-tcp-accel.sh",
   "note": "Debian 12 self-contained tcp-accel role installer for client/slave/sidecar; installs dependencies and systemd units without external build steps.",
   "path": "install/install-tcp-accel.sh",
-  "sha256": "b57da37a24e4066d8508493f39ced6eec38c9cd510bd170e27b1858004ae62c5",
-  "size": 10212,
-  "size_bytes": 10212,
-  "version": "2026.09.27.1"
+  "sha256": "5c9b7b6d44c01b0978d8a35bbd82f97c6865d9068e64a9e02405e1108e3a098a",
+  "size": 10602,
+  "size_bytes": 10602,
+  "version": "2026.09.27.2"
  },
  "tcp_accel_runtime": {
   "artifact_url": "/artifacts/leikwan-tcp-accel.py",
