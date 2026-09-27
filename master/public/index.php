@@ -48,7 +48,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
     } catch (Throwable) {
         $referenceId = substr(hash('sha256', microtime(true) . ':' . getmypid()), 0, 16);
     }
-    error_log('unhandled application exception [' . $referenceId . ']: ' . $exception::class);
+    error_log('unhandled application exception [' . $referenceId . ']: ' . $exception::class . ' :: ' . $exception->getMessage() . ' @ ' . $exception->getFile() . ':' . $exception->getLine());
 
     $status = $exception instanceof ApiException ? $exception->statusCode() : 500;
     $path = $request?->path() ?? (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
