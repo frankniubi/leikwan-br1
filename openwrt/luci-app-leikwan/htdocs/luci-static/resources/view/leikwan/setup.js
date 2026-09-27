@@ -52,11 +52,24 @@ var ERRORS = {
 	client_selection_rejected:  _('面板拒绝为该客户端签发凭证。'),
 	unknown_option:             _('提交了不受支持的配置项。'),
 	invalid_value:              _('配置项取值不合法。'),
-	reload_error:               _('配置已保存，但服务重新加载失败。')
+	reload_error:               _('配置已保存，但服务重新加载失败。'),
+	client_online_limit_reached: _('设备数量已达上限。请断开其他设备，或联系服务商提高设备上限。')
 };
+
+// The panel refuses a device that is not already online while the client's
+// online device limit is full. It is not a bug, so it gets its own wording.
+var ONLINE_LIMIT = 'client_online_limit_reached';
 
 function errorText(code) {
 	return ERRORS[code] || _('操作失败：%s').format(code || _('未知错误'));
+}
+
+function onlineLimitText(details) {
+	var limit = parseInt((details || {}).online_device_limit, 10),
+	    active = parseInt((details || {}).active_online_devices, 10),
+	    counts = (limit > 0) ? _('（%d / %d 台在线）').format(isNaN(active) ? 0 : active, limit) : '';
+
+	return _('设备数量已达上限%s。请断开其他设备，或联系服务商提高设备上限。其他设备断开约 3 分钟后，本路由器会自动重新连接。').format(counts);
 }
 
 function panelURLCurrent() {
@@ -293,11 +306,14 @@ return view.extend({
 	},
 
 	showResult: function(kind, title, message) {
+		var paragraphs = Array.isArray(message) ? message : [ message ];
+
 		dom.content(this.nodes.result, [
 			E('div', { 'class': 'alert-message %s'.format(kind) }, [
-				E('h4', title),
-				E('p', message)
-			])
+				E('h4', title)
+			].concat(paragraphs.map(function(text) {
+				return E('p', text);
+			})))
 		]);
 
 		this.nodes.result.scrollIntoView({ 'behavior': 'smooth', 'block': 'nearest' });
@@ -317,8 +333,24 @@ return view.extend({
 		]);
 	},
 
-	showFailure: function(error) {
+	showFailure: function(error, hint) {
 		var code = (error && error.error) ? error.error : error;
+
+		if (code == ONLINE_LIMIT) {
+			var lines = [ onlineLimitText(error.details) ];
+
+			// The agent's English explanation is shown as well, so the text
+			// matches what "leikwand ctl" and the log print.
+			if (error.message)
+				lines.push(error.message);
+
+			if (hint)
+				lines.push(hint);
+
+			this.showResult('warning', _('设备数量已达上限 (Device limit reached)'), lines);
+
+			return;
+		}
 
 		this.showResult('error', _('操作失败 (Action failed)'), errorText(code));
 	},
@@ -406,7 +438,9 @@ return view.extend({
 			return callPair(code);
 		}).then(function(response) {
 			if (!response || response.ok !== true) {
-				self.showFailure(response);
+				// The panel checks the device limit before it consumes the
+				// pairing code, so the same code can be retried later.
+				self.showFailure(response, _('配对码未被使用，空出名额后可用同一配对码重试。(The pairing code was not used; retry the same code once a slot is free.)'));
 
 				return;
 			}

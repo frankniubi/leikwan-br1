@@ -100,6 +100,55 @@ function statusBadge(entry) {
 	return E('span', { 'class': 'label' }, _('已停止 (Stopped)'));
 }
 
+// The panel refuses a device that is not already online while the client's
+// online device limit is full. Without a clear banner the router just looks
+// broken, so this code is rendered prominently.
+var ONLINE_LIMIT = 'client_online_limit_reached';
+
+function onlineLimitCard(snapshot) {
+	var limit = parseInt(snapshot.online_device_limit, 10),
+	    active = parseInt(snapshot.active_online_devices, 10),
+	    counts = (limit > 0) ? _('（%d / %d 台在线）').format(isNaN(active) ? 0 : active, limit) : '';
+
+	return E('div', { 'class': 'alert-message warning' }, [
+		E('h4', _('设备数量已达上限 (Device limit reached)')),
+		E('p', _('设备数量已达上限%s。请断开其他设备，或联系服务商提高设备上限。其他设备断开约 3 分钟后，本路由器会自动重新连接。').format(counts)),
+		E('p', snapshot.last_pull_error || ''),
+		E('p', { 'class': 'cbi-section-descr' },
+			_('这不是故障：已在线的设备不会被挤下线，本路由器每分钟自动重试一次。(Not a fault: online devices are never kicked; this router retries every minute.)'))
+	]);
+}
+
+// Panel traffic is sent directly (proxy variables ignored) and pinned to the
+// physical WAN so a TUN proxy or VPN on the router cannot capture it.
+var EGRESS_REASONS = {
+	default_route:         _('默认路由'),
+	default_route_non_tun: _('默认路由（已跳过隧道接口）'),
+	wan_interface:         _('WAN 接口'),
+	override:              _('手动指定'),
+	disabled:              _('已关闭绑定'),
+	no_physical_route:     _('未找到物理 WAN')
+};
+
+function egressText(snapshot) {
+	var reason = String(snapshot.panel_egress_reason || ''),
+	    invalid = (reason.indexOf('override_invalid:') == 0),
+	    base = invalid ? reason.substring('override_invalid:'.length) : reason,
+	    label = EGRESS_REASONS[base] || base || '-',
+	    text = '%s · %s'.format(snapshot.panel_egress_device || _('未绑定 (unbound)'), label);
+
+	if (invalid)
+		text += _(' · 手动指定的接口无效，已自动选择');
+
+	if (snapshot.proxy_ignored)
+		text += _(' · 直连，忽略代理');
+
+	if (snapshot.panel_egress_error)
+		return E('span', { 'class': 'label warning' }, '%s · %s'.format(text, snapshot.panel_egress_error));
+
+	return text;
+}
+
 function infoRow(label, value) {
 	return E('tr', { 'class': 'tr' }, [
 		E('td', { 'class': 'td', 'style': 'width: 30%; white-space: nowrap;' }, E('strong', label)),
@@ -204,6 +253,7 @@ return view.extend({
 					? E('span', { 'class': 'label success' }, _('已启用 (Enabled)'))
 					: E('span', { 'class': 'label danger' }, _('已停用 (Disabled) — 请到高级设置中启用'))),
 			infoRow(_('面板 (Panel)'), '%s (%s)'.format(snapshot.panel_url || '-', snapshot.panel_platform_tag || '-')),
+			infoRow(_('面板出口 (Panel egress)'), egressText(snapshot)),
 			infoRow(_('客户端 (Client)'),
 				snapshot.client_id ? '#%d %s'.format(snapshot.client_id, snapshot.client_name || '') : '-'),
 			infoRow(_('设备 (Device)'),
@@ -221,14 +271,20 @@ return view.extend({
 		if (snapshot.singbox_present || snapshot.gateway)
 			rows.push(infoRow(_('sing-box'), snapshot.singbox_present ? _('已安装 (present)') : _('未安装 (missing)')));
 
+		var limited = (snapshot.last_pull_error_code == ONLINE_LIMIT);
+
 		if (snapshot.last_pull_error)
 			rows.push(infoRow(_('最近错误 (Last error)'),
-				E('span', { 'class': 'label danger' }, snapshot.last_pull_error)));
+				E('span', { 'class': limited ? 'label warning' : 'label danger' }, snapshot.last_pull_error)));
 
 		var children = [
-			E('h3', _('服务状态 (Service state)')),
-			E('table', { 'class': 'table' }, rows)
+			E('h3', _('服务状态 (Service state)'))
 		];
+
+		if (limited)
+			children.push(onlineLimitCard(snapshot));
+
+		children.push(E('table', { 'class': 'table' }, rows));
 
 		if (!snapshot.enrolled)
 			children.push(E('div', { 'class': 'alert-message notice' }, [

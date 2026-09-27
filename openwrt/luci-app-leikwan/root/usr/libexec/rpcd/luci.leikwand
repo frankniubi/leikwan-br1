@@ -57,6 +57,7 @@ const OPTIONS = {
 	enabled:                  { type: 'bool',   default: '1' },
 	panel_url:                { type: 'url',    default: 'https://v3.leikwanhost.com' },
 	fallback_panel_url:       { type: 'url',    default: 'https://api-leikwanbridge.nbwly.com' },
+	panel_egress_interface:   { type: 'string', default: 'auto', max: 15, pattern: /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/ },
 	device_name:              { type: 'string', default: '', max: 64 },
 	device_id:                { type: 'string', default: '', max: 64 },
 	mode:                     { type: 'enum',   default: 'forward', values: [ 'forward', 'gateway', 'hybrid' ] },
@@ -293,11 +294,31 @@ function ctl(command, params) {
 
 	if (response.ok != true) {
 		let code = response.error;
+		let reply = null;
 
 		if (type(code) != 'string' || !length(code))
 			code = 'agent_error';
 
-		return err(code);
+		reply = err(code);
+
+		// Some failures (client_online_limit_reached) carry a human message
+		// and small integer counts; pass them through so LuCI can explain
+		// the refusal instead of showing a bare code.
+		if (type(response.message) == 'string' && length(response.message) && length(response.message) <= MAX_VALUE_LENGTH)
+			reply.message = response.message;
+
+		if (type(response.details) == 'object') {
+			let details = {};
+
+			for (let key in [ 'online_device_limit', 'active_online_devices' ])
+				if (type(response.details[key]) == 'int')
+					details[key] = response.details[key];
+
+			if (length(keys(details)))
+				reply.details = details;
+		}
+
+		return reply;
 	}
 
 	return ok(response.data ?? null);

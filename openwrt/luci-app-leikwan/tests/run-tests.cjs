@@ -72,7 +72,9 @@ const STATUS = {
 			bypass_cn: true, last_error: '', sing_box_version: ''
 		},
 		runtime_bin: '/usr/libexec/leikwan/ultra-client', runtime_present: true, singbox_present: true,
-		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok'
+		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok',
+		panel_egress_device: 'pppoe-wan', panel_egress_reason: 'default_route_non_tun',
+		panel_egress_override: 'auto', proxy_ignored: true
 	}
 };
 
@@ -142,9 +144,9 @@ const UCI_VALUES = {
 // Suite 1: load and render every view
 // ---------------------------------------------------------------------------
 
-async function renderView(file) {
+async function renderView(file, rpcResponses) {
 	const source = fs.readFileSync(path.join(VIEW_DIR, file), 'utf8');
-	const stubs = createStubs({ rpcResponses: RPC_RESPONSES, uciValues: UCI_VALUES });
+	const stubs = createStubs({ rpcResponses: rpcResponses || RPC_RESPONSES, uciValues: UCI_VALUES });
 	const m = stubs.modules;
 
 	// LuCI loads a view as a function body: the leading 'require x' lines are
@@ -346,8 +348,106 @@ function suiteMenu() {
 	check('ACL constrains the control runtime directory', text.includes('/var/run/leikwand'));
 }
 
+// ---------------------------------------------------------------------------
+// Suite 1b: the online device limit must read as a quota, not a bug
+// ---------------------------------------------------------------------------
+
+const LIMIT_MESSAGE = 'Device limit reached (2 of 2 devices online). Disconnect another device or ask your provider ' +
+	'to raise the device limit. This router reconnects automatically about 3 minutes after another device disconnects.';
+
+async function suiteOnlineLimit() {
+	step('online device limit messaging');
+	const limited = JSON.parse(JSON.stringify(STATUS));
+	Object.assign(limited.data, {
+		last_pull_error: LIMIT_MESSAGE,
+		last_pull_error_code: 'client_online_limit_reached',
+		online_device_limit: 2,
+		active_online_devices: 2
+	});
+
+	try {
+		const result = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: limited }));
+		check('overview shows the device-limit banner', result.text.includes('设备数量已达上限'));
+		check('overview shows the counts', result.text.includes('2 / 2'));
+		check('overview shows the agent message', result.text.includes(LIMIT_MESSAGE));
+
+		const plain = await renderView('overview.js');
+		check('overview hides the banner without the code', !plain.text.includes('设备数量已达上限'));
+	}
+	catch (err) {
+		bad('overview renders the device-limit state', String(err && err.stack || err));
+	}
+
+	try {
+		const refused = {
+			ok: false, error: 'client_online_limit_reached', message: LIMIT_MESSAGE,
+			details: { online_device_limit: 2, active_online_devices: 2 }
+		};
+		const result = await renderView('setup.js', Object.assign({}, RPC_RESPONSES, { pair: refused }));
+		result.instance.codeInput.value = 'ABCD-1234';
+		await result.instance.handlePair();
+		const text = result.instance.nodes.result.allText();
+		check('pairing refusal shows the device-limit title', text.includes('设备数量已达上限'));
+		check('pairing refusal shows the agent message', text.includes(LIMIT_MESSAGE));
+		check('pairing refusal never shows the raw panel error', !text.includes('panel error 429'));
+	}
+	catch (err) {
+		bad('setup renders the pairing refusal', String(err && err.stack || err));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Suite 1c: Panel egress (direct, pinned to the physical WAN)
+// ---------------------------------------------------------------------------
+
+async function suitePanelEgress() {
+	step('panel egress');
+	try {
+		const result = await renderView('overview.js');
+		check('overview shows the panel egress row', result.text.includes('面板出口'));
+		check('overview shows the egress device', result.text.includes('pppoe-wan'));
+		check('overview explains a skipped tunnel', result.text.includes('已跳过隧道接口'));
+		check('overview says the proxy is ignored', result.text.includes('忽略代理'));
+
+		const invalid = JSON.parse(JSON.stringify(STATUS));
+		Object.assign(invalid.data, {
+			panel_egress_device: 'eth0', panel_egress_reason: 'override_invalid:default_route',
+			panel_egress_override: 'eth9', panel_egress_error: 'operation not permitted'
+		});
+		const warned = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: invalid }));
+		check('overview flags an invalid override', warned.text.includes('手动指定的接口无效'));
+		check('overview shows a bind error', warned.text.includes('operation not permitted'));
+
+		const unbound = JSON.parse(JSON.stringify(STATUS));
+		Object.assign(unbound.data, { panel_egress_device: '', panel_egress_reason: 'no_physical_route' });
+		const plain = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: unbound }));
+		check('overview shows an unbound egress', plain.text.includes('未绑定') && plain.text.includes('未找到物理 WAN'));
+	}
+	catch (err) {
+		bad('overview renders the panel egress row', String(err && err.stack || err));
+	}
+
+	const advanced = fs.readFileSync(path.join(VIEW_DIR, 'advanced.js'), 'utf8');
+	check('advanced settings expose panel_egress_interface', advanced.includes("'panel_egress_interface'"));
+
+	const rpcd = fs.readFileSync(RPCD, 'utf8');
+	check('rpcd whitelists panel_egress_interface with default auto',
+		/panel_egress_interface:\s*\{[^}]*default:\s*'auto'/.test(rpcd));
+
+	// The leikwand package sits next to this one in the source tree; the
+	// mutation harness runs on a copy of this package alone, without it.
+	const defaultsPath = path.join(ROOT, '../leikwand/files/leikwan.config');
+	if (fs.existsSync(defaultsPath))
+		check('package UCI defaults set panel_egress_interface to auto',
+			fs.readFileSync(defaultsPath, 'utf8').includes("option panel_egress_interface 'auto'"));
+	const luciDefaults = fs.readFileSync(path.join(ROOT, 'root/etc/uci-defaults/90-luci-leikwan'), 'utf8');
+	check('LuCI UCI defaults set panel_egress_interface to auto', luciDefaults.includes("panel_egress_interface='auto'"));
+}
+
 (async function main() {
 	await suiteViews();
+	await suiteOnlineLimit();
+	await suitePanelEgress();
 	suiteContracts();
 	suiteMenu();
 	step('result');

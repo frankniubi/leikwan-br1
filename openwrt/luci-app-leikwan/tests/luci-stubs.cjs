@@ -86,6 +86,7 @@ class FakeNode {
 	}
 	dispatch(type, event) { (this._listeners[type] || []).forEach(fn => fn.call(this, event || { type, target: this })); }
 	focus() {} blur() {} click() { this.dispatch('click'); }
+	scrollIntoView() {}
 	querySelector() { return null; }
 	querySelectorAll() { return []; }
 	getElementsByTagName() { return []; }
@@ -103,6 +104,13 @@ class FakeNode {
 // LuCI's E() accepts either (tag, attrs, children) or a single array form.
 function E(tag, attrs, children) {
 	if (Array.isArray(tag)) { children = tag[2]; attrs = tag[1]; tag = tag[0]; }
+	// Like LuCI, a non-object second argument (text, array, node) is the
+	// child list, e.g. E('p', 'text'); otherwise that text would be lost.
+	if (attrs !== null && attrs !== undefined &&
+	    (typeof attrs !== 'object' || Array.isArray(attrs) || attrs instanceof FakeNode)) {
+		children = attrs;
+		attrs = null;
+	}
 	const node = new FakeNode(tag);
 	if (attrs) {
 		for (const key of Object.keys(attrs)) {

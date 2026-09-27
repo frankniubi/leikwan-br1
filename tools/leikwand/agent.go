@@ -68,6 +68,11 @@ type Agent struct {
 	clientMeta  ClientMeta
 	diagToken   string
 
+	// lastPullCode is the machine-readable code of lastPullErr (e.g.
+	// client_online_limit_reached); pullLimit is set only for that code.
+	lastPullCode string
+	pullLimit    *panelError
+
 	reconcile chan string
 	startedAt time.Time
 
@@ -90,11 +95,13 @@ type Agent struct {
 func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent {
 	deviceID := deviceIdentity(cfg, secrets)
 	deviceNm := deviceDisplayName(cfg, secrets)
+	panel := newPanelClient(cfg, secrets, deviceID, deviceNm)
+	panel.egress.log = log
 	return &Agent{
 		cfg:              cfg,
 		store:            store,
 		secrets:          secrets,
-		panel:            newPanelClient(cfg, secrets, deviceID, deviceNm),
+		panel:            panel,
 		deviceID:         deviceID,
 		deviceNm:         deviceNm,
 		log:              log,
@@ -198,17 +205,49 @@ func (a *Agent) pullLoop(ctx context.Context) {
 		case errors.Is(err, errNotModified):
 			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
 		default:
-			a.store.UpdatePull(func(state *PullState) {
-				state.Failures++
-				state.LastError = err.Error()
-				state.LastStatus = "error"
-			})
-			backoff := time.Duration(clampInt(a.store.Pull().Failures*3, 5, 60)) * time.Second
-			a.log.Warn("panel", "config pull failed: %v (retry in %s)", err, backoff)
-			delay = backoff
+			delay = a.notePullFailure(err)
 		}
 		timer.Reset(delay)
 	}
+}
+
+// notePullFailure records a failed pull where LuCI and "ctl status" can see it
+// and returns the delay before the next attempt. The currently applied
+// forwards are deliberately left running: a control-plane refusal is not a
+// reason to tear down the data plane.
+func (a *Agent) notePullFailure(err error) time.Duration {
+	message, code := describePanelFailure(err)
+	limit, limited := asOnlineLimitError(err)
+	a.store.UpdatePull(func(state *PullState) {
+		state.Failures++
+		state.LastError = message
+		state.LastStatus = "error"
+	})
+	a.mu.Lock()
+	a.lastPullErr = message
+	a.lastPullCode = code
+	a.pullLimit = nil
+	if limited {
+		copied := *limit
+		a.pullLimit = &copied
+	}
+	a.mu.Unlock()
+	if limited {
+		// A slot only frees after another device has been silent for 180s, so
+		// a fast backoff would just hammer the Panel. Retry at a steady pace.
+		a.log.Warn("panel", "%s (retry in %s)", message, onlineLimitRetryInterval)
+		return onlineLimitRetryInterval
+	}
+	backoff := time.Duration(clampInt(a.store.Pull().Failures*3, 5, 60)) * time.Second
+	a.log.Warn("panel", "config pull failed: %s (retry in %s)", message, backoff)
+	return backoff
+}
+
+// clearPullFailureLocked is called with a.mu held after any successful pull.
+func (a *Agent) clearPullFailureLocked() {
+	a.lastPullErr = ""
+	a.lastPullCode = ""
+	a.pullLimit = nil
 }
 
 func (a *Agent) pullOnce(ctx context.Context) error {
@@ -229,7 +268,7 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 		})
 		a.mu.Lock()
 		a.lastPullAt = time.Now()
-		a.lastPullErr = ""
+		a.clearPullFailureLocked()
 		a.mu.Unlock()
 		return errNotModified
 	}
@@ -240,7 +279,7 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 	a.mu.Lock()
 	a.clientMeta = response.Client
 	a.lastPullAt = time.Now()
-	a.lastPullErr = ""
+	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
 
@@ -707,12 +746,30 @@ type StatusSnapshot struct {
 	RuntimeSha256     string `json:"runtime_sha256,omitempty"`
 	DesiredRuntimeSha string `json:"desired_runtime_sha256,omitempty"`
 	RuntimeDrift      string `json:"runtime_drift,omitempty"`
+
+	// LastPullErrorCode is the stable code behind LastPullError, e.g.
+	// client_online_limit_reached, so LuCI can render it specially. The two
+	// counts are only set for client_online_limit_reached.
+	LastPullErrorCode   string `json:"last_pull_error_code,omitempty"`
+	OnlineDeviceLimit   int    `json:"online_device_limit,omitempty"`
+	ActiveOnlineDevices int    `json:"active_online_devices,omitempty"`
+
+	// Panel traffic ignores HTTP(S)_PROXY and is pinned to the physical WAN
+	// so a TUN proxy or VPN on the router cannot capture it. An empty device
+	// means the sockets are unbound; the reason says why.
+	PanelEgressDevice   string `json:"panel_egress_device"`
+	PanelEgressReason   string `json:"panel_egress_reason"`
+	PanelEgressOverride string `json:"panel_egress_override"`
+	PanelEgressError    string `json:"panel_egress_error,omitempty"`
+	ProxyIgnored        bool   `json:"proxy_ignored"`
 }
 
 func (a *Agent) snapshot() StatusSnapshot {
 	a.mu.Lock()
 	lastPull := a.lastPullAt
 	lastErr := a.lastPullErr
+	lastCode := a.lastPullCode
+	limit := a.pullLimit
 	meta := a.clientMeta
 	a.mu.Unlock()
 
@@ -741,6 +798,13 @@ func (a *Agent) snapshot() StatusSnapshot {
 	if !lastPull.IsZero() {
 		snapshot.LastPullAt = formatRFC3339(lastPull)
 	}
+	snapshot.LastPullErrorCode = lastCode
+	if limit != nil {
+		snapshot.OnlineDeviceLimit = limit.OnlineDeviceLimit
+		snapshot.ActiveOnlineDevices = limit.ActiveOnlineDevices
+	}
+	snapshot.PanelEgressDevice, snapshot.PanelEgressReason, snapshot.PanelEgressOverride, snapshot.PanelEgressError = a.panel.egressView()
+	snapshot.ProxyIgnored = true
 	snapshot.ForwardCount = len(snapshot.Forwards)
 	if a.cfg.UplinkEnabled {
 		snapshot.Uplinks = a.uplinkViews()

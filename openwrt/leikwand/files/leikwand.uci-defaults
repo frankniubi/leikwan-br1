@@ -10,6 +10,13 @@ uci -q get leikwan.main >/dev/null 2>&1 || {
 	uci -q commit leikwan
 }
 
+# Panel traffic is pinned to the physical WAN by default, so a TUN proxy or VPN
+# on the router cannot capture it. Existing installs get the default once.
+uci -q get leikwan.main.panel_egress_interface >/dev/null 2>&1 || {
+	uci -q set leikwan.main.panel_egress_interface='auto'
+	uci -q commit leikwan
+}
+
 # The runtime directory carries the control socket and its per-boot token.
 mkdir -p /var/run/leikwand
 chmod 700 /var/run/leikwand

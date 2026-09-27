@@ -43,6 +43,16 @@ function validatePath(section_id, value) {
 	return true;
 }
 
+function validateEgress(section_id, value) {
+	if (value == null || value === '')
+		return true;
+
+	if (!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/.test(value))
+		return _('请填写 auto、none 或接口名，例如 pppoe-wan、eth0、wan');
+
+	return true;
+}
+
 function rangeValidator(min, max) {
 	return function(section_id, value) {
 		if (value == null || value === '')
@@ -96,6 +106,16 @@ return view.extend({
 		o = s.taboption('panel', form.Value, 'fallback_panel_url', _('备用面板地址 (Fallback panel URL)'));
 		o.placeholder = 'https://api-leikwanbridge.nbwly.com';
 		o.validate = validateURL;
+
+		o = s.taboption('panel', form.Value, 'panel_egress_interface', _('面板出口接口 (Panel egress interface)'));
+		o.placeholder = 'auto';
+		o.default = 'auto';
+		o.value('auto', _('auto — 自动选择物理 WAN (physical WAN)'));
+		o.value('none', _('none — 不绑定接口 (no binding)'));
+		o.validate = validateEgress;
+		o.description = _('leikwand 与面板的通信始终直连、忽略代理环境变量，并绑定到物理 WAN，' +
+			'避免被 OpenClash、sing-box、WireGuard 等 TUN 接口接管。' +
+			'auto 取主路由表中 metric 最低的非隧道默认路由；也可填写设备名（如 pppoe-wan）或逻辑接口名（如 wan）。');
 
 		o = s.taboption('panel', form.Value, 'device_name', _('设备名称 (Device name)'));
 		o.placeholder = 'OpenWrt-Router';

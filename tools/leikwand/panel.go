@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"runtime"
 	"strings"
@@ -39,6 +38,7 @@ type PanelClient struct {
 	deviceNme string
 	clientID  int
 	http      *http.Client
+	egress    *panelEgress
 	backoff   time.Duration
 	lastErr   error
 
@@ -67,7 +67,19 @@ func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string
 			pool = append(pool, candidate)
 		}
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	egress := newPanelEgress(cfg.PanelEgressInterface)
+	transport := &http.Transport{
+		// The Panel is always reached directly. A router's environment may
+		// carry HTTP(S)_PROXY for other tools; the control plane must not
+		// depend on that proxy being up, so the environment is ignored.
+		Proxy:                 nil,
+		DialContext:           egress.DialContext,
+		MaxIdleConns:          8,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 40 * time.Second,
+	}
+	egress.onChange = transport.CloseIdleConnections
 	return &PanelClient{
 		endpoints:   pool,
 		token:       secrets.AgentToken,
@@ -75,17 +87,18 @@ func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string
 		deviceNme:   deviceName,
 		clientID:    secrets.ClientID,
 		platformTag: platformName,
+		egress:      egress,
 		http: &http.Client{
-			Timeout: 45 * time.Second,
-			Transport: &http.Transport{
-				DialContext:           dialer.DialContext,
-				MaxIdleConns:          8,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 40 * time.Second,
-			},
+			Timeout:   45 * time.Second,
+			Transport: transport,
 		},
 	}
+}
+
+// egressView reports which device Panel traffic is pinned to, and why.
+func (c *PanelClient) egressView() (device, reason, override, bindErr string) {
+	device, reason, bindErr = c.egress.view()
+	return device, reason, c.egress.overrideValue(), bindErr
 }
 
 func (c *PanelClient) setToken(token string, clientID int) {
@@ -275,12 +288,28 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 	return lastErr
 }
 
+// codeClientOnlineLimit is the Panel's refusal for a device that is not
+// already online while the client's online device limit is full. Devices that
+// are already online are never kicked; a slot frees when another device has
+// been silent for 180s, the tenant kicks one, or the limit is raised.
+const codeClientOnlineLimit = "client_online_limit_reached"
+
+// onlineLimitRetryInterval is the steady retry cadence while the device limit
+// is full. A slot cannot free faster than the Panel's 180s silence window, so
+// retrying every few seconds would only add load and log noise.
+const onlineLimitRetryInterval = 60 * time.Second
+
 // panelError carries the Panel's structured error envelope. It is deliberately
 // not retried: the code tells the operator exactly what to fix.
 type panelError struct {
 	Status int
 	Code   string
 	Msg    string
+
+	// OnlineDeviceLimit and ActiveOnlineDevices are filled for
+	// client_online_limit_reached; zero means the Panel did not send them.
+	OnlineDeviceLimit   int
+	ActiveOnlineDevices int
 }
 
 func (e *panelError) Error() string {
@@ -290,11 +319,23 @@ func (e *panelError) Error() string {
 	return fmt.Sprintf("panel error %d", e.Status)
 }
 
+// onlineLimitReached reports whether the Panel refused this device because the
+// client's online device limit is full.
+func (e *panelError) onlineLimitReached() bool {
+	return e != nil && e.Code == codeClientOnlineLimit
+}
+
 func decodePanelError(status int, payload []byte) error {
 	out := &panelError{Status: status, Code: "http_" + itoa(status)}
 	var envelope struct {
-		OK     bool   `json:"ok"`
-		Error  string `json:"error"`
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		Limit   *int   `json:"online_device_limit"`
+		Active  *int   `json:"active_online_devices"`
+		Details struct {
+			Limit  *int `json:"online_device_limit"`
+			Active *int `json:"active_online_devices"`
+		} `json:"details"`
 		Detail struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
@@ -308,8 +349,60 @@ func decodePanelError(status int, payload []byte) error {
 			out.Code = envelope.Detail.Code
 		}
 		out.Msg = envelope.Detail.Message
+		if out.onlineLimitReached() {
+			// The flat fields are canonical; details mirrors them for clients
+			// that only read the nested object.
+			out.OnlineDeviceLimit = firstCount(envelope.Limit, envelope.Details.Limit)
+			out.ActiveOnlineDevices = firstCount(envelope.Active, envelope.Details.Active)
+		}
 	}
 	return out
+}
+
+func firstCount(values ...*int) int {
+	for _, value := range values {
+		if value != nil && *value >= 0 {
+			return *value
+		}
+	}
+	return 0
+}
+
+// asOnlineLimitError extracts a client_online_limit_reached refusal from err.
+func asOnlineLimitError(err error) (*panelError, bool) {
+	var pe *panelError
+	if errors.As(err, &pe) && pe.onlineLimitReached() {
+		return pe, true
+	}
+	return nil, false
+}
+
+// onlineLimitMessage is the operator-facing explanation shown in LuCI, in
+// "leikwand ctl status" and in the log. Without it a refused router looks
+// like a bug rather than a full device quota.
+func onlineLimitMessage(pe *panelError) string {
+	counts := ""
+	if pe != nil && pe.OnlineDeviceLimit > 0 {
+		counts = fmt.Sprintf(" (%d of %d devices online)", pe.ActiveOnlineDevices, pe.OnlineDeviceLimit)
+	}
+	return "Device limit reached" + counts + ". Disconnect another device or ask your provider to raise the device limit. " +
+		"This router reconnects automatically about 3 minutes after another device disconnects."
+}
+
+// describePanelFailure turns a Panel call failure into the text an operator
+// reads plus a stable machine-readable code ("" for transport failures).
+func describePanelFailure(err error) (message, code string) {
+	if err == nil {
+		return "", ""
+	}
+	if pe, ok := asOnlineLimitError(err); ok {
+		return onlineLimitMessage(pe), pe.Code
+	}
+	var pe *panelError
+	if errors.As(err, &pe) {
+		return redactSecrets(err.Error()), pe.Code
+	}
+	return redactSecrets(err.Error()), ""
 }
 
 // Pull performs one long-poll cycle. A 304 is reported as errNotModified so

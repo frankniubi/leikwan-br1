@@ -26,6 +26,28 @@ type CtlResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 	Data  any    `json:"data,omitempty"`
+
+	// Message and Details accompany a failure whose code alone would read
+	// like a bug, such as client_online_limit_reached.
+	Message string         `json:"message,omitempty"`
+	Details map[string]int `json:"details,omitempty"`
+}
+
+// panelFailureResponse reports a failed Panel call. A full device quota is
+// returned as its stable code plus a human explanation and the counts, so
+// LuCI never shows "panel error 429: client_online_limit_reached".
+func panelFailureResponse(err error) CtlResponse {
+	if pe, ok := asOnlineLimitError(err); ok {
+		response := CtlResponse{OK: false, Error: pe.Code, Message: onlineLimitMessage(pe)}
+		if pe.OnlineDeviceLimit > 0 {
+			response.Details = map[string]int{
+				"online_device_limit":   pe.OnlineDeviceLimit,
+				"active_online_devices": pe.ActiveOnlineDevices,
+			}
+		}
+		return response
+	}
+	return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
 }
 
 func ctlSocketPath(runDir string) string { return filepath.Join(runDir, "ctl.sock") }
@@ -138,14 +160,14 @@ func (s *ctlServer) dispatch(request CtlRequest) CtlResponse {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		if err := agent.panel.Probe(ctx); err != nil {
-			return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
+			return panelFailureResponse(err)
 		}
 		return CtlResponse{OK: true, Data: map[string]any{"panel": agent.panel.endpointLabel(), "platform": agent.panel.platform()}}
 	case "enroll":
 		return s.enroll(request.Args)
 	case "pair":
 		if _, err := agent.pairWithCode(request.Args["code"]); err != nil {
-			return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
+			return panelFailureResponse(err)
 		}
 		return CtlResponse{OK: true, Data: map[string]any{"client_id": agent.panel.clientIDValue(), "client_name": agent.secrets.ClientName}}
 	case "sign_out":
@@ -182,7 +204,7 @@ func (s *ctlServer) enroll(args map[string]string) CtlResponse {
 	defer cancel()
 	login, err := agent.panel.Login(ctx, email, password)
 	if err != nil {
-		return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
+		return panelFailureResponse(err)
 	}
 	if !login.OK || strings.TrimSpace(login.SessionToken) == "" {
 		return CtlResponse{OK: false, Error: "login_rejected"}
@@ -193,7 +215,7 @@ func (s *ctlServer) enroll(args map[string]string) CtlResponse {
 	targetID := atoiDefault(args["client_id"], login.Clients[0].ID)
 	selection, err := agent.panel.SelectClient(ctx, login.SessionToken, targetID)
 	if err != nil {
-		return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
+		return panelFailureResponse(err)
 	}
 	if !selection.OK || strings.TrimSpace(selection.AgentToken) == "" {
 		return CtlResponse{OK: false, Error: "client_selection_rejected"}

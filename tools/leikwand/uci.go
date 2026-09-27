@@ -18,6 +18,10 @@ type Config struct {
 	DeviceID    string
 	ClientID    int
 
+	// PanelEgressInterface pins Panel traffic to one device: "auto" (the
+	// physical WAN), "none" (no pinning), or a device / UCI interface name.
+	PanelEgressInterface string
+
 	// Operating mode: forward | gateway | hybrid
 	Mode string
 
@@ -98,6 +102,7 @@ func defaultConfig() Config {
 		Enabled:               true,
 		PanelURL:              "https://v3.leikwanhost.com",
 		FallbackURL:           "https://api-leikwanbridge.nbwly.com",
+		PanelEgressInterface:  egressAuto,
 		Mode:                  "forward",
 		PollIntervalSecs:      30,
 		HeartbeatIntervalSecs: 30,
@@ -163,6 +168,7 @@ func loadConfig() Config {
 	cfg.DeviceName = get("device_name", "")
 	cfg.DeviceID = get("device_id", "")
 	cfg.ClientID = atoiDefault(get("client_id", "0"), 0)
+	cfg.PanelEgressInterface = get("panel_egress_interface", cfg.PanelEgressInterface)
 	cfg.Mode = normalizeMode(get("mode", cfg.Mode))
 
 	cfg.PollIntervalSecs = clampInt(atoiDefault(get("poll_interval", ""), cfg.PollIntervalSecs), 5, 3600)

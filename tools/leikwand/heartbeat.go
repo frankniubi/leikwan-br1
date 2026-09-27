@@ -27,7 +27,13 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 		err := a.sendHeartbeat(beatCtx)
 		cancel()
 		if err != nil {
-			a.log.Warn("heartbeat", "heartbeat failed: %v", err)
+			if _, limited := asOnlineLimitError(err); limited {
+				// The pull loop already explains the device limit once a
+				// minute; repeating it every heartbeat would bury other logs.
+				a.log.Debug("heartbeat", "heartbeat refused: %s", codeClientOnlineLimit)
+			} else {
+				a.log.Warn("heartbeat", "heartbeat failed: %v", err)
+			}
 		}
 	}
 }

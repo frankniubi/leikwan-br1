@@ -21,6 +21,7 @@ func (a *Agent) reloadConfig() {
 	previousMode := a.cfg.Mode
 	previousUplink := a.cfg.UplinkEnabled
 	a.cfg = loadConfig()
+	a.panel.egress.setOverride(a.cfg.PanelEgressInterface)
 	a.log.Info("ctl", "configuration reloaded (mode=%s uplink=%v gateway=%v)",
 		a.cfg.Mode, a.cfg.UplinkEnabled, a.cfg.gatewayActive())
 	if previousMode != a.cfg.Mode {

@@ -13,6 +13,8 @@ State files (all optional):
   listen_port     published listen port                        (default 10001)
   target          published forward target                     (default 127.0.0.1:9)
   reject_platform if present, 422 any platform except this value
+  online_limit    "N" or "N/M": 429 client_online_limit_reached on every
+                  endpoint (limit N, M active; M defaults to N)
 """
 
 import base64
@@ -126,9 +128,21 @@ class Handler(BaseHTTPRequestHandler):
         self._json(422, {"ok": False, "error": "location_platform_invalid"})
         return False
 
+    def _online_limit_gate(self) -> bool:
+        raw = state("online_limit")
+        if not raw:
+            return True
+        limit, _, active = raw.partition("/")
+        limit = int(limit or 0)
+        active = int(active or limit)
+        counts = {"online_device_limit": limit, "active_online_devices": active}
+        self._json(429, dict({"ok": False, "error": "client_online_limit_reached",
+                              "protocol_version": 1, "details": dict(counts)}, **counts))
+        return False
+
     def do_GET(self):
         global PULLS
-        if not self._platform_gate():
+        if not self._platform_gate() or not self._online_limit_gate():
             return
         if self.path.startswith("/api/client/configs/pull"):
             with LOCK:
@@ -179,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except ValueError:
             body = {}
-        if not self._platform_gate():
+        if not self._platform_gate() or not self._online_limit_gate():
             return
 
         if self.path.startswith("/api/client/ultra/lease"):
