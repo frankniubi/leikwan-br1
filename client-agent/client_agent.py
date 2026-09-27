@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.09.24.3"
+AGENT_VERSION = "2026.09.27.1"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
