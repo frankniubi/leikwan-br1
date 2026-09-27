@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.27.1"
+INSTALLER_VERSION="2026.09.27.2"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -768,7 +768,19 @@ def curl_download(url, path):
     return b""
 
 
+def resolve_pin(url):
+    # host:port:ip for curl --resolve, from the same strict DoH lookup.
+    parsed = urllib.parse.urlparse(url)
+    if not is_protected_leikwan_url(url):
+        return
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    print(f"{parsed.hostname}:{port}:{strict_resolve_a(parsed.hostname)[0]}")
+
+
 def main():
+    if sys.argv[1] == "--resolve-pin":
+        resolve_pin(sys.argv[2])
+        return
     url = sys.argv[1]
     path = sys.argv[2]
     if is_protected_leikwan_url(url):
@@ -918,7 +930,12 @@ fi
 download_manifest_artifact leikwan_cli_linux "$DOWNLOAD_BASE/artifacts/leikwan-linux.sh" "$BIN_DIR/leikwan"
 chmod 0755 "$BIN_DIR/leikwan"
 download_manifest_artifact tcp_accel_installer "$DOWNLOAD_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
+# install-tcp-accel.sh downloads with plain curl. Hand it the panel address
+# from strict DoH so polluted system DNS cannot break it; no proxy carries
+# these downloads any more.
+TCP_ACCEL_RESOLVE="$(leikwan_protected_download --resolve-pin "$DOWNLOAD_BASE" 2>/dev/null || true)"
 env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy \
+  LEIKWAN_CURL_RESOLVE="$TCP_ACCEL_RESOLVE" \
   "$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
 download_manifest_artifact install_forward_runtime "$DOWNLOAD_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_PATH" "$BIN_DIR/ultra-client"

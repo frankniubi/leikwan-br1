@@ -137,7 +137,7 @@ download_checked() {
     return 0
   fi
   tmp="${path}.new"
-  curl -fsSL --max-time 120 "$url" -o "$tmp"
+  curl "${CURL_PIN[@]}" -fsSL --max-time 120 "$url" -o "$tmp"
   actual="$(sha256_file "$tmp")"
   if [[ "$actual" != "${expected,,}" ]]; then
     rm -f "$tmp"
@@ -164,13 +164,21 @@ install_artifact() {
   fi
 }
 
+# Downloads never go through a proxy. A caller that resolved the panel over
+# strict DoH passes LEIKWAN_CURL_RESOLVE=host:port:ip so polluted system DNS
+# cannot send curl to the wrong address.
+CURL_PIN=(--noproxy '*')
+if [[ "${LEIKWAN_CURL_RESOLVE:-}" =~ ^[A-Za-z0-9.-]+:[0-9]+:[0-9a-fA-F.:]+$ ]]; then
+  CURL_PIN+=(--resolve "$LEIKWAN_CURL_RESOLVE")
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '')"
 
 ensure_debian12_dependencies
 
 if [[ -n "$ARTIFACT_BASE" ]]; then
-  VERSIONS_JSON="$(curl -fsSL --max-time 60 "$ARTIFACT_BASE/artifacts/versions.json")"
+  VERSIONS_JSON="$(curl "${CURL_PIN[@]}" -fsSL --max-time 60 "$ARTIFACT_BASE/artifacts/versions.json")"
 else
   if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/tools/tcp-accel/tcp_accel.py" ]]; then
     echo "--artifact-base is required when running outside a BR1 source checkout" >&2
