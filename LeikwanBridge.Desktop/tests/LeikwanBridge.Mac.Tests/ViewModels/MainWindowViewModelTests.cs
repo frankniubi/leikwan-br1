@@ -1036,6 +1036,128 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(PanelEndpoints.AliyunCdnUrl, vm.PanelUrl);
     }
 
+    private static IReadOnlyList<EgressInterfaceOption> EgressOptions(string? automaticLabel, params string[] adapters)
+        => EgressInterfaceCatalog.Build(
+            adapters.Select((name, index) => new LeikwanBridge.Core.Services.PanelEgress.NetworkAdapterInfo(
+                name, name, 10 + index, 10 + index, true,
+                LeikwanBridge.Core.Services.PanelEgress.NetworkAdapterKind.Physical, 25, 25,
+                [], [System.Net.IPAddress.Parse($"192.168.{index + 1}.20")])).ToList(),
+            automaticLabel);
+
+    [Fact]
+    public void SavedAdapterThatDisappearedFallsBackToAutomaticAndSaysSo()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            preferredEgressInterface: "USB Ethernet",
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0"));
+
+        Assert.Equal(EgressInterfaceCatalog.AutomaticId, vm.PreferredEgressInterface);
+        Assert.Equal(["", "en0"], vm.EgressInterfaceOptions.Select(option => option.Id));
+        Assert.Equal("Automatic (recommended)", vm.EgressInterfaceOptions[0].CompactLabel);
+        Assert.Equal("en0 · 192.168.1.20", vm.EgressInterfaceOptions[1].CompactLabel);
+        Assert.True(vm.IsEgressInterfaceNoticeVisible);
+        Assert.Contains("USB Ethernet", vm.EgressInterfaceNotice, StringComparison.Ordinal);
+        // Drawing the page never rewrites the stored preference by itself.
+        Assert.Empty(saved);
+    }
+
+    [Fact]
+    public void LoginPageAdapterChoiceIsAppliedImmediately()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        Assert.True(vm.IsLoginVisible);
+
+        vm.PreferredEgressInterface = "en7";
+
+        Assert.Equal(["en7"], saved);
+        Assert.False(vm.IsEgressInterfaceNoticeVisible);
+    }
+
+    [Fact]
+    public void SettingsPageAdapterChoiceWaitsForSavePreferences()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { IsSignedIn = true, ActiveClientName = "Client 27" }),
+            dispatch: action => action(),
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        Assert.False(vm.IsLoginVisible);
+
+        vm.PreferredEgressInterface = "en7";
+
+        Assert.Empty(saved);
+    }
+
+    [Fact]
+    public async Task SignInAppliesTheAdapterBeforeTheLoginRequest()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var saved = new List<(string Value, int LoginsSoFar)>();
+        var vm = new MainWindowViewModel(
+            controller,
+            dispatch: action => action(),
+            preferredEgressInterface: "en7",
+            saveEgressInterface: (value, _) => { saved.Add((value, controller.AgentTokenLoginCalls)); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        vm.PanelUrl = "https://panel.example.test";
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal([("en7", 0)], saved);
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+    }
+
+    [Fact]
+    public async Task SignInFallsBackWhenTheAdapterVanishedAfterThePageWasDrawn()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var adapters = new[] { "en0", "en7" };
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            controller,
+            dispatch: action => action(),
+            preferredEgressInterface: "en7",
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, adapters));
+        vm.PanelUrl = "https://panel.example.test";
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+        adapters = ["en0"];
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal([EgressInterfaceCatalog.AutomaticId], saved);
+        Assert.Contains("en7", vm.EgressInterfaceNotice, StringComparison.Ordinal);
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+    }
+
+    [Fact]
+    public void RefreshReloadsTheAdapterList()
+    {
+        var adapters = new[] { "en0" };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            egressInterfaceCatalog: label => EgressOptions(label, adapters));
+        adapters = ["en0", "en5"];
+
+        vm.RefreshEgressInterfacesCommand.Execute(null);
+
+        Assert.Equal(["", "en0", "en5"], vm.EgressInterfaceOptions.Select(option => option.Id));
+    }
+
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;

@@ -203,8 +203,10 @@ public sealed class MasterApiClientDesktopLoginTests
         var ok = await api.TestConnectionAsync();
 
         Assert.False(ok);
-        Assert.Contains("Online device limit reached", api.LastErrorMessage);
-        Assert.Contains("1 / 1", api.LastErrorMessage);
+        Assert.Contains("Device limit reached (1 of 1 devices online)", api.LastErrorMessage);
+        Assert.NotNull(api.LastDeviceLimit);
+        Assert.Equal(1, api.LastDeviceLimit!.OnlineDeviceLimit);
+        Assert.Equal(1, api.LastDeviceLimit.ActiveOnlineDevices);
     }
 
     [Fact]

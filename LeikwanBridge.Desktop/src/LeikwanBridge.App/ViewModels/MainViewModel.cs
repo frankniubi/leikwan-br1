@@ -69,6 +69,8 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
+    [ObservableProperty] private bool _isDeviceLimitReached;
+    [ObservableProperty] private string _deviceLimitMessage = string.Empty;
     [ObservableProperty] private string _lastSyncTime = "Never";
     [ObservableProperty] private int _activeForwardCount;
     [ObservableProperty] private bool _isLoadingForwards = true;
@@ -1397,7 +1399,8 @@ public partial class MainViewModel : ObservableObject
         var ok = await _api.TestConnectionAsync(ct);
         ct.ThrowIfCancellationRequested();
         ThrowIfShuttingDown();
-        if (!ok)
+        var deviceLimit = ok ? null : _api.LastDeviceLimit;
+        if (!ok && deviceLimit is null)
         {
             ConnectionStatus = string.IsNullOrWhiteSpace(_api.LastErrorMessage)
                 ? GetString("DashDisconnected")
@@ -1408,7 +1411,19 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsConnected = true;
-        ConnectionStatus = GetString("DashConnected");
+        if (deviceLimit is null)
+        {
+            ClearDeviceLimit();
+            ConnectionStatus = GetString("DashConnected");
+        }
+        else
+        {
+            // The token is valid; the panel only refuses this device while the
+            // client's online device limit is full. Start the session anyway:
+            // the polling loop retries on its steady cadence and the banner
+            // stays until a pull is admitted.
+            ShowDeviceLimit(deviceLimit);
+        }
         ShowSetupWizard = false;
 
         // Initialize services
@@ -1479,6 +1494,7 @@ public partial class MainViewModel : ObservableObject
         _api = null;
         _diagnostics = null;
         IsConnected = false;
+        ClearDeviceLimit();
         NativeOutboundCapability = null;
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
@@ -2308,6 +2324,9 @@ public partial class MainViewModel : ObservableObject
 
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
             {
+                if (IsDeviceLimitReached)
+                    AddLog("Device limit cleared; this device is connected again.");
+                ClearDeviceLimit();
                 ConnectionStatus = GetString("DashConnected");
             }
         });
@@ -2318,9 +2337,45 @@ public partial class MainViewModel : ObservableObject
         InvokeOnUiThread(() =>
         {
             IsLoadingForwards = false;
+            if (DeviceLimitReachedException.TryFind(ex, out var limit))
+            {
+                // Not a network error: keep the explanation up until a pull
+                // is admitted, and log only when the state first appears.
+                if (!IsDeviceLimitReached)
+                    AddLog($"Sync refused: {limit.Message}");
+                ShowDeviceLimit(limit);
+                return;
+            }
             ConnectionStatus = $"Error: {ex.Message}";
             AddLog($"Sync error: {ex.Message}");
         });
+    }
+
+    private void ShowDeviceLimit(DeviceLimitReachedException limit)
+    {
+        DeviceLimitMessage = FormatDeviceLimitMessage(limit);
+        IsDeviceLimitReached = true;
+        ConnectionStatus = GetString("DeviceLimitStatus");
+    }
+
+    private void ClearDeviceLimit()
+    {
+        IsDeviceLimitReached = false;
+        DeviceLimitMessage = string.Empty;
+    }
+
+    /// <summary>
+    /// Localized explanation for a device refused by the client's online
+    /// device limit; the counts are omitted when the panel did not send them.
+    /// </summary>
+    public static string FormatDeviceLimitMessage(DeviceLimitReachedException limit)
+    {
+        var key = limit.HasCounts ? "DeviceLimitReachedWithCounts" : "DeviceLimitReachedMessage";
+        if (System.Windows.Application.Current?.TryFindResource(key) is not string template)
+            return limit.Message;
+        return limit.HasCounts
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture, template, limit.ActiveOnlineDevices, limit.OnlineDeviceLimit)
+            : template;
     }
 
     private void OnHealthIssue(int forwardId, string issue)

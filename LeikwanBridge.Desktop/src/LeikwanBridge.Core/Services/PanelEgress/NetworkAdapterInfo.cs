@@ -33,6 +33,17 @@ public sealed record NetworkAdapterInfo(
 
     public bool IsTunnelLike => Kind == NetworkAdapterKind.Tunnel
         || TunnelInterfaceHeuristics.IsTunnelLikeName(Name, Description);
+
+    /// <summary>
+    /// True for an adapter that may carry panel/update traffic: up, not a
+    /// loopback, not a TUN/VPN tool and not a hypervisor/container switch.
+    /// Automatic selection and the user-facing adapter lists share this rule,
+    /// so an explicit choice can never name an adapter Automatic would skip.
+    /// </summary>
+    public bool IsEgressEligible => IsUp
+        && !IsLoopback
+        && !IsTunnelLike
+        && Kind is not NetworkAdapterKind.Virtual;
 }
 
 public interface ISystemInterfaceEnumerator
@@ -40,24 +51,57 @@ public interface ISystemInterfaceEnumerator
     IReadOnlyList<NetworkAdapterInfo> Enumerate();
 }
 
+/// <summary>
+/// Name/description rules for adapters that must never carry panel traffic,
+/// including the ones whose driver reports plain Ethernet (TAP-Windows,
+/// Hyper-V vEthernet, VMware VMnet, ...). Every comparison is
+/// case-insensitive. Real Wi-Fi, Ethernet and USB tethering adapters
+/// ("Remote NDIS based Internet Sharing Device", "Apple Mobile Device
+/// Ethernet", macOS en*) match none of these rules.
+/// </summary>
 public static class TunnelInterfaceHeuristics
 {
+    // Interface-name prefixes: BSD/macOS/Linux style kernel names.
     private static readonly string[] TunnelNamePrefixes =
     [
         "utun", "tun", "tap", "wintun", "ppp", "ipsec", "l2tp", "wg", "zt", "tailscale",
-        "bridge", "awdl", "llw", "vmnet", "vboxnet", "docker", "veth", "br-",
+        "bridge", "awdl", "llw", "vmnet", "vmenet", "vboxnet", "vnic", "docker", "veth", "br-",
+        "feth", "gif", "stf", "anpi", "pktap",
     ];
 
+    // Short adapter names TUN tools create on Windows that are too generic to
+    // match as substrings (Mihomo/Clash Meta names its Wintun adapter "Meta").
+    private static readonly HashSet<string> TunnelExactNames = new(StringComparer.Ordinal)
+    {
+        "meta", "mihomo", "clash", "xray", "v2ray",
+    };
+
+    // Only meaningful in a friendly name: in a description "Hyper-V" also
+    // names the synthetic NIC of a Hyper-V guest, which is that guest's uplink.
     private static readonly string[] TunnelNameMarkers =
     [
-        "netch", "wireguard", "openvpn", "nordlynx", "warp", "sstp", "tap-windows", "tap-win32",
-        "docker", "virtualbox", "hyper-v", "vmware",
+        "hyper-v",
     ];
 
-    private static readonly string[] TunnelDescriptionMarkers =
+    // Substrings checked against both the name and the description.
+    private static readonly string[] TunnelMarkers =
     [
-        "tap-windows", "tap-win32", "wintun", "wireguard", "openvpn", "tun/tap",
-        "tunnel adapter", "netch", "tailscale", "warp", "nordlynx", "virtual adapter",
+        // OpenVPN / TAP / Wintun / WireGuard.
+        "tap-windows", "tap-win32", "tap0901", "tap adapter", "tun/tap", "openvpn", "ovpn-dco",
+        "wintun", "wireguard", "nordlynx", "tunnel",
+        // Proxy clients that install a TUN adapter (ours included).
+        "clash", "mihomo", "sing-box", "singbox", "sing-tun", "v2rayn", "xray", "nekobox", "nekoray",
+        "netch", "hiddify", "sstap", "leikwan bridge",
+        // Overlay and consumer/enterprise VPNs.
+        "tailscale", "zerotier", "hamachi", "radmin", "softether", "vpn", "warp", "sstp", "l2tp",
+        "pptp", "anyconnect", "globalprotect", "pangp", "fortinet", "forticlient", "juniper",
+        "pulse secure", "wan miniport", "teredo", "ip-https", "6to4", "isatap",
+        // Capture and test loopbacks.
+        "npcap", "loopback",
+        // Host side of hypervisor and container switches.
+        "vethernet", "default switch", "hyper-v virtual", "vmware network adapter",
+        "vmware virtual", "vmnet", "virtualbox", "host-only", "shared networking", "docker", "wsl",
+        "virtual adapter", "virtual miniport", "virtual port",
     ];
 
     public static bool IsTunnelLikeName(string name, string description)
@@ -68,13 +112,30 @@ public static class TunnelInterfaceHeuristics
             return false;
         if (TunnelNamePrefixes.Any(prefix => normalizedName.StartsWith(prefix, StringComparison.Ordinal)))
             return true;
+        if (TunnelExactNames.Contains(normalizedName))
+            return true;
         if (TunnelNameMarkers.Any(marker => normalizedName.Contains(marker, StringComparison.Ordinal)))
             return true;
-        return TunnelDescriptionMarkers.Any(marker => normalizedDescription.Contains(marker, StringComparison.Ordinal));
+        return TunnelMarkers.Any(marker =>
+            normalizedName.Contains(marker, StringComparison.Ordinal)
+            || normalizedDescription.Contains(marker, StringComparison.Ordinal));
     }
 }
 
 internal sealed class EmptyInterfaceEnumerator : ISystemInterfaceEnumerator
 {
     public IReadOnlyList<NetworkAdapterInfo> Enumerate() => [];
+}
+
+/// <summary>Platform enumerator used by the selector and the adapter catalog.</summary>
+internal static class SystemInterfaceEnumerator
+{
+    public static ISystemInterfaceEnumerator ForCurrentPlatform()
+    {
+        if (OperatingSystem.IsWindows())
+            return new WindowsInterfaceEnumerator();
+        if (OperatingSystem.IsMacOS())
+            return new MacInterfaceEnumerator();
+        return new EmptyInterfaceEnumerator();
+    }
 }

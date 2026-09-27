@@ -58,7 +58,19 @@ public sealed class PanelClientUpdateService : IClientUpdateService, IClientUpda
         _installedVersion = installedVersion;
         _stagingDirectory = stagingDirectory;
         _applier = applier;
-        _http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _http = http ?? CreateDefaultHttpClient(_panelUrl);
+    }
+
+    // The manifest and the artifact live on panel/update hosts, so the
+    // fallback client must be the proxy-free, physical-NIC one as well; a
+    // bare HttpClient would honour the system proxy and any TUN route.
+    private static HttpClient CreateDefaultHttpClient(string panelUrl)
+    {
+        var http = Uri.TryCreate(panelUrl, UriKind.Absolute, out var panel)
+            ? LeikwanHttpClientFactory.CreateFor(panel)
+            : LeikwanHttpClientFactory.CreateDefault();
+        http.Timeout = TimeSpan.FromMinutes(10);
+        return http;
     }
 
     public async Task<ClientUpdateCheck> CheckAsync(CancellationToken ct)

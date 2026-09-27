@@ -37,8 +37,9 @@
         <!-- Setup Wizard Overlay -->
         <Grid x:Name="SetupOverlay" Visibility="{Binding ShowSetupWizard, Converter={StaticResource BoolToVis}}"
               Panel.ZIndex="100" Background="#E0F8FAFC">
-            <Border Style="{StaticResource CardBorder}" MaxWidth="450" MaxHeight="500"
+            <Border Style="{StaticResource CardBorder}" MaxWidth="450" MaxHeight="640"
                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="8">
                     <TextBlock Text="{DynamicResource SetupTitle}" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
@@ -54,6 +55,30 @@
                     </ComboBox>
                     <TextBlock Text="{DynamicResource SetupEndpointHint}" Foreground="{StaticResource MutedTextBrush}"
                                TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                    <!-- Ethernet binding: applied before any sign-in request; same
+                         PreferredEgressInterface field as the settings page. -->
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource SetupEgressInterface}"/>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="SetupEgressInterface" Grid.Column="0"
+                                  DisplayMemberPath="CompactLabel" SelectedValuePath="Id"
+                                  SelectionChanged="OnSetupEgressInterfaceChanged"
+                                  AutomationProperties.Name="Ethernet binding"/>
+                        <Button x:Name="SetupEgressRefreshButton" Grid.Column="1" Style="{StaticResource GhostButton}"
+                                Margin="6,0,0,0" Width="34" Padding="0"
+                                FontFamily="Segoe MDL2 Assets" Content="&#xE72C;"
+                                ToolTip="{DynamicResource SetupEgressRefresh}"
+                                AutomationProperties.Name="Refresh adapter list"
+                                Click="OnSetupEgressRefresh_Click"/>
+                    </Grid>
+                    <TextBlock Text="{DynamicResource SetupEgressHint}" Foreground="{StaticResource MutedTextBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="SetupEgressNotice" Foreground="{StaticResource WarningBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,-8,0,12" Visibility="Collapsed"/>
                     <!-- Kept off-screen for legacy config normalization/source compatibility. -->
                     <TextBox x:Name="TxtMasterUrl" Visibility="Collapsed"/>
 
@@ -72,6 +97,7 @@
                     <TextBlock x:Name="SetupStatus" Margin="0,12,0,0" FontSize="12"
                                Foreground="{StaticResource MutedTextBrush}" TextAlignment="Center"/>
                 </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
 
@@ -136,8 +162,18 @@
                         <TextBlock Text="{DynamicResource AppTitle}" FontSize="20" FontWeight="Bold"
                                    Foreground="White"/>
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                            <Ellipse Width="8" Height="8" Margin="0,0,6,0"
-                                     Fill="{Binding IsConnected, Converter={StaticResource StatusBrush}}"/>
+                            <Ellipse Width="8" Height="8" Margin="0,0,6,0">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{Binding IsConnected, Converter={StaticResource StatusBrush}}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsDeviceLimitReached}" Value="True">
+                                                <Setter Property="Fill" Value="{StaticResource WarningBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
                             <TextBlock Text="{Binding ConnectionStatus}" FontSize="12"
                                        Foreground="{StaticResource SidebarTextBrush}"/>
                         </StackPanel>
@@ -179,7 +215,17 @@
             </Border>
 
             <!-- Content Area -->
-            <Grid Grid.Column="1" Margin="24,16">
+            <DockPanel Grid.Column="1" Margin="24,16">
+                <!-- Device limit banner: stays on every view until a config pull is admitted again. -->
+                <Border x:Name="DeviceLimitBanner" DockPanel.Dock="Top" Margin="0,0,0,12" Padding="14,10"
+                        CornerRadius="4" BorderThickness="1" BorderBrush="{StaticResource WarningBrush}"
+                        Background="#FFFBEB"
+                        Visibility="{Binding IsDeviceLimitReached, Converter={StaticResource BoolToVis}}"
+                        AutomationProperties.Name="Device limit reached">
+                    <TextBlock Text="{Binding DeviceLimitMessage}" TextWrapping="Wrap" FontSize="13"
+                               FontWeight="SemiBold" Foreground="{StaticResource WarningBrush}"/>
+                </Border>
+            <Grid>
                 <!-- Dashboard View -->
                 <ScrollViewer x:Name="DashboardPanel"
                               VerticalScrollBarVisibility="Auto">
@@ -195,9 +241,17 @@
                                     <TextBlock Text="{DynamicResource DashSummarySubtitle}" TextWrapping="Wrap"
                                                Foreground="{StaticResource MutedTextBrush}" MaxWidth="520"/>
                                 </StackPanel>
-                                <Border Grid.Column="1" Style="{StaticResource ModeBadge}"
-                                        Background="{Binding IsConnected, Converter={StaticResource StatusBrush}}"
-                                        VerticalAlignment="Top">
+                                <Border Grid.Column="1" VerticalAlignment="Top">
+                                    <Border.Style>
+                                        <Style TargetType="Border" BasedOn="{StaticResource ModeBadge}">
+                                            <Setter Property="Background" Value="{Binding IsConnected, Converter={StaticResource StatusBrush}}"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDeviceLimitReached}" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource WarningBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
                                     <TextBlock Text="{Binding ConnectionStatus}" FontSize="11"
                                                Foreground="White" FontWeight="SemiBold"/>
                                 </Border>
@@ -1189,6 +1243,7 @@
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
+            </DockPanel>
         </Grid>
     </Grid>
 </Window>

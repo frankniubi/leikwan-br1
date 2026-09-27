@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private bool _shutdownCloseRequested;
     private bool _shutdownCloseFinalizing;
     private bool _saveLoginInfo;
+    private bool _suppressEgressSelectionHandling;
 
     public MainWindow()
     {
@@ -90,6 +91,7 @@ public partial class MainWindow : Window
             : App.Config.MasterUrl;
         SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         RestoreSetupLoginInfo();
+        PopulateSetupEgressInterfaces();
         _suppressEndpointChangeHandling = false;
 
         Loaded += (_, _) =>
@@ -161,6 +163,8 @@ public partial class MainWindow : Window
         }
 
         SetupStatus.Text = FindResource("SetupConnecting") as string ?? "Connecting...";
+        // The adapter choice must be in force before the first sign-in request.
+        EnsureSetupEgressApplied();
 
         try
         {
@@ -170,12 +174,22 @@ public partial class MainWindow : Window
                 MasterApiClient.BuildWindowsDeviceId(clientId, Environment.MachineName),
                 $"Leikwan Bridge on {Environment.MachineName}",
                 "windows-desktop");
+            var deviceLimit = default(DeviceLimitReachedException);
             if (!await api.TestConnectionAsync())
             {
-                SetupStatus.Text = string.IsNullOrWhiteSpace(api.LastErrorMessage)
-                    ? (FindResource("SetupFailed") as string ?? "Connection failed.")
-                    : api.LastErrorMessage;
-                return;
+                deviceLimit = api.LastDeviceLimit;
+                if (deviceLimit is null)
+                {
+                    SetupStatus.Text = string.IsNullOrWhiteSpace(api.LastErrorMessage)
+                        ? (FindResource("SetupFailed") as string ?? "Connection failed.")
+                        : api.LastErrorMessage;
+                    return;
+                }
+                // The panel accepted the token and only refused this device
+                // because the online device limit is full. Save the profile and
+                // continue: the main window keeps the explanation visible and
+                // rejoins automatically once a slot frees.
+                SetupStatus.Text = MainViewModel.FormatDeviceLimitMessage(deviceLimit);
             }
 
             _vm.Config.MasterUrl = masterUrl;
@@ -194,7 +208,8 @@ public partial class MainWindow : Window
             var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
             _vm.Config.RememberLoginInfo = _saveLoginInfo;
             stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
-            SetupStatus.Text = FindResource("SetupSuccess") as string ?? "Connection successful!";
+            if (deviceLimit is null)
+                SetupStatus.Text = FindResource("SetupSuccess") as string ?? "Connection successful!";
             await _vm.ConnectCommand.ExecuteAsync(null);
             if (!_saveLoginInfo)
                 ClearSetupLoginInfo();
@@ -232,11 +247,7 @@ public partial class MainWindow : Window
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
             App.Config.HealthCheckIntervalSeconds = health;
         if (SettEgressInterface.SelectedValue is string egressInterface)
-        {
-            App.Config.PreferredEgressInterface = egressInterface.Trim();
-            PanelDirectEgress.SetPreferredInterface(App.Config.PreferredEgressInterface);
-            _vm.SetPreferredEgressInterface(App.Config.PreferredEgressInterface);
-        }
+            ApplyEgressInterface(egressInterface, persist: false);
         if (SettLogLevel.SelectedItem is ComboBoxItem logLevel)
             App.Config.LogLevel = DesktopLogLevel.Normalize(logLevel.Tag?.ToString());
         App.Config.AutoStart = SettAutoStart.IsChecked == true;
@@ -327,6 +338,114 @@ public partial class MainWindow : Window
     {
         SettClientId.Text = string.Empty;
         SettAgentToken.Password = string.Empty;
+    }
+
+    // The sign-in selector and the settings page share one option list (with a
+    // localized Automatic entry) and one field: App.Config.PreferredEgressInterface.
+    private IReadOnlyList<EgressInterfaceOption> BuildEgressOptions()
+        => EgressInterfaceCatalog.Enumerate(TryFindResource("SetupEgressAutomatic") as string);
+
+    private void PopulateSetupEgressInterfaces()
+    {
+        var options = BuildEgressOptions();
+        var choice = EgressInterfaceSelection.Reconcile(options, App.Config.PreferredEgressInterface);
+        _suppressEgressSelectionHandling = true;
+        try
+        {
+            SetupEgressInterface.ItemsSource = options;
+            SetupEgressInterface.SelectedValue = choice.SelectedId;
+        }
+        finally
+        {
+            _suppressEgressSelectionHandling = false;
+        }
+        ShowSetupEgressNotice(choice);
+    }
+
+    private void ShowSetupEgressNotice(EgressInterfaceChoice choice)
+    {
+        if (!choice.FellBackToAutomatic)
+        {
+            SetupEgressNotice.Text = string.Empty;
+            SetupEgressNotice.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var template = TryFindResource("SetupEgressMissing") as string
+            ?? "The saved adapter \"{0}\" is not available. Automatic is used instead.";
+        SetupEgressNotice.Text = string.Format(CultureInfo.CurrentCulture, template, choice.MissingInterface);
+        SetupEgressNotice.Visibility = Visibility.Visible;
+    }
+
+    private void OnSetupEgressInterfaceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEgressSelectionHandling || SetupEgressInterface.SelectedValue is not string selected)
+            return;
+        ShowSetupEgressNotice(new EgressInterfaceChoice(selected, string.Empty));
+        ApplyEgressInterface(selected);
+    }
+
+    private void OnSetupEgressRefresh_Click(object sender, RoutedEventArgs e)
+        => PopulateSetupEgressInterfaces();
+
+    /// <summary>
+    /// Re-validates the sign-in selection against the current adapters (one
+    /// may have been unplugged since the list was drawn) and applies it, so a
+    /// vanished adapter falls back to Automatic before the request is sent.
+    /// </summary>
+    private void EnsureSetupEgressApplied()
+    {
+        var options = BuildEgressOptions();
+        var requested = SetupEgressInterface.SelectedValue as string ?? App.Config.PreferredEgressInterface;
+        var choice = EgressInterfaceSelection.Reconcile(options, requested);
+        if (choice.FellBackToAutomatic)
+        {
+            _suppressEgressSelectionHandling = true;
+            try
+            {
+                SetupEgressInterface.ItemsSource = options;
+                SetupEgressInterface.SelectedValue = choice.SelectedId;
+            }
+            finally
+            {
+                _suppressEgressSelectionHandling = false;
+            }
+            ShowSetupEgressNotice(choice);
+        }
+        ApplyEgressInterface(choice.SelectedId);
+    }
+
+    /// <summary>
+    /// Puts an adapter choice into force for panel direct egress and Ultra,
+    /// keeps both selectors in sync, and (from the sign-in page) persists it.
+    /// </summary>
+    private void ApplyEgressInterface(string? interfaceName, bool persist = true)
+    {
+        App.Config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+        PanelDirectEgress.SetPreferredInterface(App.Config.PreferredEgressInterface);
+        _vm.SetPreferredEgressInterface(App.Config.PreferredEgressInterface);
+        _suppressEgressSelectionHandling = true;
+        try
+        {
+            SetupEgressInterface.SelectedValue = App.Config.PreferredEgressInterface;
+            SettEgressInterface.SelectedValue = App.Config.PreferredEgressInterface;
+        }
+        finally
+        {
+            _suppressEgressSelectionHandling = false;
+        }
+
+        if (!persist)
+            return;
+        try
+        {
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "egress interface preference could not be persisted");
+        }
     }
 
     private AgentConfig BuildPersistedLoginConfig()
@@ -1137,7 +1256,8 @@ public partial class MainWindow : Window
             UpdateVisiblePanel();
         }
         if (e.PropertyName == nameof(MainViewModel.ActiveForwardCount)
-            || e.PropertyName == nameof(MainViewModel.ConnectionStatus))
+            || e.PropertyName == nameof(MainViewModel.ConnectionStatus)
+            || e.PropertyName == nameof(MainViewModel.IsDeviceLimitReached))
         {
             UpdateTrayText();
         }
@@ -1364,7 +1484,7 @@ public partial class MainWindow : Window
             ClearSettingsLoginInfo();
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
-        SettEgressInterface.ItemsSource = EgressInterfaceCatalog.Enumerate();
+        SettEgressInterface.ItemsSource = BuildEgressOptions();
         SettEgressInterface.SelectedValue = App.Config.PreferredEgressInterface ?? string.Empty;
         SelectLogLevel(App.Config.LogLevel);
         SettAutoStart.IsChecked = App.Config.AutoStart;
@@ -1404,6 +1524,7 @@ public partial class MainWindow : Window
         SettSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         SetupStatus.Text = string.Empty;
         PopulateSettings();
+        PopulateSetupEgressInterfaces();
     }
 
 
@@ -1969,6 +2090,11 @@ public partial class MainWindow : Window
     private string BuildTrayText()
     {
         var baseText = "Leikwan Bridge";
+        if (_vm.IsDeviceLimitReached)
+        {
+            var limited = $"{baseText} - {GetString("DeviceLimitStatus")}";
+            return limited.Length > 63 ? limited[..63] : limited;
+        }
         if (_vm.ActiveForwardCount <= 0)
             return baseText;
 

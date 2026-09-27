@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using System.Net;
-using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using LeikwanBridge.Core.Services.PanelEgress;
 
 namespace LeikwanBridge.Core.Services;
@@ -18,10 +18,18 @@ public sealed record EgressInterfaceOption(
     IPAddress? LocalAddress,
     bool IsUp)
 {
+    public bool IsAutomatic => Id.Length == 0;
+
     public string DisplayName
         => string.IsNullOrWhiteSpace(Description) || string.Equals(Name, Description, StringComparison.OrdinalIgnoreCase)
             ? Name
             : $"{Name} - {Description}";
+
+    /// <summary>Short sign-in label: adapter name plus its local IPv4 address.</summary>
+    public string CompactLabel
+        => IsAutomatic || LocalAddress is not { AddressFamily: AddressFamily.InterNetwork }
+            ? Name
+            : $"{Name} · {LocalAddress}";
 }
 
 public sealed record EgressInterfaceBinding(
@@ -61,60 +69,57 @@ public static class EgressInterfaceConfig
 public static class EgressInterfaceCatalog
 {
     public const string AutomaticId = "";
+    public const string DefaultAutomaticLabel = "Automatic";
 
-    public static IReadOnlyList<EgressInterfaceOption> Enumerate()
+    /// <summary>
+    /// Automatic first, then every eligible adapter. Uses the same platform
+    /// enumerator and <see cref="NetworkAdapterInfo.IsEgressEligible"/> rule as
+    /// panel direct egress, so the list never offers a TUN/VPN or hypervisor
+    /// adapter that Automatic selection would refuse.
+    /// </summary>
+    public static IReadOnlyList<EgressInterfaceOption> Enumerate(string? automaticLabel = null)
     {
-        var options = new List<EgressInterfaceOption>
-        {
-            new(AutomaticId, "Automatic", "", 0, null, true),
-        };
-
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
-            return options;
-
+        IReadOnlyList<NetworkAdapterInfo> adapters;
         try
         {
-            foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                try
-                {
-                    if (networkInterface.OperationalStatus != OperationalStatus.Up
-                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback
-                            or NetworkInterfaceType.Tunnel
-                            or NetworkInterfaceType.Ppp
-                        || TunnelInterfaceHeuristics.IsTunnelLikeName(
-                            networkInterface.Name,
-                            networkInterface.Description))
-                        continue;
-
-                    var properties = networkInterface.GetIPProperties();
-                    var localAddress = SelectLocalAddress(properties);
-                    if (localAddress is null)
-                        continue;
-                    var index = properties.GetIPv4Properties()?.Index
-                        ?? properties.GetIPv6Properties()?.Index
-                        ?? 0;
-                    if (index <= 0)
-                        continue;
-
-                    options.Add(new EgressInterfaceOption(
-                        networkInterface.Name,
-                        networkInterface.Name,
-                        networkInterface.Description,
-                        index,
-                        localAddress,
-                        IsUp: true));
-                }
-                catch
-                {
-                    // One adapter can disappear while the OS snapshot is read.
-                }
-            }
+            adapters = SystemInterfaceEnumerator.ForCurrentPlatform().Enumerate();
         }
         catch
         {
             // An unavailable adapter snapshot must not prevent the client from
             // starting in automatic mode.
+            adapters = [];
+        }
+        return Build(adapters, automaticLabel);
+    }
+
+    /// <summary>Pure list construction over an adapter snapshot (testable on any OS).</summary>
+    public static IReadOnlyList<EgressInterfaceOption> Build(
+        IReadOnlyList<NetworkAdapterInfo> adapters,
+        string? automaticLabel = null)
+    {
+        var options = new List<EgressInterfaceOption>
+        {
+            new(AutomaticId, string.IsNullOrWhiteSpace(automaticLabel) ? DefaultAutomaticLabel : automaticLabel, "", 0, null, true),
+        };
+
+        foreach (var adapter in adapters ?? [])
+        {
+            if (adapter is null || string.IsNullOrWhiteSpace(adapter.Name) || !adapter.IsEgressEligible)
+                continue;
+            var localAddress = SelectLocalAddress(adapter.Addresses);
+            if (localAddress is null)
+                continue;
+            var index = adapter.V4Index > 0 ? adapter.V4Index : adapter.V6Index;
+            if (index <= 0)
+                continue;
+            options.Add(new EgressInterfaceOption(
+                adapter.Name,
+                adapter.Name,
+                adapter.Description ?? string.Empty,
+                index,
+                localAddress,
+                IsUp: true));
         }
 
         return options
@@ -124,27 +129,61 @@ public static class EgressInterfaceCatalog
     }
 
     public static EgressInterfaceBinding? Resolve(string? selection)
-    {
-        var normalized = selection?.Trim() ?? string.Empty;
-        if (normalized.Length == 0)
-            return null;
+        => Resolve(Enumerate(), selection);
 
-        var option = Enumerate()
-            .Skip(1)
-            .FirstOrDefault(candidate => string.Equals(candidate.Id, normalized, StringComparison.OrdinalIgnoreCase));
+    public static EgressInterfaceBinding? Resolve(IReadOnlyList<EgressInterfaceOption> options, string? selection)
+    {
+        var option = Find(options, selection);
         return option is null
             ? null
             : new EgressInterfaceBinding(option.Name, option.Index, option.LocalAddress);
     }
 
-    private static IPAddress? SelectLocalAddress(IPInterfaceProperties properties)
+    /// <summary>The eligible adapter with this id, or null for Automatic/absent.</summary>
+    public static EgressInterfaceOption? Find(IReadOnlyList<EgressInterfaceOption> options, string? selection)
     {
-        var addresses = properties.UnicastAddresses
-            .Select(item => item.Address)
+        var normalized = selection?.Trim() ?? string.Empty;
+        if (normalized.Length == 0)
+            return null;
+        return options
+            .Where(candidate => !candidate.IsAutomatic)
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IPAddress? SelectLocalAddress(IReadOnlyList<IPAddress> addresses)
+    {
+        var usable = (addresses ?? [])
             .Where(address => address is not null && !IPAddress.IsLoopback(address))
             .ToList();
-        return addresses.FirstOrDefault(address => address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                && !address.IsIPv6LinkLocal)
-            ?? addresses.FirstOrDefault();
+        return usable.FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork)
+            ?? usable.FirstOrDefault(address => !address.IsIPv6LinkLocal)
+            ?? usable.FirstOrDefault();
+    }
+}
+
+/// <summary>
+/// Result of matching a saved adapter preference against the current list.
+/// <see cref="SelectedId"/> is always present in the options (Automatic when
+/// the saved adapter disappeared); <see cref="MissingInterface"/> names the
+/// saved adapter the UI should report as unavailable.
+/// </summary>
+public sealed record EgressInterfaceChoice(string SelectedId, string MissingInterface)
+{
+    public bool FellBackToAutomatic => MissingInterface.Length > 0;
+}
+
+public static class EgressInterfaceSelection
+{
+    public static EgressInterfaceChoice Reconcile(
+        IReadOnlyList<EgressInterfaceOption> options,
+        string? savedInterface)
+    {
+        var saved = savedInterface?.Trim() ?? string.Empty;
+        if (saved.Length == 0)
+            return new EgressInterfaceChoice(EgressInterfaceCatalog.AutomaticId, string.Empty);
+        var match = EgressInterfaceCatalog.Find(options, saved);
+        return match is null
+            ? new EgressInterfaceChoice(EgressInterfaceCatalog.AutomaticId, saved)
+            : new EgressInterfaceChoice(match.Id, string.Empty);
     }
 }

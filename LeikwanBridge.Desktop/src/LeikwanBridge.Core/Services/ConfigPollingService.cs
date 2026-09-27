@@ -47,6 +47,15 @@ public sealed class ConfigPollingService
     private static readonly TimeSpan RecoveryTriggerThrottle = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Steady retry cadence while the panel refuses this device because the
+    /// client's online device limit is full. A slot frees when another device
+    /// has been silent for 180 s, is kicked, or the limit is raised, so a
+    /// fixed ~1 min poll rejoins promptly without ramping like an outage.
+    /// </summary>
+    public static readonly TimeSpan DeviceLimitRetryInterval = TimeSpan.FromSeconds(60);
+    public static readonly TimeSpan DeviceLimitRetryJitter = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Config pull failures (panel/CDN down, timeouts, 5xx). While this is
     /// backing off, the polling loop waits the jittered delay instead of the
     /// 5 s re-arm, and immediate re-syncs requested by health checks, sync
@@ -228,6 +237,19 @@ public sealed class ConfigPollingService
             reason,
             delay.TotalSeconds,
             _pullBackoff.ConsecutiveFailures);
+    }
+
+    private void NotePullDeviceLimit(DeviceLimitReachedException limit)
+    {
+        // Not an outage: the endpoint answered, so no mirror is penalized and
+        // the delay does not ramp. The saved profile and anything already
+        // running are left exactly as on any other failed pull.
+        var delay = _pullBackoff.RecordSteadyFailure(DeviceLimitRetryInterval, DeviceLimitRetryJitter);
+        Log.Warning(
+            "config pull refused: online device limit reached ({Active}/{Limit}); retrying in {DelaySeconds:0}s",
+            limit.ActiveOnlineDevices,
+            limit.OnlineDeviceLimit,
+            delay.TotalSeconds);
     }
 
     private void NotePullSuccess()
@@ -451,7 +473,10 @@ public sealed class ConfigPollingService
             // it still carries the full policy payload.
             if (forcedFullPull)
                 Interlocked.Exchange(ref _forceFullPull, 1);
-            NotePullFailure(exception.GetType().Name);
+            if (DeviceLimitReachedException.TryFind(exception, out var limit))
+                NotePullDeviceLimit(limit);
+            else
+                NotePullFailure(exception.GetType().Name);
             throw;
         }
         if (!pull.Ok)
@@ -644,7 +669,7 @@ public sealed class ConfigPollingService
                     BoundErrorCode(ex.Message));
                 // Record before asking for recovery, so the recovery request
                 // sees the backoff and does not trigger an immediate re-sync.
-                if (ControlPlaneBackoff.IsControlPlaneFailure(ex))
+                if (ShouldBackOffLease(ex))
                     NoteLeaseFailure(forward.ForwardId, ex);
                 // A rotated grant/ticket (409 lease_scope_invalid and friends) is repaired by
                 // the next config pull, never by tearing the forward down. Stopping it here
@@ -829,7 +854,7 @@ public sealed class ConfigPollingService
                 ex.GetType().Name,
                 ex is MasterApiException apiException ? apiException.StatusCode : 0,
                 BoundErrorCode(ex.Message));
-            if (ControlPlaneBackoff.IsControlPlaneFailure(ex))
+            if (ShouldBackOffLease(ex))
                 NoteLeaseFailure(forward.ForwardId, ex);
             if (IsGrantRefreshError(ex) || IsTransientControlPlaneError(ex))
             {
@@ -951,6 +976,12 @@ public sealed class ConfigPollingService
             .ToArray());
         return code.Length == 0 ? "unknown" : code;
     }
+
+    // A device-limit refusal is not an outage, but lease retries must still be
+    // paced: the next config pull hits the same refusal and holds the loop.
+    private static bool ShouldBackOffLease(Exception exception)
+        => ControlPlaneBackoff.IsControlPlaneFailure(exception)
+            || DeviceLimitReachedException.TryFind(exception, out _);
 
     private static bool IsGrantRefreshError(Exception exception)
     {

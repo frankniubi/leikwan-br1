@@ -99,6 +99,27 @@ public sealed class ControlPlaneBackoff
         }
     }
 
+    /// <summary>
+    /// Records a failure whose retry cadence is set by the answer rather than
+    /// by the outage sequence (the panel refused this device because its online
+    /// device limit is full). The next attempt waits <paramref name="delay"/>
+    /// plus up to <paramref name="jitter"/>, every time, so the device rejoins
+    /// soon after a slot frees without ramping or hammering the panel.
+    /// </summary>
+    public TimeSpan RecordSteadyFailure(TimeSpan delay, TimeSpan jitter)
+    {
+        lock (_gate)
+        {
+            _consecutiveFailures = Math.Min(_consecutiveFailures + 1, 1000);
+            var draw = Math.Clamp(_random(), 0.0, 1.0);
+            var total = delay + TimeSpan.FromTicks((long)(Math.Max(0, jitter.Ticks) * draw));
+            if (total < MinimumDelay)
+                total = MinimumDelay;
+            _notBefore = _clock.GetUtcNow() + total;
+            return total;
+        }
+    }
+
     /// <summary>Resets the sequence. Returns true when a backoff was in effect.</summary>
     public bool RecordSuccess()
     {
@@ -114,12 +135,15 @@ public sealed class ControlPlaneBackoff
     /// <summary>
     /// Failures that mean "the control plane is unreachable or overloaded":
     /// transport errors, timeouts, 5xx (including the CDN's 52x/530) and 429.
-    /// A business answer such as 401/403/409 is not a control-plane outage.
+    /// A business answer such as 401/403/409 is not a control-plane outage, and
+    /// neither is the 429 client_online_limit_reached device refusal.
     /// </summary>
     public static bool IsControlPlaneFailure(Exception exception)
     {
         switch (exception)
         {
+            case DeviceLimitReachedException:
+                return false;
             case HttpRequestException http:
                 return http.StatusCode is null || IsTransientStatus((int)http.StatusCode.Value);
             case TimeoutException:

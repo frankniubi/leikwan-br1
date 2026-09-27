@@ -7,6 +7,13 @@ namespace LeikwanBridge.Core.Services;
 //   LeikwanBridge.Mac --headless --panel <url> --client-id <n> --agent-token-file <path>
 //                     [--forwards all|1,2] [--log-file <path>] [--status-file <path>]
 //                     [--egress-interface <name>] [--once] [--print-status]
+//   leikwan-bridge-headless.exe (same options; --service/--install-service wrap them)
+//
+// --egress-interface pins panel, update and Ultra traffic to one physical
+// adapter and is persisted as AgentConfig.PreferredEgressInterface. Without it
+// the client picks the physical adapter automatically; TUN/VPN and virtual
+// adapters are never eligible, and a pinned adapter that is missing fails the
+// start instead of silently falling back.
 //
 // The windowless clients run the exact same managed payload, Core services and
 // lease/heartbeat code as the windowed applications; only the process lifecycle
@@ -33,7 +40,9 @@ public sealed record HeadlessClientOptions
         "usage: <client> --headless [--panel <url>] [--client-id <n>] "
         + "[--agent-token <token>|--agent-token-file <path>] [--forwards all|1,2] "
         + "[--egress-interface <name>] [--log-file <path>] [--status-file <path>] "
-        + "[--once] [--print-status]";
+        + "[--once] [--print-status]\n"
+        + "  --egress-interface <name>  send panel/update traffic from this physical adapter "
+        + "(default: automatic; TUN/VPN/virtual adapters are never used)";
 
     public static bool TryParse(
         IReadOnlyList<string> args,

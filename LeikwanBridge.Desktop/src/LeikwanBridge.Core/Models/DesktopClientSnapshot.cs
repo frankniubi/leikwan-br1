@@ -21,6 +21,12 @@ public sealed record DesktopClientSnapshot
     public string ActiveClientName { get; init; } = string.Empty;
     public string ConnectionStatus { get; init; } = "disconnected";
     public string LastErrorCode { get; init; } = string.Empty;
+
+    /// <summary>Online device limit reported with a device_limit_reached refusal; 0 otherwise.</summary>
+    public int OnlineDeviceLimit { get; init; }
+
+    /// <summary>Devices online when this one was refused (device_limit_reached); 0 otherwise.</summary>
+    public int ActiveOnlineDevices { get; init; }
     public IReadOnlyList<DesktopClientChoice> AvailableClients { get; init; } = [];
     public IReadOnlyList<DesktopForwardSnapshot> Forwards { get; init; } = [];
     public NativeOutboundCapability? NativeOutbound { get; init; }

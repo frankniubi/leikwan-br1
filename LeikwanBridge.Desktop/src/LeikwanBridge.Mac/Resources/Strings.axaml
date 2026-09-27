@@ -7,4 +7,11 @@
   <x:String x:Key="StartAllLabel">Start all</x:String>
   <x:String x:Key="StopAllLabel">Stop all</x:String>
   <x:String x:Key="ForwardNativeOutboundRule">(Native Outbound Rule)</x:String>
+  <x:String x:Key="DeviceLimitReachedWithCounts">Device limit reached ({0} of {1} devices online). Disconnect another device or ask your provider to raise the device limit. This device reconnects automatically about 3 minutes after another device disconnects.</x:String>
+  <x:String x:Key="DeviceLimitReachedMessage">Device limit reached. Disconnect another device or ask your provider to raise the device limit. This device reconnects automatically about 3 minutes after another device disconnects.</x:String>
+  <x:String x:Key="EgressBindingLabel">ETHERNET BINDING</x:String>
+  <x:String x:Key="EgressBindingAutomatic">Automatic (recommended)</x:String>
+  <x:String x:Key="EgressBindingHint">Sign-in traffic bypasses system proxies and leaves through the selected adapter.</x:String>
+  <x:String x:Key="EgressBindingMissing">The saved adapter "{0}" is not available. Automatic is used instead.</x:String>
+  <x:String x:Key="EgressBindingRefresh">Refresh adapter list</x:String>
 </ResourceDictionary>

@@ -114,6 +114,11 @@ internal static class Program
     {
         var controller = new WindowsServiceController(serviceName);
         var config = TryLoadPanelConfig();
+        // `leikwan update|doctor` talk to the panel as well: same proxy-free,
+        // physical-NIC egress (and pinned adapter) as the service itself.
+        PanelDirectEgress.Initialize();
+        if (!string.IsNullOrWhiteSpace(config.PreferredEgressInterface))
+            PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
         var installDirectory = HeadlessUpdatePaths.InstallDirectory;
         var updater = new PanelClientUpdateService(
             config.MasterUrl,

@@ -35,6 +35,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly Action<bool>? _rememberLoginInfoChanged;
     private readonly Func<string, CancellationToken, Task>? _saveLogLevel;
     private readonly Func<string, CancellationToken, Task>? _saveEgressInterface;
+    private readonly Func<string?, IReadOnlyList<EgressInterfaceOption>> _egressInterfaceCatalog;
+    private bool _egressApplyReady;
+    private bool _suppressEgressApply;
     private string _updateFailureStage = "check";
     private bool _endpointPersistenceReady;
     private readonly Action<Action> _dispatch;
@@ -79,7 +82,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         string logLevel = DesktopLogLevel.Warning,
         Func<string, CancellationToken, Task>? saveLogLevel = null,
         string? preferredEgressInterface = null,
-        Func<string, CancellationToken, Task>? saveEgressInterface = null)
+        Func<string, CancellationToken, Task>? saveEgressInterface = null,
+        Func<string?, IReadOnlyList<EgressInterfaceOption>>? egressInterfaceCatalog = null)
     {
         _controller = controller;
         _connections = connections;
@@ -93,12 +97,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _rememberLoginInfoChanged = rememberLoginInfoChanged;
         _saveLogLevel = saveLogLevel;
         _saveEgressInterface = saveEgressInterface;
+        _egressInterfaceCatalog = egressInterfaceCatalog ?? (label => EgressInterfaceCatalog.Enumerate(label));
         _dispatch = dispatch ?? Dispatch;
         _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
         CloseToTray = closeToTray;
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
         LogLevel = DesktopLogLevel.Normalize(logLevel);
         PreferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
+        ReloadEgressInterfaces();
         PanelUrl = controller.Snapshot.PanelUrl;
         SelectedPanelEndpoint = PanelEndpoints.ForUrl(PanelUrl);
         RememberLoginInfo = rememberLoginInfo;
@@ -141,6 +147,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         _ = LoadAutostartAsync();
         _endpointPersistenceReady = true;
+        _egressApplyReady = true;
     }
 
     public ObservableCollection<DesktopClientChoice> Clients { get; } = [];
@@ -149,7 +156,6 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<string> Logs { get; } = [];
     public IReadOnlyList<string> Languages { get; } = ["en-US", "zh-CN"];
     public IReadOnlyList<string> LogLevels { get; } = DesktopLogLevel.Options;
-    public IReadOnlyList<EgressInterfaceOption> EgressInterfaceOptions { get; } = EgressInterfaceCatalog.Enumerate();
     public IReadOnlyList<string> AuthenticationModes { get; } =
         [ClientIdTokenAuthentication];
     public IReadOnlyList<MacConnectionMode> ConnectionModes { get; } =
@@ -180,6 +186,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private bool _isPairingVisible;
     [ObservableProperty] private bool _isNoticeVisible;
     [ObservableProperty] private string _noticeText = string.Empty;
+    [ObservableProperty] private bool _isDeviceLimitVisible;
+    [ObservableProperty] private string _deviceLimitMessage = string.Empty;
     [ObservableProperty] private bool _isUpdateVisible;
     [ObservableProperty] private string _updateVersion = string.Empty;
     [ObservableProperty] private bool _isUpdateInstalling;
@@ -194,6 +202,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _language = "en-US";
     [ObservableProperty] private string _logLevel = DesktopLogLevel.Warning;
     [ObservableProperty] private string _preferredEgressInterface = string.Empty;
+    [ObservableProperty] private IReadOnlyList<EgressInterfaceOption> _egressInterfaceOptions = [];
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsEgressInterfaceNoticeVisible))]
+    private string _egressInterfaceNotice = string.Empty;
     [ObservableProperty] private bool _trayAvailable;
     [ObservableProperty] private string _selectedSection = "dashboard";
     [ObservableProperty] private MacConnectionProfile? _selectedConnectionProfile;
@@ -231,6 +242,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public string ConnectionLabel => ConnectionStatus switch
     {
         "connected" => "Connected",
+        DesktopClientController.DeviceLimitReachedCode => "Device limit reached",
         "error" => "Connection error",
         _ => "Disconnected",
     };
@@ -345,6 +357,75 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     partial void OnRememberLoginInfoChanged(bool value)
         => _rememberLoginInfoChanged?.Invoke(value);
+
+    public bool IsEgressInterfaceNoticeVisible => EgressInterfaceNotice.Length > 0;
+
+    partial void OnPreferredEgressInterfaceChanged(string value)
+    {
+        // The sign-in page puts the adapter into force immediately so the next
+        // panel request already leaves through it; the settings page keeps its
+        // explicit "Save preferences" step. Both bind this one property.
+        if (value is null || !_egressApplyReady || _suppressEgressApply || !IsLoginVisible)
+            return;
+        EgressInterfaceNotice = string.Empty;
+        _ = ApplyEgressInterfaceAsync();
+    }
+
+    [RelayCommand]
+    private void RefreshEgressInterfaces() => ReloadEgressInterfaces();
+
+    /// <summary>
+    /// Re-reads the eligible adapters and keeps the selection valid: a saved
+    /// adapter that is no longer present falls back to Automatic, and the
+    /// notice says so.
+    /// </summary>
+    private EgressInterfaceChoice ReloadEgressInterfaces()
+    {
+        var saved = PreferredEgressInterface;
+        var options = _egressInterfaceCatalog(ResourceString("EgressBindingAutomatic", "Automatic (recommended)"));
+        var choice = EgressInterfaceSelection.Reconcile(options, saved);
+        _suppressEgressApply = true;
+        try
+        {
+            EgressInterfaceOptions = options;
+            PreferredEgressInterface = choice.SelectedId;
+        }
+        finally
+        {
+            _suppressEgressApply = false;
+        }
+
+        EgressInterfaceNotice = choice.FellBackToAutomatic
+            ? string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                ResourceString("EgressBindingMissing", "The saved adapter \"{0}\" is not available. Automatic is used instead."),
+                choice.MissingInterface)
+            : string.Empty;
+        return choice;
+    }
+
+    private async Task ApplyEgressInterfaceAsync()
+    {
+        if (_saveEgressInterface is null)
+            return;
+        try
+        {
+            await _saveEgressInterface(PreferredEgressInterface, CancellationToken.None);
+        }
+        catch
+        {
+            // Persisting the preference must not block sign-in.
+            AddLog("egress_interface_save_failed");
+        }
+    }
+
+    private static string ResourceString(string key, string fallback)
+    {
+        object? value = null;
+        return Avalonia.Application.Current?.TryGetResource(key, null, out value) == true && value is string text
+            ? text
+            : fallback;
+    }
 
     partial void OnSelectedConnectionModeChanged(MacConnectionMode? value)
     {
@@ -536,6 +617,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        // The adapter list may have changed since the page was drawn: re-check
+        // it and put the choice into force before the sign-in request.
+        ReloadEgressInterfaces();
+        await ApplyEgressInterfaceAsync();
+
         var agentToken = AgentToken;
         IsBusy = true;
         try
@@ -547,6 +633,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
             catch (MasterApiException exception) when (exception.StatusCode == 401)
             {
                 ValidationMessage = "Client ID or token was rejected by the panel.";
+                return;
+            }
+            catch (DeviceLimitReachedException exception)
+            {
+                ValidationMessage = FormatDeviceLimitMessage(exception.ActiveOnlineDevices, exception.OnlineDeviceLimit);
                 return;
             }
             catch
@@ -656,6 +747,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         try
         {
             await _controller.RefreshAsync();
+        }
+        catch (DeviceLimitReachedException)
+        {
+            // The device-limit banner already explains this and stays up.
         }
         catch
         {
@@ -1211,6 +1306,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         IsBusy = snapshot.IsBusy;
         ConnectionStatus = snapshot.ConnectionStatus;
+        ApplyDeviceLimit(snapshot);
         SignedInUsername = snapshot.SignedInUsername;
         ActiveClientName = snapshot.ActiveClientName;
         if (!string.IsNullOrWhiteSpace(snapshot.PanelUrl))
@@ -1587,6 +1683,30 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             Interlocked.Exchange(ref _nativeRefreshInProgress, 0);
         }
+    }
+
+    /// <summary>
+    /// Keeps the device-limit explanation up while the panel refuses this
+    /// device; the controller clears the code on the next admitted pull.
+    /// </summary>
+    private void ApplyDeviceLimit(DesktopClientSnapshot snapshot)
+    {
+        var limited = string.Equals(snapshot.ConnectionStatus, DesktopClientController.DeviceLimitReachedCode, StringComparison.Ordinal);
+        DeviceLimitMessage = limited
+            ? FormatDeviceLimitMessage(snapshot.ActiveOnlineDevices, snapshot.OnlineDeviceLimit)
+            : string.Empty;
+        IsDeviceLimitVisible = limited;
+    }
+
+    internal static string FormatDeviceLimitMessage(int activeOnlineDevices, int onlineDeviceLimit)
+    {
+        var key = onlineDeviceLimit > 0 ? "DeviceLimitReachedWithCounts" : "DeviceLimitReachedMessage";
+        object? value = null;
+        if (Avalonia.Application.Current?.TryGetResource(key, null, out value) != true || value is not string template)
+            return DeviceLimitReachedException.FormatMessage(activeOnlineDevices, onlineDeviceLimit);
+        return onlineDeviceLimit > 0
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture, template, activeOnlineDevices, onlineDeviceLimit)
+            : template;
     }
 
     private void ShowNotice(string notice)

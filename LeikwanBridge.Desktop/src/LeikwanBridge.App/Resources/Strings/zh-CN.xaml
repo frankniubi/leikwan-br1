@@ -52,6 +52,9 @@
     <!-- Dashboard -->
     <system:String x:Key="DashConnected">已连接</system:String>
     <system:String x:Key="DashDisconnected">未连接</system:String>
+    <system:String x:Key="DeviceLimitStatus">设备数量已达上限</system:String>
+    <system:String x:Key="DeviceLimitReachedWithCounts">设备数量已达上限（当前在线 {0} / 上限 {1}）。请先断开其他设备上的连接，或联系服务商提高设备数量上限。其他设备断开约 3 分钟后，本设备会自动恢复连接。</system:String>
+    <system:String x:Key="DeviceLimitReachedMessage">设备数量已达上限。请先断开其他设备上的连接，或联系服务商提高设备数量上限。其他设备断开约 3 分钟后，本设备会自动恢复连接。</system:String>
     <system:String x:Key="DashLastSync">上次同步：</system:String>
     <system:String x:Key="DashActiveForwards">活跃转发</system:String>
     <system:String x:Key="DashBytesIn">流入字节</system:String>
@@ -103,6 +106,11 @@
     <system:String x:Key="SetupEndpointCloudflare">會聚總站 (Cloudflare)</system:String>
     <system:String x:Key="SetupEndpointAliyun">會聚中國内地 (Aliyun CDN)</system:String>
     <system:String x:Key="SetupEndpointHint">请根据您所在地区选择</system:String>
+    <system:String x:Key="SetupEgressInterface">网卡绑定</system:String>
+    <system:String x:Key="SetupEgressAutomatic">自动（推荐）</system:String>
+    <system:String x:Key="SetupEgressHint">登录请求将绕过系统代理并直接从所选网卡发出</system:String>
+    <system:String x:Key="SetupEgressMissing">之前保存的网卡“{0}”当前不可用，已改为自动。</system:String>
+    <system:String x:Key="SetupEgressRefresh">刷新网卡列表</system:String>
     <system:String x:Key="SetupClientId">客户端 ID</system:String>
     <system:String x:Key="SetupAgentToken">认证令牌</system:String>
     <system:String x:Key="SetupSaveInfo">保存客户端 ID 和认证令牌到本机</system:String>

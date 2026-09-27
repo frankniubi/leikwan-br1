@@ -66,6 +66,39 @@ public sealed class MainWindowLayoutTests
     }
 
     [Fact]
+    public void SignInCardOffersEthernetBindingBeforeTheCredentials()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var macRoot = Path.Combine(root.FullName, "src", "LeikwanBridge.Mac");
+        var view = XDocument.Load(Path.Combine(macRoot, "Views", "MainWindow.axaml"));
+        var login = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "ScrollViewer" && (string?)element.Attribute("IsVisible") == "{Binding IsLoginVisible}");
+        var selector = Assert.Single(login.Descendants(), element =>
+            element.Name.LocalName == "ComboBox" && (string?)element.Attribute("ItemsSource") == "{Binding EgressInterfaceOptions}");
+        // Same property as the settings page: one source of truth.
+        Assert.Equal("{Binding PreferredEgressInterface, Mode=TwoWay}", (string?)selector.Attribute("SelectedValue"));
+        Assert.Contains(selector.Descendants(), element => (string?)element.Attribute("Text") == "{Binding CompactLabel}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Command") == "{Binding RefreshEgressInterfacesCommand}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Text") == "{DynamicResource EgressBindingHint}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Text") == "{Binding EgressInterfaceNotice}");
+        var order = view.Descendants().ToList();
+        var credentials = Assert.Single(login.Descendants(), element =>
+            (string?)element.Attribute("Text") == "{Binding ClientIdText, Mode=TwoWay}");
+        Assert.True(order.IndexOf(selector) < order.IndexOf(credentials));
+
+        var strings = XDocument.Load(Path.Combine(macRoot, "Resources", "Strings.axaml")).Root!.Elements()
+            .ToDictionary(
+                element => (string)element.Attribute(XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml"))!,
+                element => element.Value);
+        Assert.Equal("Automatic (recommended)", strings["EgressBindingAutomatic"]);
+        Assert.Equal("Sign-in traffic bypasses system proxies and leaves through the selected adapter.", strings["EgressBindingHint"]);
+        Assert.Contains("{0}", strings["EgressBindingMissing"], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NativeOutboundRuleRowIsLabelledWithoutStartStopControls()
     {
         var xaml = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");

@@ -37,10 +37,7 @@ public static class PhysicalInterfaceSelector
     {
         var holder = FindDefaultRouteHolder(adapters, family);
         var eligible = adapters
-            .Where(adapter => adapter.IsUp
-                && !adapter.IsLoopback
-                && !adapter.IsTunnelLike
-                && adapter.Kind is not NetworkAdapterKind.Virtual
+            .Where(adapter => adapter.IsEgressEligible
                 && IndexFor(adapter, family) > 0
                 && HasFamily(adapter, family))
             .ToList();
