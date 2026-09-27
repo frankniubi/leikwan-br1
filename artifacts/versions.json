@@ -303,13 +303,13 @@
    "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
    "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
    "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-   "bin/ultra-client": "a02191fbd33910b6e611e13f77f1891ddcefc0319903450aa28cd896f667066f",
+   "bin/ultra-client": "aedc18f730859d02abf60e4fa57b08f06356077e24dd1468a83babf62a58f7bf",
    "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
   },
-  "sha256": "2de9faa9cf47ea054cbbd1d832b59abc93ef018ca70ab8a3ada81617aea73301",
-  "size_bytes": 74202116,
-  "version": "1.0.51",
-  "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
+  "sha256": "44ea8294c74f6d7076f753b2a304f76612be4ad96db55f16a0cc10a449c8db78",
+  "size_bytes": 74293753,
+  "version": "1.0.52",
+  "source_commit": "4edcf79f7301393e2a9d5563988f4775b86e93cb"
  },
  "macos_client_app_x64": {
   "architecture": "x86_64",
@@ -326,13 +326,13 @@
    "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
    "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
    "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
-   "bin/ultra-client": "df2f9604c2ac358df55eb96c18f8a3050ffbd9cbfff7eb7ded068a24a02ba43a",
+   "bin/ultra-client": "a24afa13dd35fd4ceb19e64bd06340d2905780c8d9d6682f0d983c353e1f7480",
    "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
   },
-  "sha256": "000f65ab301a36f578fb5142b3a85ddbf27400974db128fa03e5e01ad8cf5bb2",
-  "size_bytes": 78843754,
-  "version": "1.0.51",
-  "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
+  "sha256": "be6f57c7b2e4af439276a7a2e494717045f5d4008b8c8ae378a52d3399f73bde",
+  "size_bytes": 78482797,
+  "version": "1.0.52",
+  "source_commit": "4edcf79f7301393e2a9d5563988f4775b86e93cb"
  },
  "macos_client_update_arm64": {
   "architecture": "arm64",
@@ -349,13 +349,13 @@
    "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
    "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
    "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-   "bin/ultra-client": "a02191fbd33910b6e611e13f77f1891ddcefc0319903450aa28cd896f667066f",
+   "bin/ultra-client": "aedc18f730859d02abf60e4fa57b08f06356077e24dd1468a83babf62a58f7bf",
    "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
   },
-  "sha256": "a156d77c11d9062676ce6b9f5dd2139ecaf7ff889179bf511ccb6b88f19ae778",
-  "size_bytes": 65966174,
-  "version": "1.0.51",
-  "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
+  "sha256": "741eff79f4c07c89586d4a8e3f96586e262b9d7e036cf3b06040b32868704818",
+  "size_bytes": 65973453,
+  "version": "1.0.52",
+  "source_commit": "4edcf79f7301393e2a9d5563988f4775b86e93cb"
  },
  "macos_client_update_x64": {
   "architecture": "x86_64",
@@ -372,20 +372,20 @@
    "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
    "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
    "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
-   "bin/ultra-client": "df2f9604c2ac358df55eb96c18f8a3050ffbd9cbfff7eb7ded068a24a02ba43a",
+   "bin/ultra-client": "a24afa13dd35fd4ceb19e64bd06340d2905780c8d9d6682f0d983c353e1f7480",
    "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
   },
-  "sha256": "427403b2854c9862131cacffa5e0e918efa78be85393d33574bc45df1b568478",
-  "size_bytes": 70030497,
-  "version": "1.0.51",
-  "source_commit": "6ca68ac9f32dfed558a79df025d7b5b3ec4798c2"
+  "sha256": "de0d37041ea43d8d370601122f52d3d23f4e050e6010f30a1e24a1339c7cdd73",
+  "size_bytes": 70037779,
+  "version": "1.0.52",
+  "source_commit": "4edcf79f7301393e2a9d5563988f4775b86e93cb"
  },
  "macos_headless_installer": {
   "install_url": "/artifacts/install-macos-headless.sh",
   "path": "install/install-macos-headless.sh",
-  "sha256": "b70693b08fb49d40a8c67e5dc4ec3d8e0d0462faf623254f28adcd7e33529ab2",
+  "sha256": "3043c7bb95d4252239f1fb726e96121d5cd6777da2e730adb7ae369df5281d8a",
   "size_bytes": 20601,
-  "version": "1.0.51",
+  "version": "1.0.52",
   "artifact_url": "/artifacts/install-macos-headless.sh"
  },
  "macos_headless_uninstaller": {
@@ -393,7 +393,7 @@
   "path": "install/uninstall-macos-headless.sh",
   "sha256": "8afbdf619d3ecde9d48f242d59c4c05c3c48865230d5e9fd6152ff5cac25ba10",
   "size_bytes": 1236,
-  "version": "1.0.51",
+  "version": "1.0.52",
   "artifact_url": "/artifacts/uninstall-macos-headless.sh"
  },
  "mptcp_client_runtime": {
