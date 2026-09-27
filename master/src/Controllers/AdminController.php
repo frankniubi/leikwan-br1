@@ -7,6 +7,7 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\AccessPolicyStore;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ExternalUoTDefaults;
 use Leikwan\Master\Support\BondLegReputationService;
@@ -53,6 +54,22 @@ final class AdminController extends BaseController
         $this->leigodOnlyServices = $leigodOnlyServices;
         parent::__construct($config, $db);
         $this->accessPolicy = $accessPolicy ?? new AccessPolicyService($db);
+    }
+
+    /**
+     * Geographic lock and province/city/country rules need clients that answer
+     * the location-check protocol. No shipped client does yet, so enabling
+     * either would refuse every client with location_check_required. Keep the
+     * switches closed until ACCESS_POLICY_LOCATION_CLIENTS_READY is set.
+     */
+    private function locationPolicyAvailable(): bool
+    {
+        return $this->config->getBool('ACCESS_POLICY_LOCATION_CLIENTS_READY', false);
+    }
+
+    private function isGeographicRuleType(string $entityType): bool
+    {
+        return in_array(strtolower(trim($entityType)), AccessPolicyStore::GEOGRAPHIC_ENTITY_TYPES, true);
     }
 
     public function dashboard(Request $request, array $params): Response
@@ -1653,8 +1670,9 @@ final class AdminController extends BaseController
                       <select name="is_tenant_visible"><option value="1"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 1 ? ' selected' : '') . '>Visible to tenants</option><option value="0"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 0 ? ' selected' : '') . '>Internal test package</option></select>
                       <p class="muted">Hidden plans stay active for internal/admin workflows, but do not appear on the tenant purchase page.</p>
                     </div>
-                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enable geographic lock</label>
-                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>
+                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . ($this->locationPolicyAvailable() ? '' : ' disabled') . '> Enable geographic lock</label>
+                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>' . ($this->locationPolicyAvailable() ? '' : '
+                      <p class="muted">Unavailable: no released client answers the location check yet, so enabling it would refuse every client. Set ACCESS_POLICY_LOCATION_CLIENTS_READY once clients ship support.</p>') . '
                     </div>
                     <div class="field"><label>Billing Mode</label><select name="billing_mode"><option value="monthly_bundle"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle' ? ' selected' : '') . '>monthly_bundle</option><option value="metered"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'metered' ? ' selected' : '') . '>metered</option></select></div>
                     <div class="field"><label>Billing Currency</label><input type="text" name="billing_currency" value="' . $this->escape((string) ($editing['billing_currency'] ?? 'CNY')) . '" placeholder="CNY"></div>
@@ -4696,7 +4714,7 @@ final class AdminController extends BaseController
                 'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
                 'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
-                'geo_lock_enabled' => $request->input('geo_lock_enabled', '0'),
+                'geo_lock_enabled' => $this->locationPolicyAvailable() ? $request->input('geo_lock_enabled', '0') : '0',
                 'allowed_forward_route_ids' => $request->body()['allowed_forward_route_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
@@ -5498,7 +5516,7 @@ final class AdminController extends BaseController
 
         $body = '<div class="hero"><div><h2>Access Control</h2><p class="muted">Manage global deny rules, geographic profiles, policy events, device blocks, and account bans.</p></div></div>'
             . '<section class="card"><h3>Blacklist Rules</h3><form method="post" action="/admin/access-control/rules"><input type="hidden" name="csrf_token" value="' . $csrf . '"><div class="form-grid">'
-            . '<div class="field"><label>Entity</label><select name="entity_type"><option value="device_uuid">Device UUID</option><option value="ip">Exact IP</option><option value="cidr">IP subnet</option><option value="province">Mainland province</option><option value="city">Prefecture city</option><option value="country">Country / region</option></select></div>'
+            . '<div class="field"><label>Entity</label><select name="entity_type"><option value="device_uuid">Device UUID</option><option value="ip">Exact IP</option><option value="cidr">IP subnet</option>' . ($this->locationPolicyAvailable() ? '<option value="province">Mainland province</option><option value="city">Prefecture city</option><option value="country">Country / region</option>' : '') . '</select>' . ($this->locationPolicyAvailable() ? '' : '<p class="muted">Province, city and country rules are unavailable until clients support the location check.</p>') . '</div>'
             . '<div class="field"><label>Value</label><input name="value" required maxlength="255" placeholder="UUID, IP, CIDR, province, city, or country"></div>'
             . '<div class="field"><label>Province (city rules)</label><input name="province" maxlength="64"></div>'
             . '<div class="field"><label>Reason code</label><input name="reason_code" value="admin_blacklist" maxlength="64"></div>'
@@ -5519,6 +5537,10 @@ final class AdminController extends BaseController
         }
         try {
             SessionAuth::validateCsrf($request);
+            if (!$this->locationPolicyAvailable() && $this->isGeographicRuleType((string) $request->input('entity_type', ''))) {
+                SessionAuth::flash('error', 'Province, city and country rules are unavailable until clients support the location check.');
+                return Response::redirect('/admin/access-control');
+            }
             $this->accessPolicy->registerBlacklistRule($request->body(), (int) $viewer['id']);
             SessionAuth::flash('success', 'Access rule saved.');
         } catch (\Throwable) {
@@ -5538,6 +5560,14 @@ final class AdminController extends BaseController
             $ruleId = $this->idParam($params);
             $activeValue = strtolower(trim((string) $request->input('active', '0')));
             $active = in_array($activeValue, ['1', 'true', 'yes', 'on'], true);
+            if ($active && !$this->locationPolicyAvailable()) {
+                foreach ($this->accessPolicy->listBlacklistRules([]) as $rule) {
+                    if ((int) ($rule['id'] ?? 0) === $ruleId && $this->isGeographicRuleType((string) ($rule['entity_type'] ?? ''))) {
+                        SessionAuth::flash('error', 'Province, city and country rules are unavailable until clients support the location check.');
+                        return Response::redirect('/admin/access-control');
+                    }
+                }
+            }
             $this->accessPolicy->setBlacklistRuleActive($ruleId, $active, (int) $viewer['id']);
             SessionAuth::flash('success', 'Access rule status updated.');
         } catch (\Throwable) {
