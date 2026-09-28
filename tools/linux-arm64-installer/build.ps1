@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.28.2",
+    [string]$Version = "2026.09.28.3",
     [string]$OutputPath = "artifacts/install-client-agent-linux-arm64",
     [switch]$SkipReproducibilityCheck
 )
