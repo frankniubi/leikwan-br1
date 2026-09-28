@@ -389,7 +389,9 @@ abstract class BaseController
             return 'curl -fsSL ' . $this->shellQuote($url) . ' -o ' . $target;
         }
 
-        return '{ curl -fsSL --connect-timeout 10 ' . $this->shellQuote($url) . ' -o ' . $target
+        // A reachable Cloudflare edge connects in about 0.3 s even from mainland
+        // hosts, so 3 s is plenty; the mirror is the last resort and waits longer.
+        return '{ curl -fsSL --connect-timeout 3 ' . $this->shellQuote($url) . ' -o ' . $target
             . ' || curl -fsSL --connect-timeout 10 ' . $this->shellQuote($mirror) . ' -o ' . $target . '; }';
     }
 

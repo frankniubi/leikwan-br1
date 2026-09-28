@@ -137,7 +137,7 @@ namespace {
         'id' => 42,
         'agent_token' => 'tok-42',
     ]);
-    $expected = 'f="$(mktemp)" && { curl -fsSL --connect-timeout 10 \'https://v3.leikwanhost.com/artifacts/install-client-agent.sh\' -o "$f"'
+    $expected = 'f="$(mktemp)" && { curl -fsSL --connect-timeout 3 \'https://v3.leikwanhost.com/artifacts/install-client-agent.sh\' -o "$f"'
         . ' || curl -fsSL --connect-timeout 10 \'https://api-leikwanbridge.nbwly.com/artifacts/install-client-agent.sh\' -o "$f"; }'
         . ' && bash "$f" --master \'https://v3.leikwanhost.com\' --client-id 42 --agent-token \'tok-42\'; rm -f "$f"';
     if ($cfCommand !== $expected) {

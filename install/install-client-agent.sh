@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.28.1"
+INSTALLER_VERSION="2026.09.28.2"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -918,17 +918,82 @@ artifact_source_candidates() {
   done
 }
 
-_VERSIONS_PATH="$STATE_DIR/versions.json.new"
-_VERSIONS_ERR="$STATE_DIR/versions.json.err"
-_SELECTED_DOWNLOAD_BASE=""
-while IFS= read -r _source; do
-  if leikwan_protected_download "$_source/artifacts/versions.json" "$_VERSIONS_PATH" 2>"$_VERSIONS_ERR"; then
-    _SELECTED_DOWNLOAD_BASE="$_source"
-    break
+# A reachable panel answers in well under a second (about 0.3 s from mainland
+# hosts to Cloudflare), so every source is asked at once. The given source wins
+# whenever it answers; another one is used only after the given source failed
+# or stayed silent for ARTIFACT_SOURCE_GRACE_SECONDS.
+ARTIFACT_SOURCE_GRACE_SECONDS=3
+
+stop_source_probe() {
+  local pid="$1"
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -P "$pid" 2>/dev/null || true
   fi
-  echo "artifact source $_source is unreachable: $(tail -n 1 "$_VERSIONS_ERR" 2>/dev/null)" >&2
-done < <(artifact_source_candidates "$DOWNLOAD_BASE")
-rm -f "$_VERSIONS_ERR"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+select_artifact_source() {
+  local -a sources=() pids=()
+  local index ticks=0 grace_ticks=$((ARTIFACT_SOURCE_GRACE_SECONDS * 5)) chosen="" finished
+  mapfile -t sources < <(artifact_source_candidates "$DOWNLOAD_BASE")
+  for index in "${!sources[@]}"; do
+    rm -f "$_VERSIONS_PATH.$index" "$_VERSIONS_PATH.$index.ok" "$_VERSIONS_PATH.$index.fail"
+    (
+      if leikwan_protected_download "${sources[$index]}/artifacts/versions.json" "$_VERSIONS_PATH.$index" 2>"$_VERSIONS_PATH.$index.err"; then
+        : > "$_VERSIONS_PATH.$index.ok"
+      else
+        : > "$_VERSIONS_PATH.$index.fail"
+      fi
+    ) &
+    pids+=("$!")
+  done
+  while [[ -z "$chosen" ]]; do
+    if [[ -e "$_VERSIONS_PATH.0.ok" ]]; then
+      chosen=0
+      break
+    fi
+    if [[ -e "$_VERSIONS_PATH.0.fail" ]] || ((ticks >= grace_ticks)); then
+      for index in "${!sources[@]}"; do
+        if [[ -e "$_VERSIONS_PATH.$index.ok" ]]; then
+          chosen="$index"
+          break
+        fi
+      done
+      [[ -n "$chosen" ]] && break
+    fi
+    finished=0
+    for index in "${!sources[@]}"; do
+      [[ -e "$_VERSIONS_PATH.$index.ok" || -e "$_VERSIONS_PATH.$index.fail" ]] && finished=$((finished + 1))
+    done
+    ((finished < ${#sources[@]})) || break
+    sleep 0.2
+    ticks=$((ticks + 1))
+  done
+  for index in "${!sources[@]}"; do
+    [[ "$index" == "$chosen" ]] || stop_source_probe "${pids[$index]}"
+  done
+  [[ -z "$chosen" ]] || wait "${pids[$chosen]}" 2>/dev/null || true
+  for index in "${!sources[@]}"; do
+    [[ "$index" == "$chosen" ]] && continue
+    if [[ -e "$_VERSIONS_PATH.$index.fail" ]]; then
+      echo "artifact source ${sources[$index]} is unreachable: $(tail -n 1 "$_VERSIONS_PATH.$index.err" 2>/dev/null)" >&2
+    elif [[ -n "$chosen" && "$index" -lt "$chosen" ]]; then
+      echo "artifact source ${sources[$index]} did not answer within ${ARTIFACT_SOURCE_GRACE_SECONDS}s" >&2
+    fi
+  done
+  if [[ -n "$chosen" ]]; then
+    mv -f "$_VERSIONS_PATH.$chosen" "$_VERSIONS_PATH"
+    _SELECTED_DOWNLOAD_BASE="${sources[$chosen]}"
+  fi
+  for index in "${!sources[@]}"; do
+    rm -f "$_VERSIONS_PATH.$index" "$_VERSIONS_PATH.$index.ok" "$_VERSIONS_PATH.$index.fail" "$_VERSIONS_PATH.$index.err"
+  done
+}
+
+_VERSIONS_PATH="$STATE_DIR/versions.json.new"
+_SELECTED_DOWNLOAD_BASE=""
+select_artifact_source
 [[ -n "$_SELECTED_DOWNLOAD_BASE" ]] || die "no artifact source answered (tried: $(artifact_source_candidates "$DOWNLOAD_BASE" | tr '\n' ' '))"
 if [[ "$_SELECTED_DOWNLOAD_BASE" != "${DOWNLOAD_BASE%/}" ]]; then
   echo "using artifact source $_SELECTED_DOWNLOAD_BASE"

@@ -48,6 +48,59 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
             completed.stdout,
         )
 
+    def _select_with_stub(self, stub_body: str) -> subprocess.CompletedProcess:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() {",
+            stub_body,
+            "}",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=https://v3.leikwanhost.com",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            "start=$(date +%s)",
+            _artifact_source_selection(source),
+            "echo \"download=$DOWNLOAD_BASE elapsed=$(( $(date +%s) - start ))\"",
+            'echo "leftovers=$(ls "$STATE_DIR" | grep -v "^versions.json.new$" | wc -l)"',
+        ])
+        return _run_bash(script)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_silent_cloudflare_costs_only_the_grace_period(self) -> None:
+        # Blackholed Cloudflare never answers; Aliyun is taken after 3 s, not
+        # after every Cloudflare address has timed out.
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 30 >/dev/null 2>&1 </dev/null; return 1 ;; esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://api-leikwanbridge.nbwly.com", completed.stdout)
+        elapsed = int(completed.stdout.split("elapsed=")[1].split()[0])
+        self.assertLessEqual(elapsed, 5, completed.stdout)
+        self.assertIn("artifact source https://v3.leikwanhost.com did not answer within 3s", completed.stderr)
+        self.assertIn("leftovers=0", completed.stdout)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_answering_cloudflare_is_kept_even_when_aliyun_is_faster(self) -> None:
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 1 ;; esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://v3.leikwanhost.com", completed.stdout)
+        self.assertEqual("", completed.stderr)
+        self.assertIn("leftovers=0", completed.stdout)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_every_source_down_fails_with_the_sources_tried(self) -> None:
+        completed = self._select_with_stub("  echo 'connect timed out' >&2; return 1")
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "die: no artifact source answered (tried: https://v3.leikwanhost.com https://api-leikwanbridge.nbwly.com )",
+            completed.stderr,
+        )
+
     @unittest.skipUnless(shutil.which("bash"), "bash is required")
     def test_custom_artifact_source_has_no_fallback(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
