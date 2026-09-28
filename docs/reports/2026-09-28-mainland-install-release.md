@@ -48,3 +48,30 @@ mount namespace with a clean `/etc/hosts`, and the rules were removed afterwards
   (agent code unchanged).
 - 172.21.255.189 still carries two old `# lk-outage` lines in `/etc/hosts` (from 2026-09-24) that point both
   panel hosts at `127.0.0.9`. They block that host's Aliyun mirror. Left untouched.
+
+## Follow-up: shorter fallback wait (releases -2 and -3)
+
+A mainland-only host used to wait about 29 s with no output: 10 s in the website command, then 18 s in the installer
+(two Cloudflare addresses at 8 s each). A reachable Cloudflare edge connects in 0.22–0.34 s from the Jiangsu host.
+
+- **Release -2**, 05:16–05:17 UTC (0cafd83a, installer 2026.09.28.2):
+  - Website command: the Cloudflare attempt now has a 3 s connect timeout. `BaseController.php` was deployed with a
+    backup at `/root/codex-backups/panel-mainland-install-20260928-2/`.
+  - Installer: asks both sources at once, with a 3 s budget for the whole `versions.json` fetch.
+  - Problem: after release, a healthy host once needed more than 3 s for DoH + TLS + transfer and was moved to Aliyun.
+- **Release -3**, 05:31 UTC (8966b116, installer 2026.09.28.3):
+  - The 3 s now covers only the connect: a probe connects to the first address with a 3 s timeout.
+  - The given source wins whenever it connects, however long the transfer takes. Another source is used once that
+    probe failed, or after 10 s as a last resort.
+  - Messages come from the probe state at decision time.
+  - Published hashes: installer `409760b5`, arm64 installer `08b99faa`, identical through Cloudflare and Aliyun.
+
+Result with the published -3 installer on 172.21.255.189:
+
+| Case | Result |
+|---|---|
+| Normal network, 3 runs | Cloudflare every time (2–3 s) |
+| Cloudflare dropped, website command | Switched to Aliyun after 3 s |
+| Cloudflare dropped, installer | Switched to Aliyun after 4 s |
+
+The total extra wait on a mainland-only host went from about 29 s to about 7 s.
