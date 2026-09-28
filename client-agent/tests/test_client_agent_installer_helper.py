@@ -67,9 +67,27 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         return _run_bash(script)
 
     @unittest.skipUnless(shutil.which("bash"), "bash is required")
-    def test_silent_cloudflare_costs_only_the_grace_period(self) -> None:
-        # Blackholed Cloudflare never answers; Aliyun is taken after 3 s, not
-        # after every Cloudflare address has timed out.
+    def test_unconnectable_cloudflare_switches_as_soon_as_its_probe_fails(self) -> None:
+        # Probes connect to the first address only, with a 3 s limit, so a
+        # blackholed Cloudflare fails after about 3 s instead of 8 s per address.
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*)\n"
+            "    [[ \"$LEIKWAN_SOURCE_PROBE\" == 1 && \"$LEIKWAN_CONNECT_TIMEOUT_SECONDS\" == 3 ]]"
+            " || { echo 'probe limits missing' >&2; sleep 20 >/dev/null 2>&1 </dev/null; }\n"
+            "    sleep 1; echo 'timed out' >&2; return 1 ;;\n"
+            "  esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://api-leikwanbridge.nbwly.com", completed.stdout)
+        elapsed = int(completed.stdout.split("elapsed=")[1].split()[0])
+        self.assertLessEqual(elapsed, 3, completed.stdout)
+        self.assertIn("artifact source https://v3.leikwanhost.com is unreachable: timed out", completed.stderr)
+        self.assertNotIn("probe limits missing", completed.stderr)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    def test_silent_cloudflare_is_abandoned_after_the_grace_period(self) -> None:
+        # A stalled source that never finishes is dropped after 10 s.
         completed = self._select_with_stub(
             "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 30 >/dev/null 2>&1 </dev/null; return 1 ;; esac\n"
             "  echo '{}' > \"$2\""
@@ -77,14 +95,16 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn("download=https://api-leikwanbridge.nbwly.com", completed.stdout)
         elapsed = int(completed.stdout.split("elapsed=")[1].split()[0])
-        self.assertLessEqual(elapsed, 5, completed.stdout)
-        self.assertIn("artifact source https://v3.leikwanhost.com did not answer within 3s", completed.stderr)
+        self.assertLessEqual(elapsed, 12, completed.stdout)
+        self.assertIn("artifact source https://v3.leikwanhost.com did not answer within 10s", completed.stderr)
         self.assertIn("leftovers=0", completed.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "bash is required")
     def test_answering_cloudflare_is_kept_even_when_aliyun_is_faster(self) -> None:
+        # Connected but slow: the whole transfer runs past 3 s, which used to
+        # push a healthy host onto Aliyun.
         completed = self._select_with_stub(
-            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 1 ;; esac\n"
+            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 4 ;; esac\n"
             "  echo '{}' > \"$2\""
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -121,9 +141,11 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
 
     def test_panel_connections_fail_fast_so_the_other_source_is_tried(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
-        self.assertIn("CONNECT_TIMEOUT_SECONDS = 8.0", source)
+        self.assertIn('CONNECT_TIMEOUT_SECONDS = float(os.environ.get("LEIKWAN_CONNECT_TIMEOUT_SECONDS", "8"))', source)
+        self.assertIn("addresses = addresses[:1]", source)
+        self.assertIn('export LEIKWAN_SOURCE_PROBE=1 LEIKWAN_CONNECT_TIMEOUT_SECONDS="$ARTIFACT_SOURCE_CONNECT_SECONDS"', source)
         self.assertNotIn("socket.create_connection((self.resolved_ip", source)
-        self.assertIn('"curl", "--noproxy", "*", "--connect-timeout", "10"', source)
+        self.assertIn('"curl", "--noproxy", "*", "--connect-timeout", str(int(CONNECT_TIMEOUT_SECONDS))', source)
 
     def test_installer_deploys_update_helper(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")

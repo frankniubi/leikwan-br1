@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.28.2"
+INSTALLER_VERSION="2026.09.28.3"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -548,7 +548,9 @@ LEIKWAN_PROTECTED_SUFFIX = ".leikwanhost.com"
 USER_AGENT = "Leikwan-Client-Agent-Installer/strict-doh"
 # A panel host that is blackholed (Cloudflare seen from a mainland-only network)
 # must fail fast so the installer can move on to the other artifact source.
-CONNECT_TIMEOUT_SECONDS = 8.0
+CONNECT_TIMEOUT_SECONDS = float(os.environ.get("LEIKWAN_CONNECT_TIMEOUT_SECONDS", "8"))
+# Source probing only needs to know whether the panel can be reached at all.
+PROBE_FIRST_ADDRESS_ONLY = os.environ.get("LEIKWAN_SOURCE_PROBE") == "1"
 
 
 def open_resolved_socket(address, timeout, source_address):
@@ -746,7 +748,10 @@ def fetch_protected(url, redirects=5):
     host_header = host if parsed.port is None else f"{host}:{parsed.port}"
     headers = {"Host": host_header, "Accept": "*/*", "User-Agent": USER_AGENT, "Connection": "close"}
     errors = []
-    for resolved_ip in strict_resolve_a(host):
+    addresses = strict_resolve_a(host)
+    if PROBE_FIRST_ADDRESS_ONLY:
+        addresses = addresses[:1]
+    for resolved_ip in addresses:
         conn_cls = ResolvedHTTPSConnection if parsed.scheme == "https" else ResolvedHTTPConnection
         conn = conn_cls(host, port=port, timeout=30.0, resolved_ip=resolved_ip)
         try:
@@ -773,7 +778,7 @@ def fetch_protected(url, redirects=5):
 
 def curl_download(url, path):
     # Non-protected URL fallback: curl -fsSL, never through a proxy.
-    cmd = ["curl", "--noproxy", "*", "--connect-timeout", "10", "-fsSL", url]
+    cmd = ["curl", "--noproxy", "*", "--connect-timeout", str(int(CONNECT_TIMEOUT_SECONDS)), "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -918,11 +923,14 @@ artifact_source_candidates() {
   done
 }
 
-# A reachable panel answers in well under a second (about 0.3 s from mainland
-# hosts to Cloudflare), so every source is asked at once. The given source wins
-# whenever it answers; another one is used only after the given source failed
-# or stayed silent for ARTIFACT_SOURCE_GRACE_SECONDS.
-ARTIFACT_SOURCE_GRACE_SECONDS=3
+# Every source is asked at once. A reachable panel connects in well under a
+# second (about 0.3 s from mainland hosts to Cloudflare), so a probe that cannot
+# connect within ARTIFACT_SOURCE_CONNECT_SECONDS counts as unreachable. The given
+# source wins whenever it connects, however long the transfer then takes;
+# another one is used once it failed, or after ARTIFACT_SOURCE_GRACE_SECONDS
+# as a last resort (for example a stalled transfer).
+ARTIFACT_SOURCE_CONNECT_SECONDS=3
+ARTIFACT_SOURCE_GRACE_SECONDS=10
 
 stop_source_probe() {
   local pid="$1"
@@ -940,6 +948,7 @@ select_artifact_source() {
   for index in "${!sources[@]}"; do
     rm -f "$_VERSIONS_PATH.$index" "$_VERSIONS_PATH.$index.ok" "$_VERSIONS_PATH.$index.fail"
     (
+      export LEIKWAN_SOURCE_PROBE=1 LEIKWAN_CONNECT_TIMEOUT_SECONDS="$ARTIFACT_SOURCE_CONNECT_SECONDS"
       if leikwan_protected_download "${sources[$index]}/artifacts/versions.json" "$_VERSIONS_PATH.$index" 2>"$_VERSIONS_PATH.$index.err"; then
         : > "$_VERSIONS_PATH.$index.ok"
       else
@@ -970,18 +979,21 @@ select_artifact_source() {
     sleep 0.2
     ticks=$((ticks + 1))
   done
+  # Report from the state at decision time: stopping a probe can make it fail.
+  local -a notes=()
+  for index in "${!sources[@]}"; do
+    [[ "$index" == "$chosen" ]] && continue
+    if [[ -e "$_VERSIONS_PATH.$index.fail" ]]; then
+      notes+=("artifact source ${sources[$index]} is unreachable: $(tail -n 1 "$_VERSIONS_PATH.$index.err" 2>/dev/null)")
+    elif [[ -n "$chosen" && "$index" -lt "$chosen" ]]; then
+      notes+=("artifact source ${sources[$index]} did not answer within ${ARTIFACT_SOURCE_GRACE_SECONDS}s")
+    fi
+  done
   for index in "${!sources[@]}"; do
     [[ "$index" == "$chosen" ]] || stop_source_probe "${pids[$index]}"
   done
   [[ -z "$chosen" ]] || wait "${pids[$chosen]}" 2>/dev/null || true
-  for index in "${!sources[@]}"; do
-    [[ "$index" == "$chosen" ]] && continue
-    if [[ -e "$_VERSIONS_PATH.$index.fail" ]]; then
-      echo "artifact source ${sources[$index]} is unreachable: $(tail -n 1 "$_VERSIONS_PATH.$index.err" 2>/dev/null)" >&2
-    elif [[ -n "$chosen" && "$index" -lt "$chosen" ]]; then
-      echo "artifact source ${sources[$index]} did not answer within ${ARTIFACT_SOURCE_GRACE_SECONDS}s" >&2
-    fi
-  done
+  ((${#notes[@]} == 0)) || printf '%s\n' "${notes[@]}" >&2
   if [[ -n "$chosen" ]]; then
     mv -f "$_VERSIONS_PATH.$chosen" "$_VERSIONS_PATH"
     _SELECTED_DOWNLOAD_BASE="${sources[$chosen]}"
