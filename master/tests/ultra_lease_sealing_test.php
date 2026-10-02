@@ -123,8 +123,8 @@ check($second['sealed']['epk'] !== $sealed['sealed']['epk'] && $second['sealed']
 // 4. Controller: modes, pin and conflict handling against a real (sqlite) session row.
 $pdo = new PDO('sqlite::memory:');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$pdo->exec('CREATE TABLE client_device_sessions (client_id INTEGER, device_id TEXT, ultra_lease_key_sha256 TEXT NULL, ultra_lease_key_seen_at TEXT NULL)');
-$pdo->exec("INSERT INTO client_device_sessions (client_id, device_id) VALUES (7, 'device-a')");
+$pdo->exec('CREATE TABLE client_device_sessions (client_id INTEGER, device_id TEXT, first_seen_at TEXT NULL, ultra_lease_key_sha256 TEXT NULL, ultra_lease_key_seen_at TEXT NULL)');
+$pdo->exec("INSERT INTO client_device_sessions (client_id, device_id, first_seen_at) VALUES (7, 'device-a', '2026-09-01 00:00:00')");
 $config = new Config(__DIR__ . '/does-not-exist.env');
 $db = new Database($config);
 $db->setPdo($pdo);
@@ -167,6 +167,20 @@ $pdo->exec("UPDATE client_device_sessions SET ultra_lease_key_seen_at = '" . gmd
 check($sealKey->invoke($controller, $request($thiefHeader), 7, 'device-a') === $thiefPublic, 'require: an idle pin can be replaced');
 check(($pinned()['ultra_lease_key_sha256'] ?? null) === UltraLeaseSealer::keyHash($thiefPublic), 'require: replacement is pinned');
 check($sealKey->invoke($controller, $request($header), 7, 'device-unknown') === $devicePublic, 'no session row: never blocks');
+
+// "auto": devices that predate the cut-over stay clear until they pin a key;
+// a pinned device and any device first seen after the cut-over must seal.
+putenv('ULTRA_LEASE_SEALING=auto');
+putenv('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE=2026-10-02 13:35:00');
+$pdo->exec("INSERT INTO client_device_sessions (client_id, device_id, first_seen_at) VALUES (7, 'old-keyless', '2026-09-20 08:00:00'), (7, 'new-keyless', '2026-10-02 14:00:00')");
+check($sealKey->invoke($controller, $request(null), 7, 'old-keyless') === null, 'auto: an old keyless device keeps working in clear');
+expectApiError(static fn() => $sealKey->invoke($controller, $request(null), 7, 'new-keyless'), 'lease_sealing_required', 409, 'auto: a device first seen after the cut-over must seal');
+expectApiError(static fn() => $sealKey->invoke($controller, $request(null), 7, 'device-a'), 'lease_sealing_required', 409, 'auto: a device that pinned a key must keep sealing');
+check($sealKey->invoke($controller, $request(null), 7, 'device-unknown') === null, 'auto: no session row never blocks');
+$pdo->exec("UPDATE client_device_sessions SET ultra_lease_key_seen_at = '" . gmdate('Y-m-d H:i:s') . "' WHERE device_id = 'device-a'");
+expectApiError(static fn() => $sealKey->invoke($controller, $request($header), 7, 'device-a'), 'lease_device_key_conflict', 409, 'auto: a conflicting live key is refused');
+putenv('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE');
+check($sealKey->invoke($controller, $request(null), 7, 'new-keyless') === null, 'auto: without a cut-over only pinned devices are held to sealing');
 
 putenv('ULTRA_LEASE_SEALING=off');
 check($sealKey->invoke($controller, $request('bad key'), 7, 'device-a') === null, 'off: header ignored entirely');

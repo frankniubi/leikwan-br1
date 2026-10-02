@@ -421,8 +421,16 @@ final class ClientAgentController extends BaseController
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'lease');
         // Decided before any lease is issued, so a refused or malformed device
-        // key never consumes a lease nonce.
-        $sealKey = $this->ultraLeaseSealKey($request, (int) $client['id'], $deviceId);
+        // key never consumes a lease nonce. Refusals use the lease endpoint's
+        // own error shape so clients see the specific code.
+        try {
+            $sealKey = $this->ultraLeaseSealKey($request, (int) $client['id'], $deviceId);
+        } catch (ApiException $refusal) {
+            return $this->json(['ok' => false, 'error' => $refusal->getMessage(), 'failures' => []], $refusal->statusCode())->withHeaders([
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+            ]);
+        }
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $assignedById = [];
@@ -656,7 +664,12 @@ final class ClientAgentController extends BaseController
      * clear response. ULTRA_LEASE_SEALING: "off" ignores the header,
      * "optional" (default) seals whenever a valid key is sent, "require" also
      * refuses a request without one and a key that conflicts with the
-     * device's live pinned key.
+     * device's live pinned key. "auto" is the rollout mode: a request without
+     * a key is refused for a device that has ever pinned one, and for every
+     * device first seen at or after ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE
+     * (new installs are always current builds, so a keyless newcomer is a
+     * token being replayed); devices that predate the cut-over keep working
+     * in clear until they update. Key conflicts are enforced as in "require".
      */
     private function ultraLeaseSealKey(Request $request, int $clientId, string $deviceId): ?string
     {
@@ -666,7 +679,7 @@ final class ClientAgentController extends BaseController
         }
         $header = trim((string) ($request->header(UltraLeaseSealer::HEADER) ?? ''));
         if ($header === '') {
-            if ($mode === 'require') {
+            if ($mode === 'require' || ($mode === 'auto' && $this->deviceMustSealLeases($clientId, $deviceId))) {
                 throw new ApiException('lease_sealing_required', 409);
             }
             return null;
@@ -675,8 +688,50 @@ final class ClientAgentController extends BaseController
         if ($key === null) {
             throw new ApiException('lease_key_invalid', 400);
         }
-        $this->pinUltraLeaseKey($clientId, $deviceId, UltraLeaseSealer::keyHash($key), $mode === 'require');
+        $this->pinUltraLeaseKey($clientId, $deviceId, UltraLeaseSealer::keyHash($key), $mode === 'require' || $mode === 'auto');
         return $key;
+    }
+
+    /**
+     * "auto" mode: whether a keyless lease request from this device is
+     * refused. Lookup failures fail open, like the rest of the bookkeeping.
+     */
+    private function deviceMustSealLeases(int $clientId, string $deviceId): bool
+    {
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT first_seen_at, ultra_lease_key_sha256 FROM client_device_sessions
+                  WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+                ['client_id' => $clientId, 'device_id' => $deviceId]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_seal_policy_lookup_failed ' . $exception::class);
+            return false;
+        }
+        if (!is_array($row)) {
+            return false;
+        }
+        $reason = '';
+        if (trim((string) ($row['ultra_lease_key_sha256'] ?? '')) !== '') {
+            $reason = 'device-has-key';
+        } else {
+            $since = trim((string) (isset($this->config) ? $this->config->get('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE', '') : ''));
+            $sinceAt = $since !== '' ? strtotime($since . ' UTC') : false;
+            $firstSeen = strtotime(trim((string) ($row['first_seen_at'] ?? '')) . ' UTC');
+            if ($sinceAt !== false && $firstSeen !== false && $firstSeen >= $sinceAt) {
+                $reason = 'new-device';
+            }
+        }
+        if ($reason === '') {
+            return false;
+        }
+        error_log(sprintf(
+            'ultra_lease_sealing_required client=%d device=%s reason=%s',
+            $clientId,
+            substr(hash('sha256', $deviceId), 0, 16),
+            $reason
+        ));
+        return true;
     }
 
     /**
