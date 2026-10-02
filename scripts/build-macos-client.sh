@@ -23,6 +23,23 @@ fail() {
   exit 1
 }
 
+# Obfuscation guard for the Go ultra-client relay. A plain `go build -ldflags '-s -w'`
+# strips the symbol table but NOT the pclntab, so tools/ultra-client function names
+# (main.parseTarget, main.credentialChecksum, ...) and -literals-eligible strings
+# (leikwan-ultra-policy-v2) still ship in cleartext. garble renames those and encrypts
+# the literals; their absence proves the binary really went through garble instead of a
+# silent fall-through to `go build`. runtimeBuildVersion is deliberately excluded: garble
+# preserves the -X stamp so panel attestation (self_sha256 / fingerprint) keeps working.
+assert_ultra_obfuscated() {
+  local path="$1"
+  local marker
+  for marker in leikwan-ultra-policy-v2 parseTarget credentialChecksum runtimeAttestation copyInbound selfExecutableHash ParseNativeRoutePolicy; do
+    if LC_ALL=C grep -a -q -F -e "$marker" "$path"; then
+      fail "ultra-client still contains unobfuscated symbol '$marker'; garble did not run"
+    fi
+  done
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
@@ -165,6 +182,7 @@ cargo build \
       -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
       -o "$helper_dir/ultra-client" .
 )
+assert_ultra_obfuscated "$helper_dir/ultra-client"
 
 if [[ ! -d "$sing_box_src/.git" ]]; then
   git clone --filter=blob:none --branch "$sing_box_version" "$sing_box_repository" "$sing_box_src"

@@ -56,7 +56,22 @@ class UltraArtifactHardeningTests(unittest.TestCase):
         self.assertNotIn(".symtab", sections)
         self.assertNotIn(".strtab", sections)
         self.assertNotIn(".note.gnu.build-id", sections)
-        for marker in [b"leikwan-ultra-policy-v2", b"tools/ultra-client", b"C:\\Users\\", b"/mnt/c/"]:
+        # garble renames main.* identifiers and encrypts -literals strings, so a
+        # genuinely obfuscated runtime contains none of these distinctive source
+        # symbols. A plain `go build -ldflags '-s -w'` strips the symbol table but
+        # keeps the pclntab, so every one of these would still ship in cleartext.
+        for marker in [
+            b"leikwan-ultra-policy-v2",
+            b"tools/ultra-client",
+            b"C:\\Users\\",
+            b"/mnt/c/",
+            b"parseTarget",
+            b"credentialChecksum",
+            b"runtimeAttestation",
+            b"copyInbound",
+            b"selfExecutableHash",
+            b"ParseNativeRoutePolicy",
+        ]:
             self.assertFalse(marker in data, f"artifact leaks plaintext marker: {marker!r}")
 
         manifest = json.loads(VERSIONS_PATH.read_text(encoding="utf-8"))["ultra_client_runtime"]
@@ -78,6 +93,38 @@ class UltraArtifactHardeningTests(unittest.TestCase):
             script = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
             self.assertIn('if ($LASTEXITCODE -ne 0) { $shortSha = "" }', script, script_name)
             self.assertNotIn('if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($shortSha))', script, script_name)
+
+    def test_build_scripts_enforce_obfuscation(self) -> None:
+        # Every builder that ships an obfuscated runtime must verify the produced
+        # binary instead of trusting that garble ran: a plain `go build` keeps the
+        # pclntab, so without this guard an unobfuscated binary ships silently (the
+        # 2026.09.25 linux/macOS/windows runtimes did exactly that: obfuscator=none).
+        markers = [
+            "leikwan-ultra-policy-v2",
+            "parseTarget",
+            "credentialChecksum",
+            "runtimeAttestation",
+        ]
+
+        for script_name in ("build-ultra-linux.ps1", "build-ultra-macos.ps1"):
+            script = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+            self.assertIn("function Assert-RuntimeObfuscated", script, script_name)
+            self.assertIn("Assert-RuntimeObfuscated $candidatePath", script, script_name)
+            for marker in markers:
+                self.assertIn(marker, script, f"{script_name} missing marker {marker}")
+
+        # Windows keeps garble opt-in (Defender false positives) but must still
+        # verify obfuscation when -Obfuscate is requested.
+        windows = (REPO_ROOT / "scripts" / "build-ultra-windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Assert-RuntimeObfuscated", windows)
+        self.assertIn("if ($Obfuscate) { Assert-RuntimeObfuscated $candidatePath }", windows)
+        self.assertIn("[switch]$Obfuscate", windows)
+
+        macos_sh = (REPO_ROOT / "scripts" / "build-macos-client.sh").read_text(encoding="utf-8")
+        self.assertIn("assert_ultra_obfuscated", macos_sh)
+        self.assertIn('assert_ultra_obfuscated "$helper_dir/ultra-client"', macos_sh)
+        for marker in markers:
+            self.assertIn(marker, macos_sh, f"build-macos-client.sh missing marker {marker}")
 
 
 if __name__ == "__main__":

@@ -4,13 +4,17 @@ param(
     [string]$OutputPath = "",
     # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
     [string]$ShortSha = "",
-    # Garble obfuscation is OFF by default on Windows. Windows Defender flags
-    # every garble-produced image as Trojan:Win32/Gracing.* and quarantines the
-    # installed runtime; the client then dies with "access denied" and the
-    # update check reports permanent runtime drift for the update it just
-    # installed. Availability wins: the anti-reverse work is carried by the
-    # attestation fingerprint plus the signed release manifest. Re-enable only
-    # after a Defender false-positive report for the artifact has cleared.
+    # Garble obfuscation is OFF by default on Windows, and ON by default on the
+    # Linux/macOS/Android builders. Pass -Obfuscate to opt in here. The trade-off:
+    # Windows Defender flags every garble-produced image as Trojan:Win32/Gracing.*
+    # and quarantines the installed runtime; the client then dies with "access
+    # denied" and the update check reports permanent runtime drift for the update
+    # it just installed. Availability wins by default: the anti-reverse work is
+    # carried by the attestation fingerprint plus the signed release manifest.
+    # When you do pass -Obfuscate, the same obfuscation guard the Linux/macOS
+    # builders use runs here too (the build fails if main.* symbols survive), and
+    # the Defender scan still gates shipping. Re-enable only after a Defender
+    # false-positive report for the artifact has cleared.
     [switch]$Obfuscate,
     [switch]$SkipReproducibilityCheck,
     [switch]$SkipDefenderScan
@@ -108,6 +112,31 @@ function Invoke-RuntimeBuild([string]$Destination) {
     }
 }
 
+# Obfuscation guard (only meaningful when -Obfuscate is set). A plain
+# `go build -ldflags '-s -w'` strips the symbol table but NOT the pclntab, so
+# tools/ultra-client function names and -literals-eligible strings still ship in
+# cleartext; garble renames/encrypts them. runtimeBuildVersion is excluded because
+# garble preserves the -X stamp the panel attestation relies on.
+$script:ObfuscationMarkers = @(
+    "leikwan-ultra-policy-v2",
+    "parseTarget",
+    "credentialChecksum",
+    "runtimeAttestation",
+    "copyInbound",
+    "selfExecutableHash",
+    "ParseNativeRoutePolicy"
+)
+function Assert-RuntimeObfuscated([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $leaks = foreach ($marker in $script:ObfuscationMarkers) {
+        if ($ascii.Contains($marker)) { $marker }
+    }
+    if ($leaks) {
+        throw "runtime still contains unobfuscated symbols ($($leaks -join ', ')); garble did not run"
+    }
+}
+
 function Get-DefenderScanTool {
     $platformRoot = Join-Path $env:ProgramData "Microsoft\Windows Defender\Platform"
     if (-not (Test-Path -LiteralPath $platformRoot)) { return "" }
@@ -142,8 +171,10 @@ try {
     Push-Location $sourceRoot
     try {
         Invoke-RuntimeBuild $candidatePath
+        if ($Obfuscate) { Assert-RuntimeObfuscated $candidatePath }
         if (-not $SkipReproducibilityCheck) {
             Invoke-RuntimeBuild $reproPath
+            if ($Obfuscate) { Assert-RuntimeObfuscated $reproPath }
             $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
             $reproHash = (Get-FileHash -LiteralPath $reproPath -Algorithm SHA256).Hash
             if ($candidateHash -ne $reproHash) {
