@@ -15,6 +15,13 @@ State files (all optional):
   reject_platform if present, 422 any platform except this value
   online_limit    "N" or "N/M": 429 client_online_limit_reached on every
                   endpoint (limit N, M active; M defaults to N)
+  lease_sealing   "optional" (default) seals leases to the X-Leikwan-Lease-Key
+                  device key when the header is present; "off" ignores it;
+                  "require" refuses a lease request without the header
+                  (docs/specs/2026-10-02-ultra-sealed-lease-v1.md)
+
+Written state: last_lease_key_header (the header value, public key only) and
+last_lease_sealed ("sealed N" or "clear N") after every lease answer.
 """
 
 import base64
@@ -31,6 +38,9 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 18080
 os.makedirs(STATE, exist_ok=True)
 
 HEX64 = "a" * 64
+SEAL_INFO = b"leikwan-ultra-lease-v1"
+SEAL_ALG = "ECDH-P256+HKDF-SHA256+A256GCM"
+SEALED_FIELDS = ("endpoint", "credential", "external_uot")
 PULLS = 0
 HEARTBEATS = []
 LOCK = threading.Lock()
@@ -103,6 +113,43 @@ def lease_frame(forward_id: int, target: str, ip: str, port: int, index: int) ->
         "endpoint": {"ip": ip, "port": port},
         "credential": {"user": "user-%d" % index, "password": "pass-%d" % index},
     }
+
+
+def b64url_decode(value: str) -> bytes:
+    value = value.strip().rstrip("=")
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def seal_lease(lease: dict, device_public: bytes) -> dict:
+    """Panel side of sealed lease v1, mirroring UltraLeaseSealer::sealLease."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    device = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), device_public)
+    ephemeral = ec.generate_private_key(ec.SECP256R1())
+    epk = ephemeral.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    shared = ephemeral.exchange(ec.ECDH(), device)
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=epk + device_public, info=SEAL_INFO).derive(shared)
+    secret = {name: lease.pop(name) for name in SEALED_FIELDS if name in lease}
+    plaintext = json.dumps(secret, separators=(",", ":")).encode()
+    iv = os.urandom(12)
+    ct = AESGCM(key).encrypt(iv, plaintext, b"leikwan-ultra-lease-v1|" + lease.get("lease_id", "").encode())
+    lease["sealed"] = {
+        "v": 1,
+        "alg": SEAL_ALG,
+        "kid": hashlib.sha256(device_public).hexdigest()[:32],
+        "epk": b64url(epk),
+        "iv": b64url(iv),
+        "ct": b64url(ct),
+    }
+    return lease
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -219,6 +266,9 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "none":
             self._json(409, {"ok": False, "error": "no_approved_candidate"})
             return
+        if state("lease_sealing") == "require" and not (self.headers.get("X-Leikwan-Lease-Key") or "").strip():
+            self._json(409, {"ok": False, "error": "lease_sealing_required"})
+            return
         if mode == "empty":
             self._json(200, {"ok": True, "leases": []})
             return
@@ -229,7 +279,28 @@ class Handler(BaseHTTPRequestHandler):
         else:
             frames = [lease_frame(forward_id, target, ip, port, i) for i, (ip, port) in enumerate(candidate_targets)]
         self._write_state("last_lease_request.json", json.dumps(body))
-        self._json(200, {"ok": True, "leases": frames})
+        response = {"ok": True, "leases": frames}
+        sealing = state("lease_sealing", "optional")
+        header = (self.headers.get("X-Leikwan-Lease-Key") or "").strip()
+        self._write_state("last_lease_key_header", header)
+        if sealing != "off" and header:
+            try:
+                device_public = b64url_decode(header)
+                if len(device_public) != 65 or device_public[0] != 4:
+                    raise ValueError("not an uncompressed point")
+                response["leases"] = [seal_lease(frame, device_public) for frame in frames]
+                response["lease_seal"] = {"v": 1, "kid": hashlib.sha256(device_public).hexdigest()[:32]}
+            except ImportError:
+                self._write_state("last_lease_sealed", "unavailable %d" % len(frames))
+                self._json(200, response)
+                return
+            except ValueError:
+                self._json(400, {"ok": False, "error": "lease_key_invalid"})
+                return
+            self._write_state("last_lease_sealed", "sealed %d" % len(frames))
+        else:
+            self._write_state("last_lease_sealed", "clear %d" % len(frames))
+        self._json(200, response)
 
     def _handle_heartbeat(self, body):
         with LOCK:

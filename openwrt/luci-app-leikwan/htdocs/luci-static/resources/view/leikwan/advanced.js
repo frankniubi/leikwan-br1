@@ -187,7 +187,7 @@ return view.extend({
 		o = s.taboption('paths', form.Value, 'data_dir', _('数据目录 (Data directory)'));
 		o.placeholder = '/etc/leikwan';
 		o.validate = validatePath;
-		o.description = _('保存设备标识与面板凭证（secret.json，0600）。');
+		o.description = _('保存设备标识与面板凭证（secret.json，0600）以及线路租约设备密钥（lease_key.json，0600）。');
 
 		o = s.taboption('paths', form.Value, 'run_dir', _('运行目录 (Runtime directory)'));
 		o.placeholder = '/var/run/leikwand';

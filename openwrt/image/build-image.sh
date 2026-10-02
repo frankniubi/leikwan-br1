@@ -143,7 +143,7 @@ cd "$IB"
 # diagnostic lines on failure.
 BUILD_LOG="${LEIKWAN_BUILD_LOG:-$IB/leikwan-image-build.log}"
 if ! make image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="$FILES" \
-	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.0.0}" >"$BUILD_LOG" 2>&1; then
+	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.0.1}" >"$BUILD_LOG" 2>&1; then
 	echo "firmware build failed; diagnostics from $BUILD_LOG:" >&2
 	grep -E 'Cannot install|check_data_file_clashes|Collected errors|^ \*|No such file|unknown package' "$BUILD_LOG" | head -20 >&2
 	tail -15 "$BUILD_LOG" >&2

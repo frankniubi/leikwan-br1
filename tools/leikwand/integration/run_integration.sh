@@ -217,6 +217,37 @@ REQ="$STATE/last_lease_request.json"
 [ "$(jsonq "$REQ" "d['forwards'][0]['max_candidates']")" = "4" ] && ok "lease asks for up to 4 candidates" || bad "max_candidates wrong"
 [ "$(jsonq "$REQ" "d['device_id']")" = "openwrt-integration" ] && ok "lease carries the router device id" || bad "device id missing from the lease request"
 
+step "sealed lease v1 (device lease key)"
+# The mock panel runs in "optional" sealing mode, so the lease that carried the
+# data-path round trip above was sealed to this router's own key and opened by
+# the daemon before it reached the runtime.
+LEASE_KEY_HEADER=$(cat "$STATE/last_lease_key_header" 2>/dev/null)
+[ "$(python3 -c "
+import base64,sys
+v=sys.argv[1]
+try:
+    raw=base64.urlsafe_b64decode(v+'='*(-len(v)%4))
+except Exception:
+    raw=b''
+print(len(raw)==65 and raw[:1]==b'\x04' and '=' not in v)" "$LEASE_KEY_HEADER")" = "True" ] \
+	&& ok "lease request carries a 65-byte P-256 X-Leikwan-Lease-Key" || bad "lease key header missing or malformed"
+case "$(cat "$STATE/last_lease_sealed" 2>/dev/null)" in
+	sealed*) ok "panel answered with sealed leases ($(cat "$STATE/last_lease_sealed"))" ;;
+	*) bad "panel did not seal the lease ($(cat "$STATE/last_lease_sealed" 2>/dev/null))" ;;
+esac
+[ -f "$DATA/lease_key.json" ] && ok "device lease key persisted in the data directory" || bad "lease_key.json missing"
+[ "$(stat -c %a "$DATA/lease_key.json" 2>/dev/null)" = "600" ] && ok "lease_key.json is owner-only (0600)" || bad "lease_key.json mode is $(stat -c %a "$DATA/lease_key.json" 2>/dev/null)"
+grep -q "lease_unseal_failed" "$ROOT/daemon.log" && bad "daemon reported lease_unseal_failed" || ok "every sealed lease opened"
+if [ -f "$DATA/lease_key.json" ]; then
+	SCALAR=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['private_scalar'])" "$DATA/lease_key.json" 2>/dev/null)
+	if [ -n "$SCALAR" ] && grep -rqF "$SCALAR" "$ROOT/daemon.log" "$STATE" "$DATA/secret.json" 2>/dev/null; then
+		bad "device private key leaked into a log, the panel or secret.json"
+	else
+		ok "device private key never left lease_key.json"
+	fi
+	grep -qF "pass-1" "$ROOT/daemon.log" && bad "relay credential appeared in the daemon log" || ok "relay credential not logged"
+fi
+
 step "a refused grant never drops a healthy session"
 # The panel now reports that no approved candidate exists. A forward that
 # already holds a valid lease must keep serving: refusing a *new* grant is a
