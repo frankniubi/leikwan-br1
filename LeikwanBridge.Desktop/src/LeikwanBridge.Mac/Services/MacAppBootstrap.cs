@@ -113,7 +113,9 @@ public static class MacAppBootstrap
         var api = new MasterApiClient(
             config.MasterUrl,
             config.AgentToken,
-            platformIdentity: identity);
+            platformIdentity: identity,
+            // Next to device-id: the lease key belongs to this install's device identity.
+            leaseKeyStore: UltraLeaseKeyStore.ForDirectory(paths.Root));
         var polling = new ConfigPollingService(api, runtime, state, MacForwardPolicy.Instance);
         var heartbeat = new HeartbeatService(
             api,

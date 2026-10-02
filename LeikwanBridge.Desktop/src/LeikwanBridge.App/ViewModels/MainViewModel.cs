@@ -1394,7 +1394,8 @@ public partial class MainViewModel : ObservableObject
             _config.AgentToken,
             MasterApiClient.BuildWindowsDeviceId(_config.ActiveClientId > 0 ? _config.ActiveClientId : _config.ClientId, Environment.MachineName),
             $"Leikwan Bridge on {Environment.MachineName}",
-            "windows-desktop");
+            "windows-desktop",
+            leaseKeyStore: UltraLeaseKeyStore.ForDirectory(_config.GetEffectiveStateDir()));
 
         var ok = await _api.TestConnectionAsync(ct);
         ct.ThrowIfCancellationRequested();

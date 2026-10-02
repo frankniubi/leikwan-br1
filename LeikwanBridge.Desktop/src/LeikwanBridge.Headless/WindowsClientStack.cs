@@ -50,7 +50,8 @@ internal sealed class WindowsClientStack : IHeadlessClientStack
             config.AgentToken,
             MasterApiClient.BuildWindowsDeviceId(clientId, Environment.MachineName),
             $"Leikwan Bridge on {Environment.MachineName}",
-            "windows-desktop");
+            "windows-desktop",
+            leaseKeyStore: UltraLeaseKeyStore.ForDirectory(config.GetEffectiveStateDir()));
 
         // The agent token is the whole identity: verify it against the panel
         // before any runtime is started, so a stale token fails fast and

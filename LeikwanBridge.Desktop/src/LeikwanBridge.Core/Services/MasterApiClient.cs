@@ -20,6 +20,7 @@ public sealed class MasterApiClient : IDisposable
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
     private readonly ControlPlaneEndpointSupervisor _endpointSupervisor;
     private readonly ExternalUotPolicyGrantCache _externalUotPolicyGrants = new();
+    private UltraLeaseKeyStore? _leaseKeyStore;
 
     public string LastErrorMessage { get; private set; } = "";
 
@@ -44,8 +45,12 @@ public sealed class MasterApiClient : IDisposable
         bool ownsHttpClient = true,
         Action<HttpRequestMessage>? onRequestForTest = null,
         ClientPlatformIdentity? platformIdentity = null,
-        IReadOnlyList<string>? fallbackEndpoints = null)
+        IReadOnlyList<string>? fallbackEndpoints = null,
+        UltraLeaseKeyStore? leaseKeyStore = null)
     {
+        // The store (and the key) is resolved on the first lease request, so
+        // clients that only sign in or pull never touch the key file.
+        _leaseKeyStore = leaseKeyStore;
         if (platformIdentity is not null)
         {
             deviceId = platformIdentity.DeviceId;
@@ -313,8 +318,9 @@ public sealed class MasterApiClient : IDisposable
             {
                 Content = content,
             };
+            var leaseKey = AddLeaseKeyHeader(request);
             var response = await SendAsync(request, ct);
-            await EnsureSuccessOrThrowAsync(response, ct);
+            await EnsureLeaseSuccessOrThrowAsync(response, forward.ForwardId, ct);
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
             try
             {
@@ -323,10 +329,11 @@ public sealed class MasterApiClient : IDisposable
                     || leases.ValueKind != JsonValueKind.Array
                     || leases.GetArrayLength() is < 1 or > 4)
                     return [];
+                using var opened = OpenLeaseBatch(leases, autoSelect ? 4 : 1, leaseKey, forward.ForwardId, response);
                 var parsed = new List<NativeOutboundLease>(Math.Min(leases.GetArrayLength(), autoSelect ? 4 : 1));
                 try
                 {
-                    foreach (var item in leases.EnumerateArray().Take(autoSelect ? 4 : 1))
+                    foreach (var item in opened.Items)
                     {
                         var parsedLease = ParseNativeOutboundLease(
                             item,
@@ -451,8 +458,9 @@ public sealed class MasterApiClient : IDisposable
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_masterUrl}/api/client/ultra/lease") { Content = content };
             AddOfflineValidityHeader(request);
+            var leaseKey = AddLeaseKeyHeader(request);
             var response = await SendAsync(request, ct);
-            await EnsureSuccessOrThrowAsync(response, ct);
+            await EnsureLeaseSuccessOrThrowAsync(response, forward.ForwardId, ct);
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
             try
             {
@@ -463,10 +471,14 @@ public sealed class MasterApiClient : IDisposable
                     || leases.GetArrayLength() is < 1
                     || leases.GetArrayLength() > 4)
                     return [];
+                // Every candidate is opened before any is parsed: an envelope
+                // that does not open fails the whole batch, and nothing parsed
+                // so far is left holding credentials.
+                using var opened = OpenLeaseBatch(leases, maxCandidates, leaseKey, forward.ForwardId, response);
                 var parsed = new List<UltraLease>(Math.Min(leases.GetArrayLength(), maxCandidates));
                 try
                 {
-                    foreach (var item in leases.EnumerateArray().Take(maxCandidates))
+                    foreach (var item in opened.Items)
                     {
                         var lease = ParseUltraLease(item, forward, policy);
                         if (lease is null || !_externalUotPolicyGrants.TryAttach(forward, lease))
@@ -829,6 +841,109 @@ public sealed class MasterApiClient : IDisposable
         request.Headers.TryAddWithoutValidation(
             UltraGrantValidity.OfflineValidityHeader,
             UltraGrantValidity.RequestedOfflineValidityHeaderValue);
+    }
+
+    /// <summary>
+    /// Presents this device's lease public key on a lease request so the panel
+    /// can seal the relay material to it (ultra sealed lease v1). Like the
+    /// offline-validity header it is copied to every mirror attempt.
+    /// </summary>
+    private UltraLeaseDeviceKey AddLeaseKeyHeader(HttpRequestMessage request)
+    {
+        _leaseKeyStore ??= UltraLeaseKeyStore.Default;
+        var key = _leaseKeyStore.GetOrCreate();
+        request.Headers.Remove(UltraLeaseDeviceKey.HeaderName);
+        request.Headers.TryAddWithoutValidation(UltraLeaseDeviceKey.HeaderName, key.HeaderValue);
+        return key;
+    }
+
+    /// <summary>
+    /// Lease refusals that concern the lease key surface like every other lease
+    /// error (a MasterApiException carrying the panel code). A key conflict is
+    /// deliberately not answered with a new key: that would fight the device
+    /// that legitimately holds the pin. The normal lease cadence retries.
+    /// </summary>
+    private static async Task EnsureLeaseSuccessOrThrowAsync(HttpResponseMessage response, int forwardId, CancellationToken ct)
+    {
+        try
+        {
+            await EnsureSuccessOrThrowAsync(response, ct);
+        }
+        catch (MasterApiException ex) when (UltraLeaseSeal.IsKeyRefusal(ex.ErrorCode))
+        {
+            Log.Warning(
+                "Ultra lease for forward {ForwardId} refused by the panel ({ErrorCode}, status={StatusCode}); keeping the current device lease key",
+                forwardId,
+                ex.ErrorCode,
+                ex.StatusCode);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Opens the sealed envelope of every candidate that will be parsed. A
+    /// lease without "sealed" is used as-is; one that does not open fails the
+    /// request with lease_unseal_failed and never falls back to anything else.
+    /// </summary>
+    private static OpenedLeaseBatch OpenLeaseBatch(
+        JsonElement leases,
+        int maxCandidates,
+        UltraLeaseDeviceKey leaseKey,
+        int forwardId,
+        HttpResponseMessage response)
+    {
+        var batch = new OpenedLeaseBatch();
+        try
+        {
+            foreach (var item in leases.EnumerateArray().Take(maxCandidates))
+            {
+                if (!UltraLeaseSeal.TryOpenLease(item, leaseKey, out var opened, out var failure))
+                {
+                    Log.Warning(
+                        "Ultra lease for forward {ForwardId} could not be unsealed ({Reason})",
+                        forwardId,
+                        failure);
+                    throw new MasterApiException(
+                        (int) response.StatusCode,
+                        UltraLeaseSeal.UnsealFailedCode,
+                        errorCode: UltraLeaseSeal.UnsealFailedCode);
+                }
+                batch.Add(item, opened);
+            }
+            return batch;
+        }
+        catch
+        {
+            batch.Dispose();
+            throw;
+        }
+    }
+
+    private sealed class OpenedLeaseBatch : IDisposable
+    {
+        private readonly List<JsonElement> _items = [];
+        private readonly List<UltraOpenedLease> _opened = [];
+
+        public IReadOnlyList<JsonElement> Items => _items;
+
+        public void Add(JsonElement original, UltraOpenedLease? opened)
+        {
+            if (opened is null)
+            {
+                _items.Add(original);
+                return;
+            }
+            _opened.Add(opened);
+            _items.Add(opened.Element);
+        }
+
+        public void Dispose()
+        {
+            foreach (var opened in _opened)
+                opened.Dispose();
+            _opened.Clear();
+            _items.Clear();
+        }
     }
 
     private void AddOptionalHeader(string name, string value)
