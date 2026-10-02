@@ -228,11 +228,29 @@ public sealed class UltraLeaseKeyStore
                 return _key = loaded!;
             }
 
-            var generated = UltraLeaseDeviceKey.Generate();
             if (state == LoadState.Inaccessible)
             {
                 // Overwriting a key this process cannot read would replace the
                 // key the other client of this device (GUI or service) holds.
+                Log.Warning("ultra lease key at {Path} exists but cannot be read; using an in-memory key for this run", KeyPath);
+                IsPersisted = false;
+                return _key = UltraLeaseDeviceKey.Generate();
+            }
+
+            // Creation is serialized across processes with a lock file: a
+            // no-overwrite rename is not atomic on every platform (on macOS
+            // concurrent creators each "won"). Under the lock, look again
+            // before generating, so the second creator adopts the first key.
+            using var creationLock = AcquireCreationLock();
+            state = TryLoad(out loaded);
+            if (state == LoadState.Loaded)
+            {
+                IsPersisted = true;
+                return _key = loaded!;
+            }
+            var generated = UltraLeaseDeviceKey.Generate();
+            if (state == LoadState.Inaccessible)
+            {
                 Log.Warning("ultra lease key at {Path} exists but cannot be read; using an in-memory key for this run", KeyPath);
                 IsPersisted = false;
                 return _key = generated;
@@ -256,6 +274,72 @@ public sealed class UltraLeaseKeyStore
             Log.Warning("ultra lease key could not be written to {Path}; using an in-memory key for this run", KeyPath);
             IsPersisted = false;
             return _key = generated;
+        }
+    }
+
+    /// <summary>
+    /// Exclusive lock on "&lt;key file&gt;.lock" (a sharing-mode lock on Windows,
+    /// flock on Unix), held only while the key is created. It works between
+    /// processes and between store instances of one process. If it cannot be
+    /// taken in time (for example the directory is read-only for this
+    /// account), creation proceeds without it and the no-overwrite rename
+    /// remains the only guard.
+    /// </summary>
+    private IDisposable? AcquireCreationLock()
+    {
+        var lockPath = KeyPath + ".lock";
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        try
+        {
+            CreatePrivateDirectory(Directory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+        while (true)
+        {
+            try
+            {
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.OpenOrCreate,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.None,
+                };
+                if (!OperatingSystem.IsWindows())
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                return new FileStream(lockPath, options);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // A lock file created by the other account may be read-only
+                // for this one; a read handle still takes the exclusive lock.
+                try
+                {
+                    return new FileStream(lockPath, FileMode.Open, FileAccess.Read, FileShare.None);
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or FileNotFoundException)
+                {
+                    return null;
+                }
+                catch (IOException) when (DateTime.UtcNow < deadline)
+                {
+                }
+                catch (IOException)
+                {
+                    return null;
+                }
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+            }
+            catch (IOException)
+            {
+                Log.Warning("ultra lease key creation lock {Path} is busy; creating without it", lockPath);
+                return null;
+            }
+            Thread.Sleep(50);
         }
     }
 

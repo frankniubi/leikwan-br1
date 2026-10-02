@@ -8,7 +8,7 @@
     <AssemblyName>leikwan-bridge-headless</AssemblyName>
     <RootNamespace>LeikwanBridge.Headless</RootNamespace>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <Version>0.1.20.59</Version>
+    <Version>0.1.20.60</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>

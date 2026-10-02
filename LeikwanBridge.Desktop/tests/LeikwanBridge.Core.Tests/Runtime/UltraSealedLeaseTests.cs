@@ -225,7 +225,7 @@ public sealed class UltraSealedLeaseTests
     }
 
     [Fact]
-    public void KeyStore_DoesNotStoreThePrivateKeyInClearOnWindows()
+    public void KeyStore_ProtectsThePrivateKeyForThePlatform()
     {
         using var keyDirectory = new TempStateDirectory();
         var store = new UltraLeaseKeyStore(keyDirectory.Path);
@@ -233,9 +233,9 @@ public sealed class UltraSealedLeaseTests
         var stored = File.ReadAllText(store.KeyPath);
         var pkcs8 = Convert.ToBase64String(key.ExportPkcs8());
 
-        Assert.DoesNotContain(pkcs8, stored, StringComparison.Ordinal);
         if (OperatingSystem.IsWindows())
         {
+            Assert.DoesNotContain(pkcs8, stored, StringComparison.Ordinal);
             Assert.StartsWith("LWLEASEKEY-DPAPI-1:", stored, StringComparison.Ordinal);
             // One file per device, not per account: the GUI user and the
             // LocalSystem service open the same key.
@@ -244,6 +244,8 @@ public sealed class UltraSealedLeaseTests
         }
         else
         {
+            // macOS/Linux keep PKCS#8 in an owner-only file by design.
+            Assert.StartsWith("LWLEASEKEY-PKCS8-1:", stored, StringComparison.Ordinal);
             Assert.Equal(UltraLeaseKeyStore.UnixKeyFileName, Path.GetFileName(store.KeyPath));
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.KeyPath));
         }
@@ -286,7 +288,9 @@ public sealed class UltraSealedLeaseTests
         Assert.Single(headers.Distinct());
         Assert.All(stores, store => Assert.True(store.IsPersisted));
         Assert.Equal(headers[0], new UltraLeaseKeyStore(keyDirectory.Path).GetOrCreate().HeaderValue);
-        Assert.Equal([stores[0].KeyPath], Directory.GetFiles(keyDirectory.Path));
+        Assert.Equal(
+            [stores[0].KeyPath],
+            Directory.GetFiles(keyDirectory.Path).Where(path => !path.EndsWith(".lock", StringComparison.Ordinal)));
     }
 
     [Fact]
