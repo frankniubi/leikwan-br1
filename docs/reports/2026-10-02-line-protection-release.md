@@ -60,3 +60,15 @@ Plan: `docs/plans/2026-10-02-line-protection-security-remediation-plan.md` (Appe
 - Pre-existing: the live 2026.09.28.3 arm64 offline installer embedded a stale `install-forward-runtime.py`
   (fixed in 2026.10.02.1); one sidecar (`2a0f:5707:aaf1:ede6::1`) reinstalls itself every 2–3 minutes;
   client 3 has two leftover emulator device sessions (462, 463).
+
+
+## 2026-10-02/03 后续（第二批，panel 已部署，master 已含）
+
+- **`ULTRA_LEASE_SEALING=auto`**（commit 2df08af4，18:18 UTC 部署）：已 pin 过 key 的设备、或 `ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE`（设为 2026-10-02 13:35:00）之后首见的设备，不带 X-Leikwan-Lease-Key 领 lease 直接 409 `lease_sealing_required`；更早的老设备仍明文可用。生产实测：带 agent_token 但不带 key 的 curl（老/新 device id）均被拒；正常用户领取量不降。sealing 拒绝改用 lease 端点的 {ok,error} 结构。
+- **sidecar 自重装循环修复**（commit 394ce522，18:29 UTC 部署）：根因=一次性 `agent_update_request_token` 永不清除 + agent 只记一个 last_completed，explicit↔auto-release 每次心跳互相重新触发；point 7 fra1 自 08-23 起每 1–3 分钟重装 bond/mptcp 数据面（~27GB/天）。面板现在在 agent 报告完成后清 token（UPDATE 带 token 守卫）；已清 point 5/7/9 的陈旧 token；fra1 重装 18:30 起降为 0/分钟。⚠️遗留：89.144.30.80 上仍有个 2026.08.13.1 旧 Python agent 在跑（无 SSH 凭据，没杀掉；token 清空后它拿不到可执行更新）。
+- **lease 时长账本**（commit e5f15e30，18:33 UTC 部署）：新表 `ultra_lease_time`（每 client+device+forward+UTC 日一行，记 lease 窗口并集秒数，不重复计 renewal/candidate）。这是服务器端唯一不可伪造的用量度量，为按时长/并发计费打基础；**仅记录，无强制、无计费改动**。迁移走 MigrationRunner 自动执行（已记入 schema_migrations）。已确认在记录。
+- 密码：117.55.193.164 root 改为 `Frank20021212.`。
+
+## 仍需用户决定
+1. **推送到 GitHub**：本地 master 领先 origin/master 529 个提交（因 09-26 历史重写）；推送=对远端强推重写历史，未做，等明确确认。
+2. **计费模型**：ledger 已同时支持"按时长"和"按并发线路"；选哪种 + 额度，定了再做强制逻辑。
