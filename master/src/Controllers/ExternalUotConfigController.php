@@ -35,6 +35,12 @@ final class ExternalUotConfigController extends BaseController
     public const DEFAULT_KEEPALIVE_SECONDS = 10;
     public const DEFAULT_SESSION_GRACE_SECONDS = 30;
     public const DEFAULT_FRAME_PAYLOAD_MAX = 65507;
+    /**
+     * The pool sync agent (sidecar-agent/uot_pool_sync.py) attests every
+     * binding with a HELLO to this target plus one DNS round trip, so pool
+     * bindings also admit it; nothing else beyond the forward's own target.
+     */
+    public const POOL_HEALTH_PROBE_TARGETS = ['1.1.1.1:53'];
 
     public function __construct(Config $config)
     {
@@ -54,7 +60,17 @@ final class ExternalUotConfigController extends BaseController
             'SELECT * FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
         ));
         [$host, $port] = self::splitTarget($node['target']);
-        $payload = self::buildPayload(null, $combinations, $this->forwardIdsByCombination($combinations), $port, $host);
+        $forwardIds = $this->forwardIdsByCombination($combinations);
+        $payload = self::buildPayload(
+            null,
+            $combinations,
+            $forwardIds,
+            $port,
+            $host,
+            null,
+            $this->forwardTargets($forwardIds),
+            self::POOL_HEALTH_PROBE_TARGETS
+        );
         unset($payload['panel']);
         $hash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         if ($request->method() === 'POST') {
@@ -72,29 +88,35 @@ final class ExternalUotConfigController extends BaseController
     /**
      * GET /external-uot-config
      *
-     * The host is selected by point_id, agent_token (both exact) or by host / ip
-     * (the sidecar_points.sidecar_host value).  listen_port overrides the port
-     * that is otherwise taken from the combination's external_uot_sidecar_target.
+     * Renders the sidecar document for exactly one sidecar point, which must
+     * prove it is that point with its own agent_token (Authorization: Bearer,
+     * or ?agent_token= for operator use). The document carries every
+     * forward's sidecar token, so it is never selected by point_id, host, ip
+     * or the requesting address: that used to hand any anonymous caller the
+     * tokens of whichever host it named. listen_port overrides the port that is
+     * otherwise taken from the combination's external_uot_sidecar_target.
      *
      * @param array<string, mixed> $params
      */
     public function sidecarConfig(Request $request, array $params): Response
     {
         $query = $request->query();
-        $pointId = (int) ($query['point_id'] ?? 0);
-        $agentToken = trim((string) ($query['agent_token'] ?? ''));
-        $host = trim((string) ($query['host'] ?? ''));
-        $ip = trim((string) ($query['ip'] ?? ''));
+        $agentToken = trim((string) ($request->bearerToken() ?? ''));
+        $tokenSource = 'bearer';
+        if ($agentToken === '') {
+            $agentToken = trim((string) ($query['agent_token'] ?? ''));
+            $tokenSource = 'query';
+        }
         $requestedPort = (int) ($query['listen_port'] ?? 0);
-
-        // A bare config URL (no host/ip/point_id) resolves against the
-        // requesting address, so a fresh sidecar install configures itself
-        // from the panel without extra operator input.
-        $remoteAddress = trim((string) ($request->remoteAddress() ?? ''));
-        $hostCandidate = $host !== '' ? $host : ($ip !== '' ? $ip : $remoteAddress);
+        if ($agentToken === '' || strlen($agentToken) > 191) {
+            return $this->json(['error' => 'unauthorized'], 401)->withHeaders(['Cache-Control' => 'no-store']);
+        }
 
         try {
-            $point = $this->resolvePoint($pointId, $agentToken, $hostCandidate);
+            $point = $this->resolvePoint($agentToken);
+            if ($point === null) {
+                return $this->json(['error' => 'unauthorized'], 401)->withHeaders(['Cache-Control' => 'no-store']);
+            }
             $combinations = $this->db->fetchAll(
                 'SELECT id, external_uot_enabled, external_uot_sidecar_target, external_uot_token, '
                 . 'external_uot_queue_packets, external_uot_keepalive_seconds, '
@@ -102,6 +124,7 @@ final class ExternalUotConfigController extends BaseController
                 . 'FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
             );
             $forwards = $this->forwardIdsByCombination($combinations);
+            $targets = $this->forwardTargets($forwards);
         } catch (Throwable $exception) {
             error_log('external-uot-config: ' . $exception->getMessage());
 
@@ -116,15 +139,12 @@ final class ExternalUotConfigController extends BaseController
             $combinations,
             $forwards,
             $requestedPort,
-            $hostCandidate
+            '',
+            null,
+            $targets
         );
         $payload['panel']['request'] = [
-            'point_id' => $pointId > 0 ? $pointId : null,
-            'agent_token' => $agentToken !== '' ? 'present' : null,
-            'host' => $host !== '' ? $host : null,
-            'ip' => $ip !== '' ? $ip : null,
-            'host_source' => $host !== '' ? 'query-host' : ($ip !== '' ? 'query-ip' : ($remoteAddress !== '' ? 'remote-address' : 'none')),
-            'remote_address' => $remoteAddress !== '' ? $remoteAddress : null,
+            'agent_token' => $tokenSource,
             'listen_port' => $requestedPort > 0 ? $requestedPort : null,
         ];
 
@@ -132,9 +152,36 @@ final class ExternalUotConfigController extends BaseController
     }
 
     /**
+     * Operator-side render for a sidecar host that is not a sidecar point
+     * (the standalone external UoT hosts). Used by
+     * master/cli/external-uot-tokens.php on the panel host itself; it is never
+     * routed, because the document carries every forward's sidecar token.
+     *
+     * @return array<string, mixed>
+     */
+    public function renderForHost(string $host, int $listenPort = 0): array
+    {
+        $combinations = $this->db->fetchAll(
+            'SELECT id, external_uot_enabled, external_uot_sidecar_target, external_uot_token, '
+            . 'external_uot_queue_packets, external_uot_keepalive_seconds, '
+            . 'external_uot_reconnect_grace_seconds, external_uot_frame_payload_max '
+            . 'FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
+        );
+        $forwards = $this->forwardIdsByCombination($combinations);
+
+        return self::buildPayload(null, $combinations, $forwards, $listenPort, $host, null, $this->forwardTargets($forwards));
+    }
+
+    /**
      * @param array<string, mixed>|null $point
      * @param list<array<string, mixed>> $combinations
      * @param array<int, list<int>> $forwardIdsByCombination
+     * @param array<int, string>|null $forwardTargets forward_id => "host:port".
+     *        When given, every forward is bound to its own target instead of
+     *        the sidecar's allow-any default; a forward without a usable target
+     *        is skipped rather than published unbound.
+     * @param list<string> $extraTargets also admitted by every bound forward
+     *        (the pool health probe).
      * @return array<string, mixed>
      */
     public static function buildPayload(
@@ -143,7 +190,9 @@ final class ExternalUotConfigController extends BaseController
         array $forwardIdsByCombination,
         int $requestedPort = 0,
         string $requestedHost = '',
-        ?string $now = null
+        ?string $now = null,
+        ?array $forwardTargets = null,
+        array $extraTargets = []
     ): array {
         $matchHost = self::normalizeHost((string) ($point['sidecar_host'] ?? $requestedHost));
 
@@ -209,7 +258,22 @@ final class ExternalUotConfigController extends BaseController
             $ids = array_values(array_unique(array_map('intval', $combinationForwards)));
             sort($ids);
             foreach ($ids as $forwardId) {
-                $forwards[$forwardId] = ['token' => $combination['token'], 'targets' => []];
+                $bound = [];
+                if ($forwardTargets !== null) {
+                    $target = self::normalizeForwardTarget((string) ($forwardTargets[$forwardId] ?? ''));
+                    if ($target === null) {
+                        $skipped[] = ['id' => $combination['id'], 'forward_id' => $forwardId, 'reason' => 'no-target'];
+                        continue;
+                    }
+                    $bound = [$target];
+                    foreach ($extraTargets as $extra) {
+                        $extra = self::normalizeForwardTarget($extra);
+                        if ($extra !== null && !in_array($extra, $bound, true)) {
+                            $bound[] = $extra;
+                        }
+                    }
+                }
+                $forwards[$forwardId] = ['token' => $combination['token'], 'targets' => $bound];
             }
             $combinationsSummary[] = [
                 'id' => $combination['id'],
@@ -286,32 +350,78 @@ final class ExternalUotConfigController extends BaseController
     }
 
     /**
-     * @return array<string, mixed>|null
+     * forward_id => "host:port" for every forward the document will publish.
+     *
+     * @param array<int, list<int>> $forwardIdsByCombination
+     * @return array<int, string>
      */
-    private function resolvePoint(int $pointId, string $agentToken, string $hostOrIp): ?array
+    private function forwardTargets(array $forwardIdsByCombination): array
     {
-        $columns = 'id, name, sidecar_host, is_active, last_status';
-        if ($pointId > 0) {
-            return $this->db->fetchOne(
-                'SELECT ' . $columns . ' FROM sidecar_points WHERE id = ? LIMIT 1',
-                [$pointId]
-            );
+        $ids = [];
+        foreach ($forwardIdsByCombination as $forwardIds) {
+            foreach ($forwardIds as $forwardId) {
+                $ids[(int) $forwardId] = true;
+            }
         }
-        if ($agentToken !== '') {
-            return $this->db->fetchOne(
-                'SELECT ' . $columns . ' FROM sidecar_points WHERE agent_token = ? LIMIT 1',
-                [$agentToken]
-            );
+        if ($ids === []) {
+            return [];
         }
-        $hostOrIp = trim($hostOrIp);
-        if ($hostOrIp !== '') {
-            return $this->db->fetchOne(
-                'SELECT ' . $columns . ' FROM sidecar_points WHERE LOWER(sidecar_host) = ? LIMIT 1',
-                [self::normalizeHost($hostOrIp)]
-            );
+        $ids = array_keys($ids);
+        $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+        $rows = $this->db->fetchAll(
+            'SELECT id, target_host, target_port FROM forwards WHERE id IN (' . $placeholders . ') ORDER BY id ASC',
+            $ids
+        );
+        $targets = [];
+        foreach ($rows as $row) {
+            $host = trim((string) ($row['target_host'] ?? ''));
+            $port = (int) ($row['target_port'] ?? 0);
+            if ((int) ($row['id'] ?? 0) > 0 && $host !== '' && $port > 0) {
+                $targets[(int) $row['id']] = (str_contains($host, ':') ? '[' . trim($host, '[]') . ']' : $host) . ':' . $port;
+            }
         }
 
-        return null;
+        return $targets;
+    }
+
+    /**
+     * Mirror of the sidecar's normalizeTarget (tools/uot-sidecar/protocol.go):
+     * lower-cased host, canonical IP text, IPv6 in brackets, port 1-65535.
+     */
+    public static function normalizeForwardTarget(string $target): ?string
+    {
+        $parsed = self::splitTarget($target);
+        if ($parsed === null) {
+            return null;
+        }
+        [$host, $port] = $parsed;
+        $host = strtolower(trim($host));
+        if ($host === '' || preg_match('/\s/', $host) === 1) {
+            return null;
+        }
+        $packed = @inet_pton($host);
+        if ($packed !== false) {
+            $host = (string) inet_ntop($packed);
+        }
+
+        return (str_contains($host, ':') ? '[' . $host . ']' : $host) . ':' . $port;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function resolvePoint(string $agentToken): ?array
+    {
+        $point = $this->db->fetchOne(
+            'SELECT id, name, sidecar_host, agent_token, is_active, last_status FROM sidecar_points WHERE agent_token = ? LIMIT 1',
+            [$agentToken]
+        );
+        if (!is_array($point) || !hash_equals((string) ($point['agent_token'] ?? ''), $agentToken)) {
+            return null;
+        }
+        unset($point['agent_token']);
+
+        return $point;
     }
 
     /**

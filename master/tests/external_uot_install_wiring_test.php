@@ -45,15 +45,16 @@ check($bond !== '', 'install-bond-sidecar.sh readable');
 check($external !== '', 'install-external-uot.sh readable');
 check($clientInstaller !== '', 'install-client-agent.sh readable');
 
-check(str_contains($base, "' --external-uot-config '"), 'install command passes --external-uot-config');
-check(str_contains($base, '/external-uot-config?host='), 'install command targets the host-specific config URL');
+check(!str_contains($base, '/external-uot-config?host='), 'install command no longer selects the config by host');
 check(str_contains($base, "' --require-external-uot'"), 'install command requires the external UoT sidecar');
-check(str_contains($base, 'shellQuote('), 'install command shell-quotes the config URL');
+check(str_contains($base, "' --agent-token '"), 'install command carries the point agent token the config fetch authenticates with');
 
 check(str_contains($bond, 'EXTERNAL_UOT_CONFIG="$ARTIFACT_BASE/external-uot-config"'), 'bond installer defaults the config URL');
+check(str_contains($bond, '-H "Authorization: Bearer $AGENT_TOKEN"'), 'bond installer authenticates the config fetch with the point agent token');
+check(str_contains($bond, '"$EXTERNAL_UOT_CONFIG" == "${ARTIFACT_BASE%/}/"*'), 'bond installer only sends the token to the panel origin');
 check(str_contains($bond, '--require-external-uot'), 'bond installer exposes --require-external-uot');
 check(str_contains($bond, '--skip-external-uot'), 'bond installer still allows skipping external UoT');
-check(str_contains($bond, 'if ! "$BIN_DIR/install-external-uot.sh"'), 'bond installer guards a failed external UoT step');
+check(str_contains($bond, '|| ! "$BIN_DIR/install-external-uot.sh"'), 'bond installer guards a failed external UoT step');
 check(str_contains($bond, 'external UoT sidecar install failed and --require-external-uot was set'), 'a failed external UoT step is fatal only with --require-external-uot');
 check(str_contains($bond, 'warning: external UoT sidecar install failed; continuing without it'), 'a failed external UoT step warns and continues otherwise');
 check(str_contains($bond, 'downloaded artifact is empty or unavailable'), 'bond installer rejects empty verified artifacts');
@@ -75,7 +76,8 @@ check(str_contains($clientInstaller, 'NotifyAccess=$AGENT_NOTIFY_ACCESS'), 'clie
 check(str_contains($clientUpdate, 'downloaded ${AGENT_BINARY_KEY} is empty'), 'client updater rejects an empty frozen binary');
 check(str_contains($sidecarUpdate, 'downloaded ${AGENT_BINARY_KEY} is empty'), 'sidecar updater rejects an empty frozen binary');
 
-check(str_contains($controller, 'remoteAddress()'), 'config endpoint resolves the requesting address');
+check(!str_contains($controller, 'remoteAddress()'), 'config endpoint never selects a point by the requesting address');
+check(str_contains($controller, 'bearerToken()'), 'config endpoint authenticates the point by its agent token');
 check(str_contains($bootstrap, "'/external-uot-config'"), 'bootstrap registers the config endpoint');
 check(str_contains($bootstrap, "'/artifacts/external-uot-config'"), 'bootstrap registers the artifacts alias');
 

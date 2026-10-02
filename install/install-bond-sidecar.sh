@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALLER_VERSION="2026.09.17.4"
+INSTALLER_VERSION="2026.10.02.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 AGENT_TOKEN=""
@@ -330,6 +330,21 @@ if [[ "$SKIP_EXTERNAL_UOT" == "1" || "${LEIKWAN_SKIP_EXTERNAL_UOT:-0}" == "1" ]]
   echo "external UoT sidecar install skipped by configuration"
 elif download_verified_artifact external_uot_installer "$ARTIFACT_BASE/artifacts/install-external-uot.sh" "$BIN_DIR/install-external-uot.sh"; then
   external_uot_args=(--artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR" --listen-port "$EXTERNAL_UOT_LISTEN_PORT")
+  # The panel only renders a sidecar document for the point that proves it is
+  # that point (the document carries every forward's sidecar token), so a
+  # panel-hosted config URL is fetched here with this point's agent token and
+  # handed on as a private file. A URL on any other origin never sees the token.
+  if [[ "$EXTERNAL_UOT_CONFIG" =~ ^https?:// ]]     && [[ "$EXTERNAL_UOT_CONFIG" == "${ARTIFACT_BASE%/}/"* || "$EXTERNAL_UOT_CONFIG" == "${MASTER_URL%/}/"* ]]; then
+    EXTERNAL_UOT_CONFIG_FILE="$(umask 077 && mktemp "${TMPDIR:-/tmp}/leikwan-external-uot.XXXXXX")"
+    if curl -fsSL --retry 3 --retry-delay 2 -H "Authorization: Bearer $AGENT_TOKEN"       -o "$EXTERNAL_UOT_CONFIG_FILE" "$EXTERNAL_UOT_CONFIG"; then
+      EXTERNAL_UOT_CONFIG="$EXTERNAL_UOT_CONFIG_FILE"
+    else
+      echo "warning: could not fetch the external UoT config for this point from $EXTERNAL_UOT_CONFIG" >&2
+      rm -f "$EXTERNAL_UOT_CONFIG_FILE"
+      EXTERNAL_UOT_CONFIG=""
+      EXTERNAL_UOT_CONFIG_FAILED=1
+    fi
+  fi
   if [[ -n "$EXTERNAL_UOT_CONFIG" ]]; then
     external_uot_args+=(--config "$EXTERNAL_UOT_CONFIG")
   fi
@@ -341,12 +356,15 @@ elif download_verified_artifact external_uot_installer "$ARTIFACT_BASE/artifacts
   # fall back to the native UDP payload path; with the flag (what the panel
   # passes for a point that owns a sidecar_host) the miss stays fatal so a
   # panel-driven install cannot silently ship without its UoT carrier.
-  if ! "$BIN_DIR/install-external-uot.sh" "${external_uot_args[@]}"; then
+  if [[ "${EXTERNAL_UOT_CONFIG_FAILED:-0}" == "1" ]] || ! "$BIN_DIR/install-external-uot.sh" "${external_uot_args[@]}"; then
     if [[ "$REQUIRE_EXTERNAL_UOT" == "1" ]]; then
       echo "external UoT sidecar install failed and --require-external-uot was set" >&2
       exit 1
     fi
     echo "warning: external UoT sidecar install failed; continuing without it" >&2
+  fi
+  if [[ -n "${EXTERNAL_UOT_CONFIG_FILE:-}" ]]; then
+    rm -f "$EXTERNAL_UOT_CONFIG_FILE"
   fi
 elif [[ "$REQUIRE_EXTERNAL_UOT" == "1" ]]; then
   echo "external UoT installer missing from $ARTIFACT_BASE and --require-external-uot was set" >&2
