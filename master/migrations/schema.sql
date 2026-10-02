@@ -592,6 +592,8 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     ultra_runtime_debugger TINYINT(1) NULL,
     ultra_runtime_instrumented TINYINT(1) NULL,
     ultra_runtime_attested_at DATETIME NULL,
+    ultra_lease_key_sha256 CHAR(64) NULL,
+    ultra_lease_key_seen_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,

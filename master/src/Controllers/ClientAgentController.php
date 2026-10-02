@@ -23,6 +23,7 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\UltraCandidateReputationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraLeaseSealer;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -362,6 +363,14 @@ final class ClientAgentController extends BaseController
 
     public function resolveUltraMaterials(Request $request, array $params): Response
     {
+        // Retired 2026-10-02: this endpoint handed back every relay endpoint
+        // and LeiGod credential for a forward, sealed only with a key derived
+        // from the client token the caller already holds. No shipped client
+        // calls it any more; leases come from /ultra/lease, sealed to the
+        // device key (docs/specs/2026-10-02-ultra-sealed-lease-v1.md).
+        if (strtolower(trim((string) (isset($this->config) ? $this->config->get('ULTRA_MATERIALS_ENDPOINT', 'retired') : 'retired'))) !== 'enabled') {
+            return $this->noStoreJson(['ok' => false, 'error' => 'ultra_materials_retired'], 410);
+        }
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'pull');
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
@@ -411,6 +420,9 @@ final class ClientAgentController extends BaseController
     {
         $client = Auth::requireClientAgent($request, $this->db);
         [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'lease');
+        // Decided before any lease is issued, so a refused or malformed device
+        // key never consumes a lease nonce.
+        $sealKey = $this->ultraLeaseSealKey($request, (int) $client['id'], $deviceId);
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $assignedById = [];
@@ -620,10 +632,110 @@ final class ClientAgentController extends BaseController
                 'Pragma' => 'no-cache',
             ]);
         }
-        return $this->json(['ok' => true, 'leases' => $leases, 'failures' => $failures])->withHeaders([
+        $body = ['ok' => true, 'leases' => $leases, 'failures' => $failures];
+        if ($sealKey !== null) {
+            try {
+                foreach ($leases as $index => $lease) {
+                    $leases[$index] = UltraLeaseSealer::sealLease($lease, $sealKey);
+                }
+            } catch (\Throwable $exception) {
+                error_log('ultra_lease_seal_failed ' . $exception->getMessage());
+                throw new ApiException('lease_seal_unavailable', 503);
+            }
+            $body['leases'] = $leases;
+            $body['lease_seal'] = ['v' => UltraLeaseSealer::VERSION, 'kid' => UltraLeaseSealer::keyId($sealKey)];
+        }
+        return $this->json($body)->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
+    }
+
+    /**
+     * The device key the leases of this request are sealed to, or null for a
+     * clear response. ULTRA_LEASE_SEALING: "off" ignores the header,
+     * "optional" (default) seals whenever a valid key is sent, "require" also
+     * refuses a request without one and a key that conflicts with the
+     * device's live pinned key.
+     */
+    private function ultraLeaseSealKey(Request $request, int $clientId, string $deviceId): ?string
+    {
+        $mode = strtolower(trim((string) (isset($this->config) ? $this->config->get('ULTRA_LEASE_SEALING', 'optional') : 'optional')));
+        if ($mode === 'off') {
+            return null;
+        }
+        $header = trim((string) ($request->header(UltraLeaseSealer::HEADER) ?? ''));
+        if ($header === '') {
+            if ($mode === 'require') {
+                throw new ApiException('lease_sealing_required', 409);
+            }
+            return null;
+        }
+        $key = UltraLeaseSealer::parsePublicKey($header);
+        if ($key === null) {
+            throw new ApiException('lease_key_invalid', 400);
+        }
+        $this->pinUltraLeaseKey($clientId, $deviceId, UltraLeaseSealer::keyHash($key), $mode === 'require');
+        return $key;
+    }
+
+    /**
+     * One live lease key per device id. A different key is accepted once the
+     * pinned one has been idle for ULTRA_LEASE_KEY_REPIN_SECONDS (a reinstall
+     * that lost its key); while the pinned key is live the newcomer is refused
+     * under "require" and only logged otherwise. Bookkeeping failures (for
+     * example the columns not migrated yet) never block a lease.
+     */
+    private function pinUltraLeaseKey(int $clientId, string $deviceId, string $keyHash, bool $enforce): void
+    {
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT ultra_lease_key_sha256, ultra_lease_key_seen_at FROM client_device_sessions
+                  WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+                ['client_id' => $clientId, 'device_id' => $deviceId]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_key_pin_lookup_failed ' . $exception::class);
+            return;
+        }
+        if (!is_array($row)) {
+            return;
+        }
+        $now = time();
+        $pinned = strtolower(trim((string) ($row['ultra_lease_key_sha256'] ?? '')));
+        $seenText = trim((string) ($row['ultra_lease_key_seen_at'] ?? ''));
+        $seenAt = $seenText !== '' ? (int) strtotime($seenText . ' UTC') : 0;
+        $window = max(60, min(86400, (isset($this->config) ? $this->config->getInt('ULTRA_LEASE_KEY_REPIN_SECONDS', 900) : 900)));
+        if ($pinned !== '' && !hash_equals($pinned, $keyHash) && $seenAt > $now - $window) {
+            error_log(sprintf(
+                'ultra_lease_key_conflict client=%d device=%s enforce=%d',
+                $clientId,
+                substr(hash('sha256', $deviceId), 0, 16),
+                $enforce ? 1 : 0
+            ));
+            if ($enforce) {
+                throw new ApiException('lease_device_key_conflict', 409);
+            }
+            return;
+        }
+        if ($pinned === $keyHash && $seenAt > $now - 60) {
+            return;
+        }
+        try {
+            $this->db->execute(
+                'UPDATE client_device_sessions
+                    SET ultra_lease_key_sha256 = :key_hash, ultra_lease_key_seen_at = :seen_at
+                  WHERE client_id = :client_id AND device_id = :device_id',
+                [
+                    'key_hash' => $keyHash,
+                    'seen_at' => gmdate('Y-m-d H:i:s', $now),
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                ]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_key_pin_update_failed ' . $exception::class);
+        }
     }
 
     /**
