@@ -144,16 +144,25 @@ public sealed class UltraLeaseDeviceKey : IDisposable
 
 /// <summary>
 /// Persists one lease key per device so the panel sees the same key on every
-/// request, restart and update. Windows keeps the PKCS#8 bytes under DPAPI in
-/// the account's own scope (the GUI user or LocalSystem for the service), in a
-/// file named after the account SID so two accounts sharing the state
-/// directory never overwrite each other's key. Other platforms keep an
-/// owner-only (0600) file in the agent's private state directory. A missing or
-/// unreadable key is replaced by a new one; a key that cannot be written is
-/// still used for the life of the process.
+/// request, restart and update.
+/// On Windows the GUI client (interactive user) and the windowless service
+/// (LocalSystem) present the same device id, so they must present the same
+/// key: the PKCS#8 bytes are kept under machine-scope DPAPI in a single file in
+/// the shared state directory. Any process on this machine can open it (the
+/// same exposure as the agent_token in that directory), a copy is useless on
+/// another machine, and the file keeps the ACL it inherits from the state
+/// directory, exactly like config.json and the other state files. On macOS the
+/// GUI and the root LaunchDaemon each have their own home, device-id and key,
+/// so the key is an owner-only (0600) file next to device-id.
+/// A missing or corrupt key is replaced by a new one; a key that exists but
+/// cannot be read is never overwritten (another account may be using it) and
+/// a key that cannot be written is still used for the life of the process.
 /// </summary>
 public sealed class UltraLeaseKeyStore
 {
+    public const string WindowsKeyFileName = "ultra-lease-key.dpapi";
+    public const string UnixKeyFileName = "ultra-lease-key";
+
     private const string ProtectedPrefix = "LWLEASEKEY-DPAPI-1:";
     private const string PlainPrefix = "LWLEASEKEY-PKCS8-1:";
     private const int MaxStoredBytes = 16 * 1024;
@@ -171,8 +180,9 @@ public sealed class UltraLeaseKeyStore
         if (string.IsNullOrWhiteSpace(directory))
             throw new ArgumentException("lease key directory required", nameof(directory));
         Directory = directory;
-        _protector = protector ?? (OperatingSystem.IsWindows() ? new WindowsDpapiSecretProtector() : null);
-        KeyPath = Path.Combine(directory, KeyFileName());
+        _protector = protector
+            ?? (OperatingSystem.IsWindows() ? new WindowsDpapiSecretProtector(localMachineScope: true) : null);
+        KeyPath = Path.Combine(directory, OperatingSystem.IsWindows() ? WindowsKeyFileName : UnixKeyFileName);
     }
 
     public string Directory { get; }
@@ -211,28 +221,37 @@ public sealed class UltraLeaseKeyStore
         {
             if (_key is not null)
                 return _key;
-            var existed = File.Exists(KeyPath);
-            if (existed && TryLoad(out var loaded))
+            var state = TryLoad(out var loaded);
+            if (state == LoadState.Loaded)
             {
                 IsPersisted = true;
-                return _key = loaded;
+                return _key = loaded!;
             }
-            if (existed)
-                Log.Warning("ultra lease key at {Path} is unreadable; generating a new device lease key", KeyPath);
 
             var generated = UltraLeaseDeviceKey.Generate();
-            if (TryPersist(generated, overwrite: existed))
+            if (state == LoadState.Inaccessible)
+            {
+                // Overwriting a key this process cannot read would replace the
+                // key the other client of this device (GUI or service) holds.
+                Log.Warning("ultra lease key at {Path} exists but cannot be read; using an in-memory key for this run", KeyPath);
+                IsPersisted = false;
+                return _key = generated;
+            }
+            if (state == LoadState.Corrupt)
+                Log.Warning("ultra lease key at {Path} is unreadable; generating a new device lease key", KeyPath);
+
+            if (TryPersist(generated, overwrite: state == LoadState.Corrupt))
             {
                 IsPersisted = true;
                 return _key = generated;
             }
-            // Another process of the same account may have created the key
-            // between the existence check and the write: adopt that one.
-            if (!existed && File.Exists(KeyPath) && TryLoad(out var raced))
+            // The other client of this device (or another process) created the
+            // key between the load and the write: the second creator adopts it.
+            if (state == LoadState.Missing && TryLoad(out var raced) == LoadState.Loaded)
             {
                 generated.Dispose();
                 IsPersisted = true;
-                return _key = raced;
+                return _key = raced!;
             }
             Log.Warning("ultra lease key could not be written to {Path}; using an in-memory key for this run", KeyPath);
             IsPersisted = false;
@@ -240,37 +259,59 @@ public sealed class UltraLeaseKeyStore
         }
     }
 
+    private enum LoadState
+    {
+        Loaded,
+        Missing,
+        Corrupt,
+        Inaccessible,
+    }
+
     private bool UsesDpapi => _protector is { IsAvailable: true };
 
-    private bool TryLoad(out UltraLeaseDeviceKey key)
+    private LoadState TryLoad(out UltraLeaseDeviceKey? key)
     {
-        key = null!;
+        key = null;
+        string stored;
+        try
+        {
+            if (!File.Exists(KeyPath))
+                return LoadState.Missing;
+            var info = new FileInfo(KeyPath);
+            if (info.Length is <= 0 or > MaxStoredBytes)
+                return LoadState.Corrupt;
+            if (!UsesDpapi && !OperatingSystem.IsWindows())
+                EnsureOwnerOnly(KeyPath);
+            stored = File.ReadAllText(KeyPath).Trim();
+        }
+        catch (FileNotFoundException)
+        {
+            return LoadState.Missing;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Debug("ultra lease key read failed ({ErrorType})", ex.GetType().Name);
+            return LoadState.Inaccessible;
+        }
+
         byte[] pkcs8 = [];
         try
         {
-            var info = new FileInfo(KeyPath);
-            if (info.Length is <= 0 or > MaxStoredBytes)
-                return false;
-            if (!UsesDpapi && !OperatingSystem.IsWindows())
-                EnsureOwnerOnly(KeyPath);
-            var stored = File.ReadAllText(KeyPath).Trim();
             var prefix = UsesDpapi ? ProtectedPrefix : PlainPrefix;
             if (!stored.StartsWith(prefix, StringComparison.Ordinal))
-                return false;
+                return LoadState.Corrupt;
             var blob = Convert.FromBase64String(stored[prefix.Length..]);
             pkcs8 = UsesDpapi ? _protector!.Unprotect(blob) : blob;
             key = UltraLeaseDeviceKey.ImportPkcs8(pkcs8);
-            return true;
+            return LoadState.Loaded;
         }
-        catch (Exception ex) when (ex is IOException
-            or UnauthorizedAccessException
-            or FormatException
+        catch (Exception ex) when (ex is FormatException
             or CryptographicException
             or Win32Exception
             or PlatformNotSupportedException)
         {
             Log.Debug("ultra lease key load failed ({ErrorType})", ex.GetType().Name);
-            return false;
+            return LoadState.Corrupt;
         }
         finally
         {
@@ -347,25 +388,6 @@ public sealed class UltraLeaseKeyStore
         const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         if (File.GetUnixFileMode(path) != ownerOnly)
             File.SetUnixFileMode(path, ownerOnly);
-    }
-
-    private static string KeyFileName()
-    {
-        if (!OperatingSystem.IsWindows())
-            return "ultra-lease-key";
-        string sid;
-        try
-        {
-            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
-            sid = identity.User?.Value ?? "";
-        }
-        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException)
-        {
-            sid = "";
-        }
-        if (sid.Length == 0 || sid.Any(character => character is not ('S' or '-' or >= '0' and <= '9')))
-            sid = "account";
-        return $"ultra-lease-key.{sid}.dpapi";
     }
 
     private static string PlatformDefaultDirectory()

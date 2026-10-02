@@ -237,12 +237,135 @@ public sealed class UltraSealedLeaseTests
         if (OperatingSystem.IsWindows())
         {
             Assert.StartsWith("LWLEASEKEY-DPAPI-1:", stored, StringComparison.Ordinal);
-            Assert.Contains(System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value, store.KeyPath, StringComparison.Ordinal);
+            // One file per device, not per account: the GUI user and the
+            // LocalSystem service open the same key.
+            Assert.Equal(UltraLeaseKeyStore.WindowsKeyFileName, Path.GetFileName(store.KeyPath));
+            Assert.True(IsMachineScopeDpapiBlob(Convert.FromBase64String(stored.Trim()["LWLEASEKEY-DPAPI-1:".Length..])));
         }
         else
         {
+            Assert.Equal(UltraLeaseKeyStore.UnixKeyFileName, Path.GetFileName(store.KeyPath));
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(store.KeyPath));
         }
+    }
+
+    [Fact]
+    public void DpapiProtector_LocalMachineScopeIsDistinctFromUserScope()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var secret = RandomNumberGenerator.GetBytes(32);
+        var machine = new WindowsDpapiSecretProtector(localMachineScope: true);
+        var user = new WindowsDpapiSecretProtector();
+
+        var machineBlob = machine.Protect(secret);
+        var userBlob = user.Protect(secret);
+
+        Assert.True(machine.IsLocalMachineScope);
+        Assert.True(IsMachineScopeDpapiBlob(machineBlob));
+        Assert.False(IsMachineScopeDpapiBlob(userBlob));
+        Assert.Equal(secret, machine.Unprotect(machineBlob));
+        Assert.Equal(secret, user.Unprotect(userBlob));
+    }
+
+    [Fact]
+    public async Task KeyStore_ConcurrentCreatorsShareOneKey()
+    {
+        // Two clients of one device (the GUI and the service) starting at the
+        // same moment: whoever writes second adopts the key already on disk.
+        using var keyDirectory = new TempStateDirectory();
+        var stores = Enumerable.Range(0, 8).Select(_ => new UltraLeaseKeyStore(keyDirectory.Path)).ToArray();
+        using var start = new Barrier(stores.Length);
+
+        var headers = await Task.WhenAll(stores.Select(store => Task.Run(() =>
+        {
+            start.SignalAndWait();
+            return store.GetOrCreate().HeaderValue;
+        })));
+
+        Assert.Single(headers.Distinct());
+        Assert.All(stores, store => Assert.True(store.IsPersisted));
+        Assert.Equal(headers[0], new UltraLeaseKeyStore(keyDirectory.Path).GetOrCreate().HeaderValue);
+        Assert.Equal([stores[0].KeyPath], Directory.GetFiles(keyDirectory.Path));
+    }
+
+    [Fact]
+    public void KeyStore_KeyFileOnlyInheritsTheStateDirectoryAcl()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        // A ProgramData directory carries the same inherited ACL as the shared
+        // ClientAgent state directory: SYSTEM full, Users read.
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "leikwan-desktop-tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new UltraLeaseKeyStore(directory);
+            store.GetOrCreate();
+
+            var security = new FileInfo(store.KeyPath).GetAccessControl();
+            var rules = security
+                .GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+                .Cast<System.Security.AccessControl.FileSystemAccessRule>()
+                .ToList();
+            Assert.False(security.AreAccessRulesProtected);
+            Assert.All(rules, rule => Assert.True(rule.IsInherited));
+            Assert.Contains(rules, rule => IsAllowedRead(rule, "S-1-5-18"));
+            Assert.Contains(rules, rule => IsAllowedRead(rule, "S-1-5-32-545"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+            var parent = Path.GetDirectoryName(directory)!;
+            try
+            {
+                if (Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+                    Directory.Delete(parent);
+            }
+            catch (IOException)
+            {
+                // Another test run is using it.
+            }
+        }
+    }
+
+    [Fact]
+    public void KeyStore_NeverOverwritesAKeyItCannotRead()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        using var keyDirectory = new TempStateDirectory();
+        var owner = new UltraLeaseKeyStore(keyDirectory.Path);
+        var ownerHeader = owner.GetOrCreate().HeaderValue;
+        var before = File.ReadAllText(owner.KeyPath);
+        var file = new FileInfo(owner.KeyPath);
+        var me = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var deny = new System.Security.AccessControl.FileSystemAccessRule(
+            me,
+            System.Security.AccessControl.FileSystemRights.ReadData,
+            System.Security.AccessControl.AccessControlType.Deny);
+        var security = file.GetAccessControl();
+        security.AddAccessRule(deny);
+        file.SetAccessControl(security);
+        try
+        {
+            var other = new UltraLeaseKeyStore(keyDirectory.Path);
+            var otherHeader = other.GetOrCreate().HeaderValue;
+
+            Assert.False(other.IsPersisted);
+            Assert.NotEqual(ownerHeader, otherHeader);
+        }
+        finally
+        {
+            security = file.GetAccessControl();
+            security.RemoveAccessRule(deny);
+            file.SetAccessControl(security);
+        }
+        Assert.Equal(before, File.ReadAllText(owner.KeyPath));
+        Assert.Equal(ownerHeader, new UltraLeaseKeyStore(keyDirectory.Path).GetOrCreate().HeaderValue);
     }
 
     [Fact]
@@ -260,6 +383,16 @@ public sealed class UltraSealedLeaseTests
         Assert.True(replacement.IsPersisted);
         Assert.Equal(replacementHeader, new UltraLeaseKeyStore(keyDirectory.Path).GetOrCreate().HeaderValue);
     }
+
+    // DPAPI_BLOB: dwVersion, guidProvider, dwMasterKeyVersion, guidMasterKey,
+    // then dwFlags; CRYPTPROTECT_LOCAL_MACHINE (0x4) marks a machine-scope blob.
+    private static bool IsMachineScopeDpapiBlob(byte[] blob)
+        => blob.Length > 44 && (BitConverter.ToUInt32(blob, 40) & 0x4) != 0;
+
+    private static bool IsAllowedRead(System.Security.AccessControl.FileSystemAccessRule rule, string sid)
+        => rule.AccessControlType == System.Security.AccessControl.AccessControlType.Allow
+            && string.Equals(rule.IdentityReference.Value, sid, StringComparison.Ordinal)
+            && (rule.FileSystemRights & System.Security.AccessControl.FileSystemRights.ReadData) != 0;
 
     public enum LeaseSealing
     {
