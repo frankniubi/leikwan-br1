@@ -1471,6 +1471,28 @@ CREATE TABLE IF NOT EXISTS ultra_lease_refusals (
     INDEX idx_ultra_lease_refusal_client (client_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Panel-observed Ultra connected time (20261003_add_ultra_lease_time.sql):
+-- union of lease windows per client + device + forward + UTC day.
+CREATE TABLE IF NOT EXISTS ultra_lease_time (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    device_hash CHAR(64) NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    period_day DATE NOT NULL,
+    leased_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    lease_count INT UNSIGNED NOT NULL DEFAULT 0,
+    covered_until BIGINT NOT NULL DEFAULT 0,
+    first_issued_at DATETIME NOT NULL,
+    last_issued_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_lease_time_day (client_id, device_hash, forward_id, period_day),
+    INDEX idx_ultra_lease_time_client_day (client_id, period_day),
+    INDEX idx_ultra_lease_time_service_day (service_id, period_day),
+    INDEX idx_ultra_lease_time_forward_day (forward_id, period_day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     forward_combination_id BIGINT UNSIGNED NOT NULL,

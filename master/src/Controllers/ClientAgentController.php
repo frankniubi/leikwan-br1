@@ -520,6 +520,8 @@ final class ClientAgentController extends BaseController
             }
             $policy = [
                 'forward_id' => $forwardId,
+                // Attribution only (ultra_lease_time); never a scope check.
+                'service_id' => (int) ($forward['service_id'] ?? 0),
                 'device_hash' => hash('sha256', $deviceId),
                 'service_state' => (string) ($forward['service_status'] ?? 'suspended'),
                 'policy_generation' => (string) ($grant['policy_generation'] ?? ''),

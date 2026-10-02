@@ -103,6 +103,8 @@ final class UltraLeaseService
     /** @var array<string, list<string>>|null fingerprint => released binary hashes */
     private ?array $releasedRuntimeHashes = null;
 
+    private ?UltraLeaseTimeLedger $leaseTime = null;
+
     public function __construct(
         private Config $config,
         private ?Database $db = null,
@@ -276,6 +278,7 @@ final class UltraLeaseService
         $leaseExpiresAt = min($expiresAt, $this->now() + $this->leaseTtlSeconds($policy));
         $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt, $candidateKeyHash);
         $this->rememberIssuedLease($clientId, $deviceHash, $leaseExpiresAt);
+        $this->recordLeaseTime($clientId, $policy, $deviceHash, $forwardId, $leaseExpiresAt);
         $lease = $this->scrubLease([
             'protocol' => $isNative ? UltraMode::NATIVE_SOCKS5_PROTOCOL : UltraMode::POLICY_PROTOCOL,
             'purpose' => $normalized['purpose'],
@@ -327,6 +330,33 @@ final class UltraLeaseService
             return $validity;
         }
         return UltraMode::MAX_POLICY_TTL_SECONDS;
+    }
+
+    /**
+     * Panel-observed connected time (UltraLeaseTimeLedger). Runs only after the
+     * lease is committed and can never change the outcome: a ledger failure is
+     * logged and the lease is still returned.
+     *
+     * @param array<string,mixed> $policy
+     */
+    private function recordLeaseTime(int $clientId, array $policy, string $deviceHash, int $forwardId, int $leaseExpiresAt): void
+    {
+        if ($this->db === null) {
+            return;
+        }
+        try {
+            $serviceId = (int) ($policy['service_id'] ?? 0);
+            ($this->leaseTime ??= new UltraLeaseTimeLedger($this->db))->recordLease(
+                $clientId,
+                $serviceId > 0 ? $serviceId : null,
+                $deviceHash,
+                $forwardId,
+                $this->now(),
+                $leaseExpiresAt
+            );
+        } catch (Throwable $exception) {
+            error_log('ultra_lease_time_record_failed ' . $exception::class);
+        }
     }
 
     /** @return array<string,mixed> */
@@ -1176,7 +1206,7 @@ final class UltraLeaseService
             return [];
         }
         $row = $this->db->fetchOne(
-            'SELECT f.id AS forward_id, f.target_host, f.target_port, f.transport_mode,
+            'SELECT f.id AS forward_id, f.service_id, f.target_host, f.target_port, f.transport_mode,
                     f.backend_mode, f.enabled, f.native_outbound_enabled,
                     s.status AS service_status, s.expire_at,
                     fc.is_active AS combination_active, fc.ultra_destination_zone,
@@ -1200,6 +1230,7 @@ final class UltraLeaseService
             && (int) ($row['combination_active'] ?? 1) === 1) ? 'active' : 'suspended';
         return [
             'forward_id' => $forwardId,
+            'service_id' => (int) ($row['service_id'] ?? 0),
             'service_state' => $state,
             'target' => $target,
             'transport' => in_array($transport, ['tcp', 'udp', 'tcp+udp'], true) ? $transport : 'tcp+udp',
