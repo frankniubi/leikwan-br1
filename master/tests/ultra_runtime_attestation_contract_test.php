@@ -939,6 +939,42 @@ namespace {
     );
     Database::$attestationSession = null;
     @unlink($denyEnv);
+
+    // (h) a runtime release replaces the platform entry; the previous build's
+    //     hash stays valid only while ULTRA_ATTESTATION_EXTRA_HASHES_JSON lists it.
+    $previousHash = str_repeat('ef', 32);
+    $previousSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => $previousHash,
+    ];
+    foreach ([false, true] as $listed) {
+        $values = [
+            'APP_ENV' => 'test',
+            UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+            UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        ];
+        if ($listed) {
+            $values[UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY] = json_encode([$releasedFingerprint => [$previousHash, 'not-a-hash']]);
+        }
+        $rolloverEnv = ultraAttestationEnv($values);
+        $rolloverService = new UltraLeaseService(
+            new Config($rolloverEnv),
+            new Database(),
+            null,
+            'ultraAttestationCandidate',
+            static fn(): int => 1_900_000_000,
+            'ultraAttestationPolicy'
+        );
+        Database::$attestationSession = $previousSession;
+        $refused = ($rolloverService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED;
+        assertUltraRuntimeAttestation(
+            $refused === !$listed,
+            $listed ? 'a listed previous-release hash must keep working' : 'an unlisted previous-release hash must be refused'
+        );
+        Database::$attestationSession = null;
+        @unlink($rolloverEnv);
+    }
     assertUltraRuntimeAttestation(
         str_contains($leaseSource, "get(self::ATTESTATION_UNATTESTED_KEY, 'allow')"),
         'the unattested policy must default to allow'

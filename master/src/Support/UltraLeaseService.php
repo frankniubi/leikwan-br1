@@ -69,6 +69,14 @@ final class UltraLeaseService
      * fingerprint, otherwise older builds lose their leases.
      */
     public const ATTESTATION_UNATTESTED_KEY = 'ULTRA_ATTESTATION_UNATTESTED';
+    /**
+     * Extra released binaries, as JSON {"<fingerprint>": ["<sha256>", ...]}.
+     * versions.json only names the current artifact per platform, so a runtime
+     * release would otherwise refuse every client still running the previous
+     * build until it updates. List the previous release's hashes here for the
+     * rollout window, then remove them.
+     */
+    public const ATTESTATION_EXTRA_HASHES_KEY = 'ULTRA_ATTESTATION_EXTRA_HASHES_JSON';
     public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
 
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
@@ -540,6 +548,20 @@ final class UltraLeaseService
             }
             if (!in_array($hash, $this->releasedRuntimeHashes[$fingerprint], true)) {
                 $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+            }
+        }
+        $extra = json_decode((string) $this->config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
+        foreach (is_array($extra) ? $extra : [] as $fingerprint => $hashes) {
+            $fingerprint = strtolower(trim((string) $fingerprint));
+            if ($fingerprint === '' || !is_array($hashes)) {
+                continue;
+            }
+            foreach ($hashes as $hash) {
+                $hash = strtolower(trim((string) $hash));
+                if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1
+                    && !in_array($hash, $this->releasedRuntimeHashes[$fingerprint] ?? [], true)) {
+                    $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+                }
             }
         }
         // One fingerprint can ship several platform binaries; a client only ever
