@@ -45,6 +45,11 @@ Plan: `docs/plans/2026-10-02-line-protection-security-remediation-plan.md` (Appe
 
 ## Follow-ups
 
+- **Client 10 (180.153.83.93, Linux agent 2026.09.27.1) had not updated by 13:46 UTC** while the other three
+  updated within ~3 minutes. It pulls config and gets leases normally (attested through the rollover hashes) but
+  has fetched no update artifact since 09:02 UTC; its account has no explicit update token, so the agent's own
+  gate is holding it (`LEIKWAN_UPDATE_HOLD_UNTIL` or the converge back-off in `client_agent.py`). No SSH access
+  from here; check on the host or set an explicit update request in the panel.
 - **Remove `ULTRA_ATTESTATION_EXTRA_HASHES_JSON`** from the panel `.env` once every Linux/macOS client reports
   fingerprint `2026.10.02.1.d1bac327` (check `client_device_sessions.ultra_runtime_fingerprint`).
 - **`ULTRA_LEASE_SEALING=require`** only after every live device has `ultra_lease_key_sha256` set (desktops update
