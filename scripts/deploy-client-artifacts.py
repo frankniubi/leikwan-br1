@@ -103,6 +103,19 @@ def verify(path, expected):
     return actual
 
 
+def is_absent(entry):
+    """A payload the release adds for the first time (plan['new_entries'])."""
+    return entry['before'] == {'absent': True}
+
+
+def verify_before(path, entry):
+    if is_absent(entry):
+        if path.exists() or path.is_symlink():
+            raise ValueError('new artifact already present: ' + str(path))
+        return None
+    return verify(path, entry['before'])
+
+
 def atomic_copy(source, target, attributes, expected):
     fd, temp = tempfile.mkstemp(prefix='.leikwan-release-', suffix='.tmp', dir=str(target.parent))
     try:
@@ -131,6 +144,10 @@ def validate_plan(root, stage, plan):
     if not re.fullmatch(r'[0-9a-f]{40}', plan['git_commit']):
         raise ValueError('expected a full source commit')
     entries = plan['payloads'] + [plan['manifest']]
+    new_keys = set(plan.get('new_entries', []))
+    if not new_keys <= set(plan['versions']):
+        raise ValueError('new entry outside the release versions')
+    new_paths = {CANONICAL[key][0] for key in new_keys}
     expected_paths = {CANONICAL[key][0] for key in plan['versions']}
     if 'client_agent' in plan['versions']:
         expected_paths.add('artifacts/client-agent.py')
@@ -139,9 +156,13 @@ def validate_plan(root, stage, plan):
     if plan['manifest']['path'] != MANIFEST:
         raise ValueError('manifest target mismatch')
     for entry in entries:
-        verify(guarded_path(root, entry['path']), entry['before'])
+        if is_absent(entry) != (entry['path'] in new_paths):
+            raise ValueError('absent marker must match new_entries: ' + entry['path'])
+        verify_before(guarded_path(root, entry['path']), entry)
         verify(guarded_path(stage, entry['upload']), entry['after'])
     before = json.loads((root / MANIFEST).read_text())
+    if any(key in before for key in new_keys):
+        raise ValueError('new entry already in the live manifest')
     after = json.loads(guarded_path(stage, plan['manifest']['upload']).read_text())
     changed = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
     if changed != set(plan['versions']):
@@ -162,7 +183,7 @@ def validate_plan(root, stage, plan):
         info = after[key]
         if info['path'] != path or info['artifact_url'] != route or info['version'] != version:
             raise ValueError('noncanonical artifact contract: ' + key)
-        if numeric_version(version) <= numeric_version(before[key]['version']):
+        if key not in new_keys and numeric_version(version) <= numeric_version(before[key]['version']):
             raise ValueError('version must strictly increase: ' + key)
         for field in ('sha256', 'size_bytes'):
             if info[field] != entry['after'][field]:
@@ -212,7 +233,7 @@ def verify_untouched_entries(root, manifest, plan):
 def publish(root, stage, backup_base, plan, health, min_free=1024**3):
     root, stage, backup_base = root.resolve(), stage.resolve(), backup_base.resolve()
     entries = validate_plan(root, stage, plan)
-    needed = sum(e['before']['size_bytes'] + 2 * e['after']['size_bytes'] for e in entries) + min_free
+    needed = sum(e['before'].get('size_bytes', 0) + 2 * e['after']['size_bytes'] for e in entries) + min_free
     for location in (root, stage, backup_base):
         if shutil.disk_usage(location).free < needed:
             raise ValueError('insufficient free space: ' + str(location))
@@ -221,6 +242,8 @@ def publish(root, stage, backup_base, plan, health, min_free=1024**3):
     backup.mkdir(mode=0o700, exist_ok=False)
     (backup / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     for entry in entries:
+        if is_absent(entry):
+            continue
         destination = guarded_path(backup, entry['path'])
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(guarded_path(root, entry['path']), destination)
@@ -235,9 +258,10 @@ def publish(root, stage, backup_base, plan, health, min_free=1024**3):
         validate_plan(root, stage, plan)
         for entry in entries:
             target = guarded_path(root, entry['path'])
-            verify(target, entry['before'])
+            verify_before(target, entry)
             installed.append(entry)
-            atomic_copy(guarded_path(stage, entry['upload']), target, entry['before'], entry['after'])
+            attributes = entry['after'] if is_absent(entry) else entry['before']
+            atomic_copy(guarded_path(stage, entry['upload']), target, attributes, entry['after'])
             verify(target, entry['after'])
         receipt['after'] = {e['path']:verify(guarded_path(root, e['path']), e['after']) for e in entries}
         receipt['preserved'] = {p:verify(guarded_path(root, p), v) for p,v in plan['preserved'].items()}
@@ -249,6 +273,13 @@ def publish(root, stage, backup_base, plan, health, min_free=1024**3):
         for entry in installed:
             target = guarded_path(root, entry['path'])
             try:
+                if is_absent(entry):
+                    # Only remove what this release wrote.
+                    if target.exists():
+                        if metadata(target)['sha256'] != entry['after']['sha256']:
+                            raise RuntimeError('concurrent modification; not removing')
+                        target.unlink()
+                    continue
                 current = metadata(target)
                 if current['sha256'] != entry['before']['sha256']:
                     if current['sha256'] != entry['after']['sha256']:

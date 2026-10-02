@@ -112,6 +112,44 @@ class GuardedDeployTests(unittest.TestCase):
         self.plan['manifest']['after']=deploy.metadata(p)
         with self.assertRaisesRegex(ValueError,'noncanonical'):self.run_release()
 
+    def add_new_entry(self):
+        path, route = deploy.CANONICAL['client_lease_seal']
+        upload = self.stage/'lease-seal.py'; upload.write_bytes(b'seal module')
+        p = self.stage/'versions.json'; m = json.loads(p.read_text())
+        m['client_lease_seal'] = {'version':'2026.10.02.1','path':path,'artifact_url':route,
+            **{k:v for k,v in deploy.metadata(upload).items() if k in ('sha256','size_bytes')}}
+        p.write_text(json.dumps(m))
+        self.plan['versions']['client_lease_seal'] = '2026.10.02.1'
+        self.plan['new_entries'] = ['client_lease_seal']
+        (self.root/path).parent.mkdir(parents=True, exist_ok=True)
+        self.plan['payloads'].append({'path':path,'upload':'lease-seal.py','before':{'absent':True},'after':deploy.metadata(upload)})
+        self.plan['manifest']['after'] = deploy.metadata(p)
+        return path
+
+    def test_new_entry_is_created_and_removed_on_rollback(self):
+        path = self.add_new_entry()
+        self.assertEqual('committed', self.run_release()['status'])
+        self.assertEqual(b'seal module', (self.root/path).read_bytes())
+
+    def test_new_entry_rolls_back_by_removal(self):
+        path = self.add_new_entry()
+        calls = []
+        def health():
+            calls.append(True)
+            if len(calls) > 1: raise RuntimeError('health failed')
+            return {'ok': True}
+        with self.assertRaisesRegex(RuntimeError, 'health failed'): self.run_release(health)
+        self.assertFalse((self.root/path).exists())
+        deploy.verify(self.root/deploy.MANIFEST, self.plan['manifest']['before'])
+
+    def test_new_entry_refuses_an_existing_file_or_unlisted_absent(self):
+        path = self.add_new_entry()
+        (self.root/path).write_bytes(b'someone else')
+        with self.assertRaisesRegex(ValueError, 'already present'): self.run_release()
+        (self.root/path).unlink()
+        self.plan['new_entries'] = []
+        with self.assertRaisesRegex(ValueError, 'absent marker'): self.run_release()
+
     def add_mac_matrix(self):
         live_manifest = json.loads((self.root/deploy.MANIFEST).read_text())
         new_manifest = json.loads((self.stage/'versions.json').read_text())
