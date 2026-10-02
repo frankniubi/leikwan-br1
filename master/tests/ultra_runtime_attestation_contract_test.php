@@ -894,6 +894,56 @@ namespace {
     );
     Database::$attestationSession = null;
 
+    // (g) ULTRA_ATTESTATION_UNATTESTED=deny closes the fail-open cases on an
+    //     enforced platform, and only there.
+    $denyEnv = ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+        UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        UltraLeaseService::ATTESTATION_UNATTESTED_KEY => 'deny',
+    ]);
+    $denyService = new UltraLeaseService(
+        new Config($denyEnv),
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+    foreach ([
+        'no session row' => null,
+        'no attestation' => ['platform' => 'linux-x86_64-agent', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null],
+        'unpublished fingerprint' => ['platform' => 'linux-x86_64-agent', 'ultra_runtime_fingerprint' => '2020.01.01.1.deadbeef', 'ultra_runtime_self_sha256' => str_repeat('cd', 32)],
+        'missing platform' => ['platform' => '', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null],
+    ] as $label => $session) {
+        Database::$attestationSession = $session;
+        $denied = $denyService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+        assertUltraRuntimeAttestation(
+            ($denied['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'deny mode must refuse a device with ' . $label
+        );
+    }
+    Database::$attestationSession = ['platform' => 'android-14', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null];
+    assertUltraRuntimeAttestation(
+        ($denyService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'deny mode must leave platforms outside the gate alone'
+    );
+    Database::$attestationSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => $releasedHash,
+    ];
+    assertUltraRuntimeAttestation(
+        ($denyService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'deny mode must keep the published binary working'
+    );
+    Database::$attestationSession = null;
+    @unlink($denyEnv);
+    assertUltraRuntimeAttestation(
+        str_contains($leaseSource, "get(self::ATTESTATION_UNATTESTED_KEY, 'allow')"),
+        'the unattested policy must default to allow'
+    );
+
     $schema = (string) file_get_contents(__DIR__ . '/../migrations/schema.sql');
     foreach ([
         'ultra_runtime_fingerprint VARCHAR(64) NULL',

@@ -60,6 +60,15 @@ final class UltraLeaseService
      * published artifact, and the Windows runtime is embedded in the installer.
      */
     public const ATTESTATION_ENFORCE_PLATFORMS_KEY = 'ULTRA_ATTESTATION_ENFORCE_PLATFORMS';
+    /**
+     * What "enforce" does with a device on an enforced platform that cannot be
+     * judged: no device session, no attestation, or a fingerprint the panel
+     * never published. "allow" (the default) lets it through as before; "deny"
+     * refuses it with ERROR_RUNTIME_UNATTESTED. Only switch to "deny" once the
+     * admin attestation view shows every live client reporting a released
+     * fingerprint, otherwise older builds lose their leases.
+     */
+    public const ATTESTATION_UNATTESTED_KEY = 'ULTRA_ATTESTATION_UNATTESTED';
     public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
 
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
@@ -392,9 +401,9 @@ final class UltraLeaseService
      * device's last session claims a fingerprint the panel published AND its
      * reported binary hash matches none of that release's published hashes.
      *
-     * Everything else - no session row, no attestation, an unknown fingerprint,
-     * a platform outside the enforced list, an unreadable manifest - fails open
-     * and is left to the report-only admin view.
+     * A platform outside the enforced list and an unreadable manifest always
+     * fail open. No session row, no attestation or an unknown fingerprint fail
+     * open unless ULTRA_ATTESTATION_UNATTESTED=deny.
      */
     private function attestationRefusal(int $clientId, string $deviceHash): ?string
     {
@@ -420,16 +429,30 @@ final class UltraLeaseService
             error_log('ultra_attestation_lookup_failed ' . $throwable->getMessage());
             return null;
         }
+        $denyUnattested = strtolower(trim((string) $this->config->get(self::ATTESTATION_UNATTESTED_KEY, 'allow'))) === 'deny';
         if (!is_array($session)) {
+            return $denyUnattested ? $this->unattestedRefusal($clientId, $deviceHash, 'no-session') : null;
+        }
+        $platform = trim((string) ($session['platform'] ?? ''));
+        if ($platform === '' && $denyUnattested) {
+            // A caller that does not even say what it is cannot opt out of
+            // the check by leaving the platform header off.
+            return $this->unattestedRefusal($clientId, $deviceHash, 'no-platform');
+        }
+        if (!$this->platformIsEnforced($platform)) {
             return null;
         }
         $fingerprint = strtolower(trim((string) ($session['ultra_runtime_fingerprint'] ?? '')));
         $reported = strtolower(trim((string) ($session['ultra_runtime_self_sha256'] ?? '')));
         if ($fingerprint === '' || $reported === '' || !isset($expected[$fingerprint])) {
-            return null;
-        }
-        if (!$this->platformIsEnforced((string) ($session['platform'] ?? ''))) {
-            return null;
+            if (!$denyUnattested) {
+                return null;
+            }
+            return $this->unattestedRefusal(
+                $clientId,
+                $deviceHash,
+                $fingerprint === '' || $reported === '' ? 'no-attestation' : 'unknown-fingerprint'
+            );
         }
         foreach ($expected[$fingerprint] as $allowed) {
             if (hash_equals($allowed, $reported)) {
@@ -442,6 +465,17 @@ final class UltraLeaseService
             substr($deviceHash, 0, 16),
             $fingerprint,
             substr($reported, 0, 16)
+        ));
+        return self::ERROR_RUNTIME_UNATTESTED;
+    }
+
+    private function unattestedRefusal(int $clientId, string $deviceHash, string $reason): string
+    {
+        error_log(sprintf(
+            'ultra_attestation_unattested client=%d device=%s reason=%s',
+            $clientId,
+            substr($deviceHash, 0, 16),
+            $reason
         ));
         return self::ERROR_RUNTIME_UNATTESTED;
     }
