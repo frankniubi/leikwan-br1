@@ -471,6 +471,7 @@ class OrdinaryUltraRenewalTest {
         override suspend fun resolveUltraLease(
             auth: String,
             request: com.leikwan.bridge.api.UltraLeaseRequest,
+            leaseKey: String?,
         ): Response<com.leikwan.bridge.api.UltraLeaseResponse> {
             val index = resolveUltraLeaseCalls++
             return ultraLeaseResponses.getOrNull(index)

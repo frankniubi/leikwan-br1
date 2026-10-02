@@ -347,7 +347,11 @@ class UltraOfflineSurvivalTest {
             return HeartbeatResponse(ok = true)
         }
 
-        override suspend fun resolveUltraLease(auth: String, request: UltraLeaseRequest): Response<UltraLeaseResponse> =
+        override suspend fun resolveUltraLease(
+            auth: String,
+            request: UltraLeaseRequest,
+            leaseKey: String?,
+        ): Response<UltraLeaseResponse> =
             leaseFailure ?: Response.success(UltraLeaseResponse(ok = true, leases = listOf(lease.deepCopy())))
 
         override suspend fun pullConfigs(auth: String): PullConfigsResponse {

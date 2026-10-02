@@ -40,6 +40,9 @@ android {
             // Keep the release runtime unminified until the known R8 suspend-state
             // machine issue is re-audited; this also keeps the test artifact
             // behavior aligned with the previously accepted release packaging.
+            // 2026-10-02: with isMinifyEnabled/isShrinkResources = true, R8 builds this app
+            // with zero warnings or missing classes using proguard-rules.pro; flipping it still
+            // needs an on-device release run (enrollment, Ultra lease, libbox VPN start).
             isMinifyEnabled = false
             isShrinkResources = false
             proguardFiles(

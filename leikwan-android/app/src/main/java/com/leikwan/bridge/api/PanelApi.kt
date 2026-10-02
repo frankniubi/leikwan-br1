@@ -10,6 +10,7 @@ import retrofit2.http.DELETE
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import com.leikwan.bridge.security.UltraLeaseSeal
 import com.leikwan.bridge.session.DeviceAckRequest
 import com.leikwan.bridge.session.DeviceAckResponse
 import com.leikwan.bridge.session.DeviceChallengeRequest
@@ -75,6 +76,8 @@ interface PanelApi {
     suspend fun resolveUltraLease(
         @Header("Authorization") auth: String,
         @Body request: UltraLeaseRequest,
+        // Sealed-lease device key (docs/specs/2026-10-02-ultra-sealed-lease-v1.md); null omits it.
+        @Header(UltraLeaseSeal.HEADER) leaseKey: String?,
     ): Response<UltraLeaseResponse>
 
     @GET("api/client/configs/pull")

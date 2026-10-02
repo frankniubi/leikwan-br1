@@ -539,7 +539,11 @@ class PanelRepositoryRouteRuleSyncTest {
             return HeartbeatResponse(ok = true)
         }
 
-        override suspend fun resolveUltraLease(auth: String, request: UltraLeaseRequest): Response<UltraLeaseResponse> =
+        override suspend fun resolveUltraLease(
+            auth: String,
+            request: UltraLeaseRequest,
+            leaseKey: String?,
+        ): Response<UltraLeaseResponse> =
             throw UnsupportedOperationException()
 
         override suspend fun pullConfigs(auth: String): PullConfigsResponse {

@@ -31,9 +31,12 @@ import com.leikwan.bridge.net.PanelNetwork
 import com.leikwan.bridge.net.PanelNetworkFallbackInterceptor
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
 import com.leikwan.bridge.security.AndroidDeviceIdentity
+import com.leikwan.bridge.security.AndroidUltraLeaseKeyStore
 import com.leikwan.bridge.security.AttestationProof
 import com.leikwan.bridge.security.DeviceSecurity
 import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.security.UltraLeaseKey
+import com.leikwan.bridge.security.UltraLeaseSeal
 import com.leikwan.bridge.session.DeviceAckRequest
 import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
@@ -76,6 +79,7 @@ class PanelRepository(
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val panelEndpointOverride: PanelEndpoint? = null,
+    private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
@@ -486,6 +490,7 @@ class PanelRepository(
         val session = requireActiveSession()
         val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val leaseKey = ultraLeaseKeyProvider()
         val response = try {
             api.resolveUltraLease(
                 authHeader(),
@@ -504,6 +509,7 @@ class PanelRepository(
                         )
                     ),
                 ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
             )
         } catch (e: CancellationException) {
             throw e
@@ -524,7 +530,7 @@ class PanelRepository(
         val leases = mutableListOf<UltraLease>()
         try {
             body.leases.forEach { rawLease ->
-                leases += UltraLease.from(rawLease, policy, now)
+                leases += UltraLease.from(UltraLeaseSeal.openLease(rawLease, leaseKey), policy, now)
                     ?: throw IllegalStateException("ultra_lease_invalid")
             }
             return leases
@@ -636,6 +642,7 @@ class PanelRepository(
                 normalizedScope,
             )
         }
+        val leaseKey = ultraLeaseKeyProvider()
         val response = try {
             api.resolveUltraLease(
                 authHeader(),
@@ -657,6 +664,7 @@ class PanelRepository(
                         ),
                     ),
                 ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
             )
         } catch (e: CancellationException) {
             throw e
@@ -681,7 +689,7 @@ class PanelRepository(
         try {
             body.leases.forEach { rawLease ->
                 leases += NativeOutboundLease.from(
-                    rawLease,
+                    UltraLeaseSeal.openLease(rawLease, leaseKey),
                     policy,
                     carrier,
                     normalizedScope,
