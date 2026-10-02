@@ -250,6 +250,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function clientLeaseSeal(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_lease_seal.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function installForwardRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/install_forward_runtime.py', 'text/x-python; charset=utf-8', $request);
@@ -601,6 +606,7 @@ final class ArtifactController extends BaseController
             'client_agent_update',
             'install_forward_runtime',
             'cfwg_latency_watchdog',
+            'client_lease_seal',
             'client_agent_installer',
             'client_agent_installer_linux_arm64',
             'client_rate_limit',

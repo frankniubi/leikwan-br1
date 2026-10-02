@@ -73,6 +73,16 @@ DEVICE_LIMIT_ERROR_CODE = "client_online_limit_reached"
 DEVICE_LIMIT_RETRY_SECONDS = 60.0
 # Stable per-install device identity sent as X-Device-Id on every panel call.
 DEVICE_ID_FILENAME = "device-id"
+# Ultra sealed lease v1 (docs/specs/2026-10-02-ultra-sealed-lease-v1.md): one
+# P-256 key per device, persisted 0600 beside device-id, public half sent on
+# every lease request so the panel can seal endpoint/credential to it.
+LEASE_KEY_FILENAME = "ultra-lease-key"
+ULTRA_LEASE_KEY_HEADER = "X-Leikwan-Lease-Key"
+LEASE_UNSEAL_FAILED = "lease_unseal_failed"
+# Panel refusals of the lease key. None of them may regenerate the key: a
+# conflict means another key is live for this device id, and replacing ours
+# would fight the legitimate holder.
+ULTRA_LEASE_KEY_REFUSALS = ("lease_key_invalid", "lease_sealing_required", "lease_device_key_conflict")
 # Runtime status written by the Ultra runtime next to its control socket.
 # The runtime's StatusWriter writes the policy state only when it changes (at
 # most every 5 s), so the file's age says nothing by itself; a status older
@@ -1304,6 +1314,83 @@ def load_or_create_device_id(state_dir: pathlib.Path | str) -> str:
     return candidate
 
 
+_LEASE_SEAL_MODULE: object = None
+_LEASE_KEY_WARNED: set[str] = set()
+
+
+def lease_seal_module():
+    """Return the leikwan_lease_seal helper, or None when it is not installed.
+
+    A sibling import works for the frozen binary and the Docker layout; the
+    Python distribution installs it next to this file. A missing helper only
+    disables sealing (no header is sent), it never stops the agent.
+    """
+    global _LEASE_SEAL_MODULE
+    if _LEASE_SEAL_MODULE is not None:
+        return _LEASE_SEAL_MODULE or None
+    module = None
+    try:
+        import leikwan_lease_seal as module  # type: ignore[no-redef]
+    except Exception:  # noqa: BLE001
+        module_path = helper_artifact_path("leikwan_lease_seal.py")
+        try:
+            spec = importlib.util.spec_from_file_location("leikwan_lease_seal", module_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"cannot load {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["leikwan_lease_seal"] = module
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001
+            sys.modules.pop("leikwan_lease_seal", None)
+            logging.warning("Ultra lease sealing unavailable (helper not installed: %s); leases stay unsealed", type(exc).__name__)
+            module = None
+    _LEASE_SEAL_MODULE = module if module is not None else False
+    return module
+
+
+def load_or_create_lease_key(state_dir: pathlib.Path | str):
+    """Return this device's persisted Ultra lease key (``None`` if sealing is unavailable).
+
+    The key lives in ``state_dir/ultra-lease-key`` with mode 0600. A missing or
+    corrupt file is regenerated; an unreadable or unwritable one yields a
+    process-lifetime key so leases still work (the panel re-pins an idle key).
+    """
+    module = lease_seal_module()
+    if module is None:
+        return None
+    path = pathlib.Path(state_dir) / LEASE_KEY_FILENAME
+    try:
+        key, event = module.load_or_create_device_key(path)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Ultra lease key unavailable at %s (%s); leases stay unsealed", path, type(exc).__name__)
+        return None
+    if event in {"created", "replaced"}:
+        logging.info("%s Ultra lease key kid=%s at %s", "created" if event == "created" else "regenerated corrupt", key.kid, path)
+    elif event in {"unreadable", "unpersisted"} and str(path) not in _LEASE_KEY_WARNED:
+        _LEASE_KEY_WARNED.add(str(path))
+        logging.warning("Ultra lease key %s at %s; using a key for this process only (kid=%s)", event, path, key.kid)
+    return key
+
+
+def ultra_lease_key_refusal(error: BaseException) -> str:
+    """Name the lease-key refusal code in a panel error, or ""."""
+    text = str(error)
+    for code in ULTRA_LEASE_KEY_REFUSALS:
+        if code in text:
+            return code
+    return ""
+
+
+def open_ultra_lease(lease: dict, lease_key: object) -> dict:
+    """Open a sealed lease (unchanged when unsealed); raises on any failure."""
+    if not isinstance(lease, dict) or "sealed" not in lease:
+        return lease
+    module = lease_seal_module()
+    if module is None or lease_key is None:
+        raise ValueError("sealed lease without a device key")
+    return module.open_sealed_lease(lease, lease_key)
+
+
 def device_request_headers(device_id: str = "") -> dict[str, str]:
     headers = {
         "x-device-platform": "linux",
@@ -1823,6 +1910,7 @@ def resolve_ultra_leases(
     fallback_endpoints: list[str] | None = None,
     state_path: pathlib.Path | None = None,
     selector: ControlPlaneEndpointState | None = None,
+    lease_key: object = None,
 ) -> list[dict]:
     normalized_selection_mode = normalize_ultra_selection_mode(selection_mode)
     max_candidates = 4 if normalized_selection_mode == "auto" else 1
@@ -1885,6 +1973,7 @@ def resolve_ultra_leases(
                     extra_headers={
                         **({"x-device-id": device_id} if device_id else {}),
                         **ultra_offline_validity_headers(),
+                        **({ULTRA_LEASE_KEY_HEADER: lease_key.public_b64url} if lease_key is not None else {}),
                     },
                 )
                 if not isinstance(batch_response, dict) or batch_response.get("ok") is not True:
@@ -1892,7 +1981,22 @@ def resolve_ultra_leases(
                 raw_leases = batch_response.get("leases")
                 if not isinstance(raw_leases, list):
                     raise ControlPlaneResponseError("invalid ultra lease list")
-                valid_leases = [item for item in raw_leases if isinstance(item, dict)]
+                valid_leases = []
+                for item in raw_leases:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        valid_leases.append(open_ultra_lease(item, lease_key))
+                    except Exception as exc:  # noqa: BLE001
+                        # Fail this lease closed: no clear-text fallback and no
+                        # replay through a mirror. Never log the payload.
+                        logging.warning(
+                            "forward %s Ultra lease %s: %s (%s)",
+                            item.get("forward_id"),
+                            str(item.get("lease_id", ""))[:64],
+                            LEASE_UNSEAL_FAILED,
+                            type(exc).__name__,
+                        )
                 lease_items.extend(valid_leases)
                 returned_forward_ids = {int(item.get("forward_id", 0) or 0) for item in valid_leases}
                 failed_forward_ids.update(batch_forward_ids - returned_forward_ids)
@@ -1906,6 +2010,15 @@ def resolve_ultra_leases(
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 selector.failure(endpoint, exc)
+                refusal = ultra_lease_key_refusal(exc)
+                if refusal:
+                    # Reported and retried at the normal cadence; the key is kept.
+                    logging.warning(
+                        "Ultra lease refused for forwards %s: %s (kid=%s)",
+                        sorted(batch_forward_ids),
+                        refusal,
+                        getattr(lease_key, "kid", "none"),
+                    )
                 # An HTTP response must not replay this POST through another CDN.
                 if getattr(exc, "response_received", False) or _has_control_plane_http_response(exc):
                     if _is_control_plane_business_error(exc):
@@ -2026,6 +2139,18 @@ class ClientAgent:
             return cached[1]
         value = load_or_create_device_id(state_dir)
         self._device_id_cache = (str(state_dir), value)
+        return value
+
+    def lease_device_key(self):
+        """This device's Ultra lease key (sealed lease v1), or None when unavailable."""
+        state_dir = getattr(self, "state_dir", None)
+        if state_dir is None:
+            return None
+        cached = getattr(self, "_lease_key_cache", None)
+        if isinstance(cached, tuple) and cached[0] == str(state_dir) and cached[1] is not None:
+            return cached[1]
+        value = load_or_create_lease_key(state_dir)
+        self._lease_key_cache = (str(state_dir), value)
         return value
 
     def pull_client_configs(self, token: str) -> tuple[dict, dict[str, str], str]:
@@ -3501,6 +3626,7 @@ class ClientAgent:
                 fallback_endpoints=control_plane_endpoints(self.config),
                 state_path=getattr(self, "endpoint_state_path", None),
                 selector=getattr(self, "endpoint_selector", None),
+                lease_key=self.lease_device_key(),
             )
         except Exception as exc:  # noqa: BLE001
             self._schedule_renewal_backoff(schedule, due, now, backoff, exc)
@@ -3766,6 +3892,7 @@ class ClientAgent:
                 fallback_endpoints=control_plane_endpoints(self.config),
                 state_path=getattr(self, "endpoint_state_path", None),
                 selector=getattr(self, "endpoint_selector", None),
+                lease_key=self.lease_device_key(),
             )
         except Exception as exc:  # noqa: BLE001
             # Keep an already-running Ultra process on its last in-memory lease
@@ -4374,6 +4501,16 @@ class ClientAgent:
                 target_device_id.write_text(source_device_id.read_text(encoding="utf-8"), encoding="utf-8")
                 with contextlib.suppress(OSError):
                     os.chmod(target_device_id, 0o600)
+            # The panel pins the lease key to the device id: move it as well.
+            source_lease_key = self.state_dir / LEASE_KEY_FILENAME
+            target_lease_key = new_state_dir / LEASE_KEY_FILENAME
+            if source_lease_key.exists() and not target_lease_key.exists():
+                with contextlib.suppress(OSError):
+                    lease_key_bytes = source_lease_key.read_bytes()
+                    fd = os.open(str(target_lease_key), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(lease_key_bytes)
+            self._lease_key_cache = None
             self.state_dir = new_state_dir
             self.applied_path = new_state_dir / "applied.json"
             self.pull_state_path = new_state_dir / "config_pull_state.json"

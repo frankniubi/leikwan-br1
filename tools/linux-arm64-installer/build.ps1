@@ -31,6 +31,7 @@ try {
     [System.IO.File]::WriteAllText($bundleManifestPath, ($bundleManifest | ConvertTo-Json -Depth 100), $utf8NoBom)
     Copy-Payload "client-agent/client_agent.py" "artifacts/client-agent.py"
     Copy-Payload "client-agent/cfwg_latency_watchdog.py" "artifacts/cfwg-latency-watchdog.py"
+    Copy-Payload "client-agent/leikwan_lease_seal.py" "artifacts/leikwan-lease-seal.py"
     Copy-Payload "install/client-agent-update.sh" "artifacts/client-agent-update.sh"
     Copy-Payload "install/leikwan-linux.sh" "artifacts/leikwan-linux.sh"
     Copy-Payload "install/install-tcp-accel.sh" "artifacts/install-tcp-accel.sh"

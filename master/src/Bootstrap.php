@@ -393,6 +393,7 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/python-agent/leikwan-client-agent_linux_amd64', [$artifacts, 'clientAgentLinuxAmd64']);
         $this->router->add('GET', '/artifacts/python-agent/leikwan-client-agent_linux_arm64', [$artifacts, 'clientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/cfwg-latency-watchdog.py', [$artifacts, 'cfwgLatencyWatchdog']);
+        $this->router->add('GET', '/artifacts/leikwan-lease-seal.py', [$artifacts, 'clientLeaseSeal']);
         $this->router->add('GET', '/artifacts/sidecar-agent.py', [$artifacts, 'sidecarAgent']);
         $this->router->add('GET', '/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', [$artifacts, 'sidecarAgentLinuxAmd64']);
         $this->router->add('GET', '/artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', [$artifacts, 'sidecarAgentLinuxArm64']);

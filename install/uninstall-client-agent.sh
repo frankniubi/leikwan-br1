@@ -28,6 +28,7 @@ if [[ "$PURGE" == "1" ]]; then
   rm -f \
     "$BIN_DIR/leikwan-client-agent.py" \
     "$BIN_DIR/install_forward_runtime.py" \
+    "$BIN_DIR/leikwan_lease_seal.py" \
     "$BIN_DIR/leikwan-rate-limit.py" \
     "$BIN_DIR/leikwan-mptcp-client.py"
 fi

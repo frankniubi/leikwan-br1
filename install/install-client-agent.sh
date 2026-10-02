@@ -1044,6 +1044,14 @@ else
   echo "using Python client-agent fallback: $AGENT_BINARY_PATH"
 fi
 download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
+# Sealed-lease helper imported by the Python agent (the frozen binary embeds
+# it). A manifest without the entry predates sealing: the agent then keeps
+# requesting clear leases, so its absence must not abort the install.
+if [[ "$(_vers_sha256 client_lease_seal)" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  download_manifest_artifact client_lease_seal "$(manifest_artifact_url client_lease_seal "$DOWNLOAD_BASE/artifacts/leikwan-lease-seal.py")" "$BIN_DIR/leikwan_lease_seal.py"
+else
+  echo "  client_lease_seal not in manifest; sealed Ultra leases stay disabled"
+fi
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   # Keep the legacy artifact route visible for older operator tooling while
   # enforcing the manifest hash through download_manifest_artifact.

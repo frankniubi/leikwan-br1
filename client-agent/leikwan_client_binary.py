@@ -20,6 +20,7 @@ import cfwg_latency_watchdog as _cfwg_latency_watchdog  # noqa: F401
 import client_agent as _client_agent
 import forward_strategy as _forward_strategy
 import install_forward_runtime as _install_forward_runtime  # noqa: F401
+import leikwan_lease_seal as _leikwan_lease_seal  # noqa: F401  (lazy import in client_agent)
 import leikwan_mptcp_client as _leikwan_mptcp_client
 import leikwan_netns as _leikwan_netns
 import leikwan_port_bridge as _leikwan_port_bridge
