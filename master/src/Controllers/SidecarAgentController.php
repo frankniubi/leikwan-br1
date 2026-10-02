@@ -84,6 +84,19 @@ final class SidecarAgentController extends BaseController
             }
         }
         $updateRequestToken = trim((string) ($point['agent_update_request_token'] ?? ''));
+        // Regression sentinel: sidecar_explicit_update_token_one_shot
+        // agent_update_request_token is a one-shot force refresh. The agent keeps
+        // only ONE last_completed_request_token, so a token that stays on the
+        // point forever re-arms every time any other token (a persistent
+        // auto-release mismatch, or a second agent sharing the state file)
+        // completes: explicit -> auto -> explicit ... reinstalling the sidecar
+        // every heartbeat (point 7 fra1: ~750 installs/day, ~27 GB/day).
+        // Retire it as soon as the agent reports it completed.
+        $updateRequestToken = $this->retireCompletedUpdateRequestToken(
+            (int) $point['id'],
+            $updateRequestToken,
+            $request->input('agent_update_state')
+        );
         $sidecarAgentUpdatesEnabled = !in_array(strtolower(trim((string) ($runtimeState['sidecar_agent_update_enabled'] ?? ''))), ['0', 'false', 'no', 'off', ''], true);
         $reportedAgentVersion = $version !== '' ? $version : (string) ($point['agent_version'] ?? '');
 
@@ -410,6 +423,30 @@ final class SidecarAgentController extends BaseController
             ];
         }
         return $evaluated;
+    }
+
+    /**
+     * Clear a one-shot agent_update_request_token once the agent's reported
+     * agent_update_state shows it completed. Returns the token to hand out.
+     * The UPDATE is guarded on the token value so a newer admin request that
+     * landed between the point SELECT and this heartbeat is never dropped.
+     */
+    private function retireCompletedUpdateRequestToken(int $pointId, string $updateRequestToken, mixed $reportedUpdateState): string
+    {
+        if ($updateRequestToken === '' || !is_array($reportedUpdateState)) {
+            return $updateRequestToken;
+        }
+        $completedToken = trim((string) ($reportedUpdateState['last_completed_request_token'] ?? ''));
+        if ($completedToken !== $updateRequestToken) {
+            return $updateRequestToken;
+        }
+        $this->db->execute(
+            'UPDATE sidecar_points
+             SET agent_update_request_token = NULL
+             WHERE id = :id AND agent_update_request_token = :request_token',
+            ['id' => $pointId, 'request_token' => $updateRequestToken]
+        );
+        return '';
     }
 
     /**

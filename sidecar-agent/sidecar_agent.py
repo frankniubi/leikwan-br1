@@ -22,6 +22,7 @@ import urllib.request
 AGENT_VERSION = "2026.09.17.4"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
+UPDATE_COMPLETED_HISTORY_LIMIT = 16
 DEFAULT_CONFIG = {
     "master_url": "",
     "agent_token": "",
@@ -1342,8 +1343,24 @@ WantedBy=multi-user.target
         except (TypeError, ValueError):
             return 0.0
 
+    @staticmethod
+    def completed_update_tokens(update_state: dict) -> list[str]:
+        """Every request token this state file has seen complete (bounded).
+
+        The update helper only records last_completed_request_token, so two live
+        tokens (an explicit panel token plus a persistent auto-release mismatch,
+        or two agents sharing one state file) would otherwise evict each other
+        and re-run the installer every heartbeat.
+        """
+        raw_history = update_state.get("completed_request_tokens", [])
+        history = [str(item) for item in raw_history if isinstance(item, str) and item] if isinstance(raw_history, list) else []
+        last_completed = str(update_state.get("last_completed_request_token", "") or "")
+        if last_completed and last_completed not in history:
+            history.append(last_completed)
+        return history[-UPDATE_COMPLETED_HISTORY_LIMIT:]
+
     def should_retry_update(self, update_state: dict, request_token: str, now: float) -> bool:
-        if str(update_state.get("last_completed_request_token", "") or "") == request_token:
+        if request_token in self.completed_update_tokens(update_state):
             return False
 
         tracked_request_token = str(update_state.get("request_token", "") or "")
@@ -1968,14 +1985,17 @@ WantedBy=multi-user.target
             explicit_request_token = ""
             auto_request_token = ""
         update_state = self.load_update_state()
-        completed_request_token = str(update_state.get("last_completed_request_token", "") or "")
+        completed_request_tokens = self.completed_update_tokens(update_state)
+        if completed_request_tokens and update_state.get("completed_request_tokens") != completed_request_tokens:
+            update_state["completed_request_tokens"] = completed_request_tokens
+            self.save_update_state(update_state)
 
         # An explicit agent_update_request_token is a manual force-refresh: it must
         # drive request_self_update even when no version/sha mismatch is present
         # (the loop's last_completed_request_token check still prevents re-running a
         # token that already completed, so this does not loop).
         for update_request_token in [token for token in [explicit_request_token, auto_request_token] if token]:
-            if completed_request_token == update_request_token:
+            if update_request_token in completed_request_tokens:
                 continue
 
             now = time.time()
