@@ -15,8 +15,8 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 37
-        versionName = "0.2.35"
+        versionCode = 38
+        versionName = "0.2.36"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
@@ -37,14 +37,13 @@ android {
 
     buildTypes {
         release {
-            // Keep the release runtime unminified until the known R8 suspend-state
-            // machine issue is re-audited; this also keeps the test artifact
-            // behavior aligned with the previously accepted release packaging.
-            // 2026-10-02: with isMinifyEnabled/isShrinkResources = true, R8 builds this app
-            // with zero warnings or missing classes using proguard-rules.pro; flipping it still
-            // needs an on-device release run (enrollment, Ultra lease, libbox VPN start).
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 shrinking + obfuscation (optimizer still off via -dontoptimize in
+            // proguard-rules.pro, which guards the Kotlin suspend state-machine issue).
+            // 2026-10-02: verified on the API 34 QA emulator against production with a
+            // -Pqatest R8 build: fresh enrollment, catalog pull, sealed Ultra lease with the
+            // Keystore agreement key, Ultra runtime start, libbox TUN, renewal and stop.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

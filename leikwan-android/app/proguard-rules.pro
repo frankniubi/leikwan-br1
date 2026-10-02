@@ -61,3 +61,15 @@
 # (Platform classes are not part of the program; nothing to keep for them.)
 # ---------------------------------------------------------------------------
 -keepclassmembers class * extends java.security.Provider { <init>(...); }
+
+# ---------------------------------------------------------------------------
+# Release contract (scripts/verify-android-build-version.ps1 and
+# verify-android-enrollment-bytecode.ps1) reads these classes by name.
+# ---------------------------------------------------------------------------
+-keep class com.leikwan.bridge.BuildConfig { *; }
+-keepnames class com.leikwan.bridge.runtime.NativeOutboundCapability
+-keepnames class com.leikwan.bridge.runtime.NativeOutboundLease
+-keepnames class com.leikwan.bridge.service.TunnelOrchestrator
+-keepnames class com.leikwan.bridge.ui.connections.ConnectionsScreenKt
+# The enrollment check names suspend methods by their JVM descriptor.
+-keepnames interface kotlin.coroutines.Continuation
