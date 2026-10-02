@@ -47,6 +47,10 @@ type PanelClient struct {
 	// to "linux" once, which the deployed access-policy allow-list accepts.
 	platformTag     string
 	platformRetried bool
+
+	// leaseKeys supplies the device key for sealed leases. It is attached by
+	// the agent; a bare client (tests, one-shot probes) sends no lease key.
+	leaseKeys *leaseKeyStore
 }
 
 func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string) *PanelClient {
@@ -205,6 +209,11 @@ func (c *PanelClient) headers(req *http.Request) {
 // do performs a request against the active endpoint and transparently retries
 // the next endpoint on transport failure.
 func (c *PanelClient) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWithHeaders(ctx, method, path, body, out, nil)
+}
+
+// doWithHeaders is do with additional request headers for this call only.
+func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extra map[string]string) error {
 	if c.baseURL() == "" {
 		return errNoEndpoint
 	}
@@ -228,6 +237,9 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 			return err
 		}
 		c.headers(req)
+		for name, value := range extra {
+			req.Header.Set(name, value)
+		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -426,12 +438,27 @@ func (c *PanelClient) Pull(ctx context.Context, sinceRevision string, waitSecond
 	return &out, nil
 }
 
+// Lease requests a candidate batch. When the agent has a device lease key the
+// request carries its public half and sealed leases in the reply are opened
+// with it (docs/specs/2026-10-02-ultra-sealed-lease-v1.md). Leases that fail
+// to open are dropped and listed in UnsealFailures.
 func (c *PanelClient) Lease(ctx context.Context, request LeaseRequest) (*LeaseResponse, error) {
-	var out LeaseResponse
-	if err := c.do(ctx, http.MethodPost, "/api/client/ultra/lease", request, &out); err != nil {
+	const path = "/api/client/ultra/lease"
+	key := c.leaseKeys.get()
+	var extra map[string]string
+	if key != nil {
+		extra = map[string]string{leaseKeyHeader: leaseKeyHeaderValue(key.PublicKey())}
+	}
+	var raw json.RawMessage
+	if err := c.doWithHeaders(ctx, http.MethodPost, path, request, &raw, extra); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	out, failures, err := decodeLeaseResponse(raw, key)
+	if err != nil {
+		return nil, fmt.Errorf("panel %s: %w", path, err)
+	}
+	out.UnsealFailures = failures
+	return out, nil
 }
 
 func (c *PanelClient) Heartbeat(ctx context.Context, payload HeartbeatPayload) (*HeartbeatResponse, error) {

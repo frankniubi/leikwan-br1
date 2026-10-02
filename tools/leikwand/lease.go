@@ -189,9 +189,10 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	if err != nil {
 		state.leaseFailures++
 		state.lastLeaseErr = redactSecrets(err.Error())
-		a.log.Warn("lease", "forward %d lease request failed (%d): %v", state.forward.ForwardID, state.leaseFailures, err)
+		a.log.Warn("lease", "forward %d lease request failed (%d): %v%s", state.forward.ForwardID, state.leaseFailures, err, leaseRefusalHint(err))
 		return
 	}
+	a.noteUnsealFailures("lease", state.forward.ForwardID, response)
 	if !response.OK || len(response.Leases) == 0 {
 		state.leaseFailures++
 		state.lastLeaseErr = firstNonEmpty(response.Error, "no_leases")
@@ -305,3 +306,33 @@ func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
 }
 
 var errPolicyMissing = errors.New("ultra grant missing")
+
+// leaseRefusalHint adds operator context to the sealed-lease refusals. They
+// are otherwise handled like any other lease error: counted, backed off and
+// retried at the normal cadence. A key conflict deliberately does not rotate
+// the device key, which would only fight the legitimate holder of the pin.
+func leaseRefusalHint(err error) string {
+	var pe *panelError
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	switch pe.Code {
+	case codeLeaseKeyInvalid:
+		return " (panel rejected this device's lease key header; client bug)"
+	case codeLeaseSealingRequired:
+		return " (panel requires sealed leases but no device lease key was available)"
+	case codeLeaseDeviceKeyConflict:
+		return " (another lease key is active for this device id; keeping the current key and retrying)"
+	}
+	return ""
+}
+
+// noteUnsealFailures logs sealed leases that were dropped because they could
+// not be opened. Only the non-sensitive reason is logged, never the payload.
+func (a *Agent) noteUnsealFailures(scope string, forwardID int, response *LeaseResponse) {
+	if response == nil || len(response.UnsealFailures) == 0 {
+		return
+	}
+	a.log.Warn(scope, "forward %d: %d sealed lease(s) dropped (%s), %d usable: %v",
+		forwardID, len(response.UnsealFailures), codeLeaseUnsealFailed, len(response.Leases), response.UnsealFailures[0])
+}

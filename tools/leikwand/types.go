@@ -130,6 +130,10 @@ type LeaseResponse struct {
 	OK     bool         `json:"ok"`
 	Leases []LeaseFrame `json:"leases"`
 	Error  string       `json:"error,omitempty"`
+
+	// UnsealFailures lists sealed leases that could not be opened and were
+	// therefore dropped from Leases. Local bookkeeping only; never encoded.
+	UnsealFailures []error `json:"-"`
 }
 
 // LeaseFrame is byte-compatible with the frame ultra-client decodes from its

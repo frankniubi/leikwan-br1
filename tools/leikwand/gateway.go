@@ -290,6 +290,7 @@ func (m *gatewayManager) acquireNativeLease(ctx context.Context, carrier Forward
 	if err != nil {
 		return err
 	}
+	a.noteUnsealFailures("gateway", carrier.ForwardID, response)
 	if !response.OK || len(response.Leases) == 0 {
 		return fmt.Errorf("native lease rejected: %s", firstNonEmpty(response.Error, "no_leases"))
 	}

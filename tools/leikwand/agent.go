@@ -97,6 +97,7 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 	deviceNm := deviceDisplayName(cfg, secrets)
 	panel := newPanelClient(cfg, secrets, deviceID, deviceNm)
 	panel.egress.log = log
+	panel.leaseKeys = newLeaseKeyStore(cfg.DataDir, log)
 	return &Agent{
 		cfg:              cfg,
 		store:            store,
