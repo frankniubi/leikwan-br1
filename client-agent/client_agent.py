@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.09.27.1"
+AGENT_VERSION = "2026.10.02.1"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
@@ -8438,6 +8438,13 @@ class ClientAgent:
                 "wireguard_listen_port": self.wireguard_listen_port(),
                 "wireguard_fallback_tcp_port": self.wireguard_fallback_tcp_port(),
             },
+        }
+        # Sealed-lease readiness, read-only: never creates the device key.
+        seal_module = lease_seal_module()
+        summary["ultra_lease_seal"] = {
+            "available": seal_module is not None,
+            "self_test": bool(seal_module is not None and seal_module.self_test()),
+            "key_present": (pathlib.Path(getattr(self, "state_dir", "/var/lib/leikwan-client-agent")) / LEASE_KEY_FILENAME).is_file(),
         }
         if summary["service_active"] is not True:
             summary["ok"] = False

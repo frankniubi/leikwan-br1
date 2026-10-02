@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.28.3",
+    [string]$Version = "2026.10.02.1",
     [string]$OutputPath = "artifacts/install-client-agent-linux-arm64",
+    # Manifest to embed; defaults to the repo manifest the release writes first.
+    [string]$ManifestPath = "artifacts/versions.json",
     [switch]$SkipReproducibilityCheck
 )
 
@@ -23,9 +25,9 @@ try {
     Remove-Item -LiteralPath $payloadRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
     Copy-Payload "install/install-client-agent.sh" "install-client-agent.sh"
-    Copy-Payload "artifacts/versions.json" "artifacts/versions.json"
+    Copy-Payload $ManifestPath "artifacts/versions.json"
     $bundleManifestPath = Join-Path $payloadRoot "artifacts/versions.json"
-    $bundleManifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "artifacts/versions.json") | ConvertFrom-Json
+    $bundleManifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $ManifestPath) | ConvertFrom-Json
     $bundleManifest.PSObject.Properties.Remove("client_agent_installer_linux_arm64")
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($bundleManifestPath, ($bundleManifest | ConvertTo-Json -Depth 100), $utf8NoBom)
@@ -36,7 +38,7 @@ try {
     Copy-Payload "install/leikwan-linux.sh" "artifacts/leikwan-linux.sh"
     Copy-Payload "install/install-tcp-accel.sh" "artifacts/install-tcp-accel.sh"
     Copy-Payload "tools/tcp-accel/tcp_accel.py" "artifacts/leikwan-tcp-accel.py"
-    Copy-Payload "artifacts/install-forward-runtime.py" "artifacts/install-forward-runtime.py"
+    Copy-Payload "client-agent/install_forward_runtime.py" "artifacts/install-forward-runtime.py"
     Copy-Payload "artifacts/forward-strategy.py" "artifacts/forward-strategy.py"
     Copy-Payload "client-agent/leikwan_tcp_race.py" "artifacts/leikwan-tcp-race.py"
     Copy-Payload "client-agent/leikwan_udp_fanout.py" "artifacts/leikwan-udp-fanout.py"
@@ -48,6 +50,27 @@ try {
     Copy-Payload "artifacts/wstunnel/wstunnel_linux_arm64" "artifacts/wstunnel/wstunnel_linux_arm64"
     Copy-Payload "artifacts/wstunnel/leikwan-ingress_linux_arm64" "artifacts/wstunnel/leikwan-ingress_linux_arm64"
     Copy-Payload "artifacts/wstunnel/leikwan-bond_linux_arm64" "artifacts/wstunnel/leikwan-bond_linux_arm64"
+
+    # The embedded installer verifies every download against the embedded
+    # manifest, so a stale payload file only fails on the customer's machine.
+    # Refuse to build such a bundle instead.
+    $installerEntry = $bundleManifest.client_agent_installer
+    $installerHash = (Get-FileHash -LiteralPath (Join-Path $payloadRoot "install-client-agent.sh") -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($null -eq $installerEntry -or ([string]$installerEntry.sha256).ToLowerInvariant() -ne $installerHash) {
+        throw "embedded install-client-agent.sh does not match manifest entry client_agent_installer"
+    }
+    foreach ($property in $bundleManifest.PSObject.Properties) {
+        $entry = $property.Value
+        if ($null -eq $entry -or $null -eq $entry.PSObject.Properties["artifact_url"] -or $null -eq $entry.PSObject.Properties["sha256"]) { continue }
+        $relative = ([string]$entry.artifact_url).TrimStart("/")
+        if ($relative -eq "" -or $relative -match "^[a-z]+://") { continue }
+        $local = Join-Path $payloadRoot $relative
+        if (-not (Test-Path -LiteralPath $local -PathType Leaf)) { continue }
+        $actual = (Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
+            throw "embedded $relative does not match manifest entry $($property.Name)"
+        }
+    }
 
     New-Item -ItemType Directory -Force -Path (Split-Path $outputPath -Parent) | Out-Null
     Push-Location $packageRoot

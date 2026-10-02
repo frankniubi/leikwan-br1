@@ -193,6 +193,11 @@ class LeaseSealPrimitiveTests(unittest.TestCase):
                 with self.assertRaises(SEAL.LeaseSealError):
                     SEAL.open_sealed_lease(lease, key)
 
+    def test_self_test_passes_and_detects_a_broken_primitive(self):
+        self.assertTrue(SEAL.self_test())
+        with mock.patch.object(SEAL, "hkdf_sha256", return_value=b"\x00" * 32):
+            self.assertFalse(SEAL.self_test())
+
     def test_open_is_fast_enough(self):
         key = vector_key()
         rounds = 10
@@ -341,6 +346,28 @@ class LeaseKeyPersistenceTests(unittest.TestCase):
             fresh = AGENT.ClientAgent.__new__(AGENT.ClientAgent)
             fresh.state_dir = Path(tmp)
             self.assertEqual(key.kid, fresh.lease_device_key().kid)
+
+
+class CheckReportsLeaseSealTests(unittest.TestCase):
+    def test_check_reports_sealing_readiness_without_creating_the_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps({"master_url": "https://panel.example.com", "client_id": 3, "agent_token": "token", "state_dir": str(state_dir)}),
+                encoding="utf-8",
+            )
+            agent = AGENT.ClientAgent(config_path)
+            with mock.patch.object(agent, "systemd_is_active", return_value=True), \
+                    mock.patch.object(agent, "ensure_wireguard_identity", return_value="pub"), \
+                    mock.patch.object(agent, "wireguard_listen_port", return_value=51820), \
+                    mock.patch.object(agent, "wireguard_fallback_tcp_port", return_value=0), \
+                    mock.patch.object(agent, "mptcp_capability", return_value={"supported": False}):
+                summary = agent.check(live=False)
+            self.assertEqual({"available": True, "self_test": True, "key_present": False}, summary["ultra_lease_seal"])
+            self.assertFalse((state_dir / AGENT.LEASE_KEY_FILENAME).exists())
 
 
 class ResolveSealedLeaseTests(unittest.TestCase):

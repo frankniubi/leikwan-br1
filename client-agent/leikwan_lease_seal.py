@@ -407,6 +407,37 @@ def open_sealed_lease(lease: dict, device_key: LeaseDeviceKey | None) -> dict:
     return merged
 
 
+_SELF_TEST_VECTOR = {
+    # docs/specs/2026-10-02-ultra-sealed-lease-v1.md section 5 (test-only key).
+    "d": "899847890f5f32c53126b22dc726d290a22e63fdc2bbc6dd2f063685199e5dfb",
+    "lease_id": "ul2_test-vector-0001",
+    "kid": "c188836f4cbb9983ef0ce2f209a32767",
+    "epk": "BNcv3DbxPypDUaly9lSNYnpyfC2TFG6vjXq2CPkud-Y_eUPFQEtJv4ppTMWnLJ8FaohlckDI6vfBZQR1Ge8IdxU",
+    "iv": "ABEiM0RVZneImaq7",
+    "ct": (
+        "PBnTWzpuLWhTPFhpX86NSK30Xe3CbjjHaQOs6PSBQ0uymvpO2hvnLDuWaaTqdrVWBWORXa7dQfFmzKxr4pN6xJ6Bi-IEiHBK"
+        "OE8MgpV1REPUugS3rInpQhM66G9rY1ZrWmSTysuUlhoyRo_HeRgGT5uPETJfdiOThqzck9ixD8_ykEXHkO0VstbSUnc09hBq"
+        "ChXJX92Jmuf_tSb-9DOgvnfxd7A8_UDn4x52VVC6HuGQwOXG11gWfhUFSI62OMIJbdvKo3u6TmeV7GHL"
+    ),
+    "plaintext_sha256": "4be76f330d14d97bb39a2a4582b6f6433b053b692abdfb367e870cec743c1a2d",
+}
+
+
+def self_test() -> bool:
+    """Known-answer test of the whole open path (AES, GCM, HKDF, ECDH); never raises."""
+    try:
+        if aes256_encrypt_block(bytes(range(32)), bytes.fromhex("00112233445566778899aabbccddeeff")).hex() != "8ea2b7ca516745bfeafc49904b496089":
+            return False
+        vector = _SELF_TEST_VECTOR
+        key = LeaseDeviceKey(int(vector["d"], 16))
+        sealed = {"v": SEAL_VERSION, "alg": SEAL_ALG, **{name: vector[name] for name in ("kid", "epk", "iv", "ct")}}
+        opened = key.open_sealed(vector["lease_id"], sealed)
+        digest = hashlib.sha256(json.dumps(opened, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return hmac.compare_digest(digest, vector["plaintext_sha256"])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _parse_key_file(text: str) -> int | None:
     try:
         payload = json.loads(text)

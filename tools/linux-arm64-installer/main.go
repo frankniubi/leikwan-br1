@@ -107,6 +107,7 @@ func selfTest() int {
 		"payload/install-client-agent.sh",
 		"payload/artifacts/versions.json",
 		"payload/artifacts/client-agent.py",
+		"payload/artifacts/leikwan-lease-seal.py",
 		"payload/artifacts/leikwan-linux.sh",
 		"payload/artifacts/install-tcp-accel.sh",
 		"payload/artifacts/leikwan-tcp-accel.py",
