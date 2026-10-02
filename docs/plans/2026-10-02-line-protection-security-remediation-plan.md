@@ -2,7 +2,7 @@
 
 **日期:** 2026-10-02
 **作者:** frankniubi + Claude (Opus 4.8, 1M)
-**状态:** P0/P1 已上线、lease 加密下发面板侧已上线（optional）、各端客户端代码完成待发版 — 见附录 B
+**状态:** P0/P1 + lease 加密下发全部上线；各端客户端已发版（2026-10-02，见 `docs/reports/2026-10-02-line-protection-release.md`）；`require` 待存量设备升级后切换
 **基线分支:** `master`
 
 ---
@@ -365,3 +365,7 @@ Win 原生 SOCKS5 只听 127.0.0.1（`native_socks5.go:578`）、不验密码、
 
 - 面板文件：`/root/codex-backups/line-protection-20261002/`；`.env` 备份同目录 `master.env`。
 - 旧令牌：同目录 `external_uot_tokens_before.tsv`（0600）；独立 sidecar 旧配置：各主机 `/root/backups/lp-20261002/`。
+
+### B.6 发版（2026-10-02 13:35 / 13:43 UTC）
+
+Linux agent 2026.10.02.1、Ultra runtime 2026.10.02.1（Linux/macOS garble）、Windows 0.1.20.60、macOS 1.0.53、Android 0.2.36（R8 开）已发布；OpenWrt 1.0.1-r1 已构建。Windows GUI/服务 key 冲突已修（共享 LocalMachine DPAPI key）。发版记录、事故与后续：`docs/reports/2026-10-02-line-protection-release.md`。
