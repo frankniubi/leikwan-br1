@@ -78,3 +78,9 @@ Plan: `docs/plans/2026-10-02-line-protection-security-remediation-plan.md` (Appe
 - **一天前的 S5 凭据不能握手**（04:37 UTC 实测）：10-02 抓的 10 份凭据（09:03–10:47 UTC，含 18:47 本地的 `eef54665`）全部 DEAD，表现与故意写错的假凭据完全一样；同一时刻、同一批当前中转 IP 上，当前真实凭据 ALIVE。旧凭据换到当前中转 IP 上测仍 DEAD，确认失效的是凭据本身。探测：源主机 `/root/probe_captured.py`（经 LeiGod 连 8.8.8.8:53，真凭据→ok/target_refused，假→no_downstream）。
 - **前提**：旧凭据只在源 agent 重新取凭据时作废。源停止刷新时旧凭据可能一直有效 → 加告警：`master/cli/ultra-source-watchdog.php`（root crontab 每分钟，日志 `/root/lk-ultra-source-watchdog.log`），过去 24h 刷新过的源超过 `ULTRA_SOURCE_STALE_MINUTES`(10) 分钟未上传 → 邮件管理员（`ULTRA_SOURCE_ALERT_EMAILS` 可改收件人），每小时提醒，恢复时通知。已发测试邮件。
 
+## 2026-10-03 Android 0.2.37（release line-protection-20261002-3，05:14 UTC）
+- 修首连竞态：runtime 控制 socket 启动后 25–180 ms 才就绪，旧版约 100 ms 就放弃；现在写入前的连接失败按 25..400 ms 退避重试，总上限 5 s。模拟器对生产 8/8 次冷首连成功。
+- 安卓开始上报 Ultra 用量（此前安卓流量从不计入额度）：心跳带 per-forward ultra_usage 增量（读 runtime 自身计数，序号按 forward 持久化，未确认则重发，停 forward 前补抓最后计数）。面板验证：下行有回包的目标 bytes_in 正常计入（forward 171: 4614 B），假节点目标 bytes_in=0 属实。
+- 面板：无 agent_version 的心跳（安卓）不再把整个账号的 clients.agent_version 清空（05:16 UTC 部署）。
+- QA 用测试服务 11 已恢复原值；QA token 文件已删；client 3 留有约 15 个 0.2.37 模拟器设备会话（测试账号，无害）。
+
