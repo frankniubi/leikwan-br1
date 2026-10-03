@@ -1513,9 +1513,11 @@ final class ClientAgentController extends BaseController
             $runtimeState['last_heartbeat_republish_at'] = $existingFingerprintAt;
         }
 
+        // A heartbeat without agent_version (Android sends none) must not
+        // blank the account's version for the Linux agent sharing the client.
         $this->db->execute(
             'UPDATE clients
-             SET agent_version = :agent_version,
+             SET agent_version = IF(CHAR_LENGTH(:agent_version_check) > 0, :agent_version, agent_version),
                  agent_config_json = :agent_config_json,
                  last_sync_at = :last_sync_at,
                  updated_at = :updated_at
@@ -1523,6 +1525,7 @@ final class ClientAgentController extends BaseController
             [
                 'id' => $client['id'],
                 'agent_version' => (string) $request->input('agent_version', ''),
+                'agent_version_check' => trim((string) $request->input('agent_version', '')),
                 'agent_config_json' => $runtimeState !== [] ? json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
                 'last_sync_at' => gmdate('Y-m-d H:i:s'),
                 'updated_at' => gmdate('Y-m-d H:i:s'),
