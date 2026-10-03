@@ -100,6 +100,8 @@ open class ProcessRunner {
 
     private fun cleanupPrivateRuntimePaths(paths: List<String>) {
         paths.sortedByDescending { it.length }.forEach { path ->
+            // Report the bytes a stopping Ultra runtime moved since the last heartbeat.
+            UltraUsageLedger.captureBeforeDelete(File(path))
             runCatching { File(path).delete() }
         }
     }

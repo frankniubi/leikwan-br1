@@ -81,6 +81,12 @@ internal class ApplicationScoped<T> {
 }
 
 private const val TAG = "TunnelOrchestrator"
+
+/** Logs when a lease delivery had to wait for the runtime to start listening (cold start). */
+private fun loggingUltraLeaseClient(): UltraLeaseClient = UltraLeaseClient(
+    onReadyAfterWait = { waitedMs -> Log.i(TAG, "Ultra control socket ready after ${waitedMs}ms") },
+)
+
 private const val NATIVE_REFRESH_MARGIN_SECONDS = 90L
 /** Renew this long before the panel's `renew_after`; the control loop ticks every 30 s. */
 private const val ULTRA_RENEW_MARGIN_SECONDS = 30L
@@ -130,10 +136,10 @@ class TunnelOrchestrator internal constructor(
     binaryInstallerFactory: () -> RuntimeBinaryInstaller = { RuntimeBinaryInstaller(context) },
     processRunnerFactory: () -> ProcessRunner = { ProcessRunner() },
     private val ultraLeaseSender: (String, UltraPolicy, UltraLease) -> Boolean = { socketPath, policy, lease ->
-        UltraLeaseClient().send(socketPath, policy, lease)
+        loggingUltraLeaseClient().send(socketPath, policy, lease)
     },
     private val nativeLeaseSender: (String, NativeOutboundLease) -> Boolean = { socketPath, lease ->
-        UltraLeaseClient().sendNative(socketPath, lease)
+        loggingUltraLeaseClient().sendNative(socketPath, lease)
     },
     private val vpnServiceStarter: (Context) -> Unit = { appContext ->
         val intent = Intent(appContext, LeikwanVpnService::class.java)
@@ -146,10 +152,10 @@ class TunnelOrchestrator internal constructor(
         )
     },
     private val nativeLeaseBatchSender: (String, List<NativeOutboundLease>) -> Boolean = { socketPath, leases ->
-        UltraLeaseClient().sendNative(socketPath, leases)
+        loggingUltraLeaseClient().sendNative(socketPath, leases)
     },
     private val ultraLeaseBatchSender: (String, UltraPolicy, List<UltraLease>) -> Boolean = { socketPath, policy, leases ->
-        UltraLeaseClient().send(socketPath, policy, leases)
+        loggingUltraLeaseClient().send(socketPath, policy, leases)
     },
     /** Clock for pacing failure-driven renewals (test seam). */
     private val ultraFailureClock: () -> Instant = Instant::now,

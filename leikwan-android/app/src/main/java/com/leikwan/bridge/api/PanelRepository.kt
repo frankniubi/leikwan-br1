@@ -25,6 +25,7 @@ import com.leikwan.bridge.runtime.nativeDirectionsMatch
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
 import com.leikwan.bridge.net.PanelNetwork
@@ -80,6 +81,7 @@ class PanelRepository(
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val panelEndpointOverride: PanelEndpoint? = null,
     private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
+    private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
@@ -454,8 +456,18 @@ class PanelRepository(
      */
     suspend fun heartbeat(): Boolean = reportingDeviceLimit {
         requireActiveSession()
+        // Ultra usage rides the heartbeat: unacknowledged rows stay pending and are resent.
+        val ledger = runCatching { ultraUsageLedgerProvider() }.getOrNull()
+        val usage = ledger?.let { runCatching { it.collect() }.getOrNull() }.orEmpty()
         try {
-            api.heartbeat(authHeader()).ok.also { ok -> if (ok) DeviceLimitGate.clear() }
+            val response = api.heartbeat(
+                authHeader(),
+                HeartbeatRequest(ultraUsage = usage.takeIf { it.isNotEmpty() }),
+            )
+            if (usage.isNotEmpty()) {
+                runCatching { ledger?.acknowledge(usage, response.ultraUsageAcknowledged ?: response.ok) }
+            }
+            response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: PanelControlException) {

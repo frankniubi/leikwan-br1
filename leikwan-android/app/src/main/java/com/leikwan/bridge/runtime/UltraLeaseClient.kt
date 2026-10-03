@@ -22,6 +22,19 @@ private const val ULTRA_NATIVE_BATCH_TIMEOUT_MS = 70_000
 private const val ULTRA_CONTROL_CONNECT_ATTEMPTS = 20
 private const val ULTRA_NATIVE_CONNECT_ATTEMPTS = 3
 private const val MAX_NATIVE_LEASE_CANDIDATES = 4
+// The runtime binds its control socket a moment after the process starts; on a cold start
+// (fresh install, first launch) that can take longer than the post-write retry budget above.
+// Connect-stage failures write nothing, so they are retried on their own bounded clock.
+internal const val ULTRA_CONTROL_READY_BUDGET_MS = 5_000L
+private const val ULTRA_CONTROL_READY_BACKOFF_START_MS = 25L
+private const val ULTRA_CONTROL_READY_BACKOFF_MAX_MS = 400L
+private const val ULTRA_CONTROL_RETRY_SLEEP_MS = 50L
+
+/**
+ * The control socket did not accept a connection: the runtime is not listening yet (or is gone).
+ * Nothing was written, so the same delivery can be retried without any risk of applying it twice.
+ */
+class UltraControlNotReadyException(cause: Throwable? = null) : IOException("ultra_control_not_ready", cause)
 
 fun interface UltraControlSocket {
     /** Exchanges one fully framed request and returns only the reply payload. */
@@ -44,7 +57,11 @@ object AndroidUltraControlSocket : TimedUltraControlSocket {
     override fun exchange(socketPath: String, frame: ByteArray, timeoutMs: Int): ByteArray {
         val socket = LocalSocket()
         try {
-            socket.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
+            try {
+                socket.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
+            } catch (error: IOException) {
+                throw UltraControlNotReadyException(error)
+            }
             socket.setSoTimeout(timeoutMs.coerceIn(1_000, ULTRA_NATIVE_BATCH_TIMEOUT_MS))
             socket.outputStream.write(frame)
             socket.outputStream.flush()
@@ -72,6 +89,10 @@ object AndroidUltraControlSocket : TimedUltraControlSocket {
 class UltraLeaseClient(
     private val controlSocket: UltraControlSocket = AndroidUltraControlSocket,
     private val sleep: (Long) -> Unit = { delayMs -> Thread.sleep(delayMs) },
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val readinessBudgetMs: Long = ULTRA_CONTROL_READY_BUDGET_MS,
+    /** Called with the milliseconds spent waiting for the runtime to listen, when it had to wait. */
+    private val onReadyAfterWait: (Long) -> Unit = {},
 ) {
     /** The lease is wiped whether the runtime accepts it or not. */
     fun send(controlSocketPath: String, policy: UltraPolicy, lease: UltraLease): Boolean {
@@ -200,15 +221,34 @@ class UltraLeaseClient(
             frame = ByteArray(4 + body.size)
             ByteBuffer.wrap(frame, 0, 4).order(ByteOrder.BIG_ENDIAN).putInt(body.size)
             body.copyInto(frame, destinationOffset = 4)
-            repeat(connectAttempts.coerceIn(1, ULTRA_CONTROL_CONNECT_ATTEMPTS)) { attempt ->
-                val reply = runCatching {
+            val attempts = connectAttempts.coerceIn(1, ULTRA_CONTROL_CONNECT_ATTEMPTS)
+            val startedAt = nowMs()
+            val readyDeadline = startedAt + readinessBudgetMs
+            var waitedForReady = false
+            var readyBackoff = ULTRA_CONTROL_READY_BACKOFF_START_MS
+            var failures = 0
+            while (true) {
+                val attemptStartedAt = nowMs()
+                val reply = try {
                     if (controlSocket is TimedUltraControlSocket) {
                         controlSocket.exchange(controlSocketPath, frame, timeoutMs)
                     } else {
                         controlSocket.exchange(controlSocketPath, frame)
                     }
-                }.getOrNull()
+                } catch (_: UltraControlNotReadyException) {
+                    // Wait for the runtime to start listening; this does not use up an attempt.
+                    val remaining = readyDeadline - nowMs()
+                    if (remaining <= 0L) return false
+                    waitedForReady = true
+                    sleep(minOf(readyBackoff, remaining))
+                    readyBackoff = minOf(readyBackoff * 2, ULTRA_CONTROL_READY_BACKOFF_MAX_MS)
+                    continue
+                } catch (_: Exception) {
+                    null
+                }
                 if (reply != null) {
+                    // Time until the runtime accepted the connection, not until it answered.
+                    if (waitedForReady) runCatching { onReadyAfterWait(attemptStartedAt - startedAt) }
                     try {
                         return reply.size in 1..MAX_ULTRA_CONTROL_PAYLOAD
                             && replyAccepted(reply, forwardId, policyGeneration)
@@ -216,9 +256,10 @@ class UltraLeaseClient(
                         reply.fill(0)
                     }
                 }
-                if (attempt + 1 < connectAttempts.coerceIn(1, ULTRA_CONTROL_CONNECT_ATTEMPTS)) sleep(50)
+                failures += 1
+                if (failures >= attempts) return false
+                sleep(ULTRA_CONTROL_RETRY_SLEEP_MS)
             }
-            return false
         } finally {
             body.fill(0)
             frame.fill(0)

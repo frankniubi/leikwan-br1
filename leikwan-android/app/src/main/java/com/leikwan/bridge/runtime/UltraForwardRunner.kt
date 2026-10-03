@@ -35,6 +35,7 @@ object UltraForwardRunner {
         val locationCacheFile = File(directory, "$suffix.location.json")
         val locationLockFile = File(directory, "$suffix.location.lock")
         val privateFiles = listOf(configFile, controlSocketFile, statusFile, locationCacheFile, locationLockFile)
+        UltraUsageLedger.captureBeforeDelete(statusFile)
         privateFiles.forEach { file -> runCatching { file.delete() } }
         val listenPort = listenPortOverride ?: forward.listenPort
         require(listenPort in 1..65535) { "ultra_listen_port_invalid" }
