@@ -72,3 +72,9 @@ Plan: `docs/plans/2026-10-02-line-protection-security-remediation-plan.md` (Appe
 ## 仍需用户决定
 1. **推送到 GitHub**：本地 master 领先 origin/master 529 个提交（因 09-26 历史重写）；推送=对远端强推重写历史，未做，等明确确认。
 2. **计费模型**：ledger 已同时支持"按时长"和"按并发线路"；选哪种 + 额度，定了再做强制逻辑。
+
+## 2026-10-03 旧凭据实测 + 源主机停刷新告警
+
+- **一天前的 S5 凭据不能握手**（04:37 UTC 实测）：10-02 抓的 10 份凭据（09:03–10:47 UTC，含 18:47 本地的 `eef54665`）全部 DEAD，表现与故意写错的假凭据完全一样；同一时刻、同一批当前中转 IP 上，当前真实凭据 ALIVE。旧凭据换到当前中转 IP 上测仍 DEAD，确认失效的是凭据本身。探测：源主机 `/root/probe_captured.py`（经 LeiGod 连 8.8.8.8:53，真凭据→ok/target_refused，假→no_downstream）。
+- **前提**：旧凭据只在源 agent 重新取凭据时作废。源停止刷新时旧凭据可能一直有效 → 加告警：`master/cli/ultra-source-watchdog.php`（root crontab 每分钟，日志 `/root/lk-ultra-source-watchdog.log`），过去 24h 刷新过的源超过 `ULTRA_SOURCE_STALE_MINUTES`(10) 分钟未上传 → 邮件管理员（`ULTRA_SOURCE_ALERT_EMAILS` 可改收件人），每小时提醒，恢复时通知。已发测试邮件。
+
