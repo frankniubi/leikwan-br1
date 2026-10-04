@@ -10958,9 +10958,15 @@ final class ProvisioningService
         $cycleUsageBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
         $rolled = false;
         $resumeTrafficSuspendedService = false;
+        // A cycle that would start at or after expiry was never paid for; a
+        // renewal moves expire_at and the next sync catches up.
+        $expiresAt = $this->serviceExpiryTimestamp((string) ($service['expire_at'] ?? ''));
 
         while ($this->nextBillingCycleStart($cycleStart) <= $now) {
             $cycleEnd = $this->nextBillingCycleStart($cycleStart);
+            if ($expiresAt !== null && $cycleEnd->getTimestamp() >= $expiresAt) {
+                break;
+            }
             $this->recordBillingCycle($service, $cycleStart, $cycleEnd, $cycleUsageBytes);
             $cycleStart = $cycleEnd;
             $cycleUsageBytes = 0;
