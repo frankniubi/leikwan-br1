@@ -280,6 +280,8 @@
     <string name="connections_import_more">再导入节点</string>
     <string name="connections_master_title">连接</string>
     <string name="connections_status_connecting">正在连接...</string>
+    <string name="connections_status_selecting_routes">正在从 %1$d 条线路中选择最佳线路...</string>
+    <string name="connections_status_selecting_routes_hint">正在测量每条线路的延迟和丢包，最长约 30 秒。</string>
     <string name="connections_status_disconnected">已断开 · 点击开启</string>
     <string name="connections_status_no_node">请先带一个节点</string>
     <string name="connections_status_connected_format">已连接 · %1$s @ 127.0.0.1:%2$d</string>

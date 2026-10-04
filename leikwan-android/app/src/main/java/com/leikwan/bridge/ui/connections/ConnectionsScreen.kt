@@ -1,5 +1,10 @@
 package com.leikwan.bridge.ui.connections
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -187,8 +193,14 @@ private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
         VpnStatus.CONNECTING -> Color(0xFFF59E0B)
         VpnStatus.CONNECTED -> Color(0xFF22C55E)
     }
+    val selectingRoutes = state.vpnStatus == VpnStatus.CONNECTING &&
+        (state.selectingRouteCandidates ?: 0) > 1
     val statusText = when (state.vpnStatus) {
-        VpnStatus.CONNECTING -> stringResource(R.string.connections_status_connecting)
+        VpnStatus.CONNECTING -> if (selectingRoutes) {
+            stringResource(R.string.connections_status_selecting_routes, state.selectingRouteCandidates ?: 0)
+        } else {
+            stringResource(R.string.connections_status_connecting)
+        }
         VpnStatus.DISCONNECTED -> if (state.hasUsablePath) {
             stringResource(R.string.connections_status_disconnected)
         } else {
@@ -200,25 +212,56 @@ private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
         }
     }
 
+    val connecting = state.vpnStatus == VpnStatus.CONNECTING
+    val dotAlpha = if (connecting) {
+        val pulse = rememberInfiniteTransition(label = "connect-pulse")
+        pulse.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(tween(durationMillis = 700), RepeatMode.Reverse),
+            label = "connect-pulse-alpha",
+        ).value
+    } else {
+        1f
+    }
+
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(20.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(stringResource(R.string.connections_master_title), style = MaterialTheme.typography.titleLarge)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(modifier = Modifier.size(10.dp), shape = MaterialTheme.shapes.small, color = statusColor) {}
-                    Spacer(Modifier.width(8.dp))
-                    Text(statusText, style = MaterialTheme.typography.bodyMedium)
+        Column(modifier = Modifier.padding(20.dp).fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.connections_master_title), style = MaterialTheme.typography.titleLarge)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            modifier = Modifier.size(10.dp).alpha(dotAlpha),
+                            shape = MaterialTheme.shapes.small,
+                            color = statusColor,
+                        ) {}
+                        Spacer(Modifier.width(8.dp))
+                        Text(statusText, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Switch(
+                    checked = state.vpnStatus != VpnStatus.DISCONNECTED,
+                    onCheckedChange = { onToggle() },
+                    enabled = !connecting,
+                )
+            }
+            if (connecting) {
+                Spacer(Modifier.height(12.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = statusColor)
+                if (selectingRoutes) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.connections_status_selecting_routes_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            Switch(
-                checked = state.vpnStatus != VpnStatus.DISCONNECTED,
-                onCheckedChange = { onToggle() },
-                enabled = state.vpnStatus != VpnStatus.CONNECTING,
-            )
         }
     }
 }

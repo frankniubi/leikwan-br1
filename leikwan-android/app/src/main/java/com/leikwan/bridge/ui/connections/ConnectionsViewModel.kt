@@ -18,6 +18,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.service.ConnectProgress
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.TunnelOrchestrator
@@ -70,6 +71,8 @@ data class ConnectionsUiState(
     val error: String? = null,
     /** Set while the panel refuses this device because the online device limit is full. */
     val deviceLimit: DeviceLimitNotice? = null,
+    /** Candidate routes the runtime is probing while connecting, or null outside route selection. */
+    val selectingRouteCandidates: Int? = null,
 ) {
     val hasNode: Boolean get() = nodes.isNotEmpty()
     val nativeVisible: Boolean get() = nativeOutbound?.isUsable() == true
@@ -113,6 +116,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val deviceLimitState: StateFlow<DeviceLimitNotice?> = DeviceLimitGate.state,
     private val deviceLimitRetryMs: Long = DEVICE_LIMIT_RETRY_MS,
     private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
+    private val routeSelectionState: StateFlow<Int?> = ConnectProgress.selectingRouteCandidates,
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
@@ -136,6 +140,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     init {
         viewModelScope.launch {
             deviceLimitState.collect { notice -> _state.update { it.copy(deviceLimit = notice) } }
+        }
+        viewModelScope.launch {
+            routeSelectionState.collect { count -> _state.update { it.copy(selectingRouteCandidates = count) } }
         }
         viewModelScope.launch {
             nodeFlows().collect { all ->
