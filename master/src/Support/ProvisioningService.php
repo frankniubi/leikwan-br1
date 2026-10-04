@@ -303,6 +303,11 @@ final class ProvisioningService
             }
 
             $serviceId = (int) $service['id'];
+            // Desktop/Android login refuses an account without a client, so a
+            // billing-created tenant could never obtain an Ultra lease.
+            if ((string) ($user['status'] ?? '') === 'active') {
+                $this->ensureDefaultClientForUser((int) $user['id']);
+            }
             foreach ($forwards as $forwardPayload) {
                 if (!is_array($forwardPayload)) {
                     continue;
