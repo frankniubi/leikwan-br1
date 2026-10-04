@@ -100,6 +100,7 @@ function leikwan_CreateAccount(array $params)
 {
     return leikwan_run($params, function () use ($params) {
         $payload = leikwan_servicePayload($params, 'active');
+        $payload['expire_at'] = leikwan_expireAt($params, true);
         $payload['initial_password'] = (string) ($params['password'] ?? '');
         leikwan_call($params, 'POST', '/api/whmcs/provision', $payload);
         Capsule::table('tblhosting')->where('id', (int) $params['serviceid'])->update(['username' => $payload['user_email']]);
@@ -246,9 +247,9 @@ function leikwan_configurableBandwidth(array $params)
  * Panel expiry (UTC) = WHMCS next due date + grace days. Free and one-time
  * services never expire on the panel side; WHMCS suspension still applies.
  */
-function leikwan_expireAt(array $params)
+function leikwan_expireAt(array $params, $firstTerm = false)
 {
-    $row = Capsule::table('tblhosting')->where('id', (int) $params['serviceid'])->first(['nextduedate', 'billingcycle']);
+    $row = Capsule::table('tblhosting')->where('id', (int) $params['serviceid'])->first(['nextduedate', 'regdate', 'billingcycle']);
     $cycle = strtolower((string) ($row->billingcycle ?? ''));
     $due = (string) ($row->nextduedate ?? '');
     if (in_array($cycle, ['free account', 'free', 'one time', 'onetime'], true) || $due === '' || strpos($due, '0000') === 0) {
@@ -256,9 +257,17 @@ function leikwan_expireAt(array $params)
     }
     $graceOption = trim((string) ($params['configoption3'] ?? ''));
     $grace = $graceOption === '' ? 3 : max(0, (int) $graceOption);
-    $date = DateTimeImmutable::createFromFormat('!Y-m-d', substr($due, 0, 10), new DateTimeZone('UTC'));
+    $utc = new DateTimeZone('UTC');
+    $date = DateTimeImmutable::createFromFormat('!Y-m-d', substr($due, 0, 10), $utc);
     if ($date === false) {
         throw new Exception('Invalid next due date: ' . $due);
+    }
+    // On a new order the due date may not have moved past the registration
+    // date yet; the customer has still bought one full term.
+    $regdate = DateTimeImmutable::createFromFormat('!Y-m-d', substr((string) ($row->regdate ?? ''), 0, 10), $utc);
+    $months = ['monthly' => 1, 'quarterly' => 3, 'semi-annually' => 6, 'annually' => 12, 'biennially' => 24, 'triennially' => 36][$cycle] ?? 0;
+    if ($firstTerm && $regdate !== false && $months > 0 && $date <= $regdate) {
+        $date = $regdate->modify('+' . $months . ' months');
     }
 
     return $date->modify('+' . $grace . ' days')->format('Y-m-d') . ' 23:59:59';
