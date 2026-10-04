@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS whmcs_login_challenges (
     INDEX idx_whmcs_login_challenges_expiry (expires_at, verified_at)
 );
 
+CREATE TABLE IF NOT EXISTS whmcs_sso_tokens (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    user_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    redirect_path VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_whmcs_sso_tokens_expiry (expires_at)
+);
+
 CREATE TABLE IF NOT EXISTS wallet_transactions (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,

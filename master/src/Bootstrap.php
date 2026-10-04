@@ -180,6 +180,7 @@ final class Bootstrap
         $this->router->add('GET', '/login', [$auth, 'loginPage']);
         $this->router->add('GET', '/auth/oidc/start', [$oidc, 'start']);
         $this->router->add('GET', '/auth/oidc/callback', [$oidc, 'callback']);
+        $this->router->add('GET', '/auth/whmcs/sso', [$whmcs, 'consumeSso']);
         $this->router->add('GET', '/register', [$auth, 'registerPage']);
         $this->router->add('GET', '/forgot-password', [$auth, 'forgotPasswordPage']);
         $this->router->add('POST', '/forgot-password', [$auth, 'requestPasswordReset']);
@@ -325,10 +326,14 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/services/{id}/regenerate-client-token', [$tenant, 'regenerateClientToken']);
         $this->router->add('GET', '/api/health', [$health, 'ping']);
 
+        $this->router->add('GET', '/api/whmcs/ping', [$whmcs, 'ping']);
+        $this->router->add('GET', '/api/whmcs/plans', [$whmcs, 'plans']);
         $this->router->add('POST', '/api/whmcs/provision', [$whmcs, 'provision']);
         $this->router->add('POST', '/api/whmcs/renew', [$whmcs, 'renew']);
         $this->router->add('POST', '/api/whmcs/suspend', [$whmcs, 'suspend']);
+        $this->router->add('POST', '/api/whmcs/unsuspend', [$whmcs, 'unsuspend']);
         $this->router->add('POST', '/api/whmcs/terminate', [$whmcs, 'terminate']);
+        $this->router->add('POST', '/api/whmcs/sso', [$whmcs, 'issueSso']);
 
         $this->router->add('GET', '/api/user/services', [$services, 'listServices']);
         $this->router->add('GET', '/api/user/services/{id}', [$services, 'showService']);

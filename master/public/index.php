@@ -129,6 +129,32 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }
+    // The WHMCS module shows these to the billing admin as the provisioning error.
+    $whmcsSafeMessages = [
+        'whmcs_auth_failed' => 'The webhook token does not match WHMCS_WEBHOOK_TOKEN.',
+        'whmcs_binding_conflict' => 'The panel account with this email is linked to another billing account.',
+        'whmcs_binding_not_supported' => 'The billing email belongs to a non-tenant panel account.',
+        'whmcs_email_owned_by_unbound_account' => 'A panel account with this email already exists. Sign in to the panel and link the billing account, then retry provisioning.',
+        'whmcs_sso_not_allowed' => 'This billing client is not linked to the panel account that owns the service.',
+        'service_not_found' => 'The panel has no service for this WHMCS service id.',
+        'service_terminated' => 'The panel service is terminated.',
+        'service_renewal_disabled' => 'Renewal is disabled for this panel plan.',
+        'plan_not_found' => 'The panel plan does not exist.',
+        'missing_required_field' => 'A required field is missing.',
+    ];
+    $whmcsCode = $exception instanceof ApiException ? $exception->getMessage() : '';
+    if (str_starts_with($path, '/api/whmcs/')
+        && isset($whmcsSafeMessages[$whmcsCode])
+        && $status >= 400 && $status < 500) {
+        return Response::json($status, [
+            'ok' => false,
+            'error' => $whmcsCode,
+            'message' => $whmcsSafeMessages[$whmcsCode],
+        ])->withHeaders([
+            'Cache-Control' => 'no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
     if ($status < 400 || $status >= 500) {
         $status = 500;
     }

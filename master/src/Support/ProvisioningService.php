@@ -174,8 +174,14 @@ final class ProvisioningService
         $serverHostname = is_array($productIdentity) ? $productIdentity['hostname'] : trim((string) ($payload['server_hostname'] ?? ''));
         $serverPublicIp = is_array($productIdentity) ? $productIdentity['server_ip'] : trim((string) ($payload['server_public_ip'] ?? ''));
         $serverIpState = $serverPublicIp !== '' ? 'fresh' : 'missing';
+        $whmcsClientId = max(0, (int) ($payload['whmcs_client_id'] ?? 0));
+        $whmcsUserId = max(0, (int) ($payload['whmcs_user_id'] ?? 0));
+        $initialPassword = (string) ($payload['initial_password'] ?? '');
 
         return $this->db->transaction(function () use (
+            $whmcsClientId,
+            $whmcsUserId,
+            $initialPassword,
             $userEmail,
             $userName,
             $whmcsServiceId,
@@ -191,7 +197,14 @@ final class ProvisioningService
             $serverPublicIp,
             $serverIpState
         ): array {
-            $user = $this->ensureUser($userEmail, $userName);
+            $user = $whmcsClientId > 0
+                ? $this->ensureWhmcsBoundUser($whmcsClientId, $whmcsUserId, $userEmail, $userName, $initialPassword)
+                : $this->ensureUser($userEmail, $userName);
+            if ((string) ($user['role'] ?? '') !== 'tenant') {
+                throw new ApiException('whmcs_binding_not_supported', 409, [
+                    'message' => 'The billing email belongs to a non-tenant panel account.',
+                ]);
+            }
             $plan = $explicitPlanId > 0
                 ? ($this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $explicitPlanId]) ?? $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit))
                 : $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit);
@@ -381,6 +394,54 @@ final class ProvisioningService
         $this->queueLifecycleTasks((int) $service['id'], 'suspend');
         $this->audit('service.suspended', ['service_id' => $service['id'], 'reason' => $reason, 'source' => 'whmcs']);
         return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * Lift a WHMCS suspension. Unlike renewService this is an operator action:
+     * it ignores the plan's renewal flag and keeps expire_at unless WHMCS sends
+     * the current due date.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function unsuspendService(array $payload): array
+    {
+        $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        if ((string) ($service['status'] ?? '') === 'terminated') {
+            throw new ApiException('service_terminated', 409, ['service_id' => (int) $service['id']]);
+        }
+        $expireAt = trim((string) ($payload['expire_at'] ?? ''));
+        $this->db->execute(
+            'UPDATE services
+             SET status = :status,
+                 expire_at = :expire_at,
+                 suspend_reason = NULL,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $service['id'],
+                'status' => 'active',
+                'expire_at' => $expireAt !== '' ? $expireAt : $service['expire_at'],
+                'updated_at' => $this->now(),
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'resume');
+        $this->audit('service.unsuspended', ['service_id' => $service['id'], 'source' => 'whmcs']);
+        return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listPlansForWhmcs(): array
+    {
+        return array_map(static fn(array $plan): array => [
+            'id' => (int) $plan['id'],
+            'name' => (string) $plan['name'],
+            'product_code' => (string) ($plan['product_code'] ?? ''),
+            'bandwidth_mbps' => (int) ($plan['default_bandwidth_limit_mbps'] ?? 0),
+            'traffic_gb' => (int) ($plan['default_traffic_limit_gb'] ?? 0),
+        ], $this->db->fetchAll('SELECT id, name, product_code, default_bandwidth_limit_mbps, default_traffic_limit_gb FROM service_plans WHERE is_active = 1 ORDER BY id'));
     }
 
     /**
@@ -9956,6 +10017,85 @@ final class ProvisioningService
             'updated_at' => $this->now(),
         ]);
         return $this->db->fetchOne('SELECT * FROM users WHERE id = :id', ['id' => $userId]) ?? [];
+    }
+
+    /**
+     * Resolve the panel account for a WHMCS client during module provisioning.
+     *
+     * The WHMCS client id is the stable key. A brand-new email creates a bound
+     * tenant (with the WHMCS-generated password, so the welcome email works).
+     * An email that already belongs to an unbound panel account is NOT adopted
+     * unless WHMCS_PROVISION_ADOPT_UNBOUND_EMAIL is on: WHMCS does not prove the
+     * buyer owns that mailbox, and the SSO link would hand them the account.
+     * Such owners bind from the panel (Account -> billing) and WHMCS retries.
+     *
+     * @return array<string, mixed>
+     */
+    private function ensureWhmcsBoundUser(int $whmcsClientId, int $whmcsUserId, string $email, string $name, string $initialPassword): array
+    {
+        $email = strtolower(trim($email));
+        $bound = $this->db->fetchOne('SELECT * FROM users WHERE whmcs_client_id = :client_id LIMIT 1', ['client_id' => $whmcsClientId]);
+        if ($bound !== null) {
+            return $bound;
+        }
+
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        if ($user !== null) {
+            if ((string) ($user['role'] ?? '') !== 'tenant') {
+                throw new ApiException('whmcs_binding_not_supported', 409, [
+                    'message' => 'The billing email belongs to a non-tenant panel account.',
+                ]);
+            }
+            if (!empty($user['whmcs_client_id'])) {
+                throw new ApiException('whmcs_binding_conflict', 409, [
+                    'message' => 'The panel account with this email is linked to another billing account.',
+                ]);
+            }
+            if (!$this->truthyConfig('WHMCS_PROVISION_ADOPT_UNBOUND_EMAIL')) {
+                throw new ApiException('whmcs_email_owned_by_unbound_account', 409, [
+                    'message' => 'A panel account with this email already exists. Sign in to the panel and link the billing account, then retry provisioning.',
+                ]);
+            }
+        } else {
+            $user = $this->ensureUser($email, $name);
+            if ($initialPassword !== '') {
+                $this->db->execute('UPDATE users SET password_hash = :hash WHERE id = :id AND password_hash IS NULL', [
+                    'id' => $user['id'],
+                    'hash' => password_hash($initialPassword, PASSWORD_DEFAULT),
+                ]);
+            }
+        }
+
+        $now = $this->now();
+        $this->db->execute(
+            'UPDATE users
+             SET whmcs_client_id = :client_id,
+                 whmcs_user_id = :whmcs_user_id,
+                 whmcs_email = :whmcs_email,
+                 whmcs_full_name = :whmcs_full_name,
+                 whmcs_bound_at = COALESCE(whmcs_bound_at, :bound_at),
+                 whmcs_last_synced_at = :synced_at,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $user['id'],
+                'client_id' => $whmcsClientId,
+                'whmcs_user_id' => $whmcsUserId > 0 ? $whmcsUserId : null,
+                'whmcs_email' => $email,
+                'whmcs_full_name' => $name,
+                'bound_at' => $now,
+                'synced_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+        $this->audit('user.whmcs_bound', ['user_id' => $user['id'], 'whmcs_client_id' => $whmcsClientId, 'source' => 'whmcs_module']);
+
+        return $this->db->fetchOne('SELECT * FROM users WHERE id = :id', ['id' => $user['id']]) ?? [];
+    }
+
+    private function truthyConfig(string $key): bool
+    {
+        return in_array(strtolower(trim((string) ($this->config->get($key, '') ?? ''))), ['1', 'true', 'yes', 'on'], true);
     }
 
     /**
