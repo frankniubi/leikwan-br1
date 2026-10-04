@@ -14,6 +14,7 @@ use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\ServiceStatus;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\WhmcsIdentityService;
@@ -151,7 +152,7 @@ final class TenantController extends BaseController
             ? '<section class="card">
                 <div class="console-service-head">
                   <h3>Latest package</h3>
-                  ' . $this->tenantServiceStatusBadge((string) ($latestService['status'] ?? '')) . '
+                  ' . $this->tenantServiceStatusBadge($latestService) . '
                 </div>
                 <dl class="console-kv">
                   <dt>Package name</dt><dd>' . $this->escape((string) ($latestService['name'] ?? 'Service')) . '</dd>
@@ -369,7 +370,7 @@ final class TenantController extends BaseController
                     <h3>' . $this->escape((string) $service['name']) . '</h3>
                     <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . '</div>
                   </div>
-                  ' . $this->tenantServiceStatusBadge((string) $service['status']) . '
+                  ' . $this->tenantServiceStatusBadge($service) . '
                 </div>
                 <div class="console-service-meta">
                   <span><span>Expires</span> ' . $this->escape((string) $service['expire_at']) . '</span>
@@ -745,7 +746,7 @@ final class TenantController extends BaseController
 
             $serviceRows .= '<tr>
                 <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
-                <td>' . $this->tenantServiceStatusBadge((string) ($service['status'] ?? '')) . '</td>
+                <td>' . $this->tenantServiceStatusBadge($service) . '</td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
                 <td>' . $currentBandwidth . ' Mbps</td>
                 <td>' . $trafficPolicy . '</td>
@@ -1845,17 +1846,20 @@ final class TenantController extends BaseController
                 $ultraHealth = [];
             }
         }
+        $serviceExpired = ServiceStatus::effective($service) === ServiceStatus::EXPIRED;
         $rows = '';
         foreach ($forwardRows as $forward) {
             $isRunning = (int) ($forward['enabled'] ?? 0) === 1;
             $forwardHealth = $ultraHealth[(int) ($forward['id'] ?? 0)] ?? null;
-            $healthFailed = is_array($forwardHealth) && ($forwardHealth['unhealthy'] ?? false) === true;
+            $healthFailed = !$serviceExpired && is_array($forwardHealth) && ($forwardHealth['unhealthy'] ?? false) === true;
             $healthReason = $healthFailed ? trim((string) ($forwardHealth['health_reason'] ?? '')) : '';
             $statusBadge = !$isRunning
                 ? '<span class="badge warning">Paused</span>'
-                : ($healthFailed
-                    ? '<span class="badge danger">已启用但未运行</span>'
-                    : '<span class="badge success">Running</span>');
+                : ($serviceExpired
+                    ? '<span class="badge danger">Expired</span>'
+                    : ($healthFailed
+                        ? '<span class="badge danger">已启用但未运行</span>'
+                        : '<span class="badge success">Running</span>'));
             if ($healthFailed) {
                 $statusBadge .= '<div class="muted">' . $this->escape($healthReason !== '' ? $healthReason : 'unhealthy') . '</div>';
             }
@@ -1880,6 +1884,8 @@ final class TenantController extends BaseController
             if ($endpointHtml === '') {
                 if (!$isRunning) {
                     $endpointHtml = '<div class="muted">Paused — endpoints released</div>';
+                } elseif ($serviceExpired) {
+                    $endpointHtml = '<div class="muted">Service expired — renew to resume</div>';
                 } elseif ($healthFailed) {
                     $endpointHtml = '<div class="muted">未运行 · 无有效 Ultra 租约，尚未建立监听</div>';
                 } else {
@@ -2081,7 +2087,7 @@ final class TenantController extends BaseController
               <div>
                 <div class="console-service-head" style="justify-content:flex-start;">
                   <h2>' . $this->escape((string) $service['name']) . '</h2>
-                  ' . $this->tenantServiceStatusBadge((string) $service['status']) . '
+                  ' . $this->tenantServiceStatusBadge($service) . '
                 </div>
                 <p class="muted"><span>Expires</span> ' . $this->escape((string) $service['expire_at']) . '</p>
               </div>
@@ -3565,8 +3571,10 @@ final class TenantController extends BaseController
         return $this->tenantNavigationItems($active);
     }
 
-    private function tenantServiceStatusBadge(string $status): string
+    /** @param array<string, mixed> $service */
+    private function tenantServiceStatusBadge(array $service): string
     {
+        $status = ServiceStatus::effective($service);
         [$label, $class] = match ($status) {
             'active' => ['Active', 'success'],
             'pending' => ['Pending activation', 'warning'],

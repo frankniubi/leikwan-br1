@@ -1807,6 +1807,7 @@
     "Suspended": "已暂停",
     "Out of traffic": "流量已用完",
     "Expired": "已到期",
+    "Service expired — renew to resume": "服务已到期，续费后自动恢复",
     "Unknown": "未知",
     "Back to My Services": "返回我的服务",
     "More details": "更多信息",

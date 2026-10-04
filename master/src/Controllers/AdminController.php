@@ -18,6 +18,7 @@ use Leikwan\Master\Support\LeigodOnlyPlatformFamilyGate;
 use Leikwan\Master\Support\LeigodRetirementActivationContext;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\PrecisionGridUi;
+use Leikwan\Master\Support\ServiceStatus;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebasePreviewDocument;
@@ -4422,7 +4423,7 @@ final class AdminController extends BaseController
         foreach ($services as $service) {
             $serviceName = (string) $service['name'];
             $owner = (string) $service['user_email'];
-            $status = (string) $service['status'];
+            $status = ServiceStatus::effective($service);
             $planName = (string) ($service['plan_name'] ?? 'No plan');
             $billing = $this->provisioning?->serviceBillingOverview((int) $service['id']) ?? null;
             $billingHtml = $billing !== null
