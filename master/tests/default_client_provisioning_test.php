@@ -424,6 +424,11 @@ namespace {
     if ($service->raiseClientDeviceLimitsToPlanDefault(80) !== 0) {
         fail('expected raising to be idempotent');
     }
+    // WHMCS create/update, WHMCS renew and wallet purchase must each call it.
+    $provisioningSource = (string) file_get_contents(__DIR__ . '/../src/Support/ProvisioningService.php');
+    if (substr_count($provisioningSource, '$this->raiseClientDeviceLimitsToPlanDefault(') < 3) {
+        fail('expected plan purchase, WHMCS provision and renew to raise client device limits');
+    }
 
     $backfill = $service->backfillDefaultClientsForUsers(null, true);
     if ((int) ($backfill['created'] ?? 0) < 1 || (int) ($backfill['marked_existing'] ?? 0) < 1 || (int) ($backfill['normalized_duplicates'] ?? 0) < 1) {
