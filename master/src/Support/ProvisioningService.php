@@ -308,6 +308,7 @@ final class ProvisioningService
             if ((string) ($user['status'] ?? '') === 'active') {
                 $this->ensureDefaultClientForUser((int) $user['id']);
             }
+            $this->raiseClientDeviceLimitsToPlanDefault((int) $user['id']);
             foreach ($forwards as $forwardPayload) {
                 if (!is_array($forwardPayload)) {
                     continue;
@@ -370,6 +371,7 @@ final class ProvisioningService
                 'updated_at' => $this->now(),
             ]
         );
+        $this->raiseClientDeviceLimitsToPlanDefault((int) ($service['user_id'] ?? 0));
         $this->queueLifecycleTasks((int) $service['id'], 'resume');
         $this->audit('service.renewed', ['service_id' => $service['id'], 'source' => 'whmcs']);
         return $this->serviceSummary((int) $service['id']);
@@ -2151,6 +2153,48 @@ final class ProvisioningService
     }
 
     /**
+     * The plan limit only seeds new clients, so a client created before its
+     * owner bought a plan stayed at 1. Raise only: admins may grant more.
+     */
+    public function raiseClientDeviceLimitsToPlanDefault(int $userId): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT MAX(p.default_client_online_device_limit) AS plan_limit
+             FROM services s
+             INNER JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.user_id = :user_id
+               AND s.status = :status',
+            [
+                'user_id' => $userId,
+                'status' => 'active',
+            ]
+        );
+        $planLimit = (int) ($row['plan_limit'] ?? 0);
+        if ($planLimit <= 1) {
+            return 0;
+        }
+
+        return $this->db->execute(
+            'UPDATE clients
+             SET online_device_limit = :plan_limit,
+                 updated_at = :updated_at
+             WHERE owner_user_id = :owner_user_id
+               AND group_id IS NULL
+               AND online_device_limit < :plan_limit_floor',
+            [
+                'plan_limit' => $planLimit,
+                'plan_limit_floor' => $planLimit,
+                'owner_user_id' => $userId,
+                'updated_at' => $this->now(),
+            ]
+        );
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function defaultClientForUser(int $userId): ?array
@@ -3030,6 +3074,7 @@ final class ProvisioningService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            $this->raiseClientDeviceLimitsToPlanDefault((int) $user['id']);
 
             $this->audit('service.purchased', [
                 'service_id' => $serviceId,

@@ -85,6 +85,22 @@ namespace Leikwan\Master\Database {
                 return $this->findById('service_plans', (int) ($params['id'] ?? 0));
             }
 
+            if (str_contains($normalized, 'SELECT MAX(p.default_client_online_device_limit) AS plan_limit FROM services s')) {
+                $userId = (int) ($params['user_id'] ?? 0);
+                $status = (string) ($params['status'] ?? 'active');
+                $limit = null;
+                foreach ($this->rows('services') as $service) {
+                    if ((int) ($service['user_id'] ?? 0) !== $userId || (string) ($service['status'] ?? '') !== $status) {
+                        continue;
+                    }
+                    $plan = $this->findById('service_plans', (int) ($service['plan_id'] ?? 0));
+                    if ($plan !== null) {
+                        $limit = max((int) $limit, (int) ($plan['default_client_online_device_limit'] ?? 1));
+                    }
+                }
+                return ['plan_limit' => $limit];
+            }
+
             if (str_contains($normalized, 'SELECT p.default_client_online_device_limit FROM services s')) {
                 $userId = (int) ($params['user_id'] ?? 0);
                 $status = (string) ($params['status'] ?? 'active');
@@ -197,6 +213,22 @@ namespace Leikwan\Master\Database {
                 return $count;
             }
 
+            if (str_contains($normalized, 'UPDATE clients SET online_device_limit = :plan_limit')) {
+                $count = 0;
+                foreach ($this->tables['clients'] as &$row) {
+                    if ((int) ($row['owner_user_id'] ?? 0) !== (int) ($params['owner_user_id'] ?? 0)
+                        || ($row['group_id'] ?? null) !== null
+                        || (int) ($row['online_device_limit'] ?? 1) >= (int) ($params['plan_limit_floor'] ?? 0)) {
+                        continue;
+                    }
+                    $row['online_device_limit'] = (int) $params['plan_limit'];
+                    $row['updated_at'] = $params['updated_at'] ?? $row['updated_at'] ?? null;
+                    $count++;
+                }
+                unset($row);
+                return $count;
+            }
+
             if (str_contains($normalized, 'DELETE FROM client_device_sessions WHERE client_id = :client_id')) {
                 $before = count($this->tables['client_device_sessions'] ?? []);
                 $clientId = (int) ($params['client_id'] ?? 0);
@@ -274,6 +306,7 @@ namespace {
         ['id' => 50, 'name' => 'Tenant E', 'email' => 'tenant-e@example.com', 'role' => 'tenant', 'status' => 'active'],
         ['id' => 60, 'name' => 'Tenant F', 'email' => 'tenant-f@example.com', 'role' => 'tenant', 'status' => 'active'],
         ['id' => 70, 'name' => 'Tenant G', 'email' => 'tenant-g@example.com', 'role' => 'tenant', 'status' => 'active'],
+        ['id' => 80, 'name' => 'Tenant H', 'email' => 'tenant-h@example.com', 'role' => 'tenant', 'status' => 'active'],
     ]);
     $db->seed('clients', [
         ['id' => 101, 'owner_user_id' => 20, 'group_id' => null, 'is_default_for_owner' => 0, 'agent_token' => 'tok-101', 'name' => 'Older Active', 'display_host' => 'older.example.com', 'status' => 'active', 'created_at' => '2026-04-25 00:00:00', 'updated_at' => '2026-04-25 00:00:00'],
@@ -354,6 +387,42 @@ namespace {
     $repeat = $service->ensureDefaultClientForUser(10);
     if ((int) ($repeat['id'] ?? 0) !== (int) ($created['id'] ?? 0)) {
         fail('expected ensureDefaultClientForUser() to be idempotent for tenant 10');
+    }
+
+    // Client created before the tenant had a service keeps limit 1 until a
+    // plan is bought; the purchase must lift it to the plan default.
+    $early = $service->ensureDefaultClientForUser(80);
+    if ((int) ($early['online_device_limit'] ?? 0) !== 1) {
+        fail('expected a client created without a service to start at limit 1');
+    }
+    $db->seed('service_plans', [
+        ['id' => 501, 'default_client_online_device_limit' => 3],
+        ['id' => 502, 'default_client_online_device_limit' => 5],
+    ]);
+    $db->seed('services', [
+        ['id' => 601, 'user_id' => 10, 'plan_id' => 501, 'status' => 'active'],
+        ['id' => 602, 'user_id' => 80, 'plan_id' => 502, 'status' => 'active'],
+    ]);
+    $db->insert('clients', ['owner_user_id' => 80, 'group_id' => null, 'is_default_for_owner' => 0, 'name' => 'Admin Raised', 'display_host' => 'raised.example.com', 'online_device_limit' => 10, 'status' => 'active']);
+    $db->insert('clients', ['owner_user_id' => 80, 'group_id' => 77, 'is_default_for_owner' => 0, 'name' => 'Grouped', 'display_host' => 'grouped-80.example.com', 'online_device_limit' => 1, 'status' => 'active']);
+    if ($service->raiseClientDeviceLimitsToPlanDefault(80) !== 1) {
+        fail('expected exactly the stale default client to be raised');
+    }
+    $limits = [];
+    foreach ($db->fetchAll('SELECT * FROM clients WHERE owner_user_id = :owner_user_id ORDER BY id ASC', ['owner_user_id' => 80]) as $row) {
+        $limits[(string) $row['name']] = (int) ($row['online_device_limit'] ?? 0);
+    }
+    if (($limits['Default Client'] ?? 0) !== 5) {
+        fail('expected the pre-purchase default client to reach the plan limit of 5');
+    }
+    if (($limits['Admin Raised'] ?? 0) !== 10) {
+        fail('expected an admin-raised client limit to be kept, never lowered');
+    }
+    if (($limits['Grouped'] ?? 0) !== 1) {
+        fail('expected grouped (admin-managed) clients to be left alone');
+    }
+    if ($service->raiseClientDeviceLimitsToPlanDefault(80) !== 0) {
+        fail('expected raising to be idempotent');
     }
 
     $backfill = $service->backfillDefaultClientsForUsers(null, true);

@@ -29,4 +29,10 @@ foreach ([
     }
 }
 
+// WHMCS create/update, WHMCS renew and wallet purchase must each lift
+// pre-existing clients to the plan's device limit.
+if (substr_count((string) $provisioning, '$this->raiseClientDeviceLimitsToPlanDefault(') < 3) {
+    fail('expected plan purchase, WHMCS provision and renew to raise client device limits');
+}
+
 echo "ok\n";
