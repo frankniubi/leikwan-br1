@@ -103,7 +103,7 @@ Authorization: Bearer <token>
     "port": 443,
     "service_id": null
   },
-  "ingress": {"host": "", "port": 0},
+  "ingress": {"host": null, "port": null},
   "state": "active",
   "endpoint_count": 1,
   "active_endpoint_count": 1,
@@ -119,7 +119,7 @@ Authorization: Bearer <token>
 | `transport` | `tcp` / `udp` / `tcp+udp` |
 | `target.source` | `manual`（手填 host+port）或 `service_ip`（指向你名下另一个服务的 IP） |
 | `native_outbound` / `native_direction` | 只读；见第 9 节 |
-| `ingress` | 保留字段，目前不保证有值，**不要依赖**；连接信息由客户端配置流程下发 |
+| `ingress` | 保留字段，当前恒为 `null`，**不要依赖**；连接信息由客户端配置流程下发 |
 | `revision` | 每次成功修改 +1；用于拼 ETag |
 
 ## 6. 创建
@@ -153,6 +153,9 @@ Idempotency-Key: create-fwd-20261007-01
 `target`：
 
 - `manual`：`{"source":"manual","host":"...","port":N}`。`host` 为 ASCII IPv4/IPv6/域名（≤253 字符），不允许 scheme、userinfo、路径、空白、控制字符、IPv6 zone。
+  目标由平台节点代为连接，因此**保留地址段会被拒绝**（`422`，`fields: {"target.host": "reserved_range"}`）：
+  环回 `127.0.0.0/8`、`::1`，链路本地 `169.254.0.0/16`（含云元数据 `169.254.169.254`），`0.0.0.0`，以及 `localhost` / `*.localhost`。
+  私有网段（`10/8`、`172.16/12`、`192.168/16`）仍可用于你自己的后端。
 - `service_ip`：`{"source":"service_ip","service_id":43,"port":8443}`。`service_id` 必须是你名下的服务，不接受 `host`。
 
 PowerShell 示例：
@@ -268,7 +271,9 @@ If-Match: "forward-123-r4"
 | 401 | `user_auth_failed` | token 无效 / 非 tenant / 账号停用 |
 | 403 | `feature_denied_manage_forwards`、`feature_denied_delete_forwards` | 套餐/账号不允许该操作 |
 | 404 | `service_not_found`、`forward_not_found` | 不存在、不属于你或已删除 |
-| 409 | `service_inactive` | 服务非 active |
+| 403 | `native_outbound_not_allowed` | 套餐未开启 Native Outbound |
+| 409 | `service_inactive` | 服务非 active，或已过到期时间（`expire_at`） |
+| 409 | `native_direction_conflict` | 同服务下该方向已有生效的 native 转发 |
 | 409 | `forward_quota_exceeded` | 生效转发数已达 `forward_limit` |
 | 409 | `forward_storage_quota_exceeded` | 历史保留记录达上限 |
 | 409 | `idempotency_conflict`、`idempotency_resource_inactive` | 见第 11 节 |
@@ -279,12 +284,10 @@ If-Match: "forward-123-r4"
 | 422 | `validation_failed`、`unknown_fields` | 字段非法 / 多余字段 |
 | 422 | `idempotency_key_invalid` | key 格式不对 |
 | 422 | `forward_route_not_allowed`、`forward_route_has_no_enabled_combination` | 线路不在套餐内 / 无启用组合 |
+| 422 | `native_outbound_requires_ultra_tcp_udp` | 线路非 Ultra 组合，或 transport 不是 `tcp+udp` |
+| 422 | `native_outbound_direction_missing` | 线路未配置方向 |
 | 428 | `idempotency_key_required`、`precondition_required` | 缺 Idempotency-Key / If-Match |
 | 500 | `operation_failed` | 内部错误（细节只记录在服务端） |
-
-> 已知问题（修复前请按此处理）：Native Outbound 相关的 `native_outbound_not_allowed`、
-> `native_direction_conflict`、`native_outbound_requires_ultra_tcp_udp`、`native_outbound_direction_missing`
-> 目前会被折叠为 `500 operation_failed`。收到 500 时请先用 forward-options 与套餐权限自查，再重试。
 
 ## 13. 旧版接口（Deprecated）
 
