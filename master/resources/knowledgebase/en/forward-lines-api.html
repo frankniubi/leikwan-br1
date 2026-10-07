@@ -1,0 +1,221 @@
+<h2>Who this is for</h2>
+<p>Use the Forward Lines API when you want your own program or script to manage forwards: creating them in bulk, switching routes on demand, or wiring them into your own system. For everyday changes, the console is all you need.</p>
+<p>The API manages the forward itself: which route it uses, which local port it listens on, and where it sends traffic. Nodes, route combinations and tunnel credentials are run by the platform and never appear in the API. The connection itself is still made by the LeiKwan client after it fetches its configuration.</p>
+
+<h2>Authentication</h2>
+<pre>Authorization: Bearer &lt;your API token&gt;</pre>
+<ul>
+  <li>Only a Bearer token in the request header is accepted. Tokens in the URL are not.</li>
+  <li>For now, contact support to get an API token. Treat it like a password and keep it out of your logs.</li>
+  <li>An invalid token or a disabled account always returns <code>401 user_auth_failed</code>.</li>
+</ul>
+
+<h2>Ground rules</h2>
+<table>
+  <thead><tr><th>Item</th><th>Rule</th></tr></thead>
+  <tbody>
+    <tr><td>Base URL</td><td><code>https://v3.leikwanhost.com</code></td></tr>
+    <tr><td>Format</td><td>JSON (UTF-8) for both requests and responses</td></tr>
+    <tr><td>Write requests</td><td>Send <code>Content-Type: application/json</code> or get <code>415</code>. Keep the body under 16 KiB or get <code>413</code>.</td></tr>
+    <tr><td>Types</td><td>Ports and IDs must be JSON numbers, not strings</td></tr>
+    <tr><td>Extra fields</td><td>Any field not documented here returns <code>422 unknown_fields</code></td></tr>
+    <tr><td>Versions</td><td>A single forward comes with an <code>ETag</code> such as <code>"forward-123-r3"</code>. Updates and deletes must send it back in <code>If-Match</code>.</td></tr>
+    <tr><td>Duplicate protection</td><td>Creates must send an <code>Idempotency-Key</code> of 8–64 characters using letters, digits and <code>. _ : -</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Endpoints</h2>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{service_id}/forward-options</code></td><td>Available routes, transports and quota</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{service_id}/forwards</code></td><td>Active forwards on the service</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/v1/user/services/{service_id}/forwards</code></td><td>Create a forward</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/forwards/{forward_id}</code></td><td>One forward and its ETag</td></tr>
+    <tr><td><code>PATCH</code></td><td><code>/api/v1/user/forwards/{forward_id}</code></td><td>Update a forward</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/api/v1/user/forwards/{forward_id}</code></td><td>Delete a forward</td></tr>
+  </tbody>
+</table>
+<p>Your service ID is on the console's Services page. An ID that is malformed, belongs to someone else, or points to a deleted forward always returns <code>404</code>, with no further detail.</p>
+
+<h2>Step 1: list available routes</h2>
+<pre>GET /api/v1/user/services/42/forward-options</pre>
+<pre>{
+  "ok": true,
+  "transports": ["tcp", "udp", "tcp+udp"],
+  "forward_limit": 64,
+  "active_forward_count": 2,
+  "capabilities": {
+    "allow_manage_forwards": true,
+    "allow_delete_forwards": true
+  },
+  "routes": [
+    {
+      "id": 14,
+      "label": "Shanghai–Tokyo",
+      "description": "Shanghai → Tokyo",
+      "badge": "stable",
+      "transports": {
+        "tcp":     {"available": true,  "healthy_node_count": 2, "unavailable_reason": null},
+        "udp":     {"available": false, "healthy_node_count": 0, "unavailable_reason": "no_healthy_nodes"},
+        "tcp+udp": {"available": true,  "healthy_node_count": 2, "unavailable_reason": null}
+      }
+    }
+  ]
+}</pre>
+<ul>
+  <li><code>routes</code> lists only the routes your plan includes. Use a route's <code>id</code> when you create a forward.</li>
+  <li><code>forward_limit</code> is how many forwards the service may have active at once; <code>active_forward_count</code> is how many it has now.</li>
+  <li><code>unavailable_reason</code> is one of <code>route_unavailable</code>, <code>no_healthy_nodes</code>, <code>transport_unavailable</code> or <code>not_configured</code>.</li>
+</ul>
+
+<h2>Create a forward</h2>
+<pre>POST /api/v1/user/services/42/forwards
+Authorization: Bearer &lt;your API token&gt;
+Content-Type: application/json
+Idempotency-Key: create-fwd-20261007-01
+
+{
+  "route_id": 14,
+  "listen_port": null,
+  "transport": "tcp",
+  "target": {"source": "manual", "host": "203.0.113.10", "port": 443}
+}</pre>
+<table>
+  <thead><tr><th>Field</th><th>Required</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>route_id</code></td><td>Yes</td><td>A route ID from step 1</td></tr>
+    <tr><td><code>listen_port</code></td><td>Yes</td><td>The local port on the client device, 1–65535, or <code>null</code> to have one assigned</td></tr>
+    <tr><td><code>transport</code></td><td>Yes</td><td><code>tcp</code>, <code>udp</code> or <code>tcp+udp</code></td></tr>
+    <tr><td><code>target</code></td><td>Yes</td><td>Where traffic goes; see below (not used for Native Outbound)</td></tr>
+    <tr><td><code>native_outbound</code></td><td>No</td><td>Defaults to <code>false</code>; see Native Outbound</td></tr>
+  </tbody>
+</table>
+<h3>Targets</h3>
+<ul>
+  <li><strong>Manual</strong>: <code>{"source": "manual", "host": "…", "port": 443}</code>. <code>host</code> is an IPv4 address, IPv6 address or domain name up to 253 characters, without <code>http://</code>, a path or spaces.</li>
+  <li><strong>Another of your services</strong>: <code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>. The service must be yours, and <code>host</code> must be left out.</li>
+</ul>
+<blockquote><p><strong>Some target addresses are refused.</strong> Platform nodes connect to your target, so loopback, link-local and cloud metadata addresses are not allowed: <code>127.0.0.0/8</code>, <code>::1</code>, <code>169.254.0.0/16</code> (including <code>169.254.169.254</code>), <code>0.0.0.0</code> and <code>localhost</code>. These return <code>422</code> with <code>"target.host": "reserved_range"</code> in <code>fields</code>. Private ranges such as <code>10.x</code>, <code>172.16–31.x</code> and <code>192.168.x</code> work normally.</p></blockquote>
+<h3>curl example</h3>
+<pre>curl -sS -X POST "https://v3.leikwanhost.com/api/v1/user/services/42/forwards" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: create-fwd-20261007-01" \
+  -H "Content-Type: application/json" \
+  -d '{"route_id":14,"listen_port":null,"transport":"tcp","target":{"source":"manual","host":"203.0.113.10","port":443}}'</pre>
+<p>A successful create returns <code>201</code> with <code>Location</code> and <code>ETag</code> headers and a body of <code>{"ok": true, "forward": {…}}</code>.</p>
+
+<h2>Read forwards</h2>
+<pre>GET /api/v1/user/services/42/forwards
+GET /api/v1/user/forwards/123</pre>
+<p>The list contains only active forwards and <strong>carries no ETags</strong>. Before you update or delete a forward, read it individually to get its ETag. A forward looks like this:</p>
+<pre>{
+  "id": 123,
+  "service_id": 42,
+  "route": {"id": 14, "label": "Shanghai–Tokyo"},
+  "listen_port": 11024,
+  "transport": "tcp",
+  "native_outbound": false,
+  "native_direction": null,
+  "target": {"source": "manual", "host": "203.0.113.10", "port": 443, "service_id": null},
+  "ingress": {"host": null, "port": null},
+  "state": "active",
+  "endpoint_count": 1,
+  "active_endpoint_count": 1,
+  "revision": 3,
+  "created_at": "2026-10-07 03:00:00",
+  "updated_at": "2026-10-07 03:05:00"
+}</pre>
+<ul>
+  <li><code>revision</code> goes up by one on every change; the ETag is <code>"forward-{id}-r{revision}"</code>.</li>
+  <li><code>ingress</code> is reserved and is always <code>null</code> for now, so don't rely on it. The client fetches its connection details on its own.</li>
+</ul>
+
+<h2>Update a forward</h2>
+<pre>PATCH /api/v1/user/forwards/123
+Authorization: Bearer &lt;your API token&gt;
+Content-Type: application/json
+If-Match: "forward-123-r3"
+
+{
+  "transport": "tcp+udp",
+  "target": {"source": "manual", "host": "backend.example.com", "port": 8443}
+}</pre>
+<ul>
+  <li>You can change <code>route_id</code>, <code>listen_port</code>, <code>transport</code> and <code>target</code> (in part or in full), and you can turn <code>native_outbound</code> off. Send at least one field.</li>
+  <li>A successful update returns the updated forward and a new ETag.</li>
+  <li>Changing the route, the transport or the target type, or setting <code>listen_port</code> to <code>null</code>, makes the platform re-place the forward. If the route is unavailable you get <code>409 route_unavailable</code> and the forward stays as it was.</li>
+  <li>To switch between a manual target and a service target, send <code>source</code> together with <code>service_id</code> (or <code>host</code>) in the same request.</li>
+  <li>Every update rebuilds the forward's connections, so don't call it in a tight loop.</li>
+</ul>
+
+<h2>Delete a forward</h2>
+<pre>DELETE /api/v1/user/forwards/123
+Authorization: Bearer &lt;your API token&gt;
+If-Match: "forward-123-r4"</pre>
+<ul>
+  <li>A successful delete returns <code>204</code> with no body. A stale ETag deletes nothing.</li>
+  <li>Each service keeps up to 512 deleted forwards. Past that, creates fail with <code>409 forward_storage_quota_exceeded</code> until support clears them, so avoid create-and-delete loops.</li>
+</ul>
+
+<h2>Native Outbound</h2>
+<p>A Native Outbound forward leaves directly from your device instead of going through a platform ingress. Leave <code>target</code> out when you create one:</p>
+<pre>{"route_id": 14, "listen_port": null, "transport": "tcp+udp", "native_outbound": true}</pre>
+<table>
+  <thead><tr><th>Requirement</th><th>Error if not met</th></tr></thead>
+  <tbody>
+    <tr><td>The route supports Native Outbound and <code>transport</code> is <code>tcp+udp</code></td><td><code>422 native_outbound_requires_ultra_tcp_udp</code></td></tr>
+    <tr><td>Your plan includes Native Outbound</td><td><code>403 native_outbound_not_allowed</code></td></tr>
+    <tr><td>The route has a direction configured</td><td><code>422 native_outbound_direction_missing</code></td></tr>
+    <tr><td>No other Native Outbound forward on the service uses that direction</td><td><code>409 native_direction_conflict</code></td></tr>
+  </tbody>
+</table>
+<p>To turn Native Outbound off, send a PATCH with <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>. To turn an existing forward into a Native Outbound forward, create a new one or change it in the console.</p>
+
+<h2>Retries and concurrency</h2>
+<ul>
+  <li>Reads can be retried freely.</li>
+  <li>If a create times out, retry with the <strong>same</strong> <code>Idempotency-Key</code> and the <strong>same</strong> body. You get the original forward back (<code>200</code>) instead of a duplicate.</li>
+  <li>Reusing a key with a different body returns <code>409 idempotency_conflict</code>. If the original forward was deleted, you get <code>409 idempotency_resource_inactive</code>.</li>
+  <li><code>412 forward_version_conflict</code> on an update or delete means the forward changed. Read it again, check it, then retry with the new ETag.</li>
+  <li>Concurrent creates can never push a service past its <code>forward_limit</code>.</li>
+</ul>
+
+<h2>Errors</h2>
+<p>Every error has this shape:</p>
+<pre>{
+  "ok": false,
+  "error": {
+    "code": "validation_failed",
+    "message": "The forward request is invalid.",
+    "fields": {"target.port": "out_of_range"}
+  }
+}</pre>
+<p>For <code>validation_failed</code>, <code>fields</code> maps each field to a reason. For <code>unknown_fields</code>, it lists the extra field names, for example <code>["target.foo"]</code>.</p>
+<table>
+  <thead><tr><th>HTTP</th><th>Code</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>401</td><td><code>user_auth_failed</code></td><td>Invalid token or disabled account</td></tr>
+    <tr><td>403</td><td><code>feature_denied_manage_forwards</code>, <code>feature_denied_delete_forwards</code></td><td>Your plan doesn't allow this action</td></tr>
+    <tr><td>403</td><td><code>native_outbound_not_allowed</code></td><td>Your plan doesn't include Native Outbound</td></tr>
+    <tr><td>404</td><td><code>service_not_found</code>, <code>forward_not_found</code></td><td>Doesn't exist, isn't yours, or was deleted</td></tr>
+    <tr><td>409</td><td><code>service_inactive</code></td><td>The service is suspended or has expired</td></tr>
+    <tr><td>409</td><td><code>forward_quota_exceeded</code></td><td>The service has reached its active forward limit</td></tr>
+    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>Too many deleted forwards are being kept</td></tr>
+    <tr><td>409</td><td><code>idempotency_conflict</code>, <code>idempotency_resource_inactive</code></td><td>See Retries and concurrency</td></tr>
+    <tr><td>409</td><td><code>route_unavailable</code></td><td>The route is unavailable right now</td></tr>
+    <tr><td>409</td><td><code>native_direction_conflict</code></td><td>That direction already has a Native Outbound forward</td></tr>
+    <tr><td>412</td><td><code>forward_version_conflict</code></td><td><code>If-Match</code> doesn't match the current version</td></tr>
+    <tr><td>413</td><td><code>request_too_large</code></td><td>The body is over 16 KiB</td></tr>
+    <tr><td>415</td><td><code>unsupported_media_type</code></td><td>The body isn't <code>application/json</code></td></tr>
+    <tr><td>422</td><td><code>validation_failed</code>, <code>unknown_fields</code></td><td>A field is invalid, or there are extra fields</td></tr>
+    <tr><td>422</td><td><code>idempotency_key_invalid</code></td><td>The Idempotency-Key has the wrong format</td></tr>
+    <tr><td>422</td><td><code>forward_route_not_allowed</code>, <code>forward_route_has_no_enabled_combination</code></td><td>The route isn't in your plan or isn't open yet</td></tr>
+    <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>, <code>native_outbound_direction_missing</code></td><td>The route doesn't support Native Outbound</td></tr>
+    <tr><td>428</td><td><code>idempotency_key_required</code>, <code>precondition_required</code></td><td>Missing Idempotency-Key or If-Match</td></tr>
+    <tr><td>500</td><td><code>operation_failed</code></td><td>Platform error; retry later or contact support</td></tr>
+  </tbody>
+</table>
+
+<h2>Legacy endpoints</h2>
+<p>The older <code>/api/user/…</code> endpoints still work but are no longer updated and have no ETag or duplicate protection. Build new integrations on the v1 endpoints in this guide only.</p>
