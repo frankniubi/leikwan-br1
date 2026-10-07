@@ -1827,7 +1827,13 @@ final class ClientAgentController extends BaseController
         $sessions = $this->clientOnlineSessions();
         $deviceId = $sessions->deviceIdFromRequest($request);
         $this->accessPolicy->authorizeClientRequest($client, $request, $touchType, $deviceId);
-        if ($this->isAndroidRequest($request)) {
+        // Security: enforce device trust not only when the request claims the
+        // android platform (a spoofable header), but also whenever it presents
+        // an attested-android device id. Otherwise a trusted android device
+        // could launder its request past session validation simply by dropping
+        // X-Device-Platform.
+        if ($this->isAndroidRequest($request)
+            || $this->deviceControls->isManagedDeviceId((string) ($request->header('x-device-id') ?? ''))) {
             $this->deviceControls->requireActive($client, $request);
         }
         return [$sessions, $sessions->enforceFromRequest($client, $request, $touchType)];

@@ -1711,6 +1711,10 @@ final class TenantController extends BaseController
 
             $payload = $request->body();
             $payload['owner_user_id'] = (int) $user['id'];
+            // Security: a tenant must not choose its own sidecar agent_token
+            // (predictable/colliding tokens, or impersonation). The service
+            // generates one on create and keeps the existing one on edit.
+            unset($payload['agent_token']);
             $this->provisioning->saveSidecarPoint($payload);
             SessionAuth::flash('success', 'Transport endpoint saved.');
         } catch (\Throwable $throwable) {
@@ -2520,7 +2524,27 @@ final class TenantController extends BaseController
 
             $currentClientProfiles = count($this->provisioning->listClientsForUser((int) $user['id']));
             $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
-            $isCreate = (int) $request->input('id', 0) <= 0;
+            $clientId = (int) $request->input('id', 0);
+            $isCreate = $clientId <= 0;
+
+            // Security: a tenant may only edit a client it owns. saveClient()
+            // loads/updates purely by id, so without this an attacker could POST
+            // id=<victim client> and take the client (and its bound forwards)
+            // over by resetting owner_user_id to themselves.
+            if (!$isCreate) {
+                $ownedClient = $this->db->fetchOne(
+                    'SELECT id FROM clients WHERE id = :id AND owner_user_id = :user_id LIMIT 1',
+                    ['id' => $clientId, 'user_id' => $user['id']]
+                );
+                if ($ownedClient === null) {
+                    throw new ApiException('client_not_found', 404);
+                }
+            }
+
+            // Security: the online device limit is a billed entitlement. It is
+            // clamped to the owner's plan default, never taken raw from the form.
+            $planDeviceLimit = $this->provisioning->defaultClientOnlineDeviceLimitForTenant((int) $user['id']);
+            $deviceLimit = min(max(1, (int) $request->input('online_device_limit', 1)), $planDeviceLimit);
 
             if ($isCreate) {
                 if ($currentClientProfiles >= $maxClientProfiles) {
@@ -2558,7 +2582,7 @@ final class TenantController extends BaseController
                 'nic_name' => $request->input('nic_name'),
                 'port_range_start' => $request->input('port_range_start'),
                 'port_range_end' => $request->input('port_range_end'),
-                'online_device_limit' => $request->input('online_device_limit', 1),
+                'online_device_limit' => $deviceLimit,
                 'traffic_multiplier' => $request->input('traffic_multiplier', '1.00'),
                 'default_endpoint_mode' => $request->input('default_endpoint_mode', 'slave_group'),
                 'default_node_group_key' => $request->input('default_node_group_key'),

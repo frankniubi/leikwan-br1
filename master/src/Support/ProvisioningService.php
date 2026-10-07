@@ -6334,19 +6334,31 @@ final class ProvisioningService
         $suspended = [];
 
         foreach ($entries as $entry) {
-            $serviceId = (int) ($entry['service_id'] ?? 0);
             $endpointId = (int) ($entry['endpoint_id'] ?? 0);
             $bytesIn = max(0, (int) ($entry['bytes_in'] ?? 0));
             $bytesOut = max(0, (int) ($entry['bytes_out'] ?? 0));
-            if ($serviceId <= 0 || $endpointId <= 0) {
+            if ($endpointId <= 0) {
                 continue;
             }
 
+            // Security: the billed service is derived from the endpoint's own
+            // forward, not from the caller-supplied `service_id`. Otherwise any
+            // node (including a user-enrolled BYOS slave) could post usage for
+            // its own endpoint but charge it to an arbitrary victim service and
+            // force a traffic suspension. A node may only ever bill a service it
+            // genuinely hosts an endpoint for.
             $endpoint = $this->db->fetchOne(
-                'SELECT * FROM service_endpoints WHERE id = :id AND node_id = :node_id LIMIT 1',
+                'SELECT se.*, f.service_id AS forward_service_id
+                 FROM service_endpoints se
+                 INNER JOIN forwards f ON f.id = se.forward_id
+                 WHERE se.id = :id AND se.node_id = :node_id LIMIT 1',
                 ['id' => $endpointId, 'node_id' => $node['id']]
             );
             if ($endpoint === null) {
+                continue;
+            }
+            $serviceId = (int) ($endpoint['forward_service_id'] ?? 0);
+            if ($serviceId <= 0) {
                 continue;
             }
 
@@ -13618,21 +13630,33 @@ final class ProvisioningService
             throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
         }
 
-        $after = $walletBalance - $amount;
         $now = $this->now();
-        $this->db->execute(
+        // Security: debit atomically with a balance guard in the WHERE clause.
+        // The previous read-then-absolute-write pattern let two concurrent
+        // requests (from separate sessions) both see the same balance and each
+        // succeed, double-spending the wallet. A conditional decrement commits
+        // only if the funds are still there, and a 0 row-count means another
+        // request won the race.
+        $affected = $this->db->execute(
             'UPDATE users
-             SET wallet_balance = :wallet_balance,
+             SET wallet_balance = wallet_balance - :amount,
                  wallet_currency = :wallet_currency,
                  updated_at = :updated_at
-             WHERE id = :id',
+             WHERE id = :id
+               AND wallet_balance >= :amount_guard',
             [
                 'id' => $userId,
-                'wallet_balance' => $this->normalizeMoney($after),
+                'amount' => $this->normalizeMoney($amount),
+                'amount_guard' => $this->normalizeMoney($amount),
                 'wallet_currency' => $targetCurrency,
                 'updated_at' => $now,
             ]
         );
+        if ((int) $affected < 1) {
+            throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
+        }
+        $fresh = $this->db->fetchOne('SELECT wallet_balance FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        $after = (float) ($fresh['wallet_balance'] ?? ($walletBalance - $amount));
 
         $this->db->insert('wallet_transactions', [
             'user_id' => $userId,
