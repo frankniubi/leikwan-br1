@@ -6,7 +6,8 @@
 <pre>Authorization: Bearer &lt;your API token&gt;</pre>
 <ul>
   <li>Only a Bearer token in the request header is accepted. Tokens in the URL are not.</li>
-  <li>For now, contact support to get an API token. Treat it like a password and keep it out of your logs.</li>
+  <li>Find your API token in the console under <strong>Account Security → API token</strong>, where you can also reset it. Resetting stops the old token immediately. Treat it like a password and keep it out of your logs.</li>
+  <li>The API token is not the client <strong>Agent Token</strong> shown on the Clients page. Calling the API with the Agent Token returns <code>401 user_auth_failed</code>.</li>
   <li>An invalid token or a disabled account always returns <code>401 user_auth_failed</code>.</li>
 </ul>
 

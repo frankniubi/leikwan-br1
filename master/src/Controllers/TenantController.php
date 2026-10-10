@@ -1085,6 +1085,7 @@ final class TenantController extends BaseController
             . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
             . '<select id="main-province" name="province" required>' . $options . '</select></div>'
             . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
+            . $this->renderApiTokenCard(trim((string) ($user['api_token'] ?? '')), $csrf)
             . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
             . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
             . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
@@ -1094,6 +1095,53 @@ final class TenantController extends BaseController
             . $deviceRows . '</tbody></table></div></section>';
 
         return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    private function renderApiTokenCard(string $apiToken, string $csrf): string
+    {
+        // users.api_token authenticates the Forward Lines API. It is a separate
+        // credential from the client Agent Token, which tenants kept pasting
+        // into API calls because nothing else on the console showed a token.
+        $tokenBlock = $apiToken !== ''
+            ? '<details><summary>Show API token</summary><code>' . $this->escape($apiToken) . '</code></details>'
+                . '<div class="actions">' . $this->renderCopyButton('Copy API token', $apiToken) . '</div>'
+            : '<p class="muted">No API token yet.</p>';
+        $resetLabel = $apiToken !== '' ? 'Reset API token' : 'Generate API token';
+
+        return '<section class="card"><h3>API token</h3>'
+            . '<p class="muted">Use this token as <code>Authorization: Bearer</code> when calling the Forward Lines API. '
+            . 'It is not the Agent Token shown on the Clients page.</p>'
+            . $tokenBlock
+            . '<div class="actions">'
+            . '<form class="inline" method="post" action="/tenant/security/api-token/reset" data-confirm="Reset the API token? Programs using the old token stop working immediately." onsubmit="return confirm(this.dataset.confirm);">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button danger" type="submit">' . $resetLabel . '</button></form>'
+            . '<a class="button ghost" href="/knowledgebase?thread=forward-lines-api">Read the API guide</a>'
+            . '</div></section>';
+    }
+
+    public function resetApiToken(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->db->execute(
+                'UPDATE users SET api_token = :token, updated_at = :updated_at WHERE id = :id',
+                [
+                    'token' => bin2hex(random_bytes(24)),
+                    'updated_at' => gmdate('Y-m-d H:i:s'),
+                    'id' => (int) $user['id'],
+                ]
+            );
+            SessionAuth::flash('success', 'API token reset. Update your programs with the new token.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to reset the API token.');
+        }
+        return Response::redirect('/tenant/security');
     }
 
     public function changeMainProvince(Request $request, array $params): Response
@@ -1286,6 +1334,7 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCopyButton('Copy Client ID', (string) $clientId) . '</div></div>'
             . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
             . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
+            . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Agent Token is only for the client app. The Forward Lines API uses a separate API token: <a href="/tenant/security">Account Security</a></p>'
             . '</section>'
             . '<form method="post" action="/tenant/clients/android-enrollment-code">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'

@@ -6,7 +6,8 @@
 <pre>Authorization: Bearer &lt;你的 API 令牌&gt;</pre>
 <ul>
   <li>只接受请求头里的 Bearer 令牌，不接受写在网址里的令牌。</li>
-  <li>API 令牌目前需要联系客服获取。请像密码一样保管，不要打印到日志里。</li>
+  <li>API 令牌在控制台「账户安全 → API 令牌」中查看，也可以在那里重置；重置后旧令牌立即失效。请像密码一样保管，不要打印到日志里。</li>
+  <li>API 令牌不是「客户端」页面上的客户端令牌（Agent Token）。用客户端令牌调用 API 会返回 <code>401 user_auth_failed</code>。</li>
   <li>令牌无效或账号已停用时，统一返回 <code>401 user_auth_failed</code>。</li>
 </ul>
 

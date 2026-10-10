@@ -288,6 +288,7 @@ final class Bootstrap
         $this->router->add('GET', '/tenant/security', [$tenant, 'accessSecurityPage']);
         $this->router->add('POST', '/tenant/security/main-province', [$tenant, 'changeMainProvince']);
         $this->router->add('POST', '/tenant/security/kick-all', [$tenant, 'kickAllDevices']);
+        $this->router->add('POST', '/tenant/security/api-token/reset', [$tenant, 'resetApiToken']);
         $this->router->add('POST', '/tenant/security/devices/restore', [$tenant, 'restoreDevice']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
