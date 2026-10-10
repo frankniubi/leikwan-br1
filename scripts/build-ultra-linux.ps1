@@ -81,8 +81,12 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
 
+# Do not add garble's tiny mode: the 2026.10.02.1 runtime built with it (v0.17.0,
+# Go 1.26) died under sustained external-UoT UDP load (exit 2, once SIGSEGV
+# with the instruction pointer in a data page) every 15-90 s; the same source
+# built with -literals alone ran clean. Tiny mode also hides every panic message.
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
+    & $garblePath -literals "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble build failed"
     }

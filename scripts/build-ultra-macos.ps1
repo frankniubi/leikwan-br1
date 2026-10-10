@@ -9,7 +9,7 @@ param(
 )
 
 # Build the darwin ultra-client runtime with the exact 2026.09.11.4 flag set
-# used for the linux/windows runtimes (garble v0.17.0 -literals -tiny,
+# used for the linux/windows runtimes (garble v0.17.0 -literals,
 # CGO_ENABLED=0, -buildmode=pie, same-origin seed derivation) plus the
 # -X main.runtimeBuildVersion=<version>.<shortsha> injection recorded in
 # docs/reports/2026-09-11-ultra-runtime-2026.09.11.3-release.md.
@@ -76,7 +76,7 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
 }
 
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
+    & $garblePath -literals "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble darwin build failed"
     }

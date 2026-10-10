@@ -100,7 +100,7 @@ printf '%s\n' "$build_plan" | grep -Fqx \
   'uot_binary=leikwan-uot-bond' \
   || fail "UOT helper must use the Cargo binary name"
 printf '%s\n' "$build_plan" | grep -Fqx \
-  'ultra_obfuscator=garble-v0.17.0-literals-tiny' \
+  'ultra_obfuscator=garble-v0.17.0-literals' \
   || fail "ultra-client build must use the pinned garble hardening profile"
 grep -Fq -- '--ultra-leak-fixture' "$package_script" \
   || fail "package must execute a managed bundle load probe"
@@ -211,7 +211,7 @@ for key, filename, fmt in (
         "architecture": "arm64",
         "format": fmt,
         "hardening": {
-            "ultra_client": "garble-v0.17.0-literals-tiny",
+            "ultra_client": "garble-v0.17.0-literals",
             "native_helpers": "release-strip",
             "managed_symbols": "disabled",
         },
@@ -236,7 +236,7 @@ data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert "existing" in data
 assert data["macos_client_app_arm64"]["format"] == "dmg"
 assert data["macos_client_update_arm64"]["format"] == "zip"
-assert data["macos_client_app_arm64"]["hardening"]["ultra_client"] == "garble-v0.17.0-literals-tiny"
+assert data["macos_client_app_arm64"]["hardening"]["ultra_client"] == "garble-v0.17.0-literals"
 assert data["macos_client_app_arm64"]["runtime_sha256"]["bin/ultra-client"] == hashlib.sha256(b"runtime").hexdigest()
 assert "unexpected" not in data["macos_client_app_arm64"]
 PY

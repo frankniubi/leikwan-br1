@@ -108,8 +108,8 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
   printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
-  printf 'garble build GOOS=darwin GOARCH=%s -literals -tiny -trimpath ./tools/ultra-client\n' "$go_arch"
-  printf 'ultra_obfuscator=garble-v0.17.0-literals-tiny\n'
+  printf 'garble build GOOS=darwin GOARCH=%s -literals -trimpath ./tools/ultra-client\n' "$go_arch"
+  printf 'ultra_obfuscator=garble-v0.17.0-literals\n'
   printf 'source_commit=%s\n' "$source_commit"
   printf 'go build GOOS=darwin GOARCH=%s -tags with_gvisor,with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
@@ -178,7 +178,7 @@ cargo build \
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
-    "$garble_path" -literals -tiny -seed="$garble_seed" build \
+    "$garble_path" -literals -seed="$garble_seed" build \
       -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
       -o "$helper_dir/ultra-client" .
 )

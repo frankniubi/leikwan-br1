@@ -99,7 +99,7 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
 function Invoke-RuntimeBuild([string]$Destination) {
     $ldflags = "-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion"
     if ($Obfuscate) {
-        & $garblePath -literals -tiny "-seed=$seed" build -trimpath -buildvcs=false "-ldflags=$ldflags" -o $Destination .
+        & $garblePath -literals "-seed=$seed" build -trimpath -buildvcs=false "-ldflags=$ldflags" -o $Destination .
         if ($LASTEXITCODE -ne 0) {
             throw "garble windows build failed"
         }

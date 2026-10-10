@@ -12,7 +12,7 @@ source_commit="unknown"
 metadata_path=""
 merge_versions=""
 managed_load_receipt=""
-ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals-tiny}"
+ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals}"
 dry_run=0
 helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
