@@ -37,6 +37,7 @@ spl_autoload_register(static function (string $class) use ($baseDir): void {
 use Leikwan\Master\Config;
 use Leikwan\Master\Controllers\ExternalUotConfigController;
 use Leikwan\Master\Database\Database;
+use Leikwan\Master\Support\CliOptions;
 
 function externalUotTokensUsage(): void
 {
@@ -46,10 +47,20 @@ function externalUotTokensUsage(): void
 }
 
 $command = (string) ($argv[1] ?? '');
-$options = getopt('', ['host:', 'listen-port:', 'combination:', 'apply', 'help'], $restIndex);
-if ($command === '' || isset($options['help']) || !in_array($command, ['list', 'render', 'rotate'], true)) {
+if ($command === '' || $command === '--help') {
     externalUotTokensUsage();
-    exit($command === '' || isset($options['help']) ? 0 : 2);
+    exit(0);
+}
+try {
+    $options = CliOptions::parse(array_slice($argv, 2), ['host', 'listen-port', 'combination'], ['apply', 'help']);
+} catch (InvalidArgumentException $exception) {
+    fwrite(STDERR, $exception->getMessage() . "\n");
+    externalUotTokensUsage();
+    exit(2);
+}
+if (isset($options['help']) || !in_array($command, ['list', 'render', 'rotate'], true)) {
+    externalUotTokensUsage();
+    exit(isset($options['help']) ? 0 : 2);
 }
 
 $envPath = getenv('LEIKWAN_ENV_PATH') ?: $baseDir . '/.env';
