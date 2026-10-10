@@ -18,6 +18,7 @@ import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.session.DeviceLimitReachedException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -105,6 +106,28 @@ class ConnectionsViewModelTest {
         startConnect = startConnect,
         stopConnect = stopConnect,
     )
+
+    @Test
+    fun `route selection progress follows the runtime while connecting`() {
+        val selecting = MutableStateFlow<Int?>(null)
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            routeSelectionState = selecting,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.selectingRouteCandidates)
+
+        selecting.value = 4
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(4, viewModel.state.value.selectingRouteCandidates)
+
+        selecting.value = null
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.selectingRouteCandidates)
+    }
 
     @Test
     fun `with no nodes the pairing surface is empty`() {

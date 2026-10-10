@@ -281,6 +281,8 @@
     <string name="connections_import_more">Import more</string>
     <string name="connections_master_title">Connect</string>
     <string name="connections_status_connecting">Connecting...</string>
+    <string name="connections_status_selecting_routes">Selecting the best of %1$d routes...</string>
+    <string name="connections_status_selecting_routes_hint">Measuring each route\'s latency and loss. This can take up to 30 seconds.</string>
     <string name="connections_status_disconnected">Disconnected · tap to connect</string>
     <string name="connections_status_no_node">Bring a node first</string>
     <string name="connections_status_connected_format">Connected: %1$s @ 127.0.0.1:%2$d</string>

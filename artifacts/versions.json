@@ -2,10 +2,10 @@
  "android_client_apk": {
   "artifact_url": "/artifacts/leikwan-android-client.apk",
   "path": "artifacts/android/leikwan-android-client.apk",
-  "sha256": "3345446ae21645283e05bb94da01fd50af9d866803565e287e617416ef14aa27",
-  "size_bytes": 80351672,
-  "version": "0.2.37",
-  "version_code": 39
+  "sha256": "e82ad97f7f31cff87f2ebfcae66c5609501aa9dfdb5e84d8d8dd6e8e02ce4f77",
+  "size_bytes": 79708600,
+  "version": "0.2.38",
+  "version_code": 40
  },
  "bond_sidecar_installer": {
   "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -559,10 +559,10 @@
   "architecture": "arm64",
   "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
   "attestation": {
-   "fingerprint": "2026.09.25.1.c10e11f1",
-   "self_sha256": "ea3b7b15b79d9dd0598f66a793b2b0ce4c563b010065329e39ba2a1ac6aaf7e1"
+   "fingerprint": "2026.10.04.1.d6c08c86",
+   "self_sha256": "236828be21b0c641ca50c3c043de5c419a8b457fe1d613459a10de177892e686"
   },
-  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.25.1",
+  "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.04.1",
   "hardening": [
    "cgo-disabled",
    "pie",
@@ -576,19 +576,19 @@
   ],
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_android_arm64",
-  "sha256": "ea3b7b15b79d9dd0598f66a793b2b0ce4c563b010065329e39ba2a1ac6aaf7e1",
-  "size_bytes": 15663364,
-  "version": "2026.09.25.1",
-  "runtime_build_version": "2026.09.25.1.c10e11f1"
+  "sha256": "236828be21b0c641ca50c3c043de5c419a8b457fe1d613459a10de177892e686",
+  "size_bytes": 15335684,
+  "version": "2026.10.04.1",
+  "runtime_build_version": "2026.10.04.1.d6c08c86"
  },
  "ultra_client_runtime_android_x86_64": {
   "architecture": "x86_64",
   "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
   "attestation": {
-   "fingerprint": "2026.09.25.1.c10e11f1",
-   "self_sha256": "c4bb737686953abe2e087f9e5d2fde4d6551a802eb4ac9c7d13df470e85fbf18"
+   "fingerprint": "2026.10.04.1.d6c08c86",
+   "self_sha256": "1d76e95c0a8f8aefdaa979c4845943a1727b05f9437a349cadf469484d365115"
   },
-  "build": "go1.26.5, garble-v0.17.0, external-uot-2026.09.25.1",
+  "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.04.1",
   "hardening": [
    "pie",
    "relro",
@@ -603,10 +603,10 @@
   "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
   "obfuscator": "garble-v0.17.0",
   "path": "artifacts/ultra/ultra-client_android_x86_64",
-  "sha256": "c4bb737686953abe2e087f9e5d2fde4d6551a802eb4ac9c7d13df470e85fbf18",
-  "size_bytes": 17443008,
-  "version": "2026.09.25.1",
-  "runtime_build_version": "2026.09.25.1.c10e11f1"
+  "sha256": "1d76e95c0a8f8aefdaa979c4845943a1727b05f9437a349cadf469484d365115",
+  "size_bytes": 17069344,
+  "version": "2026.10.04.1",
+  "runtime_build_version": "2026.10.04.1.d6c08c86"
  },
  "ultra_client_runtime_linux_arm64": {
   "architecture": "arm64",

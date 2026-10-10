@@ -1674,13 +1674,17 @@ func writeAllToUDP(conn *net.UDPConn, payload []byte) (int, error) {
 }
 
 func resolveIPv4(host string) (string, error) {
+	return resolveIPv4Context(context.Background(), host)
+}
+
+func resolveIPv4Context(ctx context.Context, host string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
 			return v4.String(), nil
 		}
 		return "", errors.New("datagram target requires IPv4")
 	}
-	addresses, err := net.LookupIP(host)
+	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return "", err
 	}
@@ -2025,7 +2029,7 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if testHookLocalUDPListening != nil {
 		testHookLocalUDPListening(local)
 	}
-	targetIP, err := resolveIPv4(targetHost)
+	targetIP, err := resolveUDPTargetIPv4(ctx, targetHost, resolveIPv4Context)
 	if err != nil {
 		local.Close()
 		return err
@@ -2594,6 +2598,7 @@ func main() {
 	if _, _, err := parseTarget(config.Target); err != nil {
 		log.Fatal(err)
 	}
+	installFallbackResolverIfNeeded(config)
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
 	status.RecordTransportConfig(config)
