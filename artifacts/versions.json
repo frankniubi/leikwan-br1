@@ -1,853 +1,861 @@
 {
- "android_client_apk": {
-  "artifact_url": "/artifacts/leikwan-android-client.apk",
-  "path": "artifacts/android/leikwan-android-client.apk",
-  "sha256": "e82ad97f7f31cff87f2ebfcae66c5609501aa9dfdb5e84d8d8dd6e8e02ce4f77",
-  "size_bytes": 79708600,
-  "version": "0.2.38",
-  "version_code": 40
- },
- "bond_sidecar_installer": {
-  "install_url": "/artifacts/install-bond-sidecar.sh",
-  "path": "install/install-bond-sidecar.sh",
-  "sha256": "0ba5bcf06f2e098150645f2b6acd39edbb8689f6b9f35b58322c958f5cc3f140",
-  "size_bytes": 17356,
-  "version": "2026.10.02.1"
- },
- "bond_sidecar_uninstaller": {
-  "install_url": "/artifacts/uninstall-bond-sidecar.sh",
-  "path": "install/uninstall-bond-sidecar.sh",
-  "sha256": "7b244075328d41aee424647e47fac54c344e66a9517d81dd543ec0b8bc2320b2",
-  "size_bytes": 1487,
-  "version": "2026.04.08.1"
- },
- "cfwg_latency_watchdog": {
-  "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
-  "path": "client-agent/cfwg_latency_watchdog.py",
-  "sha256": "749eb27aa835cabc14eb8067cbc77f0c4e87c5c10b92157737791d9051373694",
-  "size_bytes": 32373,
-  "version": "2026.09.27.1"
- },
- "client_agent": {
-  "artifact_url": "/artifacts/client-agent.py",
-  "path": "client-agent/client_agent.py",
-  "sha256": "52134330fd5d7bf86e7631ece301105da1b60468234b307fe94a8044d860df1b",
-  "size": 409241,
-  "size_bytes": 409241,
-  "version": "2026.10.02.1"
- },
- "client_agent_installer": {
-  "artifact_url": "/artifacts/install-client-agent.sh",
-  "install_url": "/artifacts/install-client-agent.sh",
-  "path": "install/install-client-agent.sh",
-  "remote_install_url": "/artifacts/remote-install-client-agent.sh",
-  "sha256": "f9887b00ffa7447013113ee4c80ee11c9d0985e5033add1e602995b78f276670",
-  "size": 51429,
-  "size_bytes": 51429,
-  "version": "2026.10.02.1"
- },
- "client_agent_installer_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/install-client-agent-linux-arm64",
-  "format": "binary",
-  "path": "artifacts/install-client-agent-linux-arm64",
-  "sha256": "304af15202185c2bc1c953e755840f43aee3818e22ce8c861ec9bb04461d5d25",
-  "size_bytes": 41484414,
-  "version": "2026.10.02.1"
- },
- "client_agent_linux_amd64": {
-  "architecture": "amd64",
-  "artifact_url": "/artifacts/python-agent/leikwan-client-agent_linux_amd64",
-  "format": "elf-onefile-pyinstaller",
-  "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
-  "runtime_mode": "frozen",
-  "sha256": "dd35a03a8244a0018fad751cd5a3ab18ff8fa2ba0f8b172a9f37b2015af2c8e7",
-  "size_bytes": 8932640,
-  "version": "2026.10.02.1"
- },
- "client_agent_update": {
-  "artifact_url": "/artifacts/client-agent-update.sh",
-  "path": "install/client-agent-update.sh",
-  "sha256": "0c61870322f84c32c5680a408732affb269bd5f631744a5359fc6b336f8308d5",
-  "size_bytes": 25624,
-  "version": "2026.09.27.1"
- },
- "client_installer": {
-  "install_url": "/artifacts/install-client.sh",
-  "path": "install/install-client.sh",
-  "remote_install_url": "/artifacts/remote-install-client.sh",
-  "sha256": "6a71a0f584ebb4f47464cf97fb98f5d96ad46a1b21944b919a9d1f6172643851",
-  "size_bytes": 19459,
-  "version": "2026.09.27.1",
-  "artifact_url": "/artifacts/install-client.sh"
- },
- "client_installer_windows": {
-  "install_url": "/artifacts/install-client.ps1",
-  "path": "install/install-client.ps1",
-  "sha256": "48e3017886bbb77f75a5730e1cfdfa52fdec8f7ecb35f8c0f42cc439c17db05e",
-  "size_bytes": 1089,
-  "version": "2026.04.08.1"
- },
- "client_manager_windows": {
-  "install_url": "/artifacts/manage-client.ps1",
-  "path": "install/manage-client.ps1",
-  "sha256": "b58586a6701750b07276782c5b9bf14672d2969fc4c6ab1c00700574b481b56b",
-  "size_bytes": 1526,
-  "version": "2026.04.08.1"
- },
- "client_rate_limit": {
-  "artifact_url": "/artifacts/leikwan-rate-limit.py",
-  "path": "client-agent/leikwan_rate_limit.py",
-  "sha256": "917cf5ef1958a10a7277cf21deab3583cfed1598c54ba456b3b042b20496e4a5",
-  "size_bytes": 4981,
-  "version": "2026.08.29.1"
- },
- "external_uot_installer": {
-  "artifact_url": "/artifacts/install-external-uot.sh",
-  "install_url": "/artifacts/install-external-uot.sh",
-  "path": "install/install-external-uot.sh",
-  "sha256": "9a4a76c948fd412dab02265b766acbe31efedff5b6c8819f4ec98fb894dea3ef",
-  "size_bytes": 14404,
-  "version": "2026.09.19.1"
- },
- "forward_strategy": {
-  "artifact_url": "/artifacts/forward-strategy.py",
-  "path": "artifacts/forward-strategy.py",
-  "sha256": "1b6e1fec1c9365140b393854da6f5c9a9c7dc582c5b45179d6f9c7fd1bcb1d12",
-  "size": 3361,
-  "size_bytes": 3361,
-  "version": "2026.07.25.1"
- },
- "gost_linux_amd64": {
-  "artifact_url": "/artifacts/gost/gost_linux_amd64",
-  "note": "gost v3.2.6 UoT carrier for the leigod basis (slave gost client + sidecar gost server). Fill sha256/size when the binary is published to the artifact store; empty sha forces a (safe) re-download.",
-  "path": "artifacts/gost/gost_linux_amd64",
-  "sha256": "a2aea24efb4597b5f57b35b8e1bbcc59f439b80723854d4371f6828b46682ffb",
-  "size_bytes": 9673064,
-  "version": "3.2.6"
- },
- "install_forward_runtime": {
-  "artifact_url": "/artifacts/install-forward-runtime.py",
-  "path": "client-agent/install_forward_runtime.py",
-  "sha256": "d5ee20b47b27435d2eefa61977267a1782e1e4cff4c35173a1d30e7f31d7caaa",
-  "size": 102034,
-  "size_bytes": 102034,
-  "version": "2026.09.27.1"
- },
- "leigod_forward_relay": {
-  "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
-  "path": "slave-agent/leigod_forward_relay.py",
-  "sha256": "1b96fc73623a991aacb0a33f503d177088fa2975fe5cb6c02fc2a28677de9848",
-  "size_bytes": 30683,
-  "version": "2026.07.27.1"
- },
- "leigod_linux_amd64": {
-  "artifact_url": "/artifacts/leigod/leigod-linux-amd64",
-  "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published.",
-  "path": "artifacts/leigod/leigod-linux-amd64",
-  "sha256": "b15fc09c4c03df82ab5fda97962ae175c124b6f61ce3167e77a0fb3d14a33b86",
-  "size_bytes": 10779919,
-  "version": "recovered"
- },
- "leikwan_bond_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
-  "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
-  "sha256": "513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b",
-  "size_bytes": 8946736,
-  "version": "0.1.30"
- },
- "leikwan_bond_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_arm64",
-  "path": "artifacts/wstunnel/leikwan-bond_linux_arm64",
-  "sha256": "c1155051ff229d1d1dd7c6cadab7f0d6e5d1dc62368717d01c5e8f029abfa8e7",
-  "size_bytes": 6103192,
-  "version": "0.1.30"
- },
- "leikwan_bond_windows_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
-  "path": "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
-  "sha256": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
-  "size_bytes": 8218624,
-  "version": "0.1.16"
- },
- "leikwan_cli_linux": {
-  "install_url": "/artifacts/leikwan-linux.sh",
-  "path": "install/leikwan-linux.sh",
-  "sha256": "b4d4d482d5a744a21a78ed534d1963ef17d045fa282d27213d43ab2e5431b626",
-  "size_bytes": 5936,
-  "version": "2026.09.17.4"
- },
- "leikwan_ingress_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_amd64",
-  "path": "artifacts/wstunnel/leikwan-ingress_linux_amd64",
-  "sha256": "7f6358b07911b54774d7f3b8ed99baacc880fa222eea3663d2173c5058ce44fc",
-  "size_bytes": 3236312,
-  "version": "0.1.0"
- },
- "leikwan_ingress_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_arm64",
-  "path": "artifacts/wstunnel/leikwan-ingress_linux_arm64",
-  "sha256": "33cfd1cf9b3559f7f476be8b3908a9f217ec0816f9db69360ff51a4d86d3845b",
-  "size_bytes": 2149472,
-  "version": "0.1.0"
- },
- "leikwan_ingress_windows_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
-  "path": "artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
-  "sha256": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
-  "size_bytes": 2339328,
-  "version": "0.1.0"
- },
- "leikwan_mptcp_relay_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
-  "path": "artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
-  "sha256": "caa182f71a2484e3548d6d6679309b0a0b4dfad47f6a44dd8586ca24cc31dd04",
-  "size_bytes": 3477712,
-  "version": "0.1.0"
- },
- "leikwan_mptcp_relay_windows_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
-  "path": "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
-  "platform": "windows-amd64",
-  "sha256": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-  "size_bytes": 2605056,
-  "version": "0.1.0"
- },
- "leikwan_udp_uot_merge_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
-  "capabilities": [
-   "leg-progress-v1",
-   "selective-first-wins-v1"
-  ],
-  "path": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
-  "protocol_version": 2,
-  "scheduler_modes": [
-   "legacy",
-   "feedback_drr"
-  ],
-  "sha256": "657be0971a820283f37d1bc94f9fafbb8bf1c592208e4f29b5dc522855574bfb",
-  "size_bytes": 3067608,
-  "version": "0.2.2"
- },
- "leikwan_uot_bond_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
-  "capabilities": [
-   "leg-progress-v1",
-   "selective-first-wins-v1"
-  ],
-  "path": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
-  "protocol_version": 2,
-  "scheduler_modes": [
-   "legacy",
-   "feedback_drr"
-  ],
-  "sha256": "56c114cf269579d76a27ac45ccf8fe61db3b5abddcab49cabbd43f187df4e73a",
-  "size_bytes": 2957184,
-  "version": "0.2.2"
- },
- "leikwan_uot_bond_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_arm64",
-  "capabilities": [
-   "leg-progress-v1",
-   "selective-first-wins-v1"
-  ],
-  "path": "artifacts/wstunnel/leikwan-uot-bond_linux_arm64",
-  "protocol_version": 2,
-  "scheduler_modes": [
-   "legacy",
-   "feedback_drr"
-  ],
-  "sha256": "f61bfe22d17f565962eca77e6b3fb1c7d1af77a65802a52216cec0004d32f953",
-  "size_bytes": 1966776,
-  "version": "0.2.2"
- },
- "leikwan_uot_bond_windows_amd64": {
-  "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
-  "capabilities": [
-   "leg-progress-v1"
-  ],
-  "path": "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
-  "protocol_version": 2,
-  "scheduler_modes": [
-   "legacy",
-   "feedback_drr"
-  ],
-  "sha256": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
-  "size_bytes": 2052096,
-  "version": "0.1.0"
- },
- "lguot_linux_amd64": {
-  "artifact_url": "/artifacts/lguot/lguot_linux_amd64",
-  "note": "CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg, SOCKS5-chained, token auth) for the leigod arm. Drop-in alt to gost when leigod_uot_impl=lguot: ~2.4x throughput at 1/3 CPU on a 2-vCPU slave (178 vs 73 Mbit/s). Source: tools/lguot/.",
-  "path": "artifacts/lguot/lguot_linux_amd64",
-  "sha256": "5480f352d2482334b1bde6198b83b7ef65fafa7eebbb3c22e15f8337a892fa1a",
-  "size": 3348125,
-  "size_bytes": 3348125,
-  "version": "2026.06.03.2"
- },
- "macos_client_app_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
-  "format": "dmg",
-  "hardening": {
-   "managed_symbols": "disabled",
-   "native_helpers": "release-strip",
-   "ultra_client": "garble-v0.17.0-literals-tiny"
+  "android_client_apk": {
+    "artifact_url": "/artifacts/leikwan-android-client.apk",
+    "path": "artifacts/android/leikwan-android-client.apk",
+    "sha256": "e82ad97f7f31cff87f2ebfcae66c5609501aa9dfdb5e84d8d8dd6e8e02ce4f77",
+    "size_bytes": 79708600,
+    "version": "0.2.38",
+    "version_code": 40
   },
-  "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
-  "runtime_sha256": {
-   "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
-   "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
-   "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
-   "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-   "bin/ultra-client": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
-   "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+  "bond_sidecar_installer": {
+    "install_url": "/artifacts/install-bond-sidecar.sh",
+    "path": "install/install-bond-sidecar.sh",
+    "sha256": "0ba5bcf06f2e098150645f2b6acd39edbb8689f6b9f35b58322c958f5cc3f140",
+    "size_bytes": 17356,
+    "version": "2026.10.02.1"
   },
-  "sha256": "46d9aff66730d34bd1f6b1a936f8bcc9e8fb6822eca0648696edba1ade73cc63",
-  "size_bytes": 77628541,
-  "version": "1.0.53",
-  "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
- },
- "macos_client_app_x64": {
-  "architecture": "x86_64",
-  "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
-  "format": "dmg",
-  "hardening": {
-   "managed_symbols": "disabled",
-   "native_helpers": "release-strip",
-   "ultra_client": "garble-v0.17.0-literals-tiny"
+  "bond_sidecar_uninstaller": {
+    "install_url": "/artifacts/uninstall-bond-sidecar.sh",
+    "path": "install/uninstall-bond-sidecar.sh",
+    "sha256": "7b244075328d41aee424647e47fac54c344e66a9517d81dd543ec0b8bc2320b2",
+    "size_bytes": 1487,
+    "version": "2026.04.08.1"
   },
-  "path": "artifacts/macos/leikwan-bridge-x64.dmg",
-  "runtime_sha256": {
-   "bin/leikwan-bond": "21ce68093efa24e0cb7c9dd4107d727cb888b5e083c3cdbfd7ab329a423e08bf",
-   "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
-   "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
-   "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
-   "bin/ultra-client": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
-   "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
+  "cfwg_latency_watchdog": {
+    "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
+    "path": "client-agent/cfwg_latency_watchdog.py",
+    "sha256": "749eb27aa835cabc14eb8067cbc77f0c4e87c5c10b92157737791d9051373694",
+    "size_bytes": 32373,
+    "version": "2026.09.27.1"
   },
-  "sha256": "3d7e2eefa59aadbb79f6b5af944e930bd1750412513ca757bcfca8dc7d3e6c4f",
-  "size_bytes": 82152275,
-  "version": "1.0.53",
-  "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
- },
- "macos_client_update_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "format": "zip",
-  "hardening": {
-   "managed_symbols": "disabled",
-   "native_helpers": "release-strip",
-   "ultra_client": "garble-v0.17.0-literals-tiny"
+  "client_agent": {
+    "artifact_url": "/artifacts/client-agent.py",
+    "path": "client-agent/client_agent.py",
+    "sha256": "52134330fd5d7bf86e7631ece301105da1b60468234b307fe94a8044d860df1b",
+    "size": 409241,
+    "size_bytes": 409241,
+    "version": "2026.10.02.1"
   },
-  "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
-  "runtime_sha256": {
-   "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
-   "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
-   "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
-   "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-   "bin/ultra-client": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
-   "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+  "client_agent_installer": {
+    "artifact_url": "/artifacts/install-client-agent.sh",
+    "install_url": "/artifacts/install-client-agent.sh",
+    "path": "install/install-client-agent.sh",
+    "remote_install_url": "/artifacts/remote-install-client-agent.sh",
+    "sha256": "f9887b00ffa7447013113ee4c80ee11c9d0985e5033add1e602995b78f276670",
+    "size": 51429,
+    "size_bytes": 51429,
+    "version": "2026.10.02.1"
   },
-  "sha256": "50bc75087dab0a0765dde19695306d16467794bb344b0dd8b1e6d005ac6b5b7a",
-  "size_bytes": 69036749,
-  "version": "1.0.53",
-  "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
- },
- "macos_client_update_x64": {
-  "architecture": "x86_64",
-  "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
-  "format": "zip",
-  "hardening": {
-   "managed_symbols": "disabled",
-   "native_helpers": "release-strip",
-   "ultra_client": "garble-v0.17.0-literals-tiny"
+  "client_agent_installer_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/install-client-agent-linux-arm64",
+    "format": "binary",
+    "path": "artifacts/install-client-agent-linux-arm64",
+    "sha256": "304af15202185c2bc1c953e755840f43aee3818e22ce8c861ec9bb04461d5d25",
+    "size_bytes": 41484414,
+    "version": "2026.10.02.1"
   },
-  "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
-  "runtime_sha256": {
-   "bin/leikwan-bond": "21ce68093efa24e0cb7c9dd4107d727cb888b5e083c3cdbfd7ab329a423e08bf",
-   "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
-   "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
-   "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
-   "bin/ultra-client": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
-   "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
+  "client_agent_linux_amd64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/python-agent/leikwan-client-agent_linux_amd64",
+    "format": "elf-onefile-pyinstaller",
+    "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
+    "runtime_mode": "frozen",
+    "sha256": "dd35a03a8244a0018fad751cd5a3ab18ff8fa2ba0f8b172a9f37b2015af2c8e7",
+    "size_bytes": 8932640,
+    "version": "2026.10.02.1"
   },
-  "sha256": "ec5925642e6600a63d207388dd6eb0cc9b1e84d889970e8fa7dcbc1a1819fda2",
-  "size_bytes": 73342451,
-  "version": "1.0.53",
-  "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
- },
- "macos_headless_installer": {
-  "install_url": "/artifacts/install-macos-headless.sh",
-  "path": "install/install-macos-headless.sh",
-  "sha256": "60739970cda079562622a82377939060777736d4f6e8acbd3a7f510f47306622",
-  "size_bytes": 20601,
-  "version": "1.0.53",
-  "artifact_url": "/artifacts/install-macos-headless.sh"
- },
- "macos_headless_uninstaller": {
-  "install_url": "/artifacts/uninstall-macos-headless.sh",
-  "path": "install/uninstall-macos-headless.sh",
-  "sha256": "8afbdf619d3ecde9d48f242d59c4c05c3c48865230d5e9fd6152ff5cac25ba10",
-  "size_bytes": 1236,
-  "version": "1.0.52",
-  "artifact_url": "/artifacts/uninstall-macos-headless.sh"
- },
- "mptcp_client_runtime": {
-  "artifact_url": "/artifacts/leikwan-mptcp-client.py",
-  "path": "artifacts/leikwan-mptcp-client.py",
-  "sha256": "26e4114873d3561023421cf6dcb0003f5ca4d7a408b401a8b8e8ab17e96bd266",
-  "size": 56785,
-  "size_bytes": 56785,
-  "version": "2026.06.06.1"
- },
- "mptcp_relay": {
-  "file": "leikwan-mptcp-relay",
-  "platform": "linux-amd64",
-  "version": "0.1.0"
- },
- "mptcp_sidecar_runtime": {
-  "artifact_url": "/artifacts/leikwan-mptcp-sidecar.py",
-  "path": "sidecar-agent/leikwan_mptcp_sidecar.py",
-  "sha256": "71392d8faccc26522da72edff645053d97a62b094567894df30740f230ef66d0",
-  "size_bytes": 42508,
-  "version": "2026.05.13.1"
- },
- "retired_runtime_030b48158478": {
-  "attestation": {
-   "fingerprint": "2026.09.12.1.4b106b02",
-   "self_sha256": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63"
+  "client_agent_update": {
+    "artifact_url": "/artifacts/client-agent-update.sh",
+    "path": "install/client-agent-update.sh",
+    "sha256": "0c61870322f84c32c5680a408732affb269bd5f631744a5359fc6b336f8308d5",
+    "size_bytes": 25624,
+    "version": "2026.09.27.1"
   },
-  "note": "superseded runtime kept accepted so clients that have not updated yet keep their leases",
-  "retired": true,
-  "version": "2026.09.12.1.4b106b02"
- },
- "sidecar_agent": {
-  "artifact_url": "/artifacts/sidecar-agent.py",
-  "path": "sidecar-agent/sidecar_agent.py",
-  "sha256": "ea4db1770391cc690e4b3ef5dd3ccbe2a9530e30e8a8814a8ddfae7cafca7d77",
-  "size": 148545,
-  "size_bytes": 148545,
-  "version": "2026.09.17.4"
- },
- "sidecar_agent_linux_amd64": {
-  "architecture": "amd64",
-  "artifact_url": "/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
-  "format": "elf-onefile-pyinstaller",
-  "path": "artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
-  "runtime_mode": "frozen",
-  "sha256": "3042f95685a6aead408e5b23400caab5c02e9e72fe1a708137d444d8690c0e43",
-  "size_bytes": 8641784,
-  "version": "2026.09.17.4"
- },
- "sidecar_agent_update": {
-  "artifact_url": "/artifacts/sidecar-agent-update.sh",
-  "path": "install/sidecar-agent-update.sh",
-  "sha256": "af92c61ce2bdaa87054dd1697d3fbb650bec7715f908299b7697134add4abc2f",
-  "size_bytes": 12079,
-  "version": "2026.09.17.4"
- },
- "slave_agent": {
-  "artifact_url": "/artifacts/slave-agent.py",
-  "path": "slave-agent/slave_agent.py",
-  "sha256": "75ba376870e1e71a69a09d0a12b2f8b4b201278e3f563e555f6d820fadbad739",
-  "size": 355310,
-  "size_bytes": 355310,
-  "version": "2026.09.15.1"
- },
- "slave_installer": {
-  "install_url": "/artifacts/install-slave.sh",
-  "path": "install/install-slave.sh",
-  "remote_install_url": "/artifacts/remote-install-slave.sh",
-  "sha256": "72e66b8b85d470df8bf2508b5346d6a0baa304aaf87ed8ee67d1a3ebd09a9e2c",
-  "size_bytes": 18323,
-  "version": "2026.08.10.1"
- },
- "slave_preconnect_relay": {
-  "artifact_url": "/artifacts/leikwan-preconnect-relay.py",
-  "path": "slave-agent/preconnect_relay.py",
-  "sha256": "76d1f0a7f34d9f5f927e696e17839ef2aad1a9136795971b06757aeaaacaab03",
-  "size_bytes": 17387,
-  "version": "2026.05.29.1"
- },
- "tcp_accel_bridge_runtime": {
-  "artifact_url": "/artifacts/leikwan-tcp-accel-bridge.py",
-  "note": "BR1 slave-only SOCKS5 bridge helper for client -> slave -> sidecar tcp-accel topology; enforces slave listener ports 7000-9000.",
-  "path": "slave-agent/leigod_tcp_accel_bridge.py",
-  "sha256": "3745c9c5c0032bd505fc6a79b517e8168f99bca57b6142f2d326138e3fd90e38",
-  "size": 15268,
-  "size_bytes": 15268,
-  "version": "2026.08.10.1"
- },
- "tcp_accel_installer": {
-  "artifact_url": "/artifacts/install-tcp-accel.sh",
-  "install_url": "/artifacts/install-tcp-accel.sh",
-  "note": "Debian 12 self-contained tcp-accel role installer for client/slave/sidecar; installs dependencies and systemd units without external build steps.",
-  "path": "install/install-tcp-accel.sh",
-  "sha256": "5c9b7b6d44c01b0978d8a35bbd82f97c6865d9068e64a9e02405e1108e3a098a",
-  "size": 10602,
-  "size_bytes": 10602,
-  "version": "2026.09.27.2"
- },
- "tcp_accel_runtime": {
-  "artifact_url": "/artifacts/leikwan-tcp-accel.py",
-  "note": "Python-only split-TCP multi-lane accelerator copied from leigod-forward tools/tcp-accel for BR1 additive pilot; no activation by default.",
-  "path": "tools/tcp-accel/tcp_accel.py",
-  "sha256": "74bc214921365b84dca68110272effa7671087b0b5286fabfb3bd40a620376dc",
-  "size": 47382,
-  "size_bytes": 47382,
-  "source": "tools/tcp-accel/tcp_accel.py",
-  "updated_at": "2026-08-11T01:40:00+08:00",
-  "version": "2026.08.10.1"
- },
- "tcp_race_runtime": {
-  "artifact_url": "/artifacts/leikwan-tcp-race.py",
-  "path": "client-agent/leikwan_tcp_race.py",
-  "sha256": "7caf5ac21ed2d7eb26917cda32258a1704d0a4d29457f67691adeb87f7f55db9",
-  "size_bytes": 9358,
-  "version": "2026.07.27.1"
- },
- "udp_fanout_runtime": {
-  "artifact_url": "/artifacts/leikwan-udp-fanout.py",
-  "path": "client-agent/leikwan_udp_fanout.py",
-  "sha256": "eb5947976240c2def73627cc31650b6ad6819ddc24a797b6bbb9222094cba58f",
-  "size_bytes": 9742,
-  "version": "2026.07.27.1"
- },
- "udp_uot_merge_runtime": {
-  "artifact_url": "/artifacts/leikwan-udp-uot-merge.py",
-  "path": "sidecar-agent/leikwan_udp_uot_merge.py",
-  "sha256": "7f48daa2cd847ea20ca2014ec24ba81da55480d7cbfe6847a3be2d97ed4dd7bb",
-  "size_bytes": 30743,
-  "version": "2026.08.08.1"
- },
- "ultra_client_runtime": {
-  "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
-  "attestation": {
-   "fingerprint": "2026.10.02.1.d1bac327",
-   "self_sha256": "4dddbccd4e214a00d241348e9c8a0ef17b34ff7914fa03b30e93c462c67d4934"
+  "client_installer": {
+    "install_url": "/artifacts/install-client.sh",
+    "path": "install/install-client.sh",
+    "remote_install_url": "/artifacts/remote-install-client.sh",
+    "sha256": "6a71a0f584ebb4f47464cf97fb98f5d96ad46a1b21944b919a9d1f6172643851",
+    "size_bytes": 19459,
+    "version": "2026.09.27.1",
+    "artifact_url": "/artifacts/install-client.sh"
   },
-  "build": "go1.26.5, garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, 2026.10.02.1",
-  "hardening": [
-   "cgo-disabled",
-   "pie",
-   "relro",
-   "nx-stack",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny"
-  ],
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_linux_amd64",
-  "sha256": "4dddbccd4e214a00d241348e9c8a0ef17b34ff7914fa03b30e93c462c67d4934",
-  "size_bytes": 17391882,
-  "version": "2026.10.02.1",
-  "runtime_build_version": "2026.10.02.1.d1bac327",
-  "build_provenance": {
-   "source_commit": "d1bac327",
-   "compiler": "garble",
-   "obfuscation": "garble-v0.17.0-literals-tiny",
-   "reason": "line-protection P3: real client obfuscation (garble v0.17.0, go1.26.5)"
+  "client_installer_windows": {
+    "install_url": "/artifacts/install-client.ps1",
+    "path": "install/install-client.ps1",
+    "sha256": "48e3017886bbb77f75a5730e1cfdfa52fdec8f7ecb35f8c0f42cc439c17db05e",
+    "size_bytes": 1089,
+    "version": "2026.04.08.1"
+  },
+  "client_manager_windows": {
+    "install_url": "/artifacts/manage-client.ps1",
+    "path": "install/manage-client.ps1",
+    "sha256": "b58586a6701750b07276782c5b9bf14672d2969fc4c6ab1c00700574b481b56b",
+    "size_bytes": 1526,
+    "version": "2026.04.08.1"
+  },
+  "client_rate_limit": {
+    "artifact_url": "/artifacts/leikwan-rate-limit.py",
+    "path": "client-agent/leikwan_rate_limit.py",
+    "sha256": "917cf5ef1958a10a7277cf21deab3583cfed1598c54ba456b3b042b20496e4a5",
+    "size_bytes": 4981,
+    "version": "2026.08.29.1"
+  },
+  "external_uot_installer": {
+    "artifact_url": "/artifacts/install-external-uot.sh",
+    "install_url": "/artifacts/install-external-uot.sh",
+    "path": "install/install-external-uot.sh",
+    "sha256": "9a4a76c948fd412dab02265b766acbe31efedff5b6c8819f4ec98fb894dea3ef",
+    "size_bytes": 14404,
+    "version": "2026.09.19.1"
+  },
+  "forward_strategy": {
+    "artifact_url": "/artifacts/forward-strategy.py",
+    "path": "artifacts/forward-strategy.py",
+    "sha256": "1b6e1fec1c9365140b393854da6f5c9a9c7dc582c5b45179d6f9c7fd1bcb1d12",
+    "size": 3361,
+    "size_bytes": 3361,
+    "version": "2026.07.25.1"
+  },
+  "gost_linux_amd64": {
+    "artifact_url": "/artifacts/gost/gost_linux_amd64",
+    "note": "gost v3.2.6 UoT carrier for the leigod basis (slave gost client + sidecar gost server). Fill sha256/size when the binary is published to the artifact store; empty sha forces a (safe) re-download.",
+    "path": "artifacts/gost/gost_linux_amd64",
+    "sha256": "a2aea24efb4597b5f57b35b8e1bbcc59f439b80723854d4371f6828b46682ffb",
+    "size_bytes": 9673064,
+    "version": "3.2.6"
+  },
+  "install_forward_runtime": {
+    "artifact_url": "/artifacts/install-forward-runtime.py",
+    "path": "client-agent/install_forward_runtime.py",
+    "sha256": "d5ee20b47b27435d2eefa61977267a1782e1e4cff4c35173a1d30e7f31d7caaa",
+    "size": 102034,
+    "size_bytes": 102034,
+    "version": "2026.09.27.1"
+  },
+  "leigod_forward_relay": {
+    "artifact_url": "/artifacts/leikwan-leigod-forward-relay.py",
+    "path": "slave-agent/leigod_forward_relay.py",
+    "sha256": "1b96fc73623a991aacb0a33f503d177088fa2975fe5cb6c02fc2a28677de9848",
+    "size_bytes": 30683,
+    "version": "2026.07.27.1"
+  },
+  "leigod_linux_amd64": {
+    "artifact_url": "/artifacts/leigod/leigod-linux-amd64",
+    "note": "recovered LeiGod accelerator (slave only); runs leigod@<line> exposing SOCKS 127.0.0.1:20000+line. Fill sha256/size when published.",
+    "path": "artifacts/leigod/leigod-linux-amd64",
+    "sha256": "b15fc09c4c03df82ab5fda97962ae175c124b6f61ce3167e77a0fb3d14a33b86",
+    "size_bytes": 10779919,
+    "version": "recovered"
+  },
+  "leikwan_bond_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_amd64",
+    "path": "artifacts/wstunnel/leikwan-bond_linux_amd64",
+    "sha256": "513b0ad9e496c4e71a225fd381453acb45a1413b6766bf5dcfb91d7babfefb7b",
+    "size_bytes": 8946736,
+    "version": "0.1.30"
+  },
+  "leikwan_bond_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-bond_linux_arm64",
+    "path": "artifacts/wstunnel/leikwan-bond_linux_arm64",
+    "sha256": "c1155051ff229d1d1dd7c6cadab7f0d6e5d1dc62368717d01c5e8f029abfa8e7",
+    "size_bytes": 6103192,
+    "version": "0.1.30"
+  },
+  "leikwan_bond_windows_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
+    "path": "artifacts/wstunnel/leikwan-bond_windows_amd64.exe",
+    "sha256": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
+    "size_bytes": 8218624,
+    "version": "0.1.16"
+  },
+  "leikwan_cli_linux": {
+    "install_url": "/artifacts/leikwan-linux.sh",
+    "path": "install/leikwan-linux.sh",
+    "sha256": "b4d4d482d5a744a21a78ed534d1963ef17d045fa282d27213d43ab2e5431b626",
+    "size_bytes": 5936,
+    "version": "2026.09.17.4"
+  },
+  "leikwan_ingress_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_amd64",
+    "path": "artifacts/wstunnel/leikwan-ingress_linux_amd64",
+    "sha256": "7f6358b07911b54774d7f3b8ed99baacc880fa222eea3663d2173c5058ce44fc",
+    "size_bytes": 3236312,
+    "version": "0.1.0"
+  },
+  "leikwan_ingress_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-ingress_linux_arm64",
+    "path": "artifacts/wstunnel/leikwan-ingress_linux_arm64",
+    "sha256": "33cfd1cf9b3559f7f476be8b3908a9f217ec0816f9db69360ff51a4d86d3845b",
+    "size_bytes": 2149472,
+    "version": "0.1.0"
+  },
+  "leikwan_ingress_windows_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
+    "path": "artifacts/wstunnel/leikwan-ingress_windows_amd64.exe",
+    "sha256": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
+    "size_bytes": 2339328,
+    "version": "0.1.0"
+  },
+  "leikwan_mptcp_relay_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
+    "path": "artifacts/wstunnel/leikwan-mptcp-relay_0.1.0_linux_amd64",
+    "sha256": "caa182f71a2484e3548d6d6679309b0a0b4dfad47f6a44dd8586ca24cc31dd04",
+    "size_bytes": 3477712,
+    "version": "0.1.0"
+  },
+  "leikwan_mptcp_relay_windows_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
+    "path": "artifacts/wstunnel/leikwan-mptcp-relay_windows_amd64.exe",
+    "platform": "windows-amd64",
+    "sha256": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
+    "size_bytes": 2605056,
+    "version": "0.1.0"
+  },
+  "leikwan_udp_uot_merge_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "capabilities": [
+      "leg-progress-v1",
+      "selective-first-wins-v1"
+    ],
+    "path": "artifacts/wstunnel/leikwan-udp-uot-merge_linux_amd64",
+    "protocol_version": 2,
+    "scheduler_modes": [
+      "legacy",
+      "feedback_drr"
+    ],
+    "sha256": "657be0971a820283f37d1bc94f9fafbb8bf1c592208e4f29b5dc522855574bfb",
+    "size_bytes": 3067608,
+    "version": "0.2.2"
+  },
+  "leikwan_uot_bond_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "capabilities": [
+      "leg-progress-v1",
+      "selective-first-wins-v1"
+    ],
+    "path": "artifacts/wstunnel/leikwan-uot-bond_linux_amd64",
+    "protocol_version": 2,
+    "scheduler_modes": [
+      "legacy",
+      "feedback_drr"
+    ],
+    "sha256": "56c114cf269579d76a27ac45ccf8fe61db3b5abddcab49cabbd43f187df4e73a",
+    "size_bytes": 2957184,
+    "version": "0.2.2"
+  },
+  "leikwan_uot_bond_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_linux_arm64",
+    "capabilities": [
+      "leg-progress-v1",
+      "selective-first-wins-v1"
+    ],
+    "path": "artifacts/wstunnel/leikwan-uot-bond_linux_arm64",
+    "protocol_version": 2,
+    "scheduler_modes": [
+      "legacy",
+      "feedback_drr"
+    ],
+    "sha256": "f61bfe22d17f565962eca77e6b3fb1c7d1af77a65802a52216cec0004d32f953",
+    "size_bytes": 1966776,
+    "version": "0.2.2"
+  },
+  "leikwan_uot_bond_windows_amd64": {
+    "artifact_url": "/artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "capabilities": [
+      "leg-progress-v1"
+    ],
+    "path": "artifacts/wstunnel/leikwan-uot-bond_windows_amd64.exe",
+    "protocol_version": 2,
+    "scheduler_modes": [
+      "legacy",
+      "feedback_drr"
+    ],
+    "sha256": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
+    "size_bytes": 2052096,
+    "version": "0.1.0"
+  },
+  "lguot_linux_amd64": {
+    "artifact_url": "/artifacts/lguot/lguot_linux_amd64",
+    "note": "CPU-efficient UDP-over-TCP carrier (batched recvmmsg/sendmmsg, SOCKS5-chained, token auth) for the leigod arm. Drop-in alt to gost when leigod_uot_impl=lguot: ~2.4x throughput at 1/3 CPU on a 2-vCPU slave (178 vs 73 Mbit/s). Source: tools/lguot/.",
+    "path": "artifacts/lguot/lguot_linux_amd64",
+    "sha256": "5480f352d2482334b1bde6198b83b7ef65fafa7eebbb3c22e15f8337a892fa1a",
+    "size": 3348125,
+    "size_bytes": 3348125,
+    "version": "2026.06.03.2"
+  },
+  "macos_client_app_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/macos/leikwan-bridge-arm64.dmg",
+    "format": "dmg",
+    "hardening": {
+      "managed_symbols": "disabled",
+      "native_helpers": "release-strip",
+      "ultra_client": "garble-v0.17.0-literals-tiny"
+    },
+    "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
+    "runtime_sha256": {
+      "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
+      "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
+      "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
+      "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
+      "bin/ultra-client": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
+      "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+    },
+    "sha256": "46d9aff66730d34bd1f6b1a936f8bcc9e8fb6822eca0648696edba1ade73cc63",
+    "size_bytes": 77628541,
+    "version": "1.0.53",
+    "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
+  },
+  "macos_client_app_x64": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/macos/leikwan-bridge-x64.dmg",
+    "format": "dmg",
+    "hardening": {
+      "managed_symbols": "disabled",
+      "native_helpers": "release-strip",
+      "ultra_client": "garble-v0.17.0-literals-tiny"
+    },
+    "path": "artifacts/macos/leikwan-bridge-x64.dmg",
+    "runtime_sha256": {
+      "bin/leikwan-bond": "21ce68093efa24e0cb7c9dd4107d727cb888b5e083c3cdbfd7ab329a423e08bf",
+      "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
+      "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
+      "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
+      "bin/ultra-client": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
+      "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
+    },
+    "sha256": "3d7e2eefa59aadbb79f6b5af944e930bd1750412513ca757bcfca8dc7d3e6c4f",
+    "size_bytes": 82152275,
+    "version": "1.0.53",
+    "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
+  },
+  "macos_client_update_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/macos/leikwan-bridge-update-arm64.zip",
+    "format": "zip",
+    "hardening": {
+      "managed_symbols": "disabled",
+      "native_helpers": "release-strip",
+      "ultra_client": "garble-v0.17.0-literals-tiny"
+    },
+    "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
+    "runtime_sha256": {
+      "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
+      "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
+      "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
+      "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
+      "bin/ultra-client": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
+      "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+    },
+    "sha256": "50bc75087dab0a0765dde19695306d16467794bb344b0dd8b1e6d005ac6b5b7a",
+    "size_bytes": 69036749,
+    "version": "1.0.53",
+    "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
+  },
+  "macos_client_update_x64": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/macos/leikwan-bridge-update-x64.zip",
+    "format": "zip",
+    "hardening": {
+      "managed_symbols": "disabled",
+      "native_helpers": "release-strip",
+      "ultra_client": "garble-v0.17.0-literals-tiny"
+    },
+    "path": "artifacts/macos/leikwan-bridge-update-x64.zip",
+    "runtime_sha256": {
+      "bin/leikwan-bond": "21ce68093efa24e0cb7c9dd4107d727cb888b5e083c3cdbfd7ab329a423e08bf",
+      "bin/leikwan-ingress": "638a68770384a54903aeb59c1a41aa00ff82d66f656b031f9427e6fa9a3ce149",
+      "bin/leikwan-uot-bond": "a2d53ceea050ce5ac50665e459b70775a11aed56b779d8a508b10987577a5caf",
+      "bin/sing-box": "a3a0ff1782435d5a76b7fecc89ff2a63e0691d4b25d1db546710792128da1ad9",
+      "bin/ultra-client": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
+      "bin/wstunnel": "988ec2df6c43a47bf0d083e828064158984329711a71260e23e79d4bdcda4647"
+    },
+    "sha256": "ec5925642e6600a63d207388dd6eb0cc9b1e84d889970e8fa7dcbc1a1819fda2",
+    "size_bytes": 73342451,
+    "version": "1.0.53",
+    "source_commit": "522eed1465b9d887f0024dfe52a74e507a2bbe40"
+  },
+  "macos_headless_installer": {
+    "install_url": "/artifacts/install-macos-headless.sh",
+    "path": "install/install-macos-headless.sh",
+    "sha256": "60739970cda079562622a82377939060777736d4f6e8acbd3a7f510f47306622",
+    "size_bytes": 20601,
+    "version": "1.0.53",
+    "artifact_url": "/artifacts/install-macos-headless.sh"
+  },
+  "macos_headless_uninstaller": {
+    "install_url": "/artifacts/uninstall-macos-headless.sh",
+    "path": "install/uninstall-macos-headless.sh",
+    "sha256": "8afbdf619d3ecde9d48f242d59c4c05c3c48865230d5e9fd6152ff5cac25ba10",
+    "size_bytes": 1236,
+    "version": "1.0.52",
+    "artifact_url": "/artifacts/uninstall-macos-headless.sh"
+  },
+  "mptcp_client_runtime": {
+    "artifact_url": "/artifacts/leikwan-mptcp-client.py",
+    "path": "artifacts/leikwan-mptcp-client.py",
+    "sha256": "26e4114873d3561023421cf6dcb0003f5ca4d7a408b401a8b8e8ab17e96bd266",
+    "size": 56785,
+    "size_bytes": 56785,
+    "version": "2026.06.06.1"
+  },
+  "mptcp_relay": {
+    "file": "leikwan-mptcp-relay",
+    "platform": "linux-amd64",
+    "version": "0.1.0"
+  },
+  "mptcp_sidecar_runtime": {
+    "artifact_url": "/artifacts/leikwan-mptcp-sidecar.py",
+    "path": "sidecar-agent/leikwan_mptcp_sidecar.py",
+    "sha256": "71392d8faccc26522da72edff645053d97a62b094567894df30740f230ef66d0",
+    "size_bytes": 42508,
+    "version": "2026.05.13.1"
+  },
+  "retired_runtime_030b48158478": {
+    "attestation": {
+      "fingerprint": "2026.09.12.1.4b106b02",
+      "self_sha256": "030b48158478de640c47c384bd0c2c7d58f71dc062063700f82d1bb07db8fc63"
+    },
+    "note": "superseded runtime kept accepted so clients that have not updated yet keep their leases",
+    "retired": true,
+    "version": "2026.09.12.1.4b106b02"
+  },
+  "sidecar_agent": {
+    "artifact_url": "/artifacts/sidecar-agent.py",
+    "path": "sidecar-agent/sidecar_agent.py",
+    "sha256": "ea4db1770391cc690e4b3ef5dd3ccbe2a9530e30e8a8814a8ddfae7cafca7d77",
+    "size": 148545,
+    "size_bytes": 148545,
+    "version": "2026.09.17.4"
+  },
+  "sidecar_agent_linux_amd64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
+    "format": "elf-onefile-pyinstaller",
+    "path": "artifacts/python-agent/leikwan-sidecar-agent_linux_amd64",
+    "runtime_mode": "frozen",
+    "sha256": "3042f95685a6aead408e5b23400caab5c02e9e72fe1a708137d444d8690c0e43",
+    "size_bytes": 8641784,
+    "version": "2026.09.17.4"
+  },
+  "sidecar_agent_update": {
+    "artifact_url": "/artifacts/sidecar-agent-update.sh",
+    "path": "install/sidecar-agent-update.sh",
+    "sha256": "af92c61ce2bdaa87054dd1697d3fbb650bec7715f908299b7697134add4abc2f",
+    "size_bytes": 12079,
+    "version": "2026.09.17.4"
+  },
+  "slave_agent": {
+    "artifact_url": "/artifacts/slave-agent.py",
+    "path": "slave-agent/slave_agent.py",
+    "sha256": "75ba376870e1e71a69a09d0a12b2f8b4b201278e3f563e555f6d820fadbad739",
+    "size": 355310,
+    "size_bytes": 355310,
+    "version": "2026.09.15.1"
+  },
+  "slave_installer": {
+    "install_url": "/artifacts/install-slave.sh",
+    "path": "install/install-slave.sh",
+    "remote_install_url": "/artifacts/remote-install-slave.sh",
+    "sha256": "72e66b8b85d470df8bf2508b5346d6a0baa304aaf87ed8ee67d1a3ebd09a9e2c",
+    "size_bytes": 18323,
+    "version": "2026.08.10.1"
+  },
+  "slave_preconnect_relay": {
+    "artifact_url": "/artifacts/leikwan-preconnect-relay.py",
+    "path": "slave-agent/preconnect_relay.py",
+    "sha256": "76d1f0a7f34d9f5f927e696e17839ef2aad1a9136795971b06757aeaaacaab03",
+    "size_bytes": 17387,
+    "version": "2026.05.29.1"
+  },
+  "tcp_accel_bridge_runtime": {
+    "artifact_url": "/artifacts/leikwan-tcp-accel-bridge.py",
+    "note": "BR1 slave-only SOCKS5 bridge helper for client -> slave -> sidecar tcp-accel topology; enforces slave listener ports 7000-9000.",
+    "path": "slave-agent/leigod_tcp_accel_bridge.py",
+    "sha256": "3745c9c5c0032bd505fc6a79b517e8168f99bca57b6142f2d326138e3fd90e38",
+    "size": 15268,
+    "size_bytes": 15268,
+    "version": "2026.08.10.1"
+  },
+  "tcp_accel_installer": {
+    "artifact_url": "/artifacts/install-tcp-accel.sh",
+    "install_url": "/artifacts/install-tcp-accel.sh",
+    "note": "Debian 12 self-contained tcp-accel role installer for client/slave/sidecar; installs dependencies and systemd units without external build steps.",
+    "path": "install/install-tcp-accel.sh",
+    "sha256": "5c9b7b6d44c01b0978d8a35bbd82f97c6865d9068e64a9e02405e1108e3a098a",
+    "size": 10602,
+    "size_bytes": 10602,
+    "version": "2026.09.27.2"
+  },
+  "tcp_accel_runtime": {
+    "artifact_url": "/artifacts/leikwan-tcp-accel.py",
+    "note": "Python-only split-TCP multi-lane accelerator copied from leigod-forward tools/tcp-accel for BR1 additive pilot; no activation by default.",
+    "path": "tools/tcp-accel/tcp_accel.py",
+    "sha256": "74bc214921365b84dca68110272effa7671087b0b5286fabfb3bd40a620376dc",
+    "size": 47382,
+    "size_bytes": 47382,
+    "source": "tools/tcp-accel/tcp_accel.py",
+    "updated_at": "2026-08-11T01:40:00+08:00",
+    "version": "2026.08.10.1"
+  },
+  "tcp_race_runtime": {
+    "artifact_url": "/artifacts/leikwan-tcp-race.py",
+    "path": "client-agent/leikwan_tcp_race.py",
+    "sha256": "7caf5ac21ed2d7eb26917cda32258a1704d0a4d29457f67691adeb87f7f55db9",
+    "size_bytes": 9358,
+    "version": "2026.07.27.1"
+  },
+  "udp_fanout_runtime": {
+    "artifact_url": "/artifacts/leikwan-udp-fanout.py",
+    "path": "client-agent/leikwan_udp_fanout.py",
+    "sha256": "eb5947976240c2def73627cc31650b6ad6819ddc24a797b6bbb9222094cba58f",
+    "size_bytes": 9742,
+    "version": "2026.07.27.1"
+  },
+  "udp_uot_merge_runtime": {
+    "artifact_url": "/artifacts/leikwan-udp-uot-merge.py",
+    "path": "sidecar-agent/leikwan_udp_uot_merge.py",
+    "sha256": "7f48daa2cd847ea20ca2014ec24ba81da55480d7cbfe6847a3be2d97ed4dd7bb",
+    "size_bytes": 30743,
+    "version": "2026.08.08.1"
+  },
+  "ultra_client_runtime": {
+    "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
+    "attestation": {
+      "fingerprint": "2026.10.10.1.b089a4e2",
+      "self_sha256": "c9f7494f038aad2140d1f691df6fdb430a4d0bbb72569409d8147bc89355d2f9"
+    },
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.10.1",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "relro",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals"
+    ],
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_linux_amd64",
+    "sha256": "c9f7494f038aad2140d1f691df6fdb430a4d0bbb72569409d8147bc89355d2f9",
+    "size_bytes": 19529994,
+    "version": "2026.10.10.1",
+    "runtime_build_version": "2026.10.10.1.b089a4e2",
+    "build_provenance": {
+      "source_commit": "b089a4e2",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals",
+      "reason": "drop garble tiny mode: 2026.10.02.1 crashed under external-UoT UDP load"
+    }
+  },
+  "ultra_client_runtime_android_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
+    "attestation": {
+      "fingerprint": "2026.10.10.2.096ca638",
+      "self_sha256": "bf67455702f889a1731f29202a01c5652b55151a9ec9da15fc279e81d284ace9"
+    },
+    "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.10.2",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "relro",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals"
+    ],
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_android_arm64",
+    "sha256": "bf67455702f889a1731f29202a01c5652b55151a9ec9da15fc279e81d284ace9",
+    "size_bytes": 17301764,
+    "version": "2026.10.10.2",
+    "runtime_build_version": "2026.10.10.2.096ca638",
+    "build_provenance": {
+      "source_commit": "096ca638",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals",
+      "reason": "runtime 2026.10.10.2: no garble tiny mode + Android resolver fix merged"
+    }
+  },
+  "ultra_client_runtime_android_x86_64": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
+    "attestation": {
+      "fingerprint": "2026.10.10.2.096ca638",
+      "self_sha256": "b28202b4815ae5dbd50d8208359a654f7283b95dcf37dbf7ae3caa2a420fa044"
+    },
+    "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.10.2",
+    "hardening": [
+      "pie",
+      "relro",
+      "bind-now",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals"
+    ],
+    "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_android_x86_64",
+    "sha256": "b28202b4815ae5dbd50d8208359a654f7283b95dcf37dbf7ae3caa2a420fa044",
+    "size_bytes": 19044064,
+    "version": "2026.10.10.2",
+    "runtime_build_version": "2026.10.10.2.096ca638",
+    "build_provenance": {
+      "source_commit": "096ca638",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals",
+      "reason": "runtime 2026.10.10.2: no garble tiny mode + Android resolver fix merged"
+    }
+  },
+  "ultra_client_runtime_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
+    "attestation": {
+      "fingerprint": "2026.10.10.1.b089a4e2",
+      "self_sha256": "d2925b4dcbe8f0f1df37d926b0503f7f8a45e49690366cbad28a6506f87a7a6d"
+    },
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.10.1",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "relro",
+      "nx-stack",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals"
+    ],
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_linux_arm64",
+    "sha256": "d2925b4dcbe8f0f1df37d926b0503f7f8a45e49690366cbad28a6506f87a7a6d",
+    "size_bytes": 17694986,
+    "version": "2026.10.10.1",
+    "runtime_build_version": "2026.10.10.1.b089a4e2",
+    "build_provenance": {
+      "source_commit": "b089a4e2",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals",
+      "reason": "drop garble tiny mode: 2026.10.02.1 crashed under external-UoT UDP load"
+    }
+  },
+  "ultra_client_runtime_macos_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
+    "attestation": {
+      "fingerprint": "2026.10.02.1.d1bac327",
+      "self_sha256": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e"
+    },
+    "build": "go1.26.5 (built go1.26.8 if rebuilt on Mac), garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, ad-hoc codesigned, 2026.10.02.1",
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_macos_arm64",
+    "sha256": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
+    "size_bytes": 14157984,
+    "version": "2026.10.02.1",
+    "runtime_build_version": "2026.10.02.1.d1bac327",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals",
+      "garble-tiny",
+      "codesign-adhoc"
+    ],
+    "build_provenance": {
+      "source_commit": "d1bac327",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals-tiny",
+      "reason": "line-protection P3: real client obfuscation (garble v0.17.0)"
+    }
+  },
+  "ultra_client_runtime_macos_x64": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
+    "attestation": {
+      "fingerprint": "2026.10.02.1.d1bac327",
+      "self_sha256": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277"
+    },
+    "build": "go1.26.5 (built go1.26.8 if rebuilt on Mac), garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, ad-hoc codesigned, 2026.10.02.1",
+    "obfuscator": "garble-v0.17.0",
+    "path": "artifacts/ultra/ultra-client_macos_amd64",
+    "sha256": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
+    "size_bytes": 16116688,
+    "version": "2026.10.02.1",
+    "runtime_build_version": "2026.10.02.1.d1bac327",
+    "hardening": [
+      "cgo-disabled",
+      "pie",
+      "trimpath",
+      "stripped",
+      "garble-identifiers",
+      "garble-literals",
+      "garble-tiny",
+      "codesign-adhoc"
+    ],
+    "build_provenance": {
+      "source_commit": "d1bac327",
+      "compiler": "garble",
+      "obfuscation": "garble-v0.17.0-literals-tiny",
+      "reason": "line-protection P3: real client obfuscation (garble v0.17.0)"
+    }
+  },
+  "ultra_client_runtime_windows": {
+    "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
+    "attestation": {
+      "fingerprint": "2026.10.10.2.096ca638",
+      "self_sha256": "b403a21f47f3e040f39c2b855f1f9066d853b1d4ba3d93702fe8baf44df75215"
+    },
+    "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
+    "obfuscator": "none",
+    "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
+    "sha256": "b403a21f47f3e040f39c2b855f1f9066d853b1d4ba3d93702fe8baf44df75215",
+    "size_bytes": 7446016,
+    "version": "2026.10.10.2",
+    "runtime_build_version": "2026.10.10.2.096ca638",
+    "hardening": [
+      "cgo-disabled",
+      "trimpath",
+      "stripped"
+    ],
+    "build_provenance": {
+      "source_commit": "096ca638",
+      "compiler": "go",
+      "obfuscation": "none (Windows Defender flags garble images)",
+      "reason": "runtime 2026.10.10.2: no garble tiny mode + Android resolver fix merged"
+    }
+  },
+  "uot_bond_runtime": {
+    "artifact_url": "/artifacts/leikwan-uot-bond.py",
+    "path": "client-agent/leikwan_uot_bond.py",
+    "sha256": "979f1d894d41195a3ebca9bc19a81a5cfa908e83ad94368fdc90ec56a2b75db7",
+    "size_bytes": 24138,
+    "version": "2026.08.29.1"
+  },
+  "uot_runtime": {
+    "artifact_url": "/artifacts/leikwan-uot.py",
+    "path": "client-agent/leikwan_uot.py",
+    "sha256": "5f581087c8001324537d013a37f9f7b011ada5224b3dc21db30a7855be2024f9",
+    "size": 7852,
+    "size_bytes": 7852,
+    "version": "2026.05.29.1"
+  },
+  "uot_sidecar_linux_amd64": {
+    "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_amd64",
+    "path": "artifacts/uot-sidecar/uot-sidecar_linux_amd64",
+    "sha256": "c6b716c94fd012265a51713a9e24b5f740eecb7310d9a9c5bddc17c032370229",
+    "size_bytes": 3092606,
+    "version": "2026.09.24.1"
+  },
+  "uot_sidecar_linux_arm64": {
+    "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_arm64",
+    "path": "artifacts/uot-sidecar/uot-sidecar_linux_arm64",
+    "sha256": "15b8377fef45f8fa91b522c36572e5f526d694720fde2d27a2808c0be3e2303a",
+    "size_bytes": 3014782,
+    "version": "2026.09.24.1"
+  },
+  "wg_watchdog": {
+    "artifact_url": "/artifacts/leikwan-wg-watchdog.sh",
+    "path": "artifacts/leikwan-wg-watchdog.sh",
+    "sha256": "9de7e942c746cc7f53fdc49f0ed4644f763a30c337ec5f671c07c8980d14ef0e",
+    "size_bytes": 9085,
+    "version": "2026.08.29.1"
+  },
+  "windows_client_app": {
+    "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
+    "path": "artifacts/windows/leikwan-bridge-setup.exe",
+    "runtime_sha256": {
+      "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
+      "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
+      "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
+      "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
+      "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
+      "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
+    },
+    "sha256": "e8c566b100e020a8eca800314d7194e68b0bb9c515199689a9355e3091d861f2",
+    "size_bytes": 69782001,
+    "version": "0.1.20.60"
+  },
+  "windows_headless_client": {
+    "architecture": "x86_64",
+    "artifact_url": "/artifacts/windows/leikwan-bridge-headless-win-x64.zip",
+    "format": "zip",
+    "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
+    "platform": "windows",
+    "sha256": "ec688a2c602c0e86b6db329240582918101c7faadf259cf5cbe0b0053c38e453",
+    "size_bytes": 63742048,
+    "version": "0.1.20.60",
+    "runtime_sha256": {
+      "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
+      "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
+      "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
+      "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
+      "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
+      "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
+    }
+  },
+  "windows_headless_installer": {
+    "install_url": "/artifacts/install-windows-headless.ps1",
+    "path": "install/install-windows-headless.ps1",
+    "sha256": "ce6cb12cda25f7a7a31a3fad52270faf6fed129e5be243bfb5023b09509f75e0",
+    "size_bytes": 16815,
+    "version": "0.1.20.60",
+    "artifact_url": "/artifacts/install-windows-headless.ps1"
+  },
+  "windows_headless_uninstaller": {
+    "install_url": "/artifacts/uninstall-windows-headless.ps1",
+    "path": "install/uninstall-windows-headless.ps1",
+    "sha256": "79f2cabf046bb908fd61713dc48cd28cac4e40c0ac313fd940775bdcf058d178",
+    "size_bytes": 2630,
+    "version": "0.1.20.59",
+    "artifact_url": "/artifacts/uninstall-windows-headless.ps1"
+  },
+  "windows_update_helper": {
+    "artifact_url": "/artifacts/leikwan-bridge-repair.cmd",
+    "install_url": "/artifacts/leikwan-bridge-repair.cmd",
+    "note": "Standalone Windows repair/update helper. Run as administrator: it repairs the shared client permissions and then updates the client to the published build. Ships inside the installer as well.",
+    "path": "scripts/leikwan-bridge-repair.cmd",
+    "sha256": "ad46bc9541de4adcec8a953ce5cbdd8d92b66b826a5d3b3be287ddd3eeeadae2",
+    "size_bytes": 11610,
+    "version": "2026.09.13.1"
+  },
+  "wstunnel_linux_amd64": {
+    "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
+    "path": "artifacts/wstunnel/wstunnel_linux_amd64",
+    "sha256": "c2f6198fde46a064e7b1a703fbe4be3cc774bd29bbc738782eb5855492d18717",
+    "size_bytes": 12326416,
+    "version": "10.5.2"
+  },
+  "wstunnel_linux_arm64": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/wstunnel/wstunnel_linux_arm64",
+    "path": "artifacts/wstunnel/wstunnel_linux_arm64",
+    "sha256": "40d36fa092e3c4fd3cf57f0b53cb8bd93f11f5b1ebdfd186c3685aeac9247d5d",
+    "size_bytes": 9227064,
+    "version": "10.5.2"
+  },
+  "wstunnel_windows_amd64": {
+    "artifact_url": "/artifacts/wstunnel/wstunnel_windows_amd64.exe",
+    "path": "artifacts/wstunnel/wstunnel_windows_amd64.exe",
+    "sha256": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
+    "size_bytes": 9054208,
+    "version": "10.5.5"
+  },
+  "client_lease_seal": {
+    "version": "2026.10.02.1",
+    "path": "client-agent/leikwan_lease_seal.py",
+    "artifact_url": "/artifacts/leikwan-lease-seal.py",
+    "sha256": "cc097b2b4ae5f7422e3f058c6cd0c2ce57bce2847e1c612c2991ca22d2749a60",
+    "size_bytes": 20515
   }
- },
- "ultra_client_runtime_android_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
-  "attestation": {
-   "fingerprint": "2026.10.04.1.d6c08c86",
-   "self_sha256": "236828be21b0c641ca50c3c043de5c419a8b457fe1d613459a10de177892e686"
-  },
-  "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.04.1",
-  "hardening": [
-   "cgo-disabled",
-   "pie",
-   "relro",
-   "nx-stack",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny"
-  ],
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_android_arm64",
-  "sha256": "236828be21b0c641ca50c3c043de5c419a8b457fe1d613459a10de177892e686",
-  "size_bytes": 15335684,
-  "version": "2026.10.04.1",
-  "runtime_build_version": "2026.10.04.1.d6c08c86"
- },
- "ultra_client_runtime_android_x86_64": {
-  "architecture": "x86_64",
-  "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
-  "attestation": {
-   "fingerprint": "2026.10.04.1.d6c08c86",
-   "self_sha256": "1d76e95c0a8f8aefdaa979c4845943a1727b05f9437a349cadf469484d365115"
-  },
-  "build": "go1.26.5, garble-v0.17.0, android-dns-fallback-2026.10.04.1",
-  "hardening": [
-   "pie",
-   "relro",
-   "bind-now",
-   "nx-stack",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny"
-  ],
-  "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_android_x86_64",
-  "sha256": "1d76e95c0a8f8aefdaa979c4845943a1727b05f9437a349cadf469484d365115",
-  "size_bytes": 17069344,
-  "version": "2026.10.04.1",
-  "runtime_build_version": "2026.10.04.1.d6c08c86"
- },
- "ultra_client_runtime_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
-  "attestation": {
-   "fingerprint": "2026.10.02.1.d1bac327",
-   "self_sha256": "15511f5de04931db03f13490a6099cf3e78626b1155ab5212efd3c935bbfa971"
-  },
-  "build": "go1.26.5, garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, 2026.10.02.1",
-  "hardening": [
-   "cgo-disabled",
-   "pie",
-   "relro",
-   "nx-stack",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny"
-  ],
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_linux_arm64",
-  "sha256": "15511f5de04931db03f13490a6099cf3e78626b1155ab5212efd3c935bbfa971",
-  "size_bytes": 15663370,
-  "version": "2026.10.02.1",
-  "runtime_build_version": "2026.10.02.1.d1bac327",
-  "build_provenance": {
-   "source_commit": "d1bac327",
-   "compiler": "garble",
-   "obfuscation": "garble-v0.17.0-literals-tiny",
-   "reason": "line-protection P3: real client obfuscation (garble v0.17.0, go1.26.5)"
-  }
- },
- "ultra_client_runtime_macos_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
-  "attestation": {
-   "fingerprint": "2026.10.02.1.d1bac327",
-   "self_sha256": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e"
-  },
-  "build": "go1.26.5 (built go1.26.8 if rebuilt on Mac), garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, ad-hoc codesigned, 2026.10.02.1",
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_macos_arm64",
-  "sha256": "c6192329157549190e82c6cf46be0a04d1223f937586e0685853ec5abc1d2c0e",
-  "size_bytes": 14157984,
-  "version": "2026.10.02.1",
-  "runtime_build_version": "2026.10.02.1.d1bac327",
-  "hardening": [
-   "cgo-disabled",
-   "pie",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny",
-   "codesign-adhoc"
-  ],
-  "build_provenance": {
-   "source_commit": "d1bac327",
-   "compiler": "garble",
-   "obfuscation": "garble-v0.17.0-literals-tiny",
-   "reason": "line-protection P3: real client obfuscation (garble v0.17.0)"
-  }
- },
- "ultra_client_runtime_macos_x64": {
-  "architecture": "x86_64",
-  "artifact_url": "/artifacts/ultra/ultra-client_macos_amd64",
-  "attestation": {
-   "fingerprint": "2026.10.02.1.d1bac327",
-   "self_sha256": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277"
-  },
-  "build": "go1.26.5 (built go1.26.8 if rebuilt on Mac), garble-v0.17.0 -literals -tiny, CGO disabled, pie, trimpath, stripped, ad-hoc codesigned, 2026.10.02.1",
-  "obfuscator": "garble-v0.17.0",
-  "path": "artifacts/ultra/ultra-client_macos_amd64",
-  "sha256": "3d9e35c380891eca314759906f45d4bea2932a87ec4f40b5fe5e0892dfe83277",
-  "size_bytes": 16116688,
-  "version": "2026.10.02.1",
-  "runtime_build_version": "2026.10.02.1.d1bac327",
-  "hardening": [
-   "cgo-disabled",
-   "pie",
-   "trimpath",
-   "stripped",
-   "garble-identifiers",
-   "garble-literals",
-   "garble-tiny",
-   "codesign-adhoc"
-  ],
-  "build_provenance": {
-   "source_commit": "d1bac327",
-   "compiler": "garble",
-   "obfuscation": "garble-v0.17.0-literals-tiny",
-   "reason": "line-protection P3: real client obfuscation (garble v0.17.0)"
-  }
- },
- "ultra_client_runtime_windows": {
-  "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
-  "attestation": {
-   "fingerprint": "2026.09.25.1.c10e11f1",
-   "self_sha256": "63dda7a7e32bf12a902beb6871b5ddf852b6927426c6431d93f896b8cfa4b684"
-  },
-  "build": "Go, CGO disabled, trimpath, stripped, 2026.09.24.1",
-  "obfuscator": "none",
-  "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-  "sha256": "63dda7a7e32bf12a902beb6871b5ddf852b6927426c6431d93f896b8cfa4b684",
-  "size_bytes": 7443456,
-  "version": "2026.09.25.1",
-  "runtime_build_version": "2026.09.25.1.c10e11f1",
-  "hardening": [
-   "cgo-disabled",
-   "trimpath",
-   "stripped"
-  ],
-  "build_provenance": {
-   "source_commit": "906efe97",
-   "compiler": "go",
-   "obfuscation": "none",
-   "reason": "first-flight pilot and close-stage diagnostics"
-  }
- },
- "uot_bond_runtime": {
-  "artifact_url": "/artifacts/leikwan-uot-bond.py",
-  "path": "client-agent/leikwan_uot_bond.py",
-  "sha256": "979f1d894d41195a3ebca9bc19a81a5cfa908e83ad94368fdc90ec56a2b75db7",
-  "size_bytes": 24138,
-  "version": "2026.08.29.1"
- },
- "uot_runtime": {
-  "artifact_url": "/artifacts/leikwan-uot.py",
-  "path": "client-agent/leikwan_uot.py",
-  "sha256": "5f581087c8001324537d013a37f9f7b011ada5224b3dc21db30a7855be2024f9",
-  "size": 7852,
-  "size_bytes": 7852,
-  "version": "2026.05.29.1"
- },
- "uot_sidecar_linux_amd64": {
-  "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_amd64",
-  "path": "artifacts/uot-sidecar/uot-sidecar_linux_amd64",
-  "sha256": "c6b716c94fd012265a51713a9e24b5f740eecb7310d9a9c5bddc17c032370229",
-  "size_bytes": 3092606,
-  "version": "2026.09.24.1"
- },
- "uot_sidecar_linux_arm64": {
-  "artifact_url": "/artifacts/uot-sidecar/uot-sidecar_linux_arm64",
-  "path": "artifacts/uot-sidecar/uot-sidecar_linux_arm64",
-  "sha256": "15b8377fef45f8fa91b522c36572e5f526d694720fde2d27a2808c0be3e2303a",
-  "size_bytes": 3014782,
-  "version": "2026.09.24.1"
- },
- "wg_watchdog": {
-  "artifact_url": "/artifacts/leikwan-wg-watchdog.sh",
-  "path": "artifacts/leikwan-wg-watchdog.sh",
-  "sha256": "9de7e942c746cc7f53fdc49f0ed4644f763a30c337ec5f671c07c8980d14ef0e",
-  "size_bytes": 9085,
-  "version": "2026.08.29.1"
- },
- "windows_client_app": {
-  "artifact_url": "/artifacts/leikwan-bridge-setup.exe",
-  "path": "artifacts/windows/leikwan-bridge-setup.exe",
-  "runtime_sha256": {
-   "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
-   "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
-   "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
-   "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
-   "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-   "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
-  },
-  "sha256": "e8c566b100e020a8eca800314d7194e68b0bb9c515199689a9355e3091d861f2",
-  "size_bytes": 69782001,
-  "version": "0.1.20.60"
- },
- "windows_headless_client": {
-  "architecture": "x86_64",
-  "artifact_url": "/artifacts/windows/leikwan-bridge-headless-win-x64.zip",
-  "format": "zip",
-  "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
-  "platform": "windows",
-  "sha256": "ec688a2c602c0e86b6db329240582918101c7faadf259cf5cbe0b0053c38e453",
-  "size_bytes": 63742048,
-  "version": "0.1.20.60",
-  "runtime_sha256": {
-   "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
-   "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
-   "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
-   "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
-   "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-   "ultra_client_runtime_windows": "f01d503a97d25a20779ebf7ba253c87c2ff9e630003caf2f90b0bac094ec740d"
-  }
- },
- "windows_headless_installer": {
-  "install_url": "/artifacts/install-windows-headless.ps1",
-  "path": "install/install-windows-headless.ps1",
-  "sha256": "ce6cb12cda25f7a7a31a3fad52270faf6fed129e5be243bfb5023b09509f75e0",
-  "size_bytes": 16815,
-  "version": "0.1.20.60",
-  "artifact_url": "/artifacts/install-windows-headless.ps1"
- },
- "windows_headless_uninstaller": {
-  "install_url": "/artifacts/uninstall-windows-headless.ps1",
-  "path": "install/uninstall-windows-headless.ps1",
-  "sha256": "79f2cabf046bb908fd61713dc48cd28cac4e40c0ac313fd940775bdcf058d178",
-  "size_bytes": 2630,
-  "version": "0.1.20.59",
-  "artifact_url": "/artifacts/uninstall-windows-headless.ps1"
- },
- "windows_update_helper": {
-  "artifact_url": "/artifacts/leikwan-bridge-repair.cmd",
-  "install_url": "/artifacts/leikwan-bridge-repair.cmd",
-  "note": "Standalone Windows repair/update helper. Run as administrator: it repairs the shared client permissions and then updates the client to the published build. Ships inside the installer as well.",
-  "path": "scripts/leikwan-bridge-repair.cmd",
-  "sha256": "ad46bc9541de4adcec8a953ce5cbdd8d92b66b826a5d3b3be287ddd3eeeadae2",
-  "size_bytes": 11610,
-  "version": "2026.09.13.1"
- },
- "wstunnel_linux_amd64": {
-  "artifact_url": "/artifacts/wstunnel/wstunnel_linux_amd64",
-  "path": "artifacts/wstunnel/wstunnel_linux_amd64",
-  "sha256": "c2f6198fde46a064e7b1a703fbe4be3cc774bd29bbc738782eb5855492d18717",
-  "size_bytes": 12326416,
-  "version": "10.5.2"
- },
- "wstunnel_linux_arm64": {
-  "architecture": "arm64",
-  "artifact_url": "/artifacts/wstunnel/wstunnel_linux_arm64",
-  "path": "artifacts/wstunnel/wstunnel_linux_arm64",
-  "sha256": "40d36fa092e3c4fd3cf57f0b53cb8bd93f11f5b1ebdfd186c3685aeac9247d5d",
-  "size_bytes": 9227064,
-  "version": "10.5.2"
- },
- "wstunnel_windows_amd64": {
-  "artifact_url": "/artifacts/wstunnel/wstunnel_windows_amd64.exe",
-  "path": "artifacts/wstunnel/wstunnel_windows_amd64.exe",
-  "sha256": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
-  "size_bytes": 9054208,
-  "version": "10.5.5"
- },
- "client_lease_seal": {
-  "version": "2026.10.02.1",
-  "path": "client-agent/leikwan_lease_seal.py",
-  "artifact_url": "/artifacts/leikwan-lease-seal.py",
-  "sha256": "cc097b2b4ae5f7422e3f058c6cd0c2ce57bce2847e1c612c2991ca22d2749a60",
-  "size_bytes": 20515
- }
 }
