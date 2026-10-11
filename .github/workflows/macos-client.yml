@@ -515,7 +515,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --orphan "$branch"
-          git rm -rf .
+          git rm -rf --ignore-unmatch -q .
           mkdir -p macos-client-test
           cp "$parts_root/"* macos-client-test/
           cp "$manifest" macos-client-test/export-manifest.json
@@ -578,7 +578,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --orphan "$branch"
-          git rm -rf .
+          git rm -rf --ignore-unmatch -q .
           mkdir -p macos-client-status
           cp "$status_root/status.json" macos-client-status/status.json
           git add macos-client-status/status.json

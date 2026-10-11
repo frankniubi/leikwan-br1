@@ -87,7 +87,7 @@ public sealed class UltraLeaseClientTests
     [Fact]
     public async Task NativeLeaseWireUsesRuntimeTargetDigestField()
     {
-        var pipeName = "leikwan-native-test-" + Guid.NewGuid().ToString("N");
+        var pipeName = "lk-nt-" + Guid.NewGuid().ToString("N")[..12];
         var generation = new string('a', 64);
         var digest = new string('b', 64);
         using var lease = new NativeOutboundLease(
@@ -130,7 +130,7 @@ public sealed class UltraLeaseClientTests
     [Fact]
     public async Task NativeLeaseBatchWirePreservesBoundedCandidates()
     {
-        var pipeName = "leikwan-native-batch-test-" + Guid.NewGuid().ToString("N");
+        var pipeName = "lk-nb-" + Guid.NewGuid().ToString("N")[..12];
         var generation = new string('c', 64);
         var digest = new string('d', 64);
         using var leaseA = CreateNativeLease("native-batch-a", "selection-batch-a", generation, digest, 5438);

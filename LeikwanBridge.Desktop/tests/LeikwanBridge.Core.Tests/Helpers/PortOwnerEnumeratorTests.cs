@@ -6,6 +6,7 @@ namespace LeikwanBridge.Core.Tests.Helpers;
 /// <summary>
 /// Tests for PortOwnerEnumerator (缺陷③修复验证)
 /// </summary>
+[Trait("Platform", "Windows")]
 public class PortOwnerEnumeratorTests
 {
     [Fact]
