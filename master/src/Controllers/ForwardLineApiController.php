@@ -546,9 +546,11 @@ final class ForwardLineApiController extends BaseController
             'message' => $messages[$code] ?? 'The forward operation could not be completed.',
         ];
         $details = $exception->details();
-        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
-            && is_array($details['fields'] ?? null)) {
-            $error['fields'] = $this->safeFields($details['fields']);
+        $fields = is_array($details['fields'] ?? null)
+            ? $details['fields']
+            : ForwardLineApiContract::fieldsForInternalCode($internalCode);
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true) && is_array($fields)) {
+            $error['fields'] = $this->safeFields($fields);
         }
 
         return $this->success(['ok' => false, 'error' => $error], $statuses[$code]);

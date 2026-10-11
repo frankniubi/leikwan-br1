@@ -485,6 +485,35 @@ namespace {
         }
     }
 
+    foreach ([
+        'target_service_ip_missing' => ['target.service_id' => 'no_public_ip'],
+        'target_service_not_allowed' => ['target.service_id' => 'not_allowed'],
+        'invalid_forward_target_source' => ['target.source' => 'invalid'],
+    ] as $internalCode => $expectedFields) {
+        $fixture = fixture(false);
+        $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+            $internalCode,
+            422,
+            ['target_service_id' => 40]
+        );
+        $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+        $error = responseBody($response)['error'] ?? [];
+        if ($response->status() !== 422 || ($error['code'] ?? '') !== 'validation_failed' || ($error['fields'] ?? null) !== $expectedFields) {
+            fail($internalCode . ' must surface as validation_failed with fields, got ' . $response->body());
+        }
+    }
+
+    $fixture = fixture(false);
+    $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+        'invalid_forward_payload',
+        422,
+        ['fields' => ['target.port' => 'out_of_range'], 'payload' => ['target_host' => 'SECRET_PAYLOAD']]
+    );
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+    if ((responseBody($response)['error']['fields'] ?? null) !== ['target.port' => 'out_of_range'] || str_contains($response->body(), 'SECRET_PAYLOAD')) {
+        fail('provisioning field reasons must pass through without the raw payload, got ' . $response->body());
+    }
+
     $fixture = fixture(false);
     $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
         'secret_internal_failure_code',

@@ -91,10 +91,13 @@ final class Response
 
     public function send(): void
     {
-        http_response_code($this->status);
         foreach ($this->headers as $name => $value) {
             header($name . ': ' . $value);
         }
+        // Set the status after the headers: PHP turns any non-201/3xx response
+        // into a 302 when it sees a Location header, which made the documented
+        // 200 idempotent-replay response arrive as 302 Found.
+        http_response_code($this->status);
         if ($this->streamBody !== null) {
             ($this->streamBody)();
             return;

@@ -96,7 +96,7 @@ Idempotency-Key: create-fwd-20261007-01
 <h3>轉發目標</h3>
 <ul>
   <li><strong>手動填寫</strong>：<code>{"source": "manual", "host": "…", "port": 443}</code>。<code>host</code> 可以是 IPv4、IPv6 或網域名稱，最長 253 個字元，不能帶 <code>http://</code>、路徑或空白。</li>
-  <li><strong>指向你的另一個服務</strong>：<code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>。<code>service_id</code> 必須是你名下的服務，此時不要填 <code>host</code>。</li>
+  <li><strong>指向你的另一個服務</strong>：<code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>。<code>service_id</code> 必須是你名下、已分配公網 IP 的服務，此時不要填 <code>host</code>。否則 <code>fields</code> 裡是 <code>"target.service_id"</code>：<code>not_found</code>（服務不存在）、<code>not_allowed</code>（不屬於你）或 <code>no_public_ip</code>（該服務沒有公網 IP，例如專線服務本身）。</li>
 </ul>
 <blockquote><p><strong>以下目標位址會被拒絕。</strong>轉發目標由平台節點去連線，所以本機位址、鏈路本地位址與雲端中繼資料位址都不允許：<code>127.0.0.0/8</code>、<code>::1</code>、<code>169.254.0.0/16</code>（含 <code>169.254.169.254</code>）、<code>0.0.0.0</code>、<code>localhost</code>。此時回傳 <code>422</code>，<code>fields</code> 裡是 <code>"target.host": "reserved_range"</code>。內網位址 <code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code> 可以正常使用。</p></blockquote>
 <h3>curl 範例</h3>

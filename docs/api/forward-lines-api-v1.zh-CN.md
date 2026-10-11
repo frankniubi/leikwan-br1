@@ -157,7 +157,8 @@ Idempotency-Key: create-fwd-20261007-01
   目标由平台节点代为连接，因此**保留地址段会被拒绝**（`422`，`fields: {"target.host": "reserved_range"}`）：
   环回 `127.0.0.0/8`、`::1`，链路本地 `169.254.0.0/16`（含云元数据 `169.254.169.254`），`0.0.0.0`，以及 `localhost` / `*.localhost`。
   私有网段（`10/8`、`172.16/12`、`192.168/16`）仍可用于你自己的后端。
-- `service_ip`：`{"source":"service_ip","service_id":43,"port":8443}`。`service_id` 必须是你名下的服务，不接受 `host`。
+- `service_ip`：`{"source":"service_ip","service_id":43,"port":8443}`。`service_id` 必须是你名下、**已分配公网 IP** 的服务，不接受 `host`。
+  校验失败时 `fields` 为：`{"target.service_id": "not_found"}`（服务不存在）、`"not_allowed"`（不属于你）、`"no_public_ip"`（该服务没有公网 IP，例如专线服务本身）。
 
 PowerShell 示例：
 
@@ -265,7 +266,7 @@ If-Match: "forward-123-r4"
 }
 ```
 
-`unknown_fields` 的 `fields` 是数组（如 `["target.foo"]`），`validation_failed` 的 `fields` 是对象。
+`unknown_fields` 的 `fields` 是数组（如 `["target.foo"]`），`validation_failed` 的 `fields` 是对象，每个 `validation_failed` 都带 `fields`。
 
 | HTTP | code | 含义 |
 | --- | --- | --- |

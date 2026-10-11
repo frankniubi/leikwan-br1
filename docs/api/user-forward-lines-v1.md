@@ -103,8 +103,8 @@ The list, detail, create, and patch responses use this representation:
     "service_id": null
   },
   "ingress": {
-    "host": "edge.example.test",
-    "port": 443
+    "host": null,
+    "port": null
   },
   "state": "active",
   "endpoint_count": 1,
@@ -120,6 +120,9 @@ The list, detail, create, and patch responses use this representation:
 Both are read-only: the direction comes from the assigned route, never from the
 request. Every other forward reports `"native_outbound": false` and
 `"native_direction": null`.
+
+`ingress` is reserved: both members are always `null`. Connection details reach
+the client through its own configuration flow.
 
 The resource never contains provider line IDs, combination IDs, active
 combination IDs, node IDs or addresses, transport endpoint fields, client
@@ -157,8 +160,9 @@ Invoke-RestMethod `
 ```
 
 `listen_port: null` requests automatic allocation. A manual target requires a
-host and port. A service-IP target uses an owned service ID and does not accept
-a manual host:
+host and port. A service-IP target uses an owned service ID that has a public
+IP, and does not accept a manual host. A rejected service ID reports
+`fields: {"target.service_id": "not_found" | "not_allowed" | "no_public_ip"}`:
 
 ```json
 {

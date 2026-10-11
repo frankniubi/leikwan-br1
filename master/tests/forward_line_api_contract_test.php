@@ -290,6 +290,7 @@ foreach ([
 }
 same(2, $presented['endpoint_count'] ?? null, 'forward endpoint count');
 same(1, $presented['active_endpoint_count'] ?? null, 'active endpoint count');
+same(['host' => null, 'port' => null], $presented['ingress'] ?? 'missing', 'reserved ingress stays null even when the row has the internal public_port');
 
 $route = ForwardLineApiContract::presentRoute([
     'id' => 14,
