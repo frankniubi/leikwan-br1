@@ -4,6 +4,7 @@ package main
 
 import (
 	"net"
+	"runtime"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,6 +28,14 @@ func tuneExternalUoTCarrier(connection net.Conn) (sendBuffer, notSentLowat int) 
 		return 0, 0
 	}
 	_ = raw.Control(func(fd uintptr) {
+		if runtime.GOOS == "darwin" {
+			// On macOS TCP_NOTSENT_LOWAT only delays writability: write() still
+			// fills an autotuned buffer of several MiB, more than the resend
+			// window can replay after a handover (15% loss on a lagging carrier).
+			// A fixed buffer below that window keeps every byte the old carrier
+			// still holds recoverable.
+			_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, externalUoTCarrierDarwinSendBuffer)
+		}
 		if unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_NOTSENT_LOWAT, externalUoTCarrierNotSentLowat) == nil {
 			if value, getErr := unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_NOTSENT_LOWAT); getErr == nil {
 				notSentLowat = value

@@ -4,7 +4,8 @@ package main
 
 import "testing"
 
-// The carrier caps its unsent kernel backlog but keeps send-buffer autotuning.
+// The carrier caps its unsent kernel backlog; Linux keeps send-buffer autotuning
+// while macOS uses a fixed buffer below the resend window.
 func TestExternalUoTCarrierCapsUnsentBacklog(t *testing.T) {
 	left, _ := tcpPair(t)
 	sendBuffer, lowat := tuneExternalUoTCarrier(relayConn(left))
