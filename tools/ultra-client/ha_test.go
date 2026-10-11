@@ -409,20 +409,35 @@ func TestHATCPRelayAvoidsRepeatedRemoteReadResetLocally(t *testing.T) {
 
 func TestHATCPRelayAmbiguousSilentStreamsRemainEligible(t *testing.T) {
 	now := time.Now()
-	for name, order := range map[string]relayStreamOrder{
-		"local_first_20ms":  {upstreamEnded: now, downstreamEnded: now.Add(20 * time.Millisecond), remoteReadError: syscall.ECONNRESET},
-		"tie":               {upstreamEnded: now, downstreamEnded: now, remoteReadError: syscall.ECONNRESET},
-		"remote_eof":        {upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF},
-		"local_write_error": {upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now},
-		"unknown_order":     {remoteReadError: syscall.ECONNRESET},
+	for name, tc := range map[string]struct {
+		order   relayStreamOrder
+		age     time.Duration
+		streams int
+	}{
+		"local_first_20ms":  {order: relayStreamOrder{upstreamEnded: now, downstreamEnded: now.Add(20 * time.Millisecond), remoteReadError: syscall.ECONNRESET}},
+		"tie":               {order: relayStreamOrder{upstreamEnded: now, downstreamEnded: now, remoteReadError: syscall.ECONNRESET}},
+		"local_write_error": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now}},
+		"unknown_order":     {order: relayStreamOrder{remoteReadError: syscall.ECONNRESET}},
+		// Below the zero-byte strike count, a fast clean remote close is still
+		// an ordinary short exchange.
+		"remote_eof_below_strikes": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF},
+			streams: zeroByteCloseStrikes - 1},
+		"remote_eof_slow": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF},
+			age: haZeroByteCloseMaxAge + 500*time.Millisecond},
+		"remote_eof_after_read": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF,
+			remoteReadBytes: 12}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, policy, leases := haStore(t)
 			key := haPathKey(leases[0])
 			status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 			defer status.Close()
-			for range 3 {
-				noteRelayOutcome(store, status, relayIdentity{pathKey: key, generation: policy.PolicyGeneration}, time.Now(), 7, 0, order)
+			streams := tc.streams
+			if streams == 0 {
+				streams = 3
+			}
+			for range streams {
+				noteRelayOutcome(store, status, relayIdentity{pathKey: key, generation: policy.PolicyGeneration}, time.Now().Add(-tc.age), 7, 0, tc.order)
 			}
 			store.mu.RLock()
 			isolated := store.isolated["tcp:"+key].After(time.Now())

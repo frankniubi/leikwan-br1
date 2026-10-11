@@ -143,12 +143,158 @@ func (s *PolicyStore) ClearPathFailure(protocol, key string) {
 	if key == "" {
 		return
 	}
-	stateKey := protocol + ":" + key
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearPathFailureLocked(protocol, key)
+}
+
+func (s *PolicyStore) clearPathFailureLocked(protocol, key string) {
+	stateKey := protocol + ":" + key
 	delete(s.pathFailures, stateKey)
 	delete(s.isolated, stateKey)
 	delete(s.businessPathIsolation, stateKey)
+	delete(s.zeroByteTrips, stateKey)
+	prefix := stateKey + ":"
+	for counterKey := range s.zeroByteCloses {
+		if strings.HasPrefix(counterKey, prefix) {
+			delete(s.zeroByteCloses, counterKey)
+		}
+	}
+}
+
+// NoteStreamDelivered clears the path's failure state after a stream carried
+// downstream bytes, like ClearPathFailure, except that a stream which started
+// before the path's last zero-byte isolation proves nothing about the path now:
+// a long download opened while the relay was healthy can finish minutes after
+// the relay began closing every new stream.
+func (s *PolicyStore) NoteStreamDelivered(protocol, key string, started time.Time) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if trip, ok := s.zeroByteTrips[protocol+":"+key]; ok && started.Before(trip.at) {
+		return
+	}
+	s.clearPathFailureLocked(protocol, key)
+}
+
+// zeroByteTrip remembers which target tripped a zero-byte isolation of a path,
+// so the same pattern on the alternative path can be recognised as the target's.
+type zeroByteTrip struct {
+	target string
+	at     time.Time
+}
+
+const (
+	// zeroByteCloseStrikes zero-byte closes on one path to one target within
+	// zeroByteCloseWindow isolate the path. A relay that has lost its upstream
+	// closes every new stream, so at the observed ~9 streams/s this trips in well
+	// under a second, while a single short request that legitimately got no
+	// reply does not.
+	zeroByteCloseStrikes = 3
+	zeroByteCloseWindow  = 10 * time.Second
+	// zeroByteTargetSideWindow is how soon after one path's zero-byte isolation
+	// the same target tripping on another path reads as the target's fault.
+	zeroByteTargetSideWindow = time.Minute
+	// zeroByteTargetSideHold suppresses zero-byte isolation for a target that
+	// closed streams on two paths, so a dead target cannot bounce traffic
+	// between healthy relays.
+	zeroByteTargetSideHold = 2 * time.Minute
+	zeroByteStateLimit     = 512
+)
+
+// NoteZeroByteClose records a stream the relay accepted, took the first flight
+// of, and then closed cleanly without returning a byte and without the explicit
+// target-refused frame. One such stream is ambiguous; zeroByteCloseStrikes in a
+// row on the same path and target isolate the path as business evidence (the
+// active-path rescue must not revive it on a bare handshake), with the usual
+// escalating windows. It is taken only when another usable path exists.
+//
+// If the same target then trips on another path within zeroByteTargetSideWindow,
+// the target is closing the streams, not the relay: the first path is restored,
+// the second is not isolated, and zero-byte isolation for that target pauses.
+// None of this is global candidate reputation.
+func (s *PolicyStore) NoteZeroByteClose(protocol, key, target, generation string) (isolated, targetSide bool) {
+	if key == "" {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.zeroByteCloses == nil {
+		s.zeroByteCloses = map[string][]time.Time{}
+	}
+	if s.zeroByteTrips == nil {
+		s.zeroByteTrips = map[string]zeroByteTrip{}
+	}
+	if s.zeroByteTargetSide == nil {
+		s.zeroByteTargetSide = map[string]time.Time{}
+	}
+	s.pruneZeroByteStateLocked(now)
+	targetKey := protocol + ":" + target
+	if until, held := s.zeroByteTargetSide[targetKey]; held && until.After(now) {
+		return false, true
+	}
+	counterKey := protocol + ":" + key + ":" + target
+	recent := s.zeroByteCloses[counterKey][:0:0]
+	for _, at := range s.zeroByteCloses[counterKey] {
+		if now.Sub(at) <= zeroByteCloseWindow {
+			recent = append(recent, at)
+		}
+	}
+	recent = append(recent, now)
+	if len(recent) < zeroByteCloseStrikes {
+		s.zeroByteCloses[counterKey] = recent
+		return false, false
+	}
+	delete(s.zeroByteCloses, counterKey)
+	prefix := protocol + ":"
+	for tripKey, trip := range s.zeroByteTrips {
+		if !strings.HasPrefix(tripKey, prefix) || tripKey == prefix+key || trip.target != target ||
+			now.Sub(trip.at) > zeroByteTargetSideWindow {
+			continue
+		}
+		s.clearPathFailureLocked(protocol, strings.TrimPrefix(tripKey, prefix))
+		s.zeroByteTargetSide[targetKey] = now.Add(zeroByteTargetSideHold)
+		return false, true
+	}
+	if !s.hasOtherUsablePathLocked(protocol, key, now) {
+		return false, false
+	}
+	isolated = s.failPathLocked(protocol, key, generation, 1)
+	if isolated {
+		stateKey := protocol + ":" + key
+		if s.businessPathIsolation == nil {
+			s.businessPathIsolation = map[string]bool{}
+		}
+		s.businessPathIsolation[stateKey] = true
+		s.zeroByteTrips[stateKey] = zeroByteTrip{target: target, at: now}
+	}
+	return isolated, false
+}
+
+// pruneZeroByteStateLocked drops expired zero-byte evidence. A native SOCKS
+// runtime sees many targets, so the maps are swept rather than left to grow.
+func (s *PolicyStore) pruneZeroByteStateLocked(now time.Time) {
+	if len(s.zeroByteCloses)+len(s.zeroByteTrips)+len(s.zeroByteTargetSide) < zeroByteStateLimit {
+		return
+	}
+	for key, closes := range s.zeroByteCloses {
+		if len(closes) == 0 || now.Sub(closes[len(closes)-1]) > zeroByteCloseWindow {
+			delete(s.zeroByteCloses, key)
+		}
+	}
+	for key, trip := range s.zeroByteTrips {
+		if now.Sub(trip.at) > zeroByteTargetSideWindow && !s.isolated[key].After(now) {
+			delete(s.zeroByteTrips, key)
+		}
+	}
+	for key, until := range s.zeroByteTargetSide {
+		if !until.After(now) {
+			delete(s.zeroByteTargetSide, key)
+		}
+	}
 }
 
 func (s *PolicyStore) failCandidateKey(protocol, key, generation string) {
@@ -272,7 +418,10 @@ func (s *PolicyStore) collapseGlobalOutageLocked(protocol string, now time.Time)
 func (s *PolicyStore) hasOtherUsablePath(protocol, key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
+	return s.hasOtherUsablePathLocked(protocol, key, time.Now())
+}
+
+func (s *PolicyStore) hasOtherUsablePathLocked(protocol, key string, now time.Time) bool {
 	if s.policy == nil || !s.policy.ExpiresAt.After(now) {
 		return false
 	}

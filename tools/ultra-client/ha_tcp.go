@@ -118,6 +118,13 @@ func remoteWriteStallTimeout(ident relayIdentity) time.Duration {
 // as evidence about the path instead of a normally short request.
 const haDeadStreamMaxAge = 3 * time.Second
 
+// haZeroByteCloseMaxAge bounds how soon after the first flight a clean remote
+// close must come to count as a zero-byte close. A relay that lost its upstream
+// closed ~10ms after the first flight on 2026-10-11, and relay round trips stay
+// well under this bound. A clean empty close that took longer looks like an
+// ordinary short exchange, not a relay with nowhere to send the stream.
+const haZeroByteCloseMaxAge = 500 * time.Millisecond
+
 // haRelayOrderEpsilon tolerates the scheduling skew between the two copy
 // goroutines that observe the ends of one stream. The ordering itself has not
 // been seen to invert: across 200 silent-relay streams the remote end was
@@ -135,6 +142,7 @@ type relayStreamOrder struct {
 	upstreamEnded   time.Time // the local -> remote copy returned
 	downstreamEnded time.Time // the remote -> local copy returned
 	remoteReadError error     // excludes local-write and policy failures
+	remoteReadBytes int64     // bytes read from the relay, delivered or not
 	upstreamOrder   uint64    // monotonic observation order, independent of clock precision
 	downstreamOrder uint64
 }
@@ -172,7 +180,7 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 	}
 	lifetime := time.Since(started)
 	if downstreamBytes > 0 {
-		store.ClearPathFailure("tcp", ident.pathKey)
+		store.NoteStreamDelivered("tcp", ident.pathKey, started)
 		return
 	}
 	if lifetime > haDeadStreamMaxAge || upstreamBytes == 0 {
@@ -183,15 +191,23 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 	// A zero-byte application response is not protocol-independent evidence
 	// that the relay is dead: encrypted destinations may legitimately remain
 	// silent, and an ordinary EOF after a complete request is normal.
-	// Only a strict remote-first ordering combined with an explicit TCP reset on
-	// the remote read escalates to this forward's local path avoidance. That
-	// never becomes global candidate reputation, and no business payload is
+	// A strict remote-first ordering combined with an explicit TCP reset on the
+	// remote read escalates to this forward's local path avoidance. So does a
+	// run of fast clean closes with nothing read (NoteZeroByteClose): one such
+	// close is ambiguous, but a relay that lost its upstream closes every new
+	// stream that way and was otherwise kept active until the next generation.
+	// Neither becomes global candidate reputation, and no business payload is
 	// replayed.
 	remoteFirst := len(order) > 0 && order[0].remoteStoppedFirst()
 	remoteReset := remoteFirst && isTCPReset(order[0].remoteReadError)
+	zeroByteClose := remoteFirst && errors.Is(order[0].remoteReadError, io.EOF) &&
+		order[0].remoteReadBytes == 0 && lifetime <= haZeroByteCloseMaxAge
 	isolated := false
+	targetSide := false
 	if remoteReset {
 		isolated = store.FailSilentPath("tcp", ident.pathKey, ident.generation)
+	} else if zeroByteClose {
+		isolated, targetSide = store.NoteZeroByteClose("tcp", ident.pathKey, ident.targetHash, ident.generation)
 	}
 	if status != nil {
 		remoteReadReason := "unknown"
@@ -205,13 +221,13 @@ func noteRelayOutcome(store *PolicyStore, status *StatusWriter, ident relayIdent
 		status.RecordTCPOutcome(ident, upstreamBytes, downstreamBytes, remoteReadReason, remoteFirst, isolated)
 	}
 	log.Printf(
-		"tcp stream had no downstream bytes forward_id=%d selection_ref=%s remote_stopped_first=%t remote_read_reset=%t remote_read_reason=%s lifetime_ms=%d upstream_bytes=%d local_path_avoided=%t global_scored=false",
+		"tcp stream had no downstream bytes forward_id=%d selection_ref=%s remote_stopped_first=%t remote_read_reset=%t remote_read_reason=%s zero_byte_close=%t zero_byte_target_side=%t lifetime_ms=%d upstream_bytes=%d local_path_avoided=%t global_scored=false",
 		ident.forward, ident.selection, remoteFirst, remoteReset, func() string {
 			if len(order) == 0 {
 				return "unknown"
 			}
 			return haErrorClass(order[0].remoteReadError)
-		}(), lifetime.Milliseconds(), upstreamBytes, isolated)
+		}(), zeroByteClose, targetSide, lifetime.Milliseconds(), upstreamBytes, isolated)
 }
 
 func relayTCP(ctx context.Context, local, remote net.Conn, limiter *PolicyLimiter, status *StatusWriter, store *PolicyStore, ident relayIdentity) {
@@ -320,6 +336,7 @@ func relayTCPAttempt(ctx context.Context, local, remote net.Conn, limiter *Polic
 			order.downstreamEnded = r.ended
 			order.downstreamOrder = r.order
 			order.remoteReadError = r.readError
+			order.remoteReadBytes = r.readBytes
 		}
 		log.Printf("tcp stream ended forward_id=%d direction=%s stage=%s reason=%s generation=%s selection_ref=%s duration_ms=%d bytes=%d candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ident.forward, r.direction, r.stage, haErrorClass(r.err), ident.generation, ident.selection, time.Since(started).Milliseconds(), r.bytes, ident.candidateKey, ident.leaseHash, ident.pathKey, ident.targetHash)
 		if event {

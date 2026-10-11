@@ -317,6 +317,9 @@ type PolicyStore struct {
 	isolated              map[string]time.Time
 	pathFailures          map[string]int
 	businessPathIsolation map[string]bool
+	zeroByteCloses        map[string][]time.Time // protocol:path:target -> recent zero-byte closes
+	zeroByteTrips         map[string]zeroByteTrip
+	zeroByteTargetSide    map[string]time.Time // protocol:target -> suppression deadline
 	mu                    sync.RWMutex
 	config                Config
 	policy                *Policy
