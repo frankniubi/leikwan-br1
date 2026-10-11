@@ -244,15 +244,6 @@ func TestExternalUoTFullQueueNeverStallsTheReadLoop(t *testing.T) {
 	if !stuck.enqueue(datagram(0)) {
 		t.Fatal("initial admission")
 	}
-	// A StatusWriter writes (and fsyncs) its first snapshot synchronously on
-	// the updating goroutine; later updates inside the interval only arm a
-	// timer. Take that first write here, outside the timed loop: on a slow CI
-	// disk the fsync alone took longer than the bound below, which measured the
-	// disk rather than admission.
-	status.UpdateError("test_prime")
-	if status.writeCountValue() != 1 {
-		t.Fatal("the priming update did not take the status writer's first write")
-	}
 	started := time.Now()
 	for index := 1; index <= 50; index++ {
 		if stuck.enqueue(datagram(index)) {

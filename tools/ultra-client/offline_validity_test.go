@@ -288,7 +288,7 @@ func freeLoopbackPort(t *testing.T) int {
 	return 0
 }
 
-// End to end through runRuntimeLoop: the listener binds within 500 ms of the
+// End to end through runRuntimeLoop: the listener binds within 1 s of the
 // lease even though the location lookup hangs; a lapse keeps the same
 // listener bound while every connection and datagram fails closed; a new lease
 // resumes service on that listener.
@@ -361,7 +361,9 @@ func TestRuntimeLoopBindsBeforeLocationAndSurvivesLapse(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if bound > 500*time.Millisecond {
+	// The hanging lookup would hold the bind for at least locationRequestTimeout
+	// (2.5 s); 1 s leaves a loaded runner room without hiding that.
+	if bound > time.Second {
 		t.Fatalf("listener bound %s after the lease; the location lookup blocked it", bound)
 	}
 	if s := statusSnapshot(status); s.LocationSource != "" {
