@@ -100,7 +100,7 @@ public sealed class MacConnectionProcessHost : IMacConnectionProcessHost
                 else previousInterfaces = GetTunInterfaces();
             }
 
-            var privileged = mode == MacConnectionMode.Vpn && OperatingSystem.IsMacOS();
+            var privileged = mode == MacConnectionMode.Vpn && _isMacOs();
             var lifetime = privileged ? configPath + ".keep" : null;
             var errorPath = privileged ? configPath + ".stderr" : null;
             var dnsPath = privileged ? configPath + ".dns" : null;
