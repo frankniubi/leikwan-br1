@@ -182,6 +182,19 @@ expectApiError(static fn() => $sealKey->invoke($controller, $request($header), 7
 putenv('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE');
 check($sealKey->invoke($controller, $request(null), 7, 'new-keyless') === null, 'auto: without a cut-over only pinned devices are held to sealing');
 
+// ULTRA_LEASE_SEALING_EXEMPT_DEVICES: an operator-approved keyless client is
+// served in clear, scoped to its own client; malformed entries exempt nothing.
+putenv('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE=2026-10-02 13:35:00');
+putenv('ULTRA_LEASE_SEALING_EXEMPT_DEVICES= 7:new-keyless , x7:device-a, 8:');
+check($sealKey->invoke($controller, $request(null), 7, 'new-keyless') === null, 'exempt: a listed keyless device is served in clear under auto');
+expectApiError(static fn() => $sealKey->invoke($controller, $request(null), 7, 'device-a'), 'lease_sealing_required', 409, 'exempt: a malformed entry exempts nothing');
+putenv('ULTRA_LEASE_SEALING=require');
+check($sealKey->invoke($controller, $request(null), 7, 'new-keyless') === null, 'exempt: a listed keyless device is served in clear under require');
+expectApiError(static fn() => $sealKey->invoke($controller, $request(null), 8, 'new-keyless'), 'lease_sealing_required', 409, 'exempt: the entry is scoped to its own client');
+check($sealKey->invoke($controller, $request($thiefHeader), 7, 'new-keyless') === $thiefPublic, 'exempt: a key sent by a listed device is still sealed');
+putenv('ULTRA_LEASE_SEALING_EXEMPT_DEVICES');
+putenv('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE');
+
 putenv('ULTRA_LEASE_SEALING=off');
 check($sealKey->invoke($controller, $request('bad key'), 7, 'device-a') === null, 'off: header ignored entirely');
 putenv('ULTRA_LEASE_SEALING');

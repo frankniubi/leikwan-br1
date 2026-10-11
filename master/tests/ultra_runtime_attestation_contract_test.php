@@ -1036,6 +1036,58 @@ namespace {
         Database::$attestationSession = null;
         @unlink($rolloverEnv);
     }
+    // (i) ULTRA_ATTESTATION_EXEMPT_DEVICES lets an operator-approved
+    //     non-official runtime through, scoped to its own client only.
+    $exemptEnv = ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+        UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        UltraLeaseService::ATTESTATION_UNATTESTED_KEY => 'deny',
+        UltraLeaseService::ATTESTATION_EXEMPT_DEVICES_KEY => ' 7:device-a , x7:device-b, 8:',
+    ]);
+    $exemptService = new UltraLeaseService(
+        new Config($exemptEnv),
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+    foreach ([
+        'repackaged' => [
+            'platform' => 'linux-x86_64-agent',
+            'ultra_runtime_fingerprint' => $releasedFingerprint,
+            'ultra_runtime_self_sha256' => str_repeat('ab', 32),
+        ],
+        'unattested' => null,
+    ] as $label => $session) {
+        Database::$attestationSession = $session;
+        assertUltraRuntimeAttestation(
+            ($exemptService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'an exempt device must not be refused when ' . $label
+        );
+        assertUltraRuntimeAttestation(
+            ($exemptService->issueLease(ultraAttestationRequest(), 7, 'device-b')['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'a malformed exemption entry must not exempt anything (' . $label . ')'
+        );
+    }
+    Database::$attestationSession = null;
+    @unlink($exemptEnv);
+    $deviceIsExempt = new ReflectionMethod(UltraLeaseService::class, 'deviceIsAttestationExempt');
+    $exemptConfigService = new UltraLeaseService(
+        new Config($exemptEnv = ultraAttestationEnv([
+            'APP_ENV' => 'test',
+            UltraLeaseService::ATTESTATION_EXEMPT_DEVICES_KEY => '7:device-a',
+        ])),
+        new Database()
+    );
+    assertUltraRuntimeAttestation(
+        $deviceIsExempt->invoke($exemptConfigService, 7, hash('sha256', 'device-a')) === true
+            && $deviceIsExempt->invoke($exemptConfigService, 8, hash('sha256', 'device-a')) === false,
+        'an exemption must be scoped to its own client'
+    );
+    @unlink($exemptEnv);
+
     assertUltraRuntimeAttestation(
         str_contains($leaseSource, "get(self::ATTESTATION_UNATTESTED_KEY, 'allow')"),
         'the unattested policy must default to allow'

@@ -77,6 +77,13 @@ final class UltraLeaseService
      * rollout window, then remove them.
      */
     public const ATTESTATION_EXTRA_HASHES_KEY = 'ULTRA_ATTESTATION_EXTRA_HASHES_JSON';
+    /**
+     * Operator-approved non-official runtimes (self-built or containerised
+     * agents), as comma-separated "<client_id>:<device_id>" pairs. A listed
+     * device skips the attestation check entirely. The pair is scoped to its
+     * client so another account cannot borrow an exempt device id.
+     */
+    public const ATTESTATION_EXEMPT_DEVICES_KEY = 'ULTRA_ATTESTATION_EXEMPT_DEVICES';
     public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
 
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
@@ -451,6 +458,9 @@ final class UltraLeaseService
         if (strtolower(trim((string) $this->config->get(self::ATTESTATION_ENFORCEMENT_KEY, 'report'))) !== 'enforce') {
             return null;
         }
+        if ($this->deviceIsAttestationExempt($clientId, $deviceHash)) {
+            return null;
+        }
         $expected = $this->releasedRuntimeHashes();
         if ($expected === []) {
             return null;
@@ -516,6 +526,30 @@ final class UltraLeaseService
             $reason
         ));
         return self::ERROR_RUNTIME_UNATTESTED;
+    }
+
+    /** Whether ULTRA_ATTESTATION_EXEMPT_DEVICES lists this client's device. */
+    private function deviceIsAttestationExempt(int $clientId, string $deviceHash): bool
+    {
+        return self::deviceListed($this->config->get(self::ATTESTATION_EXEMPT_DEVICES_KEY, ''), $clientId, $deviceHash);
+    }
+
+    /**
+     * Whether a comma-separated "<client_id>:<device_id>" list names this
+     * client's device. $deviceHash is sha256 of the trimmed device id.
+     */
+    public static function deviceListed(?string $configured, int $clientId, string $deviceHash): bool
+    {
+        foreach (explode(',', (string) $configured) as $entry) {
+            [$entryClient, $entryDevice] = array_pad(explode(':', trim($entry), 2), 2, '');
+            $entryClient = trim($entryClient);
+            $entryDevice = trim($entryDevice);
+            if ($entryDevice !== '' && ctype_digit($entryClient) && (int) $entryClient === $clientId
+                && hash_equals(hash('sha256', $entryDevice), $deviceHash)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Platform prefixes the attestation check applies to ("linux" by default). */

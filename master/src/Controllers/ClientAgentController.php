@@ -621,7 +621,14 @@ final class ClientAgentController extends BaseController
                     }
                     continue;
                 }
-                $lastError = (string) ($result['error'] ?? $lastError);
+                $error = (string) ($result['error'] ?? $lastError);
+                if ($error === 'no_approved_candidate' && $forwardLeaseCount > 0) {
+                    // The forward already holds a lease; the candidate loop only
+                    // ran past its last relay. That is not a refusal, so it is
+                    // neither logged nor reported in "failures".
+                    break;
+                }
+                $lastError = $error;
                 error_log(sprintf(
                     'ultra_lease_forward_refused client=%d forward=%d device=%s error=%s',
                     (int) ($client['id'] ?? 0),
@@ -672,6 +679,9 @@ final class ClientAgentController extends BaseController
      * (new installs are always current builds, so a keyless newcomer is a
      * token being replayed); devices that predate the cut-over keep working
      * in clear until they update. Key conflicts are enforced as in "require".
+     * ULTRA_LEASE_SEALING_EXEMPT_DEVICES ("<client_id>:<device_id>" pairs)
+     * lets an operator-approved keyless client through in clear; a request
+     * from such a device that does send a key is still sealed and pinned.
      */
     private function ultraLeaseSealKey(Request $request, int $clientId, string $deviceId): ?string
     {
@@ -681,6 +691,13 @@ final class ClientAgentController extends BaseController
         }
         $header = trim((string) ($request->header(UltraLeaseSealer::HEADER) ?? ''));
         if ($header === '') {
+            if (isset($this->config) && UltraLeaseService::deviceListed(
+                $this->config->get('ULTRA_LEASE_SEALING_EXEMPT_DEVICES', ''),
+                $clientId,
+                hash('sha256', trim($deviceId))
+            )) {
+                return null;
+            }
             if ($mode === 'require' || ($mode === 'auto' && $this->deviceMustSealLeases($clientId, $deviceId))) {
                 throw new ApiException('lease_sealing_required', 409);
             }
