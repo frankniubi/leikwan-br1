@@ -1987,7 +1987,8 @@ type udpRuntimeLimits struct {
 func resolveUDPLimits(config Config) udpRuntimeLimits {
 	queuePackets := config.UDPQueuePackets
 	if queuePackets < 1 || queuePackets > 4096 {
-		queuePackets = 256
+		// Enough to ride out a ~1.5 s scheduling stall at an 800 pps burst.
+		queuePackets = 1024
 	}
 	maxAssociations := config.UDPMaxAssociations
 	if maxAssociations < 1 || maxAssociations > 8192 {
