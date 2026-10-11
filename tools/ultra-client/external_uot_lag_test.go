@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -318,10 +319,25 @@ type uotLagRelay struct {
 
 func newUoTLagRelay(t testing.TB, sidecar string, oneWay time.Duration, buffer, receiveBuffer int, rate func(int, time.Duration) float64) *uotLagRelay {
 	t.Helper()
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	// The receive buffer is fixed on the listener, before any handshake (see
+	// tcpPairWithBuffers): set on the accepted socket, macOS kept the window it
+	// had already advertised, so a "slow" relay still acknowledged and quietly
+	// held hundreds of KiB the client can never see.
+	var listenConfig net.ListenConfig
+	if receiveBuffer > 0 {
+		listenConfig.Control = func(_, _ string, raw syscall.RawConn) error {
+			var optionErr error
+			if err := raw.Control(func(fd uintptr) { optionErr = setRawSocketBuffers(fd, receiveBuffer, 0) }); err != nil {
+				return err
+			}
+			return optionErr
+		}
+	}
+	bound, err := listenConfig.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	listener := bound.(*net.TCPListener)
 	if buffer <= 0 {
 		buffer = 256 << 10
 	}
@@ -385,9 +401,6 @@ type uotLagChunk struct {
 
 func (relay *uotLagRelay) serve(client *net.TCPConn, index int) {
 	defer client.Close()
-	if relay.receiveBuffer > 0 {
-		_ = client.SetReadBuffer(relay.receiveBuffer)
-	}
 	reader := bufio.NewReaderSize(client, 64<<10)
 	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if err := readLeigodStreamHandshake(reader); err != nil {
@@ -814,6 +827,12 @@ func TestExternalUoTLaggingCarrierFailsOverWithoutLoss(t *testing.T) {
 	drained := after
 	drained.name = "drain_completes"
 	drained.duration = 8 * time.Second
+	// A loopback receiver on macOS advertises a 290-515 KiB window whatever its
+	// SO_RCVBUF, so the collapsed relay acknowledges and holds ~600 KiB the
+	// client cannot see: the lag shows ~4 s later than on Linux and the drain
+	// takes ~3.5 s. Leave time to count what that late handover still delivers;
+	// this scenario is about losing nothing, not about latency.
+	drained.drain = 6 * time.Second
 	drained.queue = externalUoTDefaultQueuePackets
 	drained.collapsed = 160_000 // 1.3 Mbit/s: its backlog drains well inside the bound
 	drained.lag.drain = 8 * time.Second
