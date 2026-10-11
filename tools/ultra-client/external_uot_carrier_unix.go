@@ -33,7 +33,8 @@ func tuneExternalUoTCarrier(connection net.Conn) (sendBuffer, notSentLowat int) 
 			// fills an autotuned buffer of several MiB, more than the resend
 			// window can replay after a handover (15% loss on a lagging carrier).
 			// A fixed buffer below that window keeps every byte the old carrier
-			// still holds recoverable.
+			// still holds recoverable; the writer itself keeps the unsent part
+			// under the cap (awaitCarrierRoom), so the lag detector sees it.
 			_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, externalUoTCarrierDarwinSendBuffer)
 		}
 		if unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_NOTSENT_LOWAT, externalUoTCarrierNotSentLowat) == nil {

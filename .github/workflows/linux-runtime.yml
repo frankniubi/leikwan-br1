@@ -158,6 +158,9 @@ jobs:
   frozen-agent:
     name: Frozen Linux agent (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    # Debian 12 (glibc 2.36) is the release baseline, so the frozen agents keep
+    # running on the older distributions customers use.
+    container: debian:12
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -168,13 +171,15 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     steps:
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 python3-venv python3-dev binutils file git ca-certificates >/dev/null
+
       - name: Check out source
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       # The release builds the no-GUI Linux agents with PyInstaller 6.x on the
       # target architecture; the script itself runs each binary's --version.
@@ -182,9 +187,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --quiet "pyinstaller==6.16.0"
-          PYINSTALLER_MODULE=1 PYTHON_BIN=python bash scripts/build-python-agent-binaries.sh "${{ matrix.arch }}"
+          python3 -m venv /opt/pyinstaller
+          /opt/pyinstaller/bin/pip install --quiet "pyinstaller==6.16.0"
+          PYINSTALLER=/opt/pyinstaller/bin/pyinstaller PYTHON_BIN=/opt/pyinstaller/bin/python bash scripts/build-python-agent-binaries.sh "${{ matrix.arch }}"
           ls -la artifacts/python-agent/
+          ldd --version | head -1
 
       - name: Upload frozen agents
         uses: actions/upload-artifact@v4

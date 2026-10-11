@@ -13,7 +13,7 @@ import (
 
 func TestHATCPOutcomeRetainsCandidateAndLocalAvoidance(t *testing.T) {
 	store, policy, leases := haStore(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	ident := relayIdentity{
 		forward: 42, generation: policy.PolicyGeneration, pathKey: haPathKey(leases[0]),
@@ -75,7 +75,7 @@ func TestHATCPOutcomePreservesRemoteErrorSourceWithoutScoring(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, policy, leases := haStore(t)
-			status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+			status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 			defer status.Close()
 			ident := relayIdentity{generation: policy.PolicyGeneration, pathKey: haPathKey(leases[0])}
 			ended := time.Now()

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -621,6 +622,12 @@ func (tracker *externalUoTLagTracker) observe(now time.Time, waited time.Duratio
 	return now.Sub(tracker.attachedAt) >= tracker.bounds.grace || overflows != tracker.overflowsAtAtt
 }
 
+func (tracker *externalUoTLagTracker) err(now time.Time) error {
+	return fmt.Errorf("%w: every datagram waited at least %s for %s (worst %s, carrier age %s)",
+		errExternalUoTCarrierLagging, tracker.bounds.target, now.Sub(tracker.aboveSince).Round(time.Millisecond),
+		tracker.worst.Round(time.Millisecond), now.Sub(tracker.attachedAt).Round(time.Second))
+}
+
 func newExternalUoTAssociation(parent context.Context, config Config, store *PolicyStore, status *StatusWriter, local *net.UDPConn, client *net.UDPAddr, socksUDP bool) (*externalUoTAssociation, error) {
 	normalized, err := config.ExternalUoT.normalized()
 	if err != nil {
@@ -1101,6 +1108,14 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 	}
 	// countFrom is when this carrier's own queueing delay starts to count.
 	countFrom := lag.attachedAt
+	var unsentRaw syscall.RawConn
+	if tcp := carrierTCPConn(connection); tcp != nil {
+		if raw, err := tcp.SyscallConn(); err == nil {
+			if _, supported := carrierUnsentBytes(raw); supported {
+				unsentRaw = raw
+			}
+		}
+	}
 	for {
 		var oldest time.Time
 		take := func(queued externalUoTQueued) {
@@ -1138,6 +1153,18 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 		if ctx.Err() != nil {
 			association.preserveRetry(batch)
 			return
+		}
+		if unsentRaw != nil {
+			if err := association.awaitCarrierRoom(ctx, unsentRaw, &lag, oldest, countFrom); err != nil {
+				association.preserveRetry(batch)
+				if ctx.Err() == nil {
+					select {
+					case errorsOut <- err:
+					default:
+					}
+				}
+				return
+			}
 		}
 		encoded = encoded[:0]
 		usage := 0
@@ -1193,13 +1220,55 @@ func (association *externalUoTAssociation) externalUoTWriter(ctx context.Context
 			}
 			if lag.observe(now, now.Sub(oldest), association.queueOverflows.Load(), len(association.outbound), cap(association.outbound)) {
 				select {
-				case errorsOut <- fmt.Errorf("%w: every datagram waited at least %s for %s (worst %s, carrier age %s)",
-					errExternalUoTCarrierLagging, lag.bounds.target, now.Sub(lag.aboveSince).Round(time.Millisecond),
-					lag.worst.Round(time.Millisecond), now.Sub(lag.attachedAt).Round(time.Second)):
+				case errorsOut <- lag.err(now):
 				default:
 				}
 				return
 			}
+		}
+	}
+}
+
+// externalUoTCarrierRoomPoll is how often a writer held back by the unsent cap
+// looks at the kernel again.
+const externalUoTCarrierRoomPoll = 2 * time.Millisecond
+
+// awaitCarrierRoom holds the next batch back while the kernel already keeps
+// more than externalUoTCarrierNotSentLowat unsent, so the backlog stays in the
+// association queue where the lag detector measures it and a handover moves
+// it. Only platforms that report the unsent bytes get here (macOS); the others
+// cap them in the kernel. The batch keeps ageing meanwhile, so the carrier can
+// be declared lagging without another write, and a send buffer that stops
+// draining ends as a write stall.
+func (association *externalUoTAssociation) awaitCarrierRoom(ctx context.Context, raw syscall.RawConn, lag *externalUoTLagTracker, oldest, countFrom time.Time) error {
+	if oldest.Before(countFrom) {
+		oldest = countFrom
+	}
+	stall := association.carrierStall()
+	lastProgress := time.Now()
+	last := -1
+	for {
+		unsent, ok := carrierUnsentBytes(raw)
+		if !ok || unsent <= externalUoTCarrierNotSentLowat {
+			return nil
+		}
+		now := time.Now()
+		if last < 0 || unsent < last {
+			lastProgress = now
+		}
+		last = unsent
+		if stall > 0 && now.Sub(lastProgress) >= stall {
+			return errRemoteWriteStall
+		}
+		if !oldest.IsZero() && lag.observe(now, now.Sub(oldest), association.queueOverflows.Load(), len(association.outbound), cap(association.outbound)) {
+			return lag.err(now)
+		}
+		timer := time.NewTimer(externalUoTCarrierRoomPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
 }
@@ -1227,6 +1296,12 @@ func (association *externalUoTAssociation) drainLaggingCarrier(connection net.Co
 	if err != nil {
 		return
 	}
+	started := time.Now()
+	reason := "canceled"
+	defer func() {
+		log.Printf("external UoT lagging carrier drain forward_id=%d reason=%s elapsed_ms=%d queued=%d",
+			association.config.ForwardID, reason, time.Since(started).Milliseconds(), len(association.outbound))
+	}()
 	timer := time.NewTimer(association.lag.drain)
 	defer timer.Stop()
 	headroom := time.NewTicker(20 * time.Millisecond)
@@ -1234,15 +1309,18 @@ func (association *externalUoTAssociation) drainLaggingCarrier(connection net.Co
 	for {
 		select {
 		case <-readerDone:
+			reason = "completed"
 			association.discardUnconfirmed()
 			return
 		case <-timer.C:
+			reason = "bound"
 			return
 		case <-association.ctx.Done():
 			return
 		case <-headroom.C:
 			if 2*len(association.outbound) >= cap(association.outbound) ||
 				(association.budget != nil && 2*association.budget.bytes() >= association.budget.limit) {
+				reason = "queue_half_full"
 				return
 			}
 		}

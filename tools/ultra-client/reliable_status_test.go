@@ -6,7 +6,7 @@ import (
 )
 
 func TestReliableStatusAggregatesAndRetainsFailures(t *testing.T) {
-	w := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 170, 0)
+	w := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 170, 0)
 	defer w.Close()
 	busy, probe := [16]byte{1}, [16]byte{2}
 	w.SetReliableStats(busy, reliableStats{Delivered: 2000, QueueTimeout: 1, WindowPackets: 2, Failed: "test"}, false)

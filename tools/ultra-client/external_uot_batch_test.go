@@ -236,22 +236,13 @@ func TestExternalUoTWriterKeepsUpAt10MbpsWithPerWriteCost(t *testing.T) {
 // 250 ms per packet, during which every other association's datagrams piled up
 // in the kernel and were dropped uncounted).
 func TestExternalUoTFullQueueNeverStallsTheReadLoop(t *testing.T) {
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
 	defer status.Close()
 	ctx := context.Background()
 	stuck := testUoTAssociation(ctx, 1, status)
 	healthy := testUoTAssociation(ctx, 64, status)
 	if !stuck.enqueue(datagram(0)) {
 		t.Fatal("initial admission")
-	}
-	// A StatusWriter writes (and fsyncs) its first snapshot synchronously on
-	// the updating goroutine; later updates inside the interval only arm a
-	// timer. Take that first write here, outside the timed loop: on a slow CI
-	// disk the fsync alone took longer than the bound below, which measured the
-	// disk rather than admission.
-	status.UpdateError("test_prime")
-	if status.writeCountValue() != 1 {
-		t.Fatal("the priming update did not take the status writer's first write")
 	}
 	started := time.Now()
 	for index := 1; index <= 50; index++ {

@@ -27,7 +27,7 @@ func observedInboundTestState(t *testing.T, quota int64) (*PolicyLimiter, *Statu
 	if err := limiter.Replace(0, quota, time.Now().Add(time.Minute), "copy-inbound-test"); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Hour)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Hour)
 	t.Cleanup(status.Close)
 	return limiter, status
 }

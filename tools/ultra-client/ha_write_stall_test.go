@@ -70,7 +70,7 @@ func stallIdentity(lease ProviderLease, bound time.Duration) relayIdentity {
 
 func stallStatus(t *testing.T) *StatusWriter {
 	t.Helper()
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	t.Cleanup(status.Close)
 	return status
 }

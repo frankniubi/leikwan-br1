@@ -31,7 +31,7 @@ func newReplayHarness(t *testing.T) *replayHarness {
 	t.Helper()
 	store, first, second := twoPathCandidateStore(t)
 	t.Cleanup(func() { store.Revoke("") })
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	t.Cleanup(status.Close)
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(0, 1<<20, time.Now().Add(time.Minute), "test"); err != nil {

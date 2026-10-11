@@ -62,6 +62,11 @@ open class RuntimeBinaryInstaller(private val context: Context) {
         location.extractionTarget?.let { target ->
             return installAssetBinary(assetPath, target)
         }
+        if (location.path == null) {
+            // No longer packaged (wstunnel since 0.2.41): drop a copy an older
+            // version extracted, so a binary the APK no longer ships is not left behind.
+            File(runtimeDir, extractedName).delete()
+        }
         return location.path
     }
 

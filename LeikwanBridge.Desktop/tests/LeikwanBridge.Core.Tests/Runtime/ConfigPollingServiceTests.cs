@@ -135,10 +135,16 @@ public sealed class ConfigPollingServiceTests
         var stateManager = new StateManager(tempDir.Path);
         var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new TestProcessSupervisor());
         var started = new ConcurrentDictionary<int, DateTimeOffset>();
+        var overlapped = new ConcurrentDictionary<int, bool>();
+        // Each activation waits until both have started. A serial sync could
+        // never get there; timing the start gap instead failed whenever a
+        // loaded runner's thread pool was slow to start the second one.
+        using var bothStarted = new CountdownEvent(2);
         runtimeManager.OnApply = forward =>
         {
             started[forward.ForwardId] = DateTimeOffset.UtcNow;
-            Thread.Sleep(250);
+            bothStarted.Signal();
+            overlapped[forward.ForwardId] = bothStarted.Wait(TimeSpan.FromSeconds(10));
             if (forward.ForwardId == 901)
                 throw new InvalidOperationException("isolated failure");
         };
@@ -153,7 +159,7 @@ public sealed class ConfigPollingServiceTests
         Assert.True(started.ContainsKey(901));
         Assert.True(started.ContainsKey(902));
         var startGap = (started[901] - started[902]).Duration();
-        Assert.True(startGap < TimeSpan.FromMilliseconds(100), $"forwards were activated serially: elapsed={stopwatch.Elapsed}, gap={startGap}");
+        Assert.True(overlapped[901] && overlapped[902], $"forwards were activated serially: elapsed={stopwatch.Elapsed}, gap={startGap}");
     }
 
     [Fact]

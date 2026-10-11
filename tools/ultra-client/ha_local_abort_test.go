@@ -40,7 +40,7 @@ func TestLocalAbortIsNotEvidenceAboutTheRelay(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {

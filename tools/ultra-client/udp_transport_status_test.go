@@ -20,7 +20,7 @@ func TestRuntimeUDPTransportStatusUsesEffectiveBootstrap(t *testing.T) {
 		{"tcp+udp", true, "external_uot"},
 	} {
 		t.Run(tc.transport+"/"+tc.want, func(t *testing.T) {
-			status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Hour)
+			status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Hour)
 			defer status.Close()
 			status.RecordTransportConfig(Config{Transport: tc.transport, ExternalUoT: ExternalUoTConfig{Enabled: tc.external}})
 			status.mu.Lock()

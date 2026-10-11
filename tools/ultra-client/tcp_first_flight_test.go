@@ -126,7 +126,7 @@ func TestFirstFlightSurvivesGrantRenewalAndGenerationRotation(t *testing.T) {
 func TestFirstFlightRelayPreservesServerFirstAndHalfClose(t *testing.T) {
 	client, local := tcpPair(t)
 	remote, provider := tcpPair(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {

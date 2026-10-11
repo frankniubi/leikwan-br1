@@ -446,34 +446,38 @@ func (writer *StatusWriter) UpdateError(code string) {
 	})
 }
 
+// update changes the in-memory status and arms a flush. It never touches the
+// disk itself: callers include the HA dial path between candidate attempts and
+// the policy watcher, and a status file write (with its fsync) on a slow disk
+// stalled them for up to a second. The first snapshot is still written at once,
+// on the timer goroutine.
 func (writer *StatusWriter) update(change func(*RuntimeStatus)) {
 	if writer == nil || writer.path == "" {
 		return
 	}
 	writer.mu.Lock()
+	defer writer.mu.Unlock()
 	if writer.closed {
-		writer.mu.Unlock()
 		return
 	}
 	change(&writer.status)
 	writer.status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	writer.dirty = true
-	remaining := writer.interval - time.Since(writer.lastWrite)
-	if writer.lastWrite.IsZero() || remaining <= 0 {
-		snapshot := writer.status
-		writer.dirty = false
-		writer.lastWrite = time.Now()
-		writer.mu.Unlock()
-		writer.writeSnapshot(snapshot)
+	if writer.timer != nil {
 		return
 	}
-	if writer.timer == nil {
-		writer.timer = time.AfterFunc(remaining, writer.flush)
+	delay := writer.interval - time.Since(writer.lastWrite)
+	if writer.lastWrite.IsZero() || delay < 0 {
+		delay = 0
 	}
-	writer.mu.Unlock()
+	writer.timer = time.AfterFunc(delay, writer.flush)
 }
 
+// flush takes the snapshot while holding writeMu, so two flushes can never land
+// out of order and leave an older snapshot on disk.
 func (writer *StatusWriter) flush() {
+	writer.writeMu.Lock()
+	defer writer.writeMu.Unlock()
 	writer.mu.Lock()
 	writer.timer = nil
 	if writer.closed || !writer.dirty {
@@ -484,9 +488,11 @@ func (writer *StatusWriter) flush() {
 	writer.dirty = false
 	writer.lastWrite = time.Now()
 	writer.mu.Unlock()
-	writer.writeSnapshot(snapshot)
+	writer.writeSnapshotLocked(snapshot)
 }
 
+// Close writes whatever is still pending and returns only once no write is in
+// flight, so a process shutdown cannot leave the previous snapshot on disk.
 func (writer *StatusWriter) Close() {
 	if writer == nil {
 		return
@@ -501,27 +507,31 @@ func (writer *StatusWriter) Close() {
 		writer.timer.Stop()
 		writer.timer = nil
 	}
+	writer.mu.Unlock()
+	writer.writeMu.Lock()
+	defer writer.writeMu.Unlock()
+	writer.mu.Lock()
 	dirty := writer.dirty
 	snapshot := writer.status
 	writer.dirty = false
 	writer.mu.Unlock()
 	if dirty {
-		writer.writeSnapshot(snapshot)
+		writer.writeSnapshotLocked(snapshot)
 	}
-	// A timer callback may have cleared dirty and started an atomic write just
-	// before Close acquired mu. Wait for that write before returning so a
-	// process shutdown cannot leave the caller observing the previous snapshot.
-	writer.writeMu.Lock()
-	writer.writeMu.Unlock()
 }
 
-func (writer *StatusWriter) writeSnapshot(status RuntimeStatus) {
+// testHookStatusWrite runs before each status file write (tests only).
+var testHookStatusWrite func()
+
+// writeSnapshotLocked requires writeMu.
+func (writer *StatusWriter) writeSnapshotLocked(status RuntimeStatus) {
+	if testHookStatusWrite != nil {
+		testHookStatusWrite()
+	}
 	encoded, err := json.Marshal(status)
 	if err != nil || len(encoded) > 64*1024 {
 		return
 	}
-	writer.writeMu.Lock()
-	defer writer.writeMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(writer.path), 0o700); err != nil {
 		return
 	}

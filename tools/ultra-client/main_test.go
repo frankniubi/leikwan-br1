@@ -720,7 +720,7 @@ func TestServeUDPPrewarmsAssociationBeforeFirstClientPacket(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -783,7 +783,7 @@ func TestServeUDPUntanglesLocalShadowsocksEnvelope(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -843,7 +843,7 @@ func TestServeUDPProtocolKeepaliveUsesReservedEnvelope(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -993,7 +993,7 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
