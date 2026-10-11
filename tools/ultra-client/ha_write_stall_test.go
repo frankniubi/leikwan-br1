@@ -217,20 +217,17 @@ func fillUntilBlocked(t *testing.T, client *net.TCPConn) {
 // The local client closing while the upstream copy is blocked in a write to a
 // relay that stopped reading used to leave the stream alive for 452-673 s,
 // until the unit stopped (reason=canceled). The blocked write now ends it
-// within a few stall bounds.
+// within one stall bound.
 //
-// "A few", not one: the Linux kernel accepts a little more data (8 KiB here)
-// on each of the first fresh write() calls into a send buffer the relay has
-// stopped draining, even though TCP_INFO shows nothing more acknowledged.
-// writeAllProgress counts those bytes as progress and re-arms a whole bound,
-// so a relay that stopped reading is declared stalled after up to three
-// bounds on Linux (measured: 3 x 1.5 s with no byte acknowledged after the
-// first 48 ms), against one on Windows.
+// The Linux and macOS kernels still accept a little data (8 KiB here) on each
+// of the first fresh write() calls into a send buffer the relay has stopped
+// draining. Counting those bytes as progress once stretched the bound to three
+// (3 x 1.5 s measured); progress is now what the relay acknowledged.
 const localCloseStallBound = 500 * time.Millisecond
 
-// localCloseStallAllowance is how long the bounded stream may live: the
-// 300 ms fill, three bounds, and scheduling slack.
-const localCloseStallAllowance = 4*localCloseStallBound + time.Second
+// localCloseStallAllowance is how long the bounded stream may live: the fill,
+// one bound, and scheduling slack.
+const localCloseStallAllowance = localCloseStallBound + time.Second
 
 func TestLocalCloseDuringBlockedRemoteWriteEndsPromptly(t *testing.T) {
 	t.Run("before", func(t *testing.T) {
@@ -403,7 +400,7 @@ func TestTCPWriteStallConfigIsBounded(t *testing.T) {
 		seconds int
 		want    time.Duration
 	}{
-		{0, 10 * time.Second}, {-1, -1}, {1, 3 * time.Second}, {20, 20 * time.Second}, {100000, 300 * time.Second},
+		{0, 5 * time.Second}, {-1, -1}, {1, 3 * time.Second}, {20, 20 * time.Second}, {100000, 300 * time.Second},
 	} {
 		if got := resolveTCPWriteStall(Config{TCPWriteStallSeconds: tc.seconds}); got != tc.want {
 			t.Fatalf("tcp_write_stall_seconds=%d resolved to %s, want %s", tc.seconds, got, tc.want)
