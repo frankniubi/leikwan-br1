@@ -1,50 +1,46 @@
 <h2>你将完成什么</h2>
-<p>你将从已生效的套餐或服务出发，创建一条转发，安装并登录客户端，再用真实应用协议完成首次连接验证。保存配置只是起点，最终目标是应用收到预期响应。</p>
+<p>你会从"套餐已生效"走到"线路可用"：在控制台建一条转发、装上客户端、连接，然后看到线路在运行。大约五分钟，而且你不需要选择任何连接类型 —— 所有线路都用 ultra，它做的就是在你打游戏时把线路保持稳定。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>确认套餐或服务状态为<strong>有效</strong>。</li>
-  <li>准备目标主机、目标端口，以及应用所需的 TCP、UDP 或两者。</li>
-  <li>准备一台支持的 Windows、Android 或 Linux 设备。</li>
-  <li>不要向任何人展示密码、令牌、复制的安装命令、密钥、会话或线路材料。</li>
+  <li>一个使用中的套餐，控制台才会允许你创建转发。</li>
+  <li>想加速的游戏或程序，以及它连接的地址（游戏里的服务器列表通常能看到）。</li>
+  <li>运行客户端的设备：Windows、macOS、Android 或 Linux 都可以，手机和电脑一样能用。</li>
+  <li>你的控制台账号，以及大约五分钟。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 五分钟首次连接路径
-accDescr: 从有效套餐开始，创建一条转发，安装并登录客户端，测试系统分配的本地端口，成功后结束，失败时进入问题排查。
-A[有效套餐] --&gt; B[创建一条转发]
-B --&gt; C[安装并登录客户端]
-C --&gt; D[测试分配的本地端口]
-D --&gt; E{连接成功吗}
-E -- 是 --&gt; F[首次设置完成]
-E -- 否 --&gt; G[开始排查问题]</pre>
-<p>最短且安全的路径只有一次判断：真实应用请求通过本地监听端口并获得正确结果，就算完成；否则先保留现有转发，再从可见症状着手排查。</p>
+accTitle: 从套餐到可用线路
+accDescr: 先创建一条转发，装上客户端并连接，再把游戏指向本机端口。
+A[打开控制台] --&gt; B[新建一条转发]
+B --&gt; C[安装客户端]
+C --&gt; D[登录并连接]
+D --&gt; E[把游戏指向本机端口]
+E --&gt; F[开始游戏]</pre>
+<p>五步，下面每步都只有几行说明。这里没有任何需要你判断的技术选项。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="租户概览页显示三步设置流程和 Create a forward 操作">
-  <figcaption>演示截图：套餐、数量和 ID 都是演示值，请以你自己的面板为准。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview-zh-hans.png" width="1440" height="960" alt="控制台总览页，显示使用中的套餐、转发规则数量和三步开始使用">
+  <figcaption>起点就在这里：登录后的「总览」页会告诉你下一步该做什么。</figcaption>
 </figure>
 <ol>
-  <li>在租户面板中打开已生效的服务。</li>
-  <li>选择 <strong>Create Forward</strong>。</li>
-  <li>选择系统提供的线路方案，并填写目标地址和端口。</li>
-  <li>保存转发，记下系统分配的本地端口。</li>
-  <li>安装客户端并登录。</li>
-  <li>等待客户端出现最近同步记录。</li>
-  <li>让应用连接本地监听地址和端口。</li>
-  <li>使用实际应用协议验证，例如发出 HTTP 请求、建立 SSH 连接或启动游戏连接。</li>
+  <li><strong>打开控制台，确认套餐在使用中。</strong>「总览」页的「最近的套餐」会显示状态；如果显示已到期或已暂停，就没法新建转发。</li>
+  <li><strong>新建一条转发。</strong>进入「我的服务」，在套餐卡片上点「新建转发」。选择离游戏服务器最近的线路，填入游戏连接的目标地址和目标端口，本地监听端口留空让系统分配，然后保存。把这个本地端口记下来 —— 第 5 步要用。</li>
+  <li><strong>安装客户端</strong>到你玩游戏的设备上：在「客户端」页面，Windows 点「下载安装包」，Android 点「下载 APK」，Linux 复制那一条安装命令运行。用控制台账号登录。</li>
+  <li><strong>连接。</strong>客户端里会列出你刚建的转发，点连接，等到显示 running。</li>
+  <li><strong>把游戏指向客户端。</strong>游戏里凡是要填服务器地址的地方，填 <code>127.0.0.1</code> 和第 2 步记下的本地端口，然后启动游戏。</li>
+  <li><strong>开始游戏，之后再回控制台看一眼。</strong>你玩的时候，那条转发的「本期用量」会增加。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>保存后已完成配置记录，预配完成后端点可用，最近同步表示配置已送达，<strong>Connected</strong> 或 <strong>Running</strong> 表示运行状态正常；这些检查点彼此独立。最终证据仍是应用请求成功，并在可查看时由目标日志确认请求到达。</p>
+<p>按顺序看三个地方：客户端里线路显示为 running；你游戏时控制台上那条转发的「本期用量」在增加；游戏本身稳定，不会在一局中途突然卡顿。如果游戏能进但用量一直是 0，几乎都是本地端口填错了 —— 回到第 5 步检查。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止随意更改线路或端口。</strong>保留第一条转发，记录错误内容和发生时间，再按排查指南逐项检查。不要把保存、预配、最近同步、运行连接和应用成功混为一谈。</p>
+<p><strong>先停止</strong>反复提交表单，先确认套餐状态 —— 控制台不让你保存转发，最常见的原因就是套餐到期。第二常见的是目标填错：要填游戏真正连接的地址，不是你下载游戏的网站地址。第三是本地端口：游戏必须使用系统分配的那个端口。其它情况（客户端连不上、线路老是掉、游戏进不去服务器）都写在下面的排查指南里。</p>
 
 <h2>相关指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a></li>
   <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
   <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
-  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a></li>
 </ul>

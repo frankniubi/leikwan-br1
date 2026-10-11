@@ -40,7 +40,10 @@ foreach ([
 ] as $needle) {
     requireUltraMultiSource(str_contains($mode . $material . $sourceController . $broker, $needle), 'multi-source behavior missing: ' . $needle);
 }
-requireUltraMultiSource(str_contains($inventory, "'is_enabled' => 1"), 'full inventory auto-enable missing');
+requireUltraMultiSource(
+    str_contains($inventory, "'is_enabled' => \$rawAccess === 'native_udp' && \$rawNativeState === 'verified' ? 1 : 0"),
+    'native UDP verification gate missing'
+);
 requireUltraMultiSource(str_contains($provisioning, 'us.priority'), 'source priority is not used by provisioning');
 requireUltraMultiSource(str_contains($provisioning, 'last_material_expires_at'), 'stale material is not filtered from provisioning');
 requireUltraMultiSource(str_contains($admin, 'display_label'), 'source point label is not rendered in Panel');

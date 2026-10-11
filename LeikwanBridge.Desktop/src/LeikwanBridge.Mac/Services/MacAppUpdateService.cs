@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -21,6 +22,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     private readonly IMacUpdateLauncher _launcher;
     private readonly Func<string, bool> _directoryWritable;
     private readonly MacBundleValidator _validator;
+    private readonly bool _waitForCallerExit;
     private readonly Dictionary<LeikwanHttpClientKind, HttpClient> _clients = [];
     private Uri? _panelOrigin;
 
@@ -33,7 +35,8 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         Action<HttpRequestMessage>? onRequestForTest = null,
         IMacUpdateLauncher? launcher = null,
         Func<string, bool>? directoryWritable = null,
-        MacBundleValidator? validator = null)
+        MacBundleValidator? validator = null,
+        bool waitForCallerExit = true)
     {
         _updatesRoot = Path.GetFullPath(updatesRoot);
         _currentBundlePath = Path.GetFullPath(currentBundlePath);
@@ -44,17 +47,38 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         _launcher = launcher ?? new MacUpdateLauncher();
         _directoryWritable = directoryWritable ?? IsDirectoryWritable;
         _validator = validator ?? new MacBundleValidator();
+        // A windowed/GUI caller is replaced by the update and lets the helper wait for
+        // it to exit. A command-line caller stays alive to verify the result, so the
+        // helper must not wait for it (that would deadlock).
+        _waitForCallerExit = waitForCallerExit;
     }
+
+    /// <summary>Bundle this service treats as the installed application.</summary>
+    public string CurrentBundlePath => _currentBundlePath;
+
+    /// <summary>Directory the apply requests, helper log and last result live in.</summary>
+    public string UpdatesRoot => _updatesRoot;
+
+    /// <summary>Installed bundle version, or null when the bundle/plist is unreadable.</summary>
+    public string? ReadInstalledVersion() => MacBundleValidator.ReadBundleVersion(_currentBundlePath);
+
+    public Task<ClientAppArtifact?> CheckAsync(
+        string panelUrl,
+        string currentVersion,
+        CancellationToken ct = default)
+        => CheckAsync(panelUrl, currentVersion, progress: null, ct);
 
     public async Task<ClientAppArtifact?> CheckAsync(
         string panelUrl,
         string currentVersion,
+        IProgress<UpdateProgress>? progress,
         CancellationToken ct = default)
     {
         if (!Uri.TryCreate(panelUrl.TrimEnd('/'), UriKind.Absolute, out var panel)
             || panel.Scheme is not ("https" or "http"))
             throw new InvalidDataException("update_panel_url_invalid");
         _panelOrigin = panel;
+        Report(progress, UpdateProgress.Checking("Checking for updates..."));
         var manifestUri = new Uri(panel.ToString().TrimEnd('/') + "/artifacts/client-manifest.json");
         using var request = new HttpRequestMessage(HttpMethod.Get, manifestUri);
         using var response = await SendAsync(request, ct);
@@ -82,15 +106,78 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             throw new InvalidDataException("update_manifest_architecture_missing");
         update = ValidateArtifact(update, "zip", panel);
         installer = ValidateArtifact(installer, "dmg", panel);
+        foreach (var (key, component) in manifest.Manifest)
+        {
+            if (key.Contains("runtime", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(component.Sha256))
+                update.RuntimeSha256[key] = component.Sha256;
+        }
         if (!VersionsEquivalent(update.Version, installer.Version))
             throw new InvalidDataException("update_manifest_version_mismatch");
-        if (!IsRemoteVersionNewer(update.Version, currentVersion))
+        if (!IsRemoteVersionNewer(update.Version, currentVersion)
+            && !HasRuntimeDrift(update, _currentBundlePath, _architecture))
+        {
+            Report(progress, UpdateProgress.Checking("Update check finished."));
             return null;
+        }
+        Report(progress, UpdateProgress.Checking("Update check finished."));
         return update with { ManualInstaller = installer };
     }
 
+    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath, string architecture)
+    {
+        if (artifact.RuntimeSha256.Count == 0)
+            return false;
+        foreach (var (key, expected) in artifact.RuntimeSha256)
+        {
+            if (!TryResolveRuntimePath(key, bundlePath, architecture, out var path))
+                continue;
+            if (!Regex.IsMatch(expected ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
+                || !File.Exists(path)
+                || !string.Equals(MacBundleValidator.ComputeSha256(path), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool TryResolveRuntimePath(
+        string key,
+        string bundlePath,
+        string architecture,
+        out string path)
+    {
+        path = string.Empty;
+        var normalized = key.Trim();
+        var activeUltraKey = architecture == "arm64"
+            ? "ultra_client_runtime_macos_arm64"
+            : "ultra_client_runtime_macos_x64";
+        if (string.Equals(normalized, activeUltraKey, StringComparison.OrdinalIgnoreCase))
+        {
+            path = Path.Combine(bundlePath, "Contents", "Resources", "bin", "ultra-client");
+            return true;
+        }
+
+        // Mac package metadata records helper paths (for example
+        // `bin/wstunnel`) so every native helper is covered by the same
+        // runtime-drift check. Reject traversal before combining the path.
+        if (!normalized.StartsWith("bin/", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var relative = normalized.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(relative)
+            || relative.Split(Path.DirectorySeparatorChar).Any(segment => segment is "" or "." or ".."))
+            return false;
+        path = Path.Combine(bundlePath, "Contents", "Resources", relative);
+        return true;
+    }
+
+    public Task<PreparedAppUpdate> PrepareAsync(
+        ClientAppArtifact artifact,
+        CancellationToken ct = default)
+        => PrepareAsync(artifact, progress: null, ct);
+
     public async Task<PreparedAppUpdate> PrepareAsync(
         ClientAppArtifact artifact,
+        IProgress<UpdateProgress>? progress,
         CancellationToken ct = default)
     {
         artifact = ValidateArtifact(artifact, "zip", _panelOrigin);
@@ -100,10 +187,12 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         var stageRoot = Path.Combine(_updatesRoot, "stage-" + token);
         try
         {
-            await DownloadVerifiedAsync(artifact, packagePath, ct);
+            await DownloadVerifiedAsync(artifact, packagePath, progress, ct);
+            Report(progress, UpdateProgress.Staging(0, "Preparing update..."));
             var bundlePath = ExtractValidatedArchive(packagePath, stageRoot);
             _validator.Validate(bundlePath, artifact);
             var executable = MacBundleValidator.GetMainExecutablePath(bundlePath);
+            Report(progress, UpdateProgress.Staging(100, "Update staged."));
             return new PreparedAppUpdate(
                 artifact,
                 packagePath,
@@ -118,11 +207,19 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         }
     }
 
-    public async Task<AppUpdateLaunchResult> ApplyAsync(
+    public Task<AppUpdateLaunchResult> ApplyAsync(
         PreparedAppUpdate update,
         bool deferUntilRestart,
         CancellationToken ct = default)
+        => ApplyAsync(update, deferUntilRestart, progress: null, ct);
+
+    public async Task<AppUpdateLaunchResult> ApplyAsync(
+        PreparedAppUpdate update,
+        bool deferUntilRestart,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default)
     {
+        Report(progress, UpdateProgress.Applying(10, "Verifying staged update..."));
         _validator.Validate(update.StagedBundlePath, update.Artifact);
         var executable = MacBundleValidator.GetMainExecutablePath(update.StagedBundlePath);
         if (!string.Equals(
@@ -134,39 +231,63 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         var bundleParent = Path.GetDirectoryName(_currentBundlePath)
             ?? throw new InvalidDataException("update_bundle_parent_invalid");
         if (!_directoryWritable(bundleParent))
-            return await OpenManualInstallerAsync(update.Artifact, ct);
+        {
+            Report(progress, UpdateProgress.Applying(50, "Preparing installer..."));
+            return await OpenManualInstallerAsync(update.Artifact, progress, ct);
+        }
 
+        Report(progress, UpdateProgress.Applying(60, "Staging updated app..."));
         var baseName = Path.GetFileNameWithoutExtension(_currentBundlePath);
         var siblingStage = Path.Combine(bundleParent, $".{baseName}.update-{Guid.NewGuid():N}.app");
         var backup = Path.Combine(bundleParent, $".{baseName}.backup-{Guid.NewGuid():N}.app");
         MoveOrCopyDirectory(update.StagedBundlePath, siblingStage);
         _validator.Validate(siblingStage, update.Artifact);
         var stagedExecutable = MacBundleValidator.GetMainExecutablePath(siblingStage);
+        EnsurePrivateDirectory(_updatesRoot);
+        // The helper must not run from the bundle the swap renames. It resolves its
+        // managed payload relative to its own bundle, so renaming that bundle out from
+        // under it makes the post-swap verification throw; the catch-all in
+        // ApplyFromRequestAsync then rolled the update back while the CLI still
+        // reported "applied" (field-observed 2026-09-14: "applied 1.0.37", exit 0,
+        // bundle still 1.0.36, reproduced 3x). Launch a stable copy instead.
+        PruneStaleApplierBundles();
+        var applierBundle = Path.Combine(_updatesRoot, $"applier-{Guid.NewGuid():N}.app");
+        CloneOrCopyDirectory(siblingStage, applierBundle);
+        var applierExecutable = MacBundleValidator.GetMainExecutablePath(applierBundle);
         var request = new MacUpdateApplyRequest
         {
-            CurrentProcessId = Environment.ProcessId,
+            CurrentProcessId = _waitForCallerExit ? Environment.ProcessId : 0,
             CurrentBundlePath = _currentBundlePath,
             StagedBundlePath = siblingStage,
             BackupBundlePath = backup,
+            ApplierBundlePath = applierBundle,
             Version = update.Artifact.Version,
             PackageSizeBytes = update.Artifact.SizeBytes,
             PackageSha256 = update.Artifact.Sha256,
             MainExecutableSha256 = MacBundleValidator.ComputeSha256(stagedExecutable),
         };
-        EnsurePrivateDirectory(_updatesRoot);
         var requestPath = Path.Combine(
             _updatesRoot,
             deferUntilRestart ? "pending-update.json" : $"apply-{Guid.NewGuid():N}.json");
         MacAppUpdateApplier.WriteRequest(requestPath, request);
         if (deferUntilRestart)
+        {
+            Report(progress, UpdateProgress.Applying(100, "Update will install on next start."));
             return new AppUpdateLaunchResult(false, false, true, "update_deferred", requestPath);
+        }
 
-        if (!_launcher.StartProcess(stagedExecutable, ["--apply-update", requestPath]))
+        Report(progress, UpdateProgress.Applying(90, "Starting update helper..."));
+        // Discard any previous outcome so a caller waiting for this apply cannot read
+        // a stale "ok" from an earlier run.
+        TryDeleteFile(Path.Combine(_updatesRoot, MacAppUpdateApplier.LastApplyResultFileName));
+        if (!_launcher.StartProcess(applierExecutable, ["--apply-update", requestPath]))
         {
             TryDeleteFile(requestPath);
             TryDeleteDirectory(siblingStage);
+            TryDeleteDirectory(applierBundle);
             throw new IOException("update_helper_launch_failed");
         }
+        Report(progress, UpdateProgress.Applying(100, "Update started."));
         return new AppUpdateLaunchResult(true, false, false, "update_helper_started", requestPath);
     }
 
@@ -185,7 +306,14 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
                 CurrentProcessId = currentProcessId,
             };
             MacAppUpdateApplier.WriteRequest(requestPath, request);
-            var executable = MacBundleValidator.GetMainExecutablePath(request.StagedBundlePath);
+            // Same rule as the immediate path: never launch the helper from the bundle
+            // the swap renames. Older requests carry no applier path, so they keep the
+            // previous behaviour rather than failing to install at all.
+            var helperBundle = !string.IsNullOrWhiteSpace(request.ApplierBundlePath)
+                && Directory.Exists(request.ApplierBundlePath)
+                    ? request.ApplierBundlePath
+                    : request.StagedBundlePath;
+            var executable = MacBundleValidator.GetMainExecutablePath(helperBundle);
             return (launcher ?? new MacUpdateLauncher()).StartProcess(
                 executable,
                 ["--apply-update", requestPath]);
@@ -194,6 +322,80 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Removes helper copies from earlier attempts. A copy created moments ago may
+    /// still be the running helper, so only stale ones are pruned.
+    /// </summary>
+    private void PruneStaleApplierBundles()
+    {
+        try
+        {
+            var pendingHelper = ReadPendingHelperBundle();
+            foreach (var directory in Directory.EnumerateDirectories(_updatesRoot, "applier-*.app"))
+            {
+                if (string.Equals(directory, pendingHelper, StringComparison.Ordinal))
+                    continue;
+                if (DateTime.UtcNow - Directory.GetCreationTimeUtc(directory) < TimeSpan.FromHours(1))
+                    continue;
+                TryDeleteDirectory(directory);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>Helper bundle a deferred (next-start) update is still waiting to use.</summary>
+    private string? ReadPendingHelperBundle()
+    {
+        try
+        {
+            var requestPath = Path.Combine(_updatesRoot, "pending-update.json");
+            if (!File.Exists(requestPath))
+                return null;
+            var pending = MacAppUpdateApplier.ReadRequest(requestPath).ApplierBundlePath;
+            return string.IsNullOrWhiteSpace(pending) ? null : Path.GetFullPath(pending);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Copies a bundle cheaply when the filesystem supports cloning (APFS
+    /// <c>clonefile</c> costs no extra blocks) and falls back to a real copy.
+    /// </summary>
+    private static void CloneOrCopyDirectory(string source, string destination)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo("/bin/cp")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                startInfo.ArgumentList.Add("-cR");
+                startInfo.ArgumentList.Add(source);
+                startInfo.ArgumentList.Add(destination);
+                using var process = Process.Start(startInfo);
+                if (process is not null)
+                {
+                    process.WaitForExit();
+                    if (process.ExitCode == 0 && Directory.Exists(destination))
+                        return;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+            }
+            TryDeleteDirectory(destination);
+        }
+        CopyDirectory(source, destination);
     }
 
     public static bool IsRemoteVersionNewer(string remoteVersion, string currentVersion)
@@ -212,8 +414,14 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         _clients.Clear();
     }
 
+    private Task<AppUpdateLaunchResult> OpenManualInstallerAsync(
+        ClientAppArtifact updateArtifact,
+        CancellationToken ct)
+        => OpenManualInstallerAsync(updateArtifact, progress: null, ct);
+
     private async Task<AppUpdateLaunchResult> OpenManualInstallerAsync(
         ClientAppArtifact updateArtifact,
+        IProgress<UpdateProgress>? progress,
         CancellationToken ct)
     {
         var installer = updateArtifact.ManualInstaller
@@ -221,9 +429,10 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         installer = ValidateArtifact(installer, "dmg", _panelOrigin);
         EnsurePrivateDirectory(_updatesRoot);
         var path = Path.Combine(_updatesRoot, $"LeiKwan-Bridge-{installer.Version}-{_architecture}.dmg");
-        await DownloadVerifiedAsync(installer, path, ct);
+        await DownloadVerifiedAsync(installer, path, progress, ct);
         if (!_launcher.OpenFile(path))
             throw new IOException("update_manual_installer_open_failed");
+        Report(progress, UpdateProgress.Applying(100, "Installer opened."));
         return new AppUpdateLaunchResult(false, true, false, "update_manual_install_required", path);
     }
 
@@ -233,9 +442,12 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             || artifact.SizeBytes is <= 0 or > MaximumPackageBytes
             || !Regex.IsMatch(artifact.Sha256 ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
             || !string.Equals(artifact.Format, format, StringComparison.OrdinalIgnoreCase)
+            // NormalizeArchitecture() maps x64 -> "x86_64" while _architecture keeps
+            // the process name ("x64"), so comparing a normalized manifest value with a
+            // raw runtime value made every Intel/Rosetta Mac fail this check outright.
             || !string.Equals(
                 MacBundleValidator.NormalizeArchitecture(artifact.Architecture),
-                _architecture,
+                MacBundleValidator.NormalizeArchitecture(_architecture),
                 StringComparison.Ordinal))
             throw new InvalidDataException("update_artifact_invalid");
         var url = ResolveAndValidateUrl(artifact.ArtifactUrl, panelOrigin);
@@ -256,65 +468,73 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             resolved = relative;
         if (resolved is null || resolved.Scheme is not ("https" or "http"))
             throw new InvalidDataException("update_artifact_url_invalid");
+
+        // Mirrors advertise absolute artifact URLs on a fixed origin (the
+        // panel hardcodes v3.leikwanhost.com today). When the user picked a
+        // different known endpoint, redirect the download onto that endpoint
+        // so manifest, package and installer traffic all honor the choice.
+        if (panelOrigin is not null
+            && PanelEndpoints.IsKnownEndpointOrigin(panelOrigin)
+            && PanelEndpoints.IsKnownEndpointOrigin(resolved)
+            && !SameOrigin(resolved, panelOrigin))
+        {
+            resolved = new UriBuilder(resolved)
+            {
+                Scheme = panelOrigin.Scheme,
+                Host = panelOrigin.Host,
+                Port = panelOrigin.Port,
+            }.Uri;
+        }
+
         if (resolved.Scheme == "http" && (panelOrigin is null || !SameOrigin(resolved, panelOrigin)))
             throw new InvalidDataException("update_artifact_url_invalid");
         return resolved;
     }
 
-    private async Task DownloadVerifiedAsync(
+    private Task DownloadVerifiedAsync(
         ClientAppArtifact artifact,
         string destination,
         CancellationToken ct)
+        => DownloadVerifiedAsync(artifact, destination, progress: null, ct);
+
+    private async Task DownloadVerifiedAsync(
+        ClientAppArtifact artifact,
+        string destination,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct)
     {
+        Report(progress, UpdateProgress.Downloading(0, "Downloading update..."));
         var uri = ResolveAndValidateUrl(artifact.ArtifactUrl, _panelOrigin);
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        using var response = await SendAsync(request, ct, HttpCompletionOption.ResponseHeadersRead);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength is long contentLength
-            && contentLength != artifact.SizeBytes)
-            throw new InvalidDataException("update_size_mismatch");
         var directory = Path.GetDirectoryName(destination)
             ?? throw new InvalidDataException("update_destination_invalid");
         EnsurePrivateDirectory(directory);
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var output = new FileStream(
+            // Resumable: the shared panel client caps every request at 30 s
+            // including the response body, and these packages are ~70 MB, so a
+            // single request only ever completes on a multi-MB/s link.
+            var total = await ResumableArtifactDownloader.DownloadAsync(
+                (request, token) => SendAsync(request, token, HttpCompletionOption.ResponseHeadersRead),
+                uri.ToString(),
                 temporary,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                128 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var buffer = new byte[128 * 1024];
-            long total = 0;
-            try
-            {
-                while (true)
-                {
-                    var read = await source.ReadAsync(buffer, ct);
-                    if (read == 0)
-                        break;
-                    total += read;
-                    if (total > artifact.SizeBytes)
-                        throw new InvalidDataException("update_size_mismatch");
-                    await output.WriteAsync(buffer.AsMemory(0, read), ct);
-                }
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(buffer);
-            }
-            await output.FlushAsync(ct);
-            output.Close();
-            if (total != artifact.SizeBytes)
+                progress: (received, _) => Report(progress, UpdateProgress.Downloading(
+                    artifact.SizeBytes > 0
+                        ? Math.Min(99.5, received * 100.0 / artifact.SizeBytes)
+                        : 0,
+                    $"Downloading update... ({received} bytes)")),
+                expectedLength: artifact.SizeBytes,
+                ct: ct);
+            if (artifact.SizeBytes > 0 && total != artifact.SizeBytes)
                 throw new InvalidDataException("update_size_mismatch");
+            Report(progress, UpdateProgress.Downloading(100, "Download finished."));
+            Report(progress, UpdateProgress.Verifying(0, "Verifying download..."));
             if (!string.Equals(
                     MacBundleValidator.ComputeSha256(temporary),
                     artifact.Sha256,
                     StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("update_hash_mismatch");
+            Report(progress, UpdateProgress.Verifying(100, "Download verified."));
             SetPrivateFile(temporary);
             File.Move(temporary, destination, overwrite: true);
             SetPrivateFile(destination);
@@ -475,6 +695,18 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         finally
         {
             CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    private static void Report(IProgress<UpdateProgress>? progress, UpdateProgress update)
+    {
+        try
+        {
+            progress?.Report(update);
+        }
+        catch (Exception)
+        {
+            // A broken UI progress sink must never fail the update pipeline.
         }
     }
 

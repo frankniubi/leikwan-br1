@@ -10,17 +10,23 @@ public sealed partial class ClientDiagnosticsService
     private readonly IProcessSupervisor _supervisor;
     private readonly AgentConfig _config;
     private readonly Func<int, bool> _portListeningProbe;
+    private readonly DebugLogUploader _debugLogUploader;
     private readonly object _lock = new();
     private string _lastRequestToken = string.Empty;
 
     public ClientDiagnosticsService(
         IProcessSupervisor supervisor,
         AgentConfig config,
-        Func<int, bool>? portListeningProbe = null)
+        Func<int, bool>? portListeningProbe = null,
+        string? logDirectory = null)
     {
         _supervisor = supervisor;
         _config = config;
         _portListeningProbe = portListeningProbe ?? NetworkProbe.IsPortListening;
+        var resolvedLogDirectory = string.IsNullOrWhiteSpace(logDirectory)
+            ? Path.Combine(Directory.GetParent(config.GetEffectiveStateDir())?.FullName ?? config.GetEffectiveStateDir(), "logs")
+            : logDirectory;
+        _debugLogUploader = new DebugLogUploader(resolvedLogDirectory, config.GetEffectiveStateDir());
     }
 
     public List<object> BuildResults(IReadOnlyList<ForwardConfig> forwards)
@@ -70,6 +76,7 @@ public sealed partial class ClientDiagnosticsService
         try
         {
             await api.SubmitDiagnosticsAsync(token, BuildResults(forwards), string.Empty, ct);
+            _debugLogUploader.Queue(client, api, ct);
         }
         catch
         {
@@ -81,6 +88,10 @@ public sealed partial class ClientDiagnosticsService
             throw;
         }
     }
+
+    /// <summary>Queues the raw-log collection independently of summary diagnostics.</summary>
+    public void QueueDebugLogUpload(ClientMeta client, MasterApiClient api, CancellationToken ct = default)
+        => _debugLogUploader.Queue(client, api, ct);
 
     private static string BoundErrorCode(string value)
     {

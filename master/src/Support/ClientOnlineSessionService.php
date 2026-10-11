@@ -9,9 +9,17 @@ use Leikwan\Master\Http\Request;
 final class ClientOnlineSessionService
 {
     public const ACTIVE_WINDOW_SECONDS = 180;
+    public const LIMIT_REACHED_ERROR = 'client_online_limit_reached';
+    // Fallback ids derived from user-agent|ip when a client sends no device id.
+    // They change whenever the IP changes, so one machine can appear as several
+    // devices; they are neither counted toward nor refused by the online limit.
+    private const LEGACY_DEVICE_PREFIX = 'legacy-';
 
-    public function __construct(private Database $db)
+    private TrustedClientIpResolver $clientIpResolver;
+
+    public function __construct(private Database $db, ?TrustedClientIpResolver $clientIpResolver = null)
     {
+        $this->clientIpResolver = $clientIpResolver ?? new TrustedClientIpResolver();
     }
 
     /**
@@ -48,6 +56,7 @@ final class ClientOnlineSessionService
                 'device_id' => $deviceId,
             ]
         );
+        $this->enforceOnlineLimit($client, $clientId, $deviceId, $existing);
 
         if ($existing === null) {
             $this->db->insert('client_device_sessions', [
@@ -101,6 +110,68 @@ final class ClientOnlineSessionService
         return $deviceId;
     }
 
+    /**
+     * Refuse a device that is not already online when the client's online
+     * device limit is full. Devices that are already online are never kicked,
+     * even if the limit was lowered after they connected.
+     *
+     * @param array<string, mixed> $client
+     */
+    public function assertCanComeOnline(array $client, string $deviceId): void
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return;
+        }
+        $existing = $this->db->fetchOne(
+            'SELECT * FROM client_device_sessions WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+            [
+                'client_id' => $clientId,
+                'device_id' => $deviceId,
+            ]
+        );
+        $this->enforceOnlineLimit($client, $clientId, $deviceId, $existing);
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @param array<string, mixed>|null $existing
+     */
+    private function enforceOnlineLimit(array $client, int $clientId, string $deviceId, ?array $existing): void
+    {
+        if (str_starts_with($deviceId, self::LEGACY_DEVICE_PREFIX)) {
+            return;
+        }
+        $cutoff = gmdate('Y-m-d H:i:s', time() - self::ACTIVE_WINDOW_SECONDS);
+        if ($existing !== null && (string) ($existing['last_seen_at'] ?? '') >= $cutoff) {
+            return;
+        }
+
+        $limit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(*) AS total
+             FROM client_device_sessions
+             WHERE client_id = :client_id
+               AND last_seen_at >= :cutoff
+               AND device_id <> :device_id
+               AND device_id NOT LIKE :legacy_prefix',
+            [
+                'client_id' => $clientId,
+                'cutoff' => $cutoff,
+                'device_id' => $deviceId,
+                'legacy_prefix' => self::LEGACY_DEVICE_PREFIX . '%',
+            ]
+        );
+        $activeCount = max(0, (int) ($row['total'] ?? 0));
+        if ($activeCount >= $limit) {
+            throw new ApiException(self::LIMIT_REACHED_ERROR, 429, [
+                'online_device_limit' => $limit,
+                'active_online_devices' => $activeCount,
+            ]);
+        }
+    }
+
     public function activeCountForClient(int $clientId): int
     {
         $row = $this->db->fetchOne(
@@ -127,6 +198,50 @@ final class ClientOnlineSessionService
             'DELETE FROM client_device_sessions WHERE client_id = :client_id',
             ['client_id' => $clientId]
         );
+    }
+
+    public function revokeAllForUser(int $userId): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+        $clients = $this->db->fetchAll(
+            'SELECT id FROM clients WHERE owner_user_id = :owner_user_id',
+            ['owner_user_id' => $userId]
+        );
+        $now = gmdate('Y-m-d H:i:s');
+        $revoked = 0;
+        foreach ($clients as $client) {
+            $clientId = (int) ($client['id'] ?? 0);
+            if ($clientId <= 0) {
+                continue;
+            }
+            $revoked += $this->db->execute(
+                'UPDATE forward_combination_self_leg_donors
+                 SET state = :state, revoked_at = :revoked_at, revoke_reason = :revoke_reason, updated_at = :updated_at
+                 WHERE client_id = :client_id AND state IN (:active_state, :qualifying_state)',
+                [
+                    'client_id' => $clientId,
+                    'state' => 'revoked',
+                    'active_state' => 'active',
+                    'qualifying_state' => 'qualifying',
+                    'revoked_at' => $now,
+                    'revoke_reason' => 'account_device_reset',
+                    'updated_at' => $now,
+                ]
+            );
+            $revoked += $this->db->execute(
+                'UPDATE android_device_sessions SET revoked_at = :revoked_at
+                 WHERE client_id = :client_id AND revoked_at IS NULL',
+                ['client_id' => $clientId, 'revoked_at' => $now]
+            );
+            $revoked += $this->revokeAllForClient($clientId);
+        }
+        $revoked += $this->db->execute(
+            'DELETE FROM desktop_client_sessions WHERE user_id = :user_id',
+            ['user_id' => $userId]
+        );
+        return $revoked;
     }
 
     public function revokeDevice(int $clientId, string $deviceId): int
@@ -184,14 +299,33 @@ final class ClientOnlineSessionService
 
     public function deviceIdFromRequest(Request $request): string
     {
-        $header = trim((string) ($request->header('x-device-id') ?? ''));
-        if ($header !== '') {
-            return $header;
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-id', ''),
+            $request->header('x-device-uuid', ''),
+            $request->input('device_id', ''),
+            $request->input('device_uuid', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            // Security: `legacy-` is the server's reserved namespace for
+            // synthesized device ids, which are exempt from the online-device
+            // limit. A client must not be able to self-assign into it (e.g.
+            // `X-Device-Id: legacy-<random>`) to mint unlimited exempt devices.
+            // Ignore such values and fall through to the server-derived id,
+            // which is bounded to the caller's UA+IP.
+            if (str_starts_with(strtolower($candidate), self::LEGACY_DEVICE_PREFIX)) {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException('device_id_invalid', 422);
+            }
+            $deviceId = $candidate;
         }
-
-        $body = trim((string) $request->input('device_id', ''));
-        if ($body !== '') {
-            return $body;
+        if ($deviceId !== '') {
+            return $deviceId;
         }
 
         $userAgent = trim((string) ($request->header('user-agent') ?? 'unknown'));
@@ -207,7 +341,7 @@ final class ClientOnlineSessionService
         $userAgent = trim((string) ($request->header('user-agent') ?? ''));
         $platform = trim((string) ($request->header('x-device-platform') ?? (string) $request->input('platform', '')));
         $deviceName = trim((string) ($request->header('x-device-name') ?? (string) $request->input('device_name', '')));
-        $osRelease = trim((string) $request->input('kernel_release', ''));
+        $osRelease = trim((string) $request->input('os_release', $request->input('kernel_release', '')));
 
         if ($deviceName === '' && $userAgent !== '') {
             $deviceName = $userAgent;
@@ -237,16 +371,7 @@ final class ClientOnlineSessionService
 
     private function requestIp(Request $request): ?string
     {
-        $forwarded = trim((string) ($request->header('x-forwarded-for') ?? ''));
-        if ($forwarded !== '') {
-            $parts = array_map('trim', explode(',', $forwarded));
-            if ($parts !== [] && $parts[0] !== '') {
-                return $parts[0];
-            }
-        }
-
-        $realIp = trim((string) ($request->header('x-real-ip') ?? ''));
-        return $realIp !== '' ? $realIp : null;
+        return $this->clientIpResolver->resolve($request);
     }
 
     private function trimOrNull(mixed $value): ?string

@@ -39,12 +39,14 @@ $config = new Config($envPath);
 $generation = str_repeat('a', 64);
 $now = 1_900_000_000;
 $candidateCalls = 0;
+$candidateOffsetSeen = null;
 $service = new UltraLeaseService(
     $config,
     null,
     null,
-    static function (array $request, int $clientId, string $deviceId) use (&$candidateCalls): array {
+    static function (array $request, int $clientId, string $deviceId) use (&$candidateCalls, &$candidateOffsetSeen): array {
         $candidateCalls++;
+        $candidateOffsetSeen = $request['candidate_offset'] ?? null;
         return [
             'selection_ref' => str_repeat('r', 43),
             'ip' => '203.0.113.20',
@@ -82,6 +84,10 @@ assertUltraPolicyLease(($lease['ok'] ?? false) === true, 'valid lease must issue
 assertUltraPolicyLease(($lease['lease']['endpoint']['ip'] ?? '') === '203.0.113.20', 'lease endpoint missing');
 assertUltraPolicyLease(($lease['lease']['credential']['user'] ?? '') === 'line-user', 'lease user missing');
 assertUltraPolicyLease(($lease['lease']['credential']['password'] ?? '') === 'line-password', 'lease password missing');
+assertUltraPolicyLease(
+    ($lease['lease']['direct_ip_cidrs'] ?? []) === ['203.0.113.20/32'],
+    'lease did not protect the provider endpoint as a direct CIDR'
+);
 assertUltraPolicyLease(!array_key_exists('line_id', $lease['lease']), 'lease exposed line id');
 assertUltraPolicyLease(!array_key_exists('line_ips', $lease['lease']), 'lease exposed line ips');
 assertUltraPolicyLease(!array_key_exists('endpoints', $lease['lease']), 'lease exposed endpoint inventory');
@@ -97,8 +103,34 @@ assertUltraPolicyLease(
 );
 assertUltraPolicyLease($candidateCalls === 1, 'candidate resolver call count mismatch');
 
+$offsetLease = $service->issueLease(
+    array_merge($request, [
+        'nonce' => 'abcdef0123456789abcdef01234535',
+        'candidate_offset' => 2,
+    ]),
+    7,
+    'device-a'
+);
+assertUltraPolicyLease(($offsetLease['ok'] ?? false) === true, 'candidate offset lease must issue');
+assertUltraPolicyLease($candidateOffsetSeen === 2, 'candidate offset was not passed to resolver');
+
+// A config poll and a targeted refresh can race, and a request that timed out
+// after the panel committed it is retried with the same nonce. The service
+// deliberately tolerates a bounded number of those retries inside
+// REPLAY_GRACE_SECONDS (see UltraLeaseService::MAX_REPLAY_ATTEMPTS) and only
+// refuses a nonce that keeps coming back.
+for ($retryAttempt = 1; $retryAttempt <= UltraLeaseService::MAX_REPLAY_ATTEMPTS; $retryAttempt++) {
+    $retry = $service->issueLease($request, 7, 'device-a');
+    assertUltraPolicyLease(
+        ($retry['ok'] ?? false) === true,
+        'a bounded nonce retry must still issue a lease'
+    );
+}
 $replay = $service->issueLease($request, 7, 'device-a');
-assertUltraPolicyLease(($replay['error'] ?? '') === 'lease_replayed', 'nonce replay was not rejected');
+assertUltraPolicyLease(
+    ($replay['error'] ?? '') === 'lease_replayed',
+    'a nonce replayed beyond the bounded retry budget must be refused'
+);
 assertUltraPolicyLease(
     ($service->issueLease(array_merge($request, ['nonce' => 'abcdef0123456789abcdef01234530']), 7, 'wrong-device')['error'] ?? '') === 'lease_scope_invalid',
     'device scope was not rejected'
@@ -184,6 +216,38 @@ assertUltraPolicyLease(
     'revoked generation was not rejected'
 );
 
+$broadCidr = new UltraLeaseService(
+    $config,
+    null,
+    null,
+    static fn(array $request, int $clientId, string $deviceId): array => [
+        'selection_ref' => str_repeat('d', 43),
+        'ip' => '203.0.113.22',
+        'port' => 5440,
+        'user' => 'line-user',
+        'credential' => 'line-password',
+        'direct_ip_cidrs' => ['0.0.0.0/0'],
+    ],
+    static fn(): int => $now,
+    static function (int $clientId, string $deviceId, int $forwardId) use ($generation): array {
+        return [
+            'forward_id' => $forwardId,
+            'device_hash' => hash('sha256', $deviceId),
+            'service_state' => 'active',
+            'policy_generation' => $generation,
+            'target' => '198.51.100.10:443',
+            'transport' => 'tcp',
+            'rate_limit_mbps' => 20,
+            'quota_remaining_bytes' => 1024,
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', 1_900_000_300),
+        ];
+    },
+);
+assertUltraPolicyLease(
+    ($broadCidr->issueLease(array_merge($request, ['nonce' => 'abcdef0123456789abcdef01234534']), 7, 'device-a')['error'] ?? '') === 'no_approved_candidate',
+    'broad direct CIDR was accepted'
+);
+
 $source = (string) file_get_contents(__DIR__ . '/../src/Support/UltraLeaseService.php');
 foreach (['lease_replayed', 'policy_generation_invalid', 'forward_inactive', 'policy_expired', 'quota_exhausted'] as $needle) {
     assertUltraPolicyLease(str_contains($source, $needle), 'lease error missing: ' . $needle);
@@ -196,6 +260,9 @@ assertUltraPolicyLease(
     substr_count($controllerSource, "'Cache-Control' => 'no-store, no-cache, must-revalidate'") >= 2,
     'Ultra policy and lease responses must be no-store'
 );
+assertUltraPolicyLease(str_contains($controllerSource, 'selection_mode'), 'auto selection mode missing');
+assertUltraPolicyLease(str_contains($controllerSource, 'max_candidates'), 'auto selection candidate bound missing');
+assertUltraPolicyLease(str_contains($controllerSource, 'candidate_offset'), 'auto selection candidate offset missing');
 
 @unlink($envPath);
 echo "ok\n";

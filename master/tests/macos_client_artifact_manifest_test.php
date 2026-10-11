@@ -42,6 +42,7 @@ function removeMacArtifactFixture(string $path): void
     rmdir($path);
 }
 
+$repoRoot = dirname(__DIR__, 2);
 $root = sys_get_temp_dir() . '/leikwan-macos-artifacts-' . bin2hex(random_bytes(8));
 $artifactDirectory = $root . '/artifacts/macos';
 $envPath = $root . '/test.env';
@@ -54,6 +55,16 @@ $entries = [
     'macos_client_update_arm64' => ['filename' => 'leikwan-bridge-update-arm64.zip', 'architecture' => 'arm64', 'format' => 'zip'],
     'macos_client_update_x64' => ['filename' => 'leikwan-bridge-update-x64.zip', 'architecture' => 'x86_64', 'format' => 'zip'],
 ];
+$manifestSource = file_get_contents($repoRoot . '/artifacts/versions.json');
+if ($manifestSource === false) {
+    failMacArtifact('failed to read repository artifact manifest');
+}
+foreach (array_keys($entries) as $key) {
+    preg_match_all('/^\s*"' . preg_quote($key, '/') . '"\s*:/m', $manifestSource, $matches);
+    if (count($matches[0]) !== 1) {
+        failMacArtifact('artifact manifest contains duplicate or missing key ' . $key);
+    }
+}
 $versions = [];
 foreach ($entries as $key => $entry) {
     $bytes = 'fixture-' . $key;

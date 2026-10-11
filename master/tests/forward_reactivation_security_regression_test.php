@@ -35,7 +35,7 @@ if (str_contains($migration, 'auto_suspend_insufficient_balance')
     failForwardReactivation('migration must keep unknown historical disable reasons unclassified and non-reactivatable');
 }
 
-foreach (['balance_suspended_at', 'api_revision = GREATEST(1, api_revision) + 1', 'enabled = 1', 'user_deleted_at IS NULL'] as $required) {
+foreach (['native_direction_key = NULL', 'balance_suspended_at', 'api_revision = GREATEST(1, api_revision) + 1', 'enabled = 1', 'user_deleted_at IS NULL'] as $required) {
     if (!str_contains($billing, $required)) {
         failForwardReactivation('billing suspension must persist an explicit versioned reason: ' . $required);
     }

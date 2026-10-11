@@ -209,6 +209,9 @@ namespace {
     if (($clientConfig['artifact_base_url'] ?? null) !== 'https://artifacts.example.com') {
         fail('expected authoritative client config to include artifact_base_url');
     }
+    if (($clientConfig['ultra_selection_mode'] ?? null) !== 'auto') {
+        fail('expected authoritative client config to migrate Ultra selection to auto');
+    }
 
     $pullRef = new ReflectionMethod($clientController, 'pullConfigs');
     $controllerSource = (string) file_get_contents($pullRef->getFileName());

@@ -21,12 +21,12 @@ public static class LeikwanHttpHostPolicy
             return false;
         if (IPAddress.TryParse(host, out var address))
             return false;
-        if (!host.EndsWith(ProtectedDomainSuffix, StringComparison.OrdinalIgnoreCase))
-            return false;
-        if (string.Equals(host, "leikwanhost.com", StringComparison.OrdinalIgnoreCase))
-            return false;
+        if (host.EndsWith(ProtectedDomainSuffix, StringComparison.OrdinalIgnoreCase))
+            return !string.Equals(host, "leikwanhost.com", StringComparison.OrdinalIgnoreCase);
 
-        return true;
+        // Panel endpoints and DoH providers resolve through the anti-poison
+        // DoH path as well so third-party TUN tools cannot poison them.
+        return PanelDirectEgress.IsWellKnownHost(host);
     }
 
     public static bool IsBypassAddress(IPAddress address)

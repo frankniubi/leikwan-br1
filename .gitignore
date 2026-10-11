@@ -6,6 +6,12 @@
 /cantons.txt
 /shanghais.txt
 /infoandcredentials.txt
+# These two were documented as gitignored but no rule ever existed for them, so
+# "git add -A" at the repo root would have committed five sidecar host passwords
+# and the panel test credentials. /tmp/ is ignored, so the same files under
+# tmp/ were already safe; only the repo-root copies were exposed.
+/uot-sidecars.txt
+/test-env.txt
 *.env.local
 .env
 /tmp-artifact-config.env
@@ -39,6 +45,7 @@
 /artifacts/recheck/
 /artifacts/windows/publish/
 /artifacts/windows/_setup_stage/
+/artifacts/windows/proxy-runtime/
 /artifacts/*.log
 /artifacts/*.txt
 /artifacts/*.xml
@@ -84,3 +91,20 @@ artifacts/windows/leikwan-bridge-setup.exe
 /artifacts/macos/*.zip
 /artifacts/macos/*-metadata.json
 .gstack/
+
+# ---------------------------------------------------------------------------
+# These directories are scratch/build output and must never be tracked again.
+# Nearly 5.5 GB of publish trees, installers, .dmg/.zip/.apk output, crash hang
+# dumps and agent session logs had accumulated here because the narrow rules
+# below/above were added *after* the files were already committed -- and
+# gitignore never applies to already-tracked files. The broad rules win now.
+# ---------------------------------------------------------------------------
+/tmp/
+/artifacts/*
+!/artifacts/versions.json
+!/artifacts/cfwg-latency-watchdog.py
+/LeikwanBridge.Desktop/tests/**/TestResults/
+dsh-session-*/
+soak_10min*.json
+tools/acceptance-harness/harness.exe
+tools/uot-sidecar/uot-sidecar.exe

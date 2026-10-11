@@ -1,0 +1,277 @@
+package com.leikwan.bridge.runtime
+
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import java.io.EOFException
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+private const val MAX_ULTRA_CONTROL_PAYLOAD = 64 * 1024
+private const val ULTRA_CONTROL_TIMEOUT_MS = 2_000
+// The runtime answers a multi-candidate delivery only after its selection
+// window closes: probe duration + datagram association budget + response
+// grace. The 30s probe profile (UltraForwardRunner) needs roughly 45-50s, so a
+// 30s cap cancelled valid deliveries and surfaced as "forward start failed".
+// Keep this strictly above the runtime's window (desktop hosts use 70s for the
+// same reason; the macOS host had the identical bug with a 20s cap).
+private const val ULTRA_NATIVE_BATCH_TIMEOUT_MS = 70_000
+private const val ULTRA_CONTROL_CONNECT_ATTEMPTS = 20
+private const val ULTRA_NATIVE_CONNECT_ATTEMPTS = 3
+private const val MAX_NATIVE_LEASE_CANDIDATES = 4
+// The runtime binds its control socket a moment after the process starts; on a cold start
+// (fresh install, first launch) that can take longer than the post-write retry budget above.
+// Connect-stage failures write nothing, so they are retried on their own bounded clock.
+internal const val ULTRA_CONTROL_READY_BUDGET_MS = 5_000L
+private const val ULTRA_CONTROL_READY_BACKOFF_START_MS = 25L
+private const val ULTRA_CONTROL_READY_BACKOFF_MAX_MS = 400L
+private const val ULTRA_CONTROL_RETRY_SLEEP_MS = 50L
+
+/**
+ * The control socket did not accept a connection: the runtime is not listening yet (or is gone).
+ * Nothing was written, so the same delivery can be retried without any risk of applying it twice.
+ */
+class UltraControlNotReadyException(cause: Throwable? = null) : IOException("ultra_control_not_ready", cause)
+
+fun interface UltraControlSocket {
+    /** Exchanges one fully framed request and returns only the reply payload. */
+    @Throws(IOException::class)
+    fun exchange(socketPath: String, frame: ByteArray): ByteArray
+}
+
+/** Optional timeout-aware transport used for native candidate probing. */
+interface TimedUltraControlSocket : UltraControlSocket {
+    fun exchange(socketPath: String, frame: ByteArray, timeoutMs: Int): ByteArray
+
+    override fun exchange(socketPath: String, frame: ByteArray): ByteArray =
+        exchange(socketPath, frame, ULTRA_CONTROL_TIMEOUT_MS)
+}
+
+object AndroidUltraControlSocket : TimedUltraControlSocket {
+    override fun exchange(socketPath: String, frame: ByteArray): ByteArray =
+        exchange(socketPath, frame, ULTRA_CONTROL_TIMEOUT_MS)
+
+    override fun exchange(socketPath: String, frame: ByteArray, timeoutMs: Int): ByteArray {
+        val socket = LocalSocket()
+        try {
+            try {
+                socket.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
+            } catch (error: IOException) {
+                throw UltraControlNotReadyException(error)
+            }
+            socket.setSoTimeout(timeoutMs.coerceIn(1_000, ULTRA_NATIVE_BATCH_TIMEOUT_MS))
+            socket.outputStream.write(frame)
+            socket.outputStream.flush()
+            val input = socket.inputStream
+            val header = ByteArray(4)
+            readExactly(input, header)
+            val length = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN).int
+            if (length !in 1..MAX_ULTRA_CONTROL_PAYLOAD) throw IOException("ultra_control_reply_invalid")
+            return ByteArray(length).also { readExactly(input, it) }
+        } finally {
+            socket.close()
+        }
+    }
+
+    private fun readExactly(input: java.io.InputStream, target: ByteArray) {
+        var offset = 0
+        while (offset < target.size) {
+            val count = input.read(target, offset, target.size - offset)
+            if (count <= 0) throw EOFException("ultra_control_reply_incomplete")
+            offset += count
+        }
+    }
+}
+
+class UltraLeaseClient(
+    private val controlSocket: UltraControlSocket = AndroidUltraControlSocket,
+    private val sleep: (Long) -> Unit = { delayMs -> Thread.sleep(delayMs) },
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val readinessBudgetMs: Long = ULTRA_CONTROL_READY_BUDGET_MS,
+    /** Called with the milliseconds spent waiting for the runtime to listen, when it had to wait. */
+    private val onReadyAfterWait: (Long) -> Unit = {},
+) {
+    /** The lease is wiped whether the runtime accepts it or not. */
+    fun send(controlSocketPath: String, policy: UltraPolicy, lease: UltraLease): Boolean {
+        try {
+            if (controlSocketPath.isBlank() || lease.forwardId != policy.forwardId
+                || lease.policyGeneration != policy.policyGeneration) {
+                return false
+            }
+            return sendPayload(
+                controlSocketPath = controlSocketPath,
+                payload = lease.toControlPayload().toString().toByteArray(Charsets.UTF_8),
+                forwardId = policy.forwardId,
+                policyGeneration = policy.policyGeneration,
+                timeoutMs = ULTRA_CONTROL_TIMEOUT_MS,
+                connectAttempts = ULTRA_CONTROL_CONNECT_ATTEMPTS,
+            )
+        } finally {
+            lease.wipe()
+        }
+    }
+
+    /** Delivers a bounded ordinary Ultra candidate batch for local protocol-aware selection. */
+    fun send(controlSocketPath: String, policy: UltraPolicy, leases: List<UltraLease>): Boolean {
+        try {
+            val first = leases.firstOrNull()
+            if (controlSocketPath.isBlank()
+                || leases.size !in 1..MAX_NATIVE_LEASE_CANDIDATES
+                || first == null
+                || leases.any { lease ->
+                    lease.forwardId != policy.forwardId
+                        || lease.policyGeneration != policy.policyGeneration
+                        || lease.transport != policy.transport
+                        || lease.user.isEmpty()
+                        || lease.password.isEmpty()
+                }) return false
+            val payload = if (leases.size == 1) {
+                first.toControlPayload().toString().toByteArray(Charsets.UTF_8)
+            } else {
+                JsonObject().also { root ->
+                    root.add("leases", JsonArray().also { array ->
+                        leases.forEach { array.add(it.toControlPayload()) }
+                    })
+                }.toString().toByteArray(Charsets.UTF_8)
+            }
+            return sendPayload(
+                controlSocketPath = controlSocketPath,
+                payload = payload,
+                forwardId = policy.forwardId,
+                policyGeneration = policy.policyGeneration,
+                timeoutMs = if (leases.size > 1) ULTRA_NATIVE_BATCH_TIMEOUT_MS else ULTRA_CONTROL_TIMEOUT_MS,
+                connectAttempts = if (leases.size > 1) ULTRA_NATIVE_CONNECT_ATTEMPTS else ULTRA_CONTROL_CONNECT_ATTEMPTS,
+            )
+        } finally {
+            leases.forEach(UltraLease::wipe)
+        }
+    }
+
+    /** Delivers a native-outbound lease to the app-private Ultra adapter. */
+    fun sendNative(controlSocketPath: String, lease: NativeOutboundLease): Boolean =
+        sendNativeInternal(
+            controlSocketPath,
+            listOf(lease),
+            timeoutMs = ULTRA_CONTROL_TIMEOUT_MS,
+            connectAttempts = ULTRA_CONTROL_CONNECT_ATTEMPTS,
+        )
+
+    /** Delivers up to four candidates; the local adapter probes and selects one atomically. */
+    fun sendNative(controlSocketPath: String, leases: List<NativeOutboundLease>): Boolean =
+        sendNativeInternal(
+            controlSocketPath,
+            leases,
+            timeoutMs = if (leases.size > 1) ULTRA_NATIVE_BATCH_TIMEOUT_MS else ULTRA_CONTROL_TIMEOUT_MS,
+            connectAttempts = if (leases.size > 1) ULTRA_NATIVE_CONNECT_ATTEMPTS else ULTRA_CONTROL_CONNECT_ATTEMPTS,
+        )
+
+    private fun sendNativeInternal(
+        controlSocketPath: String,
+        leases: List<NativeOutboundLease>,
+        timeoutMs: Int,
+        connectAttempts: Int,
+    ): Boolean {
+        try {
+            val first = leases.firstOrNull()
+            if (controlSocketPath.isBlank()
+                || leases.size !in 1..MAX_NATIVE_LEASE_CANDIDATES
+                || first == null
+                || leases.any { lease ->
+                    !lease.isUsable()
+                        || lease.forwardId != first.forwardId
+                        || lease.policyGeneration != first.policyGeneration
+                }) return false
+            val payload = if (leases.size == 1) {
+                first.toControlPayload().toString().toByteArray(Charsets.UTF_8)
+            } else {
+                JsonObject().also { root ->
+                    root.add("leases", JsonArray().also { array ->
+                        leases.forEach { array.add(it.toControlPayload()) }
+                    })
+                }.toString().toByteArray(Charsets.UTF_8)
+            }
+            return sendPayload(
+                controlSocketPath = controlSocketPath,
+                payload = payload,
+                forwardId = first.forwardId,
+                policyGeneration = first.policyGeneration,
+                timeoutMs = timeoutMs,
+                connectAttempts = connectAttempts,
+            )
+        } finally {
+            leases.forEach(NativeOutboundLease::wipe)
+        }
+    }
+
+    private fun sendPayload(
+        controlSocketPath: String,
+        payload: ByteArray,
+        forwardId: Long,
+        policyGeneration: String,
+        timeoutMs: Int,
+        connectAttempts: Int,
+    ): Boolean {
+        var body = payload
+        var frame = ByteArray(0)
+        try {
+            if (body.size !in 1..MAX_ULTRA_CONTROL_PAYLOAD) return false
+            frame = ByteArray(4 + body.size)
+            ByteBuffer.wrap(frame, 0, 4).order(ByteOrder.BIG_ENDIAN).putInt(body.size)
+            body.copyInto(frame, destinationOffset = 4)
+            val attempts = connectAttempts.coerceIn(1, ULTRA_CONTROL_CONNECT_ATTEMPTS)
+            val startedAt = nowMs()
+            val readyDeadline = startedAt + readinessBudgetMs
+            var waitedForReady = false
+            var readyBackoff = ULTRA_CONTROL_READY_BACKOFF_START_MS
+            var failures = 0
+            while (true) {
+                val attemptStartedAt = nowMs()
+                val reply = try {
+                    if (controlSocket is TimedUltraControlSocket) {
+                        controlSocket.exchange(controlSocketPath, frame, timeoutMs)
+                    } else {
+                        controlSocket.exchange(controlSocketPath, frame)
+                    }
+                } catch (_: UltraControlNotReadyException) {
+                    // Wait for the runtime to start listening; this does not use up an attempt.
+                    val remaining = readyDeadline - nowMs()
+                    if (remaining <= 0L) return false
+                    waitedForReady = true
+                    sleep(minOf(readyBackoff, remaining))
+                    readyBackoff = minOf(readyBackoff * 2, ULTRA_CONTROL_READY_BACKOFF_MAX_MS)
+                    continue
+                } catch (_: Exception) {
+                    null
+                }
+                if (reply != null) {
+                    // Time until the runtime accepted the connection, not until it answered.
+                    if (waitedForReady) runCatching { onReadyAfterWait(attemptStartedAt - startedAt) }
+                    try {
+                        return reply.size in 1..MAX_ULTRA_CONTROL_PAYLOAD
+                            && replyAccepted(reply, forwardId, policyGeneration)
+                    } finally {
+                        reply.fill(0)
+                    }
+                }
+                failures += 1
+                if (failures >= attempts) return false
+                sleep(ULTRA_CONTROL_RETRY_SLEEP_MS)
+            }
+        } finally {
+            body.fill(0)
+            frame.fill(0)
+        }
+    }
+
+    private fun replyAccepted(reply: ByteArray, forwardId: Long, policyGeneration: String): Boolean {
+        return runCatching {
+            val root = JsonParser.parseString(reply.toString(Charsets.UTF_8)).asJsonObject
+            root.get("ok")?.asBoolean == true
+                && root.get("forward_id")?.asLong == forwardId
+                && root.get("policy_generation")?.asString == policyGeneration
+        }.getOrDefault(false)
+    }
+}

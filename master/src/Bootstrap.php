@@ -5,6 +5,7 @@ namespace Leikwan\Master;
 
 use Leikwan\Master\Controllers\AdminController;
 use Leikwan\Master\Controllers\ArtifactController;
+use Leikwan\Master\Controllers\ExternalUotConfigController;
 use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
@@ -34,6 +35,8 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\WhmcsClient;
 use Leikwan\Master\Support\WhmcsIdentityService;
 use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\UltraCandidateReviewService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMaterialService;
@@ -137,6 +140,9 @@ final class Bootstrap
         );
         $ultraInventory = new UltraInventoryService($this->config, $this->db);
         $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $accessPolicy = isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
+            ? $this->services['access_policy']
+            : new AccessPolicyService($this->db);
         $admin = new AdminController(
             $this->config,
             $this->db,
@@ -144,6 +150,7 @@ final class Bootstrap
             $this->leigodOnlyAdminServices(),
             $ultraInventory,
             $ultraClientStatus,
+            $accessPolicy,
         );
         $whmcs = new WhmcsController($this->config, $this->db, $this->provisioning);
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
@@ -159,17 +166,21 @@ final class Bootstrap
             $ultraMaterials,
             $ultraClientStatus,
             $ultraLeases,
+            accessPolicy: $accessPolicy,
         );
-        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory);
+        $ultraReviews = new UltraCandidateReviewService($this->db);
+        $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory, $ultraReviews);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
-        $tenant = new TenantController($this->config, $this->db, $this->provisioning);
+        $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
         $artifacts = new ArtifactController($this->config);
+        $externalUotConfig = new ExternalUotConfigController($this->config);
 
         $this->router->add('GET', '/', [$auth, 'home']);
         $this->router->add('GET', '/knowledgebase', [$auth, 'knowledgebasePage']);
         $this->router->add('GET', '/login', [$auth, 'loginPage']);
         $this->router->add('GET', '/auth/oidc/start', [$oidc, 'start']);
         $this->router->add('GET', '/auth/oidc/callback', [$oidc, 'callback']);
+        $this->router->add('GET', '/auth/whmcs/sso', [$whmcs, 'consumeSso']);
         $this->router->add('GET', '/register', [$auth, 'registerPage']);
         $this->router->add('GET', '/forgot-password', [$auth, 'forgotPasswordPage']);
         $this->router->add('POST', '/forgot-password', [$auth, 'requestPasswordReset']);
@@ -185,6 +196,11 @@ final class Bootstrap
         $this->router->add('POST', '/logout', [$auth, 'logout']);
         $this->router->add('GET', '/admin', [$admin, 'dashboard']);
         $this->router->add('POST', '/admin/republish/all', [$admin, 'republishAllForwards']);
+        $this->router->add('GET', '/admin/access-control', [$admin, 'accessControlPage']);
+        $this->router->add('POST', '/admin/access-control/rules', [$admin, 'saveAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/rules/{id}/toggle', [$admin, 'toggleAccessBlacklistRule']);
+        $this->router->add('POST', '/admin/access-control/devices/release', [$admin, 'releaseDeviceBlock']);
+        $this->router->add('POST', '/admin/access-control/accounts/release', [$admin, 'releaseAccountBan']);
         $this->router->add('GET', '/admin/leigod-only-rollout', [$admin, 'leigodOnlyRolloutPage']);
         $this->router->add('POST', '/admin/leigod-only-rollout/dry-run', [$admin, 'leigodOnlyActivationDryRun']);
         $this->router->add('POST', '/admin/leigod-only-rollout/activate', [$admin, 'leigodOnlyActivationApply']);
@@ -223,6 +239,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin/forward-combinations', [$admin, 'saveForwardCombination']);
         $this->router->add('GET', '/admin/ultra', [$admin, 'ultraOperationsPage']);
         $this->router->add('POST', '/admin/ultra/lines/{id}', [$admin, 'saveUltraLinePolicy']);
+        $this->router->add('POST', '/admin/ultra/attestation/refresh', [$admin, 'refreshUltraRuntimeAttestation']);
         $this->router->add('GET', '/admin/forward-routes', [$admin, 'forwardRoutesPage']);
         $this->router->add('POST', '/admin/forward-routes', [$admin, 'saveForwardRoute']);
         $this->router->add('POST', '/admin/forward-combinations/{id}/donations/{donationId}/revoke', [$admin, 'revokeDonation']);
@@ -242,6 +259,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
+        $this->router->add('POST', '/admin/clients/{id}/openwrt-pairing-code', [$admin, 'createOpenWrtPairingCode']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
         $this->router->add('POST', '/admin/node-groups', [$admin, 'saveNodeGroup']);
         $this->router->add('GET', '/admin/chains', [$admin, 'chainsPage']);
@@ -267,9 +285,18 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/plans/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('POST', '/tenant/billing/purchase', [$tenant, 'purchasePackage']);
         $this->router->add('GET', '/tenant/forwards', [$tenant, 'dashboard']);
+        $this->router->add('GET', '/tenant/security', [$tenant, 'accessSecurityPage']);
+        $this->router->add('POST', '/tenant/security/main-province', [$tenant, 'changeMainProvince']);
+        $this->router->add('POST', '/tenant/security/kick-all', [$tenant, 'kickAllDevices']);
+        $this->router->add('POST', '/tenant/security/api-token/reset', [$tenant, 'resetApiToken']);
+        $this->router->add('POST', '/tenant/security/devices/restore', [$tenant, 'restoreDevice']);
         $this->router->add('GET', '/tenant/clients', [$tenant, 'clientsPage']);
         $this->router->add('POST', '/tenant/clients/reset-token', [$tenant, 'resetDefaultClientToken']);
+        $this->router->add('POST', '/tenant/clients/runtime-attestation/refresh', [$tenant, 'refreshClientRuntimeAttestation']);
         $this->router->add('POST', '/tenant/clients/kick', [$tenant, 'kickClientDevice']);
+        $this->router->add('POST', '/tenant/clients/ban', [$tenant, 'banClientDevice']);
+        $this->router->add('POST', '/tenant/clients/unban', [$tenant, 'unbanClientDevice']);
+        $this->router->add('POST', '/tenant/clients/android-enrollment-code', [$tenant, 'createAndroidEnrollmentCode']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
         $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
         $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
@@ -300,10 +327,14 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/services/{id}/regenerate-client-token', [$tenant, 'regenerateClientToken']);
         $this->router->add('GET', '/api/health', [$health, 'ping']);
 
+        $this->router->add('GET', '/api/whmcs/ping', [$whmcs, 'ping']);
+        $this->router->add('GET', '/api/whmcs/plans', [$whmcs, 'plans']);
         $this->router->add('POST', '/api/whmcs/provision', [$whmcs, 'provision']);
         $this->router->add('POST', '/api/whmcs/renew', [$whmcs, 'renew']);
         $this->router->add('POST', '/api/whmcs/suspend', [$whmcs, 'suspend']);
+        $this->router->add('POST', '/api/whmcs/unsuspend', [$whmcs, 'unsuspend']);
         $this->router->add('POST', '/api/whmcs/terminate', [$whmcs, 'terminate']);
+        $this->router->add('POST', '/api/whmcs/sso', [$whmcs, 'issueSso']);
 
         $this->router->add('GET', '/api/user/services', [$services, 'listServices']);
         $this->router->add('GET', '/api/user/services/{id}', [$services, 'showService']);
@@ -313,6 +344,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/user/forwards/{id}/client-config', [$services, 'clientConfig']);
         $this->router->add('POST', '/api/user/services/{id}/regenerate-client-token', [$services, 'regenerateClientToken']);
 
+        $this->router->add('GET', '/api/v1/user/services', [$forwardApi, 'services']);
         $this->router->add('GET', '/api/v1/user/services/{id}/forward-options', [$forwardApi, 'options']);
         $this->router->add('GET', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'index']);
         $this->router->add('POST', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'create']);
@@ -331,15 +363,30 @@ final class Bootstrap
         $this->router->add('GET', '/api/admin/nodes', [$nodes, 'listNodes']);
         $this->router->add('GET', '/api/admin/services', [$services, 'listAllServices']);
         $this->router->add('POST', '/api/client/login', [$clientAgent, 'desktopLogin']);
-$this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopClient']);
+        $this->router->add('POST', '/api/client/access/location/challenge', [$clientAgent, 'locationChallenge']);
+        $this->router->add('POST', '/api/client/access/location/report', [$clientAgent, 'locationReport']);
+        $this->router->add('GET', '/api/client/access/policy', [$clientAgent, 'accessPolicyStatus']);
+        $this->router->add('POST', '/api/client/devices/challenge', [$clientAgent, 'deviceChallenge']);
+        $this->router->add('POST', '/api/client/devices/enroll', [$clientAgent, 'enrollDevice']);
+        $this->router->add('POST', '/api/client/devices/identity/enroll', [$clientAgent, 'deviceIdentityEnroll']);
+        $this->router->add('POST', '/api/client/devices/renew/challenge', [$clientAgent, 'deviceRenewalChallenge']);
+        $this->router->add('POST', '/api/client/devices/renew', [$clientAgent, 'renewDevice']);
+        $this->router->add('POST', '/api/client/devices/ack', [$clientAgent, 'acknowledgeDevice']);
+        $this->router->add('POST', '/api/client/devices/code/challenge', [$clientAgent, 'enrollmentCodeChallenge']);
+        $this->router->add('POST', '/api/client/devices/code/enroll', [$clientAgent, 'enrollmentCodeEnroll']);
+        $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
+        $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
+        $this->router->add('POST', '/api/client/debug/log', [$clientAgent, 'debugLogChunk']);
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);
         $this->router->add('POST', '/api/ultra/source/inventory', [$ultraSource, 'inventory']);
+        $this->router->add('POST', '/api/ultra/source/review', [$ultraSource, 'review']);
         $this->router->add('POST', '/api/sidecar/heartbeat', [$sidecarAgent, 'heartbeat']);
 
         $this->router->add('GET', '/artifacts/versions.json', [$artifacts, 'versionsManifest']);
@@ -350,14 +397,24 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/sidecar-manifest.json', [$artifacts, 'sidecarManifest']);
         $this->router->add('GET', '/artifacts/client-manifest.json', [$artifacts, 'clientManifest']);
         $this->router->add('GET', '/artifacts/client-agent.py', [$artifacts, 'clientAgent']);
+        $this->router->add('GET', '/artifacts/python-agent/leikwan-client-agent_linux_amd64', [$artifacts, 'clientAgentLinuxAmd64']);
+        $this->router->add('GET', '/artifacts/python-agent/leikwan-client-agent_linux_arm64', [$artifacts, 'clientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/cfwg-latency-watchdog.py', [$artifacts, 'cfwgLatencyWatchdog']);
+        $this->router->add('GET', '/artifacts/leikwan-lease-seal.py', [$artifacts, 'clientLeaseSeal']);
         $this->router->add('GET', '/artifacts/sidecar-agent.py', [$artifacts, 'sidecarAgent']);
+        $this->router->add('GET', '/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', [$artifacts, 'sidecarAgentLinuxAmd64']);
+        $this->router->add('GET', '/artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', [$artifacts, 'sidecarAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/gost/gost_linux_amd64', [$artifacts, 'gostBinary']);
         $this->router->add('GET', '/artifacts/leigod/leigod-linux-amd64', [$artifacts, 'leigodBinary']);
         $this->router->add('GET', '/artifacts/lguot/lguot_linux_amd64', [$artifacts, 'lguotBinary']);
         $this->router->add('GET', '/artifacts/install-forward-runtime.py', [$artifacts, 'installForwardRuntime']);
         $this->router->add('GET', '/artifacts/ultra/ultra-client_linux_amd64', [$artifacts, 'ultraClient']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_linux_arm64', [$artifacts, 'ultraClientLinuxArm64']);
         $this->router->add('GET', '/artifacts/ultra/ultra-client_windows_amd64.exe', [$artifacts, 'ultraClientWindows']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_macos_amd64', [$artifacts, 'ultraClientMacosX64']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_macos_arm64', [$artifacts, 'ultraClientMacosArm64']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_android_arm64', [$artifacts, 'ultraClientAndroidArm64']);
+        $this->router->add('GET', '/artifacts/ultra/ultra-client_android_x86_64', [$artifacts, 'ultraClientAndroidX64']);
         $this->router->add('GET', '/artifacts/forward-strategy.py', [$artifacts, 'forwardStrategyHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-race.py', [$artifacts, 'tcpRaceRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-fanout.py', [$artifacts, 'udpFanoutRuntime']);
@@ -366,6 +423,7 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/leikwan-uot-bond.py', [$artifacts, 'uotBondRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-mptcp-sidecar.py', [$artifacts, 'mptcpSidecarRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-udp-uot-merge.py', [$artifacts, 'udpUotMergeRuntime']);
+        $this->router->add('GET', '/artifacts/leikwan-external-uot.py', [$artifacts, 'externalUotRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-wss-mux.py', [$artifacts, 'wssMuxRuntime']);
         $this->router->add('GET', '/artifacts/leikwan-rate-limit.py', [$artifacts, 'clientRateLimitHelper']);
         $this->router->add('GET', '/artifacts/leikwan-tcp-accel.py', [$artifacts, 'tcpAccelRuntime']);
@@ -376,6 +434,13 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/dedupe-slave.sh', [$artifacts, 'dedupeSlave']);
         $this->router->add('GET', '/artifacts/install-client.sh', [$artifacts, 'installClient']);
         $this->router->add('GET', '/artifacts/install-bond-sidecar.sh', [$artifacts, 'installBondSidecar']);
+        $this->router->add('GET', '/artifacts/install-external-uot.sh', [$artifacts, 'installExternalUot']);
+        $this->router->add('GET', '/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
+        $this->router->add('GET', '/api/external-uot/pool/{id}/config', [$externalUotConfig, 'poolNode']);
+        $this->router->add('POST', '/api/external-uot/pool/{id}/heartbeat', [$externalUotConfig, 'poolNode']);
+        $this->router->add('GET', '/artifacts/external-uot-config', [$externalUotConfig, 'sidecarConfig']);
+        $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64', [$artifacts, 'uotSidecarLinuxAmd64']);
+        $this->router->add('GET', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64', [$artifacts, 'uotSidecarLinuxArm64']);
         $this->router->add('GET', '/artifacts/install-tcp-accel.sh', [$artifacts, 'installTcpAccel']);
         $this->router->add('GET', '/artifacts/install-mptcp-sidecar.sh', [$artifacts, 'installBondSidecar']);
         $this->router->add('GET', '/artifacts/uninstall-bond-sidecar.sh', [$artifacts, 'uninstallBondSidecar']);
@@ -385,11 +450,25 @@ $this->router->add('POST', '/api/client/select', [$clientAgent, 'selectDesktopCl
         $this->router->add('GET', '/artifacts/install-client.ps1', [$artifacts, 'installClientPowerShell']);
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
+        $this->router->add('GET', '/artifacts/install-docker-client.sh', [$artifacts, 'installDockerClient']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-compose.yml', [$artifacts, 'dockerClientCompose']);
+        $this->router->add('GET', '/artifacts/docker-client/Dockerfile', [$artifacts, 'dockerClientDockerfile']);
+        $this->router->add('GET', '/artifacts/docker-client/fetch-artifacts.py', [$artifacts, 'dockerClientFetchArtifacts']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-entrypoint.sh', [$artifacts, 'dockerClientEntrypoint']);
+        $this->router->add('GET', '/artifacts/docker-client/docker-healthcheck.sh', [$artifacts, 'dockerClientHealthcheck']);
+        $this->router->add('GET', '/artifacts/leikwan-linux.sh', [$artifacts, 'leikwanLinuxCli']);
+        $this->router->add('GET', '/artifacts/install-client-agent-linux-arm64', [$artifacts, 'installClientAgentLinuxArm64']);
         $this->router->add('GET', '/artifacts/client-agent-update.sh', [$artifacts, 'clientAgentUpdate']);
         $this->router->add('GET', '/artifacts/sidecar-agent-update.sh', [$artifacts, 'sidecarAgentUpdate']);
         $this->router->add('GET', '/artifacts/uninstall-client-agent.sh', [$artifacts, 'uninstallClientAgent']);
         $this->router->add('GET', '/artifacts/leikwan-android-client.apk', [$artifacts, 'androidClientApk']);
         $this->router->add('GET', '/artifacts/leikwan-bridge-setup.exe', [$artifacts, 'windowsClientApp']);
+        $this->router->add('GET', '/artifacts/windows/leikwan-bridge-headless-win-x64.zip', [$artifacts, 'windowsHeadlessClient']);
+        $this->router->add('GET', '/artifacts/install-macos-headless.sh', [$artifacts, 'installMacosHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-macos-headless.sh', [$artifacts, 'uninstallMacosHeadless']);
+        $this->router->add('GET', '/artifacts/install-windows-headless.ps1', [$artifacts, 'installWindowsHeadless']);
+        $this->router->add('GET', '/artifacts/uninstall-windows-headless.ps1', [$artifacts, 'uninstallWindowsHeadless']);
+        $this->router->add('GET', '/artifacts/leikwan-bridge-repair.cmd', [$artifacts, 'windowsUpdateHelper']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-arm64.dmg', [$artifacts, 'macosClientArm64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-x64.dmg', [$artifacts, 'macosClientX64Dmg']);
         $this->router->add('GET', '/artifacts/macos/leikwan-bridge-update-arm64.zip', [$artifacts, 'macosClientArm64Update']);

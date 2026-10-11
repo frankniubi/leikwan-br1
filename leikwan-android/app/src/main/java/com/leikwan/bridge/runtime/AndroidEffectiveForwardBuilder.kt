@@ -2,7 +2,7 @@ package com.leikwan.bridge.runtime
 
 /**
  * Android-effective view of a [ForwardContract]. Narrower than the raw panel contract: it only
- * ever represents the runtime modes Android can actually run (`single` / `bond`) and pre-computes
+ * only represents accepted runtime modes and pre-computes
  * the set of slave/sidecar hosts that must stay `direct` (the runtime reachability bypass set).
  */
 data class AndroidEffectiveForward(
@@ -15,30 +15,25 @@ data class AndroidEffectiveForward(
     val endpoints: List<ForwardEndpoint>,
     val bonding: BondingContract?,
     val bypassHosts: Set<String>,
+    val protectedConnectivity: ProtectedConnectivitySet,
     val runtimeContract: ForwardContract,
 ) {
-    val isDedicatedLeiGod: Boolean
-        get() = runtimeContract.targetContract.equals("dedicated_forward_node", ignoreCase = true) &&
-            !runtimeContract.sidecarRequired &&
-            !runtimeContract.aggregationEnabled
-
     fun toListItem(): ForwardListItem = runtimeContract.toListItem(
-        methodDisplay = "LeiGod",
+        methodDisplay = if (mode == ForwardMode.ULTRA) "Ultra" else "Host",
         runtimeMode = mode,
     )
 }
 
 object AndroidEffectiveForwardBuilder {
     /**
-     * Returns the Android-effective forward, or `null` for runtime modes Android does not support.
-     * Canonical LeiGod contracts are interpreted before the legacy `mode` field: dedicated LeiGod
-     * stays sidecar-less `single`, while sidecar aggregation uses Android's bond runtime, including
-     * `mptcp_preferred_bond_fallback` contracts.
+     * Accept only the current Android contract family. Raw panel fields are checked before any
+     * legacy mode normalization so unknown values can never become a usable `single` forward.
      */
     fun build(contract: ForwardContract): AndroidEffectiveForward? {
         val runtimeMode = resolveRuntimeMode(contract) ?: return null
         val runtimeContract = contract.copy(mode = runtimeMode)
         val bypassHosts = bypassHosts(runtimeContract)
+        val protectedConnectivity = protectedConnectivity(runtimeContract)
         return AndroidEffectiveForward(
             forwardId = runtimeContract.forwardId,
             serviceName = runtimeContract.serviceName,
@@ -49,90 +44,49 @@ object AndroidEffectiveForwardBuilder {
             endpoints = runtimeContract.endpoints,
             bonding = runtimeContract.bonding,
             bypassHosts = bypassHosts,
+            protectedConnectivity = protectedConnectivity,
             runtimeContract = runtimeContract,
         )
     }
 
     private fun resolveRuntimeMode(contract: ForwardContract): ForwardMode? {
-        if (!hasCanonicalContract(contract)) {
-            return contract.mode.takeIf { it == ForwardMode.SINGLE || it == ForwardMode.BOND }
-        }
-
-        if (isSidecarAggregation(contract)) {
-            return ForwardMode.BOND.takeIf { hasUsableBondAggregation(contract) }
-        }
-
-        if (isDedicatedLeiGod(contract)) {
-            return ForwardMode.SINGLE.takeIf {
-                !contract.sidecarRequired &&
-                    !contract.aggregationEnabled &&
-                    contract.target.isNotBlank() &&
-                    contract.endpoints.isNotEmpty()
-            }
-        }
-
-        val clientMode = normalizeMode(contract.clientMode) ?: contract.mode
-        return clientMode.takeIf { it == ForwardMode.SINGLE || it == ForwardMode.BOND }
-    }
-
-    private fun hasCanonicalContract(contract: ForwardContract): Boolean {
-        return contract.contractVersion > 0 ||
-            contract.clientMode.isNotBlank() ||
-            contract.runtimePreference.isNotBlank() ||
-            contract.activeFamily.isNotBlank() ||
-            contract.targetContract.isNotBlank() ||
-            contract.aggregationEnabled ||
-            contract.sidecarRequired ||
-            contract.bondSidecarPointId != null
-    }
-
-    private fun isDedicatedLeiGod(contract: ForwardContract): Boolean {
-        return contract.backendMode.equals("leigod_mode", ignoreCase = true) &&
-            (contract.activeFamily.equals("leigod_only", ignoreCase = true) ||
-                contract.targetContract.equals("dedicated_forward_node", ignoreCase = true))
-    }
-
-    private fun isSidecarAggregation(contract: ForwardContract): Boolean {
-        val clientMode = normalizeMode(contract.clientMode) ?: contract.mode
-        return contract.activeFamily.equals("sidecar_aggregation", ignoreCase = true) ||
-            contract.targetContract.equals("sidecar_aggregation", ignoreCase = true) ||
-            contract.runtimePreference.equals("mptcp_preferred_bond_fallback", ignoreCase = true) ||
-            contract.aggregationEnabled ||
-            contract.sidecarRequired ||
-            clientMode == ForwardMode.BOND ||
-            clientMode == ForwardMode.MPTCP
-    }
-
-    private fun hasUsableBondAggregation(contract: ForwardContract): Boolean {
-        val bonding = contract.bonding ?: return false
-        if (!contract.sidecarRequired || !contract.aggregationEnabled) return false
-        if (contract.bondSidecarPointId == null) return false
-        if (contract.endpoints.isEmpty()) return false
-        val ingressMode = bonding.ingressMode?.ifBlank { null } ?: "wss_path_mux"
-        return if (ingressMode == "plain_tcp_mux") {
-            !bonding.routeKey.isNullOrBlank() &&
-                contract.endpoints.any { !it.ingressAuthToken.isNullOrBlank() }
-        } else {
-            !bonding.remoteTarget.isNullOrBlank()
+        return when (contract.backendMode.trim().lowercase()) {
+            "current_mode" -> currentMode(contract)
+            // Listing must not depend on the bounded Ultra lease (300 s on older panels, up to the
+            // offline validity of ULTRA_MAX_TTL_SECONDS on newer ones): the forward list has to be
+            // stable, and the lease is only enforced at connect time (startForForward). Otherwise
+            // forwards flicker out every time the lease lapses between pulls. Nothing here depends
+            // on the lease length.
+            "ultra" -> ForwardMode.ULTRA
+            else -> null
         }
     }
 
-    private fun normalizeMode(value: String): ForwardMode? {
-        val normalized = value.trim().lowercase().takeIf { it.isNotEmpty() } ?: return null
-        return ForwardMode.normalize(normalized)
+    private fun currentMode(contract: ForwardContract): ForwardMode? {
+        val clientMode = contract.clientMode.trim().lowercase()
+        val rawMode = contract.rawMode.trim().lowercase()
+        if (rawMode.isNotEmpty() && rawMode != clientMode) return null
+        return when (clientMode) {
+            "single" -> ForwardMode.SINGLE
+            "bond" -> ForwardMode.BOND
+            else -> null
+        }
+    }
+
+    private fun protectedConnectivity(contract: ForwardContract): ProtectedConnectivitySet {
+        return ProtectedConnectivitySet.fromEndpoints(bypassHosts(contract))
     }
 
     private fun bypassHosts(contract: ForwardContract): Set<String> {
-        val hosts = linkedSetOf<String>()
+        val endpoints = linkedSetOf<String>()
         contract.endpoints.forEach { endpoint ->
-            endpoint.host.takeIf { it.isNotBlank() }?.let { hosts += it }
-            endpoint.cdnHost?.takeIf { it.isNotBlank() }?.let { hosts += it }
+            endpoints += endpoint.host
+            endpoint.cdnHost?.takeIf { it.isNotBlank() }?.let(endpoints::add)
         }
-        contract.sni.takeIf { it.isNotBlank() }?.let { hosts += it }
+        contract.sni.takeIf { it.isNotBlank() }?.let(endpoints::add)
         if (contract.mode == ForwardMode.BOND) {
-            contract.bonding?.quicServerName?.takeIf { it.isNotBlank() }?.let { hosts += it }
-            contract.mptcp?.sidecarHost?.takeIf { it.isNotBlank() }?.let { hosts += it }
+            contract.bonding?.quicServerName?.takeIf { it.isNotBlank() }?.let(endpoints::add)
         }
-        return hosts
+        return endpoints
     }
 }

@@ -1,6 +1,7 @@
 using Avalonia;
 using Serilog;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace LeikwanBridge.Mac;
 
@@ -17,6 +18,50 @@ internal static class Program
             ShowUnsupportedOsNotice();
             return 1;
         }
+        // Detached swap step of the daemon's self-update and of `leikwan update`.
+        // It runs as root from a copy of the new bundle, in its own session.
+        if (args.Length > 0 && string.Equals(args[0], Services.MacHeadlessUpdatePaths.ApplyCommand, StringComparison.Ordinal))
+            return Services.MacHeadlessUpdateApply.RunAsync(args[1..]).GetAwaiter().GetResult();
+        // `leikwan <command>` — the operator surface for the windowless client.
+        if (args.Length > 0 && string.Equals(args[0], "--cli", StringComparison.Ordinal))
+        {
+            var cliHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var cliPaths = new Services.MacPlatformPaths(cliHome, ResolveBundleDirectory());
+            var controller = new Services.MacServiceController(cliPaths);
+            // A root CLI (the wrapper runs "update" through sudo) stages into the
+            // daemon's root-only updates directory: what is staged there is what
+            // the daemon runs next.
+            var cliUpdatesRoot = OperatingSystem.IsMacOS() && Services.MacNative.geteuid() == 0
+                ? Services.MacHeadlessUpdatePaths.UpdatesRoot
+                : cliPaths.Root.TrimEnd('/', '\\') + "/updates";
+            var updater = new Services.MacClientUpdateService(
+                new Services.MacAppUpdateService(
+                    cliUpdatesRoot,
+                    cliPaths.BundleDirectory,
+                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64",
+                    // This process is the one being replaced, but it outlives the helper
+                    // so it can verify the installed version. The helper must therefore
+                    // not wait for it to exit (current_process_id = 0).
+                    waitForCallerExit: false),
+                controller,
+                Services.MacHeadlessCli.PanelUrl(cliPaths),
+                headless: Services.MacHeadlessCliUpdateInstaller.CreateDefault(cliPaths.BundleDirectory));
+            using var cliCts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, eventArgs) =>
+            {
+                eventArgs.Cancel = true;
+                cliCts.Cancel();
+            };
+            return LeikwanBridge.Core.Services.HeadlessCli
+                .RunAsync(args[1..], controller, updater, Console.Out, Console.Error, cliCts.Token)
+                .GetAwaiter().GetResult();
+        }
+        // The windowless client is a lifecycle variant of the same payload: it
+        // never initialises Avalonia, so launchd can run it without a GUI
+        // session while the Core services, lease handling and update pinning
+        // stay byte-identical to the windowed application.
+        if (args.Any(argument => string.Equals(argument, LeikwanBridge.Core.Services.HeadlessClientOptions.Flag, StringComparison.Ordinal)))
+            return Services.MacHeadlessHost.RunAsync(args).GetAwaiter().GetResult();
         if (args.Length > 0 && string.Equals(args[0], "--ultra-leak-fixture", StringComparison.Ordinal))
             return Services.MacUltraLeakFixture.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (TryConfigureUiFixture(args))
@@ -28,9 +73,15 @@ internal static class Program
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
         if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
         {
-            return Services.MacAppUpdateApplier.ApplyFromRequestAsync(args[1]).GetAwaiter().GetResult()
-                ? 0
-                : 1;
+            // Report the reason on the console as well as in the apply log: a helper
+            // that rolls back silently is indistinguishable from one that never ran.
+            var outcome = Services.MacAppUpdateApplier
+                .ApplyFromRequestOutcomeAsync(args[1])
+                .GetAwaiter()
+                .GetResult();
+            if (!outcome.Success)
+                Console.Error.WriteLine($"update_apply_failed: {outcome.Code} ({outcome.Detail})");
+            return outcome.Success ? 0 : 1;
         }
         if (Services.MacAppUpdateService.TryLaunchPendingUpdate(
                 paths.Root.TrimEnd('/', '\\') + "/updates",
@@ -47,6 +98,9 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            // Logging may not be configured when Avalonia fails before the app
+            // bootstrap. Preserve a local diagnostic for launchd and support.
+            Console.Error.WriteLine($"mac_app_start_failed:{exception}");
             Log.Error("mac_app_start_failed:{ErrorType}", exception.GetType().Name);
             return 1;
         }

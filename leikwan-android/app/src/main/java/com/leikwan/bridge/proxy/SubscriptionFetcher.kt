@@ -6,10 +6,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 object SubscriptionFetcher {
-    private val client = OkHttpClient.Builder()
+    // Direct, not via an HTTP proxy another app advertised: that proxy is usually a 127.0.0.1
+    // port of a VPN app, which breaks the fetch once the app stops and hands the user's node
+    // list to it. Sockets are deliberately not bound to the physical network (unlike panel
+    // traffic): the subscription carries no location decision, and a user who needs their
+    // own VPN to reach the provider keeps normal device routing.
+    internal val client = OkHttpClient.Builder()
+        .proxy(Proxy.NO_PROXY)
         // Resolve subscription hostnames over DoH to avoid GFW UDP/53 poisoning.
         .dns(AppDns.shared())
         .connectTimeout(15, TimeUnit.SECONDS)

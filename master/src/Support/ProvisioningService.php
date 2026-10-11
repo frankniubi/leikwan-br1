@@ -174,8 +174,14 @@ final class ProvisioningService
         $serverHostname = is_array($productIdentity) ? $productIdentity['hostname'] : trim((string) ($payload['server_hostname'] ?? ''));
         $serverPublicIp = is_array($productIdentity) ? $productIdentity['server_ip'] : trim((string) ($payload['server_public_ip'] ?? ''));
         $serverIpState = $serverPublicIp !== '' ? 'fresh' : 'missing';
+        $whmcsClientId = max(0, (int) ($payload['whmcs_client_id'] ?? 0));
+        $whmcsUserId = max(0, (int) ($payload['whmcs_user_id'] ?? 0));
+        $initialPassword = (string) ($payload['initial_password'] ?? '');
 
         return $this->db->transaction(function () use (
+            $whmcsClientId,
+            $whmcsUserId,
+            $initialPassword,
             $userEmail,
             $userName,
             $whmcsServiceId,
@@ -191,7 +197,14 @@ final class ProvisioningService
             $serverPublicIp,
             $serverIpState
         ): array {
-            $user = $this->ensureUser($userEmail, $userName);
+            $user = $whmcsClientId > 0
+                ? $this->ensureWhmcsBoundUser($whmcsClientId, $whmcsUserId, $userEmail, $userName, $initialPassword)
+                : $this->ensureUser($userEmail, $userName);
+            if ((string) ($user['role'] ?? '') !== 'tenant') {
+                throw new ApiException('whmcs_binding_not_supported', 409, [
+                    'message' => 'The billing email belongs to a non-tenant panel account.',
+                ]);
+            }
             $plan = $explicitPlanId > 0
                 ? ($this->db->fetchOne('SELECT * FROM service_plans WHERE id = :id LIMIT 1', ['id' => $explicitPlanId]) ?? $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit))
                 : $this->ensurePlan($productCode, $bandwidthLimit, $trafficLimit);
@@ -290,6 +303,12 @@ final class ProvisioningService
             }
 
             $serviceId = (int) $service['id'];
+            // Desktop/Android login refuses an account without a client, so a
+            // billing-created tenant could never obtain an Ultra lease.
+            if ((string) ($user['status'] ?? '') === 'active') {
+                $this->ensureDefaultClientForUser((int) $user['id']);
+            }
+            $this->raiseClientDeviceLimitsToPlanDefault((int) $user['id']);
             foreach ($forwards as $forwardPayload) {
                 if (!is_array($forwardPayload)) {
                     continue;
@@ -352,6 +371,7 @@ final class ProvisioningService
                 'updated_at' => $this->now(),
             ]
         );
+        $this->raiseClientDeviceLimitsToPlanDefault((int) ($service['user_id'] ?? 0));
         $this->queueLifecycleTasks((int) $service['id'], 'resume');
         $this->audit('service.renewed', ['service_id' => $service['id'], 'source' => 'whmcs']);
         return $this->serviceSummary((int) $service['id']);
@@ -381,6 +401,54 @@ final class ProvisioningService
         $this->queueLifecycleTasks((int) $service['id'], 'suspend');
         $this->audit('service.suspended', ['service_id' => $service['id'], 'reason' => $reason, 'source' => 'whmcs']);
         return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * Lift a WHMCS suspension. Unlike renewService this is an operator action:
+     * it ignores the plan's renewal flag and keeps expire_at unless WHMCS sends
+     * the current due date.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function unsuspendService(array $payload): array
+    {
+        $service = $this->getServiceByWhmcsId((int) $this->requiredString($payload, 'whmcs_service_id'));
+        if ((string) ($service['status'] ?? '') === 'terminated') {
+            throw new ApiException('service_terminated', 409, ['service_id' => (int) $service['id']]);
+        }
+        $expireAt = trim((string) ($payload['expire_at'] ?? ''));
+        $this->db->execute(
+            'UPDATE services
+             SET status = :status,
+                 expire_at = :expire_at,
+                 suspend_reason = NULL,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $service['id'],
+                'status' => 'active',
+                'expire_at' => $expireAt !== '' ? $expireAt : $service['expire_at'],
+                'updated_at' => $this->now(),
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'resume');
+        $this->audit('service.unsuspended', ['service_id' => $service['id'], 'source' => 'whmcs']);
+        return $this->serviceSummary((int) $service['id']);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listPlansForWhmcs(): array
+    {
+        return array_map(static fn(array $plan): array => [
+            'id' => (int) $plan['id'],
+            'name' => (string) $plan['name'],
+            'product_code' => (string) ($plan['product_code'] ?? ''),
+            'bandwidth_mbps' => (int) ($plan['default_bandwidth_limit_mbps'] ?? 0),
+            'traffic_gb' => (int) ($plan['default_traffic_limit_gb'] ?? 0),
+        ], $this->db->fetchAll('SELECT id, name, product_code, default_bandwidth_limit_mbps, default_traffic_limit_gb FROM service_plans WHERE is_active = 1 ORDER BY id'));
     }
 
     /**
@@ -793,9 +861,10 @@ final class ProvisioningService
             }
             $rows = $this->db->fetchAll(
                 'SELECT ul.id, ul.line_id, ul.is_source_present, ul.is_enabled,
+                        ul.access_class, ul.native_udp_state,
                         COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
                         COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone
-                 FROM ultra_lines ul
+             FROM ultra_lines ul
                  WHERE ul.id IN (' . implode(', ', $placeholders) . ')',
                 $params
             );
@@ -806,6 +875,8 @@ final class ProvisioningService
                 if (!isset($requested[$ultraLineId])
                     || (int) ($row['is_source_present'] ?? 0) !== 1
                     || (int) ($row['is_enabled'] ?? 0) !== 1
+                    || (string) ($row['access_class'] ?? 'native_udp') !== 'native_udp'
+                    || (string) ($row['native_udp_state'] ?? 'verified') !== 'verified'
                     || $rowDestination !== $destination
                     || !in_array($ingress, $allowedIngressZones, true)) {
                     continue;
@@ -841,6 +912,168 @@ final class ProvisioningService
             }
         }
         return $codes;
+    }
+
+    /**
+     * Normalize the operator-owned external UoT sidecar contract stored on an
+     * Ultra forward combination. The token is intentionally returned only in
+     * the short-lived Ultra grant; it is never copied into tenant-facing
+     * display fields.
+     *
+     * @return array{enabled:int,sidecar_target:?string,token:?string,queue_packets:int,keepalive_seconds:int,reconnect_grace_seconds:int,frame_payload_max:int}
+     */
+    private function normalizeExternalUoTCombination(array $payload, string $backendMode, int $combinationId): array
+    {
+        $empty = [
+            'enabled' => 0,
+            'sidecar_target' => null,
+            'token' => null,
+            'queue_packets' => 256,
+            'keepalive_seconds' => 10,
+            'reconnect_grace_seconds' => 30,
+            'frame_payload_max' => 65507,
+        ];
+        if (!UltraMode::isBackendMode($backendMode)) {
+            return $empty;
+        }
+
+        // An omitted flag means "use the operator default".  The admin form
+        // still sends an explicit 0 when an operator unchecks the control.
+        $enabled = array_key_exists('external_uot_enabled', $payload)
+            ? $this->configValueEnabled($payload['external_uot_enabled'])
+            : ExternalUoTDefaults::enabled($this->config);
+        if (!$enabled) {
+            return $empty;
+        }
+
+        $target = trim((string) ($payload['external_uot_sidecar_target'] ?? ''));
+        $token = trim((string) ($payload['external_uot_token'] ?? ''));
+        if ($combinationId > 0 && ($target === '' || $token === '')) {
+            try {
+                $existing = $this->db->fetchOne(
+                    'SELECT external_uot_sidecar_target, external_uot_token,
+                            external_uot_queue_packets, external_uot_keepalive_seconds,
+                            external_uot_reconnect_grace_seconds, external_uot_frame_payload_max
+                     FROM forward_combinations WHERE id = :id LIMIT 1',
+                    ['id' => $combinationId]
+                );
+                if (is_array($existing)) {
+                    if ($target === '') {
+                        $target = trim((string) ($existing['external_uot_sidecar_target'] ?? ''));
+                    }
+                    if ($token === '') {
+                        $token = trim((string) ($existing['external_uot_token'] ?? ''));
+                    }
+                    foreach (['queue_packets', 'keepalive_seconds', 'reconnect_grace_seconds', 'frame_payload_max'] as $key) {
+                        if (!array_key_exists('external_uot_' . $key, $payload) && array_key_exists('external_uot_' . $key, $existing)) {
+                            $payload['external_uot_' . $key] = $existing['external_uot_' . $key];
+                        }
+                    }
+                }
+            } catch (Throwable) {
+                // A missing legacy column is handled by the migration; keep validation below fail-closed.
+            }
+        }
+
+        if ($target === '') {
+            $target = ExternalUoTDefaults::targetForZone(
+                $this->config,
+                (string) ($payload['ultra_destination_zone'] ?? '')
+            );
+        }
+        if ($token === '') {
+            $token = ExternalUoTDefaults::generatedToken();
+        }
+
+        if ($target === '' || preg_match('/^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$|^[A-Za-z0-9._-]+:[0-9]{1,5}$/', $target) !== 1) {
+            throw new ApiException('invalid_external_uot_sidecar_target', 422);
+        }
+        $port = (int) substr($target, strrpos($target, ':') + 1);
+        if ($port < 1 || $port > 65535) {
+            throw new ApiException('invalid_external_uot_sidecar_target', 422);
+        }
+        if ($token === '' || strlen($token) > 8192 || preg_match('/\s/', $token) === 1) {
+            throw new ApiException('invalid_external_uot_token', 422);
+        }
+
+        return [
+            'enabled' => 1,
+            'sidecar_target' => $target,
+            'token' => $token,
+            'queue_packets' => max(1, min(4096, (int) ($payload['external_uot_queue_packets'] ?? 256))),
+            'keepalive_seconds' => max(5, min(30, (int) ($payload['external_uot_keepalive_seconds'] ?? 10))),
+            'reconnect_grace_seconds' => max(5, min(300, (int) ($payload['external_uot_reconnect_grace_seconds'] ?? 30))),
+            'frame_payload_max' => max(256, min(65507, (int) ($payload['external_uot_frame_payload_max'] ?? 65507))),
+        ];
+    }
+
+    /**
+     * Target allowlist for a combination save. An omitted field keeps the stored
+     * list (CLI seeders call saveForwardCombination without it); an explicit
+     * empty field clears it. A new or changed list must still admit every
+     * enabled forward already on the combination, otherwise those forwards
+     * would keep running against targets the route no longer accepts.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function normalizeCombinationTargetAllowlist(array $payload, int $combinationId): ?string
+    {
+        if (!array_key_exists('allowed_target_cidrs', $payload)) {
+            if ($combinationId <= 0) {
+                return null;
+            }
+            $existing = $this->db->fetchOne(
+                'SELECT allowed_target_cidrs FROM forward_combinations WHERE id = :id LIMIT 1',
+                ['id' => $combinationId]
+            );
+            $stored = trim((string) ($existing['allowed_target_cidrs'] ?? ''));
+            return $stored !== '' ? $stored : null;
+        }
+
+        $allowlist = ForwardTargetAllowlist::normalize($payload['allowed_target_cidrs']);
+        if ($allowlist === null || $combinationId <= 0) {
+            return $allowlist;
+        }
+        $outside = [];
+        foreach ($this->db->fetchAll(
+            'SELECT id, target_host, native_outbound_enabled
+             FROM forwards
+             WHERE forward_combination_id = :id AND enabled = 1',
+            ['id' => $combinationId]
+        ) as $forward) {
+            if (!empty($forward['native_outbound_enabled'])
+                || !ForwardTargetAllowlist::allows($allowlist, (string) ($forward['target_host'] ?? ''))) {
+                $outside[] = (int) ($forward['id'] ?? 0);
+            }
+        }
+        if ($outside !== []) {
+            throw new ApiException('forward_target_allowlist_conflict', 422, [
+                'forward_ids' => array_slice($outside, 0, 50),
+                'message' => count($outside) . ' enabled forward(s) on this combination target addresses outside the allowlist: #'
+                    . implode(', #', array_slice($outside, 0, 20)),
+            ]);
+        }
+        return $allowlist;
+    }
+
+    /**
+     * Refuse a forward target the combination's allowlist does not cover. Native
+     * outbound carries arbitrary destinations, so it can never satisfy a list.
+     *
+     * @param array<string, mixed>|null $combination
+     */
+    private function assertForwardTargetAllowedByCombination(?array $combination, string $targetHost, bool $nativeOutbound): void
+    {
+        $allowlist = (string) ($combination['allowed_target_cidrs'] ?? '');
+        if (!ForwardTargetAllowlist::isRestricted($allowlist)) {
+            return;
+        }
+        if ($nativeOutbound || !ForwardTargetAllowlist::allows($allowlist, $targetHost)) {
+            throw new ApiException('forward_target_not_allowed', 422, [
+                'forward_combination_id' => (int) ($combination['id'] ?? 0),
+                'message' => 'This route only accepts target IP addresses on its allowlist.',
+            ]);
+        }
     }
 
     /** @param array<int, array{ultra_line_id:int,sort_order:int}> $memberships */
@@ -963,8 +1196,10 @@ final class ProvisioningService
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
+        $allowedTargetCidrs = $this->normalizeCombinationTargetAllowlist($payload, $id);
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $ultraPolicy = $this->normalizeUltraCombinationPolicy($payload, $backendMode);
+        $externalUoT = $this->normalizeExternalUoTCombination($payload, $backendMode, $id);
         $leigodLineId = UltraMode::isBackendMode($backendMode)
             ? 0
             : max(0, (int) ($payload['leigod_line_id'] ?? 0));
@@ -1106,12 +1341,20 @@ final class ProvisioningService
             'ultra_destination_zone' => $ultraPolicy['destination_zone'],
             'ultra_allowed_ingress_zones_json' => $ultraPolicy['allowed_ingress_zones_json'],
             'ultra_fallback_policy' => $ultraPolicy['fallback_policy'],
+            'external_uot_enabled' => $externalUoT['enabled'],
+            'external_uot_sidecar_target' => $externalUoT['sidecar_target'],
+            'external_uot_token' => $externalUoT['token'],
+            'external_uot_queue_packets' => $externalUoT['queue_packets'],
+            'external_uot_keepalive_seconds' => $externalUoT['keepalive_seconds'],
+            'external_uot_reconnect_grace_seconds' => $externalUoT['reconnect_grace_seconds'],
+            'external_uot_frame_payload_max' => $externalUoT['frame_payload_max'],
             'desired_latency_ms' => $desiredLatencyMs,
             'allow_public_self_leg_donation' => $allowPublicSelfLegDonation,
             'donation_qualify_window_seconds' => $donationQualifyWindowSeconds,
             'donation_revoke_window_seconds' => $donationRevokeWindowSeconds,
             'donation_min_open_ports' => $donationMinOpenPorts,
             'bond_ingress_mode' => $bondIngressMode,
+            'allowed_target_cidrs' => $allowedTargetCidrs,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
             'notes' => $notes !== '' ? $notes : null,
@@ -1167,12 +1410,20 @@ final class ProvisioningService
                          ultra_destination_zone = :ultra_destination_zone,
                          ultra_allowed_ingress_zones_json = :ultra_allowed_ingress_zones_json,
                          ultra_fallback_policy = :ultra_fallback_policy,
+                         external_uot_enabled = :external_uot_enabled,
+                         external_uot_sidecar_target = :external_uot_sidecar_target,
+                         external_uot_token = :external_uot_token,
+                         external_uot_queue_packets = :external_uot_queue_packets,
+                         external_uot_keepalive_seconds = :external_uot_keepalive_seconds,
+                         external_uot_reconnect_grace_seconds = :external_uot_reconnect_grace_seconds,
+                         external_uot_frame_payload_max = :external_uot_frame_payload_max,
                          desired_latency_ms = :desired_latency_ms,
                          allow_public_self_leg_donation = :allow_public_self_leg_donation,
                          donation_qualify_window_seconds = :donation_qualify_window_seconds,
                          donation_revoke_window_seconds = :donation_revoke_window_seconds,
                          donation_min_open_ports = :donation_min_open_ports,
                          bond_ingress_mode = :bond_ingress_mode,
+                         allowed_target_cidrs = :allowed_target_cidrs,
                          is_active = :is_active,
                          sort_order = :sort_order,
                          notes = :notes,
@@ -1971,6 +2222,48 @@ final class ProvisioningService
         );
 
         return max(1, (int) ($service['default_client_online_device_limit'] ?? 1));
+    }
+
+    /**
+     * The plan limit only seeds new clients, so a client created before its
+     * owner bought a plan stayed at 1. Raise only: admins may grant more.
+     */
+    public function raiseClientDeviceLimitsToPlanDefault(int $userId): int
+    {
+        if ($userId <= 0) {
+            return 0;
+        }
+
+        $row = $this->db->fetchOne(
+            'SELECT MAX(p.default_client_online_device_limit) AS plan_limit
+             FROM services s
+             INNER JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.user_id = :user_id
+               AND s.status = :status',
+            [
+                'user_id' => $userId,
+                'status' => 'active',
+            ]
+        );
+        $planLimit = (int) ($row['plan_limit'] ?? 0);
+        if ($planLimit <= 1) {
+            return 0;
+        }
+
+        return $this->db->execute(
+            'UPDATE clients
+             SET online_device_limit = :plan_limit,
+                 updated_at = :updated_at
+             WHERE owner_user_id = :owner_user_id
+               AND group_id IS NULL
+               AND online_device_limit < :plan_limit_floor',
+            [
+                'plan_limit' => $planLimit,
+                'plan_limit_floor' => $planLimit,
+                'owner_user_id' => $userId,
+                'updated_at' => $this->now(),
+            ]
+        );
     }
 
     /**
@@ -2853,6 +3146,7 @@ final class ProvisioningService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            $this->raiseClientDeviceLimitsToPlanDefault((int) $user['id']);
 
             $this->audit('service.purchased', [
                 'service_id' => $serviceId,
@@ -3014,6 +3308,8 @@ final class ProvisioningService
         $extraClientPrice = $this->normalizeMoney($payload['extra_client_price'] ?? '0');
         $maxForwardRuleQuantity = max(1, min(100000, (int) ($payload['max_forward_rule_quantity'] ?? 64)));
         $isActive = (int) (($payload['is_active'] ?? '1') ? 1 : 0);
+        $geoLockValue = strtolower(trim((string) ($payload['geo_lock_enabled'] ?? '0')));
+        $geoLockEnabled = in_array($geoLockValue, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
         $featureFlagsJson = $this->normalizeJsonField($payload['feature_flags_json'] ?? $payload['feature_flags'] ?? null);
         $groupIds = [];
         foreach ((array) ($payload['allowed_node_group_ids'] ?? []) as $groupId) {
@@ -3113,7 +3409,7 @@ final class ProvisioningService
             );
         }
 
-        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $maxForwardRuleQuantity, $isActive, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
+        return $this->db->transaction(function () use ($id, $name, $productCode, $description, $bandwidth, $traffic, $billingMode, $billingCurrency, $monthlyBaseFee, $monthlyIncludedTraffic, $trafficPricePerGb, $trafficResetPrice, $bandwidthStepMbps, $bandwidthStepPrice, $includedClientCount, $extraClientPrice, $maxForwardRuleQuantity, $isActive, $geoLockEnabled, $featureFlagsJson, $groupIds, $clientGroupIds, $sidecarPointIds, $forwardCombinationIds, $forwardRouteIds, $payload): array {
             if ($id > 0) {
                 $this->db->execute(
                     'UPDATE service_plans
@@ -3137,6 +3433,7 @@ final class ProvisioningService
                          max_forward_rule_quantity = :max_forward_rule_quantity,
                          is_active = :is_active,
                          is_tenant_visible = :is_tenant_visible,
+                         geo_lock_enabled = :geo_lock_enabled,
                          feature_flags_json = :feature_flags_json,
                          updated_at = :updated_at
                      WHERE id = :id',
@@ -3162,6 +3459,7 @@ final class ProvisioningService
                         'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                         'is_active' => $isActive,
                         'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
+                        'geo_lock_enabled' => $geoLockEnabled,
                         'feature_flags_json' => $featureFlagsJson,
                         'updated_at' => $this->now(),
                     ]
@@ -3188,6 +3486,7 @@ final class ProvisioningService
                     'max_forward_rule_quantity' => $maxForwardRuleQuantity,
                     'is_active' => $isActive,
                     'is_tenant_visible' => (int) (($payload['is_tenant_visible'] ?? '1') ? 1 : 0),
+                    'geo_lock_enabled' => $geoLockEnabled,
                     'feature_flags_json' => $featureFlagsJson,
                     'created_at' => $this->now(),
                     'updated_at' => $this->now(),
@@ -3727,7 +4026,7 @@ final class ProvisioningService
         }
 
         $forwards = $this->db->fetchAll(
-            'SELECT f.id, f.service_id, s.status AS service_status
+            'SELECT f.id, f.service_id, s.status AS service_status, s.expire_at AS service_expire_at
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.enabled = 1
@@ -3739,6 +4038,15 @@ final class ProvisioningService
         $matched = [];
         foreach ($forwards as $forward) {
             $forwardId = (int) $forward['id'];
+            // A service past its expiry keeps status 'active' until billing
+            // catches up, but the Ultra broker already refuses it a grant. Handing
+            // clients such a forward as active made every one of them treat it as
+            // a dead runtime and re-pull and re-lease every forward every few
+            // seconds. Same expiry test as the broker (LeigodTokenBroker).
+            $serviceExpiresAt = $this->serviceExpiryTimestamp((string) ($forward['service_expire_at'] ?? ''));
+            if ($serviceExpiresAt !== null && $serviceExpiresAt <= time()) {
+                continue;
+            }
             $row = $this->db->fetchOne('SELECT * FROM forwards WHERE id = :id LIMIT 1', ['id' => $forwardId]);
             if ($row === null) {
                 continue;
@@ -4118,6 +4426,98 @@ final class ProvisioningService
         return $mapping;
     }
 
+    /** @param array<int, array<string, mixed>> $forwards @return array<string, mixed>|null */
+    public function nativeOutboundCapabilityForAssignedForwards(array $forwards): ?array
+    {
+        $eligible = [];
+        $serviceIds = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || (string) ($forward['service_status'] ?? '') !== 'active'
+                || empty($forward['native_outbound_enabled'] ?? $forward['native_outbound'] ?? false)
+                || strtolower(trim((string) ($forward['transport'] ?? ''))) !== 'tcp+udp') {
+                continue;
+            }
+            $forwardId = (int) ($forward['forward_id'] ?? 0);
+            $serviceId = (int) ($forward['service_id'] ?? 0);
+            if ($forwardId <= 0 || $serviceId <= 0) {
+                continue;
+            }
+            $eligible[$forwardId] = $forward;
+            $serviceIds[$serviceId] = $serviceId;
+        }
+        if ($eligible === [] || $serviceIds === []) {
+            return null;
+        }
+
+        $params = [];
+        $placeholders = [];
+        foreach (array_values($serviceIds) as $index => $serviceId) {
+            $key = 'native_service_' . $index;
+            $params[$key] = $serviceId;
+            $placeholders[] = ':' . $key;
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT s.id AS service_id, p.feature_flags_json AS plan_feature_flags_json
+             FROM services s
+             LEFT JOIN service_plans p ON p.id = s.plan_id
+             WHERE s.id IN (' . implode(', ', $placeholders) . ')',
+            $params
+        );
+        $allowedServices = [];
+        foreach ($rows as $row) {
+            $serviceId = (int) ($row['service_id'] ?? 0);
+            if ($serviceId > 0 && $this->planAllowsNativeOutbound($row)) {
+                $allowedServices[$serviceId] = [
+                    'unrestricted_allowed' => $this->planAllowsNativeUnrestrictedOutbound($row),
+                ];
+            }
+        }
+
+        $carriers = [];
+        foreach ($eligible as $forwardId => $forward) {
+            $servicePolicy = $allowedServices[(int) ($forward['service_id'] ?? 0)] ?? null;
+            if (!is_array($servicePolicy)) {
+                continue;
+            }
+            $direction = substr(UltraMode::redactProviderText(trim((string) ($forward['forward_combination_direction'] ?? ''))), 0, 191);
+            $routeScopes = UltraMode::nativeRouteScopesForDirection($direction);
+            $carriers[] = [
+                'forward_id' => $forwardId,
+                'direction' => $direction,
+                'scope_digest' => UltraMode::nativeScopeDigest($forwardId, $direction, 'tcp+udp', 'global'),
+                'transport' => 'tcp+udp',
+                'route_scopes' => $routeScopes,
+                'default_route_scope' => 'global',
+                'unrestricted_allowed' => !empty($servicePolicy['unrestricted_allowed']),
+            ];
+        }
+        if ($carriers === []) {
+            return null;
+        }
+        usort($carriers, static fn(array $left, array $right): int => (int) $left['forward_id'] <=> (int) $right['forward_id']);
+        $forwardIds = array_map(static fn(array $carrier): int => (int) $carrier['forward_id'], $carriers);
+        $routeScopes = [];
+        foreach ($carriers as $carrier) {
+            foreach ((array) $carrier['route_scopes'] as $scope) {
+                $routeScopes[(string) $scope] = true;
+            }
+        }
+        return [
+            'enabled' => true,
+            'protocol' => 'socks5',
+            'lease_protocol' => UltraMode::NATIVE_SOCKS5_PROTOCOL,
+            'transport' => 'tcp+udp',
+            'forward_ids' => $forwardIds,
+            'default_forward_id' => $forwardIds[0],
+            'route_scopes' => array_values(array_keys($routeScopes)),
+            'default_route_scope' => 'global',
+            'unrestricted_allowed' => false,
+            'forwards' => $carriers,
+        ];
+    }
+
     /**
      * Build broker-only Ultra metadata without placing line numbers in the
      * authenticated client response.
@@ -4125,7 +4525,12 @@ final class ProvisioningService
      * @param array<int, array<string, mixed>> $forwards
      * @return array<string, array<string, mixed>>
      */
-    public function ultraLineMetadataForAssignedForwards(array $forwards): array
+    /**
+     * @param bool $requireFreshMaterial false lists every enabled line of each
+     *        forward's combination, material or not (used for rules that must cover
+     *        the whole direction, e.g. TCP first-flight), with a cap of 16 lines.
+     */
+    public function ultraLineMetadataForAssignedForwards(array $forwards, bool $requireFreshMaterial = true): array
     {
         $eligible = [];
         foreach ($forwards as $forward) {
@@ -4155,10 +4560,24 @@ final class ProvisioningService
                     fc.ultra_destination_zone,
                     fc.ultra_allowed_ingress_zones_json,
                     fc.ultra_fallback_policy,
+                    fc.external_uot_enabled,
+                    fc.external_uot_sidecar_target,
+                    fc.external_uot_token,
+                    fc.external_uot_queue_packets,
+                    fc.external_uot_keepalive_seconds,
+                    fc.external_uot_reconnect_grace_seconds,
+                    fc.external_uot_frame_payload_max,
                     fcul.ultra_line_id,
                     fcul.sort_order,
                     ul.source_id,
                     ul.line_id,
+                    ul.access_class,
+                    ul.native_udp_state,
+                    ul.native_socks5_state,
+                    ul.route_class,
+                    ul.pricing_class,
+                    ul.pricing_evidence,
+                    COALESCE(ul.admin_dispatch_class, ul.dispatch_class) AS dispatch_class,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS destination_zone
              FROM forwards f
@@ -4169,21 +4588,26 @@ final class ProvisioningService
                      ON ul.id = fcul.ultra_line_id
                     AND ul.is_source_present = 1
                     AND ul.is_enabled = 1
+                     AND ((ul.access_class = \'native_udp\' AND ul.native_udp_state = \'verified\')
+                          OR ul.native_socks5_state = \'verified\')
              INNER JOIN ultra_sources us
                      ON us.source_id = ul.source_id
                     AND us.is_active = 1
              WHERE f.id IN (' . implode(', ', $placeholders) . ')
                AND fc.backend_mode = :ultra_backend_mode
                AND COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) = fc.ultra_destination_zone
-               AND ul.last_material_expires_at > UTC_TIMESTAMP()
-             ORDER BY f.id ASC, us.priority ASC, fcul.sort_order ASC, fcul.id ASC',
+               ' . ($requireFreshMaterial ? 'AND ul.last_material_expires_at > UTC_TIMESTAMP()' : '') . '
+             ORDER BY f.id ASC, us.priority ASC,
+                      CASE WHEN COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = \'low\' THEN 1 ELSE 0 END ASC,
+                      CASE WHEN ul.pricing_class IN (\'paid\', \'mixed\') THEN 0 WHEN ul.pricing_class = \'unknown\' THEN 1 ELSE 2 END ASC,
+                      fcul.sort_order ASC, fcul.id ASC',
             $params + ['ultra_backend_mode' => UltraMode::BACKEND_MODE]
         );
         $result = [];
         $seenByForward = [];
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
-            if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= 8) {
+            if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= ($requireFreshMaterial ? 8 : 16)) {
                 continue;
             }
             $key = (string) $forwardId;
@@ -4202,6 +4626,21 @@ final class ProvisioningService
                     )),
                     'fallback_policy' => strtolower(trim((string) ($row['ultra_fallback_policy'] ?? 'detected_then_any'))),
                 ];
+                if ((int) ($row['external_uot_enabled'] ?? 0) === 1) {
+                    $sidecarTarget = trim((string) ($row['external_uot_sidecar_target'] ?? ''));
+                    $token = trim((string) ($row['external_uot_token'] ?? ''));
+                    if ($sidecarTarget !== '' && $token !== '') {
+                        $result[$key]['external_uot'] = [
+                            'enabled' => true,
+                            'sidecar_target' => $sidecarTarget,
+                            'token' => $token,
+                            'queue_packets' => max(1, min(4096, (int) ($row['external_uot_queue_packets'] ?? 256))),
+                            'keepalive_seconds' => max(5, min(30, (int) ($row['external_uot_keepalive_seconds'] ?? 10))),
+                            'reconnect_grace_seconds' => max(5, min(300, (int) ($row['external_uot_reconnect_grace_seconds'] ?? 30))),
+                            'frame_payload_max' => max(256, min(65507, (int) ($row['external_uot_frame_payload_max'] ?? 65507))),
+                        ];
+                    }
+                }
             }
             $lineId = (int) ($row['line_id'] ?? 0);
             $sourceId = trim((string) ($row['source_id'] ?? ''));
@@ -4217,6 +4656,13 @@ final class ProvisioningService
                 'source_id' => $sourceId,
                 'ingress_zone' => strtolower(trim((string) ($row['ingress_zone'] ?? 'unknown'))),
                 'destination_zone' => strtolower(trim((string) ($row['destination_zone'] ?? 'unknown'))),
+                'access_class' => strtolower(trim((string) ($row['access_class'] ?? 'unknown'))),
+                'native_udp_state' => strtolower(trim((string) ($row['native_udp_state'] ?? 'unknown'))),
+                'native_socks5_state' => strtolower(trim((string) ($row['native_socks5_state'] ?? 'unknown'))),
+                'route_class' => strtolower(trim((string) ($row['route_class'] ?? 'unknown'))),
+                'pricing_class' => strtolower(trim((string) ($row['pricing_class'] ?? 'unknown'))),
+                'pricing_evidence' => trim((string) ($row['pricing_evidence'] ?? '')),
+                'dispatch_class' => strtolower(trim((string) ($row['dispatch_class'] ?? 'normal'))),
                 'sort_order' => (int) ($row['sort_order'] ?? 100),
             ];
         }
@@ -4939,6 +5385,43 @@ final class ProvisioningService
                 $listenPort,
                 false
             );
+            $this->assertForwardTargetAllowedByCombination(
+                $this->forwardCombinationById((int) ($forward['forward_combination_id'] ?? 0)),
+                $targetHost,
+                !empty($forward['native_outbound_enabled'])
+            );
+
+            // Regression sentinel: ultra_target_change_reprovisions_lease_plane
+            // An Ultra forward is provisioned by a short-lived LEASE, and the
+            // lease scope digest covers the target, transport and port:
+            // LeigodTokenBroker::policyGeneration() folds
+            // hash('sha256', target) (LeigodTokenBroker.php:497) and
+            // UltraLeaseService::loadForwardPolicy() builds the same generation
+            // from the row (UltraLeaseService.php:1066), while
+            // UltraLeaseService::issueLease() refuses any lease whose presented
+            // policy_generation (:146) or target_digest (:189) no longer match.
+            // Writing a new target therefore invalidates every lease and every
+            // "ultra_access" grant the client holds, yet the only re-provisioning
+            // call on this path is the ENDPOINT plane below, and
+            // reconcileForwardEndpoints() is a deliberate no-op for Ultra
+            // (ProvisioningService.php:8740 sets desiredCount = 0, :8776-8793
+            // zeroes endpoint_count). That is how an enabled Ultra forward was
+            // left with no lease and no listener while still reading as enabled.
+            //
+            // So: re-provision the lease plane here, or refuse the edit. A
+            // refusal throws out of the surrounding transaction, so the operator
+            // keeps the previous, still-provisioned target instead of silently
+            // losing the forward.
+            if ($this->ultraLeaseReprovisionRequired($forward, $targetHost, $targetPort, $transportMode)) {
+                $this->reprovisionUltraLeasePlane(
+                    $forward,
+                    $targetHost,
+                    $targetPort,
+                    $transportMode,
+                    $listenPort,
+                    $actor
+                );
+            }
 
             $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
             $this->db->execute(
@@ -4976,6 +5459,137 @@ final class ProvisioningService
         });
     }
 
+    /**
+     * Whether this edit moves an Ultra forward's lease scope.
+     *
+     * Only an ENABLED Ultra forward can be un-provisioned by a target change: a
+     * paused one intentionally holds no lease, and its start path re-provisions
+     * it. Everything else is left on the ordinary config-edit path.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function ultraLeaseReprovisionRequired(
+        array $forward,
+        string $targetHost,
+        int $targetPort,
+        string $transportMode
+    ): bool {
+        if (!UltraMode::isBackendMode($forward['backend_mode'] ?? '')) {
+            return false;
+        }
+        if ((int) ($forward['enabled'] ?? 0) !== 1) {
+            return false;
+        }
+
+        // Exactly the fields the lease scope digest covers. listen_port is
+        // deliberately NOT here: it is a runtime re-apply concern (the runtime
+        // rebinds), it does not appear in policyGeneration() and it does not
+        // invalidate a lease the client already holds, so changing it can never
+        // silently un-provision an Ultra forward.
+        return (string) ($forward['target_host'] ?? '') !== $targetHost
+            || (int) ($forward['target_port'] ?? 0) !== $targetPort
+            || (string) ($forward['transport_mode'] ?? 'tcp') !== $transportMode;
+    }
+
+    /**
+     * Re-provision the Ultra lease plane for a forward whose lease scope just
+     * changed, or refuse the edit.
+     *
+     * The panel cannot push a lease - the agent pulls one - so "re-issue
+     * immediately" means: prove a lease can be issued for the new scope, then
+     * retire every lease that belongs to the superseded scope so the next poll
+     * has to take the new one. If a lease cannot be issued the edit is refused
+     * (ApiException rolls the surrounding transaction back), because the
+     * alternative is an enabled forward with no lease and no listener.
+     *
+     * @param array<string, mixed> $forward
+     */
+    private function reprovisionUltraLeasePlane(
+        array $forward,
+        string $targetHost,
+        int $targetPort,
+        string $transportMode,
+        int $listenPort,
+        string $actor
+    ): void {
+        $forwardId = (int) ($forward['id'] ?? 0);
+        if ($forwardId <= 0) {
+            return;
+        }
+
+        $blocker = $this->ultraLeaseReprovisionBlocker($forwardId, (int) ($forward['service_id'] ?? 0));
+        if ($blocker !== null) {
+            throw new ApiException('ultra_reprovision_unavailable', 409, [
+                'forward_id' => $forwardId,
+                'reason' => $blocker,
+            ]);
+        }
+
+        // Fail closed for the old scope: a lease minted for the superseded
+        // target must never be honoured again, and the runtime must come back
+        // through the new grant instead of reusing the one it already holds.
+        $revoked = (new UltraLeaseService($this->config, $this->db))->revokeForwardLeases($forwardId);
+
+        $this->audit('forward.ultra_reprovisioned', [
+            'forward_id' => $forwardId,
+            'service_id' => (int) ($forward['service_id'] ?? 0),
+            'actor' => $actor,
+            'previous_target' => (string) ($forward['target_host'] ?? '') . ':' . (int) ($forward['target_port'] ?? 0),
+            'previous_transport' => (string) ($forward['transport_mode'] ?? ''),
+            'target' => $targetHost . ':' . $targetPort,
+            'transport' => $transportMode,
+            'listen_port' => $listenPort,
+            'revoked_leases' => $revoked,
+        ]);
+    }
+
+    /**
+     * Null when a fresh Ultra lease can be issued for this forward right now,
+     * otherwise the reason the edit must be refused.
+     *
+     * Reuses the exact predicate the grant path uses to decide whether an Ultra
+     * forward is leaseable at all
+     * (ProvisioningService::ultraLineMetadataForAssignedForwards(): enabled
+     * line, source present, verified carrier, matching destination zone and
+     * unexpired material), so "green here" and "a lease is issued there" cannot
+     * drift apart.
+     */
+    private function ultraLeaseReprovisionBlocker(int $forwardId, int $serviceId): ?string
+    {
+        $serviceStatus = $serviceId > 0
+            ? $this->db->fetchOne('SELECT status FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId])
+            : null;
+        if (!is_array($serviceStatus) || (string) ($serviceStatus['status'] ?? '') !== 'active') {
+            return 'service_not_active';
+        }
+
+        $metadata = $this->ultraLineMetadataForAssignedForwards([[
+            'forward_id' => $forwardId,
+            'backend_mode' => UltraMode::BACKEND_MODE,
+            'service_status' => 'active',
+        ]]);
+        $lines = $metadata[(string) $forwardId]['lines'] ?? [];
+        if (!is_array($lines) || $lines === []) {
+            return 'no_leaseable_line';
+        }
+
+        // The query above gates on the stored last_material_expires_at; the
+        // material service is the authority on whether a candidate can actually
+        // be resolved from it. An unreadable material service must not block an
+        // operator edit, so only a definitive "no material" refuses.
+        try {
+            $snapshot = (new UltraMaterialService(
+                $this->config,
+                $this->db,
+                new AppSettings($this->db)
+            ))->lineSnapshot($lines);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $snapshot === null ? 'lease_material_unavailable' : null;
+    }
+
     public function deleteForward(int $forwardId, string $actor = 'user', ?int $expectedRevision = null, ?array $mutationPolicy = null): void
     {
         $this->db->transaction(function () use ($forwardId, $actor, $expectedRevision, $mutationPolicy): void {
@@ -4992,6 +5606,7 @@ final class ProvisioningService
             $this->db->execute(
                 'UPDATE forwards
                  SET enabled = 0,
+                     native_direction_key = NULL,
                      user_deleted_at = :user_deleted_at,
                      balance_suspended_at = NULL,
                      api_revision = :api_revision,
@@ -5038,14 +5653,21 @@ final class ProvisioningService
             $now = $this->now();
 
             if ($enabled) {
+                $nativeDirectionKey = $this->reactivatedNativeDirectionKey($forward);
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 1,
+                         native_direction_key = :native_direction_key,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
                      WHERE id = :id',
-                    ['id' => $forwardId, 'api_revision' => $nextRevision, 'updated_at' => $now]
+                    [
+                        'id' => $forwardId,
+                        'native_direction_key' => $nativeDirectionKey,
+                        'api_revision' => $nextRevision,
+                        'updated_at' => $now,
+                    ]
                 );
                 $this->audit('forward.started', [
                     'forward_id' => $forwardId,
@@ -5059,6 +5681,7 @@ final class ProvisioningService
                 $this->db->execute(
                     'UPDATE forwards
                      SET enabled = 0,
+                         native_direction_key = NULL,
                          balance_suspended_at = NULL,
                          api_revision = :api_revision,
                          updated_at = :updated_at
@@ -5071,6 +5694,21 @@ final class ProvisioningService
                     'actor' => $actor,
                     'revision' => $nextRevision,
                 ]);
+
+                // buildClientConfig deliberately requires an enabled forward and
+                // an active service, so it throws forward_not_found 404 for the
+                // row this branch just disabled. That rolled the whole
+                // transaction back and the pause silently never persisted, which
+                // is why pausing a forward from the tenant UI appeared to work
+                // but stayed running. A paused forward has no runnable client
+                // config to return, so report its new state instead. The
+                // payload is deliberately identity-only: a paused forward must
+                // not hand out credentials for a forward it just shut down.
+                return [
+                    'forward_id' => $forwardId,
+                    'enabled' => false,
+                    'state' => 'paused',
+                ];
             }
 
             return $this->buildClientConfig($forwardId);
@@ -5187,7 +5825,7 @@ final class ProvisioningService
                 }
 
                 $candidates = $this->db->fetchAll(
-                    'SELECT id
+                    'SELECT *
                      FROM forwards
                      WHERE service_id = :service_id
                        AND enabled = 0
@@ -5202,9 +5840,23 @@ final class ProvisioningService
                     if ($forwardId <= 0) {
                         continue;
                     }
+                    // Reclaim the native direction atomically with the
+                    // balance-suspension transition. A conflicting native
+                    // direction remains paused rather than displacing the
+                    // already-active forward.
+                    $nativeDirectionKey = null;
+                    try {
+                        $nativeDirectionKey = $this->reactivatedNativeDirectionKey($candidate);
+                    } catch (ApiException $exception) {
+                        if ($exception->getMessage() === 'native_direction_conflict') {
+                            continue;
+                        }
+                        throw $exception;
+                    }
                     $updated = $this->db->execute(
                         'UPDATE forwards
                           SET enabled = 1,
+                              native_direction_key = :native_direction_key,
                               balance_suspended_at = NULL,
                               api_revision = GREATEST(1, api_revision) + 1,
                              updated_at = :updated_at
@@ -5212,7 +5864,11 @@ final class ProvisioningService
                             AND enabled = 0
                             AND user_deleted_at IS NULL
                             AND balance_suspended_at IS NOT NULL',
-                        ['id' => $forwardId, 'updated_at' => $this->now()]
+                        [
+                            'id' => $forwardId,
+                            'native_direction_key' => $nativeDirectionKey,
+                            'updated_at' => $this->now(),
+                        ]
                     );
                     if ($updated <= 0) {
                         continue;
@@ -5328,6 +5984,13 @@ final class ProvisioningService
                      combo.helper_group_cap AS forward_combination_helper_group_cap,
                      combo.helper_escalation_policy AS forward_combination_helper_escalation_policy,
                      combo.self_leg_cf_transport AS forward_combination_self_leg_cf_transport,
+                     combo.external_uot_enabled AS forward_combination_external_uot_enabled,
+                     combo.external_uot_sidecar_target AS forward_combination_external_uot_sidecar_target,
+                     combo.external_uot_token AS forward_combination_external_uot_token,
+                     combo.external_uot_queue_packets AS forward_combination_external_uot_queue_packets,
+                     combo.external_uot_keepalive_seconds AS forward_combination_external_uot_keepalive_seconds,
+                     combo.external_uot_reconnect_grace_seconds AS forward_combination_external_uot_reconnect_grace_seconds,
+                     combo.external_uot_frame_payload_max AS forward_combination_external_uot_frame_payload_max,
                      combo.desired_latency_ms AS forward_combination_desired_latency_ms,
                      combo.allow_public_self_leg_donation AS forward_combination_allow_public_self_leg_donation,
                      combo.donation_qualify_window_seconds AS forward_combination_donation_qualify_window_seconds,
@@ -5467,6 +6130,17 @@ final class ProvisioningService
         $quotaRemainingBytes = $billingMode === 'monthly_bundle' && $trafficLimitGb > 0
             ? max(0, ($trafficLimitGb * 1024 * 1024 * 1024) - $trafficUsedBytes)
             : null;
+        $externalUoTRevision = UltraMode::isBackendMode($backendMode)
+            ? hash('sha256', implode('|', [
+                (string) ((int) ($forward['forward_combination_external_uot_enabled'] ?? 0)),
+                trim((string) ($forward['forward_combination_external_uot_sidecar_target'] ?? '')),
+                trim((string) ($forward['forward_combination_external_uot_token'] ?? '')),
+                (string) ((int) ($forward['forward_combination_external_uot_queue_packets'] ?? 256)),
+                (string) ((int) ($forward['forward_combination_external_uot_keepalive_seconds'] ?? 10)),
+                (string) ((int) ($forward['forward_combination_external_uot_reconnect_grace_seconds'] ?? 30)),
+                (string) ((int) ($forward['forward_combination_external_uot_frame_payload_max'] ?? 65507)),
+            ]))
+            : '';
 
         return [
             'service_id' => (int) $forward['service_id'],
@@ -5475,6 +6149,10 @@ final class ProvisioningService
             'service_name' => (string) $forward['service_name'],
             'listen_port' => (int) $forward['listen_port'],
             'target' => $forward['target_host'] . ':' . $forward['target_port'],
+            'native_outbound' => !empty($forward['native_outbound_enabled']),
+            'native_direction' => $forward['native_direction_key'] !== null
+                ? (string) $forward['native_direction_key']
+                : null,
             'bond_sidecar_point_id' => $sidecarRequired && $forward['bond_sidecar_point_id'] !== null ? (int) $forward['bond_sidecar_point_id'] : null,
             'bond_sidecar_point_name' => $sidecarRequired ? (string) ($forward['bond_sidecar_point_name'] ?? '') : '',
             'forward_combination_id' => $forward['forward_combination_id'] !== null ? (int) $forward['forward_combination_id'] : null,
@@ -5488,6 +6166,10 @@ final class ProvisioningService
             'forward_combination_helper_group_cap' => (int) ($forward['forward_combination_helper_group_cap'] ?? 0),
             'forward_combination_helper_escalation_policy' => (string) ($forward['forward_combination_helper_escalation_policy'] ?? 'disabled'),
             'forward_combination_self_leg_cf_transport' => (string) ($forward['forward_combination_self_leg_cf_transport'] ?? 'cf_direct'),
+            // The sidecar secret is attached to the short-lived Ultra grant,
+            // never to the ordinary forward configuration response.
+            'forward_combination_external_uot_enabled' => (int) ($forward['forward_combination_external_uot_enabled'] ?? 0),
+            'forward_combination_external_uot_revision' => $externalUoTRevision,
             'desired_latency_ms' => (int) ($forward['forward_combination_desired_latency_ms'] ?? 0),
             'allow_public_self_leg_donation' => (int) ($forward['forward_combination_allow_public_self_leg_donation'] ?? 0),
             'donation_qualify_window_seconds' => (int) ($forward['forward_combination_donation_qualify_window_seconds'] ?? 60),
@@ -5611,8 +6293,8 @@ final class ProvisioningService
         if (!is_array($forward) || (string) ($forward['service_status'] ?? '') !== 'active') {
             return null;
         }
-        $serviceExpiry = trim((string) ($forward['expire_at'] ?? ''));
-        if ($serviceExpiry !== '' && ($expiry = strtotime($serviceExpiry)) !== false && $expiry <= time()) {
+        $serviceExpiry = $this->serviceExpiryTimestamp((string) ($forward['expire_at'] ?? ''));
+        if ($serviceExpiry !== null && $serviceExpiry <= time()) {
             return null;
         }
         $client = $this->db->fetchOne('SELECT group_id FROM clients WHERE id = :client_id LIMIT 1', ['client_id' => $clientId]);
@@ -5693,7 +6375,7 @@ final class ProvisioningService
                 }
                 return null;
             });
-        } catch (Throwable $exception) {
+        } catch (\Throwable $exception) {
             $message = strtolower($exception->getMessage());
             if (str_contains($message, 'duplicate') || str_contains($message, 'unique') || str_contains($message, '23000')) {
                 return null;
@@ -5729,19 +6411,31 @@ final class ProvisioningService
         $suspended = [];
 
         foreach ($entries as $entry) {
-            $serviceId = (int) ($entry['service_id'] ?? 0);
             $endpointId = (int) ($entry['endpoint_id'] ?? 0);
             $bytesIn = max(0, (int) ($entry['bytes_in'] ?? 0));
             $bytesOut = max(0, (int) ($entry['bytes_out'] ?? 0));
-            if ($serviceId <= 0 || $endpointId <= 0) {
+            if ($endpointId <= 0) {
                 continue;
             }
 
+            // Security: the billed service is derived from the endpoint's own
+            // forward, not from the caller-supplied `service_id`. Otherwise any
+            // node (including a user-enrolled BYOS slave) could post usage for
+            // its own endpoint but charge it to an arbitrary victim service and
+            // force a traffic suspension. A node may only ever bill a service it
+            // genuinely hosts an endpoint for.
             $endpoint = $this->db->fetchOne(
-                'SELECT * FROM service_endpoints WHERE id = :id AND node_id = :node_id LIMIT 1',
+                'SELECT se.*, f.service_id AS forward_service_id
+                 FROM service_endpoints se
+                 INNER JOIN forwards f ON f.id = se.forward_id
+                 WHERE se.id = :id AND se.node_id = :node_id LIMIT 1',
                 ['id' => $endpointId, 'node_id' => $node['id']]
             );
             if ($endpoint === null) {
+                continue;
+            }
+            $serviceId = (int) ($endpoint['forward_service_id'] ?? 0);
+            if ($serviceId <= 0) {
                 continue;
             }
 
@@ -6183,6 +6877,10 @@ final class ProvisioningService
             }
         }
 
+        $nativeOutboundRequested = array_key_exists('native_outbound', $payload)
+            ? $this->featureFlagValue($payload['native_outbound'])
+            : !empty($existingForward['native_outbound_enabled'] ?? false);
+
         $hasForwardCombinationPayload = array_key_exists('forward_combination_id', $payload);
         $hasForwardRoutePayload = array_key_exists('forward_route_id', $payload);
         $catalogPlacementPayloadProvided = $hasForwardCombinationPayload || $hasForwardRoutePayload;
@@ -6250,7 +6948,7 @@ final class ProvisioningService
         if ($service === null) {
             throw new ApiException('service_not_found', 404);
         }
-        if ($targetSource === 'service_ip') {
+        if (!$nativeOutboundRequested && $targetSource === 'service_ip') {
             $targetServiceId = $targetServiceId > 0 ? $targetServiceId : $serviceId;
             $targetService = $this->db->fetchOne(
                 'SELECT id, user_id, server_public_ip, server_ip_state FROM services WHERE id = :id LIMIT 1',
@@ -6270,12 +6968,17 @@ final class ProvisioningService
             $targetHost = $serviceIp;
         }
 
-        [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
-            $targetHost,
-            $targetPort,
-            $listenPort,
-            true
-        );
+        if (!$nativeOutboundRequested) {
+            [$targetHost, $targetPort, $listenPort] = $this->validateForwardMutationInputs(
+                $targetHost,
+                $targetPort,
+                $listenPort,
+                true
+            );
+        } else {
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
 
         if ($forwardRouteId > 0) {
             $this->visibleForwardRouteForService($forwardRouteId, $serviceId);
@@ -6321,6 +7024,62 @@ final class ProvisioningService
             }
         }
         $ultraRuntime = UltraMode::isBackendMode($backendMode);
+
+        $nativeDirectionKey = null;
+        if ($nativeOutboundRequested) {
+            if (!$ultraRuntime || strtolower(trim($transportMode)) !== 'tcp+udp' || $forwardCombinationId <= 0) {
+                throw new ApiException('native_outbound_requires_ultra_tcp_udp', 422);
+            }
+            $plan = $this->db->fetchOne(
+                'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => (int) ($service['plan_id'] ?? 0)]
+            );
+            $service['plan_feature_flags_json'] = is_array($plan)
+                ? (string) ($plan['feature_flags_json'] ?? '')
+                : '';
+            if (!$this->planAllowsNativeOutbound($service)) {
+                throw new ApiException('native_outbound_not_allowed', 403);
+            }
+            $nativeDirection = trim((string) ($combination['line_direction'] ?? ''));
+            if ($nativeDirection === '') {
+                throw new ApiException('native_outbound_direction_missing', 422);
+            }
+            $nativeDirectionKey = $this->nativeDirectionKey($nativeDirection);
+            $conflict = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE service_id = :service_id
+                   AND native_direction_key = :direction_key
+                   AND native_outbound_enabled = 1
+                   AND enabled = 1
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1 FOR UPDATE',
+                [
+                    'service_id' => $serviceId,
+                    'direction_key' => $nativeDirectionKey,
+                    'forward_id' => (int) ($forwardId ?? 0),
+                ]
+            );
+            if (is_array($conflict)) {
+                throw new ApiException('native_direction_conflict', 409, [
+                    'direction' => UltraMode::redactProviderText($nativeDirection),
+                    'forward_id' => (int) ($conflict['id'] ?? 0),
+                ]);
+            }
+            $existingNativeTarget = $existingForward !== null
+                && !empty($existingForward['native_outbound_enabled'])
+                && trim((string) ($existingForward['target_host'] ?? '')) === '127.0.0.1'
+                && (int) ($existingForward['target_port'] ?? 0) > 0;
+            $targetHost = '127.0.0.1';
+            $targetPort = $existingNativeTarget
+                ? (int) $existingForward['target_port']
+                : $this->allocateNativeTargetPort($forwardId);
+            $targetSource = 'manual';
+            $targetServiceId = 0;
+        }
+
+        if ($forwardCombinationId > 0) {
+            $this->assertForwardTargetAllowedByCombination($combination ?? null, $targetHost, $nativeOutboundRequested);
+        }
 
         $availableClients = $this->availableClientsForService($serviceId);
         $availableClientGroups = $this->availableClientGroupsForService($serviceId);
@@ -6707,6 +7466,8 @@ final class ProvisioningService
                 'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                 'cdn_host' => $cdnHost,
                 'filter_profile' => $filterProfile,
+                'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
                 'enabled' => 1,
                 'created_at' => $this->now(),
                 'updated_at' => $this->now(),
@@ -6746,6 +7507,8 @@ final class ProvisioningService
                      public_port = :public_port,
                      cdn_host = :cdn_host,
                      filter_profile = :filter_profile,
+                     native_outbound_enabled = :native_outbound_enabled,
+                     native_direction_key = :native_direction_key,
                      enabled = 1,
                      api_revision = :api_revision,
                      updated_at = :updated_at
@@ -6781,8 +7544,10 @@ final class ProvisioningService
                     'endpoint_count' => $endpointCount,
                     'public_port' => $publicPort > 0 ? $publicPort : $listenPort,
                     'cdn_host' => $cdnHost,
-                     'filter_profile' => $filterProfile,
-                     'api_revision' => $nextRevision,
+                    'filter_profile' => $filterProfile,
+                    'native_outbound_enabled' => $nativeOutboundRequested ? 1 : 0,
+                    'native_direction_key' => $nativeOutboundRequested ? $nativeDirectionKey : null,
+                    'api_revision' => $nextRevision,
                      'updated_at' => $this->now(),
                 ]
             );
@@ -9398,6 +10163,85 @@ final class ProvisioningService
     }
 
     /**
+     * Resolve the panel account for a WHMCS client during module provisioning.
+     *
+     * The WHMCS client id is the stable key. A brand-new email creates a bound
+     * tenant (with the WHMCS-generated password, so the welcome email works).
+     * An email that already belongs to an unbound panel account is NOT adopted
+     * unless WHMCS_PROVISION_ADOPT_UNBOUND_EMAIL is on: WHMCS does not prove the
+     * buyer owns that mailbox, and the SSO link would hand them the account.
+     * Such owners bind from the panel (Account -> billing) and WHMCS retries.
+     *
+     * @return array<string, mixed>
+     */
+    private function ensureWhmcsBoundUser(int $whmcsClientId, int $whmcsUserId, string $email, string $name, string $initialPassword): array
+    {
+        $email = strtolower(trim($email));
+        $bound = $this->db->fetchOne('SELECT * FROM users WHERE whmcs_client_id = :client_id LIMIT 1', ['client_id' => $whmcsClientId]);
+        if ($bound !== null) {
+            return $bound;
+        }
+
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        if ($user !== null) {
+            if ((string) ($user['role'] ?? '') !== 'tenant') {
+                throw new ApiException('whmcs_binding_not_supported', 409, [
+                    'message' => 'The billing email belongs to a non-tenant panel account.',
+                ]);
+            }
+            if (!empty($user['whmcs_client_id'])) {
+                throw new ApiException('whmcs_binding_conflict', 409, [
+                    'message' => 'The panel account with this email is linked to another billing account.',
+                ]);
+            }
+            if (!$this->truthyConfig('WHMCS_PROVISION_ADOPT_UNBOUND_EMAIL')) {
+                throw new ApiException('whmcs_email_owned_by_unbound_account', 409, [
+                    'message' => 'A panel account with this email already exists. Sign in to the panel and link the billing account, then retry provisioning.',
+                ]);
+            }
+        } else {
+            $user = $this->ensureUser($email, $name);
+            if ($initialPassword !== '') {
+                $this->db->execute('UPDATE users SET password_hash = :hash WHERE id = :id AND password_hash IS NULL', [
+                    'id' => $user['id'],
+                    'hash' => password_hash($initialPassword, PASSWORD_DEFAULT),
+                ]);
+            }
+        }
+
+        $now = $this->now();
+        $this->db->execute(
+            'UPDATE users
+             SET whmcs_client_id = :client_id,
+                 whmcs_user_id = :whmcs_user_id,
+                 whmcs_email = :whmcs_email,
+                 whmcs_full_name = :whmcs_full_name,
+                 whmcs_bound_at = COALESCE(whmcs_bound_at, :bound_at),
+                 whmcs_last_synced_at = :synced_at,
+                 updated_at = :updated_at
+             WHERE id = :id',
+            [
+                'id' => $user['id'],
+                'client_id' => $whmcsClientId,
+                'whmcs_user_id' => $whmcsUserId > 0 ? $whmcsUserId : null,
+                'whmcs_email' => $email,
+                'whmcs_full_name' => $name,
+                'bound_at' => $now,
+                'synced_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+        $this->audit('user.whmcs_bound', ['user_id' => $user['id'], 'whmcs_client_id' => $whmcsClientId, 'source' => 'whmcs_module']);
+
+        return $this->db->fetchOne('SELECT * FROM users WHERE id = :id', ['id' => $user['id']]) ?? [];
+    }
+
+    private function truthyConfig(string $key): bool
+    {
+        return in_array(strtolower(trim((string) ($this->config->get($key, '') ?? ''))), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function ensurePlan(string $productCode, int $bandwidthLimit, int $trafficLimit): array
@@ -10252,9 +11096,15 @@ final class ProvisioningService
         $cycleUsageBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
         $rolled = false;
         $resumeTrafficSuspendedService = false;
+        // A cycle that would start at or after expiry was never paid for; a
+        // renewal moves expire_at and the next sync catches up.
+        $expiresAt = $this->serviceExpiryTimestamp((string) ($service['expire_at'] ?? ''));
 
         while ($this->nextBillingCycleStart($cycleStart) <= $now) {
             $cycleEnd = $this->nextBillingCycleStart($cycleStart);
+            if ($expiresAt !== null && $cycleEnd->getTimestamp() >= $expiresAt) {
+                break;
+            }
             $this->recordBillingCycle($service, $cycleStart, $cycleEnd, $cycleUsageBytes);
             $cycleStart = $cycleEnd;
             $cycleUsageBytes = 0;
@@ -10351,6 +11201,24 @@ final class ProvisioningService
         return $cycleStart->modify('+1 month');
     }
 
+    /**
+     * services.expire_at is written in UTC. strtotime() would read it in
+     * date.timezone, which is PRC for the panel's CLI workers, and treat a
+     * service as expired eight hours early. Same parse as LeigodTokenBroker.
+     */
+    private function serviceExpiryTimestamp(string $value): ?int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function asUtcDateTime(string $value): DateTimeImmutable
     {
         $timezone = new DateTimeZone('UTC');
@@ -10389,13 +11257,84 @@ final class ProvisioningService
         bool $allowAutomaticListenPort
     ): array {
         if ($targetPort < 1 || $targetPort > 65535) {
-            throw new ApiException('invalid_forward_payload', 422);
+            throw new ApiException('invalid_forward_payload', 422, ['fields' => ['target.port' => 'out_of_range']]);
         }
         if ($listenPort < 0 || $listenPort > 65535 || (!$allowAutomaticListenPort && $listenPort === 0)) {
-            throw new ApiException('invalid_forward_payload', 422);
+            throw new ApiException('invalid_forward_payload', 422, ['fields' => ['listen_port' => 'out_of_range']]);
         }
 
         return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];
+    }
+
+    private function nativeDirectionKey(string $direction): string
+    {
+        $key = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '_', $direction)));
+        $key = trim($key, '_');
+        if ($key === '') {
+            $key = hash('sha256', strtolower(trim($direction)));
+        }
+        return substr($key, 0, 64);
+    }
+
+    /** @param array<string,mixed> $forward */
+    private function reactivatedNativeDirectionKey(array $forward): ?string
+    {
+        if (empty($forward['native_outbound_enabled'])) {
+            return null;
+        }
+        $directionRow = $this->db->fetchOne(
+            'SELECT line_direction FROM forward_combinations WHERE id = :id LIMIT 1',
+            ['id' => (int) ($forward['forward_combination_id'] ?? 0)]
+        );
+        $direction = trim((string) ($directionRow['line_direction'] ?? ''));
+        if ($direction === '') {
+            throw new ApiException('native_outbound_direction_missing', 422);
+        }
+        $key = $this->nativeDirectionKey($direction);
+        $conflict = $this->db->fetchOne(
+            'SELECT id FROM forwards
+             WHERE service_id = :service_id
+               AND native_direction_key = :direction_key
+               AND native_outbound_enabled = 1
+               AND enabled = 1
+               AND id <> :forward_id
+             LIMIT 1 FOR UPDATE',
+            [
+                'service_id' => (int) ($forward['service_id'] ?? 0),
+                'direction_key' => $key,
+                'forward_id' => (int) ($forward['id'] ?? 0),
+            ]
+        );
+        if (is_array($conflict)) {
+            throw new ApiException('native_direction_conflict', 409, [
+                'direction' => UltraMode::redactProviderText($direction),
+                'forward_id' => (int) ($conflict['id'] ?? 0),
+            ]);
+        }
+        return $key;
+    }
+
+    private function allocateNativeTargetPort(?int $excludeForwardId = null): int
+    {
+        for ($attempt = 0; $attempt < 64; $attempt++) {
+            $port = random_int(20000, 60000);
+            $row = $this->db->fetchOne(
+                'SELECT id FROM forwards
+                 WHERE target_host = :host
+                   AND target_port = :port
+                   AND (:forward_id = 0 OR id <> :forward_id)
+                 LIMIT 1',
+                [
+                    'host' => '127.0.0.1',
+                    'port' => $port,
+                    'forward_id' => (int) ($excludeForwardId ?? 0),
+                ]
+            );
+            if (!is_array($row)) {
+                return $port;
+            }
+        }
+        throw new ApiException('native_target_port_unavailable', 409);
     }
 
     /**
@@ -12635,6 +13574,8 @@ final class ProvisioningService
             'allow_custom_slaves' => false,
             'allow_inbound_proxy' => false,
             'allow_latency_test' => false,
+            'allow_native_outbound' => false,
+            'allow_native_outbound_unrestricted' => false,
         ];
     }
 
@@ -12693,6 +13634,32 @@ final class ProvisioningService
     }
 
     /**
+     * Native outbound is an administrator-controlled plan capability. User
+     * feature flags are deliberately ignored so they cannot elevate a plan.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw) && ($raw['allow_native_outbound'] ?? false) === true;
+    }
+
+    /**
+     * Unrestricted native routing is a separate administrator-controlled plan
+     * capability and never inherits a user feature flag.
+     *
+     * @param array<string, mixed> $service
+     */
+    public function planAllowsNativeUnrestrictedOutbound(array $service): bool
+    {
+        $raw = json_decode((string) ($service['plan_feature_flags_json'] ?? ''), true);
+        return is_array($raw)
+            && ($raw['allow_native_outbound'] ?? false) === true
+            && ($raw['allow_native_outbound_unrestricted'] ?? false) === true;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function tenantUserById(int $userId): array
@@ -12744,21 +13711,33 @@ final class ProvisioningService
             throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
         }
 
-        $after = $walletBalance - $amount;
         $now = $this->now();
-        $this->db->execute(
+        // Security: debit atomically with a balance guard in the WHERE clause.
+        // The previous read-then-absolute-write pattern let two concurrent
+        // requests (from separate sessions) both see the same balance and each
+        // succeed, double-spending the wallet. A conditional decrement commits
+        // only if the funds are still there, and a 0 row-count means another
+        // request won the race.
+        $affected = $this->db->execute(
             'UPDATE users
-             SET wallet_balance = :wallet_balance,
+             SET wallet_balance = wallet_balance - :amount,
                  wallet_currency = :wallet_currency,
                  updated_at = :updated_at
-             WHERE id = :id',
+             WHERE id = :id
+               AND wallet_balance >= :amount_guard',
             [
                 'id' => $userId,
-                'wallet_balance' => $this->normalizeMoney($after),
+                'amount' => $this->normalizeMoney($amount),
+                'amount_guard' => $this->normalizeMoney($amount),
                 'wallet_currency' => $targetCurrency,
                 'updated_at' => $now,
             ]
         );
+        if ((int) $affected < 1) {
+            throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
+        }
+        $fresh = $this->db->fetchOne('SELECT wallet_balance FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        $after = (float) ($fresh['wallet_balance'] ?? ($walletBalance - $amount));
 
         $this->db->insert('wallet_transactions', [
             'user_id' => $userId,

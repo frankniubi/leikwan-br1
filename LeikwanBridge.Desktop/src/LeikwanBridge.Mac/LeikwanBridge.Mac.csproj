@@ -8,8 +8,20 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
-    <Version>1.0.2</Version>
+    <!-- Native apphost/runtime select the architecture; keep managed IL portable
+         so cross-architecture packaging can execute a real managed-load probe. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Version>1.0.55</Version>
   </PropertyGroup>
+
+  <Target Name="CreateMacBundleAppHost" AfterTargets="_CreateAppHost"
+          Condition="$(RuntimeIdentifier.StartsWith('osx-')) and Exists('$(AppHostSourcePath)')">
+    <CreateAppHost AppHostSourcePath="$(AppHostSourcePath)"
+                   AppHostDestinationPath="$(AppHostIntermediatePath)"
+                   AppBinaryName="../Resources/dotnet/$(AssemblyName)$(TargetExt)"
+                   IntermediateAssembly="@(IntermediateAssembly->'%(FullPath)')"
+                   EnableMacOSCodeSign="false" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.20" />
@@ -28,6 +40,10 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
+    <EmbeddedResource Include="Resources\RuleSets\*.srs" LogicalName="LeikwanBridge.Mac.RuleSets.%(Filename)%(Extension)" />
+    <Content Include="Resources\RuleSets\NOTICE.txt" Link="SAGERNET-RULESETS-NOTICE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\RuleSets\LICENSE.txt" Link="SAGERNET-RULESETS-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Resources\RuleSets\COPYING.txt" Link="COPYING.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

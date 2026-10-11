@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" viewBox="0 0 200 40" role="img" aria-label="KPCloud 靠谱云">
+  <!-- Monochrome wordmark — dark fill inverts to white on the #2f3133 card -->
+  <g fill="#111827">
+    <!-- cloud mark: soft rounded cloud -->
+    <path d="M14.2 25.8H35.6c4.6 0 7.2-2.3 6.1-5.9-.4-1.4-1.4-2.5-2.8-3.3 1.1-5.2-1.5-8.6-6.2-8.8-1.6-1.7-3.8-2.6-6.1-2.6-2.2 0-4.3.8-5.8 2.3C14.3 6 6.9 8.4 6.2 14.6 2.7 16.1 1 19 3 22.2c1 1.6 2.8 2.7 5.4 3.1 1.5.3 3.6.5 5.8.5Z"/>
+    <!-- highlight cut for depth -->
+    <path d="M17.8 13.2c1.8-2.1 4.8-2.8 7.3-1.6" fill="none" stroke="#FFFFFF" stroke-width="1.1" stroke-linecap="round" opacity="0.95"/>
+  </g>
+  <g font-family="'Inter var','Helvetica Neue',Arial,sans-serif" fill="#111827">
+    <text x="51" y="19.2" font-size="15.5" font-weight="800" letter-spacing="-0.02em">KPCloud</text>
+    <text x="51" y="30.2" font-size="9.2" font-weight="600" letter-spacing="0.16em">靠谱云</text>
+  </g>
+</svg>

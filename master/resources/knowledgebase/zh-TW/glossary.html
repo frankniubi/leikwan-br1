@@ -1,36 +1,46 @@
+<p>其他指南里出現的詞，這裡每個用一句話說清楚。遇到看不懂的詞就開啟這一頁，看完再關掉。</p>
+
 <h2>你將完成什麼</h2>
-<p>你會看懂入門指南使用的產品與網路術語，不必先理解內部實作，也能分辨欄位、狀態與驗證結果。</p>
+<p>指南里的每個詞你都能看懂，不需要讀任何技術資料。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>保留正在閱讀的指南，方便把每個名詞對照到畫面上的欄位或狀態。</li>
-  <li>外觀看起來相近的狀態，可能代表不同的檢查點。</li>
-  <li>詢問名詞時，不要連同機密數值一起複製。</li>
+<li>不用準備什麼。這一頁適合一直開在另一個標籤頁裡。</li>
+<li>少了你要查的詞，告訴支援，我們會補上。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-  <li><strong>有效方案：</strong>目前允許你建立並使用轉發的已購買方案或服務。</li>
-  <li><strong>轉發：</strong>一項已儲存的規則，讓流量從用戶端監聽服務，經過面板提供的線路，送到目標位址與連接埠。</li>
-  <li><strong>轉發路由：</strong>建立第一條轉發時可選的線路方案。選擇符合目前服務的已發布項目。</li>
-  <li><strong>目標主機：</strong>目標服務的主機名稱或 IP 位址。</li>
-  <li><strong>目標連接埠：</strong>目標服務使用的連接埠。</li>
-  <li><strong>本地監聽連接埠：</strong>應用程式在用戶端這一側連線的連接埠。</li>
-  <li><strong>用戶端：</strong>Windows、Android 或 Linux 軟體，負責取得轉發設定並建立本機監聽服務。</li>
-  <li><strong>最近同步：</strong>表示用戶端最近從面板取得設定；它不能證明目標應用程式已回應。</li>
-  <li><strong>Running：</strong>表示轉發程序正在用戶端執行；它不是應用程式成功的最終證明。</li>
-  <li><strong>Single：</strong>最簡單的支援連線模式，讓一個要求使用一條線路路徑。</li>
-  <li><strong>Race：</strong>用於容錯或路徑選擇的模式。它不是頻寬聚合，實際行為會因平台和傳輸方式而異。</li>
-  <li><strong>Bond：</strong>只有方案與平台明確支援已發布要求時才使用的進階模式；它不保證速度加倍，也不保證每次都使用所有路徑。</li>
-  <li><strong>Sidecar：</strong>部分 Bond 線路需要的選用目標端中介傳輸元件，不是目標應用程式。</li>
-  <li><strong>應用程式驗證：</strong>使用預定協定送出真實要求並取得預期回應；最好也能在目標服務記錄中確認。</li>
+<li><strong>在下面的表裡找到那個詞。</strong></li>
+<li><strong>讀那一句話的解釋。</strong>看懂就可以停下了。</li>
+<li><strong>想真正用起來，就去開啟旁邊對應的指南。</strong></li>
 </ol>
+<table>
+<thead>
+<tr><th>詞</th><th>意思</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>使用中的套餐</strong></td><td>你付過錢而且還在有效期內的套餐。只有套餐有效時轉發才會執行。</td></tr>
+<tr><td><strong>轉發</strong></td><td>你在控制台上畫的一條線：一頭是目標，另一頭是本機連接埠。</td></tr>
+<tr><td><strong>線路</strong></td><td>流量從哪條線路出去。挑離目標最近的那條。</td></tr>
+<tr><td><strong>目標位址</strong></td><td>你要連線的遊戲或服務的位址。</td></tr>
+<tr><td><strong>目標連接埠</strong></td><td>那個位址監聽的連接埠。</td></tr>
+<tr><td><strong>本機監聽連接埠</strong></td><td>系統分給你自己裝置的連接埠，在「轉發規則」裡顯示為「本機連接埠」。遊戲用這個。</td></tr>
+<tr><td><strong>協定</strong></td><td>流量是 TCP、UDP 還是兩者都要。遊戲一般是 UDP。</td></tr>
+<tr><td><strong>用戶端</strong></td><td>在你裝置上承載這條線路的應用。</td></tr>
+<tr><td><strong>Running</strong></td><td>線路通了以後用戶端顯示的狀態。</td></tr>
+<tr><td><strong>線上裝置</strong></td><td>「用戶端」頁面上當前登入著的裝置列表。裝置在列表裡，說明用戶端正常。</td></tr>
+<tr><td><strong>最大線上</strong></td><td>你的套餐允許同時登入的裝置數。滿了以後新裝置登入不上，可以把不用的裝置踢下線。</td></tr>
+<tr><td><strong>ultra</strong></td><td>所有線路都用它承載。它讓你玩的時候線路保持穩定。</td></tr>
+<tr><td><strong>應用驗證</strong></td><td>用遊戲本身去測，而不是隻 ping 一下。</td></tr>
+</tbody>
+</table>
 
 <h2>如何確認成功</h2>
-<p>你能判斷畫面上每個欄位該填什麼，能區分設定送達、程序執行和應用程式成功，也能在不猜測的情況下選到正確指南。</p>
+<p>你讀完一篇指南，中途沒有被任何詞卡住。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止猜測欄位內容或分享機密。</strong>使用下方相關指南，仍不清楚時，請管理員或支援依畫面上的實際標籤說明。</p>
+<p>兩篇指南看起來說法不一致時，<strong>先停止</strong>，直接問支援。設定不要靠猜——猜錯花的時間比問一句多得多。</p>
 
 <h2>相關指南</h2>
-<p>先閱讀<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a>。表單欄位請看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>；位址與成功證明請看<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；Single、Race 和 Bond 請看<a href="/knowledgebase?thread=connection-modes-single-race-bond">選擇連線模式</a>；只有已發布的線路明確要求時，才使用<a href="/knowledgebase?thread=bond-sidecar-setup">設定 Sidecar</a>。</p>
+<p>先從<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a>開始，再把<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>放在手邊。</p>

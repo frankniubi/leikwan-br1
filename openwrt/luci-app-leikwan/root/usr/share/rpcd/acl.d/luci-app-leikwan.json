@@ -1,0 +1,36 @@
+{
+	"luci-app-leikwan": {
+		"description": "Grant access to the Leikwan agent: the luci.leikwand rpcd methods, the leikwan UCI configuration, the runtime state directory and the leikwand control binary.",
+		"read": {
+			"ubus": {
+				"luci.leikwand": [
+					"status",
+					"forwards",
+					"logs",
+					"diagnose",
+					"test_connection",
+					"get_config"
+				],
+				"file": [ "read", "list", "stat", "exec" ]
+			},
+			"uci": [ "leikwan" ],
+			"file": {
+				"/var/run/leikwand/*": [ "read", "list" ],
+				"/usr/bin/leikwand": [ "exec" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"luci.leikwand": [
+					"enroll",
+					"pair",
+					"sign_out",
+					"forward_action",
+					"reload",
+					"set_config"
+				]
+			},
+			"uci": [ "leikwan" ]
+		}
+	}
+}

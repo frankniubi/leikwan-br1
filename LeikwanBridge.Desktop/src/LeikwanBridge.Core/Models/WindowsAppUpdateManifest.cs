@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace LeikwanBridge.Core.Models;
@@ -21,6 +22,9 @@ public sealed class WindowsClientArtifactManifestEntries
 {
     [JsonPropertyName("windows_client_app")]
     public WindowsClientAppArtifact WindowsClientApp { get; set; } = new();
+
+    [JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement> Components { get; set; } = new(StringComparer.Ordinal);
 }
 
 public sealed class WindowsClientAppArtifact
@@ -39,4 +43,7 @@ public sealed class WindowsClientAppArtifact
 
     [JsonPropertyName("size_bytes")]
     public long SizeBytes { get; set; }
+
+    [JsonPropertyName("runtime_sha256")]
+    public Dictionary<string, string> RuntimeSha256 { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

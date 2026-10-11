@@ -13,7 +13,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _agentToken = "";
     [ObservableProperty] private int _pollInterval = 30;
     [ObservableProperty] private int _healthCheckInterval = 20;
-    [ObservableProperty] private string _logLevel = "INFO";
+    [ObservableProperty] private string _logLevel = DesktopLogLevel.Warning;
+    [ObservableProperty] private string _preferredEgressInterface = string.Empty;
     [ObservableProperty] private bool _autoStart;
     [ObservableProperty] private bool _minimizeToTray = true;
     [ObservableProperty] private string _bondBin = "";
@@ -38,7 +39,8 @@ public partial class SettingsViewModel : ObservableObject
         AgentToken = config.AgentToken;
         PollInterval = config.PollIntervalSeconds;
         HealthCheckInterval = config.HealthCheckIntervalSeconds;
-        LogLevel = config.LogLevel;
+        LogLevel = DesktopLogLevel.Normalize(config.LogLevel);
+        PreferredEgressInterface = config.PreferredEgressInterface;
         AutoStart = config.AutoStart;
         MinimizeToTray = config.MinimizeToTray;
         BondBin = config.BondBin;
@@ -56,7 +58,8 @@ public partial class SettingsViewModel : ObservableObject
             AgentToken = AgentToken.Trim(),
             PollIntervalSeconds = PollInterval > 0 ? PollInterval : 30,
             HealthCheckIntervalSeconds = HealthCheckInterval > 0 ? HealthCheckInterval : 20,
-            LogLevel = LogLevel,
+            LogLevel = DesktopLogLevel.Normalize(LogLevel),
+            PreferredEgressInterface = PreferredEgressInterface.Trim(),
             AutoStart = AutoStart,
             MinimizeToTray = MinimizeToTray,
             BondBin = BondBin,

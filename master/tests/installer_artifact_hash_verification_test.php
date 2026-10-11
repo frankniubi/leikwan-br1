@@ -21,22 +21,46 @@ foreach (['/artifacts/versions.json', 'check_binary_current', '_vers_sha256', 'g
 if (!str_contains($slave, 'skipping download')) fail('installer must short-circuit matching sha downloads');
 
 $clientInstaller = $sources['install-client-agent'];
+if (!str_contains($clientInstaller, 'if [[ ! -f "$0" ]]; then')) {
+    fail('install-client-agent missing piped one-click support');
+}
+// The installer proxy (--proxy / proxy.env) is retired: the panel is reached
+// directly through its CDNs, so downloads never use a proxy and the agent unit
+// carries no proxy EnvironmentFile.
 foreach ([
-    'proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"',
-    'curl -fsSL --proxy "$proxy_url" "$url" -o "$path"',
-    'if [[ ! -f "$0" ]]; then',
+    'echo "--proxy is no longer supported; the agent reaches the panel directly"',
+    'LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"',
+    'rm -f "$LEGACY_PROXY_ENV_FILE"',
+    'mark_install_changed "proxy.env removed"',
+    'cmd = ["curl", "--noproxy", "*", "--connect-timeout", str(int(CONNECT_TIMEOUT_SECONDS)), "-fsSL", url]',
 ] as $snippet) {
     if (!str_contains($clientInstaller, $snippet)) {
-        fail('install-client-agent missing proxied one-click support: ' . $snippet);
+        fail('install-client-agent missing retired-proxy handling: ' . $snippet);
     }
 }
 foreach ([
-    'PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"',
-    'EnvironmentFile=-$PROXY_ENV_FILE',
-    'chmod 0600 "$PROXY_ENV_FILE"',
+    'EnvironmentFile=',
+    'curl -fsSL --proxy',
+    'PROXY_MODE',
+    'install_proxy_env',
+    'export HTTP_PROXY',
+    'export HTTPS_PROXY',
 ] as $snippet) {
-    if (!str_contains($clientInstaller, $snippet)) {
-        fail('install-client-agent missing persistent runtime proxy support: ' . $snippet);
+    if (str_contains($clientInstaller, $snippet)) {
+        fail('install-client-agent still carries the retired installer proxy: ' . $snippet);
+    }
+}
+$clientUpdateHelper = file_get_contents($root . '/install/client-agent-update.sh');
+if (!is_string($clientUpdateHelper)) fail('failed to read client-agent-update');
+if (str_contains($clientUpdateHelper, 'load_agent_proxy_env') || str_contains($clientUpdateHelper, 'done < "$proxy_file"')) {
+    fail('client-agent-update must not load the retired proxy.env');
+}
+foreach ([
+    'unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy',
+    'cmd = ["curl", "--noproxy", "*", "--connect-timeout", "15"',
+] as $snippet) {
+    if (!str_contains($clientUpdateHelper, $snippet)) {
+        fail('client-agent-update missing direct panel download: ' . $snippet);
     }
 }
 foreach ([

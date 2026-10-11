@@ -1,40 +1,10 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
-
-data class LoginRequest(
-    val email: String,
-    val password: String,
-    @SerializedName("client_id") val clientId: Long? = null,
-)
-
-data class ClientSelectionRequest(
-    @SerializedName("session_token") val sessionToken: String,
-    @SerializedName("client_id") val clientId: Long,
-)
-
-data class LoginResponse(
-    val ok: Boolean,
-    val error: String? = null,
-    @SerializedName(value = "session_token", alternate = ["token"])
-    val token: String? = null,
-    @SerializedName("user_id") val userId: Long? = null,
-    val username: String? = null,
-    @SerializedName("client_id") val clientId: Long? = null,
-    @SerializedName("client_name") val clientName: String? = null,
-    val clients: List<ClientInfo> = emptyList(),
-)
-
-data class ClientInfo(val id: Long, val name: String)
-
-data class ClientSelectionResponse(
-    val ok: Boolean,
-    val error: String? = null,
-    @SerializedName("client_id") val clientId: Long,
-    @SerializedName("client_name") val clientName: String,
-    @SerializedName("agent_token") val agentToken: String,
-)
+import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
+import com.leikwan.bridge.runtime.UltraUsageRow
 
 data class PullConfigsResponse(
     val ok: Boolean,
@@ -45,15 +15,48 @@ data class PullConfigsResponse(
     @SerializedName("client_rules") val clientRules: List<ClientRouteRuleDto>? = null,
     @SerializedName("direction_runtime_bindings") val directionRuntimeBindings: List<DirectionRuntimeBindingDto>? = null,
     @SerializedName("capabilities") val routeRuleCapabilities: RouteRuleCapabilitiesDto? = null,
+    @SerializedName("native_outbound") val nativeOutbound: NativeOutboundCapabilityDto? = null,
 )
 
 data class HeartbeatRequest(
     @SerializedName("client_platform") val clientPlatform: String = "android",
+    @SerializedName("os_release") val osRelease: String = android.os.Build.VERSION.RELEASE.orEmpty(),
     @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = true,
     @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
+    /** Per-forward Ultra usage deltas; null (omitted) when there is nothing to report. */
+    @SerializedName("ultra_usage") val ultraUsage: List<UltraUsageRow>? = null,
 )
 
-data class HeartbeatResponse(val ok: Boolean)
+data class HeartbeatResponse(
+    val ok: Boolean,
+    /** Absent on older panels: then `ok` acknowledges the usage batch (desktop contract). */
+    @SerializedName("ultra_usage_acknowledged") val ultraUsageAcknowledged: Boolean? = null,
+)
+
+data class UltraLeaseForwardRequest(
+    @SerializedName("forward_id") val forwardId: Long,
+    @SerializedName("session_ticket") val sessionTicket: String,
+    @SerializedName("policy_generation") val policyGeneration: String,
+    val nonce: String,
+    @SerializedName("target_digest") val targetDigest: String,
+    val transport: String,
+    @SerializedName("purpose") val purpose: String? = null,
+    @SerializedName("route_scope") val routeScope: String? = null,
+    @SerializedName("route_policy") val routePolicy: String? = null,
+    @SerializedName("selection_mode") val selectionMode: String? = null,
+    @SerializedName("max_candidates") val maxCandidates: Int? = null,
+)
+
+data class UltraLeaseRequest(
+    @SerializedName("device_id") val deviceId: String,
+    val forwards: List<UltraLeaseForwardRequest>,
+)
+
+data class UltraLeaseResponse(
+    val ok: Boolean,
+    val error: String? = null,
+    val leases: List<JsonObject> = emptyList(),
+)
 
 data class RouteDirectionDto(
     val id: String = "",

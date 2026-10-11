@@ -198,4 +198,33 @@ class ProxyNodeEditorTest {
         assertEquals(listOf("0.0.0.0/0", "::/0"), peer.getAsJsonArray("allowed_ips").map { it.asString })
         assertEquals(25, peer.get("persistent_keepalive_interval").asInt)
     }
+
+    @Test
+    fun `editor applies SOCKS5 credentials and syncs config json`() {
+        val node = ProxyNode(
+            id = 12,
+            name = "old-socks",
+            type = "socks5",
+            originalServer = "old.example.com",
+            originalPort = 1080,
+            configJson = "{}",
+        )
+
+        val result = ProxyNodeEditor.applyDraft(
+            node = node,
+            draft = ProxyNodeEditDraft(
+                name = "new-socks",
+                originalServer = "socks.example.com",
+                originalPort = "1081",
+                protocol = ProxyProtocolDraft.Socks5(username = "user", password = "pass"),
+            ),
+        )
+
+        require(result is ProxyNodeEditResult.Success)
+        val config = JsonParser.parseString(result.node.configJson).asJsonObject
+        assertEquals("user", config.get("username").asString)
+        assertEquals("pass", config.get("password").asString)
+        assertEquals("socks.example.com", config.get("server").asString)
+        assertEquals(1081, config.get("server_port").asInt)
+    }
 }

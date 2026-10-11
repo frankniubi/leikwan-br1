@@ -16,6 +16,8 @@ foreach ([
     "'ultraOperationsPage'",
     "'/admin/ultra/lines/{id}'",
     "'saveUltraLinePolicy'",
+    "'/admin/ultra/attestation/refresh'",
+    "'refreshUltraRuntimeAttestation'",
 ] as $snippet) {
     if (!str_contains($bootstrap, $snippet)) {
         failUltraAdmin('missing Ultra admin route: ' . $snippet);
@@ -63,7 +65,12 @@ foreach ([
     'Include unavailable lines',
     'Material not required',
     'min(200',
+    'Lines per page',
+    'http_build_query',
+    'include_absent',
     'sessionsForAdmin',
+    'Refresh runtime',
+    'clearRuntimeAttestation',
     'listLinesForAdmin',
     'listUltraCombinationsForAdmin',
     'listSourcesForAdmin',

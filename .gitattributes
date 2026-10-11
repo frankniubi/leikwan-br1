@@ -6,6 +6,17 @@
 /slave-agent/slave_agent.py text eol=lf
 /artifacts/slave-agent.py text eol=lf
 /sidecar-agent/sidecar_agent.py text eol=lf
+/sidecar-agent/leikwan_mptcp_sidecar.py text eol=lf
 /client-agent/client_agent.py text eol=lf
 /client-agent/leikwan_mptcp_client.py text eol=lf
 /artifacts/leikwan-mptcp-client.py text eol=lf
+
+# External UoT sidecar ships inside the sidecar install path: both installers are
+# sha256-pinned by artifacts/versions.json (bond_sidecar_installer /
+# external_uot_installer), so they must hash identically on every checkout.
+/install/install-bond-sidecar.sh text eol=lf
+/install/install-external-uot.sh text eol=lf
+
+# Windows batch scripts must keep CRLF: cmd.exe mis-parses LF-only labels and goto.
+*.cmd text eol=crlf
+*.bat text eol=crlf

@@ -81,7 +81,7 @@ final class OidcController extends BaseController
             $whmcsBindingWarning = false;
             if ($this->whmcsIdentityService->isConfigured()) {
                 try {
-                    $this->whmcsIdentityService->tryDirectBindForUser((int) $user['id']);
+                    $this->whmcsIdentityService->tryDirectBindForUser((int) $user['id'], $claims);
                 } catch (Throwable) {
                     $whmcsBindingWarning = true;
                 }

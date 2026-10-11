@@ -11,7 +11,7 @@ final class OidcClient
 {
     private Config $config;
 
-    /** @var callable(string, string, array{headers?:array<string,string>,form?:array<string,string>}):array{status:int,headers?:array<string,string|list<string>>,body:string|array<string,mixed>} */
+    /** @var callable(string, string, array{headers?:array<string,string>,form?:array<string,string>,resolve?:list<string>}):array{status:int,headers?:array<string,string|list<string>>,body:string|array<string,mixed>} */
     private $httpClient;
 
     /** @var callable():int */
@@ -25,7 +25,7 @@ final class OidcClient
      * response array with integer `status`, optional headers, and a JSON `body` string or decoded array.
      * It must not throw provider response bodies into exception text.
      *
-     * @param callable(string, string, array{headers?:array<string,string>,form?:array<string,string>}):array{status:int,headers?:array<string,string|list<string>>,body:string|array<string,mixed>}|null $httpClient
+     * @param callable(string, string, array{headers?:array<string,string>,form?:array<string,string>,resolve?:list<string>}):array{status:int,headers?:array<string,string|list<string>>,body:string|array<string,mixed>}|null $httpClient
      * @param callable():int|null $clock
      */
     public function __construct(Config $config, ?callable $httpClient = null, ?callable $clock = null)
@@ -41,6 +41,7 @@ final class OidcClient
         $userinfoUrl = trim((string) $this->config->get('OIDC_USERINFO_URL', ''));
         try {
             $this->configuredMetadata();
+            $this->resolveEntries($this->issuer());
         } catch (RuntimeException) {
             return false;
         }
@@ -88,7 +89,7 @@ final class OidcClient
 
     /**
      * @param array<string, mixed> $flow A freshly consumed OIDC session flow.
-     * @return array{issuer:string, subject:string, email:string, email_verified:bool, name:string}
+     * @return array{issuer:string, subject:string, email:string, email_verified:bool, name:string, whmcs_client_id?:int, whmcs_user_id?:int}
      */
     public function authenticateCallback(string $code, array $flow): array
     {
@@ -120,13 +121,39 @@ final class OidcClient
             throw new RuntimeException('oidc_callback_invalid');
         }
 
-        return [
+        $identity = [
             'issuer' => $this->issuer(),
             'subject' => (string) $claims['sub'],
             'email' => strtolower($email),
             'email_verified' => $emailVerified,
             'name' => $name,
         ];
+
+        if ($this->usesTrustedWhmcsUserinfoClaims($userinfo, strtolower($email))) {
+            $identity['whmcs_client_id'] = (int) $userinfo['whmcs_client_id'];
+            $identity['whmcs_user_id'] = (int) $userinfo['whmcs_user_id'];
+        }
+
+        return $identity;
+    }
+
+    /** @param array<string, mixed> $userinfo */
+    private function usesTrustedWhmcsUserinfoClaims(array $userinfo, string $email): bool
+    {
+        $baseUrl = rtrim(trim((string) $this->config->get('WHMCS_BASE_URL', '')), '/');
+        $userinfoUrl = rtrim(trim((string) $this->config->get('OIDC_USERINFO_URL', '')), '/');
+        $clientId = $userinfo['whmcs_client_id'] ?? null;
+        $userId = $userinfo['whmcs_user_id'] ?? null;
+        $claimEmail = strtolower(trim((string) ($userinfo['whmcs_email'] ?? '')));
+
+        return $baseUrl !== ''
+            && $userinfoUrl === $baseUrl . '/oauth/userinfo-v3.php'
+            && is_int($clientId)
+            && $clientId > 0
+            && is_int($userId)
+            && $userId > 0
+            && $claimEmail !== ''
+            && hash_equals($email, $claimEmail);
     }
 
     /** @param array<string, mixed> $flow @return array<string, mixed> */
@@ -407,11 +434,54 @@ final class OidcClient
         return in_array('RS256', $algorithms, true);
     }
 
-    /** @return array<string, mixed> */
+    /** @return list<string> */
+    private function resolveEntries(string $url): array
+    {
+        $configured = trim((string) $this->config->get('OIDC_PROVIDER_RESOLVE', ''));
+        if ($configured === '') {
+            return [];
+        }
+
+        $parts = parse_url($url);
+        $host = is_array($parts) && is_string($parts['host'] ?? null) ? (string) $parts['host'] : '';
+        if ($host === '') {
+            throw new RuntimeException('oidc_configuration_invalid');
+        }
+        $port = (int) ($parts['port'] ?? 443);
+        $entries = [];
+        $mappings = preg_split('/\s*,\s*/', $configured, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        foreach ($mappings as $mapping) {
+            if (preg_match('/\A([^:\s,]+):([0-9]{1,5}):((?:[0-9]{1,3}\.){3}[0-9]{1,3})\z/', $mapping, $match) !== 1) {
+                throw new RuntimeException('oidc_configuration_invalid');
+            }
+            $mappedHost = strtolower($match[1]);
+            $mappedPort = (int) $match[2];
+            $mappedIp = $match[3];
+            if (
+                filter_var($mappedHost, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false
+                || $mappedPort < 1
+                || $mappedPort > 65535
+                || filter_var($mappedIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+            ) {
+                throw new RuntimeException('oidc_configuration_invalid');
+            }
+            if (strcasecmp($mappedHost, $host) === 0 && $mappedPort === $port) {
+                $entries[] = $mappedHost . ':' . $mappedPort . ':' . $mappedIp;
+            }
+        }
+
+        return array_values(array_unique($entries));
+    }
+
+    /** @param array{headers?:array<string,string>,form?:array<string,string>,resolve?:list<string>} $options @return array<string, mixed> */
     private function jsonResponse(string $method, string $url, array $options): array
     {
         if (!$this->httpsUrl($url)) {
             throw new RuntimeException('oidc_configuration_invalid');
+        }
+        $resolve = $this->resolveEntries($url);
+        if ($resolve !== []) {
+            $options['resolve'] = $resolve;
         }
         $startedAt = microtime(true);
         try {
@@ -589,11 +659,15 @@ final class OidcClient
             && !isset($parts['fragment']);
     }
 
-    /** @return array{status:int,headers:array<string,list<string>>,body:string,_meta?:array<string,int|string>} */
+    /** @param array{headers?:array<string,string>,form?:array<string,string>,resolve?:list<string>} $options @return array{status:int,headers:array<string,list<string>>,body:string,_meta?:array<string,int|string>} */
     private function defaultHttpClient(string $method, string $url, array $options): array
     {
         $headers = $options['headers'] ?? [];
+        $resolve = $options['resolve'] ?? [];
         $body = isset($options['form']) ? http_build_query($options['form'], '', '&', PHP_QUERY_RFC3986) : '';
+        if ($resolve !== [] && !function_exists('curl_init')) {
+            throw new RuntimeException('oidc_provider_request_failed');
+        }
         if ($body !== '') {
             $headers['Content-Type'] = 'application/x-www-form-urlencoded';
         }
@@ -606,7 +680,7 @@ final class OidcClient
             foreach ($headers as $name => $value) {
                 $headerLines[] = $name . ': ' . $value;
             }
-            curl_setopt_array($handle, [
+            $curlOptions = [
                 CURLOPT_CUSTOMREQUEST => $method,
                 CURLOPT_HTTPHEADER => $headerLines,
                 CURLOPT_RETURNTRANSFER => true,
@@ -615,7 +689,11 @@ final class OidcClient
                 CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
                 CURLOPT_POSTFIELDS => $method === 'POST' ? $body : null,
-            ]);
+            ];
+            if ($resolve !== []) {
+                $curlOptions[CURLOPT_RESOLVE] = $resolve;
+            }
+            curl_setopt_array($handle, $curlOptions);
             $responseBody = curl_exec($handle);
             $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             $curlError = curl_errno($handle);

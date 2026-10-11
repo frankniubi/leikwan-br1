@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>leikwan-bridge-headless</AssemblyName>
+    <RootNamespace>LeikwanBridge.Headless</RootNamespace>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <Version>0.1.20.62</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The install root and the panel endpoints come from Core so the GUI, the
+         windowless client and the installers can never disagree about either. -->
+    <ProjectReference Include="..\LeikwanBridge.Core\LeikwanBridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>

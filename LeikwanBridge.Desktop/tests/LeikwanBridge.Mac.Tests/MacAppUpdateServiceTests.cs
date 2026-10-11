@@ -45,6 +45,44 @@ public sealed class MacAppUpdateServiceTests
     }
 
     [Fact]
+    public async Task CheckAsync_IgnoresRuntimeHashesForOtherArchitectures()
+    {
+        using var temp = new TempDirectory();
+        var currentHash = Sha256(ThinMachO("arm64"));
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            runtimeEntries: $"\"ultra_client_runtime_macos_arm64\": {{ \"sha256\": \"{currentHash}\" }}, \"ultra_client_runtime_macos_x64\": {{ \"sha256\": \"{new string('B', 64)}\" }}, \"leikwan_uot_bond_linux_arm64\": {{ \"sha256\": \"{new string('C', 64)}\" }}")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.Null(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
+    public async Task CheckAsync_RequestsUpdateWhenCurrentRuntimeDiffers()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            runtimeEntries: $"\"ultra_client_runtime_macos_arm64\": {{ \"sha256\": \"{new string('B', 64)}\" }}")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.NotNull(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
+    public async Task CheckAsync_RequestsUpdateWhenPackagedHelperDiffers()
+    {
+        using var temp = new TempDirectory();
+        var currentHash = Sha256(ThinMachO("arm64"));
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(
+            version: "1.0.0",
+            packageRuntimeSha256: $"\"bin/ultra-client\": \"{currentHash}\", \"bin/wstunnel\": \"{new string('B', 64)}\"")));
+        using var service = CreateService(temp, "arm64", http);
+
+        Assert.NotNull(await service.CheckAsync("https://panel.example.test", "1.0.0"));
+    }
+
+    [Fact]
     public async Task PrepareAsync_RejectsSizeAndHashMismatches()
     {
         using var temp = new TempDirectory();
@@ -272,6 +310,247 @@ public sealed class MacAppUpdateServiceTests
         Assert.False(File.Exists(Path.Combine(current, "new-marker")));
     }
 
+    [Fact]
+    public async Task CheckAsync_RebindsKnownEndpointArtifactUrlsToSelectedPanel()
+    {
+        using var temp = new TempDirectory();
+        var requested = new List<Uri>();
+        var panelUrl = PanelEndpoints.AliyunCdnUrl;
+        var manifest = $$"""
+        {
+          "component": "desktop-client-app",
+          "manifest": {
+            "macos_client_update_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-arm64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
+            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
+            "macos_client_update_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-x64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
+            "macos_client_app_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-x64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+          }
+        }
+        """;
+        using var http = BuildHttp(request =>
+        {
+            requested.Add(request.RequestUri!);
+            return JsonResponse(manifest);
+        });
+        using var service = CreateService(temp, "arm64", http);
+
+        var artifact = await service.CheckAsync(panelUrl, "1.0.0");
+
+        Assert.NotNull(artifact);
+        Assert.StartsWith(panelUrl + "/", artifact.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(PanelEndpoints.CloudflareUrl, artifact.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(artifact.ManualInstaller);
+        Assert.StartsWith(panelUrl + "/", artifact.ManualInstaller!.ArtifactUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new Uri(panelUrl + "/artifacts/client-manifest.json"), Assert.Single(requested));
+    }
+
+    [Fact]
+    public async Task CheckAsync_ReportsCheckPhaseProgress()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson()));
+        using var service = CreateService(temp, "arm64", http);
+        var updates = new List<UpdateProgress>();
+
+        await service.CheckAsync(
+            "https://panel.example.test",
+            "1.0.0",
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.NotEmpty(updates);
+        Assert.All(updates, update => Assert.Equal(UpdatePhase.Check, update.Phase));
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReportsDownloadVerifyAndStagePhases()
+    {
+        using var source = new TempDirectory();
+        using var temp = new TempDirectory();
+        var bundle = CreateBundle(source.Path, "com.leikwan.bridge", "2.0.0", "arm64");
+        var package = ZipDirectory(bundle);
+        using var http = BuildHttp(_ => BytesResponse(package));
+        using var service = CreateService(temp, "arm64", http);
+        var updates = new List<UpdateProgress>();
+
+        var prepared = await service.PrepareAsync(
+            ArtifactFor(package),
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.True(Directory.Exists(prepared.StagedBundlePath));
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Download && update.Percent == 100);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Verify && update.Percent == 100);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Stage && update.Percent == 100);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_ReportsApplyPhaseProgress()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => BytesResponse([]));
+        var launcher = new FakeUpdateLauncher();
+        using var service = CreateService(temp, "arm64", http, launcher, _ => true);
+        var stagedBundle = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", "ApplyProgress.app");
+        var prepared = new PreparedAppUpdate(
+            ArtifactFor(Encoding.UTF8.GetBytes("zip")),
+            "package.zip",
+            stagedBundle,
+            Sha256(File.ReadAllBytes(Path.Combine(stagedBundle, "Contents", "MacOS", "LeikwanBridge.Mac"))));
+        var updates = new List<UpdateProgress>();
+
+        var result = await service.ApplyAsync(
+            prepared,
+            deferUntilRestart: false,
+            new Progress<UpdateProgress>(updates.Add));
+
+        Assert.True(result.Started);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Apply);
+        Assert.Contains(updates, update => update.Phase == UpdatePhase.Apply && update.Percent == 100);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_LaunchesHelperFromAStableCopyOutsideTheStagedBundle()
+    {
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => BytesResponse([]));
+        var launcher = new FakeUpdateLauncher();
+        using var service = CreateService(temp, "arm64", http, launcher, _ => true);
+        var stagedBundle = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", "Prepared.app");
+        var prepared = new PreparedAppUpdate(
+            ArtifactFor(Encoding.UTF8.GetBytes("zip")),
+            "package.zip",
+            stagedBundle,
+            Sha256(File.ReadAllBytes(Path.Combine(stagedBundle, "Contents", "MacOS", "LeikwanBridge.Mac"))));
+
+        var result = await service.ApplyAsync(prepared, deferUntilRestart: false);
+
+        Assert.True(result.Started);
+        var launch = Assert.Single(launcher.StartedProcesses);
+        var executable = launch.Executable.Replace('\\', '/');
+        var updatesRoot = Path.Combine(temp.Path, "updates").Replace('\\', '/') + "/";
+        // The helper resolves its managed payload relative to its own bundle, so the
+        // swap must never rename the bundle the helper runs from: doing that made the
+        // post-swap verification throw and silently rolled the update back while the
+        // caller still reported "applied" (field-observed 2026-09-14, reproduced 3x).
+        Assert.StartsWith(updatesRoot, executable, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Prepared.app", executable, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(".update-", executable, StringComparison.OrdinalIgnoreCase);
+        var requestJson = File.ReadAllText(launch.Arguments[1]);
+        Assert.Contains("applier_bundle_path", requestJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyHelper_PublishesTheRollbackReasonInsteadOfSwallowingIt()
+    {
+        using var temp = new TempDirectory();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        var staged = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", ".LeiKwan Bridge.update.app");
+        File.WriteAllText(Path.Combine(current, "old-marker"), "old");
+        File.WriteAllText(Path.Combine(staged, "new-marker"), "new");
+        var requestPath = Path.Combine(temp.Path, "apply.json");
+        MacAppUpdateApplier.WriteRequest(requestPath, new MacUpdateApplyRequest
+        {
+            CurrentProcessId = 0,
+            CurrentBundlePath = current,
+            StagedBundlePath = staged,
+            BackupBundlePath = Path.Combine(temp.Path, ".LeiKwan Bridge.backup.app"),
+            Version = "2.0.0",
+            PackageSizeBytes = 123,
+            PackageSha256 = new string('A', 64),
+            MainExecutableSha256 = Sha256(File.ReadAllBytes(Path.Combine(staged, "Contents", "MacOS", "LeikwanBridge.Mac"))),
+        });
+        var launcher = new FakeUpdateLauncher { OpenApplicationResult = false };
+
+        var outcome = await MacAppUpdateApplier.ApplyFromRequestOutcomeAsync(requestPath, launcher);
+
+        Assert.False(outcome.Success);
+        Assert.Equal("update_relaunch_failed", outcome.Code);
+        var log = File.ReadAllText(Path.Combine(temp.Path, MacAppUpdateApplier.ApplyLogFileName));
+        Assert.Contains("rollback reason=IOException: update_relaunch_failed", log, StringComparison.Ordinal);
+        Assert.Contains("rollback complete", log, StringComparison.Ordinal);
+        var published = MacAppUpdateApplier.ReadLastResult(temp.Path);
+        Assert.NotNull(published);
+        Assert.False(published!.Success);
+        Assert.Equal("update_relaunch_failed", published.Code);
+    }
+
+    [Fact]
+    public async Task ApplyHelper_PublishesSuccessAfterTheSwap()
+    {
+        using var temp = new TempDirectory();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        var staged = CreateBundle(temp.Path, "com.leikwan.bridge", "2.0.0", "arm64", ".LeiKwan Bridge.update.app");
+        var requestPath = Path.Combine(temp.Path, "apply.json");
+        MacAppUpdateApplier.WriteRequest(requestPath, new MacUpdateApplyRequest
+        {
+            CurrentProcessId = 0,
+            CurrentBundlePath = current,
+            StagedBundlePath = staged,
+            BackupBundlePath = Path.Combine(temp.Path, ".LeiKwan Bridge.backup.app"),
+            Version = "2.0.0",
+            PackageSizeBytes = 123,
+            PackageSha256 = new string('A', 64),
+            MainExecutableSha256 = Sha256(File.ReadAllBytes(Path.Combine(staged, "Contents", "MacOS", "LeikwanBridge.Mac"))),
+        });
+
+        var outcome = await MacAppUpdateApplier.ApplyFromRequestOutcomeAsync(requestPath, new FakeUpdateLauncher());
+
+        Assert.True(outcome.Success);
+        Assert.Equal("ok", outcome.Code);
+        Assert.Equal("2.0.0", MacBundleValidator.ReadBundleVersion(current));
+        var published = MacAppUpdateApplier.ReadLastResult(temp.Path);
+        Assert.NotNull(published);
+        Assert.True(published!.Success);
+    }
+
+    [Fact]
+    public async Task ClientUpdateService_FailsWhenTheInstalledVersionDoesNotChange()
+    {
+        using var source = new TempDirectory();
+        using var temp = new TempDirectory();
+        var packageBundle = CreateBundle(source.Path, "com.leikwan.bridge", "2.0.0", "arm64", "LeiKwan Bridge.app");
+        var package = ZipDirectory(packageBundle);
+        // The published entry must describe the real package: the resumable downloader
+        // refuses a body whose length differs from the manifest.
+        var manifest = $$"""
+        {
+          "component": "desktop-client-app",
+          "manifest": {
+            "macos_client_update_arm64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{Sha256(package).ToLowerInvariant()}}", "size_bytes": {{package.Length}}, "architecture": "arm64", "format": "zip" },
+            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" }
+          }
+        }
+        """;
+        using var http = BuildHttp(request => request.RequestUri!.AbsolutePath.Contains("client-manifest", StringComparison.Ordinal)
+            ? JsonResponse(manifest)
+            : BytesResponse(package));
+        var launcher = new FakeUpdateLauncher();
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
+        using var updater = new MacAppUpdateService(
+            Path.Combine(temp.Path, "updates"),
+            current,
+            "arm64",
+            _ => http,
+            ownsHttpClient: false,
+            launcher: launcher,
+            directoryWritable: _ => true,
+            waitForCallerExit: false);
+        var controller = new MacServiceController(new MacPlatformPaths(temp.Path, current));
+        var client = new MacClientUpdateService(
+            updater,
+            controller,
+            "https://panel.example.test",
+            TimeSpan.FromMilliseconds(600));
+        var output = new StringWriter();
+
+        var check = await client.CheckAsync(CancellationToken.None);
+        Assert.True(check.UpdateAvailable);
+        var applied = await client.ApplyAsync(check, controller, output, CancellationToken.None);
+
+        Assert.False(applied);
+        Assert.Contains("still 1.0.0", output.ToString(), StringComparison.Ordinal);
+    }
+
     private static MacAppUpdateService CreateService(
         TempDirectory temp,
         string architecture,
@@ -303,17 +582,24 @@ public sealed class MacAppUpdateServiceTests
         };
     }
 
-    private static string ManifestJson(string version = "2.0.0")
+    private static string ManifestJson(
+        string version = "2.0.0",
+        string? runtimeEntries = null,
+        string? packageRuntimeSha256 = null)
     {
         var sha = new string('A', 64);
+        var runtime = string.IsNullOrWhiteSpace(runtimeEntries) ? string.Empty : $", {runtimeEntries}";
+        var packageRuntime = string.IsNullOrWhiteSpace(packageRuntimeSha256)
+            ? string.Empty
+            : $", \"runtime_sha256\": {{ {packageRuntimeSha256} }}";
         return $$"""
         {
           "component": "desktop-client-app",
           "manifest": {
-            "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
+            "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip"{{packageRuntime}} },
             "macos_client_app_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{sha}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
             "macos_client_update_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-x64.zip", "sha256": "{{sha}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
-            "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+            "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }{{runtime}}
           }
         }
         """;
@@ -344,11 +630,14 @@ public sealed class MacAppUpdateServiceTests
         File.WriteAllBytes(Path.Combine(macOs, "LeikwanBridge.Mac"), executable);
         var helperPath = Path.Combine(helpers, "ultra-client");
         File.WriteAllBytes(helperPath, executable);
+        var wstunnelPath = Path.Combine(helpers, "wstunnel");
+        File.WriteAllBytes(wstunnelPath, executable);
         File.WriteAllText(Path.Combine(bundle, "Contents", "Resources", "helper-manifest.json"), $$"""
         {
           "architecture": "{{architecture}}",
           "helpers": [
-            { "name": "ultra-client", "path": "bin/ultra-client", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} }
+            { "name": "ultra-client", "path": "bin/ultra-client", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} },
+            { "name": "wstunnel", "path": "bin/wstunnel", "sha256": "{{Sha256(executable)}}", "size_bytes": {{executable.Length}} }
           ]
         }
         """);

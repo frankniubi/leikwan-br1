@@ -194,41 +194,9 @@ $expectedTopics = [
             'excerpt' => '選擇正確的用戶端位址，測試服務並確認轉發已經運作。',
         ],
     ],
-    'connection-modes-single-race-bond' => [
-        'is_pinned' => 0,
-        'sort_order' => 50,
-        'en' => [
-            'title' => 'Choose a Connection Mode',
-            'excerpt' => 'Understand Single, Race, and Bond by the outcome you need rather than internal topology.',
-        ],
-        'zh-Hans' => [
-            'title' => '选择连接模式',
-            'excerpt' => '按稳定、容错或多路径需求理解 Single、Race 和 Bond。',
-        ],
-        'zh-TW' => [
-            'title' => '選擇連線模式',
-            'excerpt' => '按穩定、容錯或多路徑需求理解 Single、Race 和 Bond。',
-        ],
-    ],
-    'bond-sidecar-setup' => [
-        'is_pinned' => 0,
-        'sort_order' => 60,
-        'en' => [
-            'title' => 'Configure a Sidecar',
-            'excerpt' => 'Create and verify a Sidecar only when your Bond route package requires one.',
-        ],
-        'zh-Hans' => [
-            'title' => '配置 Sidecar',
-            'excerpt' => '仅在线路方案明确需要时创建并验证 Sidecar。',
-        ],
-        'zh-TW' => [
-            'title' => '設定 Sidecar',
-            'excerpt' => '僅在線路方案明確需要時建立並驗證 Sidecar。',
-        ],
-    ],
     'troubleshooting-common-mistakes' => [
         'is_pinned' => 0,
-        'sort_order' => 70,
+        'sort_order' => 50,
         'en' => [
             'title' => 'Troubleshoot Common Problems',
             'excerpt' => 'Start from the symptom you can see and follow the shortest safe recovery path.',
@@ -244,7 +212,7 @@ $expectedTopics = [
     ],
     'glossary' => [
         'is_pinned' => 0,
-        'sort_order' => 80,
+        'sort_order' => 60,
         'en' => [
             'title' => 'Glossary',
             'excerpt' => 'Plain-language definitions for the product and network terms used in the guides.',
@@ -258,43 +226,46 @@ $expectedTopics = [
             'excerpt' => '用淺白語言解釋指南中出現的產品和網路術語。',
         ],
     ],
+    'no-gui-clients' => [
+        'is_pinned' => 0,
+        'sort_order' => 70,
+        'en' => [
+            'title' => 'Run the Client Without a GUI',
+            'excerpt' => 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.',
+        ],
+        'zh-Hans' => [
+            'title' => '无界面运行客户端',
+            'excerpt' => '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。',
+        ],
+        'zh-TW' => [
+            'title' => '無介面執行用戶端',
+            'excerpt' => '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。',
+        ],
+    ],
 ];
 
 assertCatalogSame(array_keys($expectedTopics), array_keys($topics), 'topic keys and order must be exact');
-assertCatalogSame(8, count($topics), 'catalog must contain exactly eight topics');
+assertCatalogSame(7, count($topics), 'catalog must contain exactly seven topics');
 
 $requiredArticleText = [
     'getting-started-five-minute-overview' => [
-        'active package',
-        'Create Forward',
-        'assigned local port',
-        'actual application protocol',
-        'application request succeeds',
+        'ultra',
+        'local port',
+        '127.0.0.1',
+        'running',
+        'active plan',
+        'Clients page',
     ],
     'install-client' => [
-        'Download Windows App',
-        'Master URL',
-        'Email',
-        'Password',
+        'Windows App',
+        'Download APK',
+        'Debian 11, 12 or 13',
+        'Android 8.0+',
         'Connection successful!',
         'Connected',
         'Running',
-        'arm64',
-        'Android 8.0+',
-        'VPN',
-        'Ready to connect',
-        'Connecting...',
-        'supported LeiGod service',
-        'Linux Install',
-        'Copy Install Command',
-        'systemd',
-        'Python 3',
-        'root-equivalent',
-        'bearer agent token',
-        'installed leikwan-client-agent',
-        'config_pull_state.json',
-        'status',
-        'ok',
+        'Clients page',
+        'online devices',
     ],
     'getting-started-first-forward-checklist' => [
         'Forward Route',
@@ -307,8 +278,8 @@ $requiredArticleText = [
         'UDP',
         'Save',
         'assigned local port',
-        'provisioning',
-        'recent client sync',
+        'No endpoint assigned yet',
+        'online on the Clients page',
     ],
     'connect-and-verify' => [
         '127.0.0.1',
@@ -318,59 +289,46 @@ $requiredArticleText = [
         'NAT',
         'Android',
         'loopback-only',
-        'actual application protocol',
         'target logs',
-    ],
-    'connection-modes-single-race-bond' => [
-        'Single',
-        'Race',
-        'Bond',
-        'not bandwidth aggregation',
-        'one winner per connection',
-        'fan out datagrams',
-        'at least two usable endpoints',
-        'differs by platform',
-        'published route contract',
-        'ask your administrator',
-    ],
-    'bond-sidecar-setup' => [
-        'Sidecar',
-        'intermediate target-side transport',
-        'not the target application',
-        'published route contract',
-        'Target Endpoints',
-        'Create Transport Endpoint',
-        'Transport Listen Port',
-        'Save Transport Endpoint',
-        'Last Heartbeat',
-        'backend listener',
-        'heartbeat alone',
+        'actual application protocol',
     ],
     'troubleshooting-common-mistakes' => [
-        'recent sync',
-        'correct address',
-        'port is allowed',
+        'online devices',
+        'address correct',
+        'port allowed',
         'forward and route',
         'target service from its own host',
-        'View Diagnostics',
+        'forward ID',
         'support',
-        'random topology changes',
+        'change settings at random',
     ],
     'glossary' => [
-        'Active package',
+        'Active plan',
         'Forward',
         'Forward Route',
         'Target Host',
         'Target Port',
         'Local Listen Port',
+        'Transport',
         'Client',
-        'Single',
-        'Race',
-        'Bond',
-        'Sidecar',
-        'Recent sync',
         'Running',
+        'Online devices',
+        'Ultra',
         'Application verification',
+    ],
+    'no-gui-clients' => [
+        'Client ID',
+        'Agent Token',
+        'stays switched on',
+        'Applications',
+        'leikwan status',
+        'leikwan restart',
+        'leikwan update',
+        'leikwan update --check',
+        'leikwan logs -n 50',
+        'leikwan doctor',
+        'leikwan stop',
+        'online',
     ],
 ];
 
@@ -381,58 +339,52 @@ $forbiddenFirstForwardText = [
 ];
 $requiredLocalizedArticleText = [
     'zh-Hans' => [
-        'getting-started-five-minute-overview' => ['有效套餐', 'Create Forward', '系统分配的本地端口', '实际应用协议', '应用请求成功', '保存', '预配', '最近同步', 'Running'],
-        'install-client' => ['Download Windows App', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '受支持 LeiGod 服务', 'Linux Install', 'Copy Install Command', 'systemd', 'Python 3', '相当于 root', '身份验证的令牌', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不要据此承诺 Android 支持 Race 或 MPTCP'],
-        'getting-started-first-forward-checklist' => ['有效', 'Create Forward', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', 'Transport', 'TCP', 'TCP + UDP', 'UDP', '保存', '预配', '最近同步', 'Running', '应用成功'],
-        'connect-and-verify' => ['127.0.0.1', '可访问的 Windows 或 Linux 客户端主机地址', '防火墙', '安全组', 'NAT', 'Android', '仅监听回环地址', '实际应用协议', '目标日志', '公网 IP'],
-        'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是带宽聚合', '每条连接选择一个胜出路径', '数据报发送到多个可用路径', '至少两个可用端点', '因客户端平台而异', 'Android 不承诺 Race 或 MPTCP', '已发布的线路约定', '仅在线路约定要求时使用 Sidecar', '速度翻倍', '跑满带宽', '所有路径'],
-        'bond-sidecar-setup' => ['Sidecar', '目标侧的中间传输组件', '不是目标应用', '已发布的线路约定', 'Target Endpoints', 'Create Transport Endpoint', 'Transport Listen Port', 'Save Transport Endpoint', 'Last Heartbeat', '后端监听服务', '仅有心跳不能证明后端健康', '令牌', '密码', '命令', '密钥', '会话', '线路材料'],
-        'troubleshooting-common-mistakes' => ['最近同步', '地址是否正确', '端口已放行', '转发和线路', '从目标服务自己的主机测试目标服务', 'View Diagnostics', '支持', '随机修改拓扑', '实际应用协议'],
-        'glossary' => ['有效套餐', '转发', 'Forward Route', 'Target Host', 'Target Port', 'Local Listen Port', '客户端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '应用验证', '不是带宽聚合', '不保证速度翻倍'],
+        'getting-started-five-minute-overview' => ['ultra', '线路', '转发', '客户端', '本机端口', '127.0.0.1', 'running', '套餐', '我的服务', '新建转发'],
+        'install-client' => ['Windows', 'Android', 'Linux', '下载安装包', '复制命令', '下载 APK', 'Debian 11、12 或 13', 'Android 8.0 以上', 'Connection successful!', 'Connected', 'Running', '客户端', '在线设备', '最大在线', '控制台邮箱和密码'],
+        'getting-started-first-forward-checklist' => ['新建转发', '线路', '目标地址', '目标端口', '本地监听端口', '协议', 'TCP', 'TCP + UDP', 'UDP', '保存', '转发规则', '正在分配节点', '在线设备', '使用中的套餐'],
+        'connect-and-verify' => ['127.0.0.1', '可访问的 Windows 或 Linux 客户端主机地址', '防火墙', '安全组', 'NAT', 'Android', '只监听回环地址', '实际应用协议', '目标日志', '本期用量'],
+        'troubleshooting-common-mistakes' => ['在线设备', '地址和端口正确吗', '端口已放行', '转发和线路', '从目标服务自己的主机测试目标服务', '转发的编号', '客服', '随手改一堆设置', '正在分配节点', '踢下线'],
+        'glossary' => ['使用中的套餐', '转发', '线路', '目标地址', '目标端口', '本地监听端口', '协议', '客户端', 'Running', '在线设备', '最大在线', 'ultra', '应用验证'],
+        'no-gui-clients' => ['客户端 ID', '客户端令牌', '长期开机', '应用程序', 'leikwan status', 'leikwan restart', 'leikwan update --check', 'leikwan logs -n 50', 'leikwan doctor', 'leikwan stop', '在线设备'],
     ],
     'zh-TW' => [
-        'getting-started-five-minute-overview' => ['有效方案', '建立轉發', '系統分配的本機連接埠', '實際應用協定', '應用程式要求成功', '儲存', '佈建', '最近同步', 'Running'],
-        'install-client' => ['下載 Windows App', '租戶 → 線路', 'Master URL', 'Email', 'Password', 'Connect', 'Connection successful!', 'Connected', 'Running', 'arm64', 'Android 8.0+', 'VPN', 'Ready to connect', 'Connecting...', '支援的 LeiGod 服務', 'Linux 安裝', '複製安裝指令', 'systemd', 'Python 3', '等同 root', '身分驗證權杖', 'installed leikwan-client-agent', '最近同步', 'config_pull_state.json', 'status', 'ok', '不能因此承諾 Android 支援 Race 或 MPTCP'],
-        'getting-started-first-forward-checklist' => ['有效', '建立轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '傳輸', 'TCP', 'TCP + UDP', 'UDP', '儲存', '佈建', '最近同步', 'Running', '應用程式成功'],
-        'connect-and-verify' => ['127.0.0.1', '可連到的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全群組', 'NAT', 'Android', '只監聽迴送位址', '實際應用協定', '目標服務記錄', '公用 IP'],
-        'connection-modes-single-race-bond' => ['Single', 'Race', 'Bond', '不是頻寬聚合', '每條連線選出一條勝出路徑', '資料包送往多條可用路徑', '至少兩個可用端點', '依用戶端平台而異', 'Android 不承諾 Race 或 MPTCP', '已發布的線路約定', '僅在線路約定要求時使用 Sidecar', '速度加倍', '跑滿頻寬', '所有路徑'],
-        'bond-sidecar-setup' => ['Sidecar', '目標端的中介傳輸元件', '不是目標應用程式', '已發布的線路約定', '目標端點', '建立傳輸端點', 'Sidecar 主機', '傳輸監聽連接埠', '儲存傳輸端點', '最後一次心跳', '代理版本', '最後狀態', '後端監聽服務', '只有心跳不能證明後端健康', '權杖', '密碼', '指令', '私密金鑰', '工作階段', '線路資料'],
-        'troubleshooting-common-mistakes' => ['最近同步', '位址是否正確', '連接埠已開放', '轉發和線路', '從目標服務所在主機測試目標服務', '查看診斷', '支援', '隨意變更拓撲', '實際應用協定'],
-        'glossary' => ['有效方案', '轉發', '轉發路由', '目標主機', '目標連接埠', '本地監聽連接埠', '用戶端', 'Single', 'Race', 'Bond', 'Sidecar', '最近同步', 'Running', '應用程式驗證', '不是頻寬聚合', '不保證速度加倍'],
+        'getting-started-five-minute-overview' => ['ultra', '線路', '轉發', '用戶端', '本機連接埠', '127.0.0.1', 'running', '套餐', '我的服務', '新建轉發'],
+        'install-client' => ['Windows', 'Android', 'Linux', '下載安裝包', '複製命令', '下載 APK', 'Debian 11、12 或 13', 'Android 8.0 以上', 'Connection successful!', 'Connected', 'Running', '用戶端', '線上裝置', '最大線上', '控制台郵箱和密碼'],
+        'getting-started-first-forward-checklist' => ['新建轉發', '線路', '目標位址', '目標連接埠', '本機監聽連接埠', '協定', 'TCP', 'TCP + UDP', 'UDP', '儲存', '轉發規則', '正在分配節點', '線上裝置', '使用中的套餐'],
+        'connect-and-verify' => ['127.0.0.1', '可訪問的 Windows 或 Linux 用戶端主機位址', '防火牆', '安全組', 'NAT', 'Android', '只監聽迴環位址', '實際應用協定', '目標日誌', '本期用量'],
+        'troubleshooting-common-mistakes' => ['線上裝置', '位址和連接埠正確嗎', '連接埠已放行', '轉發和線路', '從目標服務自己的主機測試目標服務', '轉發的編號', '客服', '隨手改一堆設定', '正在分配節點', '踢下線'],
+        'glossary' => ['使用中的套餐', '轉發', '線路', '目標位址', '目標連接埠', '本機監聽連接埠', '協定', '用戶端', 'Running', '線上裝置', '最大線上', 'ultra', '應用驗證'],
+        'no-gui-clients' => ['用戶端 ID', '用戶端令牌', '長期開機', '應用程式', 'leikwan status', 'leikwan restart', 'leikwan update --check', 'leikwan logs -n 50', 'leikwan doctor', 'leikwan stop', '線上裝置'],
     ],
 ];
+
 $forbiddenLocalizedArticleText = [
     'zh-Hans' => [
         'install-client' => ['Android 保证支持 Race', 'Android 保证支持 MPTCP'],
         'connect-and-verify' => ['任意公网 IP 都可用', 'Android 跨设备监听'],
-        'connection-modes-single-race-bond' => ['Race 是带宽聚合', '保证速度翻倍', '保证跑满带宽', '保证所有路径'],
-        'bond-sidecar-setup' => ['每条 Bond 转发都必须配置', '心跳证明后端健康'],
     ],
     'zh-TW' => [
         'install-client' => ['Android 保證支援 Race', 'Android 保證支援 MPTCP'],
         'connect-and-verify' => ['任何公用 IP 都可以使用', 'Android 跨裝置監聽'],
-        'connection-modes-single-race-bond' => ['Race 是頻寬聚合', '保證速度加倍', '保證跑滿頻寬', '保證所有路徑'],
-        'bond-sidecar-setup' => ['每條 Bond 轉發都必須設定', '心跳證明後端健康'],
     ],
 ];
+
 $localizedDiagramRequirements = [
     'zh-Hans' => [
-        'getting-started-five-minute-overview' => ['五分钟首次连接路径', '从有效套餐开始', '有效套餐', '创建一条转发', '安装并登录客户端', '测试分配的本地端口', '连接成功吗', '首次设置完成', '开始排查问题', '是', '否'],
-        'install-client' => ['客户端安装路径', '按设备系统选择', '选择设备', '操作系统', '下载 Windows 应用', '安装 arm64 Android 应用', '复制 Linux 安装命令', '确认最近同步'],
-        'getting-started-first-forward-checklist' => ['第一条转发表单路径', '打开有效套餐', '选择转发线路', '填写目标和传输方式', '打开有效套餐', '选择 Forward Route', '填写 Target Host 和 Target Port', '选择 Transport', '保存', '等待转发可用', '记下分配的本地端口'],
-        'connect-and-verify' => ['选择客户端连接地址', '应用与客户端同机时', '确认应用所在设备', '与客户端同机吗', '使用 127.0.0.1 和本地端口', '客户端平台', '使用可达主机地址和端口', '按需允许防火墙安全组或 NAT', '保持仅回环监听', '测试实际应用协议', '是', '否'],
-        'connection-modes-single-race-bond' => ['连接模式选择路径', '需要最简单的稳定路径时', '你需要什么结果', '最简单的稳定路径吗', '选择 Single', '需要非聚合容错吗', '选择 Race', '方案明确支持 Bond 吗', '选择 Bond 并核对要求', '咨询管理员', '是', '否'],
-        'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 线路', '客户端经过托管的 Slave 路径', '客户端', '托管 Slave 路径', 'Sidecar', '目标服务'],
-        'troubleshooting-common-mistakes' => ['从症状开始排查连接', '请求失败后依次检查', '应用请求失败', '最近同步正常吗', '恢复客户端同步', '地址正确吗', '使用回环或可达客户端主机', '端口已放行吗', '只放行所需端口', '转发和线路健康吗', '打开 View Diagnostics', '从目标主机测试服务', '重试应用', '整理诊断并联系支持', '是', '否'],
+        'getting-started-five-minute-overview' => ['从套餐到可用线路', '打开控制台', '新建一条转发', '安装客户端', '登录并连接', '把游戏指向本机端口', '开始游戏'],
+        'install-client' => ['客户端安装路径', '选择设备', '操作系统', '下载 Windows 安装包', '下载 Android APK', '复制 Linux 安装命令', '登录'],
+        'getting-started-first-forward-checklist' => ['第一条转发的表单路径', '打开我的服务', '点新建转发', '选择线路', '填写目标地址和目标端口', '选择协议', '保存'],
+        'connect-and-verify' => ['选择客户端连接地址', '游戏在哪台设备上运行？', '与客户端同机', '使用 127.0.0.1 和本地端口', '另一台设备', '使用客户端主机地址', '启动游戏'],
+        'troubleshooting-common-mistakes' => ['从症状开始排查', '游戏连不上', '客户端在线吗？', '否', '重启客户端再试', '是', '地址和端口正确吗？'],
+        'no-gui-clients' => ['不用屏幕的电脑设置流程', '选择电脑', '哪个系统', 'macOS', '先装应用，再运行一条命令', 'Windows', '解压下载包，再运行一条命令'],
     ],
     'zh-TW' => [
-        'getting-started-five-minute-overview' => ['五分鐘首次連線流程', '從有效方案開始', '有效方案', '建立一條轉發', '安裝並登入用戶端', '測試分配的本機連接埠', '連線成功嗎', '首次設定完成', '開始排查問題', '是', '否'],
-        'install-client' => ['用戶端安裝流程', '依裝置的作業系統選擇', '選擇裝置', '作業系統', '下載 Windows App', '安裝 arm64 Android App', '複製 Linux 安裝指令', '確認最近同步'],
-        'getting-started-first-forward-checklist' => ['第一條轉發的表單流程', '開啟有效方案', '選擇轉發路由', '填寫目標與傳輸方式', '開啟有效方案', '選擇轉發路由', '填寫目標主機和目標連接埠', '選擇傳輸方式', '儲存', '等待轉發可用', '記下分配的本機連接埠'],
-        'connect-and-verify' => ['選擇用戶端連線位址', '應用程式與用戶端在同一台裝置時', '確認應用程式所在裝置', '與用戶端在同一台裝置嗎', '使用 127.0.0.1 和本機連接埠', '用戶端平台', '使用可連到的主機位址與連接埠', '視需要開放防火牆安全群組或 NAT', '保持只監聽迴送位址', '測試實際應用協定', '是', '否'],
-        'connection-modes-single-race-bond' => ['連線模式選擇流程', '需要最簡單的穩定路徑時', '你需要什麼結果', '最簡單的穩定路徑嗎', '選擇 Single', '需要非聚合容錯嗎', '選擇 Race', '方案明確支援 Bond 嗎', '選擇 Bond 並核對要求', '詢問管理員', '是', '否'],
-        'bond-sidecar-setup' => ['使用 Sidecar 的 Bond 線路', '用戶端經過受管理的 Slave 路徑', '用戶端', '受管理的 Slave 路徑', 'Sidecar', '目標服務'],
-        'troubleshooting-common-mistakes' => ['從症狀開始排查連線', '要求失敗後依序檢查', '應用程式要求失敗', '最近同步正常嗎', '恢復用戶端同步', '位址正確嗎', '使用迴送位址或可連到的用戶端主機', '連接埠已開放嗎', '只開放必要連接埠', '轉發和線路健康嗎', '開啟查看診斷', '從目標主機測試服務', '重試應用程式', '整理診斷後聯絡支援', '是', '否'],
+        'getting-started-five-minute-overview' => ['從套餐到可用線路', '開啟控制台', '新建一條轉發', '安裝用戶端', '登入並連線', '把遊戲指向本機連接埠', '開始遊戲'],
+        'install-client' => ['用戶端安裝路徑', '選擇裝置', '作業系統', '下載 Windows 安裝包', '下載 Android APK', '複製 Linux 安裝命令', '登入'],
+        'getting-started-first-forward-checklist' => ['第一條轉發的表單路徑', '開啟我的服務', '點新建轉發', '選擇線路', '填寫目標位址和目標連接埠', '選擇協定', '儲存'],
+        'connect-and-verify' => ['選擇用戶端連線位址', '遊戲在哪臺裝置上執行？', '與用戶端同機', '使用 127.0.0.1 和本機連接埠', '另一臺裝置', '使用用戶端主機位址', '啟動遊戲'],
+        'troubleshooting-common-mistakes' => ['從症狀開始排查', '遊戲連不上', '用戶端線上嗎？', '否', '重啟用戶端再試', '是', '位址和連接埠正確嗎？'],
+        'no-gui-clients' => ['不用螢幕的電腦設定流程', '選擇電腦', '哪個系統', 'macOS', '先裝應用，再執行一條命令', 'Windows', '解壓下載包，再執行一條命令'],
     ],
 ];
 $allTopicKeys = array_keys($expectedTopics);
@@ -524,8 +476,7 @@ foreach ($topics as $topicKey => $topic) {
         $totalDiagrams += count($diagrams);
 
         if ($diagrams !== []) {
-            $expectedDirection = $topicKey === 'bond-sidecar-setup' ? 'LR' : 'TD';
-            assertCatalog(str_starts_with($diagrams[0], 'flowchart ' . $expectedDirection . "\n"), $topicKey . ': Mermaid direction');
+            assertCatalog(str_starts_with($diagrams[0], "flowchart TD\n"), $topicKey . ': Mermaid direction');
             assertCatalog(preg_match('/^accTitle:\s*\S.+$/m', $diagrams[0]) === 1, $topicKey . ': Mermaid accTitle');
             assertCatalog(preg_match('/^accDescr:\s*\S.+$/m', $diagrams[0]) === 1, $topicKey . ': Mermaid accDescr');
 
@@ -567,13 +518,13 @@ foreach ($topics as $topicKey => $topic) {
     }
 }
 
-assertCatalogSame(24, count($topics) * count($expectedLocales), 'catalog must contain 24 localized articles');
-assertCatalogSame(21, $totalDiagrams, 'catalog must preserve exactly 21 Mermaid diagrams across 24 articles');
+assertCatalogSame(21, count($topics) * count($expectedLocales), 'catalog must contain 21 localized articles');
+assertCatalogSame(18, $totalDiagrams, 'catalog must preserve exactly 18 Mermaid diagrams across 21 articles');
 foreach ($expectedLocales as $locale) {
-    assertCatalogSame(7, count(array_filter(
+    assertCatalogSame(6, count(array_filter(
         $diagramGraphs,
         static fn (array $localizedGraphs): bool => isset($localizedGraphs[$locale])
-    )), 'catalog must preserve seven Mermaid diagrams for ' . $locale);
+    )), 'catalog must preserve six Mermaid diagrams for ' . $locale);
     $glossaryBody = file_get_contents(__DIR__ . '/../resources/knowledgebase/' . $locale . '/glossary.html');
     assertCatalog(is_string($glossaryBody), $locale . ' glossary body must be readable');
     assertCatalogSame(0, count(MermaidSourcePolicy::extract($glossaryBody)), $locale . ' glossary must not contain a Mermaid diagram');
@@ -595,7 +546,7 @@ $generator = file_get_contents($generatorPath);
 assertCatalog(is_string($generator) && trim($generator) !== '', 'knowledgebase seed generator is empty');
 foreach ([
     "['en', 'zh-Hans', 'zh-TW']",
-    'exactly 8 topics',
+    'exactly 7 topics',
     'all required locale metadata and body files',
     '--output=',
     '20260729_seed_multilingual_knowledgebase.sql',
@@ -621,6 +572,6 @@ foreach (['UTC_TIMESTAMP', 'ON DUPLICATE KEY', 'ON CONFLICT', 'INSERT OR IGNORE'
 }
 
 assertCatalogSame(2, substr_count($generator, 'foreach ($requiredLocales as $locale)'), 'generator must validate and emit every required locale');
-assertCatalogSame(24, 8 * 3, 'generator default article count contract');
+assertCatalogSame(18, 6 * 3, 'generator default article count contract');
 
 echo "ok\n";

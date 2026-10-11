@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
@@ -15,7 +16,9 @@ import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.R
+import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.deviceLimitMessage
 import io.nekohasekai.libbox.CommandClient
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -40,6 +43,7 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
+import java.net.InetAddress
 
 private const val TAG = "LeikwanVpnService"
 private const val CHANNEL_ID = "leikwan_vpn"
@@ -50,6 +54,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var tunFd: ParcelFileDescriptor? = null
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
+    private val networkMonitor by lazy {
+        AndroidNetworkMonitor(this) { network ->
+            setUnderlyingNetworks(network?.let { arrayOf(it) })
+        }
+    }
+
 
     companion object {
         var instance: LeikwanVpnService? = null
@@ -127,7 +137,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         return START_STICKY
     }
 
-    fun stopVpn() {
+    private fun closeRuntime() {
         try {
             commandClient?.disconnect()
         } catch (e: Exception) {
@@ -136,17 +146,26 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         commandClient = null
         try {
             commandServer?.closeService()
-            commandServer?.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing CommandServer", e)
+            Log.e(TAG, "Error closing libbox service", e)
         }
+        runCatching { commandServer?.close() }
+            .onFailure { Log.e(TAG, "Error closing CommandServer", it) }
         commandServer = null
+        networkMonitor.close()
         try {
             tunFd?.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error closing TUN", e)
         }
         tunFd = null
+    }
+
+    fun stopVpn() {
+        closeRuntime()
+        // The config contains ephemeral native SOCKS credentials. Do not keep it
+        // reachable after the VPN runtime has been stopped.
+        configJson = null
         isRunning = false
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
@@ -157,8 +176,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        closeRuntime()
         instance = null
         isRunning = false
+        configJson = null
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
             lastStartError = null
@@ -185,6 +206,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     .getOrNull()
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() },
+                inet4RouteExcludes = options.inet4RouteExcludeAddress.toRoutePrefixes(),
+                inet6RouteExcludes = options.inet6RouteExcludeAddress.toRoutePrefixes(),
             ),
             ownerPackageName = packageName,
         )
@@ -204,13 +227,30 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         plan.inet6Addresses.forEach { route -> builder.addAddress(route.address, route.prefix) }
         plan.inet4Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
         plan.inet6Routes.forEach { route -> builder.addRoute(route.address, route.prefix) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            plan.inet4RouteExcludes.forEach { route ->
+                builder.excludeRoute(IpPrefix(InetAddress.getByName(route.address), route.prefix))
+            }
+            plan.inet6RouteExcludes.forEach { route ->
+                builder.excludeRoute(IpPrefix(InetAddress.getByName(route.address), route.prefix))
+            }
+        } else if (plan.inet4RouteExcludes.isNotEmpty() || plan.inet6RouteExcludes.isNotEmpty()) {
+            // Android added per-route exclusions in API 33. The app UID is already
+            // excluded from its own VPN on older releases, so keep the config usable
+            // while retaining the route-direct guard in sing-box.
+            Log.w(TAG, "TUN route exclusions require API 33 or newer")
+        }
         plan.dnsServers.forEach { dns -> builder.addDnsServer(dns) }
         plan.disallowedPackageNames.forEach { packageName ->
             builder.addDisallowedApplication(packageName)
             Log.i(TAG, "Excluded VPN owner package from captured traffic: $packageName")
         }
 
-        tunFd = builder.establish() ?: throw Exception("VPN permission not granted")
+        val replacement = builder.establish() ?: throw Exception("VPN permission not granted")
+        val previous = tunFd
+        tunFd = replacement
+        // libbox owns a dup of the descriptor, not this Android-side handle.
+        runCatching { previous?.close() }.onFailure { Log.w(TAG, "Error closing replaced TUN", it) }
         Log.i(TAG, "TUN interface established, fd=${tunFd!!.fd}")
         return tunFd!!.fd
     }
@@ -229,15 +269,50 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun readWIFIState(): WIFIState? = null
 
-    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+        if (listener != null) networkMonitor.start(listener)
+    }
 
-    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+        if (listener != null) networkMonitor.remove(listener)
+    }
 
     override fun startNeighborMonitor(listener: NeighborUpdateListener?) {}
 
     override fun closeNeighborMonitor(listener: NeighborUpdateListener?) {}
 
-    override fun getInterfaces(): NetworkInterfaceIterator? = null
+    override fun getInterfaces(): NetworkInterfaceIterator {
+        val items = networkMonitor.interfaces().map { physical ->
+            io.nekohasekai.libbox.NetworkInterface().apply {
+                name = physical.name
+                index = physical.index
+                mtu = physical.mtu.coerceAtLeast(1280)
+                flags = 1 or 64 // IFF_UP | IFF_RUNNING, not java.net flag ordinals.
+                addresses = stringIterator(physical.addresses)
+                dnsServer = stringIterator(physical.dnsServers)
+                metered = physical.metered
+                type = when (physical.transport) {
+                    NetworkCapabilities.TRANSPORT_WIFI -> Libbox.InterfaceTypeWIFI
+                    NetworkCapabilities.TRANSPORT_CELLULAR -> Libbox.InterfaceTypeCellular
+                    NetworkCapabilities.TRANSPORT_ETHERNET -> Libbox.InterfaceTypeEthernet
+                    else -> Libbox.InterfaceTypeOther
+                }
+            }
+        }.iterator()
+        return object : NetworkInterfaceIterator {
+            override fun hasNext() = items.hasNext()
+            override fun next(): io.nekohasekai.libbox.NetworkInterface = items.next()
+        }
+    }
+
+    private fun stringIterator(values: List<String>): StringIterator {
+        val items = values.iterator()
+        return object : StringIterator {
+            override fun hasNext() = items.hasNext()
+            override fun next(): String = items.next()
+            override fun len(): Int = values.size
+        }
+    }
 
     override fun underNetworkExtension(): Boolean = false
 
@@ -246,7 +321,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     override fun clearDNSCache() {}
 
     override fun autoDetectInterfaceControl(fd: Int) {
-        protect(fd)
+        if (!protect(fd)) throw java.io.IOException("protect_socket_failed")
     }
 
     override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
@@ -297,7 +372,20 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         }
     }
 
-    private fun buildNotification(status: String): Notification {
+    /**
+     * Shows (or, with null, withdraws) the device-limit refusal on the ongoing VPN notification so
+     * the user sees it without opening the app. The full guidance goes in the expanded text.
+     */
+    fun showDeviceLimitNotice(notice: DeviceLimitNotice?) {
+        if (!isRunning) return
+        if (notice == null) {
+            updateNotification(getString(R.string.vpn_notification_connected))
+        } else {
+            updateNotification(getString(R.string.vpn_notification_device_limit), deviceLimitMessage(notice))
+        }
+    }
+
+    private fun buildNotification(status: String, detail: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pending = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
@@ -307,6 +395,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(status)
+            .apply { detail?.let { setStyle(NotificationCompat.BigTextStyle().bigText(it)) } }
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pending)
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.vpn_notification_disconnect), stopPending)
@@ -314,9 +403,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .build()
     }
 
-    private fun updateNotification(status: String) {
+    private fun updateNotification(status: String, detail: String? = null) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(status))
+            .notify(NOTIFICATION_ID, buildNotification(status, detail))
     }
 
     private fun mainActivityPendingIntent(): PendingIntent {

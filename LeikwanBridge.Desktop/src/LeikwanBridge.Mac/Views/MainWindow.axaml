@@ -38,7 +38,13 @@
           <Button Classes="nav" Command="{Binding ShowConnectionsCommand}">
             <StackPanel Orientation="Horizontal" Spacing="10">
               <lucide:LucideIcon Kind="Route" Size="18" />
-              <TextBlock Text="Connections" />
+              <TextBlock Text="代理" />
+            </StackPanel>
+          </Button>
+          <Button Classes="nav" Command="{Binding ShowPairingCommand}">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:LucideIcon Kind="GitBranch" Size="18" />
+              <TextBlock Text="线路配对" />
             </StackPanel>
           </Button>
           <Button Classes="nav" Command="{Binding ShowLogsCommand}">
@@ -66,16 +72,27 @@
     </Border>
 
     <Grid Grid.Column="1" RowDefinitions="Auto,*">
-      <Border Grid.Row="0" Background="{DynamicResource WarningSurfaceBrush}" BorderBrush="#E7C878"
-              BorderThickness="0,0,0,1" Padding="22,12" IsVisible="{Binding IsNoticeVisible}">
-        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-          <lucide:LucideIcon Kind="CircleAlert" Size="19" Foreground="{DynamicResource WarningBrush}" />
-          <TextBlock Grid.Column="1" Text="{Binding NoticeText}" TextWrapping="Wrap" Foreground="#6E4B08" />
-          <Button Grid.Column="2" Classes="icon" Command="{Binding DismissNoticeCommand}" ToolTip.Tip="Dismiss notice">
-            <lucide:LucideIcon Kind="X" Size="17" />
-          </Button>
-        </Grid>
-      </Border>
+      <StackPanel Grid.Row="0">
+        <!-- Device limit: not dismissible; clears when a config pull is admitted again. -->
+        <Border Background="{DynamicResource WarningSurfaceBrush}" BorderBrush="#E7C878"
+                BorderThickness="0,0,0,1" Padding="22,12" IsVisible="{Binding IsDeviceLimitVisible}">
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+            <lucide:LucideIcon Kind="CircleAlert" Size="19" Foreground="{DynamicResource WarningBrush}" />
+            <TextBlock Grid.Column="1" Text="{Binding DeviceLimitMessage}" TextWrapping="Wrap"
+                       FontWeight="SemiBold" Foreground="#6E4B08" />
+          </Grid>
+        </Border>
+        <Border Background="{DynamicResource WarningSurfaceBrush}" BorderBrush="#E7C878"
+                BorderThickness="0,0,0,1" Padding="22,12" IsVisible="{Binding IsNoticeVisible}">
+          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+            <lucide:LucideIcon Kind="CircleAlert" Size="19" Foreground="{DynamicResource WarningBrush}" />
+            <TextBlock Grid.Column="1" Text="{Binding NoticeText}" TextWrapping="Wrap" Foreground="#6E4B08" />
+            <Button Grid.Column="2" Classes="icon" Command="{Binding DismissNoticeCommand}" ToolTip.Tip="Dismiss notice">
+              <lucide:LucideIcon Kind="X" Size="17" />
+            </Button>
+          </Grid>
+        </Border>
+      </StackPanel>
 
       <Grid Grid.Row="1" RowDefinitions="*,Auto">
         <Grid Grid.Row="0">
@@ -88,15 +105,51 @@
                   <TextBlock Classes="heading" Text="Sign in to LeiKwan Bridge" Margin="0,5,0,0" />
                   <TextBlock Classes="muted" Text="Use your client ID and token to continue." TextWrapping="Wrap" />
 
-                  <TextBlock Classes="label" Text="PANEL URL" Margin="0,12,0,0" />
-                  <TextBox Text="{Binding PanelUrl, Mode=TwoWay}" Watermark="https://panel.example.com" />
+                  <TextBlock Classes="label" Text="CONNECTION SITE" Margin="0,12,0,0" />
+                  <ComboBox ItemsSource="{Binding PanelEndpointOptions}"
+                            SelectedItem="{Binding SelectedPanelEndpoint, Mode=TwoWay}"
+                            AutomationProperties.Name="Connection site">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding Label}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
+
+                  <!-- Ethernet binding: applied before any sign-in request; same
+                       PreferredEgressInterface as the settings page. -->
+                  <TextBlock Classes="label" Text="{DynamicResource EgressBindingLabel}" Margin="0,4,0,0" />
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <ComboBox ItemsSource="{Binding EgressInterfaceOptions}"
+                              SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
+                              SelectedValueBinding="{Binding Id}"
+                              HorizontalAlignment="Stretch"
+                              AutomationProperties.Name="Ethernet binding">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding CompactLabel}" ToolTip.Tip="{Binding DisplayName}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <Button Grid.Column="1" Classes="secondary" Command="{Binding RefreshEgressInterfacesCommand}"
+                            ToolTip.Tip="{DynamicResource EgressBindingRefresh}"
+                            AutomationProperties.Name="Refresh adapter list">
+                      <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+                    </Button>
+                  </Grid>
+                  <TextBlock Classes="muted" Text="{DynamicResource EgressBindingHint}" FontSize="11" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding EgressInterfaceNotice}" IsVisible="{Binding IsEgressInterfaceNoticeVisible}"
+                             Foreground="{DynamicResource WarningBrush}" FontSize="11" TextWrapping="Wrap" />
 
                   <StackPanel Spacing="8">
                     <TextBlock Classes="label" Text="CLIENT ID" />
                     <TextBox Text="{Binding ClientIdText, Mode=TwoWay}" Watermark="27" />
-                    <TextBlock Classes="label" Text="CLIENT TOKEN" />
-                    <TextBox Text="{Binding AgentToken, Mode=TwoWay}" PasswordChar="*" Watermark="Paste the client token" />
+                  <TextBlock Classes="label" Text="CLIENT TOKEN" />
+                  <TextBox Text="{Binding AgentToken, Mode=TwoWay}" PasswordChar="*" Watermark="Paste the client token" />
                   </StackPanel>
+
+                  <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
 
                   <TextBlock Text="{Binding ValidationMessage}" Foreground="{DynamicResource DangerBrush}"
                              TextWrapping="Wrap" MinHeight="22" Margin="0,4,0,0" />
@@ -197,6 +250,10 @@
                           <Grid ColumnDefinitions="*,100,170,100,84" ColumnSpacing="14">
                             <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
                               <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                              <!-- Native outbound rules ship configuration only: no start/stop control. -->
+                              <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontWeight="SemiBold"
+                                         FontSize="11" Foreground="{DynamicResource AccentBrush}"
+                                         IsVisible="{Binding IsNativeOutboundRule}" />
                               <TextBlock Text="Local listener" Classes="muted" FontSize="11" />
                             </StackPanel>
                             <Border Grid.Column="1" Background="{DynamicResource QuietBrush}" CornerRadius="4"
@@ -226,20 +283,20 @@
             </Grid>
           </Grid>
 
-          <Grid IsVisible="{Binding IsConnectionsVisible}" RowDefinitions="Auto,*" Margin="28">
+          <Grid IsVisible="{Binding IsConnectionWorkspaceVisible}" RowDefinitions="Auto,*" Margin="28">
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,18">
               <StackPanel Spacing="3">
-                <TextBlock Classes="heading" Text="Connections" />
-                <TextBlock Classes="muted" Text="Use a local node for system proxy or full-device VPN routing." />
+                <TextBlock Classes="heading" Text="{Binding ConnectionWorkspaceTitle}" />
               </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsConnectionsVisible}">
                 <Border Classes="status-pill">
                   <StackPanel Orientation="Horizontal" Spacing="8">
                     <Border Width="8" Height="8" CornerRadius="4" Classes="status-dot" Classes.running="{Binding IsLocalConnectionActive}" />
                     <TextBlock Text="{Binding LocalConnectionStatus}" />
                   </StackPanel>
                 </Border>
-                <Button Classes="primary" Command="{Binding StartConnectionCommand}" IsVisible="{Binding !IsLocalConnectionActive}">
+                <Button Classes="primary" Command="{Binding StartConnectionCommand}" IsVisible="{Binding !IsLocalConnectionActive}"
+                        IsEnabled="{Binding CanStartLocalConnection}">
                   <StackPanel Orientation="Horizontal" Spacing="7">
                     <lucide:LucideIcon Kind="Play" Size="16" />
                     <TextBlock Text="Start" />
@@ -254,8 +311,9 @@
               </StackPanel>
             </Grid>
 
-            <Grid Grid.Row="1" ColumnDefinitions="260,*" ColumnSpacing="18">
-              <Border Grid.Column="0" Classes="surface" Padding="14">
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
+              <Border Grid.Column="1" Classes="surface" Padding="14" Width="260" Margin="18,0,0,0"
+                      IsVisible="{Binding IsPairingVisible}">
                 <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
                   <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
                     <TextBlock Text="Saved nodes" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -278,14 +336,111 @@
                 </Grid>
               </Border>
 
-              <ScrollViewer Grid.Column="1">
-                <StackPanel Spacing="16">
-                  <Border Classes="surface" Padding="20">
-                    <StackPanel Spacing="12">
+              <ScrollViewer Grid.Column="0">
+                 <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="16">
+                   <Border Grid.Row="3" Padding="0" IsVisible="{Binding IsConnectionsVisible}">
+                    <Expander IsExpanded="{Binding IsNativeOutboundExpanded, Mode=TwoWay}"
+                              IsVisible="{Binding IsNativeOutboundVisible}"
+                              AutomationProperties.Name="Optional native outbound">
+                      <Expander.Header>
+                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="16,12">
+                          <lucide:LucideIcon Kind="Globe" Size="18" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                          <StackPanel Grid.Column="1" Spacing="1">
+                            <TextBlock Text="Native outbound" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock Classes="muted" Text="Optional SOCKS5 egress from your active plan" FontSize="11" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Border Grid.Column="2" Classes="status-pill" VerticalAlignment="Center">
+                            <TextBlock Text="Optional" FontSize="11" />
+                          </Border>
+                        </Grid>
+                      </Expander.Header>
+                      <Border Padding="16,0,16,16">
+                        <StackPanel Spacing="12">
+                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="5">
+                              <TextBlock Classes="label" Text="CARRIER FORWARD" />
+                              <ComboBox ItemsSource="{Binding NativeOutboundForwards}"
+                                        SelectedItem="{Binding SelectedNativeForward, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                  <DataTemplate>
+                                    <StackPanel Spacing="1">
+                                      <TextBlock Text="{Binding Direction}" FontWeight="SemiBold" />
+                                      <TextBlock Text="{Binding ForwardId, StringFormat='Forward #{0}'}" Classes="muted" FontSize="11" />
+                                    </StackPanel>
+                                  </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                              </ComboBox>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="5" IsVisible="{Binding IsNativeRouteScopeSelectable}">
+                              <TextBlock Classes="label" Text="TRAFFIC SCOPE" />
+                              <ComboBox ItemsSource="{Binding NativeRouteScopeOptions}"
+                                        SelectedItem="{Binding SelectedNativeRouteScopeOption, Mode=TwoWay}">
+                                <ComboBox.ItemTemplate>
+                                  <DataTemplate>
+                                    <TextBlock Text="{Binding Label}" />
+                                  </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                              </ComboBox>
+                            </StackPanel>
+                          </Grid>
+                          <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                            <StackPanel Spacing="5">
+                              <TextBlock Classes="label" Text="LOCAL MODE" />
+                              <ComboBox ItemsSource="{Binding NativeConnectionModes}"
+                                        SelectedItem="{Binding SelectedNativeConnectionMode, Mode=TwoWay}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" Content="绕过中国大陆 IP（直连）"
+                                          IsChecked="{Binding NativeBypassChinaMainland, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsNativeBypassChinaEnabled}"
+                                          IsVisible="{Binding IsNativeRouteGlobal}"
+                                          VerticalAlignment="Bottom" />
+                          </Grid>
+                          <ToggleSwitch Content="Unrestricted full route (OpenGFW off)"
+                                        IsChecked="{Binding NativeUnrestrictedRoute, Mode=TwoWay}"
+                                        IsEnabled="{Binding IsNativeUnrestrictedRouteEnabled}"
+                                        IsVisible="{Binding IsNativeUnrestrictedRouteVisible}" />
+                          <Button Classes="primary" Command="{Binding StartNativeConnectionCommand}"
+                                  IsVisible="{Binding !IsLocalConnectionActive}" HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                              <lucide:LucideIcon Kind="Globe" Size="16" />
+                              <TextBlock Text="启动原生出口" />
+                            </StackPanel>
+                          </Button>
+                        </StackPanel>
+                      </Border>
+                    </Expander>
+                  </Border>
+
+                   <Border Grid.Row="1" Padding="0" IsVisible="{Binding IsPairingVisible}">
+                     <Expander IsExpanded="{Binding IsProxyEditorExpanded, Mode=TwoWay}"
+                               AutomationProperties.Name="Standard connection node editor">
+                       <Expander.Header>
+                         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="16,12">
+                           <lucide:LucideIcon Kind="Server" Size="18" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+                           <StackPanel Grid.Column="1" Spacing="1">
+                             <TextBlock Text="标准连接" FontSize="15" FontWeight="SemiBold" />
+                           </StackPanel>
+                           <Border Grid.Column="2" Classes="status-pill" VerticalAlignment="Center">
+                             <TextBlock Text="添加节点" FontSize="11" />
+                           </Border>
+                         </Grid>
+                       </Expander.Header>
+                       <Border Padding="20,0,20,20">
+                     <StackPanel Spacing="12">
+                       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                         <TextBox Text="{Binding ProxyImportUri, Mode=TwoWay}" Watermark="ss://, wg:// URI" />
+                         <Button Grid.Column="1" Classes="secondary" Command="{Binding ImportProxyUriCommand}">
+                           <StackPanel Orientation="Horizontal" Spacing="7">
+                             <lucide:LucideIcon Kind="Download" Size="16" />
+                             <TextBlock Text="导入并保存" />
+                           </StackPanel>
+                         </Button>
+                       </Grid>
+                       <TextBlock Text="{Binding ProxyImportError}" Foreground="{DynamicResource DangerBrush}"
+                                  TextWrapping="Wrap" />
                       <Grid ColumnDefinitions="*,220" ColumnSpacing="18">
                         <StackPanel Spacing="3">
                           <TextBlock Text="Node details" FontSize="16" FontWeight="SemiBold" />
-                          <TextBlock Classes="muted" Text="Choose a protocol first; only relevant fields are shown." FontSize="12" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Spacing="5">
                           <TextBlock Classes="label" Text="PROTOCOL" />
@@ -318,48 +473,6 @@
                       <StackPanel IsVisible="{Binding NodeEditor.IsShadowsocks}" Spacing="5">
                         <TextBlock Classes="label" Text="PASSWORD" />
                         <TextBox Text="{Binding NodeEditor.Password, Mode=TwoWay}" PasswordChar="*" Watermark="Shadowsocks password" />
-                      </StackPanel>
-
-                      <StackPanel IsVisible="{Binding NodeEditor.IsVless}" Spacing="10">
-                        <Grid ColumnDefinitions="*,180" ColumnSpacing="12">
-                          <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="UUID" />
-                            <TextBox Text="{Binding NodeEditor.Uuid, Mode=TwoWay}" Watermark="UUID" />
-                          </StackPanel>
-                          <StackPanel Grid.Column="1" Spacing="5">
-                            <TextBlock Classes="label" Text="TRANSPORT" />
-                            <ComboBox ItemsSource="{Binding NodeEditor.VlessTransportOptions}"
-                                      SelectedItem="{Binding NodeEditor.Transport, Mode=TwoWay}" />
-                          </StackPanel>
-                        </Grid>
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                          <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="SERVER NAME / SNI" />
-                            <TextBox Text="{Binding NodeEditor.ServerName, Mode=TwoWay}" Watermark="optional" />
-                          </StackPanel>
-                          <ToggleSwitch Grid.Column="1" Content="TLS" IsChecked="{Binding NodeEditor.Tls, Mode=TwoWay}" VerticalAlignment="Bottom" />
-                        </Grid>
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="12" IsVisible="{Binding NodeEditor.IsVlessWebSocket}">
-                          <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="WS HOST" />
-                            <TextBox Text="{Binding NodeEditor.Host, Mode=TwoWay}" Watermark="optional" />
-                          </StackPanel>
-                          <StackPanel Grid.Column="1" Spacing="5">
-                            <TextBlock Classes="label" Text="WS PATH" />
-                            <TextBox Text="{Binding NodeEditor.Path, Mode=TwoWay}" Watermark="/" />
-                          </StackPanel>
-                        </Grid>
-                        <StackPanel Spacing="5" IsVisible="{Binding NodeEditor.IsVlessGrpc}">
-                          <TextBlock Classes="label" Text="gRPC SERVICE" />
-                          <TextBox Text="{Binding NodeEditor.ServiceName, Mode=TwoWay}" Watermark="service-name" />
-                        </StackPanel>
-                        <Expander Header="Reality (advanced)" IsExpanded="False">
-                          <StackPanel Spacing="8" Margin="0,10,0,0">
-                            <TextBlock Classes="muted" Text="Leave blank for ordinary TLS." FontSize="12" />
-                            <TextBox Text="{Binding NodeEditor.RealityPublicKey, Mode=TwoWay}" Watermark="Reality public key" />
-                            <TextBox Text="{Binding NodeEditor.RealityShortId, Mode=TwoWay}" Watermark="Reality short id" />
-                          </StackPanel>
-                        </Expander>
                       </StackPanel>
 
                       <StackPanel IsVisible="{Binding NodeEditor.IsWireGuard}" Spacing="10">
@@ -397,8 +510,6 @@
                         </Expander>
                       </StackPanel>
 
-                      <TextBlock Text="{Binding LocalConnectionError}" Foreground="{DynamicResource DangerBrush}"
-                                 TextWrapping="Wrap" MinHeight="20" />
                       <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Classes="primary" Command="{Binding SaveConnectionProfileCommand}">
                           <StackPanel Orientation="Horizontal" Spacing="7">
@@ -413,24 +524,65 @@
                             <TextBlock Text="Delete" />
                           </StackPanel>
                         </Button>
-                      </StackPanel>
-                    </StackPanel>
-                  </Border>
+                     </StackPanel>
+                     </StackPanel>
+                       </Border>
+                     </Expander>
+                   </Border>
 
-                  <Border Classes="surface" Padding="20">
-                    <Grid ColumnDefinitions="*,220" ColumnSpacing="18">
-                      <StackPanel Spacing="4">
-                        <TextBlock Text="Connection mode" FontSize="15" FontWeight="SemiBold" />
-                        <TextBlock Classes="muted" Text="Proxy changes macOS system proxy. VPN creates a TUN interface and may ask for an administrator password." FontSize="12" TextWrapping="Wrap" />
-                      </StackPanel>
-                      <StackPanel Grid.Column="1" Spacing="5">
-                        <TextBlock Classes="label" Text="MODE" />
-                        <ComboBox ItemsSource="{Binding ConnectionModes}" SelectedItem="{Binding SelectedConnectionMode, Mode=TwoWay}" />
-                        <TextBlock Text="{Binding BypassAddressCount, StringFormat='Direct bypass entries: {0}'}" Classes="muted" FontSize="11" />
-                      </StackPanel>
-                    </Grid>
-                  </Border>
-                </StackPanel>
+                   <StackPanel Grid.Row="0" Spacing="12" IsVisible="{Binding IsPairingVisible}">
+                     <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
+                                Text="该功能非必须, 您可于其他代理软件将服务器地址改为 127.0.0.1 后使用" />
+                     <ItemsControl ItemsSource="{Binding ConnectionRoutes}" IsVisible="{Binding IsPairingVisible}">
+                       <ItemsControl.ItemTemplate>
+                         <DataTemplate x:DataType="vm:ForwardRowViewModel">
+                           <Border BorderBrush="#E5E7EB" BorderThickness="0,0,0,1" Padding="0,12">
+                             <StackPanel Spacing="6">
+                               <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                               <TextBlock Text="{Binding PortText}" Classes="muted" FontSize="11" />
+                               <ComboBox ItemsSource="{Binding NodeOptions}" SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
+                                         PlaceholderText="未选择已保存节点" HorizontalAlignment="Stretch">
+                                 <ComboBox.ItemTemplate>
+                                   <DataTemplate>
+                                     <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                   </DataTemplate>
+                                 </ComboBox.ItemTemplate>
+                               </ComboBox>
+                             </StackPanel>
+                           </Border>
+                         </DataTemplate>
+                       </ItemsControl.ItemTemplate>
+                     </ItemsControl>
+                   </StackPanel>
+
+                   <Border Grid.Row="2" Padding="16" IsVisible="{Binding IsConnectionsVisible}">
+                    <StackPanel Spacing="8">
+                      <TextBlock Classes="label" Text="线路" />
+                      <ComboBox ItemsSource="{Binding PairedConnectionRoutes}"
+                                SelectedItem="{Binding SelectedConnectionForward, Mode=TwoWay}"
+                                PlaceholderText="未选择已配对转发" MinHeight="40">
+                        <ComboBox.ItemTemplate>
+                          <DataTemplate x:DataType="vm:ForwardRowViewModel">
+                            <StackPanel Spacing="2">
+                              <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                              <TextBlock Text="{Binding PortText}" Classes="muted" FontSize="11" />
+                            </StackPanel>
+                          </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                      </ComboBox>
+                      <TextBlock Classes="label" Text="连接模式" Margin="0,6,0,0" />
+                      <ComboBox ItemsSource="{Binding ConnectionModes}"
+                                SelectedItem="{Binding SelectedConnectionMode, Mode=TwoWay}"
+                                PlaceholderText="请选择连接模式" MinHeight="40" />
+                      <TextBlock Text="{Binding SelectedConnectionEndpoint}" Classes="muted" FontSize="11" />
+                      <TextBlock Text="{Binding BypassAddressCount, StringFormat='Direct bypass entries: {0}'}" Classes="muted" FontSize="11" />
+                    <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
+                               Text="您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。" />
+                    <TextBlock Text="{Binding LocalConnectionError}" Foreground="{DynamicResource DangerBrush}"
+                               TextWrapping="Wrap" MinHeight="20" />
+                    </StackPanel>
+                   </Border>
+                 </Grid>
               </ScrollViewer>
             </Grid>
           </Grid>
@@ -462,10 +614,34 @@
               <Border Classes="surface" Padding="20">
                 <StackPanel Spacing="12">
                   <TextBlock Text="Panel" FontSize="16" FontWeight="SemiBold" />
-                  <TextBlock Classes="label" Text="PANEL URL" />
-                  <TextBox Text="{Binding PanelUrl, Mode=TwoWay}" />
+                   <TextBlock Classes="label" Text="CONNECTION SITE" />
+                   <ComboBox ItemsSource="{Binding PanelEndpointOptions}"
+                             SelectedItem="{Binding SelectedPanelEndpoint, Mode=TwoWay}"
+                             AutomationProperties.Name="Connection site">
+                     <ComboBox.ItemTemplate>
+                       <DataTemplate>
+                         <TextBlock Text="{Binding Label}" />
+                       </DataTemplate>
+                     </ComboBox.ItemTemplate>
+                   </ComboBox>
+                   <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
+                   <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
                   <TextBlock Classes="label" Text="LANGUAGE" Margin="0,4,0,0" />
                   <ComboBox ItemsSource="{Binding Languages}" SelectedItem="{Binding Language, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Classes="label" Text="LOG LEVEL" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding LogLevels}" SelectedItem="{Binding LogLevel, Mode=TwoWay}" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Classes="label" Text="OUTBOUND NETWORK INTERFACE" Margin="0,4,0,0" />
+                  <ComboBox ItemsSource="{Binding EgressInterfaceOptions}"
+                            SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
+                            SelectedValueBinding="{Binding Id}"
+                            HorizontalAlignment="Left" MinWidth="280">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding DisplayName}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <TextBlock Classes="muted" Text="Select the physical adapter used by Ultra and direct control traffic. Automatic chooses the active adapter." FontSize="11" TextWrapping="Wrap" />
                   <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
                     <StackPanel Orientation="Horizontal" Spacing="7">
                       <lucide:LucideIcon Kind="Save" Size="16" />
@@ -482,14 +658,14 @@
                       <TextBlock Text="Open at login" FontWeight="SemiBold" />
                       <TextBlock Classes="muted" Text="Start this client for the current macOS user." FontSize="12" />
                     </StackPanel>
-                    <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoStartEnabled, Mode=TwoWay}" Command="{Binding ToggleAutostartCommand}" />
-                  </Grid>
+                     <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoStartEnabled, Mode=TwoWay}" Command="{Binding ToggleAutostartCommand}" />
+                   </Grid>
                   <Border Height="1" Background="{DynamicResource BorderBrush}" />
                   <Grid ColumnDefinitions="*,Auto">
                     <StackPanel>
                       <TextBlock Text="Keep in menu bar" FontWeight="SemiBold" />
-                      <TextBlock Classes="muted" Text="Closing the window keeps active forwards running." FontSize="12" />
-                    </StackPanel>
+                       <TextBlock Classes="muted" Text="Closing the window keeps active forwards running." FontSize="12" />
+                     </StackPanel>
                     <ToggleSwitch Grid.Column="1" IsChecked="{Binding CloseToTray, Mode=TwoWay}" />
                   </Grid>
                 </StackPanel>
@@ -520,23 +696,36 @@
           <Border Background="#B3FFFFFF" IsVisible="{Binding IsBusy}">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12">
               <ProgressBar Width="180" IsIndeterminate="True" />
-              <TextBlock Text="Working" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding BusyMessage}" FontWeight="SemiBold" />
             </StackPanel>
           </Border>
         </Grid>
 
         <Border Grid.Row="1" Background="#EAF6F3" BorderBrush="#A9D8CE" BorderThickness="1,1,0,0"
-                Padding="20,12" IsVisible="{Binding IsUpdateVisible}">
+                Padding="20,12" IsVisible="{Binding IsUpdateBannerVisible}">
           <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
             <lucide:LucideIcon Kind="Download" Size="19" Foreground="{DynamicResource AccentBrush}" />
-            <StackPanel Grid.Column="1">
-              <TextBlock Text="Update available" FontWeight="SemiBold" />
-              <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" />
+            <StackPanel Grid.Column="1" Spacing="2">
+              <TextBlock Text="Update available" FontWeight="SemiBold" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Classes="muted" Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Text="Update failed" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding ShowUpdateError}" />
+              <TextBlock Classes="muted" Text="{Binding UpdateErrorMessage}" TextWrapping="Wrap" IsVisible="{Binding ShowUpdateError}" />
+              <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsUpdateInProgress}">
+                <ProgressBar Minimum="0" Maximum="100" Value="{Binding UpdatePercent}" Width="160" />
+                <TextBlock Classes="muted" Text="{Binding UpdatePhaseText}" />
+              </StackPanel>
+              <TextBlock Classes="muted" Text="{Binding UpdateProgressMessage}" TextWrapping="Wrap" />
             </StackPanel>
-            <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}">
+            <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}" IsVisible="{Binding IsUpdateVisible}">
               <StackPanel Orientation="Horizontal" Spacing="7">
                 <lucide:LucideIcon Kind="Download" Size="16" />
                 <TextBlock Text="Install and restart" />
+              </StackPanel>
+            </Button>
+            <Button Grid.Column="2" Classes="primary" Command="{Binding RetryUpdateCommand}" IsVisible="{Binding ShowUpdateError}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+                <TextBlock Text="Retry" />
               </StackPanel>
             </Button>
             <Button Grid.Column="3" Classes="icon secondary" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">

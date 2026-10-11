@@ -6,10 +6,11 @@ namespace LeikwanBridge.Mac.Services;
 public static class MacConnectionProtocol
 {
     public const string Shadowsocks = "shadowsocks";
-    public const string Vless = "vless";
     public const string WireGuard = "wireguard";
+    public const string External = "external";
 
-    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, Vless, WireGuard];
+    // Legacy protocol values are intentionally absent from this allowlist.
+    public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, WireGuard, External];
 
     public static bool IsSupported(string? protocol)
         => Supported.Contains(protocol?.Trim().ToLowerInvariant() ?? string.Empty, StringComparer.Ordinal);
@@ -52,36 +53,6 @@ public sealed class MacConnectionProfile
     [JsonPropertyName("password")]
     public string Password { get; set; } = "";
 
-    [JsonPropertyName("uuid")]
-    public string Uuid { get; set; } = "";
-
-    [JsonPropertyName("flow")]
-    public string Flow { get; set; } = "";
-
-    [JsonPropertyName("transport")]
-    public string Transport { get; set; } = "tcp";
-
-    [JsonPropertyName("host")]
-    public string Host { get; set; } = "";
-
-    [JsonPropertyName("path")]
-    public string Path { get; set; } = "";
-
-    [JsonPropertyName("service_name")]
-    public string ServiceName { get; set; } = "";
-
-    [JsonPropertyName("tls")]
-    public bool Tls { get; set; }
-
-    [JsonPropertyName("server_name")]
-    public string ServerName { get; set; } = "";
-
-    [JsonPropertyName("reality_public_key")]
-    public string RealityPublicKey { get; set; } = "";
-
-    [JsonPropertyName("reality_short_id")]
-    public string RealityShortId { get; set; } = "";
-
     [JsonPropertyName("private_key")]
     public string PrivateKey { get; set; } = "";
 
@@ -110,8 +81,9 @@ public sealed class MacConnectionProfile
     public string DisplayProtocol => Protocol.Trim().ToUpperInvariant() switch
     {
         "WIREGUARD" => "WireGuard",
-        "VLESS" => "VLESS",
-        _ => "Shadowsocks",
+        "SHADOWSOCKS" => "Shadowsocks",
+        "EXTERNAL" => "External IP + port",
+        _ => "Unsupported",
     };
 
     public MacConnectionProfile Clone() => (MacConnectionProfile)MemberwiseClone();
@@ -140,21 +112,79 @@ public sealed record MacConnectionConfigResult(
     IReadOnlyList<string> BypassDomains,
     int ProxyPort);
 
+public sealed record MacConnectionSelection(
+    int ForwardId,
+    int ProfileId,
+    IReadOnlyDictionary<int, int> ForwardProfiles)
+{
+    public static MacConnectionSelection Empty { get; } = new(0, 0, new Dictionary<int, int>());
+}
+
 public interface IMacConnectionService : IAsyncDisposable
 {
     event Action<MacConnectionSnapshot>? SnapshotChanged;
 
     IReadOnlyList<MacConnectionProfile> Profiles { get; }
     MacConnectionSnapshot Snapshot { get; }
+    DateTimeOffset? ActiveNativeLeaseExpiresAt { get; }
+    string? ActiveNativeLeasePolicyGeneration { get; }
+    bool IsNativeOutboundActive { get; }
+
+    void SetPreferredEgressInterface(string? interfaceName) { }
+
+    /// <summary>Payload ceiling the native relay published for the live association (0 = unknown).</summary>
+    int ActiveNativePayloadCeiling => 0;
+
+    /// <summary>Set when the relay's re-measured ceiling changes the live TUN MTU.</summary>
+    bool IsNativeTunMtuPending => false;
+    MacConnectionSelection Selection => MacConnectionSelection.Empty;
 
     Task InitializeAsync(CancellationToken ct = default);
     Task SaveProfileAsync(MacConnectionProfile profile, CancellationToken ct = default);
     Task DeleteProfileAsync(int profileId, CancellationToken ct = default);
+    Task SaveSelectionAsync(int forwardId, int profileId, CancellationToken ct = default)
+        => Task.CompletedTask;
+    Task StartRoutedAsync(
+        MacConnectionMode mode,
+        int profileId,
+        int forwardListenPort,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        CancellationToken ct = default)
+        => Task.FromException(new NotSupportedException("routed_connection_unavailable"));
     Task StartAsync(
         MacConnectionMode mode,
         int profileId,
         string panelUrl,
         IEnumerable<ForwardConfig> forwards,
         CancellationToken ct = default);
+    Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland = false,
+        CancellationToken ct = default);
+    Task StartNativeAsync(
+        MacConnectionMode mode,
+        NativeOutboundLease lease,
+        string panelUrl,
+        IEnumerable<ForwardConfig> forwards,
+        bool bypassChinaMainland,
+        string nativeRoutePolicy,
+        CancellationToken ct = default)
+        => StartNativeAsync(mode, lease, panelUrl, forwards, bypassChinaMainland, ct);
+    Task<bool> TryRefreshNativeAsync(
+        NativeOutboundLease lease,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Re-apply a re-measured TUN MTU to the live native tunnel without restarting it.
+    /// True means the live config now matches the ceiling (or already did); false leaves
+    /// <see cref="IsNativeTunMtuPending"/> set so the caller can retry or restart.
+    /// </summary>
+    Task<bool> ApplyPendingNativeTunMtuAsync(CancellationToken ct = default)
+        => Task.FromResult(false);
+
     Task StopAsync(CancellationToken ct = default);
 }

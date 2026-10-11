@@ -97,4 +97,16 @@ public sealed class UsageState
 
     [JsonPropertyName("ultra_sequences")]
     public Dictionary<int, long> UltraSequences { get; set; } = [];
+
+    // Native relay runtimes use a unique directory per lease. Keep their
+    // monotonic counters separate from the legacy per-forward cursors so a
+    // reconnect cannot suppress or double-count another runtime.
+    [JsonPropertyName("ultra_last_bytes_in_by_instance")]
+    public Dictionary<string, long> UltraLastBytesInByInstance { get; set; } = [];
+
+    [JsonPropertyName("ultra_last_bytes_out_by_instance")]
+    public Dictionary<string, long> UltraLastBytesOutByInstance { get; set; } = [];
+
+    [JsonPropertyName("pending_ultra_usage")]
+    public List<UltraUsageSnapshot> PendingUltraUsage { get; set; } = [];
 }

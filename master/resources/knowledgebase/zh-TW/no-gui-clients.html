@@ -1,0 +1,47 @@
+<h2>你將完成什麼</h2>
+<p>你會讓一臺電腦自己把線路跑起來 —— 一臺伺服器、一臺小主機，或者任何長期開機的機器。沒有人需要登入，桌面上不會出現視窗或圖示。裝一次、確認一次，之後用一條短命令管理它。</p>
+
+<h2>開始前準備</h2>
+<ul>
+  <li>控制台「用戶端」頁面上的 <strong>用戶端 ID</strong> 和 <strong>用戶端令牌</strong>，它們就是這臺機器的登入憑據，請像密碼一樣保管。</li>
+  <li>在這臺機器上安裝軟體的許可權（Windows 需要管理員，macOS 需要你自己的密碼）。</li>
+  <li>兩分鐘時間。macOS 下載約 80 MB，Windows 約 34 MB。</li>
+</ul>
+
+<h2>操作步驟</h2>
+<pre class="mermaid">flowchart TD
+accTitle: 不用螢幕的電腦設定流程
+accDescr: 選擇電腦，安裝後臺用戶端，然後在控制台確認線路已經在執行。
+A[選擇電腦] --&gt; B{哪個系統}
+B -- macOS --&gt; C[先裝應用，再執行一條命令]
+B -- Windows --&gt; D[解壓下載包，再執行一條命令]
+C --&gt; E[確認顯示 running]
+D --&gt; E
+E --&gt; F[在控制台看到裝置線上]</pre>
+<p>整件事就是這張圖：選系統、執行一條命令、確認結果。之後的一切都在後臺進行。</p>
+<figure class="kb-screenshot-figure">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-tw.png" width="1440" height="960" alt="用戶端頁面，顯示下載入口以及這臺機器的用戶端 ID 與用戶端令牌">
+  <figcaption>用戶端 ID 和用戶端令牌在同一頁，下載按你的系統選擇「無介面版」。</figcaption>
+</figure>
+<ol>
+  <li><strong>挑選電腦。</strong>用一臺長期開機的機器，不需要顯示器、不需要鍵盤，也不需要有人登入。</li>
+  <li><strong>先安裝應用。</strong>macOS：開啟下載的磁碟映像，把 <strong>LeiKwan Bridge</strong> 拖進 <strong>應用程式</strong>。Windows：把無介面版下載包解壓到一個資料夾。</li>
+  <li><strong>執行一次安裝命令。</strong>macOS：開啟「終端」，貼上用戶端頁面「無介面版」裡「複製 macOS 命令」得到的命令。Windows：在解壓出來的資料夾上右鍵，以管理員身份開啟終端，貼上「複製 Windows 命令」得到的命令。兩條命令裡都已經帶了這臺機器的身份。</li>
+  <li><strong>確認已經啟動。</strong>輸入 <code>leikwan status</code>，看到轉發顯示為 running 就對了。</li>
+  <li><strong>回到控制台看一眼。</strong>這臺裝置會像裝了普通用戶端的電腦一樣出現在「線上裝置」裡。</li>
+  <li><strong>以後只需要三條命令。</strong>檢視用 <code>leikwan status</code>，覺得卡住用 <code>leikwan restart</code>，升級用 <code>leikwan update</code>；如果只想看看有沒有新版本，用 <code>leikwan update --check</code>。</li>
+  <li><strong>需要解除安裝時：</strong>執行同一個用戶端頁面上的解除安裝命令，或者先用 <code>leikwan stop</code> 暫時關掉它。</li>
+</ol>
+
+<h2>如何確認成功</h2>
+<p>兩個簡單檢查。控制台「線上裝置」裡能看到這臺電腦，和其他裝置一樣；在電腦上執行 <code>leikwan status</code>，線路顯示為 running，並且命令以成功狀態結束，所以監控工具也可以直接用它。想看細節時，<code>leikwan logs -n 50</code> 顯示最近 50 行日誌，<code>leikwan doctor</code> 一次列清整體狀態。</p>
+
+<h2>如果沒有成功</h2>
+<p><strong>先停止把用戶端令牌發給任何人 —— 聊天、工單、截圖都不行。</strong>最常見的原因是用戶端令牌抄錯或已失效：控制台裡看不到這臺裝置線上，日誌裡會寫著登入被拒絕。回到用戶端頁面重新複製用戶端 ID 與用戶端令牌，再執行一次安裝命令即可。如果控制台顯示裝置線上、但某條轉發仍是停止狀態，等半分鐘 —— 轉發由控制台決定，電腦會在幾秒內跟上。仍然不通，就把 <code>leikwan doctor</code> 的輸出發給客服，那份內容不含任何機密。</p>
+
+<h2>相關指南</h2>
+<ul>
+  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">連線與驗證</a></li>
+  <li><a href="/knowledgebase?thread=troubleshooting-common-mistakes">常見問題排查</a></li>
+</ul>

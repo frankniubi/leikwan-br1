@@ -1,0 +1,814 @@
+#!/usr/bin/ucode
+// SPDX-License-Identifier: Apache-2.0
+//
+// rpcd backend for luci-app-leikwan (OpenWrt 24.10, ucode).
+//
+// LuCI never touches the agent control socket directly. Every request goes
+// through this script, which runs
+//
+//     leikwand ctl <command> [k=v ...]
+//
+// as root and republishes the single JSON line that the CLI prints on stdout.
+// Privileged commands read their own per-boot token from
+// /var/run/leikwand/ctl.token, so no token is ever passed in, returned or
+// logged here.
+//
+// Two request framings are understood, so the script works both as a classic
+// rpcd exec plugin and as a plain JSON-RPC handler:
+//
+//   1. rpcd exec plugin (/usr/libexec/rpcd/luci.leikwand):
+//        <script> list           prints the method signature object
+//        <script> call <method>  JSON argument object on stdin,
+//                                JSON reply object on stdout
+//   2. JSON-RPC envelope on stdin (invoked without arguments):
+//        {"jsonrpc":"2.0","id":N,"method":"list","params":[]}
+//        {"jsonrpc":"2.0","id":N,"method":"call",
+//         "params":["luci.leikwand","status",{}]}
+//
+// Every reply is a single line of JSON and the exit status stays 0, so a
+// stopped or missing leikwand surfaces as {"ok":false,"error":"..."} instead
+// of an ubus error and LuCI can render a "service stopped" state.
+
+'use strict';
+
+let fs = require('fs');
+let uci = require('uci');
+
+const BIN = '/usr/bin/leikwand';
+const CONFIG = 'leikwan';
+const SECTION = 'main';
+const MAX_REQUEST_BYTES = 65536;
+const MAX_VALUE_LENGTH = 512;
+const MAX_LIST_LENGTH = 256;
+const MAX_LOG_LIMIT = 500;
+const DEFAULT_LOG_LIMIT = 200;
+const MAX_INT = 2147483647;
+
+// ---------------------------------------------------------------------------
+// Option whitelist
+//
+// set_config accepts these option names and nothing else. Every entry carries
+// the expected type together with the bounds the agent itself clamps to, so a
+// value that LuCI accepts is always a value leikwand will honour. Secrets are
+// intentionally absent: the agent token lives in /etc/leikwan/secret.json and
+// is never part of the web UI.
+// ---------------------------------------------------------------------------
+const OPTIONS = {
+	enabled:                  { type: 'bool',   default: '1' },
+	panel_url:                { type: 'url',    default: 'https://v3.leikwanhost.com' },
+	fallback_panel_url:       { type: 'url',    default: 'https://api-leikwanbridge.nbwly.com' },
+	panel_egress_interface:   { type: 'string', default: 'auto', max: 15, pattern: /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/ },
+	device_name:              { type: 'string', default: '', max: 64 },
+	device_id:                { type: 'string', default: '', max: 64 },
+	mode:                     { type: 'enum',   default: 'forward', values: [ 'forward', 'gateway', 'hybrid' ] },
+	poll_interval:            { type: 'int',    default: '30', min: 5, max: 3600 },
+	heartbeat_interval:       { type: 'int',    default: '30', min: 5, max: 3600 },
+	health_interval:          { type: 'int',    default: '20', min: 2, max: 600 },
+	cold_start_grace:         { type: 'int',    default: '90', min: 10, max: 900 },
+	restart_cooldown:         { type: 'int',    default: '30', min: 5, max: 3600 },
+	lease_renew_lead:         { type: 'int',    default: '90', min: 15, max: 300 },
+	max_candidates:           { type: 'int',    default: '4', min: 1, max: 4 },
+	auto_update:              { type: 'bool',   default: '1' },
+	log_level:                { type: 'enum',   default: 'info', values: [ 'debug', 'info', 'warn', 'error' ] },
+	data_dir:                 { type: 'path',   default: '/etc/leikwan' },
+	run_dir:                  { type: 'path',   default: '/var/run/leikwand' },
+	runtime_bin:              { type: 'path',   default: '/usr/libexec/leikwan/ultra-client' },
+	gateway_enabled:          { type: 'bool',   default: '0' },
+	gateway_forward_id:       { type: 'int',    default: '0', min: 0, max: MAX_INT },
+	gateway_route_scope:      { type: 'enum',   default: 'global', values: [ 'cn_only', 'intl_only', 'global' ] },
+	gateway_route_policy:     { type: 'enum',   default: 'restricted', values: [ 'restricted', 'unrestricted' ] },
+	gateway_tun_address:      { type: 'cidr',   default: '172.19.0.1/30' },
+	gateway_tun_mtu:          { type: 'int',    default: '1420', min: 576, max: 9000 },
+	gateway_dns_mode:         { type: 'enum',   default: 'remote', values: [ 'remote', 'local' ] },
+	gateway_dns_servers:      { type: 'list',   default: '1.1.1.1' },
+	gateway_bypass_cn:        { type: 'bool',   default: '1' },
+	gateway_singbox_bin:      { type: 'path',   default: '/usr/bin/sing-box' },
+	gateway_redirect_lan:     { type: 'bool',   default: '0' },
+	uplink_enabled:           { type: 'bool',   default: '0' },
+	uplink_scope:             { type: 'string', default: 'relay', max: 32, pattern: /^[A-Za-z0-9_]+$/ },
+	uplink_interfaces:        { type: 'list',   default: '' },
+	uplink_probe:             { type: 'list',   default: '1.1.1.1 223.5.5.5' },
+	uplink_interval:          { type: 'int',    default: '5', min: 1, max: 300 },
+	uplink_timeout_ms:        { type: 'int',    default: '2000', min: 200, max: 30000 },
+	uplink_fail_threshold:    { type: 'int',    default: '3', min: 1, max: 60 },
+	uplink_recover_threshold: { type: 'int',    default: '2', min: 1, max: 60 },
+	uplink_min_improve_pct:   { type: 'int',    default: '20', min: 0, max: 90 },
+	uplink_route_table:       { type: 'int',    default: '1001', min: 1, max: MAX_INT },
+	uplink_fwmark:            { type: 'int',    default: '19531', min: 0, max: MAX_INT },
+	cn_ip_list:               { type: 'path',   default: '/etc/leikwan/CN.conf' }
+};
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+function ok(data) {
+	return { ok: true, data: data };
+}
+
+function err(code) {
+	return { ok: false, error: code };
+}
+
+// asString() renders any scalar JSON value the way the CLI expects it on the
+// command line. Objects, arrays and null are rejected.
+function asString(value) {
+	switch (type(value)) {
+	case 'string':
+		return value;
+	case 'int':
+	case 'double':
+		return sprintf('%s', value);
+	case 'bool':
+		return value ? '1' : '0';
+	default:
+		return null;
+	}
+}
+
+function validIPv4(text) {
+	let parts = split(text, '.');
+
+	if (length(parts) != 4)
+		return false;
+
+	for (let part in parts) {
+		if (!match(part, /^[0-9]{1,3}$/))
+			return false;
+
+		let octet = +part;
+
+		if (octet < 0 || octet > 255)
+			return false;
+	}
+
+	return true;
+}
+
+function validIPv4CIDR(text) {
+	let halves = split(text, '/');
+	let prefix = 0;
+
+	if (length(halves) != 2 || !validIPv4(halves[0]) || !match(halves[1], /^[0-9]{1,2}$/))
+		return false;
+
+	prefix = +halves[1];
+
+	return (prefix >= 1 && prefix <= 32);
+}
+
+// ---------------------------------------------------------------------------
+// Reading the request
+//
+// rpcd writes the JSON argument object to stdin and closes it; reading byte by
+// byte and stopping at the closing brace of the outermost object works with
+// and without that EOF, so the script never blocks on a half closed pipe.
+// ---------------------------------------------------------------------------
+function readRequest() {
+	let buf = '';
+	let depth = 0;
+	let instr = false;
+	let esc = false;
+
+	for (let i = 0; i < MAX_REQUEST_BYTES; i++) {
+		let ch = fs.stdin.read(1);
+
+		if (ch == null || ch == '')
+			break;
+
+		buf += ch;
+
+		if (instr) {
+			if (esc)
+				esc = false;
+			else if (ch == '\\')
+				esc = true;
+			else if (ch == '"')
+				instr = false;
+		}
+		else if (ch == '"') {
+			instr = true;
+		}
+		else if (ch == '{') {
+			depth++;
+		}
+		else if (ch == '}') {
+			depth--;
+
+			if (depth <= 0)
+				break;
+		}
+	}
+
+	let text = trim(buf);
+
+	if (!length(text))
+		return null;
+
+	try {
+		return json(text);
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Talking to the agent
+// ---------------------------------------------------------------------------
+function agentPresent() {
+	let st = fs.stat(BIN);
+
+	return (st != null && st.type == 'file');
+}
+
+// ctl() runs one control command and returns { ok, data } / { ok, error }.
+// The argument vector form of fs.popen() is used on purpose: no shell is
+// involved, so values such as passwords or URLs need no quoting.
+function ctl(command, params) {
+	let argv = [ BIN, 'ctl', command ];
+	let proc = null;
+	let output = null;
+	let line = null;
+	let response = null;
+
+	if (!agentPresent())
+		return err('agent_missing');
+
+	for (let key in keys(params ?? {})) {
+		let value = params[key];
+
+		if (value == null)
+			continue;
+
+		let text = asString(value);
+
+		if (text == null)
+			continue;
+
+		push(argv, sprintf('%s=%s', key, text));
+	}
+
+	try {
+		proc = fs.popen(argv, 'r');
+	}
+	catch (e) {
+		return err('agent_unavailable');
+	}
+
+	if (proc == null)
+		return err('agent_unavailable');
+
+	// ucode has no finally clause: read and reap the child in one guarded
+	// block. A missing or non-JSON answer becomes agent_unavailable below.
+	try {
+		output = proc.read('all');
+
+		proc.close();
+	}
+	catch (e) {
+		output = null;
+	}
+
+	for (let raw in split(output ?? '', '\n')) {
+		let candidate = trim(raw);
+
+		if (match(candidate, /^\{/)) {
+			line = candidate;
+			break;
+		}
+	}
+
+	if (line == null)
+		return err('agent_unavailable');
+
+	try {
+		response = json(line);
+	}
+	catch (e) {
+		return err('agent_bad_response');
+	}
+
+	if (type(response) != 'object' || response.ok == null)
+		return err('agent_bad_response');
+
+	if (response.ok != true) {
+		let code = response.error;
+		let reply = null;
+
+		if (type(code) != 'string' || !length(code))
+			code = 'agent_error';
+
+		reply = err(code);
+
+		// Some failures (client_online_limit_reached) carry a human message
+		// and small integer counts; pass them through so LuCI can explain
+		// the refusal instead of showing a bare code.
+		if (type(response.message) == 'string' && length(response.message) && length(response.message) <= MAX_VALUE_LENGTH)
+			reply.message = response.message;
+
+		if (type(response.details) == 'object') {
+			let details = {};
+
+			for (let key in [ 'online_device_limit', 'active_online_devices' ])
+				if (type(response.details[key]) == 'int')
+					details[key] = response.details[key];
+
+			if (length(keys(details)))
+				reply.details = details;
+		}
+
+		return reply;
+	}
+
+	return ok(response.data ?? null);
+}
+
+// ---------------------------------------------------------------------------
+// UCI configuration
+// ---------------------------------------------------------------------------
+function normalise(spec, value) {
+	let text = (type(value) == 'array') ? join(' ', value) : (asString(value) ?? '');
+
+	switch (spec.type) {
+	case 'bool':
+		return !!match(text, /^\s*(1|true|yes|on|enable|enabled)\s*$/i);
+
+	case 'int':
+		text = trim(text);
+
+		return match(text, /^-?[0-9]{1,10}$/) ? +text : +spec.default;
+
+	default:
+		return text;
+	}
+}
+
+function readConfig() {
+	let ctx = null;
+	let values = {};
+	let config = {};
+
+	try {
+		ctx = uci.cursor();
+		ctx.load(CONFIG);
+		values = ctx.get_all(CONFIG, SECTION) ?? {};
+	}
+	catch (e) {
+		// A missing /etc/config/leikwan (or an unreadable section) simply
+		// yields the documented defaults below.
+		values = {};
+	}
+
+	for (let name in keys(OPTIONS)) {
+		let value = values[name];
+
+		if (value == null || value == '')
+			value = OPTIONS[name].default;
+
+		config[name] = normalise(OPTIONS[name], value);
+	}
+
+	return config;
+}
+
+// coerce() validates one option value against the whitelist and returns the
+// canonical string that is written to UCI. An empty string means "remove the
+// option so the agent falls back to its built-in default".
+function coerce(spec, raw) {
+	let text = asString(raw);
+	let items = null;
+
+	if (raw == null)
+		return { ok: true, value: '' };
+
+	if (text == null || length(text) > MAX_VALUE_LENGTH)
+		return { ok: false };
+
+	switch (spec.type) {
+	case 'bool':
+		if (match(text, /^\s*(1|true|yes|on|enable|enabled)\s*$/i))
+			return { ok: true, value: '1' };
+
+		if (match(text, /^\s*(0|false|no|off|disable|disabled)?\s*$/i))
+			return { ok: true, value: '0' };
+
+		return { ok: false };
+
+	case 'int':
+		text = trim(text);
+
+		if (!match(text, /^-?[0-9]{1,10}$/))
+			return { ok: false };
+
+		let number = +text;
+
+		if (type(number) != 'int' && type(number) != 'double')
+			return { ok: false };
+
+		if (number < spec.min || number > spec.max)
+			return { ok: false };
+
+		return { ok: true, value: sprintf('%d', number) };
+
+	case 'enum':
+		text = trim(text);
+
+		for (let candidate in spec.values)
+			if (match(text, regexp(sprintf('^%s$', candidate), 'i')))
+				return { ok: true, value: candidate };
+
+		return { ok: false };
+
+	case 'url':
+		text = trim(text);
+
+		if (length(text) > MAX_LIST_LENGTH)
+			return { ok: false };
+
+		if (!match(text, /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[!-~]*)?$/))
+			return { ok: false };
+
+		return { ok: true, value: trim(text, '/') };
+
+	case 'path':
+		text = trim(text);
+
+		if (length(text) > 128 || match(text, /\.\./))
+			return { ok: false };
+
+		if (!match(text, /^\/[A-Za-z0-9._\/-]+$/))
+			return { ok: false };
+
+		return { ok: true, value: text };
+
+	case 'cidr':
+		text = trim(text);
+
+		if (!validIPv4CIDR(text))
+			return { ok: false };
+
+		return { ok: true, value: text };
+
+	case 'list':
+		items = [];
+
+		for (let token in (match(trim(text), /[^[:space:],]+/g) ?? [])) {
+			if (match(token, /[[:cntrl:]]/))
+				return { ok: false };
+
+			push(items, token);
+		}
+
+		text = join(' ', items);
+
+		if (length(text) > MAX_LIST_LENGTH)
+			return { ok: false };
+
+		return { ok: true, value: text };
+
+	default:
+		text = trim(text);
+
+		if (length(text) > (spec.max ?? 64) || match(text, /[[:cntrl:]]/))
+			return { ok: false };
+
+		if (spec.pattern != null && length(text) && !match(text, spec.pattern))
+			return { ok: false };
+
+		return { ok: true, value: text };
+	}
+}
+
+// writeConfig() applies a validated subset of the whitelist, commits it and
+// asks the running agent to pick the new configuration up.
+function writeConfig(input) {
+	let pending = {};
+	let applied = [];
+	let created = false;
+	let names = null;
+	let ctx = null;
+	let reload = null;
+
+	if (input == null)
+		input = {};
+
+	if (type(input) != 'object')
+		return err('invalid_arguments');
+
+	names = keys(input);
+
+	for (let name in names) {
+		let spec = OPTIONS[name];
+
+		if (spec == null)
+			return err('unknown_option');
+
+		let coerced = coerce(spec, input[name]);
+
+		if (coerced.ok != true)
+			return err('invalid_value');
+
+		pending[name] = coerced.value;
+	}
+
+	try {
+		ctx = uci.cursor();
+	}
+	catch (e) {
+		ctx = null;
+	}
+
+	if (ctx == null)
+		return err('uci_unavailable');
+
+	try {
+		ctx.load(CONFIG);
+	}
+	catch (e) {
+		// A missing config file is created by the section creation below.
+	}
+
+	if (ctx.get(CONFIG, SECTION) == null) {
+		ctx.set(CONFIG, SECTION, 'leikwan');
+		created = true;
+	}
+
+	if (!length(names)) {
+		if (created)
+			ctx.commit(CONFIG);
+
+		return ok({ applied: [], created: created, config: readConfig(), status: null, reload_error: null });
+	}
+
+	for (let name in names) {
+		let value = pending[name];
+
+		if (length(value))
+			ctx.set(CONFIG, SECTION, name, value);
+		else if (ctx.get(CONFIG, SECTION, name) != null)
+			ctx.delete(CONFIG, SECTION, name);
+
+		push(applied, name);
+	}
+
+	try {
+		ctx.commit(CONFIG);
+	}
+	catch (e) {
+		return err('uci_commit_failed');
+	}
+
+	reload = ctl('reload');
+
+	return ok({
+		applied: applied,
+		created: created,
+		config: readConfig(),
+		status: (reload.ok == true) ? reload.data : null,
+		reload_error: (reload.ok == true) ? null : reload.error
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Methods
+// ---------------------------------------------------------------------------
+const METHODS = {
+	status: function() {
+		return ctl('status');
+	},
+
+	forwards: function() {
+		return ctl('forwards');
+	},
+
+	logs: function(args) {
+		let raw = asString(args.limit ?? DEFAULT_LOG_LIMIT);
+		let limit = match(raw ?? '', /^[0-9]{1,4}$/) ? +raw : DEFAULT_LOG_LIMIT;
+
+		if (limit < 1 || limit > MAX_LOG_LIMIT)
+			limit = DEFAULT_LOG_LIMIT;
+
+		return ctl('logs', { limit: limit });
+	},
+
+	diagnose: function() {
+		return ctl('diagnose');
+	},
+
+	test_connection: function() {
+		return ctl('test_connection');
+	},
+
+	enroll: function(args) {
+		let email = asString(args.email);
+		let password = asString(args.password);
+		let clientID = null;
+		let params = null;
+
+		if (email == null || password == null)
+			return err('credentials_required');
+
+		email = trim(email);
+
+		if (!match(email, /^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$/) || length(email) > 254)
+			return err('invalid_email');
+
+		if (!length(password) || length(password) > MAX_VALUE_LENGTH || match(password, /[[:cntrl:]]/))
+			return err('password_required');
+
+		params = { email: email, password: password };
+
+		if (args.client_id != null && asString(args.client_id) != '') {
+			let raw = trim(asString(args.client_id) ?? '');
+
+			if (!match(raw, /^[0-9]{1,10}$/))
+				return err('invalid_client_id');
+
+			clientID = +raw;
+
+			if (clientID > MAX_INT)
+				return err('invalid_client_id');
+
+			// 0 means "unspecified" in the CLI contract; it makes the agent use
+			// the first client of the account, so it is simply left out.
+			if (clientID >= 1)
+				params.client_id = clientID;
+		}
+
+		return ctl('enroll', params);
+	},
+
+	pair: function(args) {
+		let code = asString(args.code);
+
+		if (code == null)
+			return err('invalid_pairing_code');
+
+		code = trim(code);
+
+		if (!match(code, /^[A-Za-z0-9][A-Za-z0-9-]{3,63}$/))
+			return err('invalid_pairing_code');
+
+		return ctl('pair', { code: code });
+	},
+
+	sign_out: function() {
+		return ctl('sign_out');
+	},
+
+	forward_action: function(args) {
+		let raw = asString(args.forward_id);
+		let action = asString(args.action);
+		let forwardID = 0;
+
+		if (raw == null || !match(trim(raw), /^[0-9]{1,10}$/))
+			return err('invalid_forward_id');
+
+		forwardID = +trim(raw);
+
+		if (forwardID < 1 || forwardID > MAX_INT)
+			return err('invalid_forward_id');
+
+		action = trim(action ?? '');
+
+		if (!(action in [ 'start', 'stop', 'restart' ]))
+			return err('invalid_action');
+
+		return ctl('forward_action', { forward_id: forwardID, action: action });
+	},
+
+	reload: function() {
+		return ctl('reload');
+	},
+
+	get_config: function() {
+		return ok(readConfig());
+	},
+
+	set_config: function(args) {
+		let input = (type(args.options) == 'object') ? args.options : args;
+
+		return writeConfig(input);
+	}
+};
+
+// The signature object rpcd reads from "<script> list". Scalar strings declare
+// an ubus string argument, the integer 32 an int32 one and an empty object a
+// nested table (the set_config option map).
+function signatures() {
+	return {
+		status: {},
+		forwards: {},
+		logs: { limit: 32 },
+		diagnose: {},
+		test_connection: {},
+		enroll: { email: 'string', password: 'string', client_id: 32 },
+		pair: { code: 'string' },
+		sign_out: {},
+		forward_action: { forward_id: 32, action: 'string' },
+		reload: {},
+		get_config: {},
+		set_config: { options: {} }
+	};
+}
+
+function dispatch(method, args) {
+	if (type(method) != 'string' || !exists(METHODS, method))
+		return err('unknown_method');
+
+	try {
+		return METHODS[method](type(args) == 'object' ? args : {});
+	}
+	catch (e) {
+		return err('internal_error');
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Framing
+// ---------------------------------------------------------------------------
+function jsonrpcError(id, code, message) {
+	return { jsonrpc: '2.0', id: id, error: { code: code, message: message } };
+}
+
+function jsonrpcHandle(request) {
+	let id = request.id ?? null;
+	let params = request.params ?? [];
+	let method = null;
+	let args = {};
+
+	if (request.jsonrpc != '2.0' || type(request.method) != 'string')
+		return jsonrpcError(id, -32600, 'Invalid Request');
+
+	if (request.method == 'list') {
+		let result = {};
+
+		result['luci.leikwand'] = signatures();
+
+		return { jsonrpc: '2.0', id: id, result: result };
+	}
+
+	if (request.method != 'call')
+		return jsonrpcError(id, -32601, 'Method not found');
+
+	if (type(params) == 'array') {
+		if (length(params) >= 4) {
+			if (params[1] != null && params[1] != 'luci.leikwand' && params[1] != '*')
+				return jsonrpcError(id, -32601, 'Method not found');
+
+			method = params[2];
+			args = (type(params[3]) == 'object') ? params[3] : {};
+		}
+		else if (length(params) == 2) {
+			method = params[0];
+			args = (type(params[1]) == 'object') ? params[1] : {};
+		}
+		else if (length(params) == 1) {
+			method = params[0];
+		}
+	}
+
+	if (type(method) != 'string' || !exists(METHODS, method))
+		return jsonrpcError(id, -32601, 'Method not found');
+
+	return { jsonrpc: '2.0', id: id, result: dispatch(method, args) };
+}
+
+function main() {
+	let mode = ARGV[0] ?? null;
+	let request = null;
+
+	if (mode == 'list') {
+		printf('%J\n', signatures());
+
+		return;
+	}
+
+	if (mode == 'call') {
+		request = readRequest();
+
+		// A JSON-RPC envelope may also arrive through the exec plugin path.
+		if (type(request) == 'object' && request.jsonrpc != null && request.method != null) {
+			printf('%J\n', jsonrpcHandle(request));
+
+			return;
+		}
+
+		printf('%J\n', dispatch(ARGV[1] ?? null, request));
+
+		return;
+	}
+
+	request = readRequest();
+
+	if (type(request) != 'object') {
+		printf('%J\n', jsonrpcError(null, -32700, 'Parse error'));
+
+		return;
+	}
+
+	printf('%J\n', jsonrpcHandle(request));
+}
+
+main();

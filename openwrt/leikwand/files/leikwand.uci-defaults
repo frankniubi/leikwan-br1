@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs once on first boot and after a sysupgrade that installs the package.
+# Only fills in what is absent, so an operator's configuration is never lost.
+
+[ -f /etc/config/leikwan ] || exit 0
+
+uci -q get leikwan.main >/dev/null 2>&1 || {
+	uci -q set leikwan.main=leikwan
+	uci -q set leikwan.main.enabled='1'
+	uci -q commit leikwan
+}
+
+# Panel traffic is pinned to the physical WAN by default, so a TUN proxy or VPN
+# on the router cannot capture it. Existing installs get the default once.
+uci -q get leikwan.main.panel_egress_interface >/dev/null 2>&1 || {
+	uci -q set leikwan.main.panel_egress_interface='auto'
+	uci -q commit leikwan
+}
+
+# The runtime directory carries the control socket and its per-boot token.
+mkdir -p /var/run/leikwand
+chmod 700 /var/run/leikwand
+mkdir -p /etc/leikwan
+chmod 700 /etc/leikwan
+
+exit 0

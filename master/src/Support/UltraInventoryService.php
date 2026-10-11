@@ -10,6 +10,37 @@ final class UltraInventoryService
 {
     public const MAX_INVENTORY_LINES = 256;
     public const MAX_INVENTORY_BYTES = 262144;
+    public const ACCESS_CLASSES = ['native_udp', 'wireguard_only', 'wireguard', 'dynamic', 'dynamic_ingress', 'relay_unreachable', 'unknown'];
+    public const NATIVE_UDP_STATES = ['verified', 'failed', 'unverified', 'unknown'];
+    public const NATIVE_SOCKS5_STATES = ['verified', 'failed', 'unknown'];
+    public const DIRECTION_CLASSES = ['intl_to_cn', 'cn_to_intl', 'domestic', 'unknown'];
+    public const ROUTE_CLASSES = ['bgp', 'single_telecom', 'single_unicom', 'single_mobile', 'wireguard', 'direct', 'relay', 'generic', 'unknown'];
+    public const ISP_CLASSES = ['telecom', 'unicom', 'mobile', 'generic', 'unknown'];
+    public const DISPATCH_CLASSES = ['normal', 'low'];
+    /**
+     * Provider/title labels are not per-line transport-health evidence. Keep this
+     * legacy list empty; low priority must be supplied explicitly by the audited
+     * inventory declaration.
+     */
+    public const LOW_PRIORITY_PROVIDER_MARKERS = [];
+    /**
+     * Zone codes that count as mainland China for direction classification. The
+     * list mirrors ultra_zones; add a code here when a new mainland zone is
+     * introduced (hong-kong / taiwan stay international, matching the existing
+     * intl_to_cn / cn_to_intl semantics).
+     */
+    public const MAINLAND_ZONE_CODES = [
+        'beijing', 'shanghai', 'guangzhou', 'shenzhen', 'fuzhou', 'guiyang',
+        'chengdu', 'chongqing', 'hangzhou', 'nanjing', 'wuhan', 'china-mainland',
+    ];
+    /** Source hosts report the carrier in Chinese; the panel stores a stable code. */
+    public const ISP_ALIASES = [
+        '电信' => 'telecom', 'telecom' => 'telecom', 'ct' => 'telecom',
+        '联通' => 'unicom', 'unicom' => 'unicom', 'cu' => 'unicom',
+        '移动' => 'mobile', 'mobile' => 'mobile', 'cmcc' => 'mobile',
+        '通用' => 'generic', 'generic' => 'generic', 'bgp' => 'generic',
+    ];
+    public const PRICING_CLASSES = ['paid', 'mixed', 'free', 'unknown'];
 
     /** @var callable(): int */
     private $clock;
@@ -76,6 +107,17 @@ final class UltraInventoryService
         if ($discoveryIp !== '' && filter_var($discoveryIp, FILTER_VALIDATE_IP) === false) {
             return null;
         }
+        $rawAccess = self::normalizeEnum($raw['access_class'] ?? 'unknown', self::ACCESS_CLASSES);
+        $rawNativeState = array_key_exists('native_udp_state', $raw)
+            ? self::normalizeEnum($raw['native_udp_state'], self::NATIVE_UDP_STATES)
+            : 'unknown';
+        $rawNativeSocks5State = array_key_exists('native_socks5_state', $raw)
+            ? self::normalizeEnum($raw['native_socks5_state'], self::NATIVE_SOCKS5_STATES)
+            : 'unknown';
+        $auditHash = strtolower(trim((string) ($raw['audit_hash'] ?? '')));
+        if ($auditHash !== '' && preg_match('/^[a-f0-9]{64}$/', $auditHash) !== 1) {
+            $auditHash = null;
+        }
         $timestamp = gmdate('Y-m-d H:i:s', $now);
         return [
             'line_id' => $lineId,
@@ -84,16 +126,30 @@ final class UltraInventoryService
             'game_id' => self::nullableUnsigned($raw['game_id'] ?? null),
             'area_id' => self::nullableUnsigned($raw['area_id'] ?? null),
             'line_type' => self::nullableUnsigned($raw['line_type'] ?? null),
+            'in_line_type' => self::nullableUnsigned($raw['in_line_type'] ?? null),
+            'isp' => self::normalizeIsp($raw['isp'] ?? null),
+            'provider' => self::cleanText($raw['provider'] ?? '', 64) ?: null,
+            // Dispatch class is an explicit per-line inventory declaration. Provider
+            // names are not transport-health evidence; absent/unknown defaults to normal.
+            'dispatch_class' => self::dispatchClassWithDeclaration($raw),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
             'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,
             'config_sha256' => $configSha,
-            'auto_ingress_zone' => self::classifyText($catalogIngress !== '' ? $catalogIngress : $classificationText, $zonesByRole['ingress'] ?? []),
-            'auto_destination_zone' => self::classifyText($catalogDestination !== '' ? $catalogDestination : $classificationText, $zonesByRole['destination'] ?? []),
+            'access_class' => $rawAccess,
+            'native_udp_state' => $rawNativeState,
+            'native_socks5_state' => $rawNativeSocks5State,
+            'route_class' => self::normalizeEnum($raw['route_class'] ?? 'unknown', self::ROUTE_CLASSES),
+            'pricing_class' => self::normalizeEnum($raw['pricing_class'] ?? 'unknown', self::PRICING_CLASSES),
+            'pricing_evidence' => self::cleanText($raw['pricing_evidence'] ?? '', 255) ?: null,
+            'audit_at' => self::normalizeAuditTimestamp($raw['audit_at'] ?? $raw['audited_at'] ?? null),
+            'audit_hash' => $auditHash !== '' ? $auditHash : null,
+            'auto_ingress_zone' => ($autoIngress = self::classifyText($catalogIngress !== '' ? $catalogIngress : $classificationText, $zonesByRole['ingress'] ?? [])),
+            'auto_destination_zone' => ($autoDestination = self::classifyText($catalogDestination !== '' ? $catalogDestination : $classificationText, $zonesByRole['destination'] ?? [])),
+            'direction_class' => self::deriveDirection($autoIngress, $autoDestination),
             'last_discovered_at' => $timestamp,
             'is_source_present' => 1,
-            // Operators approved full inventory activation for registered sources.
-            'is_enabled' => 1,
+            'is_enabled' => $rawAccess === 'native_udp' && $rawNativeState === 'verified' ? 1 : 0,
             'sort_order' => $lineId,
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
@@ -166,11 +222,17 @@ final class UltraInventoryService
                 $db->execute(
                     'INSERT INTO ultra_lines
                         (source_id, line_id, source_title, source_family_key, game_id, area_id, line_type,
-                         discovery_ip, catalog_ingress_label, catalog_destination_label, config_sha256, auto_ingress_zone, auto_destination_zone,
+                         in_line_type, isp, provider, dispatch_class,
+                         discovery_ip, catalog_ingress_label, catalog_destination_label, config_sha256,
+                         access_class, native_udp_state, native_socks5_state, route_class, pricing_class, pricing_evidence, audit_at, audit_hash,
+                         auto_ingress_zone, auto_destination_zone, direction_class,
                          last_discovered_at, is_source_present, is_enabled, sort_order, created_at, updated_at)
                      VALUES
                         (:source_id, :line_id, :source_title, :source_family_key, :game_id, :area_id, :line_type,
-                         :discovery_ip, :catalog_ingress_label, :catalog_destination_label, :config_sha256, :auto_ingress_zone, :auto_destination_zone,
+                         :in_line_type, :isp, :provider, :dispatch_class,
+                         :discovery_ip, :catalog_ingress_label, :catalog_destination_label, :config_sha256,
+                         :access_class, :native_udp_state, :native_socks5_state, :route_class, :pricing_class, :pricing_evidence, :audit_at, :audit_hash,
+                         :auto_ingress_zone, :auto_destination_zone, :direction_class,
                          :last_discovered_at, :is_source_present, :is_enabled, :sort_order, :created_at, :updated_at)
                      ON DUPLICATE KEY UPDATE
                         source_title = VALUES(source_title),
@@ -178,12 +240,41 @@ final class UltraInventoryService
                         game_id = VALUES(game_id),
                         area_id = VALUES(area_id),
                         line_type = VALUES(line_type),
+                        in_line_type = VALUES(in_line_type),
+                        isp = VALUES(isp),
+                        provider = VALUES(provider),
+                        dispatch_class = VALUES(dispatch_class),
                         discovery_ip = VALUES(discovery_ip),
                         catalog_ingress_label = VALUES(catalog_ingress_label),
                         catalog_destination_label = VALUES(catalog_destination_label),
                         config_sha256 = VALUES(config_sha256),
+                        access_class = VALUES(access_class),
+                        native_udp_state = VALUES(native_udp_state),
+                        is_enabled = CASE
+                            WHEN VALUES(native_socks5_state) = \'unknown\'
+                             AND ultra_lines.native_socks5_state = \'verified\'
+                             AND ultra_lines.config_sha256 = VALUES(config_sha256)
+                            THEN ultra_lines.is_enabled
+                            ELSE VALUES(is_enabled)
+                        END,
+                        native_socks5_state = CASE
+                            WHEN VALUES(native_socks5_state) = \'unknown\'
+                             AND ultra_lines.native_socks5_state = \'verified\'
+                             AND ultra_lines.config_sha256 = VALUES(config_sha256)
+                            THEN ultra_lines.native_socks5_state
+                            ELSE VALUES(native_socks5_state)
+                        END,
+                        route_class = VALUES(route_class),
+                        pricing_class = VALUES(pricing_class),
+                        pricing_evidence = VALUES(pricing_evidence),
+                        audit_at = VALUES(audit_at),
+                        audit_hash = VALUES(audit_hash),
                         auto_ingress_zone = VALUES(auto_ingress_zone),
                         auto_destination_zone = VALUES(auto_destination_zone),
+                        direction_class = CASE
+                            WHEN ultra_lines.direction_class = \'unknown\' THEN VALUES(direction_class)
+                            ELSE ultra_lines.direction_class
+                        END,
                         last_discovered_at = VALUES(last_discovered_at),
                         is_source_present = 1,
                         updated_at = VALUES(updated_at)',
@@ -280,9 +371,34 @@ final class UltraInventoryService
                 $params[$key] = $value;
             }
         }
+        $dispatchFilter = self::normalizeEnum($filters['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
+        if ($dispatchFilter !== 'unknown' && $dispatchFilter !== '') {
+            $where[] = 'COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = :dispatch_class';
+            $params['dispatch_class'] = $dispatchFilter;
+        }
+        $ispFilter = self::normalizeIsp($filters['isp'] ?? null);
+        if ($ispFilter !== 'unknown' || self::cleanText($filters['isp'] ?? '', 32) !== '') {
+            $where[] = 'ul.isp = :isp';
+            $params['isp'] = $ispFilter;
+        }
+        foreach (['access_class', 'native_udp_state', 'native_socks5_state', 'direction_class', 'route_class', 'pricing_class'] as $key) {
+            $value = self::cleanText($filters[$key] ?? '', 32);
+            if ($value !== '' && self::normalizeEnum($value, match ($key) {
+                'access_class' => self::ACCESS_CLASSES,
+                'native_udp_state' => self::NATIVE_UDP_STATES,
+                'native_socks5_state' => self::NATIVE_SOCKS5_STATES,
+                'direction_class' => self::DIRECTION_CLASSES,
+                'route_class' => self::ROUTE_CLASSES,
+                default => self::PRICING_CLASSES,
+            }) === $value) {
+                $where[] = 'ul.' . $key . ' = :' . $key;
+                $params[$key] = strtolower($value);
+            }
+        }
         $materialRequired = self::materialRequiredSql();
         return $this->db->fetchAll(
             'SELECT ul.*,
+                    COALESCE(ul.admin_dispatch_class, ul.dispatch_class) AS dispatch_class,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone,
                     CASE WHEN ' . $materialRequired . ' THEN 1 ELSE 0 END AS material_required
@@ -374,12 +490,14 @@ final class UltraInventoryService
     {
         $ingress = $this->validZoneOverride($payload['admin_ingress_zone'] ?? null, 'ingress');
         $destination = $this->validZoneOverride($payload['admin_destination_zone'] ?? null, 'destination');
+        $directionClass = self::normalizeEnum($payload['direction_class'] ?? 'unknown', self::DIRECTION_CLASSES);
         $label = self::cleanText($payload['admin_label'] ?? '', 191);
         $notes = self::cleanText($payload['notes'] ?? '', 2000);
         $this->db->execute(
             'UPDATE ultra_lines
              SET admin_ingress_zone = :admin_ingress_zone,
                  admin_destination_zone = :admin_destination_zone,
+                 direction_class = :direction_class,
                  admin_label = :admin_label,
                  is_enabled = :is_enabled,
                  sort_order = :sort_order,
@@ -390,6 +508,7 @@ final class UltraInventoryService
                 'id' => $id,
                 'admin_ingress_zone' => $ingress,
                 'admin_destination_zone' => $destination,
+                'direction_class' => $directionClass,
                 'admin_label' => $label !== '' ? $label : null,
                 'is_enabled' => $this->truthy($payload['is_enabled'] ?? false) ? 1 : 0,
                 'sort_order' => max(-100000, min(100000, (int) ($payload['sort_order'] ?? 100))),
@@ -490,6 +609,72 @@ final class UltraInventoryService
             return '';
         }
         return function_exists('mb_substr') ? mb_substr($text, 0, $maxLength, 'UTF-8') : substr($text, 0, $maxLength);
+    }
+
+    private static function normalizeEnum(mixed $value, array $allowed): string
+    {
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, $allowed, true) ? $normalized : 'unknown';
+    }
+
+    private static function normalizeAuditTimestamp(mixed $value): ?string
+    {
+        $text = self::cleanText($value, 64);
+        if ($text === '') {
+            return null;
+        }
+        $timestamp = strtotime($text);
+        return $timestamp === false ? null : gmdate('Y-m-d H:i:s', $timestamp);
+    }
+
+    /**
+     * Source hosts report the carrier as 电信/联通/移动/通用; the catalog stores a
+     * stable code so filters and route_class derivation do not depend on the
+     * source host's locale.
+     */
+    /** @param array<string, mixed> $raw */
+    public static function dispatchClass(array $raw): string
+    {
+        $declared = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
+        return $declared !== 'unknown' ? $declared : 'normal';
+    }
+
+    /** @param array<string, mixed> $raw */
+    private static function dispatchClassWithDeclaration(array $raw): string
+    {
+        return self::dispatchClass($raw);
+    }
+
+    /** Direction of a route from its resolved ingress/destination zones. */
+    public static function deriveDirection(string $ingressZone, string $destinationZone): string
+    {
+        $ingress = strtolower(trim($ingressZone));
+        $destination = strtolower(trim($destinationZone));
+        if ($ingress === '' || $destination === '' || $ingress === 'unknown' || $destination === 'unknown') {
+            return 'unknown';
+        }
+        $fromMainland = in_array($ingress, self::MAINLAND_ZONE_CODES, true);
+        $toMainland = in_array($destination, self::MAINLAND_ZONE_CODES, true);
+        if ($fromMainland && $toMainland) {
+            return 'domestic';
+        }
+        if ($fromMainland) {
+            return 'cn_to_intl';
+        }
+        if ($toMainland) {
+            return 'intl_to_cn';
+        }
+        return 'unknown';
+    }
+
+    public static function normalizeIsp(mixed $value): string
+    {
+        $raw = trim((string) ($value ?? ''));
+        if ($raw === '') {
+            return 'unknown';
+        }
+        $mapped = self::ISP_ALIASES[$raw] ?? self::ISP_ALIASES[self::lower($raw)] ?? '';
+        return in_array($mapped, self::ISP_CLASSES, true) ? $mapped : 'unknown';
     }
 
     private static function lower(string $value): string

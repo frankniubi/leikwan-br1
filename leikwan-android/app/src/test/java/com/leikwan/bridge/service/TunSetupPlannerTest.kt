@@ -90,4 +90,26 @@ class TunSetupPlannerTest {
 
         assertEquals(listOf("com.leikwan.bridge"), plan.disallowedPackageNames)
     }
+
+    @Test
+    fun `planner preserves route exclusions supplied by libbox`() {
+        val excludes4 = listOf(RoutePrefix("203.0.113.10", 32))
+        val excludes6 = listOf(RoutePrefix("2001:db8::10", 128))
+        val plan = TunSetupPlanner.plan(
+            snapshot = TunOptionSnapshot(
+                autoRoute = true,
+                strictRoute = true,
+                inet4Addresses = listOf(RoutePrefix("172.19.0.1", 30)),
+                inet6Addresses = listOf(RoutePrefix("fdfe:dcba:9876::1", 126)),
+                inet4Routes = listOf(RoutePrefix("0.0.0.0", 0)),
+                inet6Routes = listOf(RoutePrefix("::", 0)),
+                dnsServer = "172.19.0.2",
+                inet4RouteExcludes = excludes4,
+                inet6RouteExcludes = excludes6,
+            ),
+        )
+
+        assertEquals(excludes4, plan.inet4RouteExcludes)
+        assertEquals(excludes6, plan.inet6RouteExcludes)
+    }
 }

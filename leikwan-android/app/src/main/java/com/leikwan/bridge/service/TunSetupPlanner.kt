@@ -13,6 +13,8 @@ data class TunOptionSnapshot(
     val inet4Routes: List<RoutePrefix>,
     val inet6Routes: List<RoutePrefix>,
     val dnsServer: String?,
+    val inet4RouteExcludes: List<RoutePrefix> = emptyList(),
+    val inet6RouteExcludes: List<RoutePrefix> = emptyList(),
 )
 
 data class TunSetupPlan(
@@ -24,6 +26,8 @@ data class TunSetupPlan(
     val disallowedPackageNames: List<String>,
     val allowBypass: Boolean,
     val bindActiveNetwork: Boolean,
+    val inet4RouteExcludes: List<RoutePrefix> = emptyList(),
+    val inet6RouteExcludes: List<RoutePrefix> = emptyList(),
 )
 
 object TunSetupPlanner {
@@ -73,6 +77,8 @@ object TunSetupPlanner {
             disallowedPackageNames = disallowedPackageNames,
             allowBypass = false,
             bindActiveNetwork = true,
+            inet4RouteExcludes = snapshot.inet4RouteExcludes,
+            inet6RouteExcludes = snapshot.inet6RouteExcludes,
         )
     }
 }

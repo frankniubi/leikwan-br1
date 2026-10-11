@@ -86,51 +86,9 @@ return [
             ],
         ],
     ],
-    'connection-modes-single-race-bond' => [
-        'is_pinned' => 0,
-        'sort_order' => 50,
-        'articles' => [
-            'en' => [
-                'title' => 'Choose a Connection Mode',
-                'excerpt' => 'Understand Single, Race, and Bond by the outcome you need rather than internal topology.',
-                'body' => 'en/connection-modes-single-race-bond.html',
-            ],
-            'zh-Hans' => [
-                'title' => '选择连接模式',
-                'excerpt' => '按稳定、容错或多路径需求理解 Single、Race 和 Bond。',
-                'body' => 'zh-Hans/connection-modes-single-race-bond.html',
-            ],
-            'zh-TW' => [
-                'title' => '選擇連線模式',
-                'excerpt' => '按穩定、容錯或多路徑需求理解 Single、Race 和 Bond。',
-                'body' => 'zh-TW/connection-modes-single-race-bond.html',
-            ],
-        ],
-    ],
-    'bond-sidecar-setup' => [
-        'is_pinned' => 0,
-        'sort_order' => 60,
-        'articles' => [
-            'en' => [
-                'title' => 'Configure a Sidecar',
-                'excerpt' => 'Create and verify a Sidecar only when your Bond route package requires one.',
-                'body' => 'en/bond-sidecar-setup.html',
-            ],
-            'zh-Hans' => [
-                'title' => '配置 Sidecar',
-                'excerpt' => '仅在线路方案明确需要时创建并验证 Sidecar。',
-                'body' => 'zh-Hans/bond-sidecar-setup.html',
-            ],
-            'zh-TW' => [
-                'title' => '設定 Sidecar',
-                'excerpt' => '僅在線路方案明確需要時建立並驗證 Sidecar。',
-                'body' => 'zh-TW/bond-sidecar-setup.html',
-            ],
-        ],
-    ],
     'troubleshooting-common-mistakes' => [
         'is_pinned' => 0,
-        'sort_order' => 70,
+        'sort_order' => 50,
         'articles' => [
             'en' => [
                 'title' => 'Troubleshoot Common Problems',
@@ -151,7 +109,7 @@ return [
     ],
     'glossary' => [
         'is_pinned' => 0,
-        'sort_order' => 80,
+        'sort_order' => 60,
         'articles' => [
             'en' => [
                 'title' => 'Glossary',
@@ -167,6 +125,27 @@ return [
                 'title' => '名詞解釋',
                 'excerpt' => '用淺白語言解釋指南中出現的產品和網路術語。',
                 'body' => 'zh-TW/glossary.html',
+            ],
+        ],
+    ],
+    'no-gui-clients' => [
+        'is_pinned' => 0,
+        'sort_order' => 70,
+        'articles' => [
+            'en' => [
+                'title' => 'Run the Client Without a GUI',
+                'excerpt' => 'Install the windowless client on Windows or macOS as a service or daemon, verify it, and remove it again.',
+                'body' => 'en/no-gui-clients.html',
+            ],
+            'zh-Hans' => [
+                'title' => '无界面运行客户端',
+                'excerpt' => '在 Windows 或 macOS 上把无界面客户端安装为服务或守护进程，验证并卸载。',
+                'body' => 'zh-Hans/no-gui-clients.html',
+            ],
+            'zh-TW' => [
+                'title' => '無介面執行用戶端',
+                'excerpt' => '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。',
+                'body' => 'zh-TW/no-gui-clients.html',
             ],
         ],
     ],

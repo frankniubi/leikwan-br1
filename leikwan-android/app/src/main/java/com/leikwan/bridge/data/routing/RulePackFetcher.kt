@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.net.Proxy
 
 sealed interface RulePackFetchResult {
     data class Success(val snapshot: RulePackSnapshot) : RulePackFetchResult
@@ -13,7 +14,8 @@ sealed interface RulePackFetchResult {
 
 class RulePackFetcher(
     private val manifestUrl: String = DEFAULT_MANIFEST_URL,
-    private val client: OkHttpClient = OkHttpClient(),
+    // Same policy as subscriptions: ignore foreign HTTP proxies, keep normal device routing.
+    private val client: OkHttpClient = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build(),
     private val manager: RulePackManager,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {

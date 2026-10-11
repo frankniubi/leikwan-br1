@@ -10,4 +10,22 @@ public interface IAppUpdater
         PreparedAppUpdate update,
         bool deferUntilRestart,
         CancellationToken ct = default);
+
+    /// <summary>Progress-aware overloads. Progress callbacks are optional.</summary>
+    Task<ClientAppArtifact?> CheckAsync(
+        string panelUrl,
+        string currentVersion,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default);
+
+    Task<PreparedAppUpdate> PrepareAsync(
+        ClientAppArtifact artifact,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default);
+
+    Task<AppUpdateLaunchResult> ApplyAsync(
+        PreparedAppUpdate update,
+        bool deferUntilRestart,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct = default);
 }

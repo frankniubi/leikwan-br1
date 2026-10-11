@@ -44,6 +44,26 @@ public sealed class MacBundleValidator
         return Convert.ToHexString(SHA256.HashData(stream));
     }
 
+    /// <summary>
+    /// Best-effort read of the bundle's CFBundleShortVersionString. Returns null when
+    /// the bundle or its plist is missing or invalid, so a caller can verify that an
+    /// update actually landed without turning a broken bundle into a throw.
+    /// </summary>
+    public static string? ReadBundleVersion(string bundlePath)
+    {
+        try
+        {
+            var plist = ReadPlist(Path.Combine(bundlePath, "Contents", "Info.plist"));
+            if (plist.Count == 0 || !plist.TryGetValue("CFBundleShortVersionString", out var version))
+                return null;
+            return string.IsNullOrWhiteSpace(version) ? null : version.Trim();
+        }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
+    }
+
     public static string GetMainExecutablePath(string bundlePath)
     {
         var contents = Path.Combine(bundlePath, "Contents");

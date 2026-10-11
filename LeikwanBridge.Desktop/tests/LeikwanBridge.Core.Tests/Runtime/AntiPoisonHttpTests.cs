@@ -67,6 +67,8 @@ public sealed class AntiPoisonHttpTests
     [InlineData("https://172.16.0.2/api/client/configs/pull", false)]
     [InlineData("https://192.168.1.10/api/client/configs/pull", false)]
     [InlineData("https://169.254.1.10/api/client/configs/pull", false)]
+    [InlineData("https://api-leikwanbridge.nbwly.com/api/client/configs/pull", true)]
+    [InlineData("https://dns.alidns.com/dns-query", true)]
     [InlineData("https://cdn.example.com/leikwan-bridge-setup.exe", false)]
     [InlineData("https://leikwanhost.com/api", false)]
     public void HostPolicy_OnlyProtectsHttpsPublicLeikwanSubdomains(string url, bool expected)

@@ -28,6 +28,12 @@ public sealed class ForwardConfig
     [JsonPropertyName("transport")]
     public string Transport { get; set; } = "tcp+udp";
 
+    [JsonPropertyName("native_outbound")]
+    public bool NativeOutboundEnabled { get; set; }
+
+    [JsonPropertyName("native_direction")]
+    public string NativeDirection { get; set; } = "";
+
     [JsonPropertyName("backend_mode")]
     public string BackendMode { get; set; } = "current_mode";
 
@@ -39,6 +45,9 @@ public sealed class ForwardConfig
 
     [JsonPropertyName("runtime_preference")]
     public string RuntimePreference { get; set; } = "single";
+
+    [JsonPropertyName("forward_combination_direction")]
+    public string ForwardCombinationDirection { get; set; } = "";
 
     [JsonPropertyName("bond_ingress_mode")]
     public string BondIngressMode { get; set; } = "";
@@ -75,4 +84,23 @@ public sealed class ForwardConfig
 
     [JsonIgnore]
     public UltraLease? RuntimeLease { get; set; }
+
+    [JsonIgnore]
+    public List<UltraLease> RuntimeLeases { get; set; } = [];
+
+    [JsonIgnore]
+    public NativeOutboundCapability? NativeOutbound { get; set; }
+
+    [JsonIgnore]
+    public string NativeRouteScope { get; set; } = "";
+
+    /// <summary>
+    /// True for a panel-declared native outbound rule: the panel ships only the
+    /// rule, and the data plane belongs to a user-initiated native outbound
+    /// relay connection. The agent never owns an ordinary Ultra runtime for it.
+    /// Derived only; never serialized, so the JSON contract is unchanged.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsNativeOutboundRule =>
+        NativeOutboundEnabled && string.Equals(BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
 }

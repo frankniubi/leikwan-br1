@@ -11,6 +11,83 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class UnixUltraLeaseClientTests
 {
     [Fact]
+    public async Task SingleLeaseWaitsForVerificationAcknowledgement()
+    {
+        var path = TemporarySocketPath();
+        try
+        {
+            using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            listener.Bind(new UnixDomainSocketEndPoint(path));
+            listener.Listen(1);
+            using var lease = CreateLease();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var send = new UnixUltraLeaseClient().SendAsync(path, lease.ForwardId, lease, deadline.Token);
+            using var connection = await listener.AcceptAsync(deadline.Token);
+            var header = new byte[4];
+            await ReadExactlyAsync(connection, header).WaitAsync(deadline.Token);
+            var body = new byte[BinaryPrimitives.ReadUInt32BigEndian(header)];
+            await ReadExactlyAsync(connection, body).WaitAsync(deadline.Token);
+            await Task.Delay(TimeSpan.FromSeconds(2.3), deadline.Token);
+            Assert.False(send.IsCompleted, "single lease abandoned before runtime verification ACK");
+            var ack = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                ok = true, forward_id = lease.ForwardId, policy_generation = lease.PolicyGeneration,
+            });
+            BinaryPrimitives.WriteUInt32BigEndian(header, (uint)ack.Length);
+            await connection.SendAsync(header);
+            await connection.SendAsync(ack);
+            Assert.True(await send);
+        }
+        finally { TryDelete(path); }
+    }
+
+    [Fact]
+    public async Task SendAsync_DoesNotDependOnCallingSynchronizationContext()
+    {
+        var path = TemporarySocketPath();
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(path));
+        listener.Listen(1);
+        using var lease = CreateLease();
+        var server = Task.Run(async () =>
+        {
+            using var connection = await listener.AcceptAsync();
+            var header = new byte[4];
+            await ReadExactlyAsync(connection, header);
+            var body = new byte[BinaryPrimitives.ReadUInt32BigEndian(header)];
+            await ReadExactlyAsync(connection, body);
+            await Task.Delay(30);
+            var ack = JsonSerializer.SerializeToUtf8Bytes(new { ok = true, forward_id = lease.ForwardId, policy_generation = lease.PolicyGeneration });
+            BinaryPrimitives.WriteUInt32BigEndian(header, (uint)ack.Length);
+            await connection.SendAsync(header);
+            await connection.SendAsync(ack);
+        });
+        var context = new CountingContext();
+        var previous = SynchronizationContext.Current;
+        Task<bool> pending;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+            pending = new UnixUltraLeaseClient().SendAsync(path, lease.ForwardId, lease);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        Assert.True(await pending.WaitAsync(TimeSpan.FromSeconds(3)));
+        await server;
+        TryDelete(path);
+        Assert.InRange(context.PostCount, 0, 8);
+    }
+
+    private sealed class CountingContext : SynchronizationContext
+    {
+        public int PostCount;
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            Interlocked.Increment(ref PostCount);
+            ThreadPool.QueueUserWorkItem(_ => callback(state));
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_WritesBoundedFrameAndRequiresMatchingAcknowledgement()
     {
         var socketPath = TemporarySocketPath();
@@ -46,6 +123,7 @@ public sealed class UnixUltraLeaseClientTests
         using var document = JsonDocument.Parse(captured);
         Assert.Equal(lease.ForwardId, document.RootElement.GetProperty("forward_id").GetInt32());
         Assert.Equal("203.0.113.20", document.RootElement.GetProperty("endpoint").GetProperty("ip").GetString());
+        Assert.Equal("paid", document.RootElement.GetProperty("selection_tier").GetString());
         TryDelete(socketPath);
     }
 
@@ -111,6 +189,7 @@ public sealed class UnixUltraLeaseClientTests
             RateLimitMbps = 20,
             QuotaRemainingBytes = 1024,
             SelectionRef = "selection-reference-abcdefghijklmnop",
+            SelectionTier = UltraLease.SelectionTierPaid,
             NonceHash = new string('b', 64),
             ProviderIp = "203.0.113.20",
             ProviderPort = 5438,

@@ -297,7 +297,7 @@ final class MigrationRunner
         $singleIndexAdd = $singleAddClause
             && preg_match('/^alter\s+table\b[\s\S]*\badd\s+(?:unique\s+)?(?:key|index)\b/i', $statement) === 1;
         $createIndex = preg_match('/^create\s+(?:unique\s+)?index\b/i', $normalizedStatement) === 1;
-        if (str_contains($message, 'duplicate key name') && ($singleIndexAdd || $createIndex)) {
+        if ((str_contains($message, 'duplicate key name') || str_contains($message, 'already exists')) && ($singleIndexAdd || $createIndex)) {
             return true;
         }
 

@@ -6,6 +6,7 @@ namespace LeikwanBridge.Mac.Services;
 public sealed class MacConnectionProfileStore
 {
     public const string SecretAccount = "connection-profiles";
+    private const string SelectionAccount = "connection-route-selection";
     private const int MaxProfiles = 64;
     private const int MaxSerializedBytes = 512 * 1024;
 
@@ -23,18 +24,56 @@ public sealed class MacConnectionProfileStore
         _secrets = secrets;
     }
 
-    public async Task<IReadOnlyList<MacConnectionProfile>> LoadAsync(CancellationToken ct)
+    public async Task<MacConnectionSelection> LoadSelectionAsync(CancellationToken ct)
     {
-        await _gate.WaitAsync(ct);
+        var encoded = await _secrets.GetAsync(SelectionAccount, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(encoded) || encoded.Length > MaxSerializedBytes)
+            return MacConnectionSelection.Empty;
         try
         {
-            var encoded = await _secrets.GetAsync(SecretAccount, ct);
+            return NormalizeSelection(JsonSerializer.Deserialize<MacConnectionSelection>(encoded, JsonOptions));
+        }
+        catch (JsonException)
+        {
+            return MacConnectionSelection.Empty;
+        }
+    }
+
+    public Task SaveSelectionAsync(MacConnectionSelection selection, CancellationToken ct)
+        => _secrets.SetAsync(SelectionAccount, JsonSerializer.Serialize(NormalizeSelection(selection), JsonOptions), ct);
+
+    private static MacConnectionSelection NormalizeSelection(MacConnectionSelection? selection)
+        => selection is null ? MacConnectionSelection.Empty : new MacConnectionSelection(
+            Math.Max(0, selection.ForwardId),
+            Math.Max(0, selection.ProfileId),
+            (selection.ForwardProfiles ?? new Dictionary<int, int>())
+                .Where(pair => pair.Key > 0 && pair.Value > 0)
+                .Take(128)
+                .ToDictionary(pair => pair.Key, pair => pair.Value));
+
+    public async Task<IReadOnlyList<MacConnectionProfile>> LoadAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var encoded = await _secrets.GetAsync(SecretAccount, ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(encoded) || encoded.Length > MaxSerializedBytes)
                 return [];
             try
             {
                 var profiles = JsonSerializer.Deserialize<List<MacConnectionProfile>>(encoded, JsonOptions) ?? [];
-                return Normalize(profiles);
+                var normalized = Normalize(profiles);
+                var rewritten = normalized.Count == 0
+                    ? string.Empty
+                    : JsonSerializer.Serialize(normalized, JsonOptions);
+                if (!string.Equals(encoded, rewritten, StringComparison.Ordinal))
+                {
+                    if (rewritten.Length == 0)
+                        await _secrets.DeleteAsync(SecretAccount, ct).ConfigureAwait(false);
+                    else
+                        await _secrets.SetAsync(SecretAccount, rewritten, ct).ConfigureAwait(false);
+                }
+                return normalized;
             }
             catch (JsonException)
             {
@@ -57,13 +96,13 @@ public sealed class MacConnectionProfileStore
         if (encoded.Length > MaxSerializedBytes)
             throw new InvalidOperationException("connection_profiles_too_large");
 
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (normalized.Count == 0)
-                await _secrets.DeleteAsync(SecretAccount, ct);
+                await _secrets.DeleteAsync(SecretAccount, ct).ConfigureAwait(false);
             else
-                await _secrets.SetAsync(SecretAccount, encoded, ct);
+                await _secrets.SetAsync(SecretAccount, encoded, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -83,10 +122,6 @@ public sealed class MacConnectionProfileStore
             profile.Protocol = profile.Protocol.Trim().ToLowerInvariant();
             profile.Name = Bound(profile.Name, 120);
             profile.Server = Bound(profile.Server, 255);
-            profile.Host = Bound(profile.Host, 255);
-            profile.Path = Bound(profile.Path, 2048);
-            profile.ServiceName = Bound(profile.ServiceName, 255);
-            profile.ServerName = Bound(profile.ServerName, 255);
             if (profile.Id <= 0 || !ids.Add(profile.Id))
                 profile.Id = NextId(ids);
             if (profile.Port is < 1 or > 65535)

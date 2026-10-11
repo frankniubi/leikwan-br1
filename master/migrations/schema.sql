@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS whmcs_login_challenges (
     INDEX idx_whmcs_login_challenges_expiry (expires_at, verified_at)
 );
 
+CREATE TABLE IF NOT EXISTS whmcs_sso_tokens (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    user_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    redirect_path VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_whmcs_sso_tokens_expiry (expires_at)
+);
+
 CREATE TABLE IF NOT EXISTS wallet_transactions (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
@@ -167,6 +179,13 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     ultra_destination_zone VARCHAR(32) NULL,
     ultra_allowed_ingress_zones_json JSON NULL,
     ultra_fallback_policy VARCHAR(32) NOT NULL DEFAULT 'detected_then_any',
+    external_uot_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    external_uot_sidecar_target VARCHAR(255) NULL,
+    external_uot_token VARCHAR(8192) NULL,
+    external_uot_queue_packets INT NOT NULL DEFAULT 256,
+    external_uot_keepalive_seconds INT NOT NULL DEFAULT 10,
+    external_uot_reconnect_grace_seconds INT NOT NULL DEFAULT 30,
+    external_uot_frame_payload_max INT NOT NULL DEFAULT 65507,
     node_group_key VARCHAR(191) NOT NULL,
     -- Forward Mode: 'current_mode' (direct ingress) | 'cf_mode' (Cloudflare ingress) |
     -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod) |
@@ -293,6 +312,7 @@ CREATE TABLE IF NOT EXISTS service_plans (
     max_forward_rule_quantity INT NOT NULL DEFAULT 64,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     is_tenant_visible TINYINT(1) NOT NULL DEFAULT 1,
+    geo_lock_enabled TINYINT(1) NOT NULL DEFAULT 0,
     feature_flags_json JSON NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL
@@ -442,6 +462,8 @@ CREATE TABLE IF NOT EXISTS forwards (
     public_port INT NOT NULL,
     cdn_host VARCHAR(255) NOT NULL,
     filter_profile VARCHAR(64) NOT NULL DEFAULT 'off',
+    native_outbound_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    native_direction_key VARCHAR(64) NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
@@ -452,6 +474,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     CONSTRAINT fk_forwards_sidecar_point FOREIGN KEY (bond_sidecar_point_id) REFERENCES sidecar_points(id),
     CONSTRAINT fk_forwards_chain FOREIGN KEY (forward_chain_id) REFERENCES forward_chains(id),
     UNIQUE KEY uniq_forward_service_idempotency (service_id, api_idempotency_key_hash),
+    UNIQUE KEY uniq_forwards_native_direction (service_id, native_direction_key),
     INDEX idx_forwards_service (service_id),
     INDEX idx_forwards_target_service (target_service_id)
 );
@@ -506,6 +529,11 @@ CREATE TABLE IF NOT EXISTS clients (
     last_diag_run_at DATETIME NULL,
     last_diag_result_json JSON NULL,
     last_diag_error TEXT NULL,
+    debug_collection_uuid VARCHAR(64) NULL,
+    debug_collection_expires_at DATETIME NULL,
+    debug_collection_status VARCHAR(16) NOT NULL DEFAULT 'closed',
+    debug_collection_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    debug_collection_next_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0,
     agent_config_json JSON NULL,
     agent_update_request_token VARCHAR(128) NULL,
     agent_update_requested_at DATETIME NULL,
@@ -539,7 +567,20 @@ CREATE TABLE IF NOT EXISTS clients (
     CONSTRAINT fk_clients_default_chain FOREIGN KEY (default_forward_chain_id) REFERENCES forward_chains(id),
     INDEX idx_clients_group (group_id),
     INDEX idx_clients_owner_default_status (owner_user_id, is_default_for_owner, status),
-    INDEX idx_clients_status (status)
+    INDEX idx_clients_status (status),
+    UNIQUE KEY idx_clients_debug_collection_uuid (debug_collection_uuid)
+);
+
+CREATE TABLE IF NOT EXISTS client_debug_chunks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    collection_uuid VARCHAR(64) NOT NULL,
+    sequence BIGINT UNSIGNED NOT NULL,
+    chunk_sha256 CHAR(64) NOT NULL,
+    byte_length INT UNSIGNED NOT NULL,
+    storage_path VARCHAR(768) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE (client_id, collection_uuid, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS client_device_sessions (
@@ -558,11 +599,19 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     last_heartbeat_at DATETIME NULL,
     ultra_status_json JSON NULL,
     ultra_status_updated_at DATETIME NULL,
+    ultra_runtime_fingerprint VARCHAR(64) NULL,
+    ultra_runtime_self_sha256 CHAR(64) NULL,
+    ultra_runtime_debugger TINYINT(1) NULL,
+    ultra_runtime_instrumented TINYINT(1) NULL,
+    ultra_runtime_attested_at DATETIME NULL,
+    ultra_lease_key_sha256 CHAR(64) NULL,
+    ultra_lease_key_seen_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
     UNIQUE KEY uniq_client_device (client_id, device_id),
-    INDEX idx_client_device_sessions_seen (client_id, last_seen_at)
+    INDEX idx_client_device_sessions_seen (client_id, last_seen_at),
+    INDEX idx_client_device_sessions_runtime_fingerprint (ultra_runtime_fingerprint, last_seen_at)
 );
 
 CREATE TABLE IF NOT EXISTS desktop_client_sessions (
@@ -1296,10 +1345,25 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     game_id INT UNSIGNED NULL,
     area_id INT UNSIGNED NULL,
     line_type INT UNSIGNED NULL,
+    in_line_type INT UNSIGNED NULL,
+    isp VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    provider VARCHAR(64) NULL,
+    dispatch_class VARCHAR(16) NOT NULL DEFAULT 'normal',
+    admin_dispatch_class VARCHAR(16) NULL DEFAULT NULL,
+    admin_dispatch_note VARCHAR(255) NULL DEFAULT NULL,
     discovery_ip VARCHAR(64) NULL,
     catalog_ingress_label VARCHAR(191) NULL,
     catalog_destination_label VARCHAR(191) NULL,
     config_sha256 CHAR(64) NOT NULL,
+    access_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    native_udp_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    native_socks5_state VARCHAR(16) NOT NULL DEFAULT 'unknown',
+    direction_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    route_class VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    pricing_class VARCHAR(16) NOT NULL DEFAULT 'unknown',
+    pricing_evidence VARCHAR(255) NULL,
+    audit_at DATETIME NULL,
+    audit_hash CHAR(64) NULL,
     auto_ingress_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
     auto_destination_zone VARCHAR(32) NOT NULL DEFAULT 'unknown',
     admin_ingress_zone VARCHAR(32) NULL,
@@ -1318,6 +1382,9 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     CONSTRAINT fk_ultra_lines_source FOREIGN KEY (source_id) REFERENCES ultra_sources(source_id),
     UNIQUE KEY uniq_ultra_source_line (source_id, line_id),
     INDEX idx_ultra_lines_policy (is_source_present, is_enabled, auto_destination_zone, auto_ingress_zone),
+    INDEX idx_ultra_lines_quality (access_class, native_udp_state, native_socks5_state, pricing_class, is_source_present, is_enabled),
+    INDEX idx_ultra_lines_carrier (isp, route_class, is_source_present, is_enabled),
+    INDEX idx_ultra_lines_dispatch (dispatch_class, is_source_present, is_enabled),
     INDEX idx_ultra_lines_material_expiry (last_material_expires_at)
 );
 
@@ -1334,6 +1401,109 @@ CREATE TABLE IF NOT EXISTS forward_combination_ultra_lines (
     UNIQUE KEY uniq_combination_ultra_line (forward_combination_id, ultra_line_id),
     INDEX idx_fcul_selection (forward_combination_id, enabled, sort_order)
 );
+
+CREATE TABLE IF NOT EXISTS ultra_candidate_reputation_current (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    candidate_key_hash CHAR(64) NOT NULL,
+    source_id VARCHAR(191) NOT NULL,
+    line_id INT UNSIGNED NOT NULL,
+    ingress_zone VARCHAR(32) NOT NULL,
+    destination_zone VARCHAR(32) NOT NULL,
+    protocol VARCHAR(16) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'healthy',
+    consecutive_failures INT UNSIGNED NOT NULL DEFAULT 0,
+    consecutive_successes INT UNSIGNED NOT NULL DEFAULT 0,
+    independent_observers INT UNSIGNED NOT NULL DEFAULT 0,
+    backoff_level INT UNSIGNED NOT NULL DEFAULT 0,
+    quarantine_until DATETIME NULL,
+    last_reason VARCHAR(64) NULL,
+    last_observed_at DATETIME NULL,
+    last_good_at DATETIME NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_candidate_reputation_scope (candidate_key_hash),
+    INDEX idx_ultra_candidate_reputation_state (state, quarantine_until, updated_at),
+    INDEX idx_ultra_candidate_reputation_route (source_id, line_id, ingress_zone, destination_zone, protocol)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_candidate_reputation_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    candidate_key_hash CHAR(64) NOT NULL,
+    event_type VARCHAR(16) NOT NULL,
+    state VARCHAR(16) NOT NULL,
+    reason VARCHAR(64) NOT NULL,
+    observer_hash CHAR(64) NULL,
+    evidence_hash CHAR(64) NOT NULL,
+    observed_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_candidate_reputation_evidence (candidate_key_hash, evidence_hash),
+    INDEX idx_ultra_candidate_reputation_events_observed (observed_at),
+    INDEX idx_ultra_candidate_reputation_events_candidate (candidate_key_hash, event_type, observed_at)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_candidate_reviews (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    candidate_key_hash CHAR(64) NOT NULL,
+    source_id VARCHAR(191) NOT NULL,
+    line_id INT UNSIGNED NOT NULL,
+    protocol VARCHAR(16) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'pending',
+    attempts INT UNSIGNED NOT NULL DEFAULT 0,
+    requested_at DATETIME NOT NULL,
+    started_at DATETIME NULL,
+    completed_at DATETIME NULL,
+    result_json LONGTEXT NULL,
+    INDEX idx_ultra_candidate_reviews_state (state, requested_at),
+    INDEX idx_ultra_candidate_reviews_source (source_id, state, requested_at),
+    INDEX idx_ultra_candidate_reviews_candidate (candidate_key_hash, requested_at)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_observer_devices (
+    observer_hash CHAR(64) NOT NULL PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    strikes INT UNSIGNED NOT NULL DEFAULT 0,
+    demoted_at DATETIME NULL,
+    last_rebuttal_at DATETIME NULL,
+    last_decay_at DATETIME NULL,
+    last_seen_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_ultra_observer_devices_client (client_id, last_seen_at),
+    INDEX idx_ultra_observer_devices_demoted (demoted_at, strikes)
+);
+
+CREATE TABLE IF NOT EXISTS ultra_lease_refusals (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_hash CHAR(64) NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    error_code VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_ultra_lease_refusal_created (created_at),
+    INDEX idx_ultra_lease_refusal_client (client_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Panel-observed Ultra connected time (20261003_add_ultra_lease_time.sql):
+-- union of lease windows per client + device + forward + UTC day.
+CREATE TABLE IF NOT EXISTS ultra_lease_time (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    device_hash CHAR(64) NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    period_day DATE NOT NULL,
+    leased_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    lease_count INT UNSIGNED NOT NULL DEFAULT 0,
+    covered_until BIGINT NOT NULL DEFAULT 0,
+    first_issued_at DATETIME NOT NULL,
+    last_issued_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_lease_time_day (client_id, device_hash, forward_id, period_day),
+    INDEX idx_ultra_lease_time_client_day (client_id, period_day),
+    INDEX idx_ultra_lease_time_service_day (service_id, period_day),
+    INDEX idx_ultra_lease_time_forward_day (forward_id, period_day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -1395,4 +1565,241 @@ CREATE TABLE IF NOT EXISTS knowledgebase_articles (
     UNIQUE KEY uniq_knowledgebase_article_locale (topic_id, locale),
     KEY idx_knowledgebase_articles_reader (locale, status, topic_id),
     KEY idx_knowledgebase_articles_updated (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS client_device_controls (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    identity_key_hash CHAR(64) NOT NULL,
+    attestation_key_hash CHAR(64) NULL,
+    state ENUM('active', 'kicked', 'banned') NOT NULL DEFAULT 'active',
+    blocked_until DATETIME NULL,
+    block_origin VARCHAR(32) NULL,
+    release_policy VARCHAR(32) NULL,
+    reason_code VARCHAR(64) NULL,
+    changed_by_user_id BIGINT UNSIGNED NULL,
+    changed_at DATETIME NULL,
+    trust_state ENUM('trusted', 'untrusted') NOT NULL DEFAULT 'untrusted',
+    trust_reason VARCHAR(64) NULL,
+    command_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    last_acknowledged_command_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    acknowledged_at DATETIME NULL,
+    last_attested_at DATETIME NULL,
+    last_seen_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    CONSTRAINT fk_client_device_controls_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_client_device_control (client_id, device_id),
+    INDEX idx_client_device_control_state (client_id, state, blocked_until, last_seen_at)
+);
+
+CREATE TABLE IF NOT EXISTS android_device_sessions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    session_hash CHAR(64) NOT NULL,
+    command_version BIGINT UNSIGNED NOT NULL,
+    expires_at DATETIME NOT NULL,
+    revoked_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_android_device_sessions_control FOREIGN KEY (client_id, device_id)
+        REFERENCES client_device_controls(client_id, device_id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_android_device_session_hash (session_hash),
+    INDEX idx_android_device_session_active (client_id, device_id, expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS android_device_challenges (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    nonce_hash CHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    consumed_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_android_device_challenges_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_android_device_challenge_nonce (nonce_hash),
+    INDEX idx_android_device_challenge_expiry (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS android_enrollment_codes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    code_hash CHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    consumed_at DATETIME NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_android_enrollment_codes_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_android_enrollment_code_hash (code_hash),
+    INDEX idx_android_enrollment_code_expiry (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS openwrt_pairing_codes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    code_hash CHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_openwrt_pairing_codes_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    UNIQUE KEY uniq_openwrt_pairing_code_hash (code_hash),
+    INDEX idx_openwrt_pairing_code_expiry (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS client_device_control_audits (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_id VARCHAR(191) NOT NULL,
+    command_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    event_type VARCHAR(64) NOT NULL,
+    reason VARCHAR(255) NULL,
+    actor_type VARCHAR(32) NOT NULL,
+    actor_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_client_device_control_audits_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+    INDEX idx_client_device_control_audit_device (client_id, device_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS access_blacklist_rules (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    entity_type VARCHAR(32) NOT NULL,
+    canonical_value VARCHAR(255) NOT NULL,
+    display_value VARCHAR(255) NOT NULL,
+    ip_family TINYINT NULL,
+    ip_start VARBINARY(16) NULL,
+    ip_end VARBINARY(16) NULL,
+    province_code VARCHAR(32) NULL,
+    city_code VARCHAR(64) NULL,
+    country_code VARCHAR(32) NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    reason_code VARCHAR(64) NOT NULL,
+    admin_note VARCHAR(500) NULL,
+    created_by_user_id BIGINT UNSIGNED NULL,
+    updated_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_access_blacklist_entity (entity_type, canonical_value),
+    INDEX idx_access_blacklist_active_type (entity_type, is_active),
+    INDEX idx_access_blacklist_ip (ip_family, ip_start, ip_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS user_geo_lock_profiles (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'unbound',
+    main_province_code VARCHAR(32) NULL,
+    previous_province_code VARCHAR(32) NULL,
+    bound_observation_id BIGINT UNSIGNED NULL,
+    last_verified_at DATETIME NULL,
+    self_change_available_at DATETIME NULL,
+    reset_generation BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    reset_started_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_user_geo_lock_profile_user (user_id),
+    INDEX idx_user_geo_lock_profile_state (state, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS access_location_challenges (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token_hash CHAR(64) NOT NULL,
+    auth_context_hash CHAR(64) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NULL,
+    device_uuid VARCHAR(191) NOT NULL,
+    attempt_id VARCHAR(128) NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    consumed_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_access_location_challenge_token (token_hash),
+    INDEX idx_access_location_challenge_binding (user_id, device_uuid, attempt_id),
+    INDEX idx_access_location_challenge_expiry (expires_at, consumed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS access_location_observations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    challenge_id BIGINT UNSIGNED NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NULL,
+    device_uuid VARCHAR(191) NOT NULL,
+    attempt_id VARCHAR(128) NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    collection_mode VARCHAR(32) NOT NULL,
+    provider VARCHAR(64) NOT NULL,
+    source_ip VARCHAR(64) NULL,
+    public_ip VARCHAR(64) NULL,
+    country_code VARCHAR(32) NULL,
+    province_code VARCHAR(32) NULL,
+    city_code VARCHAR(64) NULL,
+    observed_at DATETIME NOT NULL,
+    received_at DATETIME NOT NULL,
+    payload_digest CHAR(64) NOT NULL,
+    INDEX idx_access_location_observation_lookup (user_id, device_uuid, source_ip, observed_at),
+    INDEX idx_access_location_observation_attempt (user_id, attempt_id, collection_mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS access_policy_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    decision_id CHAR(32) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NULL,
+    device_uuid VARCHAR(191) NULL,
+    source_ip VARCHAR(64) NULL,
+    event_type VARCHAR(32) NOT NULL,
+    decision VARCHAR(24) NOT NULL,
+    reason_code VARCHAR(64) NOT NULL,
+    matched_entity_type VARCHAR(32) NULL,
+    matched_observation_id BIGINT UNSIGNED NULL,
+    attempt_id VARCHAR(128) NULL,
+    counts_as_geo_violation TINYINT(1) NOT NULL DEFAULT 0,
+    details_digest CHAR(64) NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_access_policy_attempt (user_id, attempt_id, event_type),
+    UNIQUE KEY uniq_access_policy_decision (decision_id),
+    INDEX idx_access_policy_user_time (user_id, created_at, counts_as_geo_violation),
+    INDEX idx_access_policy_device_time (device_uuid, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS account_access_bans (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    origin VARCHAR(32) NOT NULL,
+    reason_code VARCHAR(64) NOT NULL,
+    evidence_event_ids_json JSON NOT NULL,
+    banned_at DATETIME NOT NULL,
+    released_at DATETIME NULL,
+    released_by_user_id BIGINT UNSIGNED NULL,
+    release_note VARCHAR(500) NULL,
+    INDEX idx_account_access_ban_user (user_id, banned_at),
+    INDEX idx_account_access_ban_active (user_id, released_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS access_reset_generations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    generation BIGINT UNSIGNED NOT NULL,
+    previous_province_code VARCHAR(32) NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'pending',
+    started_at DATETIME NOT NULL,
+    completed_at DATETIME NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    UNIQUE KEY uniq_access_reset_generation (user_id, generation),
+    INDEX idx_access_reset_generation_state (user_id, state, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS access_reset_devices (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    reset_generation_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    client_id BIGINT UNSIGNED NOT NULL,
+    device_uuid VARCHAR(191) NOT NULL,
+    blocked_until DATETIME NULL,
+    block_created_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_access_reset_device (reset_generation_id, client_id, device_uuid),
+    INDEX idx_access_reset_device_user (user_id, device_uuid),
+    CONSTRAINT fk_access_reset_device_generation FOREIGN KEY (reset_generation_id) REFERENCES access_reset_generations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -49,10 +49,10 @@ namespace {
         failRevision('forward_revision changed when only ephemeral grant material changed');
     }
 
-    $changedQuota = $stableForward;
-    $changedQuota['quota_remaining_bytes'] = 512;
-    if (ClientAgentController::forwardRevision([$changedQuota]) !== $revStable) {
-        failRevision('forward_revision changed when only metering quota changed');
+    $meteredForward = $stableForward;
+    $meteredForward['quota_remaining_bytes'] = 512;
+    if (ClientAgentController::forwardRevision([$meteredForward]) !== $revStable) {
+        failRevision('forward_revision changed when only metered quota changed');
     }
 
     $changedTarget = $stableForward;
@@ -83,6 +83,10 @@ namespace {
         if (!str_contains($source, $needle)) {
             failRevision('missing revision field/hook: ' . $needle);
         }
+    }
+
+    if (!str_contains($source, "is_array(\$snapshot['wstunnel_binary'] ?? null)")) {
+        failRevision('pull config response must tolerate a missing wstunnel artifact snapshot');
     }
 
     echo "ok\n";

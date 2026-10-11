@@ -210,7 +210,7 @@ class UltraSourceAgentTests(unittest.TestCase):
         self.assertNotIn("pc_port", encoded)
         self.assertNotIn("credential", encoded)
 
-    def test_inventory_uses_fully_scanned_catalog_as_current_availability_boundary(self):
+    def test_inventory_keeps_local_config_when_catalog_omits_line(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lines = root / "lines"
@@ -244,7 +244,7 @@ class UltraSourceAgentTests(unittest.TestCase):
             inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
 
         self.assertTrue(inventory["complete"])
-        self.assertEqual([453], [line["line_id"] for line in inventory["lines"]])
+        self.assertEqual([453, 460], [line["line_id"] for line in inventory["lines"]])
 
     def test_inventory_keeps_local_configs_until_every_catalog_pair_has_succeeded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -272,6 +272,144 @@ class UltraSourceAgentTests(unittest.TestCase):
             inventory = MODULE.build_inventory(lines, lines / "missing-index.json", catalog_path=cache, max_lines=256)
 
         self.assertEqual([453, 455], [line["line_id"] for line in inventory["lines"]])
+
+    def test_inventory_unions_index_and_audit_manifest_without_catalog_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            (lines / "453.toml").write_text(
+                "[acc]\ngame_id = 6262\narea_id = 11796\nline_type = 8\nline_id = 453\n",
+                encoding="utf-8",
+            )
+            index = lines / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "lines": [
+                            {"line_id": 453, "title": "local line", "speed_ip": "203.0.113.1"},
+                            {"line_id": 460, "title": "index-only line", "game_id": 6262, "area_id": 11796},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            audit = root / "line-audit.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "access_class": "paid",
+                            "native_udp_state": "verified",
+                            "route_class": "direct",
+                            "pricing_class": "monthly",
+                            "pricing_evidence": "default-plan",
+                        },
+                        "audit": {
+                            "timestamp": "2026-08-30T00:00:00Z",
+                            "sha256": "b" * 64,
+                        },
+                        "lines": [
+                            {
+                                "line_id": 119,
+                                "game_id": 6262,
+                                "area_id": 11796,
+                                "line_type": 8,
+                                "access_class": "paid",
+                                "native_udp_state": "verified",
+                                "route_class": "direct",
+                                "pricing_class": "monthly",
+                                "pricing_evidence": "plan-119",
+                                "audit_at": "2026-08-31T00:00:00Z",
+                                "audit_hash": "a" * 64,
+                                "account_password": "must-not-survive",
+                            },
+                            {"line_id": 120},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            catalog = root / "catalog-cache.json"
+            catalog.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "records": {"453": {"line_id": 453, "title": "catalog line"}},
+                        "pairs": {"6262:11796": {"last_success_at": 10_000}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(
+                lines,
+                index,
+                catalog_path=catalog,
+                audit_manifest_path=audit,
+                max_lines=256,
+            )
+
+        self.assertEqual([119, 120, 453, 460], [line["line_id"] for line in inventory["lines"]])
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(3, inventory["schema_version"])
+        audit_line = inventory["lines"][0]
+        self.assertEqual("paid", audit_line["access_class"])
+        self.assertEqual("verified", audit_line["native_udp_state"])
+        self.assertEqual("direct", audit_line["route_class"])
+        self.assertEqual("monthly", audit_line["pricing_class"])
+        self.assertEqual("plan-119", audit_line["pricing_evidence"])
+        self.assertEqual("2026-08-31T00:00:00Z", audit_line["audit_at"])
+        self.assertEqual("a" * 64, audit_line["audit_hash"])
+        self.assertNotIn("account_password", json.dumps(inventory).lower())
+        self.assertEqual("paid", inventory["lines"][1]["access_class"])
+        self.assertEqual("2026-08-30T00:00:00Z", inventory["lines"][1]["audit_at"])
+        self.assertEqual("b" * 64, inventory["lines"][1]["audit_hash"])
+        self.assertEqual("unknown", inventory["lines"][2]["access_class"])
+        self.assertEqual("unknown", inventory["lines"][2]["audit_hash"])
+
+        with tempfile.TemporaryDirectory() as single_directory:
+            single = Path(single_directory) / "single-audit.json"
+            single.write_text(
+                json.dumps(
+                    {
+                        "line": {"line_id": 118, "title": "nested line"},
+                        "audit": {"native_udp_state": "verified", "sha256": "c" * 64},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            single_records = MODULE._line_audit_manifest(single)
+        self.assertEqual([118], list(single_records))
+        self.assertEqual("verified", single_records[118]["native_udp_state"])
+        self.assertEqual("c" * 64, single_records[118]["sha256"])
+
+    def test_inventory_119_lines_is_complete_and_has_schema_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lines = Path(directory)
+            for line_id in range(119, 0, -1):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            inventory = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+
+        self.assertEqual(119, len(inventory["lines"]))
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(list(range(1, 120)), [line["line_id"] for line in inventory["lines"]])
+        self.assertEqual(3, inventory["schema_version"])
+        self.assertNotEqual("2026.08.24.3", inventory["agent_version"])
+
+    def test_inventory_fingerprint_covers_lines_beyond_payload_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lines = Path(directory)
+            for line_id in range(1, 258):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            first = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+            (lines / "257.toml").write_text("line_id = 257\nline_type = 9\n", encoding="utf-8")
+            second = MODULE.build_inventory(lines, lines / "missing-index.json", max_lines=256)
+
+        self.assertFalse(first["complete"])
+        self.assertFalse(second["complete"])
+        self.assertEqual(first["lines"], second["lines"])
+        self.assertNotEqual(first["inventory_fingerprint"], second["inventory_fingerprint"])
 
     def test_inventory_merges_index_and_toml_without_secret_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -327,6 +465,46 @@ class UltraSourceAgentTests(unittest.TestCase):
         encoded = json.dumps(inventory).lower()
         self.assertNotIn("account_password", encoded)
         self.assertNotIn("session_token", encoded)
+        self.assertNotIn("must-not-survive", encoded)
+
+    def test_inventory_carries_carrier_metadata_without_ports_or_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            index = lines / "index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "lines": [
+                            {
+                                "line_id": 327,
+                                "title": "上海-韩国-电信单线",
+                                "game_id": 6262,
+                                "area_id": 11797,
+                                "line_type": 8,
+                                "in_line_type": 3,
+                                "isp": "电信",
+                                "provider": "华为云",
+                                "speed_ip": "203.0.113.21",
+                                "pc_port": 5438,
+                                "account_token": "must-not-survive",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inventory = MODULE.build_inventory(lines, index, max_lines=256)
+
+        line = inventory["lines"][0]
+        self.assertEqual("电信", line["isp"])
+        self.assertEqual("华为云", line["provider"])
+        self.assertEqual(3, line["in_line_type"])
+        encoded = json.dumps(inventory, ensure_ascii=False).lower()
+        self.assertNotIn("pc_port", encoded)
+        self.assertNotIn("5438", encoded)
         self.assertNotIn("must-not-survive", encoded)
 
     def test_inventory_is_sorted_and_bounded(self):
@@ -389,8 +567,8 @@ class UltraSourceAgentTests(unittest.TestCase):
             self.assertEqual(
                 [
                     ("POST", "/api/ultra/source/inventory"),
-                    ("GET", "/api/ultra/source/jobs"),
-                    ("GET", "/api/ultra/source/jobs"),
+                    ("GET", "/api/ultra/source/jobs?reviews_capacity=1"),
+                    ("GET", "/api/ultra/source/jobs?reviews_capacity=1"),
                 ],
                 [(method, path) for method, path, _payload in calls],
             )
@@ -439,9 +617,156 @@ class UltraSourceAgentTests(unittest.TestCase):
                     MODULE.SourceAgent(config).run_cycle()
 
             self.assertEqual(
-                ["/api/ultra/source/inventory", "/api/ultra/source/jobs", "catalog"],
+                ["/api/ultra/source/inventory", "/api/ultra/source/jobs?reviews_capacity=1", "catalog"],
                 events,
             )
+
+    def test_agent_reauthenticates_and_retries_partial_line_acquisition_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            for line_id in (1, 2):
+                (lines / f"{line_id}.toml").write_text(f"line_id = {line_id}\n", encoding="utf-8")
+            config = root / "agent.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "panel_url": "https://panel.example",
+                        "source_id": "source-a",
+                        "source_secret": "source-secret",
+                        "binary_path": "/runtime/line-client",
+                        "lines_dir": str(lines),
+                        "inventory_path": str(lines / "index.json"),
+                        "state_dir": str(root / "state"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            acquisition_calls = []
+
+            def fake_acquire(line_id, *_args, **_kwargs):
+                acquisition_calls.append(line_id)
+                if line_id == 2 and acquisition_calls.count(2) == 1:
+                    raise RuntimeError("expired session")
+                return {"line_id": line_id, "relays": [{"ip": "203.0.113.20", "port": 5438}]}
+
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}):
+                with mock.patch.object(MODULE, "inventory_due", return_value=False):
+                    with mock.patch.object(
+                        MODULE,
+                        "request_json_with_retries",
+                        return_value={"ok": True, "upload_ticket": "ticket", "line_ids": [1, 2]},
+                    ):
+                        with mock.patch.object(MODULE, "acquire_line", side_effect=fake_acquire):
+                            with mock.patch.object(
+                                MODULE,
+                                "request_json",
+                                return_value={"ok": True, "accepted_line_ids": [1, 2]},
+                            ) as request:
+                                with mock.patch.object(MODULE.SourceAgent, "reauthenticate", return_value=True) as reauth:
+                                    with mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                                        agent = MODULE.SourceAgent(config)
+                                        self.assertEqual(2, agent.run_cycle())
+
+            self.assertEqual([1, 2, 2], acquisition_calls)
+            reauth.assert_called_once_with()
+            self.assertEqual("/api/ultra/source/materials", request.call_args.args[4])
+
+    def _uploader_agent(self, root):
+        lines = root / "lines"
+        lines.mkdir(exist_ok=True)
+        config = root / "agent.json"
+        config.write_text(json.dumps({
+            "panel_url": "https://panel.example", "source_id": "source-a", "source_secret": "source-secret",
+            "binary_path": "/runtime/line-client", "lines_dir": str(lines),
+            "inventory_path": str(lines / "index.json"), "state_dir": str(root / "state"),
+        }), encoding="utf-8")
+        return MODULE.SourceAgent(config)
+
+    def test_each_line_is_uploaded_right_after_it_is_acquired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            events = []
+
+            def fake_acquire(line_id, *_args, **_kwargs):
+                events.append(("acquire", line_id))
+                return {"line_id": line_id}
+
+            def fake_request(*args, **_kwargs):
+                body = args[5]
+                ids = [m["line_id"] for m in body["materials"]]
+                events.append(("upload", tuple(ids)))
+                return {"ok": True, "accepted_line_ids": ids}
+
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}),                     mock.patch.object(MODULE, "inventory_due", return_value=False),                     mock.patch.object(MODULE, "request_json_with_retries", return_value={"ok": True, "upload_ticket": "t", "line_ids": [1, 2, 3]}),                     mock.patch.object(MODULE, "acquire_line", side_effect=fake_acquire),                     mock.patch.object(MODULE, "request_json", side_effect=fake_request),                     mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                self.assertEqual(3, agent.run_cycle())
+            self.assertEqual(
+                [("acquire", 1), ("upload", (1,)), ("acquire", 2), ("upload", (2,)), ("acquire", 3), ("upload", (3,))],
+                events,
+            )
+
+    def test_single_use_ticket_panel_falls_back_to_one_batch_under_a_fresh_ticket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            tickets = []
+
+            def fake_request(*args, **_kwargs):
+                body = args[5]
+                tickets.append((body["upload_ticket"], [m["line_id"] for m in body["materials"]]))
+                if body["upload_ticket"] == "t1" and len(tickets) > 1:
+                    raise RuntimeError("control request failed with HTTP 409: replayed")
+                return {"ok": True, "accepted_line_ids": [m["line_id"] for m in body["materials"]]}
+
+            jobs = [{"ok": True, "upload_ticket": "t1", "line_ids": [1, 2, 3]}, {"ok": True, "upload_ticket": "t2", "line_ids": [2, 3]}]
+            with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}),                     mock.patch.object(MODULE, "inventory_due", return_value=False),                     mock.patch.object(MODULE, "request_json_with_retries", side_effect=jobs),                     mock.patch.object(MODULE, "acquire_line", side_effect=lambda line_id, *a, **k: {"line_id": line_id}),                     mock.patch.object(MODULE, "request_json", side_effect=fake_request),                     mock.patch.object(MODULE.SourceAgent, "refresh_catalog"):
+                self.assertEqual(3, agent.run_cycle())
+            self.assertEqual([("t1", [1]), ("t1", [2]), ("t2", [2, 3])], tickets)
+
+    def test_review_material_is_uploaded_before_the_probe_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._uploader_agent(Path(directory))
+            order = []
+            uploader = MODULE.MaterialUploader(agent, "t")
+            with mock.patch.object(MODULE, "acquire_line", return_value={"line_id": 453, "relays": []}),                     mock.patch.object(MODULE, "request_json", side_effect=lambda *a, **k: order.append("upload") or {"ok": True, "accepted_line_ids": [453]}),                     mock.patch.object(Path, "is_file", return_value=True):
+                agent.run_review(41, 453, 600, advertised=[], target="198.51.100.1:443", uploader=uploader)
+            self.assertEqual(["upload"], order)
+            self.assertEqual({453}, uploader.accepted)
+
+    def test_agent_hardens_existing_session_and_same_path_reauthentication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = root / "lines"
+            lines.mkdir()
+            session = root / "session.json"
+            session.write_text("session", encoding="utf-8")
+            binary = root / "line-client"
+            binary.write_bytes(b"binary")
+            config = root / "agent.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "panel_url": "https://panel.example",
+                        "source_id": "source-a",
+                        "source_secret": "source-secret",
+                        "binary_path": str(binary),
+                        "lines_dir": str(lines),
+                        "inventory_path": str(lines / "index.json"),
+                        "state_dir": str(root / "state"),
+                        "session_path": str(session),
+                        "login_mobile": "15500000000",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(MODULE.os, "chmod") as chmod:
+                with mock.patch.object(MODULE.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                    agent = MODULE.SourceAgent(config)
+                    self.assertTrue(agent.reauthenticate())
+
+            self.assertGreaterEqual(chmod.call_count, 2)
+            chmod.assert_called_with(session, 0o600)
 
     def test_signed_headers_bind_method_path_nonce_and_body(self):
         headers = MODULE.signed_headers(
@@ -573,3 +898,227 @@ class UltraSourceAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UltraSourceSignatureTests(unittest.TestCase):
+    """The panel signs the request path without its query string.
+
+    A parameter added to a signed URL used to change the canonical request and
+    the source answered 401 to every poll, so this is pinned from both sides:
+    the same signature with and without the query, and against the canonical
+    request the panel builds.
+    """
+
+    def _headers(self, path: str) -> dict:
+        return MODULE.signed_headers(
+            "source-a", "secret", "GET", path, b"", timestamp=1_900_000_000, nonce="ab" * 16
+        )
+
+    def test_query_string_does_not_change_the_signature(self):
+        self.assertEqual(
+            self._headers("/api/ultra/source/jobs")["X-Ultra-Signature"],
+            self._headers("/api/ultra/source/jobs?reviews_capacity=1")["X-Ultra-Signature"],
+        )
+
+    def test_signature_matches_the_canonical_request_the_panel_builds(self):
+        import hmac
+        nonce = "ab" * 16
+        headers = self._headers("/api/ultra/source/jobs?reviews_capacity=1")
+        canonical = "\n".join(
+            ["GET", "/api/ultra/source/jobs", "source-a", "1900000000", nonce, hashlib.sha256(b"").hexdigest()]
+        )
+        self.assertEqual(
+            hmac.new(b"secret", canonical.encode("utf-8"), hashlib.sha256).hexdigest(),
+            headers["X-Ultra-Signature"],
+        )
+
+    def test_review_capacity_is_advertised_in_the_jobs_request(self):
+        source = (ROOT / "source-agent" / "ultra_source_agent.py").read_text(encoding="utf-8")
+        self.assertIn("reviews_capacity=", source, "the panel hands out no review to an agent that does not ask")
+        self.assertEqual("2026.09.24.1", MODULE.AGENT_VERSION)
+
+
+class UltraSourceAgentReviewTests(unittest.TestCase):
+    """The review probe must be pointed at an advertised endpoint and a target."""
+
+    TARGET = "45.143.235.221:10809"
+    ADVERTISED = ["1.117.238.119", "121.5.240.89"]
+
+    def _agent(self, root):
+        lines = root / "lines"
+        lines.mkdir(exist_ok=True)
+        script = root / "ultra_line_review.py"
+        script.write_text("# review probe\n", encoding="utf-8")
+        config = root / "agent.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "panel_url": "https://panel.example",
+                    "source_id": "source-a",
+                    "source_secret": "source-secret",
+                    "binary_path": str(root / "line-client"),
+                    "lines_dir": str(lines),
+                    "inventory_path": str(lines / "index.json"),
+                    "state_dir": str(root / "state"),
+                    "review_script": str(script),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return MODULE.SourceAgent(config)
+
+    @staticmethod
+    def _material(relays):
+        return {"line_id": 453, "user": "line-user", "credential": "1234567890123456", "relays": relays}
+
+    def test_review_probes_an_advertised_relay_not_the_first_acquired_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material(
+                [
+                    {"ip": "203.0.113.20", "port": 5438},
+                    {"ip": "1.117.238.119", "port": 5440},
+                ]
+            )
+            probe_result = {
+                "passed": True,
+                "relay": "1.117.238.119:5440",
+                "target": self.TARGET,
+                "proof": {"endpoint": "1.117.238.119:5440", "local_path_only": False, "end_to_end_ok": 5},
+            }
+            completed = mock.Mock(returncode=0, stdout=json.dumps(probe_result), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    payload = agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target=self.TARGET)
+
+            command = run.call_args.args[0]
+            self.assertIn("1.117.238.119:5440", command, "the advertised IP must be paired with the material port")
+            self.assertNotIn("203.0.113.20:5438", command, "the agent must not probe its own first relay")
+            self.assertEqual(self.TARGET, command[command.index("--target") + 1])
+            self.assertEqual(
+                "1.117.238.119,121.5.240.89",
+                command[command.index("--advertised") + 1],
+                "the probe has to be told the mandate it may prove against",
+            )
+            self.assertTrue(payload["passed"])
+            self.assertEqual(probe_result, payload["detail"])
+
+    def test_review_without_an_advertised_relay_reports_no_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "203.0.113.20", "port": 5438}])
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run") as run:
+                    payload = agent.run_review(41, 453, 600, advertised=["9.9.9.9"], target=self.TARGET)
+
+            run.assert_not_called()
+            self.assertFalse(payload["passed"])
+            self.assertIn("no advertised relay", payload["note"])
+            self.assertEqual(0, payload["detail"]["proof"]["end_to_end_ok"])
+            self.assertTrue(payload["detail"]["proof"]["local_path_only"])
+            self.assertTrue(payload["detail"]["proof"]["reason"])
+
+    def test_review_without_a_panel_mandate_still_runs_the_material_relay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "203.0.113.20", "port": 5438}])
+            completed = mock.Mock(returncode=1, stdout=json.dumps({"passed": False, "last_error": "nope"}), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    agent.run_review(41, 453, 600, advertised=None, target=self.TARGET)
+
+            command = run.call_args.args[0]
+            self.assertIn("203.0.113.20:5438", command)
+            self.assertNotIn("--advertised", command)
+
+    def test_review_reports_a_probe_without_json_as_non_discriminating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "1.117.238.119", "port": 5438}])
+            completed = mock.Mock(
+                returncode=2,
+                stdout="",
+                stderr="usage: probe\nprobe: error: unrecognized arguments: --target",
+            )
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+                    payload = agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target=self.TARGET)
+
+            self.assertFalse(payload["passed"])
+            self.assertIn("no result (exit 2)", payload["note"])
+            self.assertIn("unrecognized arguments", payload["note"])
+            self.assertEqual(0, payload["detail"]["end_to_end_ok"])
+            self.assertTrue(payload["detail"]["local_path_only"])
+
+    def test_review_without_a_target_sends_an_empty_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            material = self._material([{"ip": "1.117.238.119", "port": 5438}])
+            completed = mock.Mock(returncode=1, stdout=json.dumps({"passed": False}), stderr="")
+            with mock.patch.object(MODULE, "acquire_line", return_value=material):
+                with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+                    agent.run_review(41, 453, 600, advertised=self.ADVERTISED, target="")
+
+            command = run.call_args.args[0]
+            self.assertEqual("", command[command.index("--target") + 1])
+
+    def test_process_reviews_hands_down_the_panel_payload_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self._agent(root)
+            calls = []
+
+            def fake_run_review(review_id, line_id, seconds, advertised=None, target="", uploader=None):
+                calls.append((review_id, line_id, seconds, advertised, target))
+                return {"review_id": review_id, "passed": False}
+
+            with mock.patch.object(MODULE.SourceAgent, "run_review", side_effect=fake_run_review):
+                with mock.patch.object(MODULE, "request_json", return_value={"ok": True}):
+                    completed = agent.process_reviews(
+                        [
+                            {
+                                "review_id": 41,
+                                "line_id": 453,
+                                "protocol": "tcp+udp",
+                                "seconds": 600,
+                                "relays": self.ADVERTISED,
+                                "target": self.TARGET,
+                            }
+                        ]
+                    )
+
+            self.assertEqual(1, completed)
+            self.assertEqual([(41, 453, 600, self.ADVERTISED, self.TARGET)], calls)
+
+    def test_select_review_relay_pairs_advertised_ip_with_material_port(self):
+        relay, reason = MODULE.select_review_relay(
+            [{"ip": "203.0.113.20", "port": 5438}, {"ip": "1.117.238.119", "port": 5440}],
+            self.ADVERTISED,
+        )
+        self.assertEqual({"ip": "1.117.238.119", "port": 5440}, relay)
+        self.assertEqual("", reason)
+
+    def test_select_review_relay_refuses_an_unadvertised_endpoint(self):
+        relay, reason = MODULE.select_review_relay([{"ip": "203.0.113.20", "port": 5438}], self.ADVERTISED)
+        self.assertIsNone(relay)
+        self.assertIn("no advertised relay", reason)
+
+    def test_select_review_relay_skips_unusable_material_entries(self):
+        relay, _reason = MODULE.select_review_relay(
+            [{"ip": "", "port": 5438}, {"ip": "1.117.238.119", "port": 0}, "junk"],
+            self.ADVERTISED,
+        )
+        self.assertIsNone(relay)
+
+    def test_advertised_relay_ips_validates_and_deduplicates(self):
+        self.assertEqual(
+            ["1.117.238.119", "121.5.240.89"],
+            MODULE.advertised_relay_ips(["1.117.238.119", " 121.5.240.89 ", "1.117.238.119", "", None]),
+        )
+        self.assertEqual(["1.117.238.119"], MODULE.advertised_relay_ips("1.117.238.119"))
+        self.assertEqual([], MODULE.advertised_relay_ips(None))
+

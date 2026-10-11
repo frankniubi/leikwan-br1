@@ -17,6 +17,7 @@ object ProxySelectionPolicy {
         connectionMode: ProxyConnectionMode,
         proxyNodes: List<ProxyNode>,
         proxyOptional: Boolean = false,
+        singleNodeForServices: Boolean = false,
     ): ProxySelectionResult {
         if (connectionMode == ProxyConnectionMode.SERVICES && proxyOptional) {
             return ProxySelectionResult.Success(
@@ -33,7 +34,11 @@ object ProxySelectionPolicy {
             return ProxySelectionResult.Error("Selected proxy is disabled")
         }
         val activeNodes = if (connectionMode == ProxyConnectionMode.SERVICES) {
-            proxyNodes.filter { node -> node.enabled }.ifEmpty { listOf(selectedNode) }
+            if (singleNodeForServices) {
+                listOf(selectedNode)
+            } else {
+                proxyNodes.filter { node -> node.enabled }.ifEmpty { listOf(selectedNode) }
+            }
         } else {
             proxyNodes.filter { it.enabled }.ifEmpty { listOf(selectedNode) }
         }

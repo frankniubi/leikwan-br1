@@ -13,7 +13,7 @@ namespace LeikwanBridge.Core.Services;
 /// Periodic health checks for running forwards.
 /// Port of client_agent.py:ensure_runtime_health().
 /// </summary>
-public sealed class HealthCheckService
+public sealed class HealthCheckService : IDisposable
 {
     private readonly IProcessSupervisor _supervisor;
     private readonly ForwardRuntimeManager _runtimeManager;
@@ -26,9 +26,27 @@ public sealed class HealthCheckService
     private readonly Dictionary<int, DateTime> _restartCooldown = [];
     private readonly Dictionary<int, ForwardConfig> _forwards = [];
     private readonly HashSet<int> _restartInProgress = [];
+    private readonly HashSet<int> _nativeOutboundNoticed = [];
+    private readonly Dictionary<int, IdleUltraRuntime> _idleUltra = [];
+    private readonly Func<DateTimeOffset> _clock;
+
+    /// <summary>Lease deliveries asked for an idle runtime before the restart path takes over.</summary>
+    public const int MaxIdleLeaseRefreshes = 3;
+
+    /// <summary>Spacing of those deliveries; the health cycle itself runs every ~20 s.</summary>
+    public static readonly TimeSpan IdleLeaseRefreshInterval = TimeSpan.FromSeconds(60);
+
+    private sealed class IdleUltraRuntime(DateTimeOffset since)
+    {
+        public DateTimeOffset Since { get; } = since;
+        public int Refreshes { get; set; }
+        public DateTimeOffset? LastRefreshAt { get; set; }
+    }
 
     private CancellationTokenSource? _cts;
     private Task? _checkTask;
+    private int _stopRequested;
+    private bool _disposed;
 
     public event Action<int, string>? HealthIssue;
 
@@ -39,9 +57,11 @@ public sealed class HealthCheckService
         Func<int, bool>? portListeningProbe = null,
         Func<ForwardConfig, EndpointConfig, int, (bool ok, double? latencyMs, string? error)>? bondLegProbe = null,
         AgentConfig? config = null,
-        Func<string, int, bool>? relayHealthProbe = null)
+        Func<string, int, bool>? relayHealthProbe = null,
+        Func<DateTimeOffset>? clock = null)
     {
         _supervisor = supervisor;
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _runtimeManager = runtimeManager;
         _stateManager = stateManager;
         _config = config ?? new AgentConfig();
@@ -54,7 +74,11 @@ public sealed class HealthCheckService
 
     public void Start(List<ForwardConfig> forwards, int intervalSeconds = 20)
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(HealthCheckService));
+
         UpdateForwards(forwards);
+        Volatile.Write(ref _stopRequested, 0);
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -80,7 +104,11 @@ public sealed class HealthCheckService
             _forwards[forward.ForwardId] = forward;
     }
 
-    public void Stop() => _cts?.Cancel();
+    public void Stop()
+    {
+        Volatile.Write(ref _stopRequested, 1);
+        _cts?.Cancel();
+    }
 
     public async Task StopAsync()
     {
@@ -97,6 +125,16 @@ public sealed class HealthCheckService
         }
     }
 
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        Stop();
+        _supervisor.ProcessExited -= HandleProcessExited;
+    }
+
     public Task RunCheckOnceAsync(List<ForwardConfig> forwards, CancellationToken ct = default)
     {
         UpdateForwards(forwards);
@@ -109,16 +147,42 @@ public sealed class HealthCheckService
         {
             if (forward.ServiceStatus != "active") continue;
             var fid = forward.ForwardId;
+
+            // A native outbound rule is panel-declared configuration only: its data
+            // plane belongs to a user-initiated native outbound relay connection.
+            // There is no agent-managed process to probe, restart, or record, so
+            // skip before touching supervisor or applied state. This keeps the
+            // periodic cycle both silent and side-effect free.
+            if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
+            {
+                NoteNativeOutboundRule(fid);
+                continue;
+            }
+
+            if (_runtimeManager.IsForwardStarting(fid)) continue;
             var applied = _stateManager.LoadApplied();
             if (applied.TryGetValue(fid.ToString(), out var appliedState) && appliedState.UserStopped)
                 continue;
 
             if (!_supervisor.IsRunning(fid))
             {
+                lock (_idleUltra)
+                    _idleUltra.Remove(fid);
                 if (ShouldRestart(fid))
                 {
-                    Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
-                    RequestRestart(forward, "process_dead", force: true);
+                    // An Ultra runtime that never started (no applied state yet)
+                    // is waiting for its first policy and lease, not dead; say
+                    // so, since "restarting" sends operators after a crash.
+                    if (IsUltraForward(forward) && appliedState is null)
+                    {
+                        Log.Information("forward {ForwardId}: Ultra runtime not started yet, waiting for its first policy", fid);
+                        RequestRestart(forward, "awaiting_first_policy", force: true);
+                    }
+                    else
+                    {
+                        Log.Warning("forward {ForwardId}: processes not running, restarting", fid);
+                        RequestRestart(forward, "process_dead", force: true);
+                    }
                 }
                 continue;
             }
@@ -127,6 +191,11 @@ public sealed class HealthCheckService
             int port = forward.ListenPort;
             if (port > 0 && !_portListeningProbe(port))
             {
+                if (IsUltraForward(forward) && _runtimeManager.IsUltraRuntimeIdleOnPurpose(fid))
+                {
+                    HandleIdleUltraRuntime(forward);
+                    continue;
+                }
                 Log.Warning("forward {ForwardId}: local port {Port} not listening", fid, port);
                 if (ShouldRestart(fid))
                 {
@@ -135,6 +204,9 @@ public sealed class HealthCheckService
 
                 continue;
             }
+
+            lock (_idleUltra)
+                _idleUltra.Remove(fid);
 
             if (RequiresBondTopologyRecovery(fid))
             {
@@ -356,6 +428,74 @@ public sealed class HealthCheckService
         }
     }
 
+    /// <summary>
+    /// Records the native outbound rule once per process so the skip is auditable
+    /// without repeating on every health cycle.
+    /// </summary>
+    private void NoteNativeOutboundRule(int forwardId)
+    {
+        lock (_nativeOutboundNoticed)
+        {
+            if (!_nativeOutboundNoticed.Add(forwardId))
+                return;
+        }
+
+        Log.Information(
+            "native outbound rule forward {ForwardId}: agent-managed runtime not applicable",
+            forwardId);
+    }
+
+    private static bool IsUltraForward(ForwardConfig forward)
+        => string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The runtime process is alive and its status says it is waiting for, or
+    /// has outlived, its policy (the panel was unreachable, or the grant has
+    /// not arrived yet). That is idle on purpose, not broken: ask config sync
+    /// for a lease delivery instead of a restart. Only if several deliveries,
+    /// spaced <see cref="IdleLeaseRefreshInterval"/> apart, did not bring the
+    /// listener back does the normal lease-aware restart path take over. That
+    /// path never kills a runtime before a fresh lease is in hand, and it is
+    /// gated by the control-plane backoff, so it cannot storm during an outage.
+    /// </summary>
+    private void HandleIdleUltraRuntime(ForwardConfig forward)
+    {
+        var forwardId = forward.ForwardId;
+        var now = _clock();
+        IdleUltraRuntime? entry;
+        lock (_idleUltra)
+        {
+            if (!_idleUltra.TryGetValue(forwardId, out entry))
+            {
+                entry = new IdleUltraRuntime(now);
+                _idleUltra[forwardId] = entry;
+                Log.Information(
+                    "forward {ForwardId}: Ultra runtime is idle waiting for a policy (state={State}); not restarting it",
+                    forwardId,
+                    _runtimeManager.GetUltraRuntimePolicyState(forwardId));
+            }
+        }
+
+        if (entry.Refreshes < MaxIdleLeaseRefreshes)
+        {
+            if (entry.LastRefreshAt is { } last && now - last < IdleLeaseRefreshInterval)
+                return;
+            entry.Refreshes++;
+            entry.LastRefreshAt = now;
+            _runtimeManager.RequestUltraLeaseRefresh(forwardId, "idle_policy");
+            return;
+        }
+
+        if (ShouldRestart(forwardId))
+        {
+            Log.Warning(
+                "forward {ForwardId}: Ultra runtime stayed idle after {Refreshes} lease deliveries; using the lease-aware restart path",
+                forwardId,
+                entry.Refreshes);
+            RequestRestart(forward, ForwardRuntimeManager.IdleRuntimeUnresponsiveReason, force: true);
+        }
+    }
+
     private bool ShouldRestart(int forwardId)
     {
         if (!_restartCooldown.TryGetValue(forwardId, out var lastRestart))
@@ -405,10 +545,10 @@ public sealed class HealthCheckService
     {
         try
         {
-            using var http = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(2),
-            };
+            // Data-plane relay probe: keep OS default routing (so it still
+            // works through a TUN) but never route through an HTTP proxy.
+            using var http = LeikwanHttpClientFactory.CreatePlain();
+            http.Timeout = TimeSpan.FromSeconds(2);
             using var response = http.GetAsync($"http://{host}:{relayPort + 1}/health").GetAwaiter().GetResult();
             return response.IsSuccessStatusCode;
         }
@@ -439,7 +579,14 @@ public sealed class HealthCheckService
 
     private void HandleProcessExited(int forwardId, string role)
     {
+        if (Volatile.Read(ref _stopRequested) != 0 || _disposed)
+            return;
+
         if (!_forwards.TryGetValue(forwardId, out var forward))
+            return;
+
+        // Native outbound rules never own agent-managed processes.
+        if (ForwardRuntimeManager.IsNativeOutboundForward(forward))
             return;
 
         var applied = _stateManager.LoadApplied();

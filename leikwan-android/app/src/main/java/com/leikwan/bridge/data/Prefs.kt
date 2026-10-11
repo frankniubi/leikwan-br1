@@ -3,49 +3,111 @@ package com.leikwan.bridge.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.routing.UserTrafficOutcome
+import com.leikwan.bridge.security.AndroidDeviceIdentity
 import com.leikwan.bridge.service.ProxyConnectionMode
 
 class Prefs internal constructor(private val prefs: SharedPreferences) {
+    init {
+        migrateLegacyCredentials()
+    }
 
     var panelUrl: String
-        get() = prefs.getString("panel_url", "https://v3-mirror.leikwanhost.com") ?: "https://v3-mirror.leikwanhost.com"
-        set(v) = prefs.edit().putString("panel_url", v).apply()
+        get() = if (BuildConfig.DEBUG) {
+            prefs.getString("panel_url", panelEndpoint.url) ?: panelEndpoint.url
+        } else {
+            panelEndpoint.url
+        }
+        set(v) {
+            if (BuildConfig.DEBUG) prefs.edit().putString("panel_url", v).apply()
+        }
 
-    var token: String?
-        get() = prefs.getString("token", null)
-        set(v) = prefs.edit().putString("token", v).apply()
+    /** The selected allowlisted panel origin used by all new API clients. */
+    var panelEndpoint: PanelEndpoint
+        get() = PanelEndpoint.fromStorage(
+            prefs.getString("panel_endpoint", PanelEndpoint.DEFAULT.storageKey),
+        )
+        set(v) {
+            prefs.edit()
+                .putString("panel_endpoint", v.storageKey)
+                // A debug-only URL override must not shadow an explicit endpoint choice.
+                .remove("panel_url")
+                .apply()
+        }
 
-    var username: String?
-        get() = prefs.getString("username", null)
-        set(v) = prefs.edit().putString("username", v).apply()
+    var rememberLoginInfo: Boolean
+        get() = prefs.getBoolean("remember_login_info", true)
+        set(v) = prefs.edit().putBoolean("remember_login_info", v).apply()
 
-    var email: String?
-        get() = prefs.getString("email", null)
-        set(v) = prefs.edit().putString("email", v).apply()
+    val savedClientId: Long?
+        get() = if (rememberLoginInfo) prefs.getLong("saved_client_id", 0L).takeIf { it > 0L } else null
 
-    /** Stored in EncryptedSharedPreferences for client switching */
-    var password: String?
-        get() = prefs.getString("password", null)
-        set(v) = prefs.edit().putString("password", v).apply()
+    val savedAgentToken: String?
+        get() = if (rememberLoginInfo) prefs.getString("saved_agent_token", null)?.takeIf { it.isNotBlank() } else null
+
+    fun saveLoginInfo(clientId: Long, agentToken: String) {
+        require(clientId > 0L) { "client_id_invalid" }
+        require(agentToken.isNotBlank()) { "agent_token_required" }
+        prefs.edit()
+            .putLong("saved_client_id", clientId)
+            .putString("saved_agent_token", agentToken.trim())
+            .putBoolean("remember_login_info", true)
+            .apply()
+    }
+
+    fun clearSavedLoginInfo() {
+        prefs.edit()
+            .remove("saved_client_id")
+            .remove("saved_agent_token")
+            .putBoolean("remember_login_info", false)
+            .apply()
+    }
+
+    var agentToken: String?
+        get() = prefs.getString("agent_token", null)
+        set(v) = putNullableString("agent_token", v)
+
+    var deviceSessionToken: String?
+        get() = prefs.getString("device_session_token", null)
+        set(v) = putNullableString("device_session_token", v)
+
+    var deviceSessionExpiresAtMs: Long
+        get() = prefs.getLong("device_session_expires_at_ms", 0L)
+        set(v) = prefs.edit().putLong("device_session_expires_at_ms", v).apply()
+
+    var enrolledDeviceId: String?
+        get() = prefs.getString("enrolled_device_id", null)
+        set(v) = putNullableString("enrolled_device_id", v)
 
     var clientId: Long
         get() = prefs.getLong("client_id", 0L)
         set(v) = prefs.edit().putLong("client_id", v).apply()
 
-    var clientName: String?
-        get() = prefs.getString("client_name", null)
-        set(v) = prefs.edit().putString("client_name", v).apply()
-
-    /** JSON array of {id, name} objects — cached from login response */
-    var clientsJson: String?
-        get() = prefs.getString("clients_json", null)
-        set(v) = prefs.edit().putString("clients_json", v).apply()
-
     var selectedForwardId: Long
         get() = prefs.getLong("selected_forward_id", 0L)
         set(v) = prefs.edit().putLong("selected_forward_id", v).apply()
+
+    var nativeOutboundSelected: Boolean
+        get() = prefs.getBoolean("native_outbound_selected", false)
+        set(v) = prefs.edit().putBoolean("native_outbound_selected", v).apply()
+
+    var nativeOutboundForwardId: Long
+        get() = prefs.getLong("native_outbound_forward_id", 0L)
+        set(v) = prefs.edit().putLong("native_outbound_forward_id", v).apply()
+
+    var nativeOutboundRouteScope: String
+        get() = prefs.getString("native_outbound_route_scope", "global") ?: "global"
+        set(v) = prefs.edit().putString("native_outbound_route_scope", v).apply()
+
+    var nativeOutboundBypassChina: Boolean
+        get() = prefs.getBoolean("native_outbound_bypass_china", false)
+        set(v) = prefs.edit().putBoolean("native_outbound_bypass_china", v).apply()
+
+    var nativeOutboundRoutePolicy: String
+        get() = prefs.getString("native_outbound_route_policy", "restricted") ?: "restricted"
+        set(v) = prefs.edit().putString("native_outbound_route_policy", v).apply()
 
     var selectedProxyId: Long
         get() = prefs.getLong("selected_proxy_id", 0L)
@@ -143,13 +205,51 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getLong("latest_explainability_compiled_at_ms", 0L)
         set(v) = prefs.edit().putLong("latest_explainability_compiled_at_ms", v).apply()
 
-    fun isLoggedIn(): Boolean = token != null && clientsJson != null
+    fun isLoggedIn(nowMs: Long = System.currentTimeMillis()): Boolean =
+        clientId > 0L &&
+            !agentToken.isNullOrBlank() &&
+            !enrolledDeviceId.isNullOrBlank() &&
+            !deviceSessionToken.isNullOrBlank() &&
+            deviceSessionExpiresAtMs > nowMs
+
+    fun clearEnrollment(clearIdentity: Boolean = true) {
+        val cleared = prefs.edit()
+            .remove("agent_token")
+            .remove("device_session_token")
+            .remove("device_session_expires_at_ms")
+            .remove("enrolled_device_id")
+            .remove("token")
+            .remove("username")
+            .remove("email")
+            .remove("password")
+            .remove("clients_json")
+            .remove("client_id")
+            .remove("client_name")
+            .remove("selected_forward_id")
+            .remove("native_outbound_selected")
+            .remove("native_outbound_forward_id")
+            .remove("native_outbound_route_scope")
+            .remove("native_outbound_bypass_china")
+            .remove("native_outbound_route_policy")
+            .commit()
+        check(cleared) { "failed to clear enrollment state" }
+        if (clearIdentity) {
+            runCatching { AndroidDeviceIdentity().clear() }
+        }
+    }
+
+    fun clearDeviceSession() {
+        check(
+            prefs.edit()
+                .remove("device_session_token")
+                .remove("device_session_expires_at_ms")
+                .commit(),
+        ) { "failed to clear device session" }
+    }
 
     fun logout() {
+        clearEnrollment()
         prefs.edit()
-            .remove("token").remove("username").remove("email").remove("password")
-            .remove("client_id").remove("client_name").remove("clients_json")
-            .remove("selected_forward_id")
             .remove("selected_proxy_id")
             .remove("proxy_connection_mode")
             .remove("routing_selector_enabled")
@@ -157,16 +257,34 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .apply()
     }
 
+    private fun migrateLegacyCredentials() {
+        val legacyKeys = listOf("token", "username", "email", "password", "clients_json")
+        if (legacyKeys.none(prefs::contains)) return
+        val editor = prefs.edit()
+        legacyKeys.forEach(editor::remove)
+        check(editor.commit()) { "failed to clear legacy credentials" }
+    }
+
+    private fun putNullableString(key: String, value: String?) {
+        val editor = prefs.edit()
+        if (value.isNullOrBlank()) editor.remove(key) else editor.putString(key, value)
+        editor.apply()
+    }
+
     companion object {
         @Volatile private var INSTANCE: Prefs? = null
 
         fun get(context: Context): Prefs =
             INSTANCE ?: synchronized(this) {
+                val appContext = context.applicationContext
+                val masterKey = MasterKey.Builder(appContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
                 INSTANCE ?: Prefs(
                     EncryptedSharedPreferences.create(
+                        appContext,
                         "leikwan_secure_prefs",
-                        MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC),
-                        context.applicationContext,
+                        masterKey,
                         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
                     )

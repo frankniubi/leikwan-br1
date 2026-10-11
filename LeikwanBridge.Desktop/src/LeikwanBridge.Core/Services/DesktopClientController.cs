@@ -6,26 +6,56 @@ public interface IDesktopClientController : IAsyncDisposable
 {
     event Action<DesktopClientSnapshot>? SnapshotChanged;
     event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged;
+    event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     event Action<string>? NoticeRaised;
     event Action<string>? LogRaised;
     event Action<string>? UpdateAvailable;
 
     DesktopClientSnapshot Snapshot { get; }
+    NativeOutboundCapability? NativeOutbound { get; }
     Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default);
     Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default);
+    Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        bool rememberCredentials,
+        CancellationToken ct = default)
+        => LoginWithAgentTokenAsync(panelUrl, clientId, agentToken, ct);
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
     Task ConnectAsync(CancellationToken ct = default);
     Task RefreshAsync(CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
     Task StartForwardAsync(int forwardId, CancellationToken ct = default);
+    Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
+        => RefreshAsync(ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct = default);
+    Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        => throw new InvalidOperationException("proxy_forward_unavailable");
     Task StartAllAsync(CancellationToken ct = default);
     Task StopAllAsync(CancellationToken ct = default);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct = default);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
+        => ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
     Task SignOutAsync(CancellationToken ct = default);
 }
 
 public sealed class DesktopClientController : IDesktopClientController
 {
+    /// <summary>
+    /// ConnectionStatus and LastErrorCode while the panel refuses this device
+    /// because the client's online device limit is full.
+    /// </summary>
+    public const string DeviceLimitReachedCode = "device_limit_reached";
+
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(45);
     private readonly AgentConfig _config;
     private readonly ClientPlatformIdentity _identity;
     private readonly Func<AgentConfig, CancellationToken, Task> _saveConfig;
@@ -36,6 +66,7 @@ public sealed class DesktopClientController : IDesktopClientController
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _snapshotLock = new();
     private IDesktopRuntimeSession? _runtimeSession;
+    private NativeOutboundCapability? _nativeOutbound;
     private DesktopClientSnapshot _snapshot;
 
     public DesktopClientController(
@@ -59,6 +90,7 @@ public sealed class DesktopClientController : IDesktopClientController
 
     public event Action<DesktopClientSnapshot>? SnapshotChanged;
     public event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged;
+    public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     public event Action<string>? NoticeRaised;
     public event Action<string>? LogRaised;
     public event Action<string>? UpdateAvailable;
@@ -71,6 +103,8 @@ public sealed class DesktopClientController : IDesktopClientController
                 return _snapshot;
         }
     }
+
+    public NativeOutboundCapability? NativeOutbound => _nativeOutbound;
 
     public IReadOnlyList<ForwardConfig> RuntimeForwards
         => _runtimeSession?.Forwards ?? [];
@@ -113,10 +147,18 @@ public sealed class DesktopClientController : IDesktopClientController
         }
     }
 
+    public Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        CancellationToken ct = default)
+        => LoginWithAgentTokenAsync(panelUrl, clientId, agentToken, rememberCredentials: true, ct: ct);
+
     public async Task LoginWithAgentTokenAsync(
         string panelUrl,
         int clientId,
         string agentToken,
+        bool rememberCredentials,
         CancellationToken ct = default)
     {
         await _lifecycleGate.WaitAsync(ct);
@@ -148,13 +190,25 @@ public sealed class DesktopClientController : IDesktopClientController
             _config.SignedInUsername = string.Empty;
             _config.SignedInEmail = string.Empty;
             _config.AvailableClients = [];
-            await _saveConfig(_config, ct);
+            _config.RememberLoginInfo = rememberCredentials;
+            var persistedConfig = _config.Clone();
+            if (!rememberCredentials)
+            {
+                persistedConfig.AgentToken = string.Empty;
+                persistedConfig.DesktopSessionToken = string.Empty;
+            }
+            await _saveConfig(persistedConfig, ct);
             PublishSnapshot(SnapshotFromConfig(_config) with
             {
                 IsBusy = false,
                 RequiresClientSelection = false,
                 LastErrorCode = string.Empty,
             });
+        }
+        catch (Exception exception) when (DeviceLimitReachedException.TryFind(exception, out var limit))
+        {
+            PublishFailure(DeviceLimitReachedCode, limit);
+            throw;
         }
         catch
         {
@@ -201,16 +255,33 @@ public sealed class DesktopClientController : IDesktopClientController
             await DisconnectCoreAsync();
             var session = _runtimeFactory(_config, _identity);
             session.ForwardsChanged += OnRuntimeForwardsChanged;
+            session.NativeOutboundChanged += OnRuntimeNativeOutboundChanged;
             session.ForwardRejected += (_, notice) => NoticeRaised?.Invoke(notice);
             session.LogRaised += message => LogRaised?.Invoke(message);
+            session.DeviceLimitChanged += OnRuntimeDeviceLimitChanged;
             _runtimeSession = session;
-            await session.StartAsync(ct);
+            PublishSnapshot(Snapshot with { ConnectionStatus = "starting_routes" });
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectCts.CancelAfter(ConnectTimeout);
+            await session.StartAsync(connectCts.Token).ConfigureAwait(false);
+            if (session.DeviceLimit is { } limit)
+            {
+                // The session stays up and keeps polling on its steady
+                // device-limit cadence; the refusal clears on its own once a
+                // slot frees.
+                PublishDeviceLimit(limit);
+                LogRaised?.Invoke("connected_device_limit_reached");
+                return;
+            }
             PublishSnapshot(Snapshot with
             {
                 IsConnected = true,
                 IsBusy = false,
                 ConnectionStatus = "connected",
                 LastErrorCode = string.Empty,
+                OnlineDeviceLimit = 0,
+                ActiveOnlineDevices = 0,
+                NativeOutbound = _nativeOutbound,
             });
             LogRaised?.Invoke("connected");
         }
@@ -240,7 +311,10 @@ public sealed class DesktopClientController : IDesktopClientController
                 IsBusy = false,
                 ConnectionStatus = "disconnected",
                 Forwards = [],
+                NativeOutbound = null,
             });
+            _nativeOutbound = null;
+            NativeOutboundChanged?.Invoke(null);
             ForwardsChanged?.Invoke([]);
         }
         finally
@@ -264,7 +338,15 @@ public sealed class DesktopClientController : IDesktopClientController
                 IsBusy = false,
                 ConnectionStatus = "connected",
                 LastErrorCode = string.Empty,
+                OnlineDeviceLimit = 0,
+                ActiveOnlineDevices = 0,
             });
+        }
+        catch (Exception exception) when (_runtimeSession is not null
+            && DeviceLimitReachedException.TryFind(exception, out var limit))
+        {
+            PublishDeviceLimit(limit);
+            throw;
         }
         catch
         {
@@ -297,14 +379,54 @@ public sealed class DesktopClientController : IDesktopClientController
     public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StartForwardAsync(forwardId, ct));
 
+    public Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
+        => WithRuntimeAsync(runtime => runtime.EnsureForwardAsync(forwardId, ct));
+
     public Task StopForwardAsync(int forwardId, CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StopForwardAsync(forwardId, ct));
+
+    public async Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
+            return await runtime.AcquireProxyForwardAsync(forwardId, ct).ConfigureAwait(false);
+        }
+        finally { _lifecycleGate.Release(); }
+    }
 
     public Task StartAllAsync(CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StartAllAsync(ct));
 
     public Task StopAllAsync(CancellationToken ct = default)
         => WithRuntimeAsync(runtime => runtime.StopAllAsync(ct));
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct = default)
+        => await ResolveNativeOutboundLeaseAsync(forwardId, routeScope, "restricted", ct).ConfigureAwait(false);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct = default)
+    {
+        await _lifecycleGate.WaitAsync(ct);
+        try
+        {
+            var runtime = _runtimeSession ?? throw new InvalidOperationException("client_not_connected");
+            SetBusy(true);
+            return await runtime.ResolveNativeOutboundLeaseAsync(forwardId, routeScope, routePolicy, ct);
+        }
+        finally
+        {
+            SetBusy(false);
+            _lifecycleGate.Release();
+        }
+    }
 
     public async Task SignOutAsync(CancellationToken ct = default)
     {
@@ -384,16 +506,29 @@ public sealed class DesktopClientController : IDesktopClientController
         var runtime = _runtimeSession;
         var publicForwards = forwards.Select(forward => new DesktopForwardSnapshot(
             forward.ForwardId,
-            $"Forward {forward.ForwardId}",
+            $"Forward #{forward.ForwardId} · {FormatForwardDirection(forward)}",
             string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase)
                 ? "ultra"
                 : (!string.IsNullOrWhiteSpace(forward.ClientMode) ? forward.ClientMode : forward.Mode).Trim().ToLowerInvariant(),
             forward.ListenPort,
             runtime?.IsForwardRunning(forward.ForwardId) == true,
-            runtime?.IsForwardRunning(forward.ForwardId) == true ? "running" : "stopped"))
+            runtime?.IsForwardRunning(forward.ForwardId) == true ? "running" : "stopped",
+            ForwardRuntimeManager.IsNativeOutboundForward(forward)))
             .ToList();
-        PublishSnapshot(Snapshot with { Forwards = publicForwards });
+        PublishSnapshot(Snapshot with { Forwards = publicForwards, NativeOutbound = _nativeOutbound });
         ForwardsChanged?.Invoke(publicForwards);
+    }
+
+    private static string FormatForwardDirection(ForwardConfig forward) =>
+        string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
+            ? "-"
+            : forward.ForwardCombinationDirection.Trim();
+
+    private void OnRuntimeNativeOutboundChanged(NativeOutboundCapability? capability)
+    {
+        _nativeOutbound = capability;
+        PublishSnapshot(Snapshot with { NativeOutbound = capability });
+        NativeOutboundChanged?.Invoke(capability);
     }
 
     private async Task DisconnectCoreAsync()
@@ -401,8 +536,11 @@ public sealed class DesktopClientController : IDesktopClientController
         var session = Interlocked.Exchange(ref _runtimeSession, null);
         if (session is null)
             return;
+        session.NativeOutboundChanged -= OnRuntimeNativeOutboundChanged;
+        session.DeviceLimitChanged -= OnRuntimeDeviceLimitChanged;
         await session.StopAsync();
         await session.DisposeAsync();
+        _nativeOutbound = null;
     }
 
     private void SetBusy(bool busy)
@@ -410,7 +548,44 @@ public sealed class DesktopClientController : IDesktopClientController
         PublishSnapshot(Snapshot with { IsBusy = busy });
     }
 
-    private void PublishFailure(string errorCode)
+    private void OnRuntimeDeviceLimitChanged(DeviceLimitReachedException? limit)
+    {
+        if (_runtimeSession is null)
+            return;
+        if (limit is not null)
+        {
+            PublishDeviceLimit(limit);
+            return;
+        }
+        if (!string.Equals(Snapshot.LastErrorCode, DeviceLimitReachedCode, StringComparison.Ordinal))
+            return;
+        PublishSnapshot(Snapshot with
+        {
+            IsConnected = true,
+            ConnectionStatus = "connected",
+            LastErrorCode = string.Empty,
+            OnlineDeviceLimit = 0,
+            ActiveOnlineDevices = 0,
+        });
+        LogRaised?.Invoke("connected");
+    }
+
+    private void PublishDeviceLimit(DeviceLimitReachedException limit)
+    {
+        // IsConnected stays true: the session is alive and polling, and the
+        // saved profile is untouched. Only the panel's admission is pending.
+        PublishSnapshot(Snapshot with
+        {
+            IsBusy = false,
+            IsConnected = true,
+            ConnectionStatus = DeviceLimitReachedCode,
+            LastErrorCode = DeviceLimitReachedCode,
+            OnlineDeviceLimit = limit.OnlineDeviceLimit,
+            ActiveOnlineDevices = limit.ActiveOnlineDevices,
+        });
+    }
+
+    private void PublishFailure(string errorCode, DeviceLimitReachedException? limit = null)
     {
         PublishSnapshot(Snapshot with
         {
@@ -418,6 +593,8 @@ public sealed class DesktopClientController : IDesktopClientController
             IsConnected = false,
             ConnectionStatus = "error",
             LastErrorCode = errorCode,
+            OnlineDeviceLimit = limit?.OnlineDeviceLimit ?? 0,
+            ActiveOnlineDevices = limit?.ActiveOnlineDevices ?? 0,
         });
     }
 
@@ -443,6 +620,7 @@ public sealed class DesktopClientController : IDesktopClientController
             ActiveClientName = config.ActiveClientName,
             ConnectionStatus = "disconnected",
             AvailableClients = config.AvailableClients.ToList(),
+            NativeOutbound = null,
         };
     }
 

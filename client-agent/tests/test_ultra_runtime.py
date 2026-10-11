@@ -46,7 +46,110 @@ def sample_forward():
 
 
 class UltraRuntimeTests(unittest.TestCase):
-    def test_ultra_renders_only_generic_direct_binary_runtime(self):
+    def test_first_flight_keeps_every_direction_candidate_beyond_four(self):
+        # The panel derives the list from all of a forward's lines when the
+        # rule names none; a direction such as PEK -> FRA has seven.
+        forward = sample_forward()
+        hashes = [format(index, "x") * 64 for index in range(1, 8)]
+        forward["ultra_access"]["tcp_first_flight"] = {
+            "target": forward["target"],
+            "policy_generation": "a" * 64,
+            "expires_at": "2030-01-01T00:20:00Z",
+            "candidate_hashes": hashes,
+            "prefix_bytes": 4,
+            "delay_ms": 300,
+        }
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        self.assertEqual(sorted(hashes), json.loads(config_file["content"])["tcp_first_flight"]["candidate_hashes"])
+
+    def test_first_flight_is_bound_to_explicit_candidate_target_generation_and_expiry(self):
+        forward = sample_forward()
+        allowed = "b" * 64
+        forward["ultra_access"]["tcp_first_flight"] = {
+            "target": forward["target"],
+            "policy_generation": "a" * 64,
+            "expires_at": "2030-01-01T00:20:00Z",
+            "candidate_hashes": [allowed],
+            "prefix_bytes": 4,
+            "delay_ms": 300,
+        }
+        forward["_ultra_leases"] = [
+            {"candidate_key_hash": allowed, "expires_at": "2030-01-01T00:10:00Z"},
+            {"candidate_key_hash": "c" * 64, "expires_at": "2030-01-01T00:10:00Z"},
+        ]
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        actual = json.loads(config_file["content"])["tcp_first_flight"]
+        self.assertEqual([allowed], actual["candidate_hashes"])
+        self.assertEqual(4, actual["prefix_bytes"])
+        self.assertEqual(300, actual["delay_ms"])
+
+        for key, invalid in (
+            ("target", "other.example:443"),
+            ("policy_generation", "d" * 64),
+            ("expires_at", "2000-01-01T00:00:00Z"),
+        ):
+            with self.subTest(key=key):
+                candidate = sample_forward()
+                candidate["ultra_access"]["tcp_first_flight"] = dict(forward["ultra_access"]["tcp_first_flight"])
+                candidate["ultra_access"]["tcp_first_flight"][key] = invalid
+                candidate["_ultra_leases"] = [{"candidate_key_hash": allowed}]
+                result = MODULE.render_ultra_runtime(candidate, {})
+                payload = next(item for item in result["files"] if item["path"].endswith("forward-42.json"))
+                self.assertNotIn("tcp_first_flight", json.loads(payload["content"]))
+
+        # The rendered block holds only stable fields, so a grant renewal (new
+        # generation/expiry) or a lease rotation cannot restart the forward.
+        self.assertNotIn("policy_generation", actual)
+        self.assertNotIn("expires_at", actual)
+        renewed = sample_forward()
+        renewed["ultra_access"]["policy_generation"] = "e" * 64
+        renewed["ultra_access"]["tcp_first_flight"] = dict(
+            forward["ultra_access"]["tcp_first_flight"],
+            policy_generation="e" * 64,
+            expires_at="2030-01-01T00:25:00Z",
+        )
+        renewed["_ultra_leases"] = [{"candidate_key_hash": "c" * 64}]
+        renewed_config = next(
+            item for item in MODULE.render_ultra_runtime(renewed, {})["files"] if item["path"].endswith("forward-42.json")
+        )
+        self.assertEqual(actual, json.loads(renewed_config["content"])["tcp_first_flight"])
+
+    def test_linux_installer_verifies_ultra_artifact_before_agent_restart(self):
+        installer = (ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        download = 'download_manifest_artifact ultra_client_runtime "$ARTIFACT_BASE/artifacts/ultra/ultra-client_linux_amd64" "$BIN_DIR/ultra-client"'
+
+        self.assertIn(download, installer)
+        self.assertIn("expected_sha256=\"$(_vers_sha256 \"$key\")\"", installer)
+        self.assertIn("downloaded artifact sha256 mismatch: $key", installer)
+        self.assertLess(installer.index(download), installer.index('systemctl restart "$SERVICE_NAME.service"'))
+
+    def test_ultra_runtime_emits_udp_prewarm_for_udp_capable_transports(self):
+        for transport in ("udp", "tcp+udp"):
+            with self.subTest(transport=transport):
+                forward = sample_forward()
+                forward["transport"] = transport
+                forward["ultra_access"]["transport"] = transport
+                rendered = MODULE.render_ultra_runtime(forward, {})
+                config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+                config = json.loads(config_file["content"])
+
+                self.assertTrue(config["udp_prewarm"])
+                self.assertEqual(5, config["udp_keepalive_interval_seconds"])
+
+    def test_ultra_runtime_disables_udp_prewarm_for_tcp_only(self):
+        forward = sample_forward()
+        forward["transport"] = "tcp"
+        forward["ultra_access"]["transport"] = "tcp"
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        config = json.loads(config_file["content"])
+
+        self.assertFalse(config["udp_prewarm"])
+        self.assertEqual(0, config["udp_keepalive_interval_seconds"])
+
+    def test_ultra_renders_generic_direct_binary_with_auto_selection(self):
         rendered = MODULE.render_forward_runtime(sample_forward(), {})
         self.assertEqual("ultra-forward-42", rendered["service_name"])
         generated_text = rendered["service_unit"] + rendered["start_script"]
@@ -70,16 +173,70 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertEqual("/run/ultra/forward-42.control.sock", config["control_socket"])
         self.assertEqual(42, config["forward_id"])
         self.assertEqual("203.0.113.10:443", config["target"])
-        self.assertEqual(64, config["udp_queue_packets"])
+        self.assertEqual(256, config["udp_queue_packets"])
         self.assertEqual("/run/ultra/forward-42.status.json", config["status_path"])
         self.assertEqual("/var/lib/ultra/location.json", config["location_cache_path"])
         self.assertEqual("/run/ultra/location.lock", config["location_lock_path"])
         self.assertNotIn("fallback_policy", config)
         self.assertEqual(["Shanghai", "上海"], config["zone_aliases"]["shanghai"])
+        self.assertTrue(config["auto_select"])
+        self.assertEqual("1.1.1.1:53", config["probe_target"])
         self.assertEqual(4, config["probe_workers"])
+        self.assertEqual(30, config["probe_duration_seconds"])
         self.assertEqual(800, config["probe_timeout_ms"])
+        self.assertEqual(30, config["probe_samples"])
+        self.assertEqual(1000, config["probe_interval_ms"])
         self.assertIn("ReadWritePaths=/run/ultra /var/lib/ultra", rendered["service_unit"])
         self.assertFalse(any(item["path"].endswith(".access.json") for item in rendered["files"]))
+
+    def test_ultra_runtime_can_explicitly_enable_auto_selection(self):
+        rendered = MODULE.render_ultra_runtime(sample_forward(), {"ultra_selection_mode": "auto"})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        config = json.loads(config_file["content"])
+        self.assertTrue(config["auto_select"])
+        self.assertEqual("1.1.1.1:53", config["probe_target"])
+        self.assertEqual(4, config["probe_workers"])
+        self.assertEqual(30, config["probe_duration_seconds"])
+        self.assertEqual(800, config["probe_timeout_ms"])
+        self.assertEqual(30, config["probe_samples"])
+        self.assertEqual(1000, config["probe_interval_ms"])
+
+    def test_external_uot_is_explicit_and_carries_only_bounded_sidecar_settings(self):
+        forward = sample_forward()
+        forward["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": "185.220.238.153:7443",
+            "token": "sidecar-token",
+            "queue_packets": 99999,
+            "keepalive_seconds": 1,
+            "reconnect_grace_seconds": 999,
+            "frame_payload_max": 99999,
+        }
+        rendered = MODULE.render_ultra_runtime(forward, {})
+        config_file = next(item for item in rendered["files"] if item["path"].endswith("forward-42.json"))
+        config = json.loads(config_file["content"])
+        self.assertEqual(
+            {
+                "enabled": True,
+                "sidecar_target": "185.220.238.153:7443",
+                "token": "sidecar-token",
+                "queue_packets": 4096,
+                "keepalive_seconds": 5,
+                "reconnect_grace_seconds": 300,
+                "frame_payload_max": 65507,
+            },
+            config["external_uot"],
+        )
+
+    def test_external_uot_rejects_untrusted_sidecar_target(self):
+        forward = sample_forward()
+        forward["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": "https://sidecar.example.test:7443",
+            "token": "sidecar-token",
+        }
+        with self.assertRaisesRegex(RuntimeError, "sidecar target invalid"):
+            MODULE.render_ultra_runtime(forward, {})
 
     def test_ultra_fails_closed_without_resolved_material(self):
         forward = sample_forward()

@@ -46,10 +46,10 @@ foreach ([
 }
 
 foreach ([
-    '我的服务',
-    '个 forward',
-    '本期已用流量',
-    '新建 Forward',
+    "'My Services'",
+    '<span>Forwards</span>',
+    'Traffic used this cycle',
+    'New forward',
 ] as $marker) {
     if (!str_contains($dashboard, $marker)) {
         fail('dashboard service-card marker missing: ' . $marker);

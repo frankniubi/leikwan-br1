@@ -127,6 +127,7 @@ final class ServiceController extends BaseController
         $structural = array_key_exists('forward_route_id', $changes)
             || array_key_exists('target_source', $changes)
             || array_key_exists('target_service_id', $changes)
+            || array_key_exists('native_outbound', $changes)
             || (array_key_exists('transport_mode', $changes)
                 && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
             || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
@@ -205,6 +206,7 @@ final class ServiceController extends BaseController
                  WHERE f.id = :id
                    AND f.enabled = 1
                    AND s.status = :active_status
+                   AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())
                  LIMIT 1',
                 ['id' => $forwardId, 'active_status' => 'active']
             );
@@ -227,6 +229,7 @@ final class ServiceController extends BaseController
                  WHERE f.id = :id
                    AND f.enabled = 1
                    AND s.status = :active_status
+                   AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())
                  LIMIT 1',
                 ['id' => $forwardId, 'active_status' => 'active']
             );
@@ -349,6 +352,7 @@ final class ServiceController extends BaseController
             'forward_version_conflict' => 412,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
             'operation_failed' => 500,
@@ -361,9 +365,11 @@ final class ServiceController extends BaseController
 
         $details = [];
         $sourceDetails = $throwable->details();
-        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
-            && is_array($sourceDetails['fields'] ?? null)) {
-            $details['fields'] = $sourceDetails['fields'];
+        $fields = is_array($sourceDetails['fields'] ?? null)
+            ? $sourceDetails['fields']
+            : ForwardLineApiContract::fieldsForInternalCode($internalCode);
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true) && is_array($fields)) {
+            $details['fields'] = $fields;
         }
         return new ApiException($code, $statuses[$code], $details);
     }
@@ -371,7 +377,10 @@ final class ServiceController extends BaseController
     /** @param array<string, mixed> $service */
     private function assertServiceActive(array $service): void
     {
-        if ((string) ($service['status'] ?? '') !== 'active') {
+        // Effective status: services.status is never written 'expired', so a raw
+        // check kept serving a service past expire_at. When expire_at is absent
+        // from the loaded row this behaves exactly as before.
+        if (\Leikwan\Master\Support\ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
     }

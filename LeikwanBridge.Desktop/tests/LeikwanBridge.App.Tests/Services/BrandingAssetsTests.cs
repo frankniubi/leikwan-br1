@@ -95,6 +95,30 @@ public sealed class BrandingAssetsTests
         Assert.Contains("AppDefaults.NormalizeMasterUrl(SettMasterUrl.Text)", codeBehind, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void WindowsAutomaticConnectionStartsRecoveryWhenCommandReturnsDisconnected()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot, "LeikwanBridge.Desktop", "src", "LeikwanBridge.App", "Views", "MainWindow.xaml.cs"));
+
+        Assert.Contains("await _vm.ConnectCommand.ExecuteAsync(null)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("if (!_vm.IsConnected)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("connection_not_ready", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("_connectionRecovery.StartAsync(ct)", codeBehind, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MacAutomaticRecoveryPassesCancellationToController()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var appSource = File.ReadAllText(Path.Combine(
+            repoRoot, "LeikwanBridge.Desktop", "src", "LeikwanBridge.Mac", "App.axaml.cs"));
+
+        Assert.Contains("_connectionRecovery = new ConnectionRecoverySupervisor", appSource, StringComparison.Ordinal);
+        Assert.Contains("services.Controller.ConnectAsync(ct)", appSource, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(Directory.GetCurrentDirectory());

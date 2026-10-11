@@ -1,0 +1,149 @@
+using System.Xml.Linq;
+using Xunit;
+
+namespace LeikwanBridge.Mac.Tests.Views;
+
+public sealed class MainWindowLayoutTests
+{
+    [Fact]
+    public void SidebarExposesForwardPairingGuide()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var pairingButton = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button"
+            && (string?)element.Attribute("Command") == "{Binding ShowPairingCommand}");
+        Assert.Contains(pairingButton.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" && (string?)element.Attribute("Text") == "线路配对");
+    }
+
+    [Fact]
+    public void PairingAndProxyControlsAreVisibleInSeparateSections()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var connections = Assert.Single(view.Descendants(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsConnectionWorkspaceVisible}");
+        var routeSelector = Assert.Single(connections.Descendants(), element =>
+            element.Name.LocalName == "ComboBox" && (string?)element.Attribute("ItemsSource") == "{Binding PairedConnectionRoutes}");
+        Assert.Equal("{Binding SelectedConnectionForward, Mode=TwoWay}", (string?)routeSelector.Attribute("SelectedItem"));
+        var modeSelector = Assert.Single(connections.Descendants(), element =>
+            element.Name.LocalName == "ComboBox"
+            && (string?)element.Attribute("ItemsSource") == "{Binding ConnectionModes}"
+            && !element.Ancestors().Any(ancestor => (string?)ancestor.Attribute("IsVisible") == "False"));
+        Assert.Equal("{Binding SelectedConnectionMode, Mode=TwoWay}", (string?)modeSelector.Attribute("SelectedItem"));
+        Assert.Equal("请选择连接模式", (string?)modeSelector.Attribute("PlaceholderText"));
+        Assert.Contains(connections.Descendants(), element => (string?)element.Attribute("Command") == "{Binding StartConnectionCommand}");
+        Assert.Contains(connections.Descendants(), element => (string?)element.Attribute("Command") == "{Binding StopConnectionCommand}");
+        Assert.Contains(routeSelector.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsConnectionsVisible}");
+        var pairing = Assert.Single(connections.Descendants(), element =>
+            element.Name.LocalName == "ItemsControl"
+            && (string?)element.Attribute("ItemsSource") == "{Binding ConnectionRoutes}");
+        Assert.Equal("{Binding IsPairingVisible}", (string?)pairing.Attribute("IsVisible"));
+        Assert.DoesNotContain(pairing.Descendants(), element => element.Name.LocalName == "Button");
+        Assert.Contains(pairing.Descendants(), element =>
+            (string?)element.Attribute("ItemsSource") == "{Binding NodeOptions}");
+        Assert.DoesNotContain(connections.Descendants(), element => element.Name.LocalName == "ComboBox"
+            && (string?)element.Attribute("ItemsSource") == "{Binding Forwards}");
+        var library = Assert.Single(connections.Descendants(), element =>
+            (string?)element.Attribute("ItemsSource") == "{Binding ConnectionProfiles}");
+        Assert.Equal("0", (string?)routeSelector.Ancestors().First(element => element.Name.LocalName == "ScrollViewer").Attribute("Grid.Column"));
+        Assert.Equal("1", (string?)library.Ancestors().First(element => element.Attribute("Grid.Column") is not null).Attribute("Grid.Column"));
+        Assert.Contains(library.Ancestors(), element => element.Name.LocalName == "Border");
+        Assert.Contains(library.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsPairingVisible}");
+        var editor = Assert.Single(connections.Descendants(), element =>
+            (string?)element.Attribute("Command") == "{Binding SaveConnectionProfileCommand}");
+        Assert.Contains(editor.Ancestors(), element =>
+            (string?)element.Attribute("IsVisible") == "{Binding IsPairingVisible}");
+    }
+
+    [Fact]
+    public void SignInCardOffersEthernetBindingBeforeTheCredentials()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var macRoot = Path.Combine(root.FullName, "src", "LeikwanBridge.Mac");
+        var view = XDocument.Load(Path.Combine(macRoot, "Views", "MainWindow.axaml"));
+        var login = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "ScrollViewer" && (string?)element.Attribute("IsVisible") == "{Binding IsLoginVisible}");
+        var selector = Assert.Single(login.Descendants(), element =>
+            element.Name.LocalName == "ComboBox" && (string?)element.Attribute("ItemsSource") == "{Binding EgressInterfaceOptions}");
+        // Same property as the settings page: one source of truth.
+        Assert.Equal("{Binding PreferredEgressInterface, Mode=TwoWay}", (string?)selector.Attribute("SelectedValue"));
+        Assert.Contains(selector.Descendants(), element => (string?)element.Attribute("Text") == "{Binding CompactLabel}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Command") == "{Binding RefreshEgressInterfacesCommand}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Text") == "{DynamicResource EgressBindingHint}");
+        Assert.Contains(login.Descendants(), element => (string?)element.Attribute("Text") == "{Binding EgressInterfaceNotice}");
+        var order = view.Descendants().ToList();
+        var credentials = Assert.Single(login.Descendants(), element =>
+            (string?)element.Attribute("Text") == "{Binding ClientIdText, Mode=TwoWay}");
+        Assert.True(order.IndexOf(selector) < order.IndexOf(credentials));
+
+        var strings = XDocument.Load(Path.Combine(macRoot, "Resources", "Strings.axaml")).Root!.Elements()
+            .ToDictionary(
+                element => (string)element.Attribute(XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml"))!,
+                element => element.Value);
+        Assert.Equal("Automatic (recommended)", strings["EgressBindingAutomatic"]);
+        Assert.Equal("Sign-in traffic bypasses system proxies and leaves through the selected adapter.", strings["EgressBindingHint"]);
+        Assert.Contains("{0}", strings["EgressBindingMissing"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NativeOutboundRuleRowIsLabelledWithoutStartStopControls()
+    {
+        var xaml = XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml");
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var label = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "TextBlock"
+            && (string?)element.Attribute("Text") == "{DynamicResource ForwardNativeOutboundRule}");
+        Assert.Equal("{Binding IsNativeOutboundRule}", (string?)label.Attribute("IsVisible"));
+
+        var strings = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Resources", "Strings.axaml"));
+        var entry = Assert.Single(strings.Descendants(), element => (string?)element.Attribute(xaml) == "ForwardNativeOutboundRule");
+        Assert.Equal("(Native Outbound Rule)", entry.Value);
+
+        // Both per-row runtime actions stay gated by the row's Can flags, which
+        // are false for a native outbound rule.
+        var start = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button" && (string?)element.Attribute("Command") == "{Binding StartCommand}");
+        Assert.Equal("{Binding CanStart}", (string?)start.Attribute("IsVisible"));
+        var stop = Assert.Single(view.Descendants(), element =>
+            element.Name.LocalName == "Button" && (string?)element.Attribute("Command") == "{Binding StopCommand}");
+        Assert.Equal("{Binding CanStop}", (string?)stop.Attribute("IsVisible"));
+    }
+
+    [Fact]
+    public void ConnectionErrorAndExternalHintRemainOutsideCollapsedEditor()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !Directory.Exists(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var view = XDocument.Load(Path.Combine(root.FullName, "src", "LeikwanBridge.Mac", "Views", "MainWindow.axaml"));
+        var textBlocks = view.Descendants().Where(element => element.Name.LocalName == "TextBlock").ToList();
+        var error = Assert.Single(textBlocks, element => (string?)element.Attribute("Text") == "{Binding LocalConnectionError}");
+        var hint = Assert.Single(textBlocks, element => (string?)element.Attribute("Text") ==
+            "您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。");
+        Assert.DoesNotContain("Expander", error.Ancestors().Select(element => element.Name.LocalName));
+        Assert.DoesNotContain("Expander", hint.Ancestors().Select(element => element.Name.LocalName));
+        Assert.Equal("Wrap", (string?)hint.Attribute("TextWrapping"));
+        Assert.Equal("11", (string?)hint.Attribute("FontSize"));
+        Assert.Equal("muted", (string?)hint.Attribute("Classes"));
+        Assert.DoesNotContain(textBlocks, element => ((string?)element.Attribute("Text"))?.StartsWith("Use a local node", StringComparison.Ordinal) == true);
+    }
+}

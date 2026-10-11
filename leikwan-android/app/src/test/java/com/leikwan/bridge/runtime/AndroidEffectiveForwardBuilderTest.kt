@@ -1,13 +1,37 @@
 package com.leikwan.bridge.runtime
 
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 
 class AndroidEffectiveForwardBuilderTest {
+
+    @Test
+    fun `ultra forward is listed regardless of lease enforced at connect`() {
+        val valid = sampleContract(
+            forwardId = 90L,
+            mode = ForwardMode.ULTRA,
+            backendMode = "ultra",
+            clientMode = "ultra",
+            ultraAccess = ultraAccess(90L),
+        )
+        val expired = valid.copy(
+            forwardId = 91L,
+            ultraAccess = ultraAccess(91L, "2020-01-01T00:00:00Z"),
+        )
+
+        // Listing (ForwardFilter / AndroidEffectiveForwardBuilder) must NOT depend on the short-lived
+        // (300s) ultra lease, or forwards flicker out every time the lease lapses between pulls. The
+        // lease is enforced only at connect time (TunnelOrchestrator.startForForward -> UltraPolicy.from).
+        assertEquals(ForwardMode.ULTRA, AndroidEffectiveForwardBuilder.build(valid)?.mode)
+        assertEquals(ForwardMode.ULTRA, AndroidEffectiveForwardBuilder.build(expired)?.mode)
+    }
 
     @Test
     fun `builder keeps single and bond but rejects unsupported legacy runtime modes`() {
@@ -29,7 +53,7 @@ class AndroidEffectiveForwardBuilderTest {
     }
 
     @Test
-    fun `canonical dedicated leigod resolves to sidecarless single`() {
+    fun `legacy leigod contract is rejected`() {
         val dedicated = sampleContract(
             forwardId = 65L,
             mode = ForwardMode.MPTCP,
@@ -46,17 +70,11 @@ class AndroidEffectiveForwardBuilderTest {
 
         val effective = AndroidEffectiveForwardBuilder.build(dedicated)
 
-        assertNotNull(effective)
-        effective!!
-        assertEquals(ForwardMode.SINGLE, effective.mode)
-        assertEquals(ForwardMode.SINGLE, effective.runtimeContract.mode)
-        assertTrue(effective.isDedicatedLeiGod)
-        assertEquals("LeiGod", effective.toListItem().methodDisplay)
-        assertEquals("dedicated_forward_node", effective.runtimeContract.targetContract)
+        assertNull(effective)
     }
 
     @Test
-    fun `canonical mptcp preferred aggregation uses android bond fallback`() {
+    fun `legacy mptcp aggregation is rejected`() {
         val aggregation = sampleContract(
             forwardId = 66L,
             mode = ForwardMode.MPTCP,
@@ -74,17 +92,11 @@ class AndroidEffectiveForwardBuilderTest {
 
         val effective = AndroidEffectiveForwardBuilder.build(aggregation)
 
-        assertNotNull(effective)
-        effective!!
-        assertEquals(ForwardMode.BOND, effective.mode)
-        assertEquals(ForwardMode.BOND, effective.runtimeContract.mode)
-        assertFalse(effective.isDedicatedLeiGod)
-        assertEquals("sidecar_aggregation", effective.runtimeContract.targetContract)
-        assertEquals(ForwardMode.BOND, effective.toListItem().mode)
+        assertNull(effective)
     }
 
     @Test
-    fun `canonical aggregation can be detected from boolean and sidecar id markers`() {
+    fun `current mode does not promote mptcp metadata to bond`() {
         val aggregation = sampleContract(
             forwardId = 67L,
             mode = ForwardMode.MPTCP,
@@ -96,10 +108,7 @@ class AndroidEffectiveForwardBuilderTest {
 
         val effective = AndroidEffectiveForwardBuilder.build(aggregation)
 
-        assertNotNull(effective)
-        effective!!
-        assertEquals(ForwardMode.BOND, effective.mode)
-        assertEquals(ForwardMode.BOND, effective.runtimeContract.mode)
+        assertNull(effective)
     }
 
     @Test
@@ -204,7 +213,7 @@ class AndroidEffectiveForwardBuilderTest {
     }
 
     @Test
-    fun `catalog hides unsupported runtime without exposing old mptcp copy`() {
+    fun `catalog clears a dropped selection without retaining its id`() {
         val single = sampleContract(forwardId = 11L, mode = ForwardMode.SINGLE)
         val hidden = sampleContract(forwardId = 22L, mode = ForwardMode.MPTCP)
 
@@ -214,8 +223,6 @@ class AndroidEffectiveForwardBuilderTest {
         )
 
         assertNull(catalog.selectedForwardId)
-        assertTrue(catalog.hiddenForwardIds.contains(22L))
-        assertEquals(0, catalog.hiddenUnsupportedMptcpCount)
     }
 
     private fun sampleContract(
@@ -225,15 +232,20 @@ class AndroidEffectiveForwardBuilderTest {
         dynamicPriority: Int? = null,
         nodeId: Int? = null,
         bonding: BondingContract? = null,
-        backendMode: String = "",
+        backendMode: String = "current_mode",
         contractVersion: Int = 0,
-        clientMode: String = "",
+        clientMode: String = when (mode) {
+            ForwardMode.SINGLE -> "single"
+            ForwardMode.BOND -> "bond"
+            else -> mode.wireValue
+        },
         runtimePreference: String = "",
         activeFamily: String = "",
         aggregationEnabled: Boolean = false,
         targetContract: String = "",
         sidecarRequired: Boolean = false,
         bondSidecarPointId: Long? = null,
+        ultraAccess: JsonObject? = null,
     ): ForwardContract {
         return ForwardContract(
             forwardId = forwardId,
@@ -275,7 +287,31 @@ class AndroidEffectiveForwardBuilderTest {
             ),
             bonding = bonding,
             mptcp = null,
+            ultraAccess = ultraAccess,
         )
+    }
+
+    private fun ultraAccess(forwardId: Long, expiresAt: String? = null): JsonObject {
+        val now = Instant.now()
+        val effectiveExpiry = expiresAt ?: now.plusSeconds(240).toString()
+        return JsonParser.parseString(
+        """
+        {
+          "protocol":"leikwan-ultra-policy-v2",
+          "forward_id":$forwardId,
+          "session_ticket":"ticket",
+          "policy_generation":"${"a".repeat(64)}",
+          "issued_at":"${now.minusSeconds(10)}",
+          "renew_after":"${now.plusSeconds(120)}",
+          "expires_at":"$effectiveExpiry",
+          "service_state":"active",
+          "transport":"tcp",
+          "rate_limit_mbps":0,
+          "quota_remaining_bytes":1048576,
+          "target_digest":"${UltraPolicy.targetDigest("example.com:443")}"
+        }
+        """.trimIndent(),
+        ).asJsonObject
     }
 
     private fun sampleBonding(

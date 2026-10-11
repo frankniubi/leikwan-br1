@@ -35,16 +35,22 @@ public sealed class MacUiFixtureController : IDesktopClientController
 
     public event Action<DesktopClientSnapshot>? SnapshotChanged { add { } remove { } }
     public event Action<IReadOnlyList<DesktopForwardSnapshot>>? ForwardsChanged { add { } remove { } }
+    public event Action<NativeOutboundCapability?>? NativeOutboundChanged { add { } remove { } }
     public event Action<string>? NoticeRaised { add { } remove { } }
     public event Action<string>? LogRaised { add { } remove { } }
     public event Action<string>? UpdateAvailable { add { } remove { } }
 
     public DesktopClientSnapshot Snapshot { get; }
+    public NativeOutboundCapability? NativeOutbound => Snapshot.NativeOutbound;
 
     public Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default)
         => Task.CompletedTask;
 
-    public Task LoginWithAgentTokenAsync(string panelUrl, int clientId, string agentToken, CancellationToken ct = default)
+    public Task LoginWithAgentTokenAsync(
+        string panelUrl,
+        int clientId,
+        string agentToken,
+        CancellationToken ct = default)
         => Task.CompletedTask;
 
     public Task SelectClientAsync(int clientId, CancellationToken ct = default) => Task.CompletedTask;
@@ -55,6 +61,8 @@ public sealed class MacUiFixtureController : IDesktopClientController
     public Task StopForwardAsync(int forwardId, CancellationToken ct = default) => Task.CompletedTask;
     public Task StartAllAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task StopAllAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(int forwardId, string routeScope, CancellationToken ct = default)
+        => Task.FromResult<NativeOutboundLease?>(null);
     public Task SignOutAsync(CancellationToken ct = default) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

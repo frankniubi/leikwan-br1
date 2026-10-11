@@ -1,0 +1,26 @@
+{
+  "gate_pass": {
+    "noul": 0.73
+  },
+  "next_priority": {
+    "choice": "no_healthy",
+    "confidence": 0.31,
+    "probs": {
+      "reverify_46": 0.34,
+      "no_listener": 0.06,
+      "udp_loss": 0.09,
+      "no_healthy": 0.45,
+      "throughput": 0.06
+    }
+  },
+  "confidence": {
+    "score": 1.89,
+    "confidence": 0.82,
+    "probs": {
+      "0": 0.01,
+      "1": 0.13,
+      "2": 0.83,
+      "3": 0.03
+    }
+  }
+}

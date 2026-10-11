@@ -1,59 +1,42 @@
+<p>遊戲連不上的時候，幾乎都是這三個原因之一。按順序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
+
 <h2>你將完成什麼</h2>
-<p>你會從看得見的症狀開始，一次檢查一個邊界，並在大範圍或隨意變更讓原始問題更難辨認前停下來。</p>
+<p>找出這三個常見原因裡屬於你的那一個，修好它，重新進遊戲。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>記下確切錯誤、時間、用戶端平台、轉發名稱和本機連接埠。</li>
-  <li>檢查目前狀態時，先不要更動已儲存的轉發。</li>
-  <li>截圖或聯絡支援時，不要包含密碼、權杖、產生的指令、線路金鑰、私密金鑰或內部工作階段資料。</li>
-  <li>最後一步必須使用實際應用協定測試。</li>
+<li>開啟控制台，並且保證你玩遊戲那臺裝置上的用戶端在執行。</li>
+<li>你之前跟著做的那篇指南，萬一要再查一次本機連接埠。</li>
 </ul>
 
 <h2>操作步驟</h2>
-<pre class="mermaid">flowchart TD
-accTitle: 從症狀開始排查連線
-accDescr: 應用程式要求失敗後依序檢查最近同步、位址、連接埠的網路存取、轉發與線路健康，以及目標服務，再使用診斷與支援。
-A[應用程式要求失敗] --&gt; B{最近同步正常嗎}
-B -- 否 --&gt; C[恢復用戶端同步]
-B -- 是 --&gt; D{位址正確嗎}
-D -- 否 --&gt; E[使用迴送位址或可連到的用戶端主機]
-D -- 是 --&gt; F{連接埠已開放嗎}
-F -- 否 --&gt; G[只開放必要連接埠]
-F -- 是 --&gt; H{轉發和線路健康嗎}
-H -- 否 --&gt; I[開啟查看診斷]
-H -- 是 --&gt; J[從目標主機測試服務]
-C --&gt; K[重試應用程式]
-E --&gt; K
-G --&gt; K
-I --&gt; L[整理診斷後聯絡支援]
-J --&gt; L</pre>
-<p>檢查順序從用戶端一路走向目標。修正第一個失敗的邊界後重試一次，保留證據，不要隨意變更拓撲。</p>
-<figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="用戶端診斷頁面顯示先 Run Diagnostics 再 View Diagnostics，並顯示健康結果">
-  <figcaption>示範截圖：先執行一次新的診斷，再開啟 View Diagnostics 查看詳情。</figcaption>
-</figure>
 <ol>
-  <li>確認預期的用戶端有最近同步。</li>
-  <li>確認轉發顯示 <strong>Running</strong>。</li>
-  <li>檢查位址是否正確：同一台用戶端裝置使用 <code>127.0.0.1</code>。</li>
-  <li>其他裝置要連線時，使用可連到的 Windows 或 Linux 用戶端主機位址；不要把 Android 當成跨裝置監聽服務。</li>
-  <li>確認本機連接埠和轉發卡片一致。</li>
-  <li>跨裝置使用時，依實際環境確認防火牆、安全群組和 NAT 只讓必要的連接埠已開放。</li>
-  <li>在<strong>查看診斷</strong>確認轉發和線路健康。</li>
-  <li>從目標服務所在主機測試目標服務和連接埠。</li>
-  <li>用實際應用協定重試。</li>
-  <li>若仍然失敗，收集已清除機密的診斷，附上症狀和時間聯絡支援。</li>
+<li><strong>用戶端線上嗎？</strong>「用戶端」頁面底部的「線上裝置」裡應該能看到這臺裝置。沒有的話，重啟用戶端，等幾秒再重新整理頁面；如果「最大線上」已經滿了，先在列表裡把不用的裝置「踢下線」。</li>
+<li><strong>位址是否正確？</strong>和用戶端同一臺裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
+<li><strong>連接埠已放行嗎？</strong>只需要放行你真正用的那個連接埠，防火牆、安全組或 NAT 上放行一條就夠。</li>
+<li><strong>轉發和線路正常嗎？</strong>在服務詳情頁的「轉發規則」裡，這一行的狀態應該是「執行中」，「節點狀態」不應該一直停在「正在分配節點」；從目標服務自己的主機測試目標服務時也應該有回應。</li>
+<li><strong>還是不行？</strong>把轉發的編號、用的是哪臺裝置、出問題的大概時間一起發給客服。</li>
 </ol>
+<pre class="mermaid">
+flowchart TD
+accTitle: 從症狀開始排查
+accDescr: 從遊戲連不上開始，依次檢查用戶端線上、位址，最後檢查目標服務
+A[遊戲連不上] --> B[用戶端線上嗎？]
+B -- 否 --> C[重啟用戶端再試]
+B -- 是 --> D[位址和連接埠正確嗎？]
+D -- 否 --> E[改用 127.0.0.1 或用戶端主機位址]
+E --> C
+D -- 是 --> F[從目標服務自己的主機測試目標服務]
+F --> G[帶上轉發編號聯絡客服]
+</pre>
+<p>從頭到尾走一遍，別跳步。跳過的步驟通常最後還要回來補。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-zh-tw.png" width="1440" height="960" alt="用戶端頁面的線上裝置列表，顯示裝置 IP、系統和用戶端版本"><figcaption>「線上裝置」列出當前登入的每臺裝置；裝置不在這裡，轉發就不會通。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>第一個失敗的邊界恢復正常，真實應用程式要求也成功。最近同步證明設定已送達，<strong>Running</strong> 證明本機程序狀態，目標成功回應才證明整段連線完成。</p>
+<p>用戶端顯示這條線路 running，你玩的時候「轉發規則」裡的「本期用量」又開始增加。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止重新安裝所有元件、開放大範圍連接埠或隨意變更拓撲。</strong>保留錯誤與診斷，向支援提供轉發名稱、用戶端平台、測試時間、位址類型、本機連接埠和已清理的結果，絕對不要傳送機密。</p>
+<p>在改別的東西之前，<strong>先停止</strong>。不要隨手改一堆設定——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都沒問題的話，直接聯絡客服，這是從這裡出發最快的路。</p>
 
 <h2>相關指南</h2>
-<ul>
-  <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
-  <li><a href="/knowledgebase?thread=glossary">名詞解釋</a></li>
-</ul>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一行本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>

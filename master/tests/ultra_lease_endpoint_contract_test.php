@@ -32,7 +32,11 @@ assertUltraLeaseEndpoint(str_contains($lease, 'markConsumed'), 'lease audit cons
 assertUltraLeaseEndpoint(str_contains($lease, 'revokeGeneration'), 'lease generation revocation missing');
 assertUltraLeaseEndpoint(str_contains($controller, "'ultra_actions'"), 'heartbeat does not return Ultra policy actions');
 assertUltraLeaseEndpoint(str_contains($controller, 'recordUltraUsage'), 'heartbeat does not account Ultra usage');
+assertUltraLeaseEndpoint(str_contains($controller, "'ultra_usage_acknowledged' => \$ultraUsageAcknowledged"), 'heartbeat does not expose usage acknowledgement');
+assertUltraLeaseEndpoint(str_contains($controller, '$ultraUsageAcknowledged = false;'), 'heartbeat does not reject failed usage batches');
 assertUltraLeaseEndpoint(str_contains($controller, 'scrubUltraClientForward'), 'Ultra forwards are not scrubbed before grant handling');
+assertUltraLeaseEndpoint(str_contains($controller, 'redactUltraClientDisplayText'), 'Ultra client display text is not provider-neutralized');
+assertUltraLeaseEndpoint(str_contains($controller, 'Leigod|雷神'), 'Ultra provider branding redaction pattern is missing');
 assertUltraLeaseEndpoint(str_contains($controller, "'leases' => " . '$leases'), 'v2 lease payload missing');
 foreach (['line_client_id', 'line_client_name', 'client_token', '_ultra_line_ids', '_ultra_lines'] as $forbidden) {
     assertUltraLeaseEndpoint(str_contains($controller, "'$forbidden'"), 'Ultra client scrub boundary missing: ' . $forbidden);

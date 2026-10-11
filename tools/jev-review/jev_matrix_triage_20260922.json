@@ -1,0 +1,34 @@
+{
+  "primary_cause": {
+    "choice": "B_control_plane_coupling",
+    "confidence": 0.91,
+    "probs": {
+      "D_lease_material": 0.01,
+      "C_relay_capacity": 0.03,
+      "B_control_plane_coupling": 0.93,
+      "A_product_defect": 0.03
+    }
+  },
+  "next_fix": {
+    "choice": "fix_cfwg_decoupling",
+    "confidence": 0.67,
+    "probs": {
+      "fix_dotnet_selfheal_verify": 0.01,
+      "fix_relay_capacity": 0.21,
+      "fix_lease_material": 0.02,
+      "fix_cfwg_decoupling": 0.76
+    }
+  },
+  "forward_170_anchor": 0.61,
+  "enterprise_ready": 0.09,
+  "confidence": {
+    "score": 1.87,
+    "confidence": 0.62,
+    "probs": {
+      "0": 0.01,
+      "1": 0.23,
+      "2": 0.64,
+      "3": 0.12
+    }
+  }
+}

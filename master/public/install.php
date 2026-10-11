@@ -542,14 +542,14 @@ function buildStatusHtml(array $payload): string
 function renderShell(string $title, string $body): string
 {
     return '<!doctype html>
-<html lang="en">
+<html lang="' . h(Leikwan\Master\Support\LocaleResolver::fromGlobals()) . '">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>' . h($title) . '</title>
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260725">
-  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260729a">
+  <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
 </head>
 <body class="pg-public">
   <div class="shell">
@@ -559,14 +559,7 @@ function renderShell(string $title, string $body): string
         <p class="muted">Idempotent setup and upgrade entrypoint for the Master panel.</p>
       </div>
       <div class="toolbar">
-        <div class="locale-switch">
-          <label for="locale-switcher" class="locale-label">Language</label>
-          <select id="locale-switcher" class="locale-select">
-            <option value="en">EN</option>
-            <option value="zh-Hans">Simplified Chinese</option>
-            <option value="zh-TW">Traditional Chinese</option>
-          </select>
-        </div>
+        ' . Leikwan\Master\Support\LocaleSwitcher::html(Leikwan\Master\Support\LocaleResolver::fromGlobals()) . '
       </div>
     </div>
     ' . $body . '

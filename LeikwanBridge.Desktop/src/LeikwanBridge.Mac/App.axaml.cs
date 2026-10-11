@@ -8,6 +8,7 @@ using LeikwanBridge.Mac.Services;
 using LeikwanBridge.Mac.ViewModels;
 using LeikwanBridge.Mac.Views;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using Serilog;
 
 namespace LeikwanBridge.Mac;
@@ -19,6 +20,7 @@ public sealed partial class App : Application
     private TrayIcon? _trayIcon;
     private bool _quitStarted;
     private ClientAppArtifact? _availableUpdate;
+    private ConnectionRecoverySupervisor? _connectionRecovery;
 
     public static MacPlatformPaths PlatformPaths { get; set; } = null!;
     public static string UiFixtureState { get; set; } = string.Empty;
@@ -68,57 +70,102 @@ public sealed partial class App : Application
     {
         try
         {
-            _services = await MacAppBootstrap.CreateAsync(PlatformPaths);
-            var config = _services.Config;
-            var viewModel = new MainWindowViewModel(
-                _services.Controller,
-                _services.Connections,
-                () => _services.Controller.RuntimeForwards,
-                _services.Autostart,
-                config.MinimizeToTray,
-                config.Language,
-                async (panelUrl, language, closeToTray, ct) =>
-                {
-                    config.MasterUrl = panelUrl.TrimEnd('/');
-                    config.Language = language;
-                    config.MinimizeToTray = closeToTray;
-                    await _services.ConfigStore.SaveAsync(config, ct);
-                },
-                ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
-                ct => InstallUpdateAsync(desktop, ct));
-            _window = new MainWindow { DataContext = viewModel };
-            _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
-            desktop.MainWindow = _window;
+            using var startupCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var services = await MacAppBootstrap.CreateAsync(PlatformPaths, startupCts.Token).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() => InitializeDesktopUi(desktop, services));
 
-            viewModel.TrayAvailable = TryCreateTray(desktop, viewModel);
-            var background = desktop.Args?.Any(arg => string.Equals(arg, "--background", StringComparison.Ordinal)) == true;
-            if (!background || !viewModel.TrayAvailable)
-                _window.Show();
-
-            if (_services.Controller.Snapshot.IsSignedIn
-                && !_services.Controller.Snapshot.RequiresClientSelection
+            var config = services.Config;
+            if (services.Controller.Snapshot.IsSignedIn
+                && !services.Controller.Snapshot.RequiresClientSelection
                 && !string.IsNullOrWhiteSpace(config.AgentToken))
             {
                 try
                 {
-                    await _services.Controller.ConnectAsync();
+                    await services.Controller.ConnectAsync().ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    Log.Warning("startup_connect_failed");
+                    Log.Warning(
+                        "startup_connect_failed type={ErrorType} code={ErrorCode}",
+                        exception.GetType().Name,
+                        BoundErrorCode(exception));
+                    if (!_quitStarted)
+                    {
+                        _connectionRecovery = new ConnectionRecoverySupervisor(
+                            ct => services.Controller.ConnectAsync(ct));
+                        _ = _connectionRecovery.StartAsync();
+                    }
                 }
             }
             if (!config.DisableAutoUpdates && !string.IsNullOrWhiteSpace(config.MasterUrl))
                 _ = CheckForUpdatesAsync(CancellationToken.None, notifyWhenCurrent: false);
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Error("mac_app_initialization_failed");
-            var errorWindow = BuildStartupErrorWindow();
-            desktop.MainWindow = errorWindow;
-            errorWindow.Closed += (_, _) => desktop.Shutdown(1);
-            errorWindow.Show();
+            Log.Error(exception, "mac_app_initialization_failed");
+            await Dispatcher.UIThread.InvokeAsync(() => ShowStartupError(desktop));
         }
+    }
+
+    private void InitializeDesktopUi(
+        IClassicDesktopStyleApplicationLifetime desktop,
+        MacAppServices services)
+    {
+        _services = services;
+        var config = services.Config;
+        var viewModel = new MainWindowViewModel(
+            services.Controller,
+            services.Connections,
+            () => services.Controller.RuntimeForwards,
+            services.Autostart,
+            config.MinimizeToTray,
+            config.Language,
+            async (panelUrl, language, closeToTray, ct) =>
+            {
+                config.MasterUrl = panelUrl.TrimEnd('/');
+                config.Language = language;
+                config.MinimizeToTray = closeToTray;
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+            },
+            ct => CheckForUpdatesAsync(ct, notifyWhenCurrent: true),
+            ct => InstallUpdateAsync(desktop, ct),
+            rememberLoginInfo: config.RememberLoginInfo,
+            savedClientId: config.ActiveClientId > 0 ? config.ActiveClientId : config.ClientId,
+            savedAgentToken: config.AgentToken,
+            rememberLoginInfoChanged: value => config.RememberLoginInfo = value,
+            checkForUpdatesWithProgress: (progress, ct) => CheckForUpdatesAsync(ct, notifyWhenCurrent: true, progress),
+            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress),
+            logLevel: config.LogLevel,
+            saveLogLevel: async (level, ct) =>
+            {
+                config.LogLevel = DesktopLogLevel.Normalize(level);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+                MacAppBootstrap.ReconfigureLogging(PlatformPaths, config.LogLevel);
+            },
+            preferredEgressInterface: config.PreferredEgressInterface,
+            saveEgressInterface: async (interfaceName, ct) =>
+            {
+                config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+                PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
+                services.Connections.SetPreferredEgressInterface(config.PreferredEgressInterface);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+            });
+        _window = new MainWindow { DataContext = viewModel };
+        _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
+        desktop.MainWindow = _window;
+
+        viewModel.TrayAvailable = TryCreateTray(desktop, viewModel);
+        var background = desktop.Args?.Any(arg => string.Equals(arg, "--background", StringComparison.Ordinal)) == true;
+        if (!background || !viewModel.TrayAvailable)
+            _window.Show();
+    }
+
+    private static void ShowStartupError(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        var errorWindow = BuildStartupErrorWindow();
+        desktop.MainWindow = errorWindow;
+        errorWindow.Closed += (_, _) => desktop.Shutdown(1);
+        errorWindow.Show();
     }
 
     private bool TryCreateTray(
@@ -171,54 +218,101 @@ public sealed partial class App : Application
         _window.Activate();
     }
 
-    private async Task CheckForUpdatesAsync(CancellationToken ct, bool notifyWhenCurrent)
+    private MainWindowViewModel? UpdateViewModel
+        => _window?.DataContext as MainWindowViewModel;
+
+    private async Task CheckForUpdatesAsync(
+        CancellationToken ct,
+        bool notifyWhenCurrent,
+        IProgress<UpdateProgress>? progress = null)
     {
         if (_services is null)
             return;
         try
         {
+            // Prefer the live view-model selection so an endpoint change made
+            // moments ago applies even before the config write settles.
+            // Avalonia controls are thread-affine. Startup calls this method
+            // after the bootstrap continuation has deliberately left the UI
+            // thread, so reading DataContext here used to throw
+            // `Call from invalid thread` and abort every automatic update check.
+            var panelUrl = await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                var selected = UpdateViewModel?.PanelUrl;
+                return string.IsNullOrWhiteSpace(selected)
+                    ? _services.Config.MasterUrl
+                    : selected!;
+            });
             var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
             _availableUpdate = await _services.Updater.CheckAsync(
-                _services.Config.MasterUrl,
+                panelUrl,
                 currentVersion,
+                progress,
                 ct);
-            if (_availableUpdate is null)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (notifyWhenCurrent)
-                    _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
-                return;
-            }
-            _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
+                if (_availableUpdate is null)
+                {
+                    if (notifyWhenCurrent)
+                        _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                    UpdateViewModel?.ReportUpdateFinished();
+                    return;
+                }
+
+                _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
+                UpdateViewModel?.ReportUpdateFinished();
+            });
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Warning("update_check_failed");
-            _services.Controller.PublishNotice("The update check could not be completed.");
+            Log.Warning(exception, "update_check_failed");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice("The update check could not be completed.");
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
+            });
         }
+    }
+
+    private static string BoundErrorCode(Exception exception)
+    {
+        var message = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (message.Length > 120)
+            message = message[..120];
+        return string.IsNullOrWhiteSpace(message) ? "unknown" : message;
     }
 
     private async Task InstallUpdateAsync(
         IClassicDesktopStyleApplicationLifetime desktop,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<UpdateProgress>? progress = null)
     {
         if (_services is null || _availableUpdate is null)
             return;
         try
         {
-            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, ct);
-            var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, ct);
+            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, progress, ct);
+            var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, progress, ct);
             if (result.RequiresManualInstall)
             {
-                _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                    UpdateViewModel?.ReportUpdateFinished();
+                });
                 return;
             }
             if (result.Started)
                 await QuitAsync(desktop);
         }
-        catch
+        catch (Exception exception)
         {
-            Log.Warning("update_install_failed");
-            _services.Controller.PublishNotice("The update could not be installed.");
+            Log.Warning(exception, "update_install_failed");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice("The update could not be installed.");
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
+            });
         }
     }
 
@@ -233,10 +327,13 @@ public sealed partial class App : Application
         _trayIcon = null;
         if (_services is not null)
         {
+            if (_connectionRecovery is not null)
+                await _connectionRecovery.StopAsync();
             await _services.Connections.DisposeAsync();
             await _services.Controller.DisposeAsync();
             _services.Updater.Dispose();
         }
+        PanelDirectEgress.Shutdown();
         await Dispatcher.UIThread.InvokeAsync(() => desktop.Shutdown());
     }
 

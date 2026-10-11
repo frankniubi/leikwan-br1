@@ -5,22 +5,32 @@ namespace Leikwan\Master\Controllers;
 
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\PrecisionGridUi;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\ServiceStatus;
 use Leikwan\Master\Support\SessionAuth;
+use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
 {
+    private AccessPolicyService $accessPolicy;
+
     public function __construct(
         \Leikwan\Master\Config $config,
         \Leikwan\Master\Database\Database $db,
         private ProvisioningService $provisioning,
+        ?AccessPolicyService $accessPolicy = null,
     ) {
         parent::__construct($config, $db);
+        $this->accessPolicy = $accessPolicy ?? new AccessPolicyService($db);
     }
 
     public function introPage(Request $request, array $params): Response
@@ -42,10 +52,7 @@ final class TenantController extends BaseController
             ]
         ) ?? [];
         $clientCount = count($this->provisioning->listClientsForUser((int) $user['id']));
-        $purchasePlans = $this->provisioning->listPurchasablePlans();
-        $linked = !empty($user['whmcs_client_id']);
         $activeServiceCount = (int) ($serviceSummary['active_total'] ?? 0);
-        $totalServiceCount = (int) ($serviceSummary['total'] ?? 0);
 
         $activeServices = $this->db->fetchAll(
             'SELECT id FROM services WHERE user_id = :user_id AND status = :status ORDER BY id ASC',
@@ -82,8 +89,8 @@ final class TenantController extends BaseController
         $stepBadge = static function (string $state): string {
             return match ($state) {
                 'done' => '<span class="badge success">Done</span>',
-                'current' => '<span class="badge info">Current</span>',
-                default => '<span class="badge">Next</span>',
+                'current' => '<span class="badge info">In progress</span>',
+                default => '<span class="badge">To do</span>',
             };
         };
 
@@ -106,6 +113,10 @@ final class TenantController extends BaseController
             default => 'Manage forwards',
         };
 
+        $step = static fn(string $state, string $title, string $hint): string => '<li class="console-step" data-state="' . $state . '">'
+            . '<div class="console-step-head"><strong>' . $title . '</strong>' . $stepBadge($state) . '</div>'
+            . '<div class="muted">' . $hint . '</div></li>';
+
         $onboardingCard = $setupComplete
             ? '<section class="card">
                 <h3>Setup complete</h3>
@@ -117,13 +128,12 @@ final class TenantController extends BaseController
               </section>'
             : '<section class="card">
                 <h3>Get connected in 3 steps</h3>
-                <p class="muted">Buy a package, create one recommended forward, then install the client for this device.</p>
-                <div class="stack" style="margin-top:14px;">
-                  <div><strong>1. Buy a package</strong> ' . $stepBadge($step1State) . '<div class="muted">Activate a service plan before routing traffic.</div></div>
-                  <div><strong>2. Create a forward</strong> ' . $stepBadge($step2State) . '<div class="muted">One forward with defaults is enough to get online.</div></div>
-                  <div><strong>3. Install client</strong> ' . $stepBadge($step3State) . '<div class="muted">Download the desktop or mobile client and sign in.</div></div>
-                </div>
-                <div class="actions" style="margin-top:16px;">
+                <ol class="console-steps">'
+                . $step($step1State, '1. Buy a package', 'Activate a service plan before routing traffic.')
+                . $step($step2State, '2. Create a forward', 'One forward with defaults is enough to get online.')
+                . $step($step3State, '3. Install client', 'Download the desktop or mobile client and sign in.')
+                . '</ol>
+                <div class="actions">
                   <a class="button" href="' . $this->escape($continueHref) . '">' . $this->escape($continueLabel) . '</a>
                   <a class="button ghost" href="/tenant/getting-started">Open setup guide</a>
                 </div>
@@ -140,10 +150,14 @@ final class TenantController extends BaseController
 
         $latestServiceCard = $latestService !== null
             ? '<section class="card">
-                <h3>Latest package</h3>
-                <div><strong>' . $this->escape((string) ($latestService['name'] ?? 'Service')) . '</strong></div>
-                <div class="muted"><span>Status</span>: ' . $this->escape((string) ($latestService['status'] ?? 'unknown')) . '</div>
-                <div class="muted"><span>Expires</span>: ' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</div>
+                <div class="console-service-head">
+                  <h3>Latest package</h3>
+                  ' . $this->tenantServiceStatusBadge($latestService) . '
+                </div>
+                <dl class="console-kv">
+                  <dt>Package name</dt><dd>' . $this->escape((string) ($latestService['name'] ?? 'Service')) . '</dd>
+                  <dt>Expires</dt><dd>' . $this->escape((string) ($latestService['expire_at'] ?? '-')) . '</dd>
+                </dl>
                 <div class="actions">
                   <a class="button" href="/tenant/services/' . (int) ($latestService['id'] ?? 0) . '">Open details</a>
                   <a class="button ghost" href="/tenant/forwards">View all forwards</a>
@@ -158,45 +172,38 @@ final class TenantController extends BaseController
                 </div>
               </section>';
 
+        $walletCurrency = strtoupper(trim((string) ($user['wallet_currency'] ?? 'CNY')));
+        $walletBalance = number_format((float) ($user['wallet_balance'] ?? 0), 2);
+        $statCard = static fn(string $href, string $label, string $value): string => '<a class="card console-stat" href="' . $href . '">'
+            . '<span class="muted">' . $label . '</span><span class="stats">' . $value . '</span></a>';
+
         $body = '
-            <div class="hero">
+            <div class="console-welcome">
               <div>
-                <h2>Overview</h2>
-                <p class="muted">Check account and package status, then create a forward and install a client.</p>
+                <h2>Welcome back</h2>
+                <p>Check account and package status, then create a forward and install a client.</p>
+              </div>
+              <div class="actions">
+                <a class="button" href="' . $this->escape($continueHref) . '">' . $this->escape($continueLabel) . '</a>
               </div>
             </div>
-            <div class="grid three">
-              <section class="card"><div class="muted">Account</div><div class="stats">' . ($linked ? 'Linked' : 'Not linked') . '</div></section>
-              <section class="card"><div class="muted">Active packages</div><div class="stats">' . $activeServiceCount . '</div></section>
-              <section class="card"><div class="muted">Available packages</div><div class="stats">' . count($purchasePlans) . '</div></section>
-              <section class="card"><div class="muted">Total services</div><div class="stats">' . $totalServiceCount . '</div></section>
-              <section class="card"><div class="muted">Clients</div><div class="stats">' . $clientCount . '</div></section>
-              <section class="card"><div class="muted">Forwards</div><div class="stats">' . $forwardCount . '</div></section>
+            <div class="grid four">
+              ' . $statCard('/tenant/forwards', 'Active packages', (string) $activeServiceCount) . '
+              ' . $statCard('/tenant/forwards', 'Forwards', (string) $forwardCount) . '
+              ' . $statCard('/tenant/clients', 'Clients', (string) $clientCount) . '
+              ' . $statCard('/tenant/account', 'Account balance', $this->escape($walletCurrency . ' ' . $walletBalance)) . '
             </div>
-            <div class="grid two" style="margin-top:20px;">
-              ' . $onboardingCard . '
-              <section class="card">
-                <h3>Panel map</h3>
-                <div class="stack">
-                  <div><strong>Overview</strong><div class="muted">Status and the three-step setup path.</div></div>
-                  <div><strong>Packages</strong><div class="muted">Buy a plan and review current services.</div></div>
-                  <div><strong>Forwards</strong><div class="muted">Add or manage traffic rules for each service.</div></div>
-                  <div><strong>Clients</strong><div class="muted">Install commands, profiles, and device diagnostics.</div></div>
-                  <div><strong>Account</strong><div class="muted">Binding, balance, and transfer history.</div></div>
-                  <div><strong>Advanced</strong><div class="muted">Target endpoints and node groups for power users.</div></div>
-                </div>
-              </section>
-            </div>
-            <div class="grid two" style="margin-top:20px;">
+            <div style="margin-top:16px;">' . $onboardingCard . '</div>
+            <div class="grid two" style="margin-top:16px;">
               ' . $latestServiceCard . '
               <section class="card">
                 <h3>Need help?</h3>
-                <p class="muted">Typical path: link account, buy a package, create one forward, then install the client.</p>
-                <div class="actions">
-                  <a class="button" href="/knowledgebase">Open knowledgebase</a>
-                  <a class="button ghost" href="/tenant/clients">Manage clients</a>
-                  <a class="button ghost" href="/tenant/account">Open account</a>
-                </div>
+                <ul class="console-links">
+                  <li><a href="/knowledgebase?thread=getting-started-five-minute-overview">Read the five-minute overview</a></li>
+                  <li><a href="/knowledgebase?thread=install-client">Read the installation guide</a></li>
+                  <li><a href="/knowledgebase?thread=connect-and-verify">Read the connection check</a></li>
+                  <li><a href="/knowledgebase">Open knowledgebase</a></li>
+                </ul>
               </section>
             </div>';
 
@@ -339,15 +346,6 @@ final class TenantController extends BaseController
         $totalLimitBytes = 0;
         $serviceCards = '';
         foreach ($services as $service) {
-            $statusLabel = match ((string) $service['status']) {
-                'active' => '运行中',
-                'pending' => '待激活',
-                'suspended' => '已暂停',
-                'traffic_suspended' => '流量用尽',
-                'expired' => '已过期',
-                default => (string) $service['status'],
-            };
-            $statusClass = ((string) $service['status'] === 'active') ? 'success' : 'danger';
             $billing = $this->provisioning->serviceBillingOverview((int) $service['id']);
             $trafficUsedBytes = max(0, (int) ($billing['current_cycle_used_bytes'] ?? 0));
             $trafficLimitGb = ((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle')
@@ -363,29 +361,30 @@ final class TenantController extends BaseController
             $forwardCount = (int) ($forwardCounts[(int) $service['id']] ?? 0);
 
             $usageText = $trafficRemainingBytes !== null
-                ? $this->formatTrafficBytes($trafficUsedBytes) . ' / ' . $this->formatTrafficBytes($trafficLimitBytes) . ' · 剩余 ' . $this->formatTrafficBytes($trafficRemainingBytes)
-                : $this->formatTrafficBytes($trafficUsedBytes) . ' (按量)';
+                ? $this->formatTrafficBytes($trafficUsedBytes) . ' / ' . $this->formatTrafficBytes($trafficLimitBytes)
+                : $this->formatTrafficBytes($trafficUsedBytes) . ' · <span>pay as you go</span>';
 
             $serviceCards .= '<section class="card">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+                <div class="console-service-head">
                   <div>
-                    <h3 style="margin:0 0 4px;">' . $this->escape((string) $service['name']) . '</h3>
-                    <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . '</div>
+                    <h3>' . $this->escape((string) $service['name']) . '</h3>
+                    <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . ' · <span>Service ID</span> <code>' . (int) $service['id'] . '</code></div>
                   </div>
-                  <span class="badge ' . $statusClass . '">' . $this->escape($statusLabel) . '</span>
+                  ' . $this->tenantServiceStatusBadge($service) . '
                 </div>
-                <div class="muted" style="margin-top:8px;">到期 ' . $this->escape((string) $service['expire_at']) . ' · 带宽 ' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</div>
-                <div class="muted" style="margin-top:10px;">本期已用流量</div>
-                <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
-                  <div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;">
-                    <div style="width:' . $pct . '%;height:100%;background:#2563eb;"></div>
-                  </div>
-                  <span style="font-size:12px;white-space:nowrap;">' . $this->escape($usageText) . '</span>
+                <div class="console-service-meta">
+                  <span><span>Expires</span> ' . $this->escape((string) $service['expire_at']) . '</span>
+                  <span><span>Bandwidth</span> ' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</span>
+                  <span><span>Forwards</span> ' . $forwardCount . '</span>
                 </div>
-                <div class="muted" style="margin-top:10px;">' . $forwardCount . ' 个 forward</div>
-                <div class="actions" style="margin-top:12px;">
-                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '">管理</a>
-                  <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '/create-forward">新建 Forward</a>
+                <div class="muted" style="margin-top:12px;">Traffic used this cycle</div>
+                <div class="console-progress">
+                  <div class="console-progress-track"><div class="console-progress-fill" style="width:' . $pct . '%;"></div></div>
+                  <span>' . $usageText . '</span>
+                </div>
+                <div class="actions">
+                  <a class="button" href="/tenant/services/' . (int) $service['id'] . '">Manage</a>
+                  <a class="button ghost" href="/tenant/services/' . (int) $service['id'] . '/create-forward">New forward</a>
                 </div>
               </section>';
         }
@@ -394,7 +393,7 @@ final class TenantController extends BaseController
             ? '<section class="card">
                 <h3>No Service Yet</h3>
                 <p class="muted">There is nothing to configure yet because no service has been activated for this tenant.</p>
-                <p class="muted">Ask the admin to activate a service first.</p>
+                <div class="actions"><a class="button" href="/tenant/plans">View packages</a></div>
               </section>'
             : '';
 
@@ -402,21 +401,23 @@ final class TenantController extends BaseController
         $body = '
             <div class="hero">
               <div>
-                <h2>我的服务</h2>
-                <p class="muted">一个套餐 = 一个服务，多个 forward 合并计费到这一个套餐。点「管理」进入服务查看和操作里面的 forward。</p>
+                <p class="muted">One package is one service. All forwards under it share its traffic and billing. Open Manage to view or change them.</p>
+              </div>
+              <div class="actions">
+                <a class="button ghost" href="/tenant/plans">Buy Packages</a>
               </div>
             </div>
             <div class="grid three">
-              <section class="card"><div class="muted">套餐数</div><div class="stats">' . count($services) . '</div></section>
-              <section class="card"><div class="muted">本期已用</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalUsedBytes)) . '</div></section>
-              <section class="card"><div class="muted">本期剩余</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalRemainingBytes)) . '</div></section>
+              <section class="card"><div class="muted">Packages</div><div class="stats">' . count($services) . '</div></section>
+              <section class="card"><div class="muted">Used this cycle</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalUsedBytes)) . '</div></section>
+              <section class="card"><div class="muted">Remaining this cycle</div><div class="stats">' . $this->escape($this->formatTrafficBytes($totalRemainingBytes)) . '</div></section>
             </div>
-            ' . $emptyState . '
-            <div class="grid two" style="margin-top:20px;">
+            ' . ($emptyState !== '' ? '<div style="margin-top:16px;">' . $emptyState . '</div>' : '') . '
+            <div class="grid two" style="margin-top:16px;">
               ' . $serviceCards . '
             </div>';
 
-        return $this->page('我的服务', $body, $user, $this->tenantNav('forwards'));
+        return $this->page('My Services', $body, $user, $this->tenantNav('forwards'));
     }
 
     public function billingPage(Request $request, array $params): Response
@@ -455,14 +456,14 @@ final class TenantController extends BaseController
         $linked = !empty($snapshot['linked']);
         $localCurrency = strtoupper(trim((string) ($user['wallet_currency'] ?? 'CNY')));
         $localBalance = (float) ($user['wallet_balance'] ?? 0);
-        $balanceColor = 'var(--success)';
-        $balanceLabel = 'Active';
+        $balanceClass = 'success';
+        $balanceLabel = 'Balance OK';
         if ($localBalance <= 0) {
-            $balanceColor = 'var(--danger)';
+            $balanceClass = 'danger';
             $balanceLabel = 'Suspended';
         } elseif ($localBalance <= (float) ($user['wallet_low_balance_threshold'] ?? 5.00)) {
-            $balanceColor = '#c96b32';
-            $balanceLabel = 'Low';
+            $balanceClass = 'warning';
+            $balanceLabel = 'Low balance';
         }
         $remoteBalance = $remote !== null ? (float) ($remote['credit'] ?? 0) : 0.0;
         $remoteCurrency = $remote !== null
@@ -662,32 +663,35 @@ final class TenantController extends BaseController
               </div>
             </section>' : '';
 
+        // Buy-station counters only mean something once the account is linked.
+        $remoteStatCards = $remote !== null
+            ? '<section class="card"><div class="muted">Active Products</div><div class="stats">' . (int) ($stats['productsnumactive'] ?? 0) . '</div></section>
+              <section class="card"><div class="muted">Unpaid Invoices</div><div class="stats">' . (int) ($stats['numunpaidinvoices'] ?? 0) . '</div></section>
+              <section class="card"><div class="muted">Open Tickets</div><div class="stats">' . (int) ($stats['numtickets'] ?? 0) . '</div></section>'
+            : '';
         $body = '
             <div class="hero">
               <div>
-                <h2>账户</h2>
-                <p class="muted">处理绑定、余额和转账记录。套餐购买已经拆到单独的 <strong>套餐</strong> 页面。</p>
+                <p class="muted">Manage account binding, balance and transfer history. Packages are bought on the Buy Packages page.</p>
               </div>
-              <div class="actions" style="margin-top:0;">
-                <a class="button ghost" href="/tenant/plans">前往套餐</a>
+              <div class="actions">
+                <a class="button ghost" href="/tenant/plans">Buy Packages</a>
               </div>
             </div>
             ' . $syncNotice . '
             <div class="grid three">
-              <section class="card"><div class="muted">Panel Balance</div><div class="stats" style="color:' . $balanceColor . ';">' . $this->escape($localCurrency) . ' ' . $this->escape(number_format($localBalance, 2)) . '</div><span class="badge" style="background:' . $balanceColor . ';color:#fff;margin-top:10px;display:inline-block;">' . $this->escape($balanceLabel) . '</span>'
+              <section class="card"><div class="console-service-head"><div class="muted">Panel Balance</div><span class="badge ' . $balanceClass . '">' . $this->escape($balanceLabel) . '</span></div><div class="stats">' . $this->escape($localCurrency) . ' ' . $this->escape(number_format($localBalance, 2)) . '</div>'
             . ($localBalance > 0 && $this->hasSuspendedForwards($user) ? '<form method="post" action="/tenant/account/reactivate" style="margin-top:10px;"><input type="hidden" name="csrf_token" value="' . $csrf . '"><button class="button" type="submit" style="width:100%;">Reactivate All Forwards</button></form>' : '') . '</section>
               <section class="card"><div class="muted">Buy Balance</div><div class="stats">' . ($remote !== null ? $this->escape($remoteCurrency) . ' ' . $this->escape(number_format($remoteBalance, 2)) : '-') . '</div></section>
               <section class="card"><div class="muted">Binding Status</div><div class="stats">' . ($linked ? 'Bound' : 'Not Bound') . '</div></section>
-              <section class="card"><div class="muted">Active Products</div><div class="stats">' . (int) ($stats['productsnumactive'] ?? 0) . '</div></section>
-              <section class="card"><div class="muted">Unpaid Invoices</div><div class="stats">' . (int) ($stats['numunpaidinvoices'] ?? 0) . '</div></section>
-              <section class="card"><div class="muted">Open Tickets</div><div class="stats">' . (int) ($stats['numtickets'] ?? 0) . '</div></section>
+              ' . $remoteStatCards . '
             </div>
             <div class="grid two" style="margin-top:20px;">
               ' . $bindSection . '
               ' . $transferSection . '
             </div>
             ' . $usageTable . '
-            <section class="card" style="margin-top:20px;">
+            ' . ($remote !== null ? '<section class="card" style="margin-top:16px;">
               <h3>Buy Station Products</h3>
               <div class="table-wrap">
                 <table>
@@ -695,8 +699,8 @@ final class TenantController extends BaseController
                   <tbody>' . $productRows . '</tbody>
                 </table>
               </div>
-            </section>
-            <section class="card" style="margin-top:20px;">
+            </section>' : '') . '
+            <section class="card" style="margin-top:16px;">
               <h3>Balance Transfer History</h3>
               <div class="table-wrap">
                 <table>
@@ -706,7 +710,7 @@ final class TenantController extends BaseController
               </div>
             </section>';
 
-        return $this->page('账户', $body, $user, $this->tenantNav('account'));
+        return $this->page('Balance & Billing', $body, $user, $this->tenantNav('account'));
     }
 
     public function plansPage(Request $request, array $params): Response
@@ -733,20 +737,19 @@ final class TenantController extends BaseController
         $totalBandwidth = 0;
         foreach ($services as $service) {
             $billing = $this->provisioning->serviceBillingOverview((int) $service['id']);
-            $statusClass = ((string) ($service['status'] ?? '') === 'active') ? 'success' : 'danger';
             $currentBandwidth = (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps'] ?? 0);
             $totalBandwidth += max(0, $currentBandwidth);
             $totalEstimatedBilling += (float) ($billing['estimated_total_amount'] ?? 0);
             $trafficPolicy = ((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle')
-                ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month')
-                : 'metered';
+                ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB / <span>month</span>')
+                : '<span>metered</span>';
 
             $serviceRows .= '<tr>
-                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
-                <td><span class="badge ' . $statusClass . '">' . $this->escape((string) ($service['status'] ?? 'unknown')) . '</span></td>
+                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a><br><span class="muted">Service ID</span> <code>' . (int) $service['id'] . '</code></td>
+                <td>' . $this->tenantServiceStatusBadge($service) . '</td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
                 <td>' . $currentBandwidth . ' Mbps</td>
-                <td>' . $this->escape($trafficPolicy) . '</td>
+                <td>' . $trafficPolicy . '</td>
                 <td>' . $this->escape((string) ($billing['estimated_total_formatted'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($service['expire_at'] ?? '')) . '</td>
                 <td>
@@ -796,13 +799,15 @@ final class TenantController extends BaseController
                   <div class="storefront-product-price">
                     <div class="muted">Starting from</div>
                     <div class="stats">' . $this->escape($planCurrency) . ' ' . $this->escape($planPrice) . '</div>
-                    <div>Monthly</div>
-                    <div class="storefront-product-meta">Base Bandwidth: ' . (int) ($plan['default_bandwidth_limit_mbps'] ?? 0) . ' Mbps</div>
-                    <div class="muted">Traffic Reset ' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</div>
-                    <div class="muted">Included Traffic: ' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</div>
-                    <div class="muted">Included Clients: ' . $includedClients . '</div>
-                    <div class="muted">Client Profiles: ' . $maxClientProfiles . '</div>
-                    <div class="muted">Client Device Limit: ' . $deviceLimit . ' (Devices per Client: ' . $deviceLimit . ')</div>
+                    <div class="muted">Monthly</div>
+                    <dl class="console-kv" style="margin-top:10px;text-align:left;">
+                      <dt>Base Bandwidth</dt><dd>' . (int) ($plan['default_bandwidth_limit_mbps'] ?? 0) . ' Mbps</dd>
+                      <dt>Included Traffic</dt><dd>' . (int) ($plan['default_traffic_limit_gb'] ?? 0) . ' GB</dd>
+                      <dt>Traffic Reset</dt><dd>' . $this->escape($planCurrency) . ' ' . $this->escape($resetPrice) . '</dd>
+                      <dt>Included Clients</dt><dd>' . $includedClients . '</dd>
+                      <dt>Client profile limit</dt><dd>' . $maxClientProfiles . '</dd>
+                      <dt>Client Device Limit</dt><dd>' . $deviceLimit . '</dd>
+                    </dl>
                     ' . $inlineForm . '
                   </div>
                 </div>
@@ -816,14 +821,13 @@ final class TenantController extends BaseController
             <link rel="stylesheet" href="/assets/storefront.css?v=20260727a">
             <div class="hero">
               <div>
-                <h2>Packages</h2>
                 <p class="muted">Use this storefront to compare packages first, then open an inline order form to set service name and bandwidth before purchase.</p>
               </div>
-              <div class="actions" style="margin-top:0;">
-                <a class="button ghost" href="/tenant/forwards">Forward Config</a>
+              <div class="actions">
+                <a class="button ghost" href="/tenant/forwards">My Services</a>
               </div>
             </div>
-            <div class="grid three">
+            <div class="grid four">
               <section class="card"><div class="muted">Current Services</div><div class="stats">' . count($services) . '</div></section>
               <section class="card"><div class="muted">Visible Packages</div><div class="stats">' . count($purchasePlans) . '</div></section>
               <section class="card"><div class="muted">Total Bandwidth</div><div class="stats">' . $totalBandwidth . ' Mbps</div></section>
@@ -852,7 +856,7 @@ final class TenantController extends BaseController
               </div>
             </section>';
 
-        return $this->page('Packages', $body, $user, $this->tenantNav('plans'));
+        return $this->page('Buy Packages', $body, $user, $this->tenantNav('plans'));
     }
 
     /**
@@ -998,6 +1002,234 @@ final class TenantController extends BaseController
         return Response::redirect('/tenant/services/' . $serviceId);
     }
 
+    public function accessSecurityPage(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        $userId = (int) $user['id'];
+        $profile = $this->accessPolicy->tenantProfile($userId) ?? [
+            'state' => 'unbound',
+            'main_province_code' => null,
+            'previous_province_code' => null,
+            'last_verified_at' => null,
+            'self_change_available_at' => null,
+            'reset_generation' => 0,
+            'reset_started_at' => null,
+        ];
+        $devices = $this->accessPolicy->tenantDeviceRows($userId);
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $mainProvince = trim((string) ($profile['main_province_code'] ?? ''));
+        $availableAt = trim((string) ($profile['self_change_available_at'] ?? ''));
+        $geoEnabled = $this->accessPolicy->effectiveGeoLockForUser($userId);
+
+        $options = '<option value="">Select province</option>';
+        foreach ($this->accessPolicy->regions()->allProvinces() as $province) {
+            $selected = $province === $mainProvince ? ' selected' : '';
+            $options .= '<option value="' . $this->escape($province) . '"' . $selected . '>'
+                . $this->escape($province) . '</option>';
+        }
+
+        $deviceRows = '';
+        foreach ($devices as $device) {
+            $clientId = (int) ($device['client_id'] ?? 0);
+            $deviceUuid = trim((string) ($device['device_uuid'] ?? ''));
+            if ($clientId <= 0 || $deviceUuid === '') {
+                continue;
+            }
+            $origin = trim((string) ($device['block_origin'] ?? ''));
+            $releasePolicy = trim((string) ($device['release_policy'] ?? ''));
+            $blockedUntil = trim((string) ($device['blocked_until'] ?? ''));
+            $canRestore = $blockedUntil !== ''
+                && $origin === 'manual_tenant'
+                && $releasePolicy === 'tenant_or_admin';
+            $restore = $canRestore
+                ? '<form class="inline" method="post" action="/tenant/security/devices/restore">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                    . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceUuid) . '">'
+                    . '<button class="button ghost" type="submit">Restore</button></form>'
+                : '<span class="muted">Admin release</span>';
+            $deviceRows .= '<tr><td>' . $this->escape((string) ($device['client_name'] ?? $clientId)) . '</td>'
+                . '<td><code>' . $this->escape($deviceUuid) . '</code></td>'
+                . '<td>' . $this->escape((string) ($device['platform'] ?? '')) . '</td>'
+                . '<td>' . $this->escape((string) ($device['state'] ?? 'active')) . '</td>'
+                . '<td>' . $this->escape($origin !== '' ? $origin : '-') . '</td>'
+                . '<td>' . $this->escape($blockedUntil !== '' ? $blockedUntil : '-') . '</td>'
+                . '<td>' . $restore . '</td></tr>';
+        }
+        if ($deviceRows === '') {
+            $deviceRows = '<tr><td colspan="7" class="muted">No registered devices.</td></tr>';
+        }
+
+        $profileState = match ((string) ($profile['state'] ?? 'unbound')) {
+            'unbound' => 'Not bound',
+            'bound' => 'Bound',
+            'pending' => 'Pending',
+            'reset_pending' => 'Reset pending',
+            default => (string) ($profile['state'] ?? ''),
+        };
+        $body = '<div class="hero"><div>'
+            . '<p class="muted">Review location binding and control devices for this account.</p></div></div>'
+            . '<section class="card"><h3>Location binding</h3>'
+            . '<dl class="console-kv">'
+            . '<dt>Geo lock</dt><dd>' . ($geoEnabled ? '<span class="badge success">Enabled</span>' : '<span class="badge">Disabled</span>') . '</dd>'
+            . '<dt>Binding state</dt><dd>' . $this->escape($profileState) . '</dd>'
+            . '<dt>Main province</dt><dd>' . $this->escape($mainProvince !== '' ? $mainProvince : 'Not bound') . '</dd>'
+            . '<dt>Last verified</dt><dd>' . $this->escape((string) ($profile['last_verified_at'] ?? 'Not verified')) . '</dd>'
+            . '<dt>Next self-change</dt><dd>' . $this->escape($availableAt !== '' ? $availableAt : 'Available now') . '</dd>'
+            . '</dl>'
+            . '<form method="post" action="/tenant/security/main-province"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
+            . '<select id="main-province" name="province" required>' . $options . '</select></div>'
+            . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
+            . $this->renderApiTokenCard(
+                trim((string) ($user['api_token'] ?? '')),
+                $csrf,
+                $this->db->fetchAll(
+                    'SELECT id, name FROM services WHERE user_id = :user_id ORDER BY id ASC',
+                    ['user_id' => $user['id']]
+                )
+            )
+            . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
+            . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
+            . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button danger" type="submit">Kick all devices</button></form></div>'
+            . '<div class="table-wrap"><table><thead><tr><th>Client</th><th>Device UUID</th><th>Platform</th><th>State</th><th>Block origin</th><th>Blocked until</th><th>Action</th></tr></thead><tbody>'
+            . $deviceRows . '</tbody></table></div></section>';
+
+        return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    /** @param array<int, array<string, mixed>> $services */
+    private function renderApiTokenCard(string $apiToken, string $csrf, array $services = []): string
+    {
+        // users.api_token authenticates the Forward Lines API. It is a separate
+        // credential from the client Agent Token, which tenants kept pasting
+        // into API calls because nothing else on the console showed a token.
+        $tokenBlock = $apiToken !== ''
+            ? '<details><summary>Show API token</summary><code>' . $this->escape($apiToken) . '</code></details>'
+                . '<div class="actions">' . $this->renderCopyButton('Copy API token', $apiToken) . '</div>'
+            : '<p class="muted">No API token yet.</p>';
+        $resetLabel = $apiToken !== '' ? 'Reset API token' : 'Generate API token';
+        // The API paths take services.id. Tenants used the Client ID from the
+        // Clients page (or the WHMCS id) instead, which only works when the
+        // numbers happen to collide and otherwise returns service_not_found.
+        $serviceRows = '';
+        foreach ($services as $service) {
+            $serviceId = (int) ($service['id'] ?? 0);
+            $serviceRows .= '<dt>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</dt>'
+                . '<dd><code>' . $serviceId . '</code> ' . $this->renderCopyButton('Copy', (string) $serviceId, 'ghost') . '</dd>';
+        }
+        $serviceBlock = '<h4>Service IDs</h4>'
+            . '<p class="muted">API paths such as <code>/api/v1/user/services/{id}/forwards</code> take a Service ID. '
+            . 'It is not the Client ID on the Clients page.</p>'
+            . ($serviceRows !== ''
+                ? '<dl class="console-kv">' . $serviceRows . '</dl>'
+                : '<p class="muted">No services yet.</p>');
+
+        return '<section class="card"><h3>API token</h3>'
+            . '<p class="muted">Use this token as <code>Authorization: Bearer</code> when calling the Forward Lines API. '
+            . 'It is not the Agent Token shown on the Clients page.</p>'
+            . $tokenBlock
+            . $serviceBlock
+            . '<div class="actions">'
+            . '<form class="inline" method="post" action="/tenant/security/api-token/reset" data-confirm="Reset the API token? Programs using the old token stop working immediately." onsubmit="return confirm(this.dataset.confirm);">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button danger" type="submit">' . $resetLabel . '</button></form>'
+            . '<a class="button ghost" href="/knowledgebase?thread=forward-lines-api">Read the API guide</a>'
+            . '</div></section>';
+    }
+
+    public function resetApiToken(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->db->execute(
+                'UPDATE users SET api_token = :token, updated_at = :updated_at WHERE id = :id',
+                [
+                    'token' => bin2hex(random_bytes(24)),
+                    'updated_at' => gmdate('Y-m-d H:i:s'),
+                    'id' => (int) $user['id'],
+                ]
+            );
+            SessionAuth::flash('success', 'API token reset. Update your programs with the new token.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to reset the API token.');
+        }
+        return Response::redirect('/tenant/security');
+    }
+
+    public function changeMainProvince(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $province = trim((string) $request->input('province', ''));
+            $this->accessPolicy->changeMainProvince((int) $user['id'], $province, (int) $user['id'], false);
+            SessionAuth::flash('success', 'Main province updated.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to update the main province.');
+        }
+        return Response::redirect('/tenant/security');
+    }
+
+    public function kickAllDevices(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $result = $this->accessPolicy->beginAllDeviceReset((int) $user['id'], (int) $user['id']);
+            $message = !empty($result['idempotent'])
+                ? 'A device reset is already pending.'
+                : 'All application devices were kicked out.';
+            SessionAuth::flash('success', $message);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to kick all devices.');
+        }
+        // Deliberately preserve the authenticated web Panel session.
+        return Response::redirect('/tenant/security');
+    }
+
+    public function restoreDevice(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            [$clientId, $deviceUuid] = $this->ownedTenantDevice($user, $request);
+            DeviceControlService::fromConfig($this->config, $this->db)->releaseTemporaryBlock(
+                $clientId,
+                $deviceUuid,
+                (int) $user['id'],
+                false,
+            );
+            SessionAuth::flash('success', 'Device restored.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'This device cannot be restored by the tenant.');
+        }
+        return Response::redirect('/tenant/security');
+    }
+
     public function clientsPage(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
@@ -1022,10 +1254,36 @@ final class TenantController extends BaseController
         $onlineCount = $sessionService->activeCountForClient($clientId);
         $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
         $sessions = $sessionService->activeSessionsForClient($clientId);
+        $controlRows = DeviceControlService::fromConfig($this->config, $this->db)->controlsForClient($clientId);
+        $controlsByDevice = [];
+        foreach ($controlRows as $controlRow) {
+            $controlDeviceId = trim((string) ($controlRow['device_id'] ?? ''));
+            if ($controlDeviceId !== '') {
+                $controlsByDevice[$controlDeviceId] = $controlRow;
+            }
+        }
+        $observedDevices = [];
+        foreach ($sessions as $session) {
+            $observedDevices[(string) ($session['device_id'] ?? '')] = true;
+        }
+        foreach ($controlRows as $controlRow) {
+            $controlDeviceId = trim((string) ($controlRow['device_id'] ?? ''));
+            if ($controlDeviceId === '' || isset($observedDevices[$controlDeviceId])) {
+                continue;
+            }
+            $sessions[] = [
+                'device_id' => $controlDeviceId,
+                'platform' => 'android',
+                'last_ip' => '',
+                'os_release' => '',
+                'client_version' => '',
+                'user_agent' => '',
+            ];
+        }
         $csrf = $this->escape(SessionAuth::csrfToken());
         $resetForm = '<form class="inline" method="post" action="/tenant/clients/reset-token">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
-            . '<button class="button ghost" type="submit">重置</button></form>';
+            . '<button class="button ghost" type="submit">重置令牌</button></form>';
 
         $onlineRows = '';
         foreach ($sessions as $session) {
@@ -1043,26 +1301,55 @@ final class TenantController extends BaseController
                 }
             }
             $deviceId = trim((string) ($session['device_id'] ?? ''));
-            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" onsubmit="return confirm(\'确定要踢走这个客户端吗？\');">'
+            $kickForm = '<form class="inline" method="post" action="/tenant/clients/kick" data-confirm="Confirm kicking this client" onsubmit="return confirm(this.dataset.confirm);">'
                 . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                 . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
-                . '<button class="button ghost" type="submit">踢走</button></form>';
+                . '<button class="button ghost" type="submit">踢下线</button></form>';
+            $control = $controlsByDevice[$deviceId] ?? null;
+            $controlState = is_array($control) ? (string) ($control['state'] ?? 'active') : 'online';
+            $controlForms = $kickForm;
+            if (is_array($control)) {
+                $blockedUntil = trim((string) ($control['blocked_until'] ?? ''));
+                $tenantCanRestore = $blockedUntil !== ''
+                    && (string) ($control['block_origin'] ?? '') === 'manual_tenant'
+                    && (string) ($control['release_policy'] ?? '') === 'tenant_or_admin';
+                if ($tenantCanRestore) {
+                    $controlForms = '<form class="inline" method="post" action="/tenant/security/devices/restore">'
+                        . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                        . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                        . '<input type="hidden" name="device_uuid" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Restore</button></form>';
+                } elseif ($controlState === 'banned' || $controlState === 'kicked'
+                    || ($blockedUntil !== '' && (string) ($control['release_policy'] ?? '') !== 'tenant_or_admin')) {
+                    // Tenant-origin temporary blocks are restorable above;
+                    // permanent and policy/admin blocks stay administrator-only.
+                    $controlForms = '<span class="muted">Admin release</span>';
+                } else {
+                    $controlForms .= '<form class="inline" method="post" action="/tenant/clients/ban" data-confirm="Confirm banning this device" onsubmit="return confirm(this.dataset.confirm);">'
+                        . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                        . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+                        . '<input type="hidden" name="device_id" value="' . $this->escape($deviceId) . '">'
+                        . '<button class="button ghost" type="submit">Ban</button></form>';
+                }
+            }
+            $controlForms = '<span class="muted">' . $this->escape($controlState) . '</span>' . $controlForms;
             $onlineRows .= '<tr>'
                 . '<td>' . $this->escape($ip !== '' ? $ip : '—') . '</td>'
                 . '<td>' . $this->escape($os !== '' ? $os : '—') . '</td>'
                 . '<td>' . $this->escape($version !== '' ? $version : '—') . '</td>'
-                . '<td class="actions">' . $kickForm . '</td>'
+                . '<td class="actions">' . $controlForms . '</td>'
                 . '</tr>';
         }
 
         $onlineList = '<div class="tenant-client-install__online-list">'
-            . '<div class="tenant-client-install__online-list-head"><strong>在线客户端</strong>'
-            . '<span class="muted">' . count($sessions) . ' 个在线</span></div>';
+            . '<div class="tenant-client-install__online-list-head"><strong>在线设备</strong>'
+            . '<span class="muted">' . count($sessions) . ' 台在线</span></div>';
         if ($sessions === []) {
-            $onlineList .= '<div class="muted">当前没有在线客户端。</div>';
+            $onlineList .= '<div class="muted">当前没有设备在线。客户端登录后会显示在这里。</div>';
         } else {
-            $onlineList .= '<table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
-                . $onlineRows . '</tbody></table>';
+            $onlineList .= '<div class="table-wrap"><table class="table"><thead><tr><th>IP</th><th>系统</th><th>客户端版本</th><th></th></tr></thead><tbody>'
+                . $onlineRows . '</tbody></table></div>';
         }
         $onlineList .= '</div>';
 
@@ -1071,35 +1358,114 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCopyButton('Copy Client ID', (string) $clientId) . '</div></div>'
             . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
             . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
+            . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Agent Token is only for the client app. The Forward Lines API uses a separate API token: <a href="/tenant/security">Account Security</a></p>'
+            . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Client ID is not a Service ID. API paths take the Service ID listed on Account Security.</p>'
+            . '</section>'
+            . '<form method="post" action="/tenant/clients/android-enrollment-code">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
+
+        // macOS: App (Apple Silicon) + no-GUI together; Windows + Windows no-GUI together; Docker standalone.
+        // All command <pre> blocks are collapsible via <details> so the page stays scannable.
+        $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
+        $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
+        $dockerCommand = $this->dockerClientInstallCommand($client);
+        $dockerComposeSnippet = $this->dockerClientComposeInline($client);
+
+        $macosGuiSectionRaw = $this->renderMacClientInstallSection();
+        $macosSection = '';
+        if ($macosGuiSectionRaw !== '') {
+            $macosNoGuiBlock = '<details style="margin-top:12px;"><summary>无界面版 · macOS（launchd 守护进程）</summary>'
+                . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+                . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+                . '<div class="actions">'
+                . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+                . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+                . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+                . '</div></details>';
+            $macosSection = str_replace('</section>', $macosNoGuiBlock . '</section>', $macosGuiSectionRaw);
+        } else {
+            $macosSection = '<section class="tenant-client-install__platform"><strong>'
+                . $this->platformIcon('macos')
+                . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版', 'windows_headless_client')) . '</strong>'
+                . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+                . '<details open><summary>安装命令</summary><pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+                . '<div class="actions">' . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败') . '</div></details>'
+                . '</section>';
+        }
+
+        $windowsSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('windows')
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</strong>'
+            . '<div class="actions">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . ' · 复制命令</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . '无界面版 · Windows 系统服务</summary>'
+            . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
+            . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+            . '</div></details>'
             . '</section>';
+
+        $dockerSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('docker')
+            . $this->escape($this->clientAppReleaseLabel('Docker · 全平台 (TCP+UDP)', 'docker_client_installer')) . '</strong>'
+            . '<div class="muted">最纯粹的 TCP+UDP 转发容器，无 GUI、免 TUN：linux/amd64 与 linux/arm64 双架构，含私有 Registry（--image）与全平台宿主支持。</div>'
+            . '<details style="margin-top:10px;" open><summary>一键安装命令 · 复制即用</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($dockerCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 Docker 命令', $dockerCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->dockerClientInstallerUrl()) . '">安装脚本</a>'
+            . '<a class="button secondary" href="' . $this->escape($this->dockerClientComposeUrl()) . '">docker-compose.yml</a>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>docker-compose.yml · 预览</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($dockerComposeSnippet) . '</pre>'
+            . '<div class="muted">完整模板位于 /artifacts/docker-client/docker-compose.yml；安装脚本会自动拉取并校验，支持 LEIKWAN_IMAGE 私有镜像。</div>'
+            . '</div></details>'
+            . '</section>';
+
 
         $body = '<div class="tenant-client-install">'
             . '<div class="tenant-client-install__shell">'
-            . '<div class="tenant-client-install__header"><strong>安装</strong></div>'
+            . '<div class="tenant-client-install__header"><strong>下载与安装</strong>'
+            . '<span class="muted">选择设备对应的系统，安装后用当前账户登录即可。Linux 和无界面版可直接复制命令运行。</span></div>'
             . '<div class="tenant-client-install__body"><div class="tenant-client-install__platforms">'
-            . '<section class="tenant-client-install__platform"><strong>Linux</strong>'
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('linux')
+            . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
+            . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。只能访问国内网络的机器也可以直接运行：连不上 Cloudflare 时会自动改用阿里云 CDN。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
             . '</div></section>'
-            . '<section class="tenant-client-install__platform"><strong>Windows App</strong>'
-            . '<div class="actions">' . $this->renderCommandLink('下载 installer', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '</section>'
-            . '<section class="tenant-client-install__platform"><strong>macOS</strong>'
-            . '<div class="muted">Unsigned build. macOS may show a security prompt on first open.</div>'
-            . '<div class="actions">'
-            . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
-            . $this->renderCommandLink('Intel', $this->macosClientX64AppUrl(), 'secondary')
-            . '</div>'
+            . $windowsSection
+            . $macosSection
+            // Docker installation is hidden until container runtime acceptance passes.
+            . '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('android')
+            . $this->escape($this->clientAppReleaseLabel('Android (Unstable)', 'android_client_apk')) . '</strong>'
+            . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
-            . $onlineCount . ' / ' . $onlineLimit . '</strong></div></div></div>'
+            . $onlineCount . ' / ' . $onlineLimit . '</strong>'
+            . ($onlineCount >= $onlineLimit
+                ? '<div class="muted">已达上限：新设备会被拒绝连接并提示“设备数量已达上限”。在线设备不受影响；可移除下方设备，或等其他设备断开约 3 分钟后自动释放名额。</div>'
+                : '')
+            . '</div></div></div>'
             . $credentialPanel
             . $onlineList
             . '</div>';
 
-        return $this->page('客户端', $body, $user, $this->tenantNav('clients'));
+        return $this->page('Clients', $body, $user, $this->tenantNav('clients'));
     }
 
     public function resetDefaultClientToken(Request $request, array $params): Response
@@ -1136,6 +1502,57 @@ final class TenantController extends BaseController
 
     public function kickClientDevice(Request $request, array $params): Response
     {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            [$clientId, $deviceId] = $this->ownedTenantDevice($user, $request);
+
+            DeviceControlService::fromConfig($this->config, $this->db)->setTemporaryBlock(
+                $clientId,
+                $deviceId,
+                'manual_tenant',
+                1800,
+                (int) $user['id'],
+            );
+            (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
+            SessionAuth::flash('success', '客户端已踢下线。');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', '踢下线失败。');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    public function banClientDevice(Request $request, array $params): Response
+    {
+        return $this->changeAndroidDeviceState($request, 'banned', 'tenant_ban');
+    }
+
+    public function unbanClientDevice(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            // Permanent device bans are an administrator-only control. Keep
+            // the legacy route so old clients receive a deterministic denial.
+            throw new ApiException('device_unban_admin_only', 403);
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Permanent device bans require administrator release.');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    public function createAndroidEnrollmentCode(Request $request, array $params): Response
+    {
         $user = SessionAuth::currentUser($this->db);
         if ($user === null || (string) $user['role'] !== 'tenant') {
             return Response::redirect('/login');
@@ -1147,16 +1564,42 @@ final class TenantController extends BaseController
             if ($client === null) {
                 $client = $this->provisioning->ensureDefaultClientForUser((int) $user['id']);
             }
-            $clientId = (int) ($client['id'] ?? 0);
-            $deviceId = trim((string) $request->input('device_id', ''));
-            if ($clientId <= 0 || $deviceId === '') {
-                throw new ApiException('invalid_device', 400);
-            }
-
-            (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
-            SessionAuth::flash('success', '客户端已踢下线。');
+            $issued = (new AndroidEnrollmentCodeService($this->db))->issue(
+                (int) ($client['id'] ?? 0),
+                (int) $user['id'],
+            );
+            $link = $this->agentBaseUrl() . '/android/enroll?client_id=' . (int) ($client['id'] ?? 0)
+                . '&code=' . rawurlencode((string) $issued['code']);
+            SessionAuth::flash('success', 'Enrollment link (valid 5 minutes): ' . $link);
         } catch (\Throwable) {
-            SessionAuth::flash('error', '踢下线失败。');
+            SessionAuth::flash('error', 'Enrollment code creation failed.');
+        }
+
+        return Response::redirect('/tenant/clients');
+    }
+
+    private function changeAndroidDeviceState(Request $request, string $state, string $reason): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            [$clientId, $deviceId] = $this->ownedTenantDevice($user, $request);
+            DeviceControlService::fromConfig($this->config, $this->db)->setState(
+                $clientId,
+                $deviceId,
+                $state,
+                $reason,
+                (int) $user['id'],
+            );
+            (new ClientOnlineSessionService($this->db))->revokeDevice($clientId, $deviceId);
+            (new UltraLeaseService($this->config, $this->db))->revokeDevice($clientId, $deviceId);
+            SessionAuth::flash('success', $state === 'banned' ? 'Device banned.' : 'Device unbanned; enrollment is still required.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Device control update failed.');
         }
 
         return Response::redirect('/tenant/clients');
@@ -1342,6 +1785,10 @@ final class TenantController extends BaseController
 
             $payload = $request->body();
             $payload['owner_user_id'] = (int) $user['id'];
+            // Security: a tenant must not choose its own sidecar agent_token
+            // (predictable/colliding tokens, or impersonation). The service
+            // generates one on create and keeps the existing one on edit.
+            unset($payload['agent_token']);
             $this->provisioning->saveSidecarPoint($payload);
             SessionAuth::flash('success', 'Transport endpoint saved.');
         } catch (\Throwable $throwable) {
@@ -1455,20 +1902,52 @@ final class TenantController extends BaseController
         $usageMap = $this->provisioning->forwardCycleUsageMap($serviceId, $cycleStart);
         $includedBytes = max(0, (int) (($summary['billing']['included_bytes'] ?? 0) ?: 0));
         $csrf = $this->escape(SessionAuth::csrfToken());
+        // Regression sentinel: awaiting_policy_is_a_health_failure
+        // "enabled" is only a DB flag. An Ultra forward is provisioned by a
+        // lease, so an enabled Ultra forward that holds no live lease - or whose
+        // runtime reports awaiting_policy/degraded - was rendering below as
+        // running while it carried no traffic at all. Resolve its real health
+        // before the rows are built.
+        $ultraHealth = [];
+        $ultraForwardIds = [];
+        foreach ($forwardRows as $forward) {
+            if ((int) ($forward['enabled'] ?? 0) === 1
+                && \Leikwan\Master\Support\UltraMode::isBackendMode($forward['backend_mode'] ?? '')) {
+                $ultraForwardIds[] = (int) ($forward['id'] ?? 0);
+            }
+        }
+        if ($ultraForwardIds !== []) {
+            try {
+                $ultraHealth = (new \Leikwan\Master\Support\UltraClientStatusService($this->config, $this->db))
+                    ->runtimeHealthForForwards($ultraForwardIds);
+            } catch (\Throwable) {
+                $ultraHealth = [];
+            }
+        }
+        $serviceExpired = ServiceStatus::effective($service) === ServiceStatus::EXPIRED;
         $rows = '';
         foreach ($forwardRows as $forward) {
             $isRunning = (int) ($forward['enabled'] ?? 0) === 1;
-            $statusBadge = $isRunning
-                ? '<span class="badge success">运行</span>'
-                : '<span class="badge info">已暂停</span>';
+            $forwardHealth = $ultraHealth[(int) ($forward['id'] ?? 0)] ?? null;
+            $healthFailed = !$serviceExpired && is_array($forwardHealth) && ($forwardHealth['unhealthy'] ?? false) === true;
+            $healthReason = $healthFailed ? trim((string) ($forwardHealth['health_reason'] ?? '')) : '';
+            $statusBadge = !$isRunning
+                ? '<span class="badge warning">Paused</span>'
+                : ($serviceExpired
+                    ? '<span class="badge danger">Expired</span>'
+                    : ($healthFailed
+                        ? '<span class="badge danger">已启用但未运行</span>'
+                        : '<span class="badge success">Running</span>'));
+            if ($healthFailed) {
+                $statusBadge .= '<div class="muted">' . $this->escape($healthReason !== '' ? $healthReason : 'unhealthy') . '</div>';
+            }
 
             $usedBytes = (int) ($usageMap[(int) $forward['id']] ?? 0);
             $usedLabel = $this->formatTrafficBytes($usedBytes);
             $pct = $includedBytes > 0 ? min(100, (int) round($usedBytes / $includedBytes * 100)) : 0;
-            $usageCell = '<div style="display:flex;align-items:center;gap:8px;min-width:120px;">'
-                . '<div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;">'
-                . '<div style="width:' . $pct . '%;height:100%;background:#2563eb;"></div></div>'
-                . '<span style="font-size:12px;white-space:nowrap;">' . $usedLabel . '</span></div>';
+            $usageCell = '<div class="console-progress" style="min-width:120px;margin-top:0;">'
+                . '<div class="console-progress-track"><div class="console-progress-fill" style="width:' . $pct . '%;"></div></div>'
+                . '<span>' . $usedLabel . '</span></div>';
 
             $endpointHtml = '';
             $activeEndpointCount = 0;
@@ -1481,19 +1960,25 @@ final class TenantController extends BaseController
                     . $this->escape((string) ($endpoint['node_name'] ?? $endpoint['node'] ?? 'Slave endpoint')) . '</div>';
             }
             if ($endpointHtml === '') {
-                $endpointHtml = $isRunning
-                    ? '<div class="muted">No endpoint assigned yet</div>'
-                    : '<div class="muted">Paused — endpoints released</div>';
+                if (!$isRunning) {
+                    $endpointHtml = '<div class="muted">Paused — endpoints released</div>';
+                } elseif ($serviceExpired) {
+                    $endpointHtml = '<div class="muted">Service expired — renew to resume</div>';
+                } elseif ($healthFailed) {
+                    $endpointHtml = '<div class="muted">未运行 · 无有效 Ultra 租约，尚未建立监听</div>';
+                } else {
+                    $endpointHtml = '<div class="muted">No endpoint assigned yet</div>';
+                }
             } else {
-                $endpointHtml = '<div class="muted">Total: ' . count($forward['endpoints']) . ' | Active: ' . $activeEndpointCount . '</div>' . $endpointHtml;
+                $endpointHtml = '<div class="muted"><span>Total</span> ' . count($forward['endpoints']) . ' · <span>Active</span> ' . $activeEndpointCount . '</div>' . $endpointHtml;
             }
 
             $targetCell = $this->escape((string) $forward['target_host']) . ':' . (int) $forward['target_port'];
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
                 if (!empty($forward['bond_sidecar_point_name'])) {
-                    $targetCell .= '<div class="muted">point ' . $this->escape((string) $forward['bond_sidecar_point_name']) . '</div>';
+                    $targetCell .= '<div class="muted"><span>Transport point</span> ' . $this->escape((string) $forward['bond_sidecar_point_name']) . '</div>';
                 }
-                $targetCell .= '<div class="muted">target transport ' . $this->escape((string) $forward['bond_remote_host']) . ':' . (int) ($forward['bond_remote_port'] ?? 0) . '</div>';
+                $targetCell .= '<div class="muted"><span>Target transport</span> ' . $this->escape((string) $forward['bond_remote_host']) . ':' . (int) ($forward['bond_remote_port'] ?? 0) . '</div>';
             }
 
             $actionsHtml = '';
@@ -1521,7 +2006,7 @@ final class TenantController extends BaseController
 
             $runtimeManagementHtml = '<div class="muted" style="margin-top:12px;">Manage client profiles and runtime installs from <a href="/tenant/clients"><strong>Client Profiles</strong></a>.</div>';
             if (in_array($this->canonicalClientMode((string) ($forward['client_mode'] ?? 'single')), ['bond', 'mptcp'], true) && !empty($forward['bond_remote_host'])) {
-                $runtimeManagementHtml .= '<div class="muted">Current target transport endpoint: '
+                $runtimeManagementHtml .= '<div class="muted"><span>Current target transport endpoint:</span> '
                     . $this->escape((string) $forward['bond_remote_host'])
                     . ':'
                     . (int) (($forward['bond_remote_port'] ?? 0) ?: $this->defaultBondRemotePort())
@@ -1665,51 +2150,67 @@ final class TenantController extends BaseController
             ['key' => 'overview', 'label' => 'Overview', 'href' => '/tenant/services/' . $serviceId . '?view=overview'],
             ['key' => 'forwards', 'label' => 'Forwards', 'href' => '/tenant/services/' . $serviceId . '?view=forwards'],
         ], $view);
+        $cycleUsedBytes = (int) ($billing['current_cycle_used_bytes'] ?? 0);
+        $cyclePct = $includedBytes > 0 ? min(100, (int) round($cycleUsedBytes / $includedBytes * 100)) : 0;
+        $isBundle = ((string) ($billing['mode'] ?? 'monthly_bundle')) === 'monthly_bundle';
+        $kv = function (array $pairs): string {
+            $html = '<dl class="console-kv">';
+            foreach ($pairs as [$label, $value]) {
+                $html .= '<dt>' . $label . '</dt><dd>' . $value . '</dd>';
+            }
+            return $html . '</dl>';
+        };
         $body = $tabs . '
             <div class="hero">
               <div>
-                <h2>' . $this->escape((string) $service['name']) . '</h2>
-                <p class="muted">Status: ' . $this->escape((string) $service['status']) . ' | Expire At: ' . $this->escape((string) $service['expire_at']) . '</p>
+                <div class="console-service-head" style="justify-content:flex-start;">
+                  <h2>' . $this->escape((string) $service['name']) . '</h2>
+                  ' . $this->tenantServiceStatusBadge($service) . '
+                </div>
+                <p class="muted"><span>Expires</span> ' . $this->escape((string) $service['expire_at']) . '</p>
               </div>
               <div class="actions">
-                <a class="button ghost" href="/tenant/forwards">返回转发配置</a>
+                <a class="button ghost" href="/tenant/forwards">Back to My Services</a>
               </div>
             </div>
             <div class="grid two">
               <section class="card">
                 <h3>Service Info</h3>
-                <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
-                  <div><div class="muted">Plan</div><strong>' . $this->escape((string) ($summary['plan_name'] ?? '')) . '</strong></div>
-                  <div><div class="muted">Expires</div><strong>' . $this->escape((string) $service['expire_at']) . '</strong></div>
-                  <div><div class="muted">Bandwidth</div><strong>' . (int) $service['bandwidth_limit_mbps'] . ' Mbps</strong></div>
-                  <div style="flex:1;min-width:220px;">
-                    <div class="muted">本期已用流量</div>
-                    <div style="display:flex;align-items:center;gap:8px;">
-                      <div style="flex:1;height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;">
-                        <div style="width:' . (($includedBytes > 0) ? min(100, (int) round(((int) ($billing['current_cycle_used_bytes'] ?? 0)) / $includedBytes * 100)) : 0) . '%;height:100%;background:#2563eb;"></div>
-                      </div>
-                      <span style="font-size:12px;white-space:nowrap;">' . $this->formatTrafficBytes((int) ($billing['current_cycle_used_bytes'] ?? 0)) . ' / ' . $this->formatTrafficBytes($includedBytes) . '</span>
-                    </div>
+                ' . $kv([
+                    ['Service ID', '<code>' . (int) $service['id'] . '</code> <span class="muted">used by the Forward Lines API</span>'],
+                    ['Plan', '<strong>' . $this->escape((string) ($summary['plan_name'] ?? '')) . '</strong>'],
+                    ['Expires', $this->escape((string) $service['expire_at'])],
+                    ['Bandwidth', (int) $service['bandwidth_limit_mbps'] . ' Mbps'],
+                ]) . '
+                <div style="margin-top:14px;">
+                  <div class="muted">Traffic used this cycle</div>
+                  <div class="console-progress">
+                    <div class="console-progress-track"><div class="console-progress-fill" style="width:' . $cyclePct . '%;"></div></div>
+                    <span>' . $this->formatTrafficBytes($cycleUsedBytes) . ' / ' . $this->formatTrafficBytes($includedBytes) . '</span>
                   </div>
                 </div>
                 <details style="margin-top:16px;">
-                  <summary>更多详情</summary>
-                  <p class="muted">WHMCS Service ID: ' . $this->escape((string) $service['whmcs_service_id']) . '</p>
-                  <p class="muted">Allowed Client Groups: ' . $this->escape(implode(', ', array_map(static fn(array $group): string => (string) $group['name'], $allowedClientGroups))) . '</p>
-                  <p class="muted">Traffic Policy: ' . (((string) ($billing['mode'] ?? 'monthly_bundle') === 'monthly_bundle') ? ((int) ($billing['included_traffic_gb'] ?? 0) . ' GB restored every billing month') : 'metered by monthly cycle') . '</p>
-                  <p class="muted">Lifetime Used Traffic: ' . round(((int) $service['traffic_used_bytes']) / 1024 / 1024 / 1024, 2) . ' GB</p>
-                  <div class="flash success" style="margin-top:16px;">
-                    <strong>Flexible Package</strong><br>
-                    Base Bandwidth: ' . (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
-                    Current Bandwidth: ' . (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps<br>
-                    Bandwidth Add-on: +' . (int) ($billing['bandwidth_step_mbps'] ?? 0) . ' Mbps => ' . $this->escape((string) ($billing['bandwidth_step_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
-                    Current Extra Bandwidth: ' . (int) ($billing['extra_bandwidth_mbps'] ?? 0) . ' Mbps (' . (int) ($billing['extra_bandwidth_steps'] ?? 0) . ' step)<br>
-                    Current Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                    Included Clients: ' . (int) ($billing['included_client_count'] ?? 0) . '<br>
-                    Current Explicit Clients In Use: ' . (int) ($billing['active_client_count'] ?? 0) . '<br>
-                    Extra Client Charge: ' . $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' each month<br>
-                    Current Extra Client Charge: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '
-                  </div>
+                  <summary>More details</summary>
+                  ' . $kv([
+                    ['WHMCS Service ID', $this->escape((string) $service['whmcs_service_id'])],
+                    ['Allowed client groups', $this->escape(implode(', ', array_map(static fn(array $group): string => (string) $group['name'], $allowedClientGroups))) ?: '-'],
+                    ['Traffic Policy', $isBundle
+                        ? (int) ($billing['included_traffic_gb'] ?? 0) . ' GB · <span>restored every billing month</span>'
+                        : '<span>metered by monthly cycle</span>'],
+                    ['Lifetime Used Traffic', round(((int) $service['traffic_used_bytes']) / 1024 / 1024 / 1024, 2) . ' GB'],
+                  ]) . '
+                  <h4 style="margin:18px 0 8px;">Flexible Package</h4>
+                  ' . $kv([
+                    ['Base Bandwidth', (int) ($billing['base_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps'],
+                    ['Current Bandwidth', (int) ($billing['current_bandwidth_mbps'] ?? $service['bandwidth_limit_mbps']) . ' Mbps'],
+                    ['Bandwidth step price', '+' . (int) ($billing['bandwidth_step_mbps'] ?? 0) . ' Mbps · ' . $this->escape((string) ($billing['bandwidth_step_price_formatted'] ?? 'CNY 0.00')) . ' <span>per month</span>'],
+                    ['Current Extra Bandwidth', (int) ($billing['extra_bandwidth_mbps'] ?? 0) . ' Mbps (' . (int) ($billing['extra_bandwidth_steps'] ?? 0) . ' <span>steps</span>)'],
+                    ['Current Bandwidth Add-on', $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00'))],
+                    ['Included Clients', (string) (int) ($billing['included_client_count'] ?? 0)],
+                    ['Clients in use', (string) (int) ($billing['active_client_count'] ?? 0)],
+                    ['Extra client price', $this->escape((string) ($billing['extra_client_price_formatted'] ?? 'CNY 0.00')) . ' <span>per month</span>'],
+                    ['Current Extra Client Charge', $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00'))],
+                  ]) . '
                   <form method="post" action="/tenant/services/' . (int) $service['id'] . '/flexible-options" style="margin-top:12px;">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <div class="form-grid">
@@ -1723,24 +2224,28 @@ final class TenantController extends BaseController
                       <button class="button secondary" type="submit">Update Flexible Options</button>
                     </div>
                   </form>
-                  <div class="flash success" style="margin-top:16px;">
-                    <strong>Billing This Cycle</strong><br>
-                    Mode: ' . $this->escape((string) ($billing['mode_label'] ?? 'Monthly Bundle')) . '<br>
-                    Base Fee: ' . $this->escape((string) ($billing['base_fee_formatted'] ?? 'CNY 0.00')) . '<br>
-                    Traffic Charge: ' . $this->escape((string) ($billing['traffic_charge_formatted'] ?? 'CNY 0.00')) . '<br>
-                    Bandwidth Add-on: ' . $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                    Client Add-on: ' . $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00')) . '<br>
-                    ' . (((string) ($billing['mode'] ?? 'monthly_bundle')) === 'monthly_bundle'
-                      ? 'Included Traffic: ' . (int) ($billing['included_traffic_gb'] ?? 0) . ' GB / month<br>Remaining Included Traffic: ' . $this->escape((string) (($billing['remaining_included_gb'] ?? 0))) . ' GB<br>'
-                      : 'Usage Price: ' . $this->escape((string) ($billing['traffic_price_per_gb_formatted'] ?? 'CNY 0.0000 / GB')) . '<br>Billable Traffic: ' . $this->escape((string) ($billing['billable_gb'] ?? 0)) . ' GB<br>') . '
-                    Current Estimate: ' . $this->escape((string) ($billing['estimated_total_formatted'] ?? 'CNY 0.00')) . '<br>
-                    Billing Cycle: ' . $this->escape((string) ($billing['cycle_started_at'] ?? '')) . ' -> ' . $this->escape((string) ($billing['cycle_ends_at'] ?? '')) . '
-                  </div>
-                  <div class="flash success" style="margin-top:16px;">
-                    <strong>Traffic Reset</strong><br>
-                    Reset Price: ' . $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2)) . '<br>
-                    This action resets <code>Current Cycle Used Traffic</code> back to 0 for this service. Lifetime traffic stays unchanged.
-                  </div>
+                  <h4 style="margin:18px 0 8px;">Billing This Cycle</h4>
+                  ' . $kv(array_merge([
+                    ['Billing mode', $this->escape((string) ($billing['mode_label'] ?? 'Monthly Bundle'))],
+                    ['Base Fee', $this->escape((string) ($billing['base_fee_formatted'] ?? 'CNY 0.00'))],
+                    ['Traffic Charge', $this->escape((string) ($billing['traffic_charge_formatted'] ?? 'CNY 0.00'))],
+                    ['Bandwidth Add-on', $this->escape((string) ($billing['bandwidth_addon_formatted'] ?? 'CNY 0.00'))],
+                    ['Client Add-on', $this->escape((string) ($billing['client_addon_formatted'] ?? 'CNY 0.00'))],
+                  ], $isBundle ? [
+                    ['Included Traffic', (int) ($billing['included_traffic_gb'] ?? 0) . ' GB / <span>month</span>'],
+                    ['Remaining Included Traffic', $this->escape((string) ($billing['remaining_included_gb'] ?? 0)) . ' GB'],
+                  ] : [
+                    ['Usage Price', $this->escape((string) ($billing['traffic_price_per_gb_formatted'] ?? 'CNY 0.0000 / GB'))],
+                    ['Billable Traffic', $this->escape((string) ($billing['billable_gb'] ?? 0)) . ' GB'],
+                  ], [
+                    ['Current Estimate', '<strong>' . $this->escape((string) ($billing['estimated_total_formatted'] ?? 'CNY 0.00')) . '</strong>'],
+                    ['Billing Cycle', $this->escape((string) ($billing['cycle_started_at'] ?? '')) . ' → ' . $this->escape((string) ($billing['cycle_ends_at'] ?? ''))],
+                  ])) . '
+                  <h4 style="margin:18px 0 8px;">Traffic Reset</h4>
+                  ' . $kv([
+                    ['Reset Price', $this->escape($trafficResetCurrency) . ' ' . $this->escape(number_format($trafficResetPrice, 2))],
+                  ]) . '
+                  <p class="muted" style="margin-top:8px;">Resetting sets this cycle&#39;s used traffic back to 0. Lifetime traffic stays unchanged.</p>
                   <form method="post" action="/tenant/services/' . (int) $service['id'] . '/reset-traffic" style="margin-top:12px;">
                     <input type="hidden" name="csrf_token" value="' . $csrf . '">
                     <div class="actions">
@@ -1753,7 +2258,7 @@ final class TenantController extends BaseController
                       <tbody>' . $billingHistoryRows . '</tbody>
                     </table>
                   </div>
-                  <h3 style="margin-top:18px;">Available Lines</h3>
+                  <h4 style="margin:18px 0 8px;">Available Lines</h4>
                   <ul class="list">' . $availableClientHtml . '</ul>
                   <p class="muted">If there is no line here, admin still needs to create a client and authorize it through your plan.</p>
                   <div class="actions">
@@ -1768,7 +2273,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Create Forward</h3>
                 <p class="muted">Choose one route package, then fill your backend target on the dedicated create page.</p>
-                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connection-modes-single-race-bond">Choose a connection mode</a> &middot; <a href="/knowledgebase?thread=bond-sidecar-setup">Set up Bond and Sidecar</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
+                <p class="field-note">Need help? <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create your first forward</a> &middot; <a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a> &middot; <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot a connection</a> &middot; <a href="/knowledgebase?thread=glossary">Read the glossary</a></p>
                 ' . (empty($features['allow_manage_forwards']) ? '<div class="flash danger">Forward creation is disabled for your plan/account.</div>' : '') . '
                 ' . $createForwardNotice . '
                 <div class="actions" style="margin-top:12px;">
@@ -1782,7 +2287,7 @@ final class TenantController extends BaseController
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>ID</th><th>Local Listen</th><th>Forward Combination</th><th>Target</th><th>Transport</th><th>本期用量</th><th>Status</th><th>Endpoint Status</th><th>Actions</th></tr>
+                    <tr><th>ID</th><th>Local Listen</th><th>Route</th><th>Target</th><th>Transport</th><th>Usage this cycle</th><th>Status</th><th>Endpoint Status</th><th>Actions</th></tr>
                   </thead>
                   <tbody>' . $rows . '</tbody>
                 </table>
@@ -1790,7 +2295,7 @@ final class TenantController extends BaseController
             </section>'
             . $mySlavesSection;
 
-        return $this->page('服务详情', $body, $user, $this->tenantNav('service', $serviceId));
+        return $this->page('Service Details', $body, $user, $this->tenantNav('service', $serviceId));
     }
 
     public function forwardWizardRedirect(Request $request, array $params): Response
@@ -1821,6 +2326,14 @@ final class TenantController extends BaseController
 
             $summary = $this->provisioning->serviceSummary($serviceId);
             $features = $summary['effective_features'] ?? [];
+            $plan = $this->db->fetchOne(
+                'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => (int) ($service['plan_id'] ?? 0)]
+            );
+            $planFeatureRow = [
+                'plan_feature_flags_json' => is_array($plan) ? (string) ($plan['feature_flags_json'] ?? '') : '',
+            ];
+            $nativeAllowed = $this->provisioning->planAllowsNativeOutbound($planFeatureRow);
             $availableForwardCombinations = is_array($summary['available_forward_combinations'] ?? null) ? $summary['available_forward_combinations'] : [];
             $forwardLimit = $this->provisioning->forwardLimitForService($serviceId);
         } catch (\Throwable $throwable) {
@@ -1891,8 +2404,9 @@ final class TenantController extends BaseController
                 <input type="hidden" name="target_source" value="manual">
                 <div class="form-grid">
                   <div class="field"><label>Forward Route</label><select name="forward_route_id" required>' . $routeOptions . '</select></div>
-                  <div class="field"><label>Target Host</label><input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required></div>
-                  <div class="field"><label>Target Port</label><input type="number" name="target_port" placeholder="443" required></div>
+                  ' . ($nativeAllowed ? '<div class="field"><label><input type="checkbox" name="native_outbound" value="1" id="native-outbound-toggle"> Native outbound</label><div class="field-note">Use the plan-provided Ultra SOCKS5 exit. The panel will assign a local loopback target.</div></div>' : '') . '
+                  <div class="field"><label>Target Host</label><input type="text" name="target_host" id="native-target-host" placeholder="10.0.0.5 or example.com" required></div>
+                  <div class="field"><label>Target Port</label><input type="number" name="target_port" id="native-target-port" placeholder="443" required></div>
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
                   <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp">TCP</option><option value="tcp+udp">TCP + UDP</option><option value="udp">UDP</option></select></div>
                 </div>
@@ -1902,6 +2416,7 @@ final class TenantController extends BaseController
                   <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
+              ' . ($nativeAllowed ? '<script>(function(){const toggle=document.getElementById("native-outbound-toggle");const host=document.getElementById("native-target-host");const port=document.getElementById("native-target-port");function sync(){const native=toggle.checked;host.disabled=native;port.disabled=native;host.required=!native;port.required=!native;host.placeholder=native?"Generated by panel":"10.0.0.5 or example.com";port.placeholder=native?"Generated by panel":"443";}toggle.addEventListener("change",sync);sync();}());</script>' : '') . '
             </div>';
 
         return $this->page('Create Forward', $body, $user, $this->tenantNav('wizard', $serviceId));
@@ -1936,6 +2451,20 @@ final class TenantController extends BaseController
             }
             $this->assertTenantServiceActive($forward);
             $this->assertTenantForwardFeature($serviceId, 'allow_manage_forwards', 'feature_denied_manage_forwards');
+            $plan = $this->db->fetchOne(
+                'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                ['id' => (int) ($forward['plan_id'] ?? 0)]
+            );
+            if (!is_array($plan)) {
+                $serviceRow = $this->db->fetchOne('SELECT plan_id FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+                $plan = $this->db->fetchOne(
+                    'SELECT feature_flags_json FROM service_plans WHERE id = :id LIMIT 1',
+                    ['id' => (int) ($serviceRow['plan_id'] ?? 0)]
+                );
+            }
+            $nativeAllowed = $this->provisioning->planAllowsNativeOutbound([
+                'plan_feature_flags_json' => is_array($plan) ? (string) ($plan['feature_flags_json'] ?? '') : '',
+            ]);
 
         $csrf = $this->escape(SessionAuth::csrfToken());
         $targetHostField = (string) ($forward['target_source'] ?? 'manual') === 'service_ip'
@@ -1953,8 +2482,9 @@ final class TenantController extends BaseController
                 <input type="hidden" name="csrf_token" value="' . $csrf . '">
                 <div class="form-grid">
                   <div class="field"><label>Current Forward Route</label><div class="value-chip">' . $this->escape((string) ($forward['forward_route_label'] ?? '')) . '</div></div>
-                  ' . $targetHostField . '
-                  <div class="field"><label>Target Port</label><input type="number" name="target_port" value="' . (int) $forward['target_port'] . '" required></div>
+                  ' . ($nativeAllowed || !empty($forward['native_outbound_enabled']) ? '<div class="field"><label><input type="checkbox" name="native_outbound" value="1" id="native-outbound-toggle"' . (!empty($forward['native_outbound_enabled']) ? ' checked' : '') . '> Native outbound</label><div class="field-note">Native target is generated by the panel.</div></div>' : '') . '
+                  ' . str_replace('name="target_host"', 'name="target_host" id="native-target-host"', $targetHostField) . '
+                  <div class="field"><label>Target Port</label><input type="number" name="target_port" id="native-target-port" value="' . (int) $forward['target_port'] . '" required></div>
                   <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" value="' . (int) $forward['listen_port'] . '"></div>
                   <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp"' . ((string) $forward['transport_mode'] === 'tcp' ? ' selected' : '') . '>TCP</option><option value="tcp+udp"' . ((string) $forward['transport_mode'] === 'tcp+udp' ? ' selected' : '') . '>TCP + UDP</option><option value="udp"' . ((string) $forward['transport_mode'] === 'udp' ? ' selected' : '') . '>UDP</option></select></div>
                 </div>
@@ -1963,6 +2493,7 @@ final class TenantController extends BaseController
                   <a class="button ghost" href="/tenant/services/' . $serviceId . '">Cancel</a>
                 </div>
               </form>
+              ' . ($nativeAllowed || !empty($forward['native_outbound_enabled']) ? '<script>(function(){const toggle=document.getElementById("native-outbound-toggle");const host=document.getElementById("native-target-host");const port=document.getElementById("native-target-port");function sync(){const native=toggle.checked;host.disabled=native;port.disabled=native;host.required=!native;port.required=!native;}toggle.addEventListener("change",sync);sync();}());</script>' : '') . '
             </div>';
 
             return $this->page('Edit Forward', $body, $user, $this->tenantNav('service', $serviceId));
@@ -2004,7 +2535,8 @@ final class TenantController extends BaseController
                 $this->normalizeTenantForwardEditPayload($request->body())
             );
             $payload = ForwardLineApiContract::mergePatch($forward, $changes);
-            $structural = (array_key_exists('transport_mode', $changes)
+            $structural = array_key_exists('native_outbound', $changes)
+                || (array_key_exists('transport_mode', $changes)
                     && (string) $payload['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
                 || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
             if ($structural) {
@@ -2067,7 +2599,27 @@ final class TenantController extends BaseController
 
             $currentClientProfiles = count($this->provisioning->listClientsForUser((int) $user['id']));
             $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
-            $isCreate = (int) $request->input('id', 0) <= 0;
+            $clientId = (int) $request->input('id', 0);
+            $isCreate = $clientId <= 0;
+
+            // Security: a tenant may only edit a client it owns. saveClient()
+            // loads/updates purely by id, so without this an attacker could POST
+            // id=<victim client> and take the client (and its bound forwards)
+            // over by resetting owner_user_id to themselves.
+            if (!$isCreate) {
+                $ownedClient = $this->db->fetchOne(
+                    'SELECT id FROM clients WHERE id = :id AND owner_user_id = :user_id LIMIT 1',
+                    ['id' => $clientId, 'user_id' => $user['id']]
+                );
+                if ($ownedClient === null) {
+                    throw new ApiException('client_not_found', 404);
+                }
+            }
+
+            // Security: the online device limit is a billed entitlement. It is
+            // clamped to the owner's plan default, never taken raw from the form.
+            $planDeviceLimit = $this->provisioning->defaultClientOnlineDeviceLimitForTenant((int) $user['id']);
+            $deviceLimit = min(max(1, (int) $request->input('online_device_limit', 1)), $planDeviceLimit);
 
             if ($isCreate) {
                 if ($currentClientProfiles >= $maxClientProfiles) {
@@ -2105,7 +2657,7 @@ final class TenantController extends BaseController
                 'nic_name' => $request->input('nic_name'),
                 'port_range_start' => $request->input('port_range_start'),
                 'port_range_end' => $request->input('port_range_end'),
-                'online_device_limit' => $request->input('online_device_limit', 1),
+                'online_device_limit' => $deviceLimit,
                 'traffic_multiplier' => $request->input('traffic_multiplier', '1.00'),
                 'default_endpoint_mode' => $request->input('default_endpoint_mode', 'slave_group'),
                 'default_node_group_key' => $request->input('default_node_group_key'),
@@ -2143,6 +2695,7 @@ final class TenantController extends BaseController
             if ($client === null) {
                 throw new ApiException('client_not_found', 404);
             }
+            $debugCollection = (new DebugCollectionStore($this->db, $this->config))->create($clientId);
             $token = bin2hex(random_bytes(24));
             $this->db->execute(
                 'UPDATE clients
@@ -2160,7 +2713,7 @@ final class TenantController extends BaseController
                     'updated_at' => gmdate('Y-m-d H:i:s'),
                 ]
             );
-            SessionAuth::flash('success', 'Diagnostics requested. Wait for the client-agent to sync and refresh this page.');
+            SessionAuth::flash('success', 'Diagnostics requested. Debug collection expires at ' . (string) ($debugCollection['expires_at'] ?? '') . '.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Failed to request diagnostics: ' . $throwable->getMessage());
         }
@@ -2791,6 +3344,7 @@ final class TenantController extends BaseController
                 'tcp' => 'tcp',
                 default => $transportInput,
             },
+            'native_outbound' => in_array(strtolower(trim((string) ($payload['native_outbound'] ?? ''))), ['1', 'true', 'on'], true),
         ];
 
         if ($targetSource === 'service_ip') {
@@ -2823,6 +3377,7 @@ final class TenantController extends BaseController
                 'tcp' => 'tcp',
                 default => $transportInput,
             },
+            'native_outbound' => in_array(strtolower(trim((string) ($payload['native_outbound'] ?? ''))), ['1', 'true', 'on'], true),
         ];
         if (array_key_exists('target_host', $payload)) {
             $normalized['target_host'] = trim((string) $payload['target_host']);
@@ -3071,6 +3626,7 @@ final class TenantController extends BaseController
                 'feature_denied_manage_forwards', 'feature_denied_delete_forwards' => 'Your plan or account does not allow this forward operation.',
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
+                'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
                 default => 'The forward operation could not be completed.',
             };
@@ -3112,15 +3668,54 @@ final class TenantController extends BaseController
      */
     private function tenantNav(string $active, ?int $serviceId = null): array
     {
-        return [
-            ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
-            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
-            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages', 'active' => $active === 'plans'],
-            ['group' => '客户端', 'href' => '/tenant/clients', 'label' => '客户端', 'active' => $active === 'clients'],
-            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account', 'active' => $active === 'account'],
-            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
-            ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
-        ];
+        return $this->tenantNavigationItems($active);
+    }
+
+    /** @param array<string, mixed> $service */
+    private function tenantServiceStatusBadge(array $service): string
+    {
+        $status = ServiceStatus::effective($service);
+        [$label, $class] = match ($status) {
+            'active' => ['Active', 'success'],
+            'pending' => ['Pending activation', 'warning'],
+            'suspended' => ['Suspended', 'danger'],
+            'traffic_suspended' => ['Out of traffic', 'danger'],
+            'expired' => ['Expired', 'danger'],
+            default => [$status !== '' ? $status : 'Unknown', ''],
+        };
+        return '<span class="badge ' . $class . '">' . $this->escape($label) . '</span>';
+    }
+
+    /** @return array<string, mixed>|null */
+    private function tenantUser(): ?array
+    {
+        $user = SessionAuth::currentUser($this->db);
+        if ($user === null || (string) ($user['role'] ?? '') !== 'tenant') {
+            return null;
+        }
+        return $user;
+    }
+
+    /** @return array{0:int,1:string} */
+    private function ownedTenantDevice(array $user, Request $request): array
+    {
+        $clientId = (int) $request->input('client_id', 0);
+        $uuidValue = trim((string) $request->input('device_uuid', ''));
+        $idValue = trim((string) $request->input('device_id', ''));
+        if ($uuidValue !== '' && $idValue !== '' && !hash_equals($uuidValue, $idValue)) {
+            throw new ApiException('device_id_invalid', 422);
+        }
+        $deviceUuid = $uuidValue !== '' ? $uuidValue : $idValue;
+        if ($clientId <= 0 || $deviceUuid === '' || strlen($deviceUuid) > 191 || preg_match('/[\x00-\x20\x7f]/', $deviceUuid) === 1) {
+            throw new ApiException('invalid_device', 400);
+        }
+        foreach ($this->accessPolicy->tenantDeviceRows((int) $user['id']) as $device) {
+            if ((int) ($device['client_id'] ?? 0) === $clientId
+                && hash_equals($deviceUuid, (string) ($device['device_uuid'] ?? ''))) {
+                return [$clientId, $deviceUuid];
+            }
+        }
+        throw new ApiException('device_not_owned', 403);
     }
 
     private function whmcsIdentityService(): WhmcsIdentityService

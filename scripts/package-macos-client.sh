@@ -11,6 +11,8 @@ output_dir=""
 source_commit="unknown"
 metadata_path=""
 merge_versions=""
+managed_load_receipt=""
+ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals}"
 dry_run=0
 helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
@@ -24,6 +26,8 @@ usage() {
 Usage: scripts/package-macos-client.sh --rid <osx-arm64|osx-x64> --version <version> --publish-dir <path> --helper-dir <path> --helper-hashes <path> [options]
   --output-dir <path>       Artifact output directory
   --source-commit <sha>     Source revision for metadata
+  --managed-load-receipt <path>
+                            Hash-bound probe receipt for cross-architecture packaging
   --dry-run                 Validate inputs without creating an app/DMG/ZIP
 
 Metadata merge mode:
@@ -41,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --helper-hashes) helper_hashes="${2:-}"; shift 2 ;;
     --output-dir) output_dir="${2:-}"; shift 2 ;;
     --source-commit) source_commit="${2:-}"; shift 2 ;;
+    --managed-load-receipt) managed_load_receipt="${2:-}"; shift 2 ;;
     --metadata) metadata_path="${2:-}"; shift 2 ;;
     --merge-versions) merge_versions="${2:-}"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
@@ -121,7 +126,7 @@ for key, entry in artifacts.items():
         raise SystemExit(f"invalid artifact architecture: {key}")
     if str(entry.get("format", "")) != expected_format:
         raise SystemExit(f"invalid artifact format: {key}")
-    versions[key] = {
+    merged = {
         "version": str(entry["version"]),
         "path": expected_path,
         "artifact_url": expected_url,
@@ -130,6 +135,30 @@ for key, entry in artifacts.items():
         "architecture": expected_architecture,
         "format": expected_format,
     }
+    hardening = entry.get("hardening")
+    if isinstance(hardening, dict):
+        allowed_hardening = {
+            name: str(hardening[name])
+            for name in ("ultra_client", "native_helpers", "managed_symbols")
+            if name in hardening and str(hardening[name]).strip()
+        }
+        if allowed_hardening:
+            merged["hardening"] = allowed_hardening
+    runtime_sha256 = entry.get("runtime_sha256")
+    if not isinstance(runtime_sha256, dict) or not runtime_sha256:
+        raise SystemExit(f"runtime hashes missing: {key}")
+    normalized_runtime = {}
+    for runtime_path, runtime_hash in runtime_sha256.items():
+        relative_runtime = pathlib.PurePosixPath(str(runtime_path))
+        if (relative_runtime.as_posix() != str(runtime_path)
+                or not str(runtime_path).startswith("bin/")
+                or relative_runtime.is_absolute()
+                or ".." in relative_runtime.parts
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", str(runtime_hash))):
+            raise SystemExit(f"invalid runtime hash: {key}:{runtime_path}")
+        normalized_runtime[str(runtime_path)] = str(runtime_hash).lower()
+    merged["runtime_sha256"] = normalized_runtime
+    versions[key] = merged
 
 versions_path.parent.mkdir(parents=True, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=versions_path.name + ".", suffix=".tmp", dir=versions_path.parent)
@@ -163,6 +192,34 @@ esac
 [[ -d "$helper_dir" ]] || fail "helper directory missing"
 [[ -f "$helper_hashes" ]] || fail "helper hash manifest missing"
 [[ -f "$publish_dir/LeikwanBridge.Mac" ]] || fail "main executable missing"
+for managed_file in \
+  LeikwanBridge.Mac.dll \
+  LeikwanBridge.Core.dll \
+  LeikwanBridge.Mac.deps.json \
+  LeikwanBridge.Mac.runtimeconfig.json; do
+  [[ -f "$publish_dir/$managed_file" ]] || fail "managed publish file missing: $managed_file"
+done
+python3 - "$publish_dir" "$version" "$rid" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+version, rid = sys.argv[2:]
+deps = json.loads((root / 'LeikwanBridge.Mac.deps.json').read_text(encoding='utf-8-sig'))
+target_name = deps['runtimeTarget']['name']
+if not target_name.endswith('/' + rid):
+    raise SystemExit('managed dependency manifest RID mismatch')
+target = deps['targets'][target_name]
+app = target.get('LeikwanBridge.Mac/' + version)
+if app is None:
+    raise SystemExit('managed dependency manifest version mismatch')
+core_version = app['dependencies']['LeikwanBridge.Core']
+core = target['LeikwanBridge.Core/' + core_version]
+if 'LeikwanBridge.Mac.dll' not in app['runtime'] or 'LeikwanBridge.Core.dll' not in core['runtime']:
+    raise SystemExit('managed dependency manifest assembly missing')
+json.loads((root / 'LeikwanBridge.Mac.runtimeconfig.json').read_text(encoding='utf-8-sig'))
+PY
 
 forbidden_input="$(find "$publish_dir" "$helper_dir" -type f \( \
   -name '*.pdb' -o -name '*.cs' -o -name '*.fs' -o -name '*.vb' -o \
@@ -176,8 +233,7 @@ unexpected_app="$(find "$publish_dir" -type d -name '*.app' -print -quit)"
 check_architecture() {
   local path="$1"
   local detected=""
-  if command -v lipo >/dev/null 2>&1; then
-    detected="$(lipo -archs "$path" 2>/dev/null || true)"
+  if command -v lipo >/dev/null 2>&1 && detected="$(lipo -archs "$path" 2>/dev/null)"; then
     [[ "$detected" == "$architecture" ]] || fail "wrong architecture for $(basename "$path"): $detected"
     return
   fi
@@ -192,7 +248,7 @@ check_architecture "$publish_dir/LeikwanBridge.Mac"
 for helper in $helpers; do
   path="$helper_dir/$helper"
   [[ -f "$path" ]] || fail "required helper missing: $helper"
-  expected="$(awk -v name="$helper" '$2 == name || $2 == "*" name { print tolower($1) }' "$helper_hashes")"
+  expected="$(awk -v name="$helper" '{ sub(/\r$/, "") } $2 == name || $2 == "*" name { print tolower($1) }' "$helper_hashes")"
   [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || fail "helper hash entry missing or duplicated: $helper"
   actual="$(sha256_file "$path")"
   [[ "$actual" == "$expected" ]] || fail "helper hash mismatch: $helper"
@@ -208,7 +264,7 @@ if [[ "$dry_run" -eq 1 ]]; then
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "DMG packaging requires macOS"
-for command in hdiutil ditto sips iconutil plutil python3 shasum lipo; do
+for command in hdiutil ditto sips iconutil plutil python3 shasum file codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "required command missing: $command"
 done
 
@@ -217,13 +273,23 @@ icon_png="$repo_root/LeikwanBridge.Desktop/src/LeikwanBridge.Mac/Assets/app-icon
 [[ -f "$template" && -f "$icon_png" ]] || fail "bundle template or icon missing"
 mkdir -p "$output_dir"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/leikwan-macos-package.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
+mount_point=""
+cleanup_package() {
+  if [[ -n "$mount_point" ]] && ! hdiutil detach "$mount_point" >/dev/null 2>&1; then
+    printf 'package-macos-client: retaining mounted verification directory: %s\n' "$work_dir" >&2
+    return
+  fi
+  rm -rf "$work_dir"
+}
+trap cleanup_package EXIT
 app="$work_dir/LeiKwan Bridge.app"
 macos_dir="$app/Contents/MacOS"
 resources_dir="$app/Contents/Resources"
 bundle_helpers="$resources_dir/bin"
-mkdir -p "$macos_dir" "$bundle_helpers"
-cp -R "$publish_dir"/. "$macos_dir"/
+managed_dir="$resources_dir/dotnet"
+mkdir -p "$macos_dir" "$bundle_helpers" "$managed_dir"
+cp -R "$publish_dir"/. "$managed_dir"/
+mv "$managed_dir/LeikwanBridge.Mac" "$macos_dir/LeikwanBridge.Mac"
 for helper in $helpers; do
   cp "$helper_dir/$helper" "$bundle_helpers/$helper"
 done
@@ -285,6 +351,26 @@ forbidden_bundle="$(find "$app" -type f \( \
   -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -iname '*credential*' -o -iname '*secret*' \
 \) -print -quit)"
 [[ -z "$forbidden_bundle" ]] || fail "forbidden material entered app bundle"
+python3 "$repo_root/scripts/prepare-macos-bundle.py" "$app"
+
+host_architecture="$(uname -m)"
+if [[ "$host_architecture" == "$architecture" ]]; then
+  load_probe_log="$work_dir/managed-load-probe.log"
+  set +e
+  LEIKWAN_TEST_ULTRA_CANARY= "$macos_dir/LeikwanBridge.Mac" --ultra-leak-fixture \
+    </dev/null >"$load_probe_log" 2>&1
+  load_probe_status=$?
+  set -e
+  if [[ "$load_probe_status" -ne 2 ]]; then
+    cat "$load_probe_log" >&2 || true
+    fail "managed bundle load probe failed with exit $load_probe_status"
+  fi
+else
+  [[ -f "$managed_load_receipt" ]] \
+    || fail "managed load receipt required for cross-architecture packaging"
+  python3 "$repo_root/scripts/verify-macos-managed-load-receipt.py" \
+    "$publish_dir" "$managed_load_receipt" --rid "$rid" --version "$version"
+fi
 
 dmg="$output_dir/leikwan-bridge-$suffix.dmg"
 update_zip="$output_dir/leikwan-bridge-update-$suffix.zip"
@@ -295,6 +381,15 @@ ditto "$app" "$dmg_root/LeiKwan Bridge.app"
 ln -s /Applications "$dmg_root/Applications"
 rm -f "$dmg" "$update_zip" "$metadata"
 hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+hdiutil verify "$dmg" >/dev/null
+mount_point="$work_dir/verify-mount"
+mkdir -p "$mount_point"
+hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" "$dmg" >/dev/null
+python3 "$repo_root/scripts/verify-macos-dmg-layout.py" "$mount_point" \
+  --version "$version" --architecture "$architecture"
+codesign --verify --deep --strict --verbose=2 "$mount_point/LeiKwan Bridge.app"
+hdiutil detach "$mount_point" >/dev/null
+mount_point=""
 ditto -c -k --sequesterRsrc --keepParent "$app" "$update_zip"
 
 dmg_sha="$(sha256_file "$dmg")"
@@ -307,7 +402,7 @@ dotnet_version="$(dotnet --version 2>/dev/null || printf unknown)"
 
 python3 - "$metadata" "$version" "$architecture" "$suffix" "$source_commit" \
   "$dmg_sha" "$dmg_size" "$zip_sha" "$zip_size" "$resources_dir/helper-manifest.json" \
-  "$go_version" "$rust_version" "$dotnet_version" <<'PY'
+  "$go_version" "$rust_version" "$dotnet_version" "$ultra_hardening" <<'PY'
 import json
 import pathlib
 import sys
@@ -326,12 +421,20 @@ import sys
     go_version,
     rust_version,
     dotnet_version,
+    ultra_hardening,
 ) = sys.argv[1:]
 app_key = "macos_client_app_" + suffix
 update_key = "macos_client_update_" + suffix
 dmg_name = "leikwan-bridge-" + suffix + ".dmg"
 zip_name = "leikwan-bridge-update-" + suffix + ".zip"
 helpers = json.loads(pathlib.Path(helper_manifest).read_text(encoding="utf-8"))
+runtime_sha256 = {
+    str(helper["path"]): str(helper["sha256"]).lower()
+    for helper in helpers.get("helpers", [])
+    if isinstance(helper, dict) and helper.get("path") and helper.get("sha256")
+}
+if not runtime_sha256:
+    raise SystemExit("helper manifest has no runtime hashes")
 payload = {
     "version": version,
     "architecture": architecture,
@@ -345,6 +448,12 @@ payload = {
             "size_bytes": int(dmg_size),
             "architecture": architecture,
             "format": "dmg",
+            "hardening": {
+                "ultra_client": ultra_hardening,
+                "native_helpers": "release-strip",
+                "managed_symbols": "disabled",
+            },
+            "runtime_sha256": runtime_sha256,
         },
         update_key: {
             "version": version,
@@ -354,6 +463,12 @@ payload = {
             "size_bytes": int(zip_size),
             "architecture": architecture,
             "format": "zip",
+            "hardening": {
+                "ultra_client": ultra_hardening,
+                "native_helpers": "release-strip",
+                "managed_symbols": "disabled",
+            },
+            "runtime_sha256": runtime_sha256,
         },
     },
     "helpers": helpers,

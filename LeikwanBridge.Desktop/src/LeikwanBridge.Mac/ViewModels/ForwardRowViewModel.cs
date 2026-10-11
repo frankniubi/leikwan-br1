@@ -2,12 +2,19 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Mac.Services;
 
 namespace LeikwanBridge.Mac.ViewModels;
 
 public sealed partial class ForwardRowViewModel : ObservableObject
 {
     private readonly IDesktopClientController _controller;
+    private bool _suppressPairCallback;
+
+    public Func<Task>? StartConnection { get; set; }
+    public Func<Task>? StopConnection { get; set; }
+    public Func<int, Task>? PairNode { get; set; }
+    public IReadOnlyList<MacConnectionProfile> NodeOptions { get; set; } = [];
 
     public ForwardRowViewModel(IDesktopClientController controller, DesktopForwardSnapshot snapshot)
     {
@@ -18,12 +25,49 @@ public sealed partial class ForwardRowViewModel : ObservableObject
         ListenPort = snapshot.ListenPort;
         IsRunning = snapshot.IsRunning;
         Status = snapshot.Status;
+        IsNativeOutboundRule = snapshot.IsNativeOutboundRule;
     }
 
     public int ForwardId { get; }
     public string DisplayName { get; }
     public string Mode { get; }
     public int ListenPort { get; }
+
+    [ObservableProperty]
+    private string _savedNodeName = "未选择已保存节点";
+
+    [ObservableProperty]
+    private MacConnectionProfile? _selectedNode;
+
+    public bool IsPaired => SelectedNode is { Id: > 0 };
+
+    public void SetSavedNode(MacConnectionProfile? profile)
+    {
+        if (profile is { Id: <= 0 })
+            profile = null;
+        _suppressPairCallback = true;
+        SelectedNode = profile;
+        _suppressPairCallback = false;
+        SavedNodeName = string.IsNullOrWhiteSpace(profile?.Name)
+            ? "未选择已保存节点"
+            : profile.Name.Trim();
+        OnPropertyChanged(nameof(IsPaired));
+    }
+
+    partial void OnSelectedNodeChanged(MacConnectionProfile? value)
+    {
+        if (value is { Id: <= 0 })
+        {
+            _suppressPairCallback = true;
+            SelectedNode = null;
+            _suppressPairCallback = false;
+            return;
+        }
+        SavedNodeName = string.IsNullOrWhiteSpace(value?.Name) ? "未选择已保存节点" : value.Name.Trim();
+        OnPropertyChanged(nameof(IsPaired));
+        if (!_suppressPairCallback && PairNode is not null)
+            _ = PairNode(value?.Id ?? 0);
+    }
 
     [ObservableProperty]
     private bool _isRunning;
@@ -34,9 +78,16 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [ObservableProperty]
     private bool _isBusy;
 
+    /// <summary>
+    /// Panel-declared native outbound rule: configuration only. Its data plane
+    /// belongs to a user-initiated native outbound connection, so the row never
+    /// offers, and never honours, an agent-side start/stop action.
+    /// </summary>
+    public bool IsNativeOutboundRule { get; }
+
     public string PortText => $"127.0.0.1:{ListenPort}";
-    public bool CanStart => !IsBusy && !IsRunning;
-    public bool CanStop => !IsBusy && IsRunning;
+    public bool CanStart => !IsNativeOutboundRule && !IsBusy && !IsRunning;
+    public bool CanStop => !IsNativeOutboundRule && !IsBusy && IsRunning;
 
     partial void OnIsRunningChanged(bool value)
     {
@@ -53,14 +104,15 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
-        if (!CanStart)
+        if (IsNativeOutboundRule || !CanStart)
             return;
         IsBusy = true;
         try
         {
             await _controller.StartForwardAsync(ForwardId);
-            IsRunning = true;
-            Status = "running";
+            var current = _controller.Snapshot.Forwards.FirstOrDefault(item => item.ForwardId == ForwardId);
+            IsRunning = current?.IsRunning == true;
+            Status = current?.Status ?? "stopped";
         }
         finally
         {
@@ -71,7 +123,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     [RelayCommand]
     private async Task StopAsync()
     {
-        if (!CanStop)
+        if (IsNativeOutboundRule || !CanStop)
             return;
         IsBusy = true;
         try
@@ -85,4 +137,10 @@ public sealed partial class ForwardRowViewModel : ObservableObject
             IsBusy = false;
         }
     }
+
+    [RelayCommand]
+    private Task StartConnectionAsync() => StartConnection?.Invoke() ?? Task.CompletedTask;
+
+    [RelayCommand]
+    private Task StopConnectionAsync() => StopConnection?.Invoke() ?? Task.CompletedTask;
 }

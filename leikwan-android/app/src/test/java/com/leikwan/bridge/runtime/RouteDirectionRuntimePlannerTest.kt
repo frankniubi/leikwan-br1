@@ -94,8 +94,10 @@ class RouteDirectionRuntimePlannerTest {
                   "forward_id": 77,
                   "service_name": "helper-dir-sh-jp-1",
                   "target": "93.184.216.34:443",
-                  "listen_port": 11077,
-                  "mode": "single",
+                   "listen_port": 11077,
+                   "mode": "single",
+                   "backend_mode": "current_mode",
+                   "client_mode": "single",
                   "transport": "tcp_udp",
                   "service_status": "active",
                   "endpoint_mode": "manual",
@@ -292,6 +294,12 @@ class RouteDirectionRuntimePlannerTest {
         target = "93.184.216.34:443",
         listenPort = 11077,
         mode = mode,
+        backendMode = "current_mode",
+        clientMode = when (mode) {
+            ForwardMode.SINGLE -> "single"
+            ForwardMode.BOND -> "bond"
+            else -> mode.wireValue
+        },
         transport = "tcp_udp",
         serviceStatus = "active",
         endpointMode = "manual",

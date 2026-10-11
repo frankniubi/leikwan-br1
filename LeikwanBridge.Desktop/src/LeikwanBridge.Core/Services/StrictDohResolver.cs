@@ -9,6 +9,7 @@ public sealed class StrictDohResolver : ILeikwanDnsResolver, IDisposable
 {
     private readonly IReadOnlyList<DohProvider> _providers;
     private readonly Dictionary<DohProvider, HttpClient> _clients;
+    private readonly Action<Socket>? _configureSocket;
     private bool _disposed;
 
     public static IReadOnlyList<DohProvider> DefaultProviders { get; } =
@@ -33,13 +34,17 @@ public sealed class StrictDohResolver : ILeikwanDnsResolver, IDisposable
     }
 
     public StrictDohResolver(IReadOnlyList<DohProvider> providers)
-        : this(providers, provider => null)
+        : this(providers, null, null)
     {
     }
 
-    internal StrictDohResolver(IReadOnlyList<DohProvider> providers, Func<DohProvider, HttpClient?>? clientFactory)
+    internal StrictDohResolver(
+        IReadOnlyList<DohProvider> providers,
+        Func<DohProvider, HttpClient?>? clientFactory = null,
+        Action<Socket>? configureSocket = null)
     {
         _providers = providers.Count == 0 ? throw new ArgumentException("At least one DoH provider is required", nameof(providers)) : providers;
+        _configureSocket = configureSocket;
         _clients = _providers.ToDictionary(provider => provider, provider => clientFactory?.Invoke(provider) ?? CreateBootstrapHttpClient(provider));
     }
 
@@ -127,11 +132,12 @@ public sealed class StrictDohResolver : ILeikwanDnsResolver, IDisposable
         return BitConverter.ToUInt16(Guid.NewGuid().ToByteArray(), 0);
     }
 
-    private static async ValueTask<Stream> ConnectSocketAsync(string host, int port, CancellationToken ct)
+    private async ValueTask<Stream> ConnectSocketAsync(string host, int port, CancellationToken ct)
     {
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
+            _configureSocket?.Invoke(socket);
             await socket.ConnectAsync(host, port, ct).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
@@ -142,11 +148,14 @@ public sealed class StrictDohResolver : ILeikwanDnsResolver, IDisposable
         }
     }
 
-    private static async ValueTask<Stream> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
+    private async ValueTask<Stream> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
     {
         var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
+            // DoH bootstrap connections also egress through the physical NIC
+            // so a TUN tool can never intercept the resolver itself.
+            _configureSocket?.Invoke(socket);
             await socket.ConnectAsync(address, port, ct).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }

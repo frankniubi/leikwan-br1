@@ -271,6 +271,9 @@ same('"forward-123-r3"', ForwardLineApiContract::etag($forward), 'current forwar
 trueValue(ForwardLineApiContract::matchesEtag('"forward-123-r3"', $forward), 'current etag matches');
 trueValue(!ForwardLineApiContract::matchesEtag('"forward-123-r2"', $forward), 'stale etag does not match');
 trueValue(!ForwardLineApiContract::matchesEtag(null, $forward), 'missing etag does not match');
+trueValue(ForwardLineApiContract::matchesEtag('W/"forward-123-r3"', $forward), 'the weak etag a CDN hands out still matches');
+trueValue(!ForwardLineApiContract::matchesEtag('W/"forward-123-r2"', $forward), 'a stale weak etag does not match');
+trueValue(!ForwardLineApiContract::matchesEtag('W/W/"forward-123-r3"', $forward), 'only one weak prefix is accepted');
 
 $encoded = json_encode($presented, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 if (!is_string($encoded)) {
@@ -287,6 +290,7 @@ foreach ([
 }
 same(2, $presented['endpoint_count'] ?? null, 'forward endpoint count');
 same(1, $presented['active_endpoint_count'] ?? null, 'active endpoint count');
+same(['host' => null, 'port' => null], $presented['ingress'] ?? 'missing', 'reserved ingress stays null even when the row has the internal public_port');
 
 $route = ForwardLineApiContract::presentRoute([
     'id' => 14,

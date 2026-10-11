@@ -158,6 +158,9 @@ try {
                 && $owner->emailVerified()
             ) {
                 $userinfo['email_verified'] = true;
+                $userinfo['whmcs_client_id'] = (int) $client->id;
+                $userinfo['whmcs_user_id'] = $ownerId;
+                $userinfo['whmcs_email'] = $clientEmail;
             }
         }
     }

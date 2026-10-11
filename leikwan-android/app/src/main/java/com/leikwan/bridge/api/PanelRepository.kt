@@ -1,11 +1,12 @@
 package com.leikwan.bridge.api
 
 import android.content.Context
-import android.util.Log
-import com.google.gson.Gson
+import android.os.Build
 import com.google.gson.JsonElement
+import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.clientrules.ClientRouteRule
 import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
+import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
@@ -14,44 +15,119 @@ import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardContract
 import com.leikwan.bridge.runtime.ForwardContractParser
 import com.leikwan.bridge.runtime.ForwardFilter
+import com.leikwan.bridge.runtime.NativeOutboundCapability
+import com.leikwan.bridge.runtime.NativeOutboundLease
+import com.leikwan.bridge.runtime.NATIVE_OUTBOUND_PURPOSE
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
+import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
+import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
+import com.leikwan.bridge.runtime.nativeDirectionsMatch
+import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.runtime.UltraLease
+import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
+import com.leikwan.bridge.net.PanelNetwork
+import com.leikwan.bridge.net.PanelNetworkFallbackInterceptor
+import com.leikwan.bridge.security.AndroidAttestationProofFactory
+import com.leikwan.bridge.security.AndroidDeviceIdentity
+import com.leikwan.bridge.security.AndroidUltraLeaseKeyStore
+import com.leikwan.bridge.security.AttestationProof
+import com.leikwan.bridge.security.DeviceSecurity
+import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.security.UltraLeaseKey
+import com.leikwan.bridge.security.UltraLeaseSeal
+import com.leikwan.bridge.session.DeviceAckRequest
+import com.leikwan.bridge.session.DeviceChallengeRequest
+import com.leikwan.bridge.session.DeviceChallengeResponse
+import com.leikwan.bridge.session.DeviceEnrollRequest
+import com.leikwan.bridge.session.DeviceEnrollResponse
+import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitReachedException
+import com.leikwan.bridge.session.DeviceRenewRequest
+import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
+import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
+import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
+import com.leikwan.bridge.session.EnrollmentResult
+import com.leikwan.bridge.session.PanelControlException
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.CancellationException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
+import java.time.Instant
+import java.security.SecureRandom
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 class PanelRepository(
-    context: Context,
+    private val context: Context,
     prefsOverride: Prefs? = null,
     apiOverride: PanelApi? = null,
     private val routeRuleStore: ClientRouteRuleStore = ClientRouteRuleStore.from(context),
+    private val httpClientOverride: OkHttpClient? = null,
+    private val deviceIdProvider: (Long) -> String = AndroidDeviceIdentity()::deviceId,
+    private val identityPublicKeyProvider: () -> ByteArray = { AndroidDeviceIdentity().publicKeySpki() },
+    private val attestationProofProvider: (String, Long, String) -> AttestationProof =
+        AndroidAttestationProofFactory()::create,
+    private val deviceNameProvider: () -> String = {
+        listOf(Build.MANUFACTURER, Build.MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
+    },
+    private val deviceSecurityCheck: () -> DeviceSecurityResult = {
+        DeviceSecurity.evaluate(context.applicationContext)
+    },
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val panelEndpointOverride: PanelEndpoint? = null,
+    private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
+    private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
-    private val gson = Gson()
 
-    private val hasApiOverride = apiOverride != null
-    private var api: PanelApi = apiOverride ?: buildApi(prefs.panelUrl)
+    private val api: PanelApi = apiOverride ?: buildApi(panelEndpointOverride?.url ?: prefs.panelUrl)
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
+    @Volatile private var cachedNativeOutbound: NativeOutboundCapability? = null
+
+    data class TerminalDeviceAcknowledgement internal constructor(
+        val deviceId: String,
+        val authorization: String,
+    )
 
     private fun buildApi(baseUrl: String): PanelApi {
         val url = baseUrl.trimEnd('/') + "/"
         val host = runCatching { URI(url).host }.getOrNull()
-        val clientBuilder = OkHttpClient.Builder()
-            // Resolve the panel hostname over DoH so GFW UDP/53 poisoning can't redirect
-            // login to a bogus IP. Panel control-plane calls intentionally do not fall
-            // back to system DNS because poisoned networks return bogus A/AAAA records.
+        val clientBuilder = httpClientOverride?.newBuilder() ?: OkHttpClient.Builder()
+            // Panel control-plane calls intentionally do not fall back to system DNS.
             .dns(AppDns.strict())
             .callTimeout(20, TimeUnit.SECONDS)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
 
-        if (MirrorNoSni.shouldRewrite(host)) {
+        if (httpClientOverride == null && MirrorNoSni.shouldRewrite(host)) {
             MirrorNoSni.applyTo(clientBuilder)
+        }
+
+        // Panel traffic never follows another app's HTTP proxy, and leaves on a physical
+        // (non-VPN) network when one can be bound, so the panel sees this device's own address.
+        val networkBinder = if (httpClientOverride == null) PanelNetwork.ensureInstalled(context) else null
+        PanelNetwork.applyTo(clientBuilder, networkBinder)
+
+        clientBuilder
+            .addInterceptor(
+                PanelDeviceInterceptor(
+                    prefs = prefs,
+                    deviceNameProvider = deviceNameProvider,
+                    clientVersion = BuildConfig.VERSION_NAME,
+                    nowMs = nowMs,
+                ),
+            )
+            .addInterceptor(PanelControlInterceptor())
+        if (networkBinder != null) {
+            // Innermost, so panel refusals thrown above never count as a network failure.
+            clientBuilder.addInterceptor(PanelNetworkFallbackInterceptor { networkBinder })
         }
 
         val client = clientBuilder.build()
@@ -63,129 +139,241 @@ class PanelRepository(
             .create(PanelApi::class.java)
     }
 
-    private fun authHeader(): String = "Bearer ${prefs.token}"
+    private fun authHeader(): String {
+        val token = prefs.agentToken ?: throw IllegalStateException("Not enrolled")
+        return "Bearer $token"
+    }
 
-    private fun rebuildApiUnlessOverridden(baseUrl: String) {
-        if (!hasApiOverride) {
-            api = buildApi(baseUrl)
+    suspend fun enroll(clientId: Long, agentToken: String): EnrollmentResult {
+        require(clientId > 0L) { "client_id_invalid" }
+        require(agentToken.isNotBlank()) { "agent_token_required" }
+        ensureDeviceAllowed()
+
+        prefs.clearEnrollment(clearIdentity = false)
+        prefs.clientId = clientId
+        prefs.agentToken = agentToken.trim()
+        prefs.enrolledDeviceId = deviceIdProvider(clientId)
+        return try {
+            performIdentityEnrollment(clientId, enrollmentCode = null, suppliedAgentToken = agentToken.trim())
+        } catch (throwable: Throwable) {
+            prefs.clearEnrollment(clearIdentity = false)
+            throw throwable
         }
     }
 
-    suspend fun login(panelUrl: String, email: String, password: String): LoginResponse {
-        prefs.panelUrl = panelUrl
-        rebuildApiUnlessOverridden(panelUrl)
-        val resp = executeLogin(LoginRequest(email, password))
-        if (needsClientSelection(resp)) {
-            return resp
+    suspend fun enrollWithCode(clientId: Long, enrollmentCode: String): EnrollmentResult {
+        require(clientId > 0L) { "client_id_invalid" }
+        require(enrollmentCode.isNotBlank()) { "enrollment_code_required" }
+        ensureDeviceAllowed()
+
+        prefs.clearEnrollment(clearIdentity = false)
+        prefs.clientId = clientId
+        prefs.enrolledDeviceId = deviceIdProvider(clientId)
+        return try {
+            performIdentityEnrollment(clientId, enrollmentCode = enrollmentCode.trim(), suppliedAgentToken = null)
+        } catch (throwable: Throwable) {
+            prefs.clearEnrollment(clearIdentity = false)
+            throw throwable
         }
-        val sessionToken = resp.token?.takeIf { it.isNotBlank() }
-            ?: throw Exception("Login response missing session token")
-        val selectedClientId = resp.clientId ?: resp.clients.singleOrNull()?.id
-            ?: throw Exception("Please select a client")
-        val selection = executeSelectClient(ClientSelectionRequest(sessionToken, selectedClientId))
-        persistSelectedClient(selection, email, password, resp.clients, resp.username)
-        return resp
     }
 
-    suspend fun selectClient(
-        panelUrl: String,
-        email: String,
-        password: String,
-        sessionToken: String,
+    suspend fun requireActiveSession(forceRefresh: Boolean = false): EnrollmentResult {
+        ensureDeviceAllowed()
+        val clientId = prefs.clientId.takeIf { it > 0L } ?: throw IllegalStateException("Not enrolled")
+        val agentToken = prefs.agentToken?.takeIf { it.isNotBlank() } ?: throw IllegalStateException("Not enrolled")
+        val expectedDeviceId = deviceIdProvider(clientId)
+        if (prefs.enrolledDeviceId != expectedDeviceId) {
+            prefs.clearEnrollment(clearIdentity = false)
+            throw IllegalStateException("device_identity_changed")
+        }
+        if (!forceRefresh && prefs.deviceSessionToken?.isNotBlank() == true
+            && prefs.deviceSessionExpiresAtMs > nowMs() + SESSION_REFRESH_MARGIN_MS
+        ) {
+            return EnrollmentResult(clientId, expectedDeviceId, prefs.deviceSessionExpiresAtMs)
+        }
+
+        prefs.clearDeviceSession()
+        return performIdentityEnrollment(clientId, enrollmentCode = null, suppliedAgentToken = agentToken)
+    }
+
+    suspend fun acknowledgeDevice(commandVersion: Long): Boolean {
+        val acknowledgement = captureTerminalAcknowledgement() ?: return false
+        return acknowledgeTerminal(acknowledgement, commandVersion)
+    }
+
+    fun captureTerminalAcknowledgement(): TerminalDeviceAcknowledgement? {
+        val deviceId = prefs.enrolledDeviceId?.takeIf { it.isNotBlank() } ?: return null
+        val token = prefs.agentToken?.takeIf { it.isNotBlank() } ?: return null
+        return TerminalDeviceAcknowledgement(deviceId = deviceId, authorization = "Bearer $token")
+    }
+
+    suspend fun acknowledgeTerminal(
+        acknowledgement: TerminalDeviceAcknowledgement,
+        commandVersion: Long,
+    ): Boolean {
+        val response = api.acknowledgeDevice(
+            acknowledgement.authorization,
+            DeviceAckRequest(acknowledgement.deviceId, commandVersion.coerceAtLeast(0L)),
+        )
+        return response.isSuccessful && response.body()?.ok == true
+    }
+
+    private suspend fun performEnrollment(
         clientId: Long,
-        clients: List<ClientInfo>,
-        username: String? = null,
-    ): ClientSelectionResponse {
-        prefs.panelUrl = panelUrl
-        rebuildApiUnlessOverridden(panelUrl)
-        val token = sessionToken.takeIf { it.isNotBlank() }
-            ?: executeLogin(LoginRequest(email, password)).token?.takeIf { it.isNotBlank() }
-            ?: throw Exception("Login response missing session token")
-        val selection = executeSelectClient(ClientSelectionRequest(token, clientId))
-        persistSelectedClient(selection, email, password, clients, username)
-        return selection
+        agentToken: String?,
+        enrollmentCode: String?,
+    ): EnrollmentResult {
+        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
+        if (agentToken != null) prefs.agentToken = agentToken
+
+        val challenge = if (enrollmentCode == null) {
+            requireSuccessful(
+                api.deviceChallenge(DeviceChallengeRequest(clientId, deviceId)),
+                "device_challenge_failed",
+            )
+        } else {
+            requireSuccessful(
+                api.enrollmentCodeChallenge(EnrollmentCodeChallengeRequest(enrollmentCode, deviceId)),
+                "device_challenge_failed",
+            )
+        }
+        validateChallenge(challenge, clientId)
+        val proof = attestationProofProvider(challenge.nonce, clientId, deviceId)
+        val response = if (enrollmentCode == null) {
+            requireSuccessful(
+                api.enrollDevice(
+                    DeviceEnrollRequest(clientId, deviceId, challenge.nonce, proof, Build.VERSION.RELEASE.orEmpty()),
+                ),
+                "device_enrollment_failed",
+            )
+        } else {
+            requireSuccessful(
+                api.enrollmentCodeEnroll(
+                    EnrollmentCodeEnrollRequest(
+                        enrollmentCode,
+                        deviceId,
+                        challenge.nonce,
+                        proof,
+                        Build.VERSION.RELEASE.orEmpty(),
+                    ),
+                ),
+                "device_enrollment_failed",
+            )
+        }
+        return persistEnrollment(response, clientId, deviceId, agentToken)
     }
 
-    suspend fun switchClient(clientId: Long): LoginResponse {
-        val email = prefs.email ?: throw Exception("Not logged in")
-        val password = prefs.password ?: throw Exception("Re-login required")
-        val resp = executeLogin(LoginRequest(email, password), fallback = "Switch client failed")
-        val sessionToken = resp.token?.takeIf { it.isNotBlank() }
-            ?: throw Exception("Login response missing session token")
-        val selection = executeSelectClient(ClientSelectionRequest(sessionToken, clientId), fallback = "Switch client failed")
-        persistSelectedClient(selection, email, password, resp.clients, resp.username)
+    /** Default Android enrollment uses the persistent Keystore identity only. */
+    private suspend fun performIdentityEnrollment(
+        clientId: Long,
+        enrollmentCode: String?,
+        suppliedAgentToken: String?,
+    ): EnrollmentResult {
+        val deviceId = prefs.enrolledDeviceId ?: throw IllegalStateException("device_identity_missing")
+        val challenge = if (enrollmentCode == null) {
+            requireSuccessful(
+                api.deviceChallenge(DeviceChallengeRequest(clientId, deviceId)),
+                "device_challenge_failed",
+            )
+        } else {
+            requireSuccessful(
+                api.enrollmentCodeChallenge(EnrollmentCodeChallengeRequest(enrollmentCode, deviceId)),
+                "device_challenge_failed",
+            )
+        }
+        validateChallenge(challenge, clientId)
+
+        val identitySpki = identityPublicKeyProvider()
+        try {
+            if (identitySpki.isEmpty()) throw IllegalStateException("device_identity_missing")
+            val encodedIdentity = Base64.getEncoder().encodeToString(identitySpki)
+            val response = if (enrollmentCode == null) {
+                requireSuccessful(
+                    api.enrollDeviceIdentity(
+                        DeviceIdentityEnrollRequest(clientId, deviceId, challenge.nonce, encodedIdentity),
+                    ),
+                    "device_enrollment_failed",
+                )
+            } else {
+                requireSuccessful(
+                    api.enrollmentCodeIdentityEnroll(
+                        EnrollmentCodeIdentityEnrollRequest(
+                            enrollmentCode,
+                            deviceId,
+                            challenge.nonce,
+                            encodedIdentity,
+                        ),
+                    ),
+                    "device_enrollment_failed",
+                )
+            }
+            return persistEnrollment(response, clientId, deviceId, suppliedAgentToken)
+        } finally {
+            identitySpki.fill(0)
+        }
+    }
+
+    private fun validateChallenge(challenge: DeviceChallengeResponse, clientId: Long) {
+        if (!challenge.ok || challenge.nonce.isBlank()) throw IllegalStateException("device_challenge_invalid")
+        if (challenge.clientId != null && challenge.clientId != clientId) {
+            throw IllegalStateException("client_id_mismatch")
+        }
+        if (parseExpiry(challenge.expiresAt) <= nowMs()) {
+            throw IllegalStateException("device_challenge_expired")
+        }
+    }
+
+    private fun persistEnrollment(
+        response: DeviceEnrollResponse,
+        clientId: Long,
+        deviceId: String,
+        suppliedAgentToken: String?,
+    ): EnrollmentResult {
+        if (!response.ok || response.clientId != clientId || response.deviceSession.isBlank()) {
+            throw IllegalStateException("device_enrollment_invalid")
+        }
+        val expiresAtMs = parseExpiry(response.expiresAt)
+        if (expiresAtMs <= nowMs()) throw IllegalStateException("device_session_expired")
+        val persistedAgentToken = suppliedAgentToken ?: response.agentToken?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("agent_token_missing")
+
+        prefs.clientId = clientId
+        prefs.agentToken = persistedAgentToken
+        prefs.enrolledDeviceId = deviceId
+        prefs.deviceSessionToken = response.deviceSession
+        prefs.deviceSessionExpiresAtMs = expiresAtMs
+        routeRuleStore.clear()
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
-        return resp
+        cachedNativeOutbound = null
+        return EnrollmentResult(clientId, deviceId, expiresAtMs)
     }
 
-    private fun needsClientSelection(resp: LoginResponse): Boolean =
-        resp.clients.size > 1 && resp.clientId == null
+    private fun parseExpiry(value: String): Long = runCatching { Instant.parse(value).toEpochMilli() }
+        .getOrElse { throw IllegalStateException("device_expiry_invalid") }
 
-    private fun persistSelectedClient(
-        selection: ClientSelectionResponse,
-        email: String,
-        password: String,
-        clients: List<ClientInfo>,
-        username: String?,
-    ) {
-        val agentToken = selection.agentToken.takeIf { it.isNotBlank() }
-            ?: throw Exception("Client selection missing agent token")
-        prefs.token = agentToken
-        prefs.username = username
-        prefs.email = email
-        prefs.password = password
-        prefs.clientId = selection.clientId
-        prefs.clientName = selection.clientName
-        prefs.clientsJson = gson.toJson(clients)
-        prefs.selectedForwardId = 0L
-        routeRuleStore.clear()
-    }
-
-    private suspend fun executeLogin(request: LoginRequest, fallback: String = "Login failed"): LoginResponse {
-        val response = api.login(request)
+    private fun <T> requireSuccessful(response: retrofit2.Response<T>, fallback: String): T {
         if (!response.isSuccessful) {
-            val message = PanelErrorParser.messageFromHttp(
-                response.code(),
-                response.message(),
-                response.errorBody()?.string(),
+            throw IllegalStateException(
+                PanelErrorParser.messageFromHttp(
+                    response.code(),
+                    response.message(),
+                    response.errorBody()?.string(),
+                ),
             )
-            Log.w(TAG, "panel login http failure code=${response.code()} message=$message")
-            throw Exception(message)
         }
-        val body = response.body() ?: throw Exception("Empty login response")
-        if (!body.ok) {
-            val message = body.error?.takeIf { it.isNotBlank() } ?: fallback
-            Log.w(TAG, "panel login api failure message=$message")
-            throw Exception(message)
-        }
-        Log.i(TAG, "panel login ok clients=${body.clients.size} clientId=${body.clientId}")
-        return body
+        return response.body() ?: throw IllegalStateException(fallback)
     }
 
-    private suspend fun executeSelectClient(
-        request: ClientSelectionRequest,
-        fallback: String = "Client selection failed",
-    ): ClientSelectionResponse {
-        val response = api.selectClient(request)
-        if (!response.isSuccessful) {
-            val message = PanelErrorParser.messageFromHttp(
-                response.code(),
-                response.message(),
-                response.errorBody()?.string(),
-            )
-            Log.w(TAG, "client select http failure code=${response.code()} message=$message")
-            throw Exception(message)
+    private fun ensureDeviceAllowed() {
+        when (deviceSecurityCheck()) {
+            DeviceSecurityResult.Allowed -> Unit
+            DeviceSecurityResult.Rooted -> throw SecurityException("rooted_device_blocked")
+            DeviceSecurityResult.Emulator -> throw SecurityException("emulator_blocked")
+            DeviceSecurityResult.UnsupportedAbi -> throw SecurityException("unsupported_abi")
+            DeviceSecurityResult.Debuggable -> throw SecurityException("debuggable_build_blocked")
         }
-        val body = response.body() ?: throw Exception("Empty client selection response")
-        if (!body.ok) {
-            val message = body.error?.takeIf { it.isNotBlank() } ?: fallback
-            Log.w(TAG, "client select api failure message=$message")
-            throw Exception(message)
-        }
-        Log.i(TAG, "client select ok clientId=${body.clientId}")
-        return body
     }
 
     suspend fun pullConfigs(): List<ForwardInfo> {
@@ -195,7 +383,7 @@ class PanelRepository(
                 serviceName = item.serviceName,
                 target = item.target,
                 listenPort = item.listenPort,
-                mode = "leigod",
+                mode = item.mode.wireValue,
                 transport = item.transport,
                 serviceStatus = item.serviceStatus,
                 endpointMode = item.endpointMode,
@@ -204,10 +392,18 @@ class PanelRepository(
         }
     }
 
-    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog {
+    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog =
+        reportingDeviceLimit { pullCatalogOnce(selectedForwardId) }
+
+    private suspend fun pullCatalogOnce(selectedForwardId: Long): ForwardCatalog {
+        requireActiveSession()
         try {
             api.heartbeat(authHeader(), HeartbeatRequest())
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        } catch (e: DeviceLimitReachedException) {
             throw e
         } catch (_: Exception) {
             // Capability advertisement is best-effort; older or temporarily unavailable
@@ -215,6 +411,7 @@ class PanelRepository(
         }
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
+        DeviceLimitGate.clear()
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
             entitlements = resp.routeRuleEntitlements.orEmpty(),
@@ -225,16 +422,16 @@ class PanelRepository(
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+        cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
                 val contract = ForwardContractParser.parse(raw) ?: continue
+                val effective = AndroidEffectiveForwardBuilder.build(contract) ?: continue
                 contracts += contract
                 cachedForwardConfigs[contract.forwardId] = raw
                 cachedForwardContracts[contract.forwardId] = contract
-                AndroidEffectiveForwardBuilder.build(contract)?.let { effective ->
-                    cachedEffectiveForwards[effective.forwardId] = effective
-                }
+                cachedEffectiveForwards[effective.forwardId] = effective
             } catch (_: Exception) {
                 // skip unparseable forwards
             }
@@ -242,7 +439,7 @@ class PanelRepository(
         return ForwardFilter.buildCatalog(
             contracts = contracts,
             selectedForwardId = selectedForwardId.takeIf { it > 0L },
-        )
+        ).copy(nativeOutbound = cachedNativeOutbound)
     }
 
     fun getCachedConfig(forwardId: Long): JsonElement? = cachedForwardConfigs[forwardId]
@@ -251,15 +448,277 @@ class PanelRepository(
 
     fun getCachedEffectiveForward(forwardId: Long): AndroidEffectiveForward? = cachedEffectiveForwards[forwardId]
 
-    suspend fun heartbeat(): Boolean {
-        return try {
-            api.heartbeat(authHeader()).ok
+    fun getCachedNativeOutbound(): NativeOutboundCapability? = cachedNativeOutbound
+
+    /**
+     * Returns false for a transient failure. A terminal control or a full online device limit is
+     * thrown instead, so the caller can tell "panel unreachable" from "panel refused this device".
+     */
+    suspend fun heartbeat(): Boolean = reportingDeviceLimit {
+        requireActiveSession()
+        // Ultra usage rides the heartbeat: unacknowledged rows stay pending and are resent.
+        val ledger = runCatching { ultraUsageLedgerProvider() }.getOrNull()
+        val usage = ledger?.let { runCatching { it.collect() }.getOrNull() }.orEmpty()
+        try {
+            val response = api.heartbeat(
+                authHeader(),
+                HeartbeatRequest(ultraUsage = usage.takeIf { it.isNotEmpty() }),
+            )
+            if (usage.isNotEmpty()) {
+                runCatching { ledger?.acknowledge(usage, response.ultraUsageAcknowledged ?: response.ok) }
+            }
+            response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        } catch (e: DeviceLimitReachedException) {
+            throw e
         } catch (_: Exception) {
             false
         }
     }
 
+    /** Publishes a device-limit refusal (from the session renewal or the call itself) to the UI. */
+    private suspend fun <T> reportingDeviceLimit(block: suspend () -> T): T = try {
+        block()
+    } catch (limit: DeviceLimitReachedException) {
+        DeviceLimitGate.report(limit)
+        throw limit
+    }
+
+    /** Resolves one ephemeral Ultra lease for the currently trusted device session. */
+    suspend fun resolveUltraLease(policy: UltraPolicy): UltraLease =
+        resolveUltraLeases(policy, maxCandidates = 1).single()
+
+    /** Resolves up to four ordinary Ultra candidates for local protocol-aware selection. */
+    suspend fun resolveUltraLeases(
+        policy: UltraPolicy,
+        maxCandidates: Int = 4,
+    ): List<UltraLease> {
+        if (maxCandidates !in 1..4) {
+            throw IllegalArgumentException("ultra_candidate_limit_invalid")
+        }
+        val session = requireActiveSession()
+        val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val leaseKey = ultraLeaseKeyProvider()
+        val response = try {
+            api.resolveUltraLease(
+                authHeader(),
+                UltraLeaseRequest(
+                    deviceId = session.deviceId,
+                    forwards = listOf(
+                        UltraLeaseForwardRequest(
+                            forwardId = policy.forwardId,
+                            sessionTicket = policy.sessionTicket,
+                            policyGeneration = policy.policyGeneration,
+                            nonce = nonce,
+                            targetDigest = policy.targetDigest,
+                            transport = policy.transport,
+                            selectionMode = if (maxCandidates > 1) "auto" else "single",
+                            maxCandidates = maxCandidates,
+                        )
+                    ),
+                ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        }
+        val body = if (response.isSuccessful) response.body() else null
+        if (body?.ok != true) {
+            throw IllegalStateException(
+                body?.error?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(response.code(), response.message(), response.errorBody()?.string()),
+            )
+        }
+        if (body.leases.isEmpty() || body.leases.size > maxCandidates) {
+            throw IllegalStateException("ultra_lease_invalid")
+        }
+        val now = Instant.ofEpochMilli(nowMs())
+        val leases = mutableListOf<UltraLease>()
+        try {
+            body.leases.forEach { rawLease ->
+                leases += UltraLease.from(UltraLeaseSeal.openLease(rawLease, leaseKey), policy, now)
+                    ?: throw IllegalStateException("ultra_lease_invalid")
+            }
+            return leases
+        } catch (error: Exception) {
+            leases.forEach(UltraLease::wipe)
+            throw error
+        }
+    }
+
+    /** Resolves one short-lived, forward-bound native SOCKS5 lease without exposing its provider. */
+    suspend fun resolveNativeOutboundLease(
+        forward: ForwardContract,
+        routeScope: String,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+    ): NativeOutboundLease = resolveNativeOutboundLeases(
+        forward,
+        cachedNativeOutbound,
+        routeScope,
+        maxCandidates = 1,
+        routePolicy = routePolicy,
+    ).single()
+
+    suspend fun resolveNativeOutboundLease(
+        forward: ForwardContract,
+        capability: NativeOutboundCapability?,
+        routeScope: String,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+    ): NativeOutboundLease = resolveNativeOutboundLeases(
+        forward,
+        capability,
+        routeScope,
+        maxCandidates = 1,
+        routePolicy = routePolicy,
+    ).single()
+
+    /**
+     * Resolves a bounded set of native candidates. The local Ultra adapter probes this batch and
+     * atomically keeps the best usable path, so a single stale provider line does not make startup
+     * fail when another approved line is available.
+     */
+    suspend fun resolveNativeOutboundLeases(
+        forward: ForwardContract,
+        routeScope: String,
+        maxCandidates: Int = 4,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+    ): List<NativeOutboundLease> = resolveNativeOutboundLeases(
+        forward,
+        cachedNativeOutbound,
+        routeScope,
+        maxCandidates,
+        routePolicy,
+    )
+
+    suspend fun resolveNativeOutboundLeases(
+        forward: ForwardContract,
+        capability: NativeOutboundCapability?,
+        routeScope: String,
+        maxCandidates: Int = 4,
+        routePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+    ): List<NativeOutboundLease> {
+        if (maxCandidates !in 1..4) {
+            throw IllegalArgumentException("native_candidate_limit_invalid")
+        }
+        val normalizedScope = NativeOutboundCapability.normalizeScope(routeScope)
+            ?: throw IllegalStateException("native_route_scope_invalid")
+        val normalizedPolicy = normalizeNativeRoutePolicy(routePolicy)
+        if (!isNativeRoutePolicyValue(routePolicy)) {
+            throw IllegalStateException("native_route_policy_invalid")
+        }
+        if (capability == null || !capability.isUsable()) {
+            throw IllegalStateException("native_outbound_not_allowed")
+        }
+        val carrier = capability.carrier(forward.forwardId)
+            ?: throw IllegalStateException("native_outbound_not_allowed")
+        if (!nativeDirectionsMatch(forward.direction, carrier.direction)) {
+            throw IllegalStateException("native_forward_direction_mismatch")
+        }
+        if (normalizedScope !in carrier.routeScopes
+            || carrier.transport != "tcp+udp"
+            || capability.transport != "tcp+udp") {
+            throw IllegalStateException("native_route_scope_invalid")
+        }
+        if (normalizedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED && !carrier.unrestrictedAllowed) {
+            throw IllegalStateException("native_route_policy_not_allowed")
+        }
+        val now = Instant.ofEpochMilli(nowMs())
+        val policy = UltraPolicy.from(forward, now)
+            ?: throw IllegalStateException("native_policy_invalid")
+        if (policy.transport != "tcp+udp") {
+            throw IllegalStateException("native_transport_invalid")
+        }
+
+        val session = requireActiveSession()
+        val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val expectedDigest = if (normalizedPolicy == NATIVE_ROUTE_POLICY_UNRESTRICTED) {
+            NativeOutboundLease.scopeDigestV2(
+                forward.forwardId,
+                carrier.direction,
+                carrier.transport,
+                normalizedScope,
+                normalizedPolicy,
+            )
+        } else {
+            NativeOutboundLease.scopeDigest(
+                forward.forwardId,
+                carrier.direction,
+                carrier.transport,
+                normalizedScope,
+            )
+        }
+        val leaseKey = ultraLeaseKeyProvider()
+        val response = try {
+            api.resolveUltraLease(
+                authHeader(),
+                UltraLeaseRequest(
+                    deviceId = session.deviceId,
+                    forwards = listOf(
+                        UltraLeaseForwardRequest(
+                            forwardId = forward.forwardId,
+                            sessionTicket = policy.sessionTicket,
+                            policyGeneration = policy.policyGeneration,
+                            nonce = nonce,
+                            targetDigest = expectedDigest,
+                            transport = "tcp+udp",
+                            purpose = NATIVE_OUTBOUND_PURPOSE,
+                            routeScope = normalizedScope,
+                            routePolicy = normalizedPolicy,
+                            selectionMode = if (maxCandidates > 1) "auto" else "single",
+                            maxCandidates = maxCandidates,
+                        ),
+                    ),
+                ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PanelControlException) {
+            throw e
+        }
+        val body = if (response.isSuccessful) response.body() else null
+        if (body?.ok != true) {
+            throw IllegalStateException(
+                body?.error?.takeIf { it.isNotBlank() }
+                    ?: PanelErrorParser.messageFromHttp(
+                        response.code(),
+                        response.message(),
+                        response.errorBody()?.string(),
+                    ),
+            )
+        }
+        if (body.leases.isEmpty() || body.leases.size > maxCandidates) {
+            throw IllegalStateException("native_lease_invalid")
+        }
+        val leases = mutableListOf<NativeOutboundLease>()
+        try {
+            body.leases.forEach { rawLease ->
+                leases += NativeOutboundLease.from(
+                    UltraLeaseSeal.openLease(rawLease, leaseKey),
+                    policy,
+                    carrier,
+                    normalizedScope,
+                    now,
+                    normalizedPolicy,
+                )
+                    ?: throw IllegalStateException("native_lease_invalid")
+            }
+            return leases
+        } catch (error: Exception) {
+            leases.forEach(NativeOutboundLease::wipe)
+            throw error
+        }
+    }
+
     suspend fun createClientRule(draft: ClientRuleWriteDraft): ClientRouteRule {
+        requireActiveSession()
         val local = routeRuleStore.markPendingCreate(draft)
         return try {
             val response = api.createClientRule(authHeader(), draft.toRequest())
@@ -281,6 +740,7 @@ class PanelRepository(
     }
 
     suspend fun updateClientRule(ruleId: String, draft: ClientRuleWriteDraft): ClientRouteRule {
+        requireActiveSession()
         val local = routeRuleStore.markPendingUpdate(ruleId, draft)
         return try {
             val response = api.updateClientRule(authHeader(), ruleId, draft.toRequest())
@@ -302,6 +762,7 @@ class PanelRepository(
     }
 
     suspend fun deleteClientRule(ruleId: String): ClientRouteRule {
+        requireActiveSession()
         val local = routeRuleStore.markPendingTombstone(ruleId)
         return try {
             val response = api.deleteClientRule(authHeader(), ruleId)
@@ -339,9 +800,10 @@ class PanelRepository(
         cachedForwardConfigs.clear()
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
+        cachedNativeOutbound = null
     }
 
     private companion object {
-        const val TAG = "LKPanelRepo"
+        const val SESSION_REFRESH_MARGIN_MS = 30_000L
     }
 }

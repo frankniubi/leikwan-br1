@@ -15,9 +15,22 @@ import (
 
 const (
 	policyProtocol       = "leikwan-ultra-policy-v2"
-	maxPolicyTTL         = 5 * time.Minute
-	maxQuotaBytes  int64 = 107374182400
-	maxRateMbps    int64 = 100000
+	nativeSocks5Protocol = "leikwan-ultra-native-socks5-v1"
+	nativeSocks5Purpose  = "native_outbound"
+	// maxPolicyTTL is the longest validity a grant may carry. Clients that
+	// announce X-Leikwan-Ultra-Offline-Validity get up to 30 minutes (panel
+	// ceiling 3600 s) so a panel outage does not stop a working forward; online
+	// clients still renew every few minutes, so revocation lands just as fast.
+	maxPolicyTTL = 3600 * time.Second
+	// maxPolicyTTLSkew absorbs RFC 3339 second rounding and a small clock
+	// offset between the panel and this host on top of maxPolicyTTL.
+	maxPolicyTTLSkew           = 30 * time.Second
+	maxQuotaBytes        int64 = 107374182400
+	maxRateMbps          int64 = 100000
+	selectionTierPaid          = "paid"
+	selectionTierMixed         = "mixed"
+	selectionTierFree          = "free"
+	selectionTierUnknown       = "unknown"
 )
 
 var (
@@ -36,6 +49,8 @@ var (
 // the runtime memory and is never written back to the static config file.
 type Policy struct {
 	Protocol            string    `json:"protocol"`
+	Purpose             string    `json:"purpose,omitempty"`
+	Native              bool      `json:"native_outbound,omitempty"`
 	ForwardID           int       `json:"forward_id"`
 	PolicyGeneration    string    `json:"policy_generation"`
 	SessionTicket       string    `json:"session_ticket"`
@@ -44,19 +59,39 @@ type Policy struct {
 	RateLimitMbps       int64     `json:"rate_limit_mbps"`
 	QuotaRemainingBytes int64     `json:"quota_remaining_bytes"`
 	TargetDigest        string    `json:"target_digest"`
+	Direction           string    `json:"direction,omitempty"`
+	RouteScope          string    `json:"route_scope,omitempty"`
+	RoutePolicy         string    `json:"route_policy,omitempty"`
 }
 
 func (p Policy) Validate(config Config, now time.Time) error {
-	if p.Protocol != policyProtocol || p.ForwardID <= 0 || p.ForwardID != config.ForwardID {
+	if p.ForwardID <= 0 || p.ForwardID != config.ForwardID {
+		return ErrPolicyInvalid
+	}
+	if p.Native {
+		if !config.NativeSocks5 || p.Protocol != nativeSocks5Protocol || p.Purpose != nativeSocks5Purpose {
+			return ErrPolicyInvalid
+		}
+		if p.Transport != "tcp+udp" || p.Direction == "" ||
+			(p.RouteScope != "cn_only" && p.RouteScope != "intl_only" && p.RouteScope != "global") {
+			return ErrPolicyInvalid
+		}
+		routePolicy, err := ParseNativeRoutePolicy(p.RoutePolicy)
+		if err != nil || routePolicy != nativeRoutePolicyForConfig(config) {
+			return ErrPolicyInvalid
+		}
+	} else if p.Protocol != policyProtocol {
 		return ErrPolicyInvalid
 	}
 	if len(p.PolicyGeneration) != 64 || !isLowerHex(p.PolicyGeneration) || strings.TrimSpace(p.SessionTicket) == "" {
-		return ErrPolicyInvalid
+		if !p.Native || len(p.PolicyGeneration) != 64 || !isLowerHex(p.PolicyGeneration) {
+			return ErrPolicyInvalid
+		}
 	}
-	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+time.Second)) {
+	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+maxPolicyTTLSkew)) {
 		return ErrPolicyExpired
 	}
-	if p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
+	if !p.Native && p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
 		return ErrPolicyInvalid
 	}
 	if p.RateLimitMbps < 0 || p.RateLimitMbps > maxRateMbps || p.QuotaRemainingBytes < 0 || p.QuotaRemainingBytes > maxQuotaBytes {
@@ -65,7 +100,7 @@ func (p Policy) Validate(config Config, now time.Time) error {
 	if len(p.TargetDigest) != 64 || !isLowerHex(p.TargetDigest) {
 		return ErrPolicyInvalid
 	}
-	if targetDigest(config.Target) != p.TargetDigest {
+	if !p.Native && targetDigest(config.Target) != p.TargetDigest {
 		return ErrPolicyInvalid
 	}
 	return nil
@@ -86,6 +121,38 @@ func isLowerHex(value string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeSelectionTier(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return selectionTierUnknown, nil
+	}
+	switch normalized {
+	case selectionTierPaid, selectionTierMixed, selectionTierFree, selectionTierUnknown:
+		return normalized, nil
+	default:
+		return "", ErrLeaseInvalid
+	}
+}
+
+func selectionTierRank(value string) int {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case selectionTierPaid:
+		return 0
+	case selectionTierMixed:
+		return 1
+	case selectionTierFree:
+		return 2
+	case selectionTierUnknown:
+		return 3
+	default:
+		// Invalid wire values are rejected during lease validation. Treat a
+		// manually-constructed result as least preferred instead of allowing
+		// it to outrank a known pricing class.
+		return 3
+	}
 }
 
 type PolicyLimiter struct {
@@ -171,17 +238,23 @@ func (l *PolicyLimiter) Consume(n int) error {
 
 type ProviderLease struct {
 	LeaseID          string
+	LeaseHash        string
 	PolicyGeneration string
 	ExpiresAt        time.Time
 	Transport        string
 	SelectionRef     string
+	SelectionTier    string
+	CandidateKeyHash string
 	NonceHash        string
 	IP               string
 	Port             int
-	User             []byte
-	Password         []byte
-	userLocked       bool
-	passwordLocked   bool
+	// RelayPayloadCeiling is the panel-declared payload ceiling of this relay or
+	// line. 0 means the panel did not declare one and the runtime must measure.
+	RelayPayloadCeiling int
+	User                []byte
+	Password            []byte
+	userLocked          bool
+	passwordLocked      bool
 }
 
 func (l *ProviderLease) wipe() {
@@ -191,6 +264,9 @@ func (l *ProviderLease) wipe() {
 	l.Password = nil
 	l.IP = ""
 	l.SelectionRef = ""
+	l.SelectionTier = ""
+	l.CandidateKeyHash = ""
+	l.LeaseHash = ""
 	l.LeaseID = ""
 	l.NonceHash = ""
 	l.userLocked = false
@@ -220,6 +296,15 @@ func (l ProviderLease) Validate(policy Policy, now time.Time) error {
 	if l.Transport != policy.Transport || len(l.SelectionRef) < 16 || len(l.SelectionRef) > 128 {
 		return ErrLeaseInvalid
 	}
+	if l.CandidateKeyHash != "" && (len(l.CandidateKeyHash) != 64 || !isLowerHex(l.CandidateKeyHash)) {
+		return ErrLeaseInvalid
+	}
+	if l.LeaseHash != "" && (len(l.LeaseHash) != 64 || !isLowerHex(l.LeaseHash)) {
+		return ErrLeaseInvalid
+	}
+	if _, err := normalizeSelectionTier(l.SelectionTier); err != nil {
+		return ErrLeaseInvalid
+	}
 	return nil
 }
 
@@ -229,56 +314,118 @@ type RuntimeSnapshot struct {
 }
 
 type PolicyStore struct {
-	mu         sync.RWMutex
-	config     Config
-	policy     *Policy
-	lease      *ProviderLease
-	seenNonces map[string]struct{}
-	seenGens   map[string]struct{}
-	revoked    map[string]struct{}
-	limiter    *PolicyLimiter
-	updates    chan struct{}
+	isolated              map[string]time.Time
+	pathFailures          map[string]int
+	businessPathIsolation map[string]bool
+	zeroByteCloses        map[string][]time.Time // protocol:path:target -> recent zero-byte closes
+	zeroByteTrips         map[string]zeroByteTrip
+	zeroByteTargetSide    map[string]time.Time // protocol:target -> suppression deadline
+	mu                    sync.RWMutex
+	config                Config
+	policy                *Policy
+	lease                 *ProviderLease
+	candidates            []*ProviderLease
+	candidateFailures     map[string]int
+	candidateIsolatedTill map[string]time.Time
+	seenNonces            map[string]struct{}
+	seenGens              map[string]struct{}
+	revoked               map[string]struct{}
+	revocations           uint64
+	limiter               *PolicyLimiter
+	updates               chan struct{}
 }
 
 func NewPolicyStore(config Config) *PolicyStore {
 	return &PolicyStore{
-		config: config, seenNonces: make(map[string]struct{}), seenGens: make(map[string]struct{}), revoked: make(map[string]struct{}), limiter: NewPolicyLimiter(), updates: make(chan struct{}, 1),
+		config: config, candidateFailures: make(map[string]int), candidateIsolatedTill: make(map[string]time.Time),
+		pathFailures: make(map[string]int),
+		seenNonces:   make(map[string]struct{}), seenGens: make(map[string]struct{}), revoked: make(map[string]struct{}),
+		limiter: NewPolicyLimiter(), updates: make(chan struct{}, 1),
 	}
 }
 
+func (s *PolicyStore) ReplaceCandidates(policy Policy, selected ProviderLease, leases []ProviderLease) error {
+	return s.ReplaceBatch(policy, selected, leases)
+}
+
 func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
+	return s.ReplaceBatch(policy, lease, []ProviderLease{lease})
+}
+
+// ReplaceBatch atomically installs a policy and a bounded candidate set. The
+// selected lease is kept as the initial sticky candidate, while subsequent
+// new streams may move to a healthy sibling after local isolation.
+func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases []ProviderLease) error {
+	if len(leases) < 1 || len(leases) > 4 {
+		return ErrLeaseInvalid
+	}
 	now := time.Now()
 	if err := policy.Validate(s.config, now); err != nil {
 		return err
 	}
-	if err := lease.Validate(policy, now); err != nil {
+	if err := selected.Validate(policy, now); err != nil {
 		return err
+	}
+	selectedFound := false
+	for _, lease := range leases {
+		if lease.NonceHash == selected.NonceHash && haPathKey(lease) == haPathKey(selected) {
+			selectedFound = true
+		}
+		if err := lease.Validate(policy, now); err != nil {
+			return err
+		}
+	}
+	if !selectedFound {
+		return ErrLeaseInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, revoked := s.revoked[policy.PolicyGeneration]; revoked {
 		return ErrPolicyRollback
 	}
-	if _, replayed := s.seenNonces[lease.NonceHash]; replayed {
-		return ErrLeaseReplay
+	batchNonces := make(map[string]struct{}, len(leases))
+	for _, lease := range leases {
+		if _, duplicate := batchNonces[lease.NonceHash]; duplicate {
+			return ErrLeaseReplay
+		}
+		if _, replayed := s.seenNonces[lease.NonceHash]; replayed {
+			return ErrLeaseReplay
+		}
+		batchNonces[lease.NonceHash] = struct{}{}
 	}
 	if _, seen := s.seenGens[policy.PolicyGeneration]; seen && s.policy != nil && s.policy.PolicyGeneration != policy.PolicyGeneration {
 		return ErrPolicyRollback
 	}
-	if s.lease != nil {
-		s.lease.wipe()
+	oldFailures, oldIsolation := s.candidateFailures, s.candidateIsolatedTill
+	oldPathFailures := s.pathFailures
+	s.wipeCandidatesLocked()
+	s.candidateFailures, s.candidateIsolatedTill = oldFailures, oldIsolation
+	// Path health is keyed by endpoint+user, so it survives a lease rotation.
+	s.pathFailures = oldPathFailures
+	for key, until := range s.isolated {
+		if !until.After(now) {
+			delete(s.isolated, key)
+			delete(s.businessPathIsolation, key)
+		}
 	}
-	s.seenNonces[lease.NonceHash] = struct{}{}
+	for nonce := range batchNonces {
+		s.seenNonces[nonce] = struct{}{}
+	}
 	s.seenGens[policy.PolicyGeneration] = struct{}{}
 	policyCopy := policy
-	leaseCopy := lease
-	leaseCopy.User = append([]byte(nil), lease.User...)
-	leaseCopy.Password = append([]byte(nil), lease.Password...)
-	leaseCopy.userLocked = false
-	leaseCopy.passwordLocked = false
-	leaseCopy.lock()
 	s.policy = &policyCopy
-	s.lease = &leaseCopy
+	s.candidates = make([]*ProviderLease, 0, len(leases))
+	selectedKey := providerLeaseIdentity(selected)
+	for index := range leases {
+		leaseCopy := cloneProviderLease(leases[index])
+		s.candidates = append(s.candidates, leaseCopy)
+		if selectedKey != "" && leaseCopy.NonceHash == selected.NonceHash && providerLeaseIdentity(*leaseCopy) == selectedKey {
+			s.lease = leaseCopy
+		}
+		if index == 0 && s.lease == nil {
+			s.lease = leaseCopy
+		}
+	}
 	_ = s.limiter.Replace(policy.RateLimitMbps, policy.QuotaRemainingBytes, policy.ExpiresAt, policy.PolicyGeneration)
 	s.notifyLocked()
 	return nil
@@ -287,10 +434,9 @@ func (s *PolicyStore) Replace(policy Policy, lease ProviderLease) error {
 func (s *PolicyStore) Revoke(generation string) {
 	s.mu.Lock()
 	s.revoked[generation] = struct{}{}
+	s.revocations++
 	if s.policy != nil && (generation == "" || s.policy.PolicyGeneration == generation) {
-		if s.lease != nil {
-			s.lease.wipe()
-		}
+		s.wipeCandidatesLocked()
 		s.policy = nil
 		s.lease = nil
 		s.limiter.Revoke(generation)
@@ -299,12 +445,57 @@ func (s *PolicyStore) Revoke(generation string) {
 	s.mu.Unlock()
 }
 
+// RevokedAny reports whether the store has ever been told to revoke a
+// generation. A revocation is an authorization decision and must tear the
+// listeners down at once, unlike a policy that merely lapsed or was never
+// issued: those are outages, and serving is already refused while
+// CandidateSnapshots has nothing valid.
+func (s *PolicyStore) RevokedAny() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.revoked) > 0
+}
+
+// RevocationCount counts Revoke calls. A runtime compares it with the value it
+// saw when it started, so a revocation that happened before the current policy
+// was installed does not make every later lapse look like a revocation.
+func (s *PolicyStore) RevocationCount() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revocations
+}
+
+// PolicyView is the non-secret state a host needs to tell a runtime that is
+// idle on purpose (no or lapsed policy) from one that is broken.
+type PolicyView struct {
+	Valid     bool
+	Held      bool // a policy is installed, valid or not
+	Transport string
+	ExpiresAt time.Time
+}
+
+// View reports whether a usable policy and lease are held, plus the policy's
+// transport and expiry. It never exposes lease material.
+func (s *PolicyStore) View() PolicyView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectActiveLocked("")
+	now := time.Now()
+	if s.policy == nil {
+		return PolicyView{}
+	}
+	return PolicyView{
+		Valid:     s.lease != nil && s.policy.ExpiresAt.After(now) && s.lease.ExpiresAt.After(now),
+		Held:      true,
+		Transport: s.policy.Transport,
+		ExpiresAt: s.policy.ExpiresAt,
+	}
+}
+
 func (s *PolicyStore) ClearExpired() {
 	s.mu.Lock()
 	if s.policy != nil && !s.policy.ExpiresAt.After(time.Now()) {
-		if s.lease != nil {
-			s.lease.wipe()
-		}
+		s.wipeCandidatesLocked()
 		s.policy = nil
 		s.lease = nil
 		s.limiter.Revoke("")
@@ -314,9 +505,54 @@ func (s *PolicyStore) ClearExpired() {
 }
 
 func (s *PolicyStore) Snapshot() (RuntimeSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectActiveLocked("")
+	return s.snapshotLocked(time.Now())
+}
+
+// ActiveSnapshot returns the path the runtime was already using without
+// reselecting around a locally isolated candidate. It is used only as a last
+// resort when a fresh probe batch says every candidate is unhealthy: the
+// caller still has to prove the same path with a real forwarding attempt.
+func (s *PolicyStore) ActiveSnapshot() (RuntimeSnapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.policy == nil || s.lease == nil || !s.policy.ExpiresAt.After(time.Now()) || !s.lease.ExpiresAt.After(time.Now()) {
+	return s.snapshotLocked(time.Now())
+}
+
+// SnapshotNextCandidate selects a healthy sibling for a new connection while
+// excluding candidates already attempted for this connection. Existing
+// streams retain their own lease snapshot and are not moved by this method.
+func (s *PolicyStore) SnapshotNextCandidate(excluded ...string) (RuntimeSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy == nil || !s.policy.ExpiresAt.After(time.Now()) {
+		return RuntimeSnapshot{}, false
+	}
+	now := time.Now()
+	excludedKeys := make(map[string]struct{}, len(excluded))
+	for _, value := range excluded {
+		if key := s.findCandidateIdentityLocked(value); key != "" {
+			excludedKeys[key] = struct{}{}
+		}
+	}
+	for _, candidate := range s.candidates {
+		if candidate == nil || !candidate.ExpiresAt.After(now) {
+			continue
+		}
+		key := providerLeaseIdentity(*candidate)
+		if _, skip := excludedKeys[key]; skip || s.candidateIsolatedLocked(key, now) {
+			continue
+		}
+		s.lease = candidate
+		return s.snapshotLocked(now)
+	}
+	return RuntimeSnapshot{}, false
+}
+
+func (s *PolicyStore) snapshotLocked(now time.Time) (RuntimeSnapshot, bool) {
+	if s.policy == nil || s.lease == nil || !s.policy.ExpiresAt.After(now) || !s.lease.ExpiresAt.After(now) {
 		return RuntimeSnapshot{}, false
 	}
 	snapshot := RuntimeSnapshot{Policy: *s.policy, Lease: *s.lease}
@@ -329,10 +565,163 @@ func (s *PolicyStore) Snapshot() (RuntimeSnapshot, bool) {
 }
 
 func (s *PolicyStore) HasValid() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectActiveLocked("")
 	return s.policy != nil && s.lease != nil &&
 		s.policy.ExpiresAt.After(time.Now()) && s.lease.ExpiresAt.After(time.Now())
+}
+
+// MarkCandidateFailure records a classified local data-plane failure. The
+// second consecutive failure isolates that candidate for new streams while
+// preserving the existing connection that already holds its snapshot.
+func (s *PolicyStore) MarkCandidateFailure(candidateKeyHash string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.findCandidateIdentityLocked(candidateKeyHash)
+	if key == "" {
+		return false
+	}
+	failures := s.candidateFailures[key] + 1
+	if failures > 65535 {
+		failures = 65535
+	}
+	s.candidateFailures[key] = failures
+	if s.candidateFailures[key] >= 2 {
+		ttl := 30 * time.Second
+		if s.policy != nil {
+			remaining := time.Until(s.policy.ExpiresAt)
+			if remaining > 0 && remaining < ttl {
+				ttl = remaining
+			}
+		}
+		s.candidateIsolatedTill[key] = time.Now().Add(ttl)
+		s.selectActiveLocked("")
+		s.notifyLocked()
+		return true
+	}
+	return false
+}
+
+// MarkCandidateSuccess clears local isolation after a successful canary or
+// data-plane setup and makes that candidate preferred for new streams.
+func (s *PolicyStore) MarkCandidateSuccess(candidateKeyHash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.findCandidateIdentityLocked(candidateKeyHash)
+	if key == "" {
+		return
+	}
+	delete(s.candidateFailures, key)
+	delete(s.candidateIsolatedTill, key)
+	s.selectActiveLocked(key)
+	s.notifyLocked()
+}
+
+func (s *PolicyStore) wipeCandidatesLocked() {
+	seen := make(map[*ProviderLease]struct{}, len(s.candidates))
+	for _, candidate := range s.candidates {
+		if candidate == nil {
+			continue
+		}
+		if _, already := seen[candidate]; already {
+			continue
+		}
+		candidate.wipe()
+		seen[candidate] = struct{}{}
+	}
+	if s.lease != nil {
+		if _, already := seen[s.lease]; !already {
+			s.lease.wipe()
+		}
+		s.lease = nil
+	}
+	s.candidates = nil
+	s.candidateFailures = make(map[string]int)
+	s.candidateIsolatedTill = make(map[string]time.Time)
+}
+
+func cloneProviderLease(lease ProviderLease) *ProviderLease {
+	copy := lease
+	copy.User = append([]byte(nil), lease.User...)
+	copy.Password = append([]byte(nil), lease.Password...)
+	copy.userLocked = false
+	copy.passwordLocked = false
+	copy.lock()
+	return &copy
+}
+
+func providerLeaseIdentity(lease ProviderLease) string {
+	if hash := normalizedLeaseHash(lease.CandidateKeyHash); hash != "" {
+		return "hash:" + hash
+	}
+	if reference := strings.TrimSpace(lease.SelectionRef); reference != "" {
+		return "ref:" + reference
+	}
+	return "endpoint:" + strings.ToLower(net.JoinHostPort(strings.TrimSpace(lease.IP), fmt.Sprint(lease.Port))) + "\x00" + strings.TrimSpace(string(lease.User))
+}
+
+func (s *PolicyStore) findCandidateIdentityLocked(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range s.candidates {
+		if candidate == nil {
+			continue
+		}
+		if value != "" && (strings.EqualFold(candidate.CandidateKeyHash, value) || strings.EqualFold(candidate.SelectionRef, value)) {
+			return providerLeaseIdentity(*candidate)
+		}
+	}
+	return ""
+}
+
+func (s *PolicyStore) selectActiveLocked(preferred string) {
+	if len(s.candidates) == 0 {
+		s.lease = nil
+		return
+	}
+	now := time.Now()
+	if preferred != "" {
+		for _, candidate := range s.candidates {
+			if candidate != nil && providerLeaseIdentity(*candidate) == preferred && !s.candidateIsolatedLocked(providerLeaseIdentity(*candidate), now) {
+				s.lease = candidate
+				return
+			}
+		}
+	}
+	if s.lease != nil && !s.candidateIsolatedLocked(providerLeaseIdentity(*s.lease), now) && s.lease.ExpiresAt.After(now) {
+		return
+	}
+	var fallback *ProviderLease
+	var earliest time.Time
+	for _, candidate := range s.candidates {
+		if candidate == nil || !candidate.ExpiresAt.After(now) {
+			continue
+		}
+		key := providerLeaseIdentity(*candidate)
+		if !s.candidateIsolatedLocked(key, now) {
+			s.lease = candidate
+			return
+		}
+		until := s.candidateIsolatedTill[key]
+		if fallback == nil || until.Before(earliest) {
+			fallback = candidate
+			earliest = until
+		}
+	}
+	if fallback != nil {
+		s.lease = fallback
+	}
+}
+
+func (s *PolicyStore) candidateIsolatedLocked(key string, now time.Time) bool {
+	until, ok := s.candidateIsolatedTill[key]
+	if !ok || !until.After(now) {
+		if ok {
+			delete(s.candidateIsolatedTill, key)
+		}
+		return false
+	}
+	return true
 }
 
 func (s *PolicyStore) Limiter() *PolicyLimiter  { return s.limiter }

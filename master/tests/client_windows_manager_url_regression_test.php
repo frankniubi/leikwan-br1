@@ -84,11 +84,67 @@ namespace {
         'id' => 42,
         'agent_token' => 'tok-42',
     ]);
-    if (!str_contains($linuxCommand, 'curl -fsSL https://artifacts.example.com/artifacts/install-client-agent.sh')) {
+    if (!str_contains($linuxCommand, 'artifacts/install-client-agent.sh')) {
         fail('expected Linux installer download to use artifact base URL');
     }
-    if (!str_contains($linuxCommand, '--master https://panel.example.com --artifact-base https://artifacts.example.com')) {
-        fail('expected Linux installer command to pass separate panel and artifact base URLs');
+    if (!str_starts_with($linuxCommand, "curl -fsSL 'https://artifacts.example.com/artifacts/install-client-agent.sh' | bash -s --")) {
+        fail('expected Linux installer command to use the concise artifact bootstrap');
+    }
+    if (!str_contains($linuxCommand, "--master 'https://panel.example.com' --artifact-base 'https://artifacts.example.com'")) {
+        fail('expected Linux installer command to pass separately quoted panel and artifact base URLs');
+    }
+    if (!str_contains($linuxCommand, '--client-id 42')) {
+        fail('expected Linux installer command to pass the client id');
+    }
+    if (!str_contains($linuxCommand, "--agent-token 'tok-42'")) {
+        fail('expected Linux installer command to quote the agent token');
+    }
+    if (strlen($linuxCommand) >= 500) {
+        fail('expected Linux installer command to stay concise');
+    }
+    foreach (['apt-get', 'sha256sum -c', 'manifest=$(mktemp)', 'required Debian command'] as $forbidden) {
+        if (str_contains($linuxCommand, $forbidden)) {
+            fail('did not expect long dependency or manifest preflight in the displayed command: ' . $forbidden);
+        }
+    }
+
+    $sameEnvPath = tempnam(sys_get_temp_dir(), 'lw-base-controller-same-');
+    if ($sameEnvPath === false) {
+        fail('failed to create same-base temp env');
+    }
+    file_put_contents($sameEnvPath, "AGENT_API_URL=https://panel.example.com\nARTIFACT_BASE_URL=https://panel.example.com\n");
+    $sameController = new BaseControllerProbe(new Config($sameEnvPath), new Database());
+    $sameBaseCommand = $sameController->linuxInstallCommandForClient([
+        'id' => 42,
+        'agent_token' => 'tok-42',
+    ]);
+    if (str_contains($sameBaseCommand, '--artifact-base')) {
+        fail('expected the concise command to omit a redundant artifact base');
+    }
+    if (!str_contains($sameBaseCommand, "--master 'https://panel.example.com' --client-id 42")) {
+        fail('expected the concise command to keep master and client id arguments');
+    }
+
+    // The production Cloudflare base retries through the Aliyun CDN, so a
+    // mainland-only host can still install; the script is saved before it runs.
+    $cfEnvPath = tempnam(sys_get_temp_dir(), 'lw-base-controller-cf-');
+    if ($cfEnvPath === false) {
+        fail('failed to create Cloudflare temp env');
+    }
+    file_put_contents($cfEnvPath, "APP_URL=https://v3.leikwanhost.com\nARTIFACT_BASE_URL=https://v3.leikwanhost.com\n");
+    $cfController = new BaseControllerProbe(new Config($cfEnvPath), new Database());
+    $cfCommand = $cfController->linuxInstallCommandForClient([
+        'id' => 42,
+        'agent_token' => 'tok-42',
+    ]);
+    $expected = 'f="$(mktemp)" && { curl -fsSL --connect-timeout 3 \'https://v3.leikwanhost.com/artifacts/install-client-agent.sh\' -o "$f"'
+        . ' || curl -fsSL --connect-timeout 10 \'https://api-leikwanbridge.nbwly.com/artifacts/install-client-agent.sh\' -o "$f"; }'
+        . ' && bash "$f" --master \'https://v3.leikwanhost.com\' --client-id 42 --agent-token \'tok-42\'; rm -f "$f"';
+    if ($cfCommand !== $expected) {
+        fail('expected the Cloudflare install command to fall back to the Aliyun CDN: ' . $cfCommand);
+    }
+    if (strlen($cfCommand) >= 500) {
+        fail('expected the fallback install command to stay concise');
     }
 
     echo "ok\n";

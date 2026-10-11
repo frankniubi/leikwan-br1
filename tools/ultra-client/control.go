@@ -3,10 +3,12 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -38,17 +40,17 @@ func writeFrame(writer io.Writer, payload []byte) error {
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := writer.Write(header[:]); err != nil {
+	if err := writeAll(writer, header[:]); err != nil {
 		return err
 	}
-	_, err := writer.Write(payload)
-	return err
+	return writeAll(writer, payload)
 }
 
 type ControlServer struct {
 	path        string
 	config      Config
 	store       *PolicyStore
+	status      *StatusWriter
 	ln          *net.UnixListener
 	sem         chan struct{}
 	close       chan struct{}
@@ -57,9 +59,13 @@ type ControlServer struct {
 	peerAllowed func(*net.UnixConn) bool
 }
 
-func NewControlServer(path string, config Config, store *PolicyStore) *ControlServer {
+func NewControlServer(path string, config Config, store *PolicyStore, status ...*StatusWriter) *ControlServer {
+	var statusWriter *StatusWriter
+	if len(status) > 0 {
+		statusWriter = status[0]
+	}
 	return &ControlServer{
-		path: path, config: config, store: store,
+		path: path, config: config, store: store, status: statusWriter,
 		sem: make(chan struct{}, 4), close: make(chan struct{}), done: make(chan struct{}),
 		peerAllowed: sameUserPeer,
 	}
@@ -135,7 +141,8 @@ func (server *ControlServer) Serve() error {
 
 func (server *ControlServer) handle(connection *net.UnixConn) {
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	deadline := time.Now().Add(controlDeadlineDuration(server.config))
+	_ = connection.SetDeadline(deadline)
 	if server.peerAllowed == nil || !server.peerAllowed(connection) {
 		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": "peer_rejected"})
 		return
@@ -146,11 +153,109 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		return
 	}
 	defer clearBytes(payload)
-	policy, lease, err := decodeLeaseFrame(payload, server.config)
+	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
 	if err == nil {
-		err = server.store.Replace(policy, lease)
+		leases, err = applyCandidateQuarantine(server.config, leases, time.Now(), server.status)
 	}
-	lease.wipe()
+	var selected ProviderLease
+	var probeResult udpProbeResult
+	var selectionEpoch uint64
+	var previousActive RuntimeSnapshot
+	var havePreviousActive bool
+	var verifiedLeases []ProviderLease
+	if err == nil {
+		coordinator := selectionCoordinatorFor(policy.ForwardID)
+		selectionEpoch = coordinator.begin()
+		coordinator.runMu.Lock()
+		defer coordinator.runMu.Unlock()
+		if !coordinator.isLatest(selectionEpoch) {
+			err = errSelectionSuperseded
+		}
+		if err != nil {
+			goto selectionDone
+		}
+		if server.config.AutoSelect && len(leases) > 1 {
+			previousActive, havePreviousActive = server.store.ActiveSnapshot()
+			if havePreviousActive {
+				defer previousActive.Lease.wipe()
+			}
+		}
+		if externalUoTEnabled(server.config) && stringsContainsUDP(policy.Transport) &&
+			(server.config.AutoSelect || len(leases) == 1) {
+			probeContext, cancel := context.WithDeadline(context.Background(), deadline.Add(-selectionResponseGrace))
+			selected, probeResult, verifiedLeases, err = selectVerifiedExternalUoTCandidates(
+				probeContext, server.config, policy, leases, previousActive, havePreviousActive,
+				server.status.RecordProbeFailure, nil)
+			cancel()
+		} else if storeHasGeneration(server.store, policy.PolicyGeneration) {
+			var stickyMatch bool
+			selected, stickyMatch = stickyLeaseForPolicy(server.store, policy, leases)
+			if !stickyMatch {
+				// Never acknowledge a refresh that cannot prove it is the
+				// previously selected path. Keeping the old lease would eventually
+				// use an expired credential; selecting a new path would mix
+				// associations within one policy generation.
+				err = ErrLeaseInvalid
+			}
+		} else if len(leases) > 1 && !server.config.AutoSelect {
+			err = ErrLeaseInvalid
+		} else if server.config.AutoSelect && len(leases) > 1 {
+			logLeaseSelectionStart(policy.ForwardID, len(leases))
+			remaining := time.Until(deadline) - selectionResponseGrace - activeCandidateFallbackBudget(server.config)
+			if remaining <= 0 {
+				err = context.DeadlineExceeded
+			} else {
+				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
+				selected, probeResult, err = selectBestLeaseReporting(selectionContext, server.config, policy, leases, server.status.RecordProbeFailure)
+				cancel()
+				if errors.Is(err, errNoHealthyCandidate) && havePreviousActive {
+					log.Printf("active candidate forwarding test started forward_id=%d reason=no_healthy_candidate", policy.ForwardID)
+					fallbackContext, fallbackCancel := context.WithDeadline(context.Background(), deadline)
+					selected, probeResult, err = retryActiveCandidateForward(
+						fallbackContext, server.config, policy, previousActive, leases, nil)
+					fallbackCancel()
+				}
+			}
+		} else {
+			selected = leases[0]
+		}
+	}
+selectionDone:
+	if err == nil && selectionEpoch != 0 && !selectionCoordinatorFor(policy.ForwardID).isLatest(selectionEpoch) {
+		err = errSelectionSuperseded
+	}
+	if err == nil {
+		admitted := leases
+		if verifiedLeases != nil {
+			admitted = verifiedLeases
+		}
+		err = server.store.ReplaceCandidates(policy, selected, admitted)
+		if err == nil && server.status != nil {
+			server.status.UpdatePolicy(policy.PolicyGeneration)
+		}
+		if err == nil && server.status != nil && (probeResult.Sent > 0 || probeResult.TCPReceived > 0) {
+			if stringsContainsUDP(policy.Transport) && externalUoTEnabled(server.config) {
+				server.status.UpdateUDPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+			} else if stringsContainsUDP(policy.Transport) {
+				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+			} else {
+				server.status.UpdateTCPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "tcp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+			}
+		}
+	}
+	if err != nil && server.status != nil && server.config.AutoSelect && len(leases) > 0 {
+		server.status.UpdateError(controlErrorName(err))
+	}
+	selected.wipe()
+	for index := range leases {
+		leases[index].wipe()
+	}
 	if err != nil {
 		_ = writeJSONFrame(connection, map[string]any{"ok": false, "error": controlErrorName(err)})
 		return
@@ -168,6 +273,14 @@ func writeJSONFrame(connection io.Writer, value any) error {
 
 func controlErrorName(err error) string {
 	switch {
+	case errors.Is(err, errOperatorQuarantine):
+		return "operator_quarantined"
+	case errors.Is(err, errProbeTCPFailed):
+		return "probe_tcp_failed"
+	case errors.Is(err, errProbeUDPFailed):
+		return "probe_udp_failed"
+	case errors.Is(err, errNoHealthyCandidate):
+		return "no_healthy_candidate"
 	case errors.Is(err, ErrPolicyRollback):
 		return "policy_generation_invalid"
 	case errors.Is(err, ErrLeaseReplay):

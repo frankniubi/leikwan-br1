@@ -81,6 +81,16 @@
     return value.replace(/\s+/g, " ").trim();
   }
 
+  // The language control is deliberately language-invariant: its options are
+  // endonyms and its label is a glyph, so the patch must never rewrite it.
+  function insideLocaleSwitcher(node) {
+    let element = node.parentElement;
+    while (element) {
+      if (element.classList && element.classList.contains("locale-switch")) return true;
+      element = element.parentElement;
+    }
+    return false;
+  }
   function patchTextNodes(root, dictionary) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -89,6 +99,9 @@
           return NodeFilter.FILTER_REJECT;
         }
         if (!node.nodeValue || normalizeKey(node.nodeValue) === "") {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (insideLocaleSwitcher(node)) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -111,8 +124,9 @@
   function patchAttributes(root, dictionary) {
     const attrMap = dictionary.attributes || {};
     root.querySelectorAll("*").forEach((element) => {
-      ["placeholder", "title", "aria-label", "value"].forEach((attr) => {
+      ["placeholder", "title", "aria-label", "value", "data-confirm"].forEach((attr) => {
         if (!element.hasAttribute(attr)) return;
+        if (element.closest && element.closest(".locale-switch")) return;
         const value = element.getAttribute(attr) || "";
         const normalized = normalizeKey(value);
         if (attrMap[normalized]) {

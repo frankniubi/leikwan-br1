@@ -9,10 +9,30 @@ use Leikwan\Master\Http\Response;
 final class ArtifactController extends BaseController
 {
     private const WSTUNNEL_ARTIFACT_DIR = 'artifacts/wstunnel';
+    private const STREAM_THRESHOLD_BYTES = 8 * 1024 * 1024;
+
+    /**
+     * Digest cache for GET /artifacts/versions.json.
+     *
+     * That route answers with a sha256 for every published artifact, so a naive
+     * implementation re-hashes the whole artifact tree on every request. In
+     * production that is 59 entries and 647 MB of SHA-256 (~2.7 s of CPU) per
+     * request, which also evicts the page cache on a box that is trying to keep
+     * a database in memory. The cache key is (size, mtime, ctime), so a
+     * republished artifact invalidates its own entry: a plain overwrite changes
+     * mtime and ctime, and even a `cp -p` that preserves mtime changes ctime.
+     */
+    private const DIGEST_CACHE_RELATIVE_DIR = 'storage/cache';
+    private const DIGEST_CACHE_FILE = 'artifact-digests.json';
+    private const DIGEST_CACHE_VERSION = 1;
 
     /** @var array<string, mixed>|null */
     private ?array $versions = null;
     private string $repoRoot;
+
+    /** @var array<string, array{size:int, mtime:int, ctime:int, sha256:string}>|null */
+    private static ?array $digestCache = null;
+    private bool $digestCacheDirty = false;
 
     /** @param array<string, mixed>|null $versions */
     public function __construct(\Leikwan\Master\Config $config, ?array $versions = null, ?string $repoRoot = null)
@@ -57,9 +77,42 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-client.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    /**
+     * Standalone Windows repair/update helper.
+     *
+     * It ships inside the Windows installer too, but stays a first-class
+     * artifact so a host stuck on an older build - one that cannot repair its
+     * own shared permissions and whose updater stops after the download - can
+     * fetch and run it on its own.
+     */
+    public function windowsUpdateHelper(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('scripts/leikwan-bridge-repair.cmd', 'text/plain; charset=utf-8', $request);
+    }
+
     public function installBondSidecar(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    /**
+     * Serve the operator-owned external UoT sidecar installer. Installs the Go uot-sidecar
+     * (uot_sidecar_linux_*) plus its systemd unit; the carrier config is supplied separately
+     * so a point can be enabled without rebuilding the installer.
+     */
+    public function installExternalUot(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-external-uot.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uotSidecarLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function uotSidecarLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_arm64', 'application/octet-stream', $request);
     }
 
     public function wgWatchdog(Request $request, array $params): Response
@@ -142,20 +195,19 @@ final class ArtifactController extends BaseController
             }
             $normalized = $entry;
             if (isset($normalized['path']) && is_string($normalized['path']) && $normalized['path'] !== '') {
-                $absolute = $this->resolveRepoFile($normalized['path']);
-                if ($absolute !== null) {
-                    $sha = hash_file('sha256', $absolute);
-                    $size = filesize($absolute);
-                    $normalized['sha256'] = $sha;
-                    $normalized['size_bytes'] = $size;
+                $digest = $this->artifactDigest($normalized['path']);
+                if ($digest !== null) {
+                    $normalized['sha256'] = $digest['sha256'];
+                    $normalized['size_bytes'] = $digest['size'];
                     // Some consumers read the legacy 'size' alias; keep it consistent when present.
                     if (array_key_exists('size', $normalized)) {
-                        $normalized['size'] = $size;
+                        $normalized['size'] = $digest['size'];
                     }
                 }
             }
             $manifest[$key] = $normalized;
         }
+        $this->flushArtifactDigestCache();
 
         return new Response(200, [
             'Content-Type' => 'application/json; charset=utf-8',
@@ -173,9 +225,34 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function clientAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function clientAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function cfwgLatencyWatchdog(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function clientLeaseSeal(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_lease_seal.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function installForwardRuntime(Request $request, array $params): Response
@@ -188,9 +265,34 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('artifacts/ultra/ultra-client_linux_amd64', 'application/octet-stream', $request);
     }
 
+    public function ultraClientLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function ultraClientWindows(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/ultra/ultra-client_windows_amd64.exe', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientMacosX64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_macos_amd64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientMacosArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_macos_arm64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientAndroidArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_arm64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientAndroidX64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_x86_64', 'application/octet-stream', $request);
     }
 
     public function forwardStrategyHelper(Request $request, array $params): Response
@@ -233,6 +335,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function externalUotRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('sidecar-agent/leikwan_external_uot.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function wssMuxRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8', $request);
@@ -263,6 +370,46 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    public function installDockerClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-docker-client.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientCompose(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-compose.yml', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientDockerfile(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/Dockerfile', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientFetchArtifacts(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/fetch-artifacts.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function dockerClientEntrypoint(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-entrypoint.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientHealthcheck(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-healthcheck.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installClientAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/install-client-agent-linux-arm64',
+            'application/octet-stream',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="install-client-agent-linux-arm64"']
+        );
+    }
+
     public function clientAgentUpdate(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/client-agent-update.sh', 'text/plain; charset=utf-8', $request);
@@ -281,6 +428,47 @@ final class ArtifactController extends BaseController
     public function windowsClientApp(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/windows/leikwan-bridge-setup.exe', 'application/octet-stream', $request);
+    }
+
+    // Windowless (no-GUI) clients. The Windows payload is its own small
+    // self-contained build of the same Core stack; macOS runs the shipped app
+    // bundle in its --headless lifecycle, so it only needs the installers.
+    public function windowsHeadlessClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile(
+            'artifacts/windows/leikwan-bridge-headless-win-x64.zip',
+            'application/zip',
+            $request,
+            ['Content-Disposition' => 'attachment; filename="leikwan-bridge-headless-win-x64.zip"']
+        );
+    }
+
+    // Linux has had a windowless client (the systemd client-agent) from the
+    // start; this is the same `leikwan` command surface the macOS and Windows
+    // no-GUI installs use.
+    public function leikwanLinuxCli(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/leikwan-linux.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallMacosHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-macos-headless.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uninstallWindowsHeadless(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/uninstall-windows-headless.ps1', 'text/plain; charset=utf-8', $request);
     }
 
     public function macosClientArm64Dmg(Request $request, array $params): Response
@@ -387,11 +575,17 @@ final class ArtifactController extends BaseController
             'component' => 'sidecar',
             'manifest' => $this->manifestFor(
                 'sidecar_agent',
+                'sidecar_agent_linux_amd64',
+                'sidecar_agent_linux_arm64',
                 'mptcp_sidecar_runtime',
                 'udp_uot_merge_runtime',
                 'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller',
+                'external_uot_installer',
+                'uot_sidecar_linux_amd64',
+                'uot_sidecar_linux_arm64',
+                'sidecar_agent_update',
                 'tcp_accel_runtime',
                 'tcp_accel_installer'
             ),
@@ -407,14 +601,24 @@ final class ArtifactController extends BaseController
             'bond_sidecar_installer',
             'bond_sidecar_uninstaller',
             'client_agent',
+            'client_agent_linux_amd64',
+            'client_agent_linux_arm64',
+            'client_agent_update',
+            'install_forward_runtime',
             'cfwg_latency_watchdog',
+            'client_lease_seal',
             'client_agent_installer',
+            'client_agent_installer_linux_arm64',
+            'client_rate_limit',
+            'wg_watchdog',
             'ultra_client_runtime',
+            'ultra_client_runtime_linux_arm64',
             'ultra_client_runtime_windows',
             'mptcp_client_runtime',
             'uot_runtime',
             'uot_bond_runtime',
             'leikwan_uot_bond_linux_amd64',
+            'leikwan_uot_bond_linux_arm64',
             'leikwan_uot_bond_windows_amd64',
             'sidecar_agent',
             'mptcp_sidecar_runtime',
@@ -425,16 +629,22 @@ final class ArtifactController extends BaseController
             'tcp_accel_installer',
             'android_client_apk',
             'windows_client_app',
+            'windows_update_helper',
             'macos_client_app_arm64',
             'macos_client_app_x64',
             'macos_client_update_arm64',
             'macos_client_update_x64',
             'legacy_client',
             'wstunnel_linux_amd64',
+            'wstunnel_linux_arm64',
             'wstunnel_windows_amd64',
             'leikwan_bond_linux_amd64',
+            'leikwan_bond_linux_arm64',
             'leikwan_bond_windows_amd64',
             'leikwan_bond_android_arm64',
+            'leikwan_ingress_linux_amd64',
+            'leikwan_ingress_linux_arm64',
+            'leikwan_ingress_windows_amd64',
             'leikwan_mptcp_relay_linux_amd64'
         );
         $macKeys = [
@@ -509,14 +719,30 @@ final class ArtifactController extends BaseController
                 }
             }
             if ($start !== null && $end !== null && $start <= $end && $start >= 0 && $end < $size) {
+                $length = $end - $start + 1;
+                $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
+                $headers['Content-Length'] = (string) $length;
+                if ($length > self::STREAM_THRESHOLD_BYTES) {
+                    return Response::streamed(
+                        206,
+                        $headers,
+                        static function () use ($path, $start, $length): void {
+                            self::streamFile($path, $start, $length);
+                        },
+                    );
+                }
                 $handle = fopen($path, 'rb');
                 if ($handle !== false) {
-                    fseek($handle, $start);
-                    $body = (string) fread($handle, $end - $start + 1);
-                    fclose($handle);
-                    $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
-                    $headers['Content-Length'] = (string) strlen($body);
-                    return new Response(206, $headers, $body);
+                    try {
+                        if (fseek($handle, $start) === 0) {
+                            $body = (string) fread($handle, $length);
+                            if (strlen($body) === $length) {
+                                return new Response(206, $headers, $body);
+                            }
+                        }
+                    } finally {
+                        fclose($handle);
+                    }
                 }
             }
             $headers['Content-Range'] = 'bytes */' . $size;
@@ -524,7 +750,44 @@ final class ArtifactController extends BaseController
             return new Response(416, $headers, '');
         }
 
+        if ($size > self::STREAM_THRESHOLD_BYTES) {
+            return Response::streamed(
+                200,
+                $headers,
+                static function () use ($path, $size): void {
+                    self::streamFile($path, 0, $size);
+                },
+            );
+        }
+
         return new Response(200, $headers, (string) file_get_contents($path));
+    }
+
+    private static function streamFile(string $path, int $offset, int $length): void
+    {
+        $handle = fopen($path, 'rb');
+        if ($handle === false || fseek($handle, $offset) !== 0) {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            return;
+        }
+
+        try {
+            set_time_limit(0);
+            $remaining = $length;
+            while ($remaining > 0 && !feof($handle)) {
+                $chunk = fread($handle, min(1024 * 1024, $remaining));
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                echo $chunk;
+                $remaining -= strlen($chunk);
+                flush();
+            }
+        } finally {
+            fclose($handle);
+        }
     }
 
     private function renderForwardSpecificWindowsInstallerWrapper(int $forwardId, string $token): string
@@ -686,6 +949,138 @@ final class ArtifactController extends BaseController
     {
         $relativePath = trim((string) ($entry['path'] ?? ''));
         return $relativePath === '' ? null : $this->resolveRepoFile($relativePath);
+    }
+
+    /**
+     * sha256 + size for one repo-relative artifact, served from the (size,
+     * mtime, ctime) keyed cache when the file has not moved.
+     *
+     * Returns null when the file is unknown or unreadable, which keeps the
+     * previous behaviour of publishing no digest rather than a guess.
+     *
+     * @return array{sha256:string, size:int}|null
+     */
+    private function artifactDigest(string $relativePath): ?array
+    {
+        $absolute = $this->resolveRepoFile($relativePath);
+        if ($absolute === null) {
+            return null;
+        }
+        clearstatcache(true, $absolute);
+        $size = @filesize($absolute);
+        $mtime = @filemtime($absolute);
+        $ctime = @filectime($absolute);
+        if ($size === false || $mtime === false || $ctime === false) {
+            $sha = @hash_file('sha256', $absolute);
+            return is_string($sha) && $sha !== '' ? ['sha256' => $sha, 'size' => 0] : null;
+        }
+        $size = (int) $size;
+        $mtime = (int) $mtime;
+        $ctime = (int) $ctime;
+
+        $cache = $this->artifactDigestCache();
+        $cached = $cache[$relativePath] ?? null;
+        if (is_array($cached)
+            && (int) ($cached['size'] ?? -1) === $size
+            && (int) ($cached['mtime'] ?? -1) === $mtime
+            && (int) ($cached['ctime'] ?? -1) === $ctime
+            && is_string($cached['sha256'] ?? null)
+            && preg_match('/^[a-f0-9]{64}$/', $cached['sha256']) === 1) {
+            return ['sha256' => $cached['sha256'], 'size' => $size];
+        }
+
+        $sha = @hash_file('sha256', $absolute);
+        if (!is_string($sha) || $sha === '') {
+            return null;
+        }
+        self::$digestCache[$relativePath] = [
+            'size' => $size,
+            'mtime' => $mtime,
+            'ctime' => $ctime,
+            'sha256' => $sha,
+        ];
+        $this->digestCacheDirty = true;
+
+        return ['sha256' => $sha, 'size' => $size];
+    }
+
+    /** @return array<string, array{size:int, mtime:int, ctime:int, sha256:string}> */
+    private function artifactDigestCache(): array
+    {
+        if (self::$digestCache !== null) {
+            return self::$digestCache;
+        }
+        self::$digestCache = [];
+        $path = $this->artifactDigestCachePath();
+        if ($path === null || !is_file($path)) {
+            return self::$digestCache;
+        }
+        $raw = @file_get_contents($path);
+        if (!is_string($raw) || $raw === '') {
+            return self::$digestCache;
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)
+            || (int) ($decoded['version'] ?? 0) !== self::DIGEST_CACHE_VERSION
+            || !is_array($decoded['entries'] ?? null)) {
+            return self::$digestCache;
+        }
+        foreach ($decoded['entries'] as $key => $value) {
+            if (is_string($key) && is_array($value) && preg_match('/^[a-f0-9]{64}$/', (string) ($value['sha256'] ?? '')) === 1) {
+                self::$digestCache[$key] = $value;
+            }
+        }
+
+        return self::$digestCache;
+    }
+
+    /**
+     * Persist the cache once per request, and only when a digest was actually
+     * recomputed. Every failure is ignored: a cache that cannot be written must
+     * never change what the route serves.
+     */
+    private function flushArtifactDigestCache(): void
+    {
+        if (!$this->digestCacheDirty || self::$digestCache === null) {
+            return;
+        }
+        $path = $this->artifactDigestCachePath(true);
+        if ($path === null) {
+            return;
+        }
+        $payload = json_encode([
+            'version' => self::DIGEST_CACHE_VERSION,
+            'updated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+            'entries' => self::$digestCache,
+        ], JSON_UNESCAPED_SLASHES);
+        if (!is_string($payload)) {
+            return;
+        }
+        $temporary = $path . '.' . getmypid() . '.tmp';
+        if (@file_put_contents($temporary, $payload, LOCK_EX) === false) {
+            @unlink($temporary);
+            return;
+        }
+        // Rename is atomic, so a reader never sees a half-written cache.
+        @chmod($temporary, 0644);
+        if (!@rename($temporary, $path)) {
+            @unlink($temporary);
+            return;
+        }
+        $this->digestCacheDirty = false;
+    }
+
+    private function artifactDigestCachePath(bool $forWrite = false): ?string
+    {
+        $directory = $this->repoRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, self::DIGEST_CACHE_RELATIVE_DIR);
+        if (!is_dir($directory) && $forWrite) {
+            @mkdir($directory, 0775, true);
+        }
+        if (!is_dir($directory)) {
+            return null;
+        }
+
+        return $directory . DIRECTORY_SEPARATOR . self::DIGEST_CACHE_FILE;
     }
 
     private function resolveRepoFile(string $relativePath): ?string

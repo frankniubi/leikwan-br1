@@ -14,9 +14,12 @@ final class Auth
      */
     public static function requireAdmin(Request $request, Config $config): array
     {
-        $token = $request->bearerToken() ?? (string) $request->input('token', '');
+        // Security: accept the admin token only from the Authorization header,
+        // never from a query-string parameter that would land in access/CDN
+        // logs and Referer headers.
+        $token = (string) ($request->bearerToken() ?? '');
         $expected = (string) $config->get('MASTER_ADMIN_TOKEN', '');
-        if ($token === '' || !hash_equals($expected, $token)) {
+        if ($token === '' || $expected === '' || !hash_equals($expected, $token)) {
             throw new ApiException('admin_auth_failed', 401);
         }
 
@@ -119,12 +122,16 @@ final class Auth
         }
 
         $row = $db->fetchOne(
+            // Security: block a service that is past expire_at. services.status
+            // is never written 'expired', so without the expiry predicate an
+            // expired service's client token kept fetching fresh config.
             'SELECT s.*, f.id AS forward_id
              FROM forwards f
              INNER JOIN services s ON s.id = f.service_id
              WHERE f.id = :forward_id
                AND f.enabled = 1
                AND s.status = :active_status
+               AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())
                AND s.client_token = :token
              LIMIT 1',
             [
@@ -151,15 +158,17 @@ final class Auth
             throw new ApiException('client_agent_auth_failed', 401);
         }
 
-        $client = $db->fetchOne('SELECT * FROM clients WHERE agent_token = :token LIMIT 1', [
+        // Security: a disabled/kicked/banned client must lose agent access.
+        // Previously this looked the client up by token alone, so changing its
+        // status did not stop it pulling configs, leases or heartbeating.
+        $client = $db->fetchOne('SELECT * FROM clients WHERE agent_token = :token AND status = :status LIMIT 1', [
             'token' => $token,
+            'status' => 'active',
         ]);
 
         if ($client === null) {
             throw new ApiException('client_agent_auth_failed', 401);
         }
-
-        (new ClientOnlineSessionService($db))->enforceFromRequest($client, $request);
 
         return $client;
     }

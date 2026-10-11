@@ -28,12 +28,14 @@ final class WhmcsIdentityService
     }
 
     /**
+     * @param array<string, mixed> $authenticatedIdentity
      * @return array<string, mixed>|null
      */
-    public function tryDirectBindForUser(int $userId): ?array
+    public function tryDirectBindForUser(int $userId, array $authenticatedIdentity = []): ?array
     {
         $user = $this->bindingUser($userId);
-        $profile = $this->profileByEmail((string) ($user['email'] ?? ''));
+        $profile = $this->profileFromAuthenticatedIdentity($authenticatedIdentity, $user);
+        $profile ??= $this->profileByEmail((string) ($user['email'] ?? ''));
         if ($profile === null) {
             return null;
         }
@@ -403,12 +405,47 @@ final class WhmcsIdentityService
         $remoteBefore = $this->parseMoney($remote['credit'] ?? 0);
         $currency = strtoupper(trim((string) ($remote['currency_code'] ?? $user['wallet_currency'] ?? 'CNY')));
 
+        $whmcsClientId = (int) $remote['whmcs_client_id'];
+        $now = $this->now();
+
         if ($direction === 'panel_to_whmcs') {
-            if ($localBefore < $amount) {
+            // Security: debit the panel wallet ATOMICALLY and BEFORE crediting
+            // the remote Buy-station account. The previous order (unlocked check
+            // -> remote credit -> absolute panel write) let N concurrent requests
+            // from separate sessions each pass the check and each credit WHMCS
+            // while the panel balance was written down only once — minting remote
+            // credit that pays real invoices. The conditional decrement commits
+            // exactly once per request; a 0 row-count means the funds are gone.
+            $affected = $this->db->execute(
+                'UPDATE users
+                 SET wallet_balance = wallet_balance - :amount,
+                     wallet_currency = :wallet_currency,
+                     whmcs_last_synced_at = :synced_at,
+                     updated_at = :updated_at
+                 WHERE id = :id
+                   AND wallet_balance >= :amount_guard',
+                [
+                    'id' => $userId,
+                    'amount' => $this->money($amount),
+                    'amount_guard' => $this->money($amount),
+                    'wallet_currency' => $currency,
+                    'synced_at' => $now,
+                    'updated_at' => $now,
+                ]
+            );
+            if ((int) $affected < 1) {
                 throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your panel balance is not enough for this transfer.']);
             }
-
-            $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan panel balance transfer', $amount, 'add');
+            try {
+                $this->whmcs->addCredit($whmcsClientId, 'LeiKwan panel balance transfer', $amount, 'add');
+            } catch (\Throwable $throwable) {
+                // Remote credit failed: refund the panel debit so money is conserved.
+                $this->db->execute(
+                    'UPDATE users SET wallet_balance = wallet_balance + :amount, updated_at = :updated_at WHERE id = :id',
+                    ['id' => $userId, 'amount' => $this->money($amount), 'updated_at' => $this->now()]
+                );
+                throw $throwable;
+            }
             $localAfter = $localBefore - $amount;
             $remoteAfter = $remoteBefore + $amount;
         } elseif ($direction === 'whmcs_to_panel') {
@@ -416,56 +453,58 @@ final class WhmcsIdentityService
                 throw new ApiException('whmcs_balance_insufficient', 422, ['message' => 'Your Buy station credit is not enough for this transfer.']);
             }
 
-            $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan panel balance transfer', $amount, 'remove');
+            // Remove from the remote account first; credit the panel only on success.
+            $this->whmcs->addCredit($whmcsClientId, 'LeiKwan panel balance transfer', $amount, 'remove');
+            try {
+                $this->db->execute(
+                    'UPDATE users
+                     SET wallet_balance = wallet_balance + :amount,
+                         wallet_currency = :wallet_currency,
+                         whmcs_last_synced_at = :synced_at,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $userId,
+                        'amount' => $this->money($amount),
+                        'wallet_currency' => $currency,
+                        'synced_at' => $now,
+                        'updated_at' => $now,
+                    ]
+                );
+            } catch (\Throwable $throwable) {
+                // Panel credit failed: give the removed remote credit back.
+                try {
+                    $this->whmcs->addCredit($whmcsClientId, 'LeiKwan transfer rollback', $amount, 'add');
+                } catch (\Throwable) {
+                }
+                throw $throwable;
+            }
             $localAfter = $localBefore + $amount;
             $remoteAfter = $remoteBefore - $amount;
         } else {
             throw new ApiException('wallet_transfer_invalid_direction', 422, ['message' => 'Unsupported transfer direction.']);
         }
 
+        // Ledger row (best-effort; the balance movement above is authoritative).
+        $freshLocal = $this->db->fetchOne('SELECT wallet_balance FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        $localAfterActual = $freshLocal !== null ? $this->parseMoney($freshLocal['wallet_balance'] ?? $localAfter) : $localAfter;
         try {
-            $this->db->transaction(function () use ($userId, $direction, $amount, $currency, $localBefore, $localAfter, $remoteBefore, $remoteAfter, $remote): void {
-                $now = $this->now();
-                $this->db->execute(
-                    'UPDATE users
-                     SET wallet_balance = :wallet_balance,
-                         wallet_currency = :wallet_currency,
-                         whmcs_last_synced_at = :whmcs_last_synced_at,
-                         updated_at = :updated_at
-                     WHERE id = :id',
-                    [
-                        'id' => $userId,
-                        'wallet_balance' => $this->money($localAfter),
-                        'wallet_currency' => $currency,
-                        'whmcs_last_synced_at' => $now,
-                        'updated_at' => $now,
-                    ]
-                );
-
-                $this->db->insert('wallet_transactions', [
-                    'user_id' => $userId,
-                    'direction' => $direction,
-                    'amount' => $this->money($amount),
-                    'currency' => $currency,
-                    'panel_balance_before' => $this->money($localBefore),
-                    'panel_balance_after' => $this->money($localAfter),
-                    'whmcs_balance_before' => $this->money($remoteBefore),
-                    'whmcs_balance_after' => $this->money($remoteAfter),
-                    'context_json' => json_encode([
-                        'whmcs_client_id' => (int) $remote['whmcs_client_id'],
-                        'source' => 'whmcs',
-                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                    'created_at' => $now,
-                ]);
-            });
-        } catch (\Throwable $throwable) {
-            $compensationType = $direction === 'panel_to_whmcs' ? 'remove' : 'add';
-            try {
-                $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan transfer rollback', $amount, $compensationType);
-            } catch (\Throwable) {
-            }
-
-            throw $throwable;
+            $this->db->insert('wallet_transactions', [
+                'user_id' => $userId,
+                'direction' => $direction,
+                'amount' => $this->money($amount),
+                'currency' => $currency,
+                'panel_balance_before' => $this->money($localBefore),
+                'panel_balance_after' => $this->money($localAfterActual),
+                'whmcs_balance_before' => $this->money($remoteBefore),
+                'whmcs_balance_after' => $this->money($remoteAfter),
+                'context_json' => json_encode([
+                    'whmcs_client_id' => $whmcsClientId,
+                    'source' => 'whmcs',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'created_at' => $this->now(),
+            ]);
+        } catch (\Throwable) {
         }
 
         return $this->accountSnapshot($userId);
@@ -552,7 +591,49 @@ final class WhmcsIdentityService
             'credit_formatted' => (string) ($client['formattedcredit'] ?? ''),
             'stats' => is_array($client['stats'] ?? null) ? $client['stats'] : [],
             'client' => $client,
-            'products' => $this->whmcs->fetchClientProducts(100, 0, $clientId),
+            // Product inventory is fetched when the billing snapshot is opened. It is
+            // not part of resolving or binding an identity.
+            'products' => [],
+        ];
+    }
+
+    /**
+     * UserInfo from the first-party WHMCS adapter can carry the already verified
+     * client/owner relationship. Use it before the management API lookup, which may
+     * be blocked by WHMCS source-IP allowlisting even when OIDC succeeded.
+     *
+     * @param array<string, mixed> $identity
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>|null
+     */
+    private function profileFromAuthenticatedIdentity(array $identity, array $user): ?array
+    {
+        $clientId = max(0, (int) ($identity['whmcs_client_id'] ?? 0));
+        $ownerId = max(0, (int) ($identity['whmcs_user_id'] ?? 0));
+        $identityEmail = strtolower(trim((string) ($identity['email'] ?? '')));
+        $userEmail = strtolower(trim((string) ($user['email'] ?? '')));
+        if (
+            ($identity['email_verified'] ?? null) !== true
+            || $clientId <= 0
+            || $ownerId <= 0
+            || $identityEmail === ''
+            || $identityEmail !== $userEmail
+        ) {
+            return null;
+        }
+
+        return [
+            'whmcs_user_id' => $ownerId,
+            'whmcs_client_id' => $clientId,
+            'email' => $identityEmail,
+            'full_name' => trim((string) ($identity['name'] ?? '')),
+            'company_name' => '',
+            'currency_code' => 'CNY',
+            'credit' => 0.0,
+            'credit_formatted' => '',
+            'stats' => [],
+            'client' => [],
+            'products' => [],
         ];
     }
 

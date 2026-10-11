@@ -1,6 +1,7 @@
 using LeikwanBridge.App.ViewModels;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using System.Text.Json;
 using System.Reflection;
 using Xunit;
 
@@ -9,18 +10,205 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 public sealed class MainViewModelTests
 {
     [Fact]
-    public void ApplyForwardSnapshot_BuildsFriendlyForwardSummary()
+    public void NativeRouteScopeSelectorFollowsSelectedCarrier()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["cn_only", "global"],
+                DefaultRouteScope = "global",
+                Forwards =
+                [
+                    new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "global"),
+                    new NativeOutboundForward(160, "China Mainland -> Hong Kong", "b", "tcp+udp", ["global"], "global"),
+                ],
+            },
+        };
+
+        vm.SelectedNativeForwardId = 160;
+        Assert.False(vm.IsNativeRouteScopeSelectable);
+
+        vm.SelectedNativeForwardId = 159;
+        Assert.True(vm.IsNativeRouteScopeSelectable);
+    }
+
+    [Fact]
+    public void ForwardCatalogStartsLoadingAndBecomesReadyAfterSnapshot()
     {
         var vm = new MainViewModel();
-        vm.ApplyForwardSnapshot([CreateBondForwardWithEndpoints()], _ => true);
+
+        Assert.True(vm.IsLoadingForwards);
+
+        vm.ApplyForwardSnapshot([], _ => false);
+
+        Assert.False(vm.IsLoadingForwards);
+    }
+
+    [Fact]
+    public void ProxyCannotConnectUntilModeIsExplicitlySelected()
+    {
+        var vm = new MainViewModel();
+        Assert.False(vm.IsProxyModeSelected);
+        Assert.False(vm.IsProxyReadyForSelectedPairedForward);
+        vm.IsProxyModeSelected = true;
+        Assert.False(vm.IsProxyReadyForSelectedPairedForward);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerIsCollapsedByDefault()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["cn_only", "global"],
+                Forwards =
+                [
+                    new NativeOutboundForward(159, "Hong Kong -> China Mainland", "a", "tcp+udp", ["cn_only", "global"], "cn_only"),
+                ],
+            },
+        };
+
+        Assert.True(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
+    public void NativeOutboundDrawerStaysHiddenWithoutCarrierRows()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+            },
+        };
+
+        Assert.False(vm.IsNativeOutboundVisible);
+        Assert.False(vm.IsNativeOutboundExpanded);
+    }
+
+    [Fact]
+    public void UnrestrictedNativeRouteIsHiddenUnlessCarrierAllowsIt()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                Forwards =
+                [
+                    new NativeOutboundForward(158, "Mainland China -> International", "a", "tcp+udp", ["intl_only", "global"], "global"),
+                ],
+            },
+            SelectedNativeForwardId = 158,
+        };
+
+        Assert.False(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+
+        vm.NativeOutboundCapability = new NativeOutboundCapability
+        {
+            Enabled = true,
+            Protocol = "socks5",
+            LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+            Transport = "tcp+udp",
+            Forwards =
+            [
+                new NativeOutboundForward(158, "Mainland China -> International", "a", "tcp+udp", ["intl_only", "global"], "global", true),
+            ],
+        };
+        Assert.True(vm.IsNativeUnrestrictedRouteVisible);
+        Assert.False(vm.NativeUnrestrictedRoute);
+        vm.NativeUnrestrictedRoute = true;
+        Assert.True(vm.NativeUnrestrictedRoute);
+    }
+
+    [Fact]
+    public void MainlandToInternationalCarrierExposesIntlOnlyAndDisablesChinaBypass()
+    {
+        var vm = new MainViewModel
+        {
+            NativeOutboundCapability = new NativeOutboundCapability
+            {
+                Enabled = true,
+                Protocol = "socks5",
+                LeaseProtocol = "leikwan-ultra-native-socks5-v1",
+                Transport = "tcp+udp",
+                RouteScopes = ["intl_only", "global"],
+                DefaultRouteScope = "intl_only",
+                Forwards =
+                [
+                    new NativeOutboundForward(
+                        201,
+                        "Mainland China -> International",
+                        "a",
+                        "tcp+udp",
+                        ["intl_only", "global"],
+                        "intl_only"),
+                ],
+            },
+        };
+
+        vm.SelectedNativeForwardId = 201;
+        vm.SelectedNativeRouteScope = "intl_only";
+        vm.NativeBypassChinaMainland = true;
+
+        Assert.True(vm.IsNativeRouteScopeSelectable);
+        Assert.True(vm.IsNativeRouteIntlOnly);
+        Assert.False(vm.IsNativeBypassChinaEnabled);
+        Assert.False(vm.NativeBypassChinaMainland);
+    }
+
+    [Fact]
+    public void ApplyForwardSnapshot_DisplaysForwardIdPortAndDirection()
+    {
+        var vm = new MainViewModel();
+        var config = JsonSerializer.Deserialize<ForwardConfig>("""
+            {
+                "forward_id": 59,
+                "mode": "bond",
+                "listen_port": 11059,
+                "target": "193.227.109.82:5201",
+                "transport": "tcp+udp",
+                "forward_combination_direction": "CAN->HKG"
+            }
+            """)!;
+        vm.ApplyForwardSnapshot([config], _ => true);
 
         var forward = Assert.Single(vm.Forwards);
         Assert.Equal(59, forward.ForwardId);
-        Assert.Equal("Forward #59", forward.DisplayName);
+        Assert.Equal("Forward #59 · CAN->HKG", forward.DisplayName);
         Assert.Equal(ForwardLifecycleState.Connected, forward.Summary.Lifecycle);
         Assert.Equal(ForwardQualityState.Good, forward.Summary.Quality);
         Assert.True(forward.Summary.CanStop);
         Assert.False(forward.Summary.CanStart);
+    }
+
+    [Fact]
+    public void ApplyForwardSnapshot_WhenDirectionMissing_UsesStablePlaceholder()
+    {
+        var vm = new MainViewModel();
+        vm.ApplyForwardSnapshot([CreateForward(26, "bond")], _ => false);
+
+        var forward = Assert.Single(vm.Forwards);
+
+        Assert.Equal("Forward #26 · -", forward.DisplayName);
     }
 
     [Fact]
@@ -58,6 +246,89 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void Initialize_PreservesSelectedProxyGameAndMirrorsLaterChanges()
+    {
+        var vm = new MainViewModel();
+        var config = new AgentConfig
+        {
+            ProxyActiveGameId = "steam",
+        };
+
+        vm.Initialize(config);
+
+        Assert.Equal("steam", vm.SelectedProxyGameId);
+        vm.SelectedProxyGameId = "valorant";
+        Assert.Equal("valorant", config.ProxyActiveGameId);
+    }
+
+    [Fact]
+    public async Task AddProxyGameFolderCreatesNamedProfileWithAllExecutableProcessNames()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-game-folder-" + Guid.NewGuid().ToString("N"));
+        var gameDir = Path.Combine(stateDir, "game");
+        Directory.CreateDirectory(Path.Combine(gameDir, "bin"));
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "launcher.exe"), "test");
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "bin", "game.exe"), "test");
+        await File.WriteAllTextAsync(Path.Combine(gameDir, "readme.txt"), "not an executable");
+
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+
+            var profile = await vm.AddProxyGameFolderAsync(gameDir, "HKG Game");
+
+            Assert.Equal("HKG Game", profile.DisplayName);
+            Assert.Equal(
+                ["game.exe", "launcher.exe"],
+                profile.ProcessPatterns.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray());
+            Assert.Contains(vm.ProxyGameOptions, option => option.Id == profile.Id);
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RefreshProxyGameOptionsPreservesSelectedGameAndDisplayName()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-game-selection-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateDir);
+        var executable = Path.Combine(stateDir, "game.exe");
+        await File.WriteAllTextAsync(executable, "test");
+
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+            var profile = await vm.AddProxyGameAsync(executable, "My Game");
+
+            vm.SelectedProxyGameId = profile.Id;
+            vm.RefreshProxyGameOptions();
+
+            Assert.Equal(profile.Id, vm.SelectedProxyGameId);
+            Assert.Equal("My Game", vm.SelectedProxyGameDisplayName);
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void Initialize_WithTokenOnlyConfig_HidesSetupWizard()
     {
         var vm = new MainViewModel();
@@ -85,6 +356,65 @@ public sealed class MainViewModelTests
         Assert.True(vm.ShowSetupWizard);
         Assert.False(vm.ShouldAutoConnectOnStartup);
         Assert.False(vm.HasSignedInEmail);
+    }
+
+    [Fact]
+    public async Task ShutdownForExit_IsIdempotentAndBlocksLateInitialization()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3.leikwanhost.com",
+            ClientId = 1,
+            ActiveClientId = 1,
+            AgentToken = "agent-token",
+        });
+
+        var first = vm.ShutdownForExitAsync();
+        var second = vm.ShutdownForExitAsync();
+
+        Assert.Same(first, second);
+        await first;
+        Assert.True(vm.IsShuttingDown);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => vm.InitializeProxyAsync());
+    }
+
+    [Fact]
+    public async Task SaveProxyProfileAfterInitializationKeepsEditorValuesAndAddsLibraryEntry()
+    {
+        var stateDir = Path.Combine(Path.GetTempPath(), "leikwan-proxy-vm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateDir);
+        var vm = new MainViewModel();
+        try
+        {
+            vm.Initialize(new AgentConfig
+            {
+                StateDir = stateDir,
+                ProxySingBoxBin = Path.Combine(stateDir, "sing-box.exe"),
+            });
+            await vm.InitializeProxyAsync();
+
+            vm.ProxyEditor.Name = "HKG test";
+            vm.ProxyEditor.Protocol = WindowsProxyProtocol.Shadowsocks2022;
+            vm.ProxyEditor.Server = "east.example.test";
+            vm.ProxyEditor.PortText = "30526";
+            vm.ProxyEditor.Method = "2022-blake3-aes-256-gcm";
+            vm.ProxyEditor.Password = "test-secret";
+
+            await vm.SaveProxyProfileAsync();
+
+            var profile = Assert.Single(vm.ProxyProfiles);
+            Assert.Equal("HKG test", profile.Name);
+            Assert.Equal("east.example.test", profile.Server);
+            Assert.Equal(30526, profile.Port);
+            Assert.Equal(profile.Id, vm.Config.ProxyActiveProfileId);
+            Assert.True(File.Exists(Path.Combine(stateDir, "proxy-profiles.json")));
+        }
+        finally
+        {
+            vm.DisposeProxyForShutdown();
+            try { Directory.Delete(stateDir, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]
@@ -245,6 +575,85 @@ public sealed class MainViewModelTests
 
         Assert.Equal("Update check failed: manifest unreachable", vm.ConnectionStatus);
         Assert.False(vm.ShowUpdatePrompt);
+    }
+
+    [Fact]
+    public void ReportUpdateProgress_SetsPhasePercentAndBusyState()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateProgress(UpdateProgress.Downloading(42.5, "Downloading update... (12345 bytes)"));
+
+        Assert.Equal("Downloading update", vm.UpdatePhaseText);
+        Assert.Equal(42.5, vm.UpdatePercent);
+        Assert.Equal("Downloading update... (12345 bytes)", vm.UpdateProgressMessage);
+        Assert.True(vm.IsUpdateInProgress);
+
+        vm.ReportUpdateProgress(UpdateProgress.Verifying(100, "Download verified."));
+        Assert.Equal("Verifying download", vm.UpdatePhaseText);
+        Assert.Equal(100, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void ReportUpdateFailed_SetsErrorDetailsAndRetrySurface()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateFailed("downloaded installer hash mismatch");
+
+        Assert.False(vm.IsUpdateInProgress);
+        Assert.True(vm.ShowUpdateError);
+        Assert.Equal("downloaded installer hash mismatch", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateOverlayVisible);
+
+        vm.ReportUpdateFinished();
+        Assert.False(vm.ShowUpdateError);
+        Assert.False(vm.IsUpdateOverlayVisible);
+        Assert.Equal(0, vm.UpdatePercent);
+    }
+
+    [Fact]
+    public void ReportUpdateCheckFailed_ExposesErrorAndRetrySurface()
+    {
+        var vm = new MainViewModel();
+
+        vm.ReportUpdateCheckFailedForTests("manifest unreachable");
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.Equal("manifest unreachable", vm.UpdateErrorMessage);
+        Assert.True(vm.IsUpdateOverlayVisible);
+    }
+
+    [Fact]
+    public async Task RetryUpdateCommand_InvokesInjectedHandler()
+    {
+        var vm = new MainViewModel();
+        var attempts = 0;
+        vm.RetryUpdateHandler = () =>
+        {
+            attempts++;
+            return Task.CompletedTask;
+        };
+        vm.ReportUpdateFailed("boom");
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, attempts);
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+    }
+
+    [Fact]
+    public void DismissUpdateErrorCommand_HidesErrorSurface()
+    {
+        var vm = new MainViewModel();
+        vm.ReportUpdateFailed("boom");
+
+        vm.DismissUpdateErrorCommand.Execute(null);
+
+        Assert.False(vm.ShowUpdateError);
+        Assert.Equal(string.Empty, vm.UpdateErrorMessage);
+        Assert.False(vm.IsUpdateOverlayVisible);
     }
 
 

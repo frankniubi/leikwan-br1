@@ -1,36 +1,46 @@
+<p>其他指南里出现的词，这里每个用一句话说清楚。遇到看不懂的词就打开这一页，看完再关掉。</p>
+
 <h2>你将完成什么</h2>
-<p>你将用通俗语言理解入门指南中的产品和网络术语，从而知道转发该填什么、客户端状态代表什么，以及连接何时才算真正验证成功。</p>
+<p>指南里的每个词你都能看懂，不需要读任何技术资料。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>打开正在阅读的指南，把术语与页面中的字段或状态对应起来。</li>
-  <li>外观相似的状态可能代表不同检查点，不要互相替代。</li>
-  <li>询问术语含义时，不要复制任何密码、令牌、命令、密钥或内部材料。</li>
+<li>不用准备什么。这一页适合一直开在另一个标签页里。</li>
+<li>少了你要查的词，告诉支持，我们会补上。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-  <li><strong>有效套餐：</strong>当前允许创建并使用转发的已购买套餐或服务。</li>
-  <li><strong>转发：</strong>把客户端监听收到的流量，经系统提供的线路送到目标主机和端口的一条已保存规则。</li>
-  <li><strong>Forward Route：</strong>第一张转发表单提供的线路方案，应选择与当前服务相符的已发布选项。</li>
-  <li><strong>Target Host：</strong>目标服务的主机名或 IP 地址。</li>
-  <li><strong>Target Port：</strong>目标服务监听的端口。</li>
-  <li><strong>Local Listen Port：</strong>应用连接客户端时使用的本地监听端口。</li>
-  <li><strong>客户端：</strong>在 Windows、Android 或 Linux 上接收转发配置并建立本地监听的软件。</li>
-  <li><strong>最近同步：</strong>证明客户端最近从面板拉取了配置，但不能证明目标应用已经响应。</li>
-  <li><strong>Running：</strong>表示客户端中的转发进程正在运行，不等于应用连接成功。</li>
-  <li><strong>Single：</strong>使用一条受支持路径处理请求的简单连接模式。</li>
-  <li><strong>Race：</strong>用于路径选择或容错，不是带宽聚合；行为因平台和传输类型而异。</li>
-  <li><strong>Bond：</strong>只有套餐与平台明确支持发布要求时才使用的高级模式；不保证速度翻倍、跑满带宽或每条路径都参与。</li>
-  <li><strong>Sidecar：</strong>某些 Bond 线路要求的可选目标侧中间传输，不是目标应用。</li>
-  <li><strong>应用验证：</strong>使用预定协议发出真实请求并获得正确响应，最好还能在目标日志中确认。</li>
+<li><strong>在下面的表里找到那个词。</strong></li>
+<li><strong>读那一句话的解释。</strong>看懂就可以停下了。</li>
+<li><strong>想真正用起来，就去打开旁边对应的指南。</strong></li>
 </ol>
+<table>
+<thead>
+<tr><th>词</th><th>意思</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>使用中的套餐</strong></td><td>你付过钱而且还在有效期内的套餐。只有套餐有效时转发才会运行。</td></tr>
+<tr><td><strong>转发</strong></td><td>你在控制台上画的一条线：一头是目标，另一头是本机端口。</td></tr>
+<tr><td><strong>线路</strong></td><td>流量从哪条线路出去。挑离目标最近的那条。</td></tr>
+<tr><td><strong>目标地址</strong></td><td>你要连接的游戏或服务的地址。</td></tr>
+<tr><td><strong>目标端口</strong></td><td>那个地址监听的端口。</td></tr>
+<tr><td><strong>本地监听端口</strong></td><td>系统分给你自己设备的端口，在「转发规则」里显示为「本地端口」。游戏用这个。</td></tr>
+<tr><td><strong>协议</strong></td><td>流量是 TCP、UDP 还是两者都要。游戏一般是 UDP。</td></tr>
+<tr><td><strong>客户端</strong></td><td>在你设备上承载这条线路的应用。</td></tr>
+<tr><td><strong>Running</strong></td><td>线路通了以后客户端显示的状态。</td></tr>
+<tr><td><strong>在线设备</strong></td><td>「客户端」页面上当前登录着的设备列表。设备在列表里，说明客户端正常。</td></tr>
+<tr><td><strong>最大在线</strong></td><td>你的套餐允许同时登录的设备数。满了以后新设备登录不上，可以把不用的设备踢下线。</td></tr>
+<tr><td><strong>ultra</strong></td><td>所有线路都用它承载。它让你玩的时候线路保持稳定。</td></tr>
+<tr><td><strong>应用验证</strong></td><td>用游戏本身去测，而不是只 ping 一下。</td></tr>
+</tbody>
+</table>
 
 <h2>如何确认成功</h2>
-<p>你能够为可见字段选择正确的值，区分配置送达、进程运行和应用成功，并根据问题跳转到合适的指南，而不是猜测内部设置。</p>
+<p>你读完一篇指南，中途没有被任何词卡住。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止猜值或分享秘密。</strong>使用下方链接回到对应操作场景；仍不清楚时，请管理员或支持人员结合页面上的可见标签解释。</p>
+<p>两篇指南看起来说法不一致时，<strong>先停止</strong>，直接问支持。设置不要靠猜——猜错花的时间比问一句多得多。</p>
 
 <h2>相关指南</h2>
-<p>首次使用请阅读<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a>；填写表单请看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>；地址与成功证据请看<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；模式选择请看<a href="/knowledgebase?thread=connection-modes-single-race-bond">选择连接模式</a>；仅在线路明确要求时阅读<a href="/knowledgebase?thread=bond-sidecar-setup">配置 Sidecar</a>。</p>
+<p>先从<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分钟完成首次连接</a>开始，再把<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>放在手边。</p>

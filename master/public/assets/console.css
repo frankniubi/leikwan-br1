@@ -1,0 +1,1684 @@
+/*
+ * Console skin for every signed-in page (body.pg-app).
+ *
+ * Loaded after leikwan-ui.css, operator-console.css and bridge-modern.css, so
+ * every rule is prefixed with `html body.pg-app` to win the cascade without
+ * touching the public/home skins those sheets also serve.
+ *
+ * Direction: a light cloud-console look (white surfaces on a cool grey page,
+ * one blue accent taken from the logo), mainland-Chinese system fonts, calm
+ * weights and tabular numbers.
+ */
+html body.pg-app {
+  --c-page: #f4f6f9;
+  --c-surface: #ffffff;
+  --c-surface-2: #f8f9fb;
+  --c-hover: #f1f4f8;
+  --c-line: #e4e7ec;
+  --c-line-strong: #cfd4dc;
+  --c-ink: #1d2433;
+  --c-ink-2: #4a5468;
+  --c-muted: #7a8396;
+  --c-brand: #1f6fe0;
+  --c-brand-hover: #185bc0;
+  --c-brand-soft: #e9f1fd;
+  --c-brand-line: #bcd4f7;
+  --c-success: #12a150;
+  --c-success-soft: #e7f7ee;
+  --c-warning: #d9820a;
+  --c-warning-soft: #fdf3e2;
+  --c-danger: #e0443a;
+  --c-danger-soft: #fdecea;
+  --c-code: #111827;
+  --c-radius: 8px;
+  --c-radius-sm: 6px;
+  --c-topbar: 56px;
+  --c-sidebar: 216px;
+  --c-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --c-shadow-pop: 0 8px 24px rgba(16, 24, 40, 0.12);
+  /* Latin faces first so digits and product names use the system UI font;
+     CJK glyphs fall through to the Chinese faces. */
+  --c-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
+  --c-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* Older sheets read these; point them at the new palette. */
+  --ink: var(--c-ink);
+  --muted: var(--c-muted);
+  --line: var(--c-line);
+  --line-soft: var(--c-line);
+  --line-strong: var(--c-line-strong);
+  --surface: var(--c-surface);
+  --surface-soft: var(--c-surface-2);
+  --success: var(--c-success);
+  --healthy: var(--c-brand);
+  --danger: var(--c-danger);
+  --radius: var(--c-radius);
+
+  margin: 0;
+  min-height: 100vh;
+  background: var(--c-page) !important;
+  color: var(--c-ink) !important;
+  font-family: var(--c-font) !important;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+html body.pg-app *,
+html body.pg-app *::before,
+html body.pg-app *::after {
+  box-sizing: border-box;
+}
+
+html body.pg-app h1,
+html body.pg-app h2,
+html body.pg-app h3,
+html body.pg-app h4 {
+  font-family: var(--c-font) !important;
+  color: var(--c-ink) !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+}
+
+html body.pg-app a {
+  color: var(--c-brand);
+  text-decoration: none;
+}
+
+html body.pg-app a:hover {
+  color: var(--c-brand-hover);
+}
+
+html body.pg-app strong,
+html body.pg-app b {
+  font-weight: 600;
+}
+
+html body.pg-app code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line);
+  color: var(--c-ink-2);
+  font-family: var(--c-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+html body.pg-app .muted {
+  color: var(--c-muted) !important;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+html body.pg-app .shell {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html body.pg-app .topbar {
+  position: sticky !important;
+  top: 0;
+  z-index: 30;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px;
+  height: var(--c-topbar);
+  min-height: var(--c-topbar) !important;
+  margin: 0 !important;
+  padding: 0 20px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--c-line) !important;
+  border-radius: 0 !important;
+  background: var(--c-surface) !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .brand {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  min-width: 0;
+  text-decoration: none;
+}
+
+html body.pg-app .brand-mark {
+  display: flex !important;
+  align-items: center;
+  width: auto !important;
+  height: 44px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+html body.pg-app .brand-mark img {
+  display: block;
+  width: auto !important;
+  height: 44px !important;
+  max-width: 160px;
+  object-fit: contain !important;
+}
+
+html body.pg-app .brand-copy {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--c-line);
+}
+
+html body.pg-app .brand-copy h1 {
+  margin: 0 !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  white-space: nowrap;
+}
+
+html body.pg-app .brand-copy p {
+  margin: 0 !important;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--c-brand-soft);
+  color: var(--c-brand) !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  white-space: nowrap;
+}
+
+html body.pg-app .toolbar {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 12px !important;
+  width: auto !important;
+  flex-wrap: nowrap !important;
+}
+
+html body.pg-app .locale-switch {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 4px 0 10px !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-surface) !important;
+  color: var(--c-ink-2) !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .locale-switch .locale-globe {
+  flex: none;
+  color: var(--c-muted);
+}
+
+html body.pg-app .locale-switch select,
+html body.pg-app .locale-select {
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 22px 0 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background-color: transparent !important;
+  color: var(--c-ink-2) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .viewer {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+html body.pg-app .viewer-avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--c-brand);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+html body.pg-app .viewer-meta {
+  display: grid !important;
+  gap: 0 !important;
+  margin: 0 !important;
+  text-align: left !important;
+  line-height: 1.3 !important;
+}
+
+html body.pg-app .viewer-meta strong {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-ink) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+}
+
+html body.pg-app .viewer-meta span {
+  color: var(--c-muted) !important;
+  font-size: 12px !important;
+  text-transform: none !important;
+}
+
+html body.pg-app .viewer-meta .viewer-role {
+  display: inline-block !important;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 6px !important;
+  border-radius: 4px !important;
+  background: var(--c-surface-2) !important;
+  border: 1px solid var(--c-line) !important;
+  color: var(--c-ink-2) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 18px !important;
+}
+
+html body.pg-app .viewer form {
+  margin: 0 !important;
+}
+
+html body.pg-app .viewer .button.danger,
+html body.pg-app .viewer button.logout-button {
+  min-height: 32px !important;
+  height: 32px;
+  padding: 0 12px !important;
+  border: 1px solid var(--c-line) !important;
+  background: var(--c-surface) !important;
+  color: var(--c-ink-2) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+}
+
+html body.pg-app .viewer .button.danger:hover,
+html body.pg-app .viewer button.logout-button:hover {
+  border-color: var(--c-danger) !important;
+  background: var(--c-danger-soft) !important;
+  color: var(--c-danger) !important;
+}
+
+html body.pg-app .mobile-nav-toggle {
+  display: none !important;
+}
+
+html body.pg-app .layout {
+  display: grid !important;
+  grid-template-columns: var(--c-sidebar) minmax(0, 1fr) !important;
+  gap: 0 !important;
+  min-height: calc(100vh - var(--c-topbar));
+  margin: 0 !important;
+  padding: 0 !important;
+  /* Paint the sidebar column down the whole page; the sticky sidebar itself
+     is only one viewport tall. */
+  background: linear-gradient(to right, var(--c-surface) calc(var(--c-sidebar) - 1px), var(--c-line) calc(var(--c-sidebar) - 1px), var(--c-line) var(--c-sidebar), transparent var(--c-sidebar)) !important;
+}
+
+html body.pg-app .sidebar {
+  position: sticky !important;
+  top: var(--c-topbar) !important;
+  align-self: start;
+  height: calc(100vh - var(--c-topbar)) !important;
+  margin: 0 !important;
+  padding: 12px 10px 24px !important;
+  overflow-y: auto;
+  border: 0 !important;
+  border-right: 1px solid var(--c-line) !important;
+  border-radius: 0 !important;
+  background: var(--c-surface) !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .sidebar-panel {
+  display: none !important;
+}
+
+html body.pg-app .pg-nav-section {
+  margin: 0 0 6px !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+html body.pg-app .pg-nav-section + .pg-nav-section {
+  padding-top: 6px !important;
+}
+
+html body.pg-app .pg-nav-heading {
+  margin: 8px 0 2px !important;
+  padding: 0 10px !important;
+  color: var(--c-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 24px !important;
+  text-transform: none !important;
+}
+
+html body.pg-app .pg-nav-list {
+  display: grid !important;
+  gap: 2px !important;
+}
+
+html body.pg-app .nav-link {
+  position: relative;
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  border: 0 !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--c-ink-2) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  text-decoration: none !important;
+  transform: none !important;
+}
+
+html body.pg-app .nav-link:hover {
+  background: var(--c-hover) !important;
+  color: var(--c-ink) !important;
+}
+
+html body.pg-app .nav-link.active {
+  background: var(--c-brand-soft) !important;
+  color: var(--c-brand) !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app .nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--c-brand);
+}
+
+html body.pg-app .content-card {
+  width: 100%;
+  max-width: 1320px;
+  min-width: 0;
+  margin: 0 !important;
+  padding: 24px 32px 56px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* ------------------------------------------------------- page header -- */
+
+html body.pg-app .pg-console {
+  display: block;
+}
+
+html body.pg-app .pg-page-header {
+  display: flex !important;
+  align-items: flex-end !important;
+  justify-content: space-between !important;
+  gap: 16px;
+  margin: 0 0 20px !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+html body.pg-app .pg-page-header h1 {
+  margin: 0 !important;
+  font-size: 22px !important;
+  font-weight: 600 !important;
+  line-height: 1.35 !important;
+}
+
+html body.pg-app .pg-eyebrow {
+  margin: 0 0 4px !important;
+  font-family: var(--c-font) !important;
+  color: var(--c-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+  text-transform: none !important;
+}
+
+html body.pg-app .pg-page-body {
+  display: block;
+}
+
+html body.pg-app .hero {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 16px;
+  margin: 0 0 20px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .hero h2 {
+  margin: 0 0 4px !important;
+  font-size: 16px !important;
+}
+
+html body.pg-app .hero p,
+html body.pg-app .hero .muted {
+  margin: 0 !important;
+  max-width: 760px;
+  font-size: 13px !important;
+}
+
+html body.pg-app .hero .actions {
+  flex: none;
+  margin: 0 !important;
+}
+
+/* In a card the hero is just a title row with a trailing action. */
+html body.pg-app .card .hero {
+  margin-bottom: 16px !important;
+}
+
+html body.pg-app .card .hero h3 {
+  margin: 0 0 4px !important;
+}
+
+/* -------------------------------------------------------------- cards -- */
+
+html body.pg-app .grid {
+  display: grid !important;
+  gap: 16px !important;
+  margin-top: 0;
+}
+
+html body.pg-app .grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+html body.pg-app .grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+html body.pg-app .grid.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+
+html body.pg-app .grid + .grid,
+html body.pg-app .grid + .card,
+html body.pg-app .card + .card,
+html body.pg-app .card + .grid,
+html body.pg-app .flash + .grid {
+  margin-top: 16px !important;
+}
+
+/* Grid children are aligned by the grid gap, never by sibling margins. */
+html body.pg-app .grid.grid > *,
+html body.pg-app .grid.grid > .card + .card {
+  margin-top: 0 !important;
+}
+
+html body.pg-app .card,
+html body.pg-app .content-card .card {
+  min-width: 0;
+  margin: 0;
+  padding: 20px !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius) !important;
+  background: var(--c-surface) !important;
+  box-shadow: var(--c-shadow) !important;
+}
+
+html body.pg-app .card h3,
+html body.pg-app .content-card h3 {
+  margin: 0 0 12px !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app .card > p {
+  margin: 0 0 12px;
+  color: var(--c-ink-2);
+}
+
+html body.pg-app .card > .muted,
+html body.pg-app .card > p.muted {
+  font-size: 13px;
+}
+
+html body.pg-app .stats {
+  margin-top: 6px !important;
+  color: var(--c-ink) !important;
+  font-family: var(--c-font) !important;
+  font-size: 26px !important;
+  font-weight: 600 !important;
+  line-height: 1.25 !important;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* A stat card is a card whose only content is a label and a value. */
+html body.pg-app .card > .muted:first-child {
+  font-size: 13px !important;
+}
+
+html body.pg-app .stack {
+  display: grid !important;
+  gap: 12px !important;
+}
+
+html body.pg-app .list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--c-ink-2);
+}
+
+html body.pg-app .list li + li {
+  margin-top: 4px;
+}
+
+html body.pg-app details:not(.pg-row-menu) {
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-surface-2) !important;
+  padding: 0 !important;
+}
+
+html body.pg-app details:not(.pg-row-menu) > summary {
+  padding: 10px 14px !important;
+  color: var(--c-ink-2) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  cursor: pointer;
+}
+
+html body.pg-app details:not(.pg-row-menu)[open] > summary {
+  border-bottom: 1px solid var(--c-line);
+}
+
+html body.pg-app details:not(.pg-row-menu) > :not(summary) {
+  margin-left: 14px;
+  margin-right: 14px;
+}
+
+html body.pg-app details:not(.pg-row-menu) > :last-child:not(summary) {
+  margin-bottom: 14px;
+}
+
+html body.pg-app .pg-row-menu {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+html body.pg-app .pg-row-menu > summary {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--c-radius-sm) !important;
+}
+
+/* ------------------------------------------------------------ buttons -- */
+
+html body.pg-app .actions {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px !important;
+  margin-top: 16px;
+}
+
+html body.pg-app td.actions,
+html body.pg-app td .actions {
+  margin-top: 0 !important;
+}
+
+html body.pg-app .button,
+html body.pg-app button[type="submit"],
+html body.pg-app input[type="submit"] {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: auto;
+  min-height: 34px !important;
+  height: auto;
+  padding: 6px 16px !important;
+  border: 1px solid var(--c-brand) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-brand) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  font-family: var(--c-font) !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  line-height: 20px !important;
+  text-decoration: none !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: none !important;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+html body.pg-app .button:hover,
+html body.pg-app button[type="submit"]:hover,
+html body.pg-app input[type="submit"]:hover {
+  border-color: var(--c-brand-hover) !important;
+  background: var(--c-brand-hover) !important;
+  color: #ffffff !important;
+}
+
+html body.pg-app .button.secondary,
+html body.pg-app .button.ghost,
+html body.pg-app button.secondary,
+html body.pg-app button.ghost {
+  border-color: var(--c-line-strong) !important;
+  background: var(--c-surface) !important;
+  color: var(--c-ink) !important;
+}
+
+html body.pg-app .button.secondary:hover,
+html body.pg-app .button.ghost:hover,
+html body.pg-app button.secondary:hover,
+html body.pg-app button.ghost:hover {
+  border-color: var(--c-brand) !important;
+  background: var(--c-surface) !important;
+  color: var(--c-brand) !important;
+}
+
+html body.pg-app .button.danger,
+html body.pg-app button.danger {
+  border-color: var(--c-danger) !important;
+  background: var(--c-surface) !important;
+  color: var(--c-danger) !important;
+}
+
+html body.pg-app .button.danger:hover,
+html body.pg-app button.danger:hover {
+  border-color: var(--c-danger) !important;
+  background: var(--c-danger) !important;
+  color: #ffffff !important;
+}
+
+html body.pg-app .button[disabled],
+html body.pg-app button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+html body.pg-app table .button,
+html body.pg-app table button[type="submit"] {
+  min-height: 28px !important;
+  padding: 3px 10px !important;
+  font-size: 13px !important;
+}
+
+html body.pg-app form.inline {
+  display: inline-flex;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------- badges -- */
+
+html body.pg-app .badge,
+html body.pg-app .chip {
+  display: inline-flex !important;
+  align-items: center;
+  height: 22px;
+  margin: 0 !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: var(--c-surface-2) !important;
+  color: var(--c-ink-2) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 22px !important;
+  text-transform: none !important;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+html body.pg-app .badge.success {
+  background: var(--c-success-soft) !important;
+  color: var(--c-success) !important;
+}
+
+html body.pg-app .badge.info {
+  background: var(--c-brand-soft) !important;
+  color: var(--c-brand) !important;
+}
+
+html body.pg-app .badge.warning {
+  background: var(--c-warning-soft) !important;
+  color: var(--c-warning) !important;
+}
+
+html body.pg-app .badge.danger {
+  background: var(--c-danger-soft) !important;
+  color: var(--c-danger) !important;
+}
+
+html body.pg-app .pg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+/* -------------------------------------------------------------- flash -- */
+
+html body.pg-app .flash,
+html body.pg-app .callout {
+  margin: 0 0 16px !important;
+  padding: 10px 14px !important;
+  border: 1px solid var(--c-brand-line) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-brand-soft) !important;
+  color: var(--c-ink) !important;
+  font-size: 13px !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app .flash.success,
+html body.pg-app .callout.success {
+  border-color: #b7e4c7 !important;
+  background: var(--c-success-soft) !important;
+}
+
+html body.pg-app .flash.danger,
+html body.pg-app .callout.danger {
+  border-color: #f5c2bd !important;
+  background: var(--c-danger-soft) !important;
+  color: #b42318 !important;
+}
+
+html body.pg-app .flash a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------- tables -- */
+
+html body.pg-app .table-wrap,
+html body.pg-app .pg-sheet-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-surface) !important;
+}
+
+html body.pg-app table {
+  width: 100%;
+  border-collapse: collapse !important;
+  border: 0 !important;
+  font-size: 13px;
+}
+
+html body.pg-app th,
+html body.pg-app .pg-sheet-table th {
+  padding: 10px 14px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--c-line) !important;
+  background: var(--c-surface-2) !important;
+  color: var(--c-muted) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  text-align: left;
+  text-transform: none !important;
+  white-space: nowrap;
+}
+
+html body.pg-app td,
+html body.pg-app .pg-sheet-table td {
+  padding: 12px 14px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--c-line) !important;
+  background: transparent !important;
+  color: var(--c-ink) !important;
+  font-size: 13px !important;
+  vertical-align: middle;
+}
+
+html body.pg-app tbody tr:last-child td {
+  border-bottom: 0 !important;
+}
+
+html body.pg-app tbody tr:hover td {
+  background: var(--c-surface-2) !important;
+}
+
+html body.pg-app td.muted,
+html body.pg-app td[colspan].muted {
+  padding: 28px 14px !important;
+  color: var(--c-muted) !important;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------- forms -- */
+
+html body.pg-app .form-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px !important;
+}
+
+html body.pg-app .field {
+  display: grid !important;
+  gap: 6px !important;
+  min-width: 0;
+}
+
+html body.pg-app .field label,
+html body.pg-app label {
+  color: var(--c-ink-2) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  text-transform: none !important;
+}
+
+html body.pg-app .field .muted,
+html body.pg-app .field-note {
+  font-size: 12px !important;
+  line-height: 1.5;
+}
+
+html body.pg-app input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="hidden"]),
+html body.pg-app select,
+html body.pg-app textarea {
+  width: 100%;
+  min-height: 36px !important;
+  padding: 7px 11px !important;
+  border: 1px solid var(--c-line-strong) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background-color: var(--c-surface) !important;
+  color: var(--c-ink) !important;
+  box-shadow: none !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
+}
+
+html body.pg-app input::placeholder,
+html body.pg-app textarea::placeholder {
+  color: #a3aab8 !important;
+}
+
+html body.pg-app input:focus,
+html body.pg-app select:focus,
+html body.pg-app textarea:focus {
+  border-color: var(--c-brand) !important;
+  outline: 3px solid rgba(31, 111, 224, 0.14) !important;
+  outline-offset: 0;
+}
+
+html body.pg-app .locale-switch select:focus {
+  outline: 0 !important;
+}
+
+/* --------------------------------------------------------------- tabs -- */
+
+html body.pg-app .pg-view-tabs {
+  display: flex !important;
+  gap: 24px !important;
+  margin: 0 0 20px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--c-line) !important;
+  background: transparent !important;
+}
+
+html body.pg-app .pg-view-tab {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 40px !important;
+  margin: 0 0 -1px !important;
+  padding: 0 2px !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--c-ink-2) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  text-decoration: none !important;
+}
+
+html body.pg-app .pg-view-tab:hover {
+  color: var(--c-brand) !important;
+}
+
+html body.pg-app .pg-view-tab.active,
+html body.pg-app .pg-view-tab[aria-selected="true"] {
+  border-bottom-color: var(--c-brand) !important;
+  color: var(--c-brand) !important;
+  font-weight: 600 !important;
+}
+
+/* ------------------------------------------------------ overview page -- */
+
+html body.pg-app .console-welcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 20px 24px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius);
+  background: var(--c-surface);
+  box-shadow: var(--c-shadow);
+}
+
+html body.pg-app .console-welcome h2 {
+  margin: 0 0 4px !important;
+  font-size: 18px !important;
+}
+
+html body.pg-app .console-welcome p {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: 13px;
+}
+
+html body.pg-app .console-welcome .actions {
+  flex: none;
+  margin: 0 !important;
+}
+
+html body.pg-app .console-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-decoration: none;
+}
+
+html body.pg-app a.console-stat:hover {
+  border-color: var(--c-brand-line) !important;
+}
+
+html body.pg-app .console-stat .muted {
+  font-size: 13px !important;
+}
+
+html body.pg-app .console-stat .stats {
+  margin-top: 4px !important;
+}
+
+html body.pg-app .console-stat small {
+  color: var(--c-muted);
+  font-size: 12px;
+}
+
+html body.pg-app .console-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+html body.pg-app .console-step {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius-sm);
+  background: var(--c-surface-2);
+}
+
+html body.pg-app .console-step[data-state="current"] {
+  border-color: var(--c-brand-line);
+  background: var(--c-brand-soft);
+}
+
+html body.pg-app .console-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+html body.pg-app .console-step-head strong {
+  font-size: 14px;
+}
+
+html body.pg-app .console-step .muted {
+  font-size: 12px !important;
+  line-height: 1.5;
+}
+
+html body.pg-app .console-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+html body.pg-app .console-kv dt {
+  color: var(--c-muted);
+}
+
+html body.pg-app .console-kv dd {
+  margin: 0;
+  color: var(--c-ink);
+  overflow-wrap: anywhere;
+}
+
+html body.pg-app .console-links {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+html body.pg-app .console-links a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: var(--c-radius-sm);
+  color: var(--c-ink-2);
+  font-size: 13px;
+}
+
+html body.pg-app .console-links a::after {
+  content: "\203A";
+  color: var(--c-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+html body.pg-app .console-links a:hover {
+  background: var(--c-hover);
+  color: var(--c-brand);
+}
+
+/* ------------------------------------------------- service / progress -- */
+
+html body.pg-app .console-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+html body.pg-app .console-progress-track {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #e8ebf0;
+}
+
+html body.pg-app .console-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--c-brand);
+}
+
+html body.pg-app .console-progress span {
+  color: var(--c-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+html body.pg-app .console-service-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+html body.pg-app .console-service-head h3 {
+  margin: 0 0 2px !important;
+}
+
+html body.pg-app .console-service-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-top: 12px;
+  color: var(--c-ink-2);
+  font-size: 13px;
+}
+
+html body.pg-app .console-service-meta span > span:first-child {
+  color: var(--c-muted);
+}
+
+/* --------------------------------------------------- client downloads -- */
+
+html body.pg-app .tenant-client-install {
+  width: 100% !important;
+  max-width: 1120px !important;
+  margin: 0 !important;
+}
+
+html body.pg-app .tenant-client-install__shell {
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius) !important;
+  background: var(--c-surface) !important;
+  box-shadow: var(--c-shadow) !important;
+}
+
+html body.pg-app .tenant-client-install__header {
+  padding: 16px 20px !important;
+  border-bottom: 1px solid var(--c-line);
+  background: var(--c-surface) !important;
+  color: var(--c-ink) !important;
+}
+
+html body.pg-app .tenant-client-install__header strong {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app .tenant-client-install__header .muted {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+html body.pg-app .tenant-client-install__body {
+  padding: 20px !important;
+}
+
+html body.pg-app .tenant-client-install__platforms {
+  gap: 16px !important;
+}
+
+html body.pg-app .tenant-client-install__platform {
+  display: flex;
+  flex-direction: column;
+  padding: 16px !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius) !important;
+  background: var(--c-surface) !important;
+}
+
+html body.pg-app .tenant-client-install__platform > strong,
+html body.pg-app .tenant-client-install__platform strong {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app .tenant-client-install__platform .muted {
+  margin-top: 8px;
+  font-size: 12px !important;
+  line-height: 1.6;
+}
+
+html body.pg-app .tenant-client-install__platform .actions {
+  margin-top: 12px !important;
+}
+
+html body.pg-app .tenant-client-install__command {
+  max-height: 132px;
+  margin: 10px 0 0 !important;
+  padding: 10px 12px !important;
+  overflow: auto !important;
+  border: 0 !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-code) !important;
+  color: #d6e4ff !important;
+  font: 12px/1.6 var(--c-mono) !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+}
+
+html body.pg-app .tenant-client-install__online {
+  margin-top: 16px !important;
+  padding: 12px 16px !important;
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius-sm) !important;
+  background: var(--c-surface-2) !important;
+  font-size: 13px !important;
+}
+
+html body.pg-app .tenant-client-install__online strong {
+  color: var(--c-success) !important;
+  font-size: 15px !important;
+}
+
+html body.pg-app .tenant-client-install__credentials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius);
+  background: var(--c-surface);
+  box-shadow: var(--c-shadow);
+}
+
+html body.pg-app .tenant-client-install__credentials > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+html body.pg-app .tenant-client-install__credentials strong {
+  font-size: 13px;
+  color: var(--c-ink-2);
+  font-weight: 500;
+}
+
+html body.pg-app .tenant-client-install__credentials code {
+  display: block;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+html body.pg-app .tenant-client-install__credentials .actions {
+  margin-top: 0 !important;
+}
+
+html body.pg-app .tenant-client-install > form {
+  margin-top: 12px;
+}
+
+html body.pg-app .tenant-client-install__online-list {
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius);
+  background: var(--c-surface);
+  box-shadow: var(--c-shadow);
+}
+
+html body.pg-app .tenant-client-install__online-list-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+html body.pg-app .tenant-client-install__online-list-head strong {
+  font-size: 15px;
+}
+
+html body.pg-app .command-card-icon,
+html body.pg-app .tenant-client-install__platform svg {
+  flex: none;
+  color: var(--c-ink-2);
+}
+
+/* ---------------------------------------------------------- storefront -- */
+
+html body.pg-app .storefront-section {
+  margin-top: 16px !important;
+}
+
+html body.pg-app .storefront-heading h3 {
+  margin-bottom: 4px !important;
+}
+
+html body.pg-app .storefront-heading .muted {
+  font-size: 13px;
+}
+
+html body.pg-app .storefront-categories,
+html body.pg-app .storefront-product,
+html body.pg-app .storefront-empty {
+  border: 1px solid var(--c-line) !important;
+  border-radius: var(--c-radius) !important;
+  background: var(--c-surface) !important;
+  box-shadow: var(--c-shadow);
+}
+
+html body.pg-app .storefront-category-title {
+  background: var(--c-surface-2) !important;
+  color: var(--c-muted);
+  font-size: 12px;
+  font-weight: 500 !important;
+}
+
+html body.pg-app .storefront-category {
+  color: var(--c-ink-2);
+  font-size: 14px;
+}
+
+html body.pg-app .storefront-category.active {
+  border-left: 3px solid var(--c-brand) !important;
+  background: var(--c-brand-soft) !important;
+  color: var(--c-brand) !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app .storefront-product-header {
+  padding: 14px 18px !important;
+  background: var(--c-surface) !important;
+  border-bottom: 1px solid var(--c-line) !important;
+}
+
+html body.pg-app .storefront-product-header h3 {
+  margin: 0 !important;
+  font-size: 16px !important;
+}
+
+html body.pg-app .storefront-product-body {
+  min-height: 0 !important;
+}
+
+html body.pg-app .storefront-product-price {
+  border-left: 1px solid var(--c-line) !important;
+  background: var(--c-surface-2);
+  font-size: 13px;
+}
+
+html body.pg-app .storefront-product-price .console-kv {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+}
+
+html body.pg-app .storefront-product-price .console-kv dd {
+  text-align: right;
+  white-space: nowrap;
+}
+
+html body.pg-app .storefront-product-price .stats {
+  color: var(--c-brand) !important;
+  font-size: 28px !important;
+}
+
+html body.pg-app .storefront-order {
+  width: 100%;
+  border-color: var(--c-brand) !important;
+  background: var(--c-brand) !important;
+}
+
+html body.pg-app .storefront-services {
+  margin-top: 16px !important;
+}
+
+/* ---------------------------------------------------------- knowledge -- */
+
+html body.pg-app .kb-shell,
+html body.pg-app .kb-article,
+html body.pg-app .kb-sidebar {
+  border-radius: var(--c-radius) !important;
+}
+
+/* --------------------------------------------------------- responsive -- */
+
+@media (max-width: 1180px) {
+  html body.pg-app .grid.four {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  html body.pg-app .grid.three {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  html body.pg-app .console-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  html body.pg-app .topbar {
+    position: sticky !important;
+    height: var(--c-topbar);
+    padding: 0 12px !important;
+  }
+
+  html body.pg-app .brand-copy,
+  html body.pg-app .viewer-meta {
+    display: none !important;
+  }
+
+  html body.pg-app .mobile-nav-toggle {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    min-width: 36px !important;
+    height: 36px;
+    min-height: 36px !important;
+    padding: 0 !important;
+    border: 1px solid var(--c-line) !important;
+    border-radius: var(--c-radius-sm) !important;
+    background: var(--c-surface) !important;
+    color: var(--c-ink) !important;
+    font-size: 16px !important;
+  }
+
+  html body.pg-app .layout {
+    grid-template-columns: 1fr !important;
+    background: transparent !important;
+  }
+
+  html body.pg-app .sidebar {
+    display: none !important;
+    position: fixed !important;
+    top: var(--c-topbar) !important;
+    left: 0;
+    right: 0;
+    z-index: 25;
+    height: auto !important;
+    max-height: calc(100vh - var(--c-topbar));
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--c-line) !important;
+    box-shadow: var(--c-shadow-pop) !important;
+  }
+
+  html body.pg-app .sidebar[data-open="true"] {
+    display: block !important;
+  }
+
+  html body.pg-app .content-card {
+    padding: 16px 16px 40px !important;
+  }
+
+  html body.pg-app .grid.two,
+  html body.pg-app .grid.three,
+  html body.pg-app .grid.four,
+  html body.pg-app .form-grid,
+  html body.pg-app .tenant-client-install__credentials {
+    grid-template-columns: 1fr !important;
+  }
+
+  html body.pg-app .hero,
+  html body.pg-app .console-welcome,
+  html body.pg-app .pg-page-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+  }
+}
+
+@media (max-width: 520px) {
+  html body.pg-app .toolbar {
+    gap: 8px !important;
+  }
+
+  html body.pg-app .viewer-avatar {
+    display: none !important;
+  }
+
+  html body.pg-app .brand-mark,
+  html body.pg-app .brand-mark img {
+    height: 36px !important;
+  }
+
+  html body.pg-app .locale-switch {
+    padding-left: 8px !important;
+  }
+
+  html body.pg-app .locale-switch select {
+    max-width: 84px;
+  }
+
+  html body.pg-app .grid.four,
+  html body.pg-app .grid.three {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  html body.pg-app .locale-switch .locale-globe {
+    display: none;
+  }
+
+  html body.pg-app .card,
+  html body.pg-app .content-card .card {
+    padding: 16px !important;
+  }
+
+  html body.pg-app .stats {
+    font-size: 22px !important;
+  }
+}
+
+html body.pg-app .console-kv + form,
+html body.pg-app .console-kv + .actions {
+  margin-top: 16px !important;
+}
+
+/* ------------------------------------------------- checkboxes / radios -- */
+
+/* Older sheets size every input like a text field, which blew native
+   checkboxes up to a full-width 44px box with a giant check mark. */
+html body.pg-app input[type="checkbox"],
+html body.pg-app input[type="radio"] {
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  flex: none !important;
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+  outline-offset: 2px;
+  accent-color: var(--c-brand);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+html body.pg-app label:has(> input[type="checkbox"]),
+html body.pg-app label:has(> input[type="radio"]) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  width: auto;
+  min-height: 32px;
+  padding: 4px 0 !important;
+  color: var(--c-ink) !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  text-align: left !important;
+  cursor: pointer;
+}
+
+html body.pg-app td > input[type="checkbox"] {
+  display: block;
+}
+
+/* ------------------------------------------------------ admin overview -- */
+
+html body.pg-app .grid.five {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
+}
+
+html body.pg-app .grid.one {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+html body.pg-app .console-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+html body.pg-app .console-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--c-radius-sm);
+  background: var(--c-surface);
+  color: var(--c-ink-2);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+html body.pg-app .console-total strong {
+  color: var(--c-ink);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+html body.pg-app a.console-total:hover {
+  border-color: var(--c-brand-line);
+  color: var(--c-brand);
+}
+
+html body.pg-app #recent-failed-tasks > .card {
+  height: 100%;
+  margin-top: 0 !important;
+}
+
+html body.pg-app details.console-danger-zone {
+  margin-top: 16px !important;
+  padding: 0 !important;
+  border: 1px solid var(--c-line) !important;
+  background: var(--c-surface) !important;
+}
+
+html body.pg-app details.console-danger-zone > summary {
+  padding: 14px 20px !important;
+  color: var(--c-ink) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+html body.pg-app details.console-danger-zone > .card {
+  margin: 16px 20px !important;
+  box-shadow: none !important;
+}
+
+html body.pg-app details.console-danger-zone > .card:last-child {
+  margin-bottom: 20px !important;
+}

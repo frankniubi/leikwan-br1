@@ -12,6 +12,7 @@ object ProxyListSections {
         "ss" to "Shadowsocks",
         "vless" to "VLESS",
         "vmess" to "VMess",
+        "socks5" to "SOCKS5",
         "wireguard" to "WireGuard",
     )
 

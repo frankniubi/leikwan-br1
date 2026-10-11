@@ -95,6 +95,19 @@ class WindowsClientSetupInstallerScriptTests(unittest.TestCase):
         self.assertIn("LEIKWANINSTALLMODE", self.inno_source)
         self.assertIn("LEIKWANDESKTOPSHORTCUT", self.inno_source)
 
+    def test_inno_script_declares_supported_windows_install_matrix(self) -> None:
+        self.assertIn("MinVersion=10.0.17763", self.inno_source)
+        self.assertIn("ArchitecturesAllowed=x64compatible", self.inno_source)
+        self.assertIn("ArchitecturesInstallIn64BitMode=x64compatible", self.inno_source)
+
+    def test_helper_wraps_payload_replacement_in_transactional_rollback(self) -> None:
+        helper_source = INSTALL_HELPER.read_text(encoding="utf-8")
+        self.assertIn("New-InstallSnapshot", helper_source)
+        self.assertIn("Restore-InstallSnapshot", helper_source)
+        self.assertIn("$snapshotRoot", helper_source)
+        self.assertIn("try {", helper_source)
+        self.assertIn("catch {", helper_source)
+
     def test_directory_contains_real_install_ignores_updates_only_cache(self) -> None:
         with tempfile.TemporaryDirectory(prefix="leikwan-migration-detect-") as temp_dir:
             temp_path = pathlib.Path(temp_dir)
@@ -203,6 +216,11 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             "leikwan-uot-bond.exe",
             "leikwan-mptcp-relay.exe",
             "ultra-client.exe",
+            "sing-box.exe",
+            "Redirector.bin",
+            "netfilter2.sys",
+            "nfapi.dll",
+            "CN.conf",
         ):
             (bin_dir / name).write_bytes(name.encode("utf-8"))
 
@@ -300,6 +318,9 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             )
             self.assertEqual(first_install.returncode, 0, msg=first_install.stdout + "\n" + first_install.stderr)
             self.assertTrue((install_dir / "Obsolete.Dependency.dll").is_file())
+            old_backup = install_dir / "backup-legacy"
+            (old_backup / "old-client.exe").parent.mkdir(parents=True)
+            (old_backup / "old-client.exe").write_bytes(b"old")
 
             obsolete_file.unlink()
             second_install = self.run_helper(
@@ -319,6 +340,14 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             )
             self.assertEqual(second_install.returncode, 0, msg=second_install.stdout + "\n" + second_install.stderr)
             self.assertFalse((install_dir / "Obsolete.Dependency.dll").exists())
+            manifest = json.loads((install_dir / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["backup_dir"], "")
+            self.assertFalse(any(install_dir.glob("backup-*")))
+
+    def test_helper_source_does_not_create_client_backup_directories(self) -> None:
+        helper_source = INSTALL_HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("function Backup-ExistingInstall", helper_source)
+        self.assertNotIn("Backup-ExistingInstall -TargetDir", helper_source)
 
     def test_helper_all_users_shortcut_uses_common_desktop(self) -> None:
         with tempfile.TemporaryDirectory(prefix="leikwan-helper-common-desktop-") as temp_dir:
@@ -615,7 +644,9 @@ class WindowsClientSetupInstallerTests(unittest.TestCase):
                 text=True,
                 errors="replace",
                 env=env,
-                timeout=40,
+                # The self-contained native Windows package is larger than the
+                # legacy test installer; allow extraction on slower disks.
+                timeout=180,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or ""

@@ -5,22 +5,64 @@ namespace LeikwanBridge.Core.Services;
 public interface IDesktopRuntimeSession : IAsyncDisposable
 {
     event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+    event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     event Action<int, string>? ForwardRejected;
     event Action<string>? LogRaised;
 
+    /// <summary>
+    /// Raised with the refusal when the panel starts refusing this device
+    /// because the online device limit is full, and with null once a config
+    /// pull succeeds again.
+    /// </summary>
+    event Action<DeviceLimitReachedException?>? DeviceLimitChanged { add { } remove { } }
+
     IReadOnlyList<ForwardConfig> Forwards { get; }
+    NativeOutboundCapability? NativeOutbound { get; }
+
+    /// <summary>The current device-limit refusal, or null while the panel accepts this device.</summary>
+    DeviceLimitReachedException? DeviceLimit => null;
     bool IsForwardRunning(int forwardId);
     Task StartAsync(CancellationToken ct);
     Task RefreshAsync(CancellationToken ct);
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
+    Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => RefreshAsync(ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
+    Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+        => ProxyForwardLease.AcquireAsync(
+            Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+                ?? throw new InvalidOperationException("proxy_forward_unavailable"),
+            () => IsForwardRunning(forwardId),
+            token => StartForwardAsync(forwardId, token),
+            token => StopForwardAsync(forwardId, token), ct);
     Task StartAllAsync(CancellationToken ct);
     Task StopAllAsync(CancellationToken ct);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct);
+    Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct)
+        => ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
 }
 
 public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 {
+    // A control-plane outage during startup should not surface as a hard
+    // disconnect when the endpoint supervisor can recover shortly afterwards.
+    // Keep this retry local to the initial pull; the API payload and runtime
+    // reconciliation remain unchanged.
+    private static readonly TimeSpan[] StartupSyncRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(7),
+    ];
+
     private readonly MasterApiClient _api;
     private readonly ConfigPollingService _polling;
     private readonly HeartbeatService _heartbeat;
@@ -31,6 +73,12 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     private readonly int _healthIntervalSeconds;
     private readonly TimeSpan _heartbeatInterval;
     private readonly SemaphoreSlim _heartbeatGate = new(1, 1);
+    private readonly object _heartbeatScheduleGate = new();
+    private readonly object _heartbeatNoticeGate = new();
+    private DateTimeOffset _lastHeartbeatScheduledAtUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+    private int _consecutiveHeartbeatFailures;
+    private static readonly TimeSpan HeartbeatFailureNoticeInterval = TimeSpan.FromMinutes(5);
     private readonly object _taskLock = new();
     private CancellationTokenSource? _cts;
     private Task? _heartbeatLoop;
@@ -38,6 +86,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     private Task? _lastDiagnostics;
     private bool _healthStarted;
     private bool _stopped;
+    private DeviceLimitReachedException? _deviceLimit;
 
     public DesktopRuntimeSession(
         MasterApiClient api,
@@ -58,34 +107,128 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _diagnostics = diagnostics;
         _pollIntervalSeconds = Math.Max(1, pollIntervalSeconds);
         _healthIntervalSeconds = Math.Max(1, healthIntervalSeconds);
-        _heartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(30);
+        _heartbeatInterval = heartbeatInterval is { } interval && interval > TimeSpan.Zero
+            ? interval
+            : TimeSpan.FromSeconds(30);
         _polling.ForwardsUpdated += OnForwardsUpdated;
+        _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
+        _polling.PreparationProgress += (done, total) => LogRaised?.Invoke($"preparing_routes:{done}/{total}");
         _polling.PullStateChanged += state =>
         {
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                ClearDeviceLimit();
                 QueueHeartbeat();
+            }
         };
-        _polling.SyncError += exception => LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+        _polling.SyncError += exception =>
+        {
+            // The polling service already holds the loop on its steady
+            // device-limit cadence; a recovery request would only queue a
+            // forced pull that the panel refuses the same way.
+            if (DeviceLimitReachedException.TryFind(exception, out var limit))
+            {
+                SetDeviceLimit(limit);
+                return;
+            }
+            LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
+            _polling.RequestControlPlaneRecovery();
+        };
         _polling.ClientUpdated += client => QueueDiagnostics(client);
         _health.HealthIssue += (forwardId, issue) => LogRaised?.Invoke($"health_issue:{forwardId}:{BoundCode(issue)}");
         _heartbeat.UltraActionsReceived += ApplyUltraPolicyActions;
     }
 
     public event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+    public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     public event Action<int, string>? ForwardRejected;
     public event Action<string>? LogRaised;
+    public event Action<DeviceLimitReachedException?>? DeviceLimitChanged;
 
     public IReadOnlyList<ForwardConfig> Forwards => _polling.LatestForwards;
 
+    public DeviceLimitReachedException? DeviceLimit => Volatile.Read(ref _deviceLimit);
+
+    public NativeOutboundCapability? NativeOutbound => _polling.LatestNativeOutbound;
+
     public bool IsForwardRunning(int forwardId) => _runtime.IsForwardRunning(forwardId);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        CancellationToken ct)
+        => await ResolveNativeOutboundLeaseAsync(forwardId, routeScope, "restricted", ct).ConfigureAwait(false);
+
+    public async Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+        int forwardId,
+        string routeScope,
+        string routePolicy,
+        CancellationToken ct)
+    {
+        // Native reconnects need fresh rotating tickets, not a revision-cached
+        // forward. Pull only the policy; do not restart ordinary forwards.
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var pull = await _api.PullConfigsAsync(ct: ct).ConfigureAwait(false);
+            var forward = pull.Forwards.FirstOrDefault(item => item.ForwardId == forwardId);
+            if (!pull.Ok || pull.NotModified || forward is null || pull.NativeOutbound is null)
+                return null;
+            try
+            {
+                return await _api.ResolveNativeOutboundLeaseAsync(
+                    forward, pull.NativeOutbound, routeScope.Trim().ToLowerInvariant(), routePolicy, ct).ConfigureAwait(false);
+            }
+            catch (MasterApiException error) when (attempt == 0 && error.StatusCode == 409 && error.Message == "lease_scope_invalid")
+            {
+                LogRaised?.Invoke("native_lease_policy_refresh");
+            }
+        }
+        return null;
+    }
 
     public async Task StartAsync(CancellationToken ct)
     {
         if (_cts is not null)
             return;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        await _polling.SyncOnceAsync(_cts.Token);
+        LogRaised?.Invoke("preparing_config");
+        Exception? lastSyncError = null;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await _polling.SyncOnceAsync(_cts.Token).ConfigureAwait(false);
+                lastSyncError = null;
+                break;
+            }
+            catch (OperationCanceledException) when (_cts.Token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (DeviceLimitReachedException.TryFind(exception, out var limit))
+            {
+                // The profile is valid; only the online device limit is full.
+                // Start the polling loop anyway: it retries on the steady
+                // device-limit cadence and applies routes once a slot frees.
+                SetDeviceLimit(limit);
+                break;
+            }
+            catch (Exception exception) when (attempt < StartupSyncRetryDelays.Length)
+            {
+                lastSyncError = exception;
+                LogRaised?.Invoke($"startup_sync_retry:{attempt + 1}:{exception.GetType().Name}");
+                await Task.Delay(StartupSyncRetryDelays[attempt], _cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                lastSyncError = exception;
+                break;
+            }
+        }
+        if (lastSyncError is not null)
+            throw lastSyncError;
+        _cts.Token.ThrowIfCancellationRequested();
         _polling.Start(_pollIntervalSeconds);
         _heartbeatLoop = RunHeartbeatLoopAsync(_cts.Token);
     }
@@ -99,7 +242,15 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         // without cancelling the session's background polling token.
         using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
         refreshCts.CancelAfter(TimeSpan.FromSeconds(15));
-        await _polling.SyncOnceAsync(refreshCts.Token);
+        try
+        {
+            await _polling.SyncOnceAsync(refreshCts.Token);
+        }
+        catch (Exception exception) when (DeviceLimitReachedException.TryFind(exception, out var limit))
+        {
+            SetDeviceLimit(limit);
+            throw;
+        }
     }
 
     public async Task StopAsync()
@@ -130,13 +281,47 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     }
 
     public Task StartForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "manual_apply", ct);
+
+    public Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "automatic_ensure", ct);
+
+    private Task StartForwardCoreAsync(int forwardId, string reason, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
             ?? throw new KeyNotFoundException("forward_not_found");
-        _runtime.RestartForward(forward, force: true, reason: "manual_apply");
-        PublishCurrentForwards();
-        return Task.CompletedTask;
+        return Task.Run(() =>
+        {
+            _runtime.RestartForward(forward, force: true, reason: reason);
+            PublishCurrentForwards();
+        }, ct);
+    }
+
+    public async Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
+    {
+        var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
+            ?? throw new InvalidOperationException("proxy_forward_unavailable");
+        ProxyForwardLease? lease = null;
+        try
+        {
+            lease = await _runtime.AcquireProxyForwardAsync(forward, ct).ConfigureAwait(false);
+            PublishCurrentForwards();
+            return lease.OwnsForward
+                ? new ProxyForwardLease(lease.Forward, true, async _ =>
+                {
+                    try { await lease.DisposeAsync().ConfigureAwait(false); }
+                    finally { PublishCurrentForwards(); }
+                })
+                : lease;
+        }
+        catch
+        {
+            if (lease is not null)
+                await lease.DisposeAsync().ConfigureAwait(false);
+            PublishCurrentForwards();
+            throw;
+        }
     }
 
     public Task StopForwardAsync(int forwardId, CancellationToken ct)
@@ -149,12 +334,16 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 
     public async Task StartAllAsync(CancellationToken ct)
     {
-        foreach (var forward in Forwards)
-        {
-            ct.ThrowIfCancellationRequested();
-            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
-            await Task.Yield();
-        }
+        await RunBoundedAsync(
+            Forwards,
+            4,
+            forward =>
+            {
+                ct.ThrowIfCancellationRequested();
+                _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+                return Task.CompletedTask;
+            },
+            ct);
         PublishCurrentForwards();
     }
 
@@ -196,7 +385,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
-                await SendHeartbeatSafeAsync(ct);
+                QueueHeartbeat();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -205,6 +394,17 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 
     private void QueueHeartbeat()
     {
+        // The panel refuses heartbeats from a device it has not admitted.
+        if (Volatile.Read(ref _deviceLimit) is not null)
+            return;
+        lock (_heartbeatScheduleGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastHeartbeatScheduledAtUtc < _heartbeatInterval)
+                return;
+            _lastHeartbeatScheduledAtUtc = now;
+        }
+
         var ct = _cts?.Token ?? CancellationToken.None;
         var task = SendHeartbeatSafeAsync(ct);
         lock (_taskLock)
@@ -224,14 +424,52 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             {
                 _heartbeatGate.Release();
             }
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures = 0;
+                _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
+            var shouldNotify = false;
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures++;
+                var now = DateTimeOffset.UtcNow;
+                if (_consecutiveHeartbeatFailures == 1
+                    || now - _lastHeartbeatNoticeAtUtc >= HeartbeatFailureNoticeInterval)
+                {
+                    _lastHeartbeatNoticeAtUtc = now;
+                    shouldNotify = true;
+                }
+            }
+            if (shouldNotify)
+                LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
         }
+    }
+
+    private void SetDeviceLimit(DeviceLimitReachedException limit)
+    {
+        var previous = Interlocked.Exchange(ref _deviceLimit, limit);
+        if (previous is null
+            || previous.OnlineDeviceLimit != limit.OnlineDeviceLimit
+            || previous.ActiveOnlineDevices != limit.ActiveOnlineDevices)
+        {
+            LogRaised?.Invoke($"device_limit_reached:{limit.ActiveOnlineDevices}/{limit.OnlineDeviceLimit}");
+            DeviceLimitChanged?.Invoke(limit);
+        }
+    }
+
+    private void ClearDeviceLimit()
+    {
+        if (Interlocked.Exchange(ref _deviceLimit, null) is null)
+            return;
+        LogRaised?.Invoke("device_limit_cleared");
+        DeviceLimitChanged?.Invoke(null);
     }
 
     private void QueueDiagnostics(ClientMeta client)
@@ -249,6 +487,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         try
         {
             await _diagnostics!.SubmitIfRequestedAsync(client, Forwards, _api, ct);
+            _diagnostics.QueueDebugLogUpload(client, _api, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -300,5 +539,27 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         catch (OperationCanceledException)
         {
         }
+    }
+
+    private static async Task RunBoundedAsync<T>(
+        IEnumerable<T> items,
+        int maxConcurrency,
+        Func<T, Task> action,
+        CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(Math.Max(1, maxConcurrency));
+        var tasks = items.Select(async item =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                await Task.Run(() => action(item), ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks);
     }
 }

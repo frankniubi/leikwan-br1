@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -30,19 +31,26 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
+import com.leikwan.bridge.ui.MainActivity
 
 @Composable
 fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
+    val activity = LocalContext.current as? MainActivity
+    LaunchedEffect(Unit) {
+        viewModel.refreshRoutingSelectorState()
+    }
     var showAddUri by remember { mutableStateOf(false) }
     var showAddSub by remember { mutableStateOf(false) }
     var showQrScan by remember { mutableStateOf(false) }
@@ -60,14 +68,6 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
-            Text(stringResource(R.string.proxies_connection_mode), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.proxy_mode_leigod_only),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Spacer(Modifier.height(8.dp))
 
             state.error?.let { err ->
@@ -114,9 +114,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                         ) { _, node ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    viewModel.selectNode(node)
-                                },
+                                onClick = { viewModel.selectNode(node) },
                                 border = if (state.selectedProxyId == node.id) {
                                     BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
                                 } else {

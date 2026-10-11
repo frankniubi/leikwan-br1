@@ -7,6 +7,48 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 
 public sealed class DesktopClientControllerTests
 {
+    [Theory]
+    [InlineData("CAN->HKG", "Forward #59 · CAN->HKG")]
+    [InlineData(" 上海 → 香港 ", "Forward #59 · 上海 → 香港")]
+    [InlineData("", "Forward #59 · -")]
+    public async Task ForwardTitleContainsIdAndDirectionWithoutRuntimeEndpoint(string direction, string expected)
+    {
+        var forward = Forward(59, "ultra", "single", 11059);
+        forward.ForwardCombinationDirection = direction;
+        forward.Target = "198.51.100.9:30526";
+        var runtime = new FakeRuntimeSession { InitialForwards = [forward] };
+        await using var controller = CreateController(SignedInConfig(), runtime);
+
+        await controller.ConnectAsync();
+
+        Assert.Equal(expected, Assert.Single(controller.Snapshot.Forwards).DisplayName);
+    }
+
+    [Fact]
+    public async Task ProxyForwardLeaseKeepsItsRunningSnapshotWhenAnotherRouteIsOperated()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var forward = Forward(180, "ultra", "single", port);
+        forward.Transport = "tcp";
+        forward.Target = "198.51.100.9:443";
+        var runtime = new FakeRuntimeSession { InitialForwards = [forward, Forward(181, "ultra", "single", 11881)] };
+        await using var controller = CreateController(SignedInConfig(), runtime);
+        await controller.ConnectAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var lease = await controller.AcquireProxyForwardAsync(180, deadline.Token);
+        await controller.StartForwardAsync(181, deadline.Token);
+
+        Assert.True(controller.Snapshot.Forwards.Single(item => item.ForwardId == 180).IsRunning);
+        Assert.Equal("198.51.100.9:443", forward.Target);
+        Assert.Equal(port, lease.ListenPort);
+        await lease.DisposeAsync();
+        Assert.False(controller.Snapshot.Forwards.Single(item => item.ForwardId == 180).IsRunning);
+        Assert.True(controller.Snapshot.Forwards.Single(item => item.ForwardId == 181).IsRunning);
+    }
+
     [Fact]
     public async Task LoginSelectConnectAndLifecyclePublishCredentialFreeSnapshots()
     {
@@ -191,6 +233,20 @@ public sealed class DesktopClientControllerTests
         await controller.DisposeAsync();
     }
 
+    [Fact]
+    public async Task NativeRoutePolicyOverloadReachesRuntimeSession()
+    {
+        var config = SignedInConfig();
+        var runtime = new FakeRuntimeSession();
+        var controller = CreateController(config, runtime);
+
+        await controller.ConnectAsync();
+        await controller.ResolveNativeOutboundLeaseAsync(158, "global", "unrestricted");
+
+        Assert.Equal("unrestricted", runtime.LastNativeRoutePolicy);
+        await controller.DisposeAsync();
+    }
+
     private static DesktopClientController CreateController(
         AgentConfig config,
         FakeRuntimeSession runtime,
@@ -252,6 +308,7 @@ public sealed class DesktopClientControllerTests
         private List<ForwardConfig> _forwards = [];
 
         public event Action<IReadOnlyList<ForwardConfig>>? ForwardsChanged;
+        public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
         public event Action<int, string>? ForwardRejected;
         public event Action<string>? LogRaised { add { } remove { } }
 
@@ -260,6 +317,7 @@ public sealed class DesktopClientControllerTests
         public bool BlockStart { get; init; }
         public bool ThrowOnRefresh { get; init; }
         public IReadOnlyList<ForwardConfig> Forwards => _forwards;
+        public NativeOutboundCapability? NativeOutbound { get; init; }
         public List<int> Started { get; } = [];
         public List<int> Stopped { get; } = [];
         public int StartForwardCalls { get; private set; }
@@ -268,6 +326,7 @@ public sealed class DesktopClientControllerTests
         public int StopCalls { get; private set; }
         public int DisposeCalls { get; private set; }
         public int RefreshCalls { get; private set; }
+        public string? LastNativeRoutePolicy { get; private set; }
 
         public bool IsForwardRunning(int forwardId) => Started.Contains(forwardId);
 
@@ -326,6 +385,22 @@ public sealed class DesktopClientControllerTests
             Started.Clear();
             ForwardsChanged?.Invoke(_forwards);
             return Task.CompletedTask;
+        }
+
+        public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+            int forwardId,
+            string routeScope,
+            CancellationToken ct)
+            => Task.FromResult<NativeOutboundLease?>(null);
+
+        public Task<NativeOutboundLease?> ResolveNativeOutboundLeaseAsync(
+            int forwardId,
+            string routeScope,
+            string routePolicy,
+            CancellationToken ct)
+        {
+            LastNativeRoutePolicy = routePolicy;
+            return Task.FromResult<NativeOutboundLease?>(null);
         }
 
         public ValueTask DisposeAsync()

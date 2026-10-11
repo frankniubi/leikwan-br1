@@ -24,13 +24,30 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
         for snippet in forbidden:
             self.assertNotIn(snippet, source)
 
+        self.assertIn("missing manifest sha256", source)
+        self.assertLess(
+            source.rfind("ensure_debian12_dependencies"),
+            source.index('VERSIONS_JSON=')
+        )
+
+    def test_tcp_accel_downloads_go_direct_to_the_doh_resolved_panel(self) -> None:
+        # A host whose system DNS only returns unreachable (IPv6 or polluted)
+        # panel addresses used to be carried by the retired proxy.env.
+        accel = (REPO_ROOT / "install" / "install-tcp-accel.sh").read_text(encoding="utf-8")
+        self.assertIn("CURL_PIN=(--noproxy '*')", accel)
+        self.assertIn('CURL_PIN+=(--resolve "$LEIKWAN_CURL_RESOLVE")', accel)
+        for line in accel.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("curl ") or '"$(curl ' in stripped:
+                self.assertIn('"${CURL_PIN[@]}"', stripped, stripped)
+
+        installer = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertIn('leikwan_protected_download --resolve-pin "$DOWNLOAD_BASE"', installer)
+        self.assertIn('LEIKWAN_CURL_RESOLVE="$TCP_ACCEL_RESOLVE"', installer)
+        self.assertIn('if sys.argv[1] == "--resolve-pin":', installer)
+
     def test_role_installers_download_and_run_tcp_accel_installer(self) -> None:
         expectations = [
-            (
-                "install-client-agent.sh",
-                'download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"',
-                '"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$ARTIFACT_BASE" --bin-dir "$BIN_DIR"',
-            ),
             (
                 "install-slave.sh",
                 'download_manifest_artifact tcp_accel_installer "$ARTIFACT_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"',
@@ -47,6 +64,12 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
                 source = (REPO_ROOT / "install" / filename).read_text(encoding="utf-8")
                 self.assertIn(download_snippet, source)
                 self.assertIn(exec_snippet, source)
+
+        # The client role installs the same helper: its split-TCP forwards render
+        # leikwan-client-<id>-tcp-accel units that exec it.
+        client_agent = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertIn("download_manifest_artifact tcp_accel_installer", client_agent)
+        self.assertIn('install-tcp-accel.sh" client', client_agent)
 
     def test_repo_local_tcp_accel_installer_uses_br1_bridge_helper(self) -> None:
         source = (REPO_ROOT / "tools" / "tcp-accel" / "install_debian12.sh").read_text(encoding="utf-8")

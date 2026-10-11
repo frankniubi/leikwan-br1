@@ -7,17 +7,27 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\AppSettings;
+use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AndroidEnrollmentCodeService;
+use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\DeviceControlService;
+use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
 use Leikwan\Master\Support\LeigodTokenBroker;
+use Leikwan\Master\Support\UltraOfflineValidityTokenProvider;
 use Leikwan\Master\Support\LeigodTokenProvider;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\UltraCandidateReputationService;
 use Leikwan\Master\Support\UltraClientStatusService;
 use Leikwan\Master\Support\UltraInventoryService;
+use Leikwan\Master\Support\UltraLeaseSealer;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
+use Leikwan\Master\Support\TrustedClientIpResolver;
 
 final class ClientAgentController extends BaseController
 {
@@ -25,6 +35,10 @@ final class ClientAgentController extends BaseController
     private UltraMaterialService $ultraMaterials;
     private UltraLeaseService $ultraLeases;
     private UltraClientStatusService $ultraClientStatus;
+    private DeviceControlService $deviceControls;
+    private AndroidEnrollmentCodeService $enrollmentCodes;
+    private OpenWrtPairingCodeService $openWrtPairingCodes;
+    private AccessPolicyService $accessPolicy;
 
     public function __construct(
         \Leikwan\Master\Config $config,
@@ -34,6 +48,10 @@ final class ClientAgentController extends BaseController
         ?UltraMaterialService $ultraMaterials = null,
         ?UltraClientStatusService $ultraClientStatus = null,
         ?UltraLeaseService $ultraLeases = null,
+        ?DeviceControlService $deviceControls = null,
+        ?AndroidEnrollmentCodeService $enrollmentCodes = null,
+        ?AccessPolicyService $accessPolicy = null,
+        ?OpenWrtPairingCodeService $openWrtPairingCodes = null,
     ) {
         parent::__construct($config, $db);
         $this->ultraMaterials = $ultraMaterials
@@ -42,13 +60,319 @@ final class ClientAgentController extends BaseController
             ?? new LeigodTokenBroker($config, new AppSettings($db), $this->ultraMaterials);
         $this->ultraLeases = $ultraLeases ?? new UltraLeaseService($config, $db, $this->ultraMaterials);
         $this->ultraClientStatus = $ultraClientStatus ?? new UltraClientStatusService($config, $db);
+        $this->deviceControls = $deviceControls ?? DeviceControlService::fromConfig($config, $db);
+        $this->enrollmentCodes = $enrollmentCodes ?? new AndroidEnrollmentCodeService($db);
+        $this->openWrtPairingCodes = $openWrtPairingCodes ?? new OpenWrtPairingCodeService($db, $config);
+        $this->accessPolicy = $accessPolicy ?? new AccessPolicyService(
+            $db,
+            clientIpResolver: new TrustedClientIpResolver((string) ($config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
+        );
+    }
+
+    public function locationChallenge(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $platform = $this->accessPolicyPlatform($request);
+        $challenge = $this->accessPolicy->issueLocationChallenge(
+            $client,
+            $this->accessPolicyDeviceUuid($request),
+            $this->accessPolicyAttemptId($request),
+            $platform,
+            $request,
+        );
+        return $this->noStoreJson([
+            'ok' => true,
+            'protocol_version' => 1,
+            'challenge_token' => (string) ($challenge['token'] ?? ''),
+            'challenge_expires_at' => (string) ($challenge['expires_at'] ?? ''),
+            'attempt_id' => (string) ($challenge['attempt_id'] ?? ''),
+            'platform' => (string) ($challenge['platform'] ?? $platform),
+            'poll_interval_seconds' => (int) ($challenge['poll_interval_seconds'] ?? 1800),
+            'poll_jitter_seconds' => (int) ($challenge['poll_jitter_seconds'] ?? 300),
+        ]);
+    }
+
+    public function locationReport(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
+        try {
+            $decision = $this->accessPolicy->recordLocationReport($client, $request);
+        } catch (ApiException $exception) {
+            $stable = [
+                'direct_location_check_required', 'location_check_unavailable',
+                'access_blacklisted', 'geo_lock_violation', 'device_temporarily_banned',
+                'device_banned', 'account_banned',
+            ];
+            if (!in_array($exception->getMessage(), $stable, true)
+                && in_array($exception->statusCode(), [400, 413, 422], true)) {
+                throw new ApiException('location_report_invalid', 422);
+            }
+            throw $exception;
+        }
+        return $this->noStoreJson(['ok' => true, 'protocol_version' => 1] + $this->safeAccessDecision($decision));
+    }
+
+    public function accessPolicyStatus(Request $request, array $params): Response
+    {
+        $client = $this->accessPolicyClient($request);
+        $this->accessPolicyPlatform($request);
+        $status = $this->accessPolicy->policyStatus($client, $request, $this->accessPolicyDeviceUuid($request));
+        return $this->noStoreJson(['ok' => true] + $status);
+    }
+
+    public function deviceChallenge(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueChallenge($client, $deviceId, 1);
+        return $this->noStoreJson(['ok' => true] + $challenge);
+    }
+
+    public function deviceRenewalChallenge(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueRenewalChallenge($client, $deviceId, 1);
+        return $this->noStoreJson(['ok' => true] + $challenge);
+    }
+
+    public function renewDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
+        $enrollment = $this->deviceControls->renew(
+            $client,
+            $deviceId,
+            (string) $request->input('nonce', ''),
+            (string) $request->input('identity_public_key', ''),
+            (string) $request->input('binding_signature', ''),
+            1,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
+    public function enrollDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $proof = $request->input('attestation_proof', []);
+        if (!is_array($proof)) {
+            throw new ApiException('attestation_proof_invalid', 422);
+        }
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
+        $proof['access_policy_protocol_version'] = 1;
+        $enrollment = $this->deviceControls->enroll(
+            $client,
+            $deviceId,
+            (string) $request->input('nonce', ''),
+            $proof,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
+    public function deviceIdentityEnroll(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $this->assertRequestedClientId($client, $request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($client, $deviceId);
+        $enrollment = $this->deviceControls->enrollIdentity(
+            $client,
+            $deviceId,
+            (string) $request->input('nonce', ''),
+            (string) $request->input('identity_public_key', ''),
+            1,
+        );
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $enrollment);
+    }
+
+    public function acknowledgeDevice(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->requireAndroidRequest($request);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'acknowledge', $deviceId);
+        $this->deviceControls->acknowledge(
+            $client,
+            $deviceId,
+            max(0, (int) $request->input('command_version', 0)),
+        );
+        return $this->noStoreJson(['ok' => true]);
+    }
+
+    public function enrollmentCodeChallenge(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $client = $this->activeClientForEnrollmentCode((string) $request->input('enrollment_code', ''));
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'enrollment', $deviceId);
+        $challenge = $this->deviceControls->issueChallenge($client, $deviceId, 1);
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+        ] + $challenge);
+    }
+
+    public function enrollmentCodeEnroll(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $code = (string) $request->input('enrollment_code', '');
+        $proof = $request->input('attestation_proof', []);
+        if (!is_array($proof)) {
+            throw new ApiException('attestation_proof_invalid', 422);
+        }
+        $policyClient = $this->activeClientForEnrollmentCode($code);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
+        $proof['access_policy_protocol_version'] = 1;
+        [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $proof): array {
+            $codeRow = $this->enrollmentCodes->findActive($code);
+            if ($codeRow === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            $client = $this->activeClientForEnrollmentCodeRow($codeRow);
+            $enrollment = $this->deviceControls->enroll(
+                $client,
+                $this->requestedDeviceId($request),
+                (string) $request->input('nonce', ''),
+                $proof,
+            );
+            if ($this->enrollmentCodes->consume($code) === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            return [$client, $enrollment];
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'agent_token' => (string) $client['agent_token'],
+        ] + $enrollment);
+    }
+
+    public function enrollmentCodeIdentityEnroll(Request $request, array $params): Response
+    {
+        $this->requireAndroidRequest($request);
+        $code = (string) $request->input('enrollment_code', '');
+        $identityPublicKey = (string) $request->input('identity_public_key', '');
+        $policyClient = $this->activeClientForEnrollmentCode($code);
+        $deviceId = $this->requestedDeviceId($request);
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
+        [$client, $enrollment] = $this->db->transaction(function () use ($code, $request, $identityPublicKey): array {
+            $codeRow = $this->enrollmentCodes->findActive($code);
+            if ($codeRow === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            $client = $this->activeClientForEnrollmentCodeRow($codeRow);
+            $enrollment = $this->deviceControls->enrollIdentity(
+                $client,
+                $this->requestedDeviceId($request),
+                (string) $request->input('nonce', ''),
+                $identityPublicKey,
+                1,
+            );
+            if ($this->enrollmentCodes->consume($code) === null) {
+                throw new ApiException('android_enrollment_code_invalid', 403);
+            }
+            return [$client, $enrollment];
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'agent_token' => (string) $client['agent_token'],
+        ] + $enrollment);
+    }
+
+    /**
+     * OpenWrt router onboarding.
+     *
+     * Deliberately separate from the Android enrolment-code flow: routers have
+     * no key attestation, so onboarding is gated by an operator-issued,
+     * single-use pairing code that is scoped to exactly one client. It never
+     * reads or consumes android_enrollment_codes.
+     */
+    public function pairOpenWrtDevice(Request $request, array $params): Response
+    {
+        $pairingCodes = $this->openWrtPairingCodes;
+        $pairingCodes->assertAvailable();
+        $code = (string) $request->input('pairing_code', '');
+        $deviceId = $this->requestDeviceIdentity($request, true, 'openwrt_pairing_device_invalid');
+        $policyClient = $this->activeClientForOpenWrtPairingCode($pairingCodes, $code);
+        $requestedClientId = (int) $request->input('client_id', 0);
+        if ($requestedClientId > 0 && $requestedClientId !== (int) ($policyClient['id'] ?? 0)) {
+            // The code scope is authoritative; a request cannot redirect the
+            // pairing to another client by naming one.
+            throw new ApiException('client_id_mismatch', 403);
+        }
+        $this->accessPolicy->authorizeClientRequest($policyClient, $request, 'enrollment', $deviceId);
+        $this->clientOnlineSessions()->assertCanComeOnline($policyClient, $deviceId);
+        $client = $this->db->transaction(function () use ($pairingCodes, $code): array {
+            $row = $pairingCodes->findByCode($code);
+            if ($row === null || $pairingCodes->isUsed($row)) {
+                throw new ApiException('openwrt_pairing_code_invalid', 403);
+            }
+            if ($pairingCodes->isExpired($row)) {
+                throw new ApiException('openwrt_pairing_code_expired', 403);
+            }
+            $client = $this->activeClientForOpenWrtPairingCodeRow($row);
+            if ($pairingCodes->consume($code) === null) {
+                throw new ApiException('openwrt_pairing_code_invalid', 403);
+            }
+            return $client;
+        });
+        $this->clientOnlineSessions()->enforceFromRequest($client, $request, 'pull');
+
+        return $this->noStoreJson([
+            'ok' => true,
+            'client_id' => (int) $client['id'],
+            'client_name' => (string) ($client['name'] ?? ''),
+            'agent_token' => (string) ($client['agent_token'] ?? ''),
+        ]);
     }
 
     public function resolveUltraMaterials(Request $request, array $params): Response
     {
+        // Retired 2026-10-02: this endpoint handed back every relay endpoint
+        // and LeiGod credential for a forward, sealed only with a key derived
+        // from the client token the caller already holds. No shipped client
+        // calls it any more; leases come from /ultra/lease, sealed to the
+        // device key (docs/specs/2026-10-02-ultra-sealed-lease-v1.md).
+        if (strtolower(trim((string) (isset($this->config) ? $this->config->get('ULTRA_MATERIALS_ENDPOINT', 'retired') : 'retired'))) !== 'enabled') {
+            return $this->noStoreJson(['ok' => false, 'error' => 'ultra_materials_retired'], 410);
+        }
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessions = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'pull');
+        [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'pull');
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $allowed = [];
@@ -95,8 +419,18 @@ final class ClientAgentController extends BaseController
     public function resolveUltraLease(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessions = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessions->enforceFromRequest($client, $request, 'lease');
+        [$deviceSessions, $deviceId] = $this->enforceClientRequest($client, $request, 'lease');
+        // Decided before any lease is issued, so a refused or malformed device
+        // key never consumes a lease nonce. Refusals use the lease endpoint's
+        // own error shape so clients see the specific code.
+        try {
+            $sealKey = $this->ultraLeaseSealKey($request, (int) $client['id'], $deviceId);
+        } catch (ApiException $refusal) {
+            return $this->json(['ok' => false, 'error' => $refusal->getMessage(), 'failures' => []], $refusal->statusCode())->withHeaders([
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'Pragma' => 'no-cache',
+            ]);
+        }
         $deviceSession = $deviceSessions->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
         $assigned = $this->provisioning->assignedForwardConfigsForClient((int) $client['id'], $deviceSession);
         $assignedById = [];
@@ -110,7 +444,9 @@ final class ClientAgentController extends BaseController
             $forwards = [$request->body()];
         }
         $forwards = array_slice(array_values($forwards), 0, 4);
-        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true);
+        $offlineValidity = UltraMode::parseOfflineValidityHeader($request->header(UltraMode::OFFLINE_VALIDITY_HEADER));
+        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true, $offlineValidity);
+        $leaseValidityCap = UltraMode::offlineValidityCapSeconds($this->config, $offlineValidity);
         $grantsById = [];
         foreach ($granted as $grantedForward) {
             if (!is_array($grantedForward)) {
@@ -121,7 +457,22 @@ final class ClientAgentController extends BaseController
                 $grantsById[$grantedId] = $grantedForward[UltraMode::ACCESS_FIELD];
             }
         }
+        $nativeCapability = null;
+        try {
+            $nativeCapability = $this->provisioning->nativeOutboundCapabilityForAssignedForwards(
+                is_array($assigned) ? $assigned : []
+            );
+        } catch (\Throwable) {
+            $nativeCapability = null;
+        }
+        $nativeCarriersById = [];
+        foreach (is_array($nativeCapability['forwards'] ?? null) ? $nativeCapability['forwards'] : [] as $carrier) {
+            if (is_array($carrier)) {
+                $nativeCarriersById[(int) ($carrier['forward_id'] ?? 0)] = $carrier;
+            }
+        }
         $leases = [];
+        $failures = [];
         $lastError = 'lease_scope_invalid';
         foreach ($forwards as $item) {
             if (!is_array($item)) {
@@ -130,17 +481,47 @@ final class ClientAgentController extends BaseController
             $forwardId = (int) ($item['forward_id'] ?? 0);
             $forward = $assignedById[$forwardId] ?? null;
             $grant = $grantsById[$forwardId] ?? null;
+            $purpose = strtolower(trim((string) ($item['purpose'] ?? '')));
+            $isNative = $purpose === UltraMode::NATIVE_OUTBOUND_PURPOSE;
             if (!is_array($forward) || !is_array($grant)) {
+                if ($isNative && !isset($nativeCarriersById[$forwardId])) {
+                    $lastError = 'native_outbound_not_allowed';
+                    continue;
+                }
                 $lastError = 'policy_unavailable';
+                $failures[$forwardId] = $lastError;
+                continue;
+            }
+            $nativeCarrier = $nativeCarriersById[$forwardId] ?? null;
+            if ($isNative && !is_array($nativeCarrier)) {
+                $lastError = 'native_outbound_not_allowed';
                 continue;
             }
             $ticket = trim((string) ($item['session_ticket'] ?? ''));
             if ($ticket === '' || !hash_equals($ticket, (string) ($grant['session_ticket'] ?? ''))) {
-                $lastError = 'lease_scope_invalid';
-                continue;
+                // The panel re-mints the ticket whenever the relay material rotates
+                // (~every 30 minutes) while a running forward still carries the ticket
+                // from its last config pull, so a strict comparison made every lease
+                // refresh fail with 409 lease_scope_invalid. The agent then stopped the
+                // forward and restarted it, which the user saw as an endless
+                // "Starting routes" loop. The assignment above is already validated for
+                // this exact client + device + forward, so a rotated ticket is accepted
+                // and recorded instead of failing the refresh.
+                if ($ticket === '' || (int) ($grant['forward_id'] ?? 0) !== $forwardId) {
+                    $lastError = 'lease_scope_invalid';
+                    continue;
+                }
+                error_log(sprintf(
+                    'ultra_lease_ticket_rotated client=%d forward=%d device=%s',
+                    (int) ($client['id'] ?? 0),
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16)
+                ));
             }
             $policy = [
                 'forward_id' => $forwardId,
+                // Attribution only (ultra_lease_time); never a scope check.
+                'service_id' => (int) ($forward['service_id'] ?? 0),
                 'device_hash' => hash('sha256', $deviceId),
                 'service_state' => (string) ($forward['service_status'] ?? 'suspended'),
                 'policy_generation' => (string) ($grant['policy_generation'] ?? ''),
@@ -150,36 +531,320 @@ final class ClientAgentController extends BaseController
                 'quota_remaining_bytes' => (int) ($grant['quota_remaining_bytes'] ?? 0),
                 'expires_at' => (string) ($grant['expires_at'] ?? ''),
             ];
-            $result = $this->ultraLeases->issueLease($item, (int) $client['id'], $deviceId, $policy);
-            if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
-                $leases[] = $result['lease'];
-                continue;
+            if ($leaseValidityCap > 0 && !$isNative) {
+                // Only a client that announced the offline-validity header gets
+                // a lease longer than the short-path ceiling; it is still capped
+                // by the grant's own expires_at above.
+                $policy['offline_validity_seconds'] = $leaseValidityCap;
             }
-            $lastError = (string) ($result['error'] ?? $lastError);
+            if ($isNative) {
+                $direction = trim((string) ($nativeCarrier['direction'] ?? ''));
+                $routeScope = UltraMode::normalizeNativeRouteScope(
+                    (string) ($item['route_scope'] ?? 'global'),
+                    $direction
+                );
+                $nativeTransport = (string) ($nativeCarrier['transport'] ?? '');
+                $routePolicy = UltraMode::normalizeNativeRoutePolicy($item['route_policy'] ?? 'restricted');
+                if ($routePolicy === null
+                    || ($routePolicy === UltraMode::NATIVE_ROUTE_POLICY_UNRESTRICTED
+                        && empty($nativeCarrier['unrestricted_allowed']))) {
+                    $lastError = 'native_route_policy_not_allowed';
+                    continue;
+                }
+                $requestDigest = strtolower(trim((string) ($item['target_digest'] ?? '')));
+                $digestMatches = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? hash_equals(
+                        UltraMode::nativeScopeDigest($forwardId, $direction, $nativeTransport, $routeScope ?? ''),
+                        $requestDigest
+                    ) || hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    )
+                    : hash_equals(
+                        UltraMode::nativeScopeDigestV2($forwardId, $direction, $nativeTransport, $routeScope ?? '', $routePolicy),
+                        $requestDigest
+                    );
+                if ($routeScope === null || $nativeTransport !== 'tcp+udp' || !$digestMatches) {
+                    $lastError = 'policy_scope_invalid';
+                    continue;
+                }
+                $policy['target'] = $routePolicy === UltraMode::NATIVE_ROUTE_POLICY_RESTRICTED
+                    ? implode("\n", [
+                        'native-outbound:v1',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                    ])
+                    : implode("\n", [
+                        'native-outbound:v2',
+                        $forwardId,
+                        strtolower($direction),
+                        $nativeTransport,
+                        $routeScope,
+                        $routePolicy,
+                    ]);
+                $policy['transport'] = $nativeTransport;
+                $policy['direction'] = $direction;
+                $policy['route_scope'] = $routeScope;
+                $policy['route_policy'] = $routePolicy;
+                $policy['native_unrestricted_allowed'] = !empty($nativeCarrier['unrestricted_allowed']);
+            }
+            $selectionMode = strtolower(trim((string) ($item['selection_mode'] ?? '')));
+            $maxCandidates = $selectionMode === 'auto'
+                ? max(1, min(4, (int) ($item['max_candidates'] ?? 4)))
+                : 1;
+            $baseNonce = strtolower(trim((string) ($item['nonce'] ?? '')));
+            $issuedCandidates = [];
+            $forwardLeaseCount = 0;
+            for ($candidateOffset = 0; $candidateOffset < 8 && $forwardLeaseCount < $maxCandidates; $candidateOffset++) {
+                $candidateRequest = $item;
+                $candidateRequest['candidate_offset'] = $candidateOffset;
+                if ($candidateOffset > 0) {
+                    $candidateRequest['nonce'] = hash('sha256', $baseNonce . "\n" . $candidateOffset);
+                }
+                $result = $this->ultraLeases->issueLease($candidateRequest, (int) $client['id'], $deviceId, $policy);
+                if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
+                    $candidateLease = $this->attachExternalUotToLease($result['lease'], $grant, $isNative);
+                    $endpoint = is_array($candidateLease['endpoint'] ?? null) ? $candidateLease['endpoint'] : [];
+                    $endpointKey = strtolower(trim((string) ($endpoint['ip'] ?? ''))) . ':' . (int) ($endpoint['port'] ?? 0);
+                    $selectionRef = trim((string) ($candidateLease['selection_ref'] ?? ''));
+                    if ($selectionRef === '') {
+                        $credential = is_array($candidateLease['credential'] ?? null) ? $candidateLease['credential'] : [];
+                        $selectionRef = strtolower(trim((string) ($credential['user'] ?? '')));
+                    }
+                    $selectionKey = $endpointKey . ':' . $selectionRef;
+                    if ($endpointKey !== ':' && !isset($issuedCandidates[$selectionKey])) {
+                        $issuedCandidates[$selectionKey] = true;
+                        $leases[] = $candidateLease;
+                        $forwardLeaseCount++;
+                    }
+                    continue;
+                }
+                $error = (string) ($result['error'] ?? $lastError);
+                if ($error === 'no_approved_candidate' && $forwardLeaseCount > 0) {
+                    // The forward already holds a lease; the candidate loop only
+                    // ran past its last relay. That is not a refusal, so it is
+                    // neither logged nor reported in "failures".
+                    break;
+                }
+                $lastError = $error;
+                error_log(sprintf(
+                    'ultra_lease_forward_refused client=%d forward=%d device=%s error=%s',
+                    (int) ($client['id'] ?? 0),
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16),
+                    $lastError
+                ));
+                $failures[$forwardId] = $lastError;
+                if ($lastError !== 'no_approved_candidate') {
+                    break;
+                }
+                break;
+            }
         }
         if ($leases === []) {
-            return $this->json(['ok' => false, 'error' => $lastError], 409)->withHeaders([
+            return $this->json(['ok' => false, 'error' => $lastError, 'failures' => $failures], 409)->withHeaders([
                 'Cache-Control' => 'no-store, no-cache, must-revalidate',
                 'Pragma' => 'no-cache',
             ]);
         }
-        return $this->json(['ok' => true, 'leases' => $leases])->withHeaders([
+        $body = ['ok' => true, 'leases' => $leases, 'failures' => $failures];
+        if ($sealKey !== null) {
+            try {
+                foreach ($leases as $index => $lease) {
+                    $leases[$index] = UltraLeaseSealer::sealLease($lease, $sealKey);
+                }
+            } catch (\Throwable $exception) {
+                error_log('ultra_lease_seal_failed ' . $exception->getMessage());
+                throw new ApiException('lease_seal_unavailable', 503);
+            }
+            $body['leases'] = $leases;
+            $body['lease_seal'] = ['v' => UltraLeaseSealer::VERSION, 'kid' => UltraLeaseSealer::keyId($sealKey)];
+        }
+        return $this->json($body)->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
     }
 
+    /**
+     * The device key the leases of this request are sealed to, or null for a
+     * clear response. ULTRA_LEASE_SEALING: "off" ignores the header,
+     * "optional" (default) seals whenever a valid key is sent, "require" also
+     * refuses a request without one and a key that conflicts with the
+     * device's live pinned key. "auto" is the rollout mode: a request without
+     * a key is refused for a device that has ever pinned one, and for every
+     * device first seen at or after ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE
+     * (new installs are always current builds, so a keyless newcomer is a
+     * token being replayed); devices that predate the cut-over keep working
+     * in clear until they update. Key conflicts are enforced as in "require".
+     * ULTRA_LEASE_SEALING_EXEMPT_DEVICES ("<client_id>:<device_id>" pairs)
+     * lets an operator-approved keyless client through in clear; a request
+     * from such a device that does send a key is still sealed and pinned.
+     */
+    private function ultraLeaseSealKey(Request $request, int $clientId, string $deviceId): ?string
+    {
+        $mode = strtolower(trim((string) (isset($this->config) ? $this->config->get('ULTRA_LEASE_SEALING', 'optional') : 'optional')));
+        if ($mode === 'off') {
+            return null;
+        }
+        $header = trim((string) ($request->header(UltraLeaseSealer::HEADER) ?? ''));
+        if ($header === '') {
+            if (isset($this->config) && UltraLeaseService::deviceListed(
+                $this->config->get('ULTRA_LEASE_SEALING_EXEMPT_DEVICES', ''),
+                $clientId,
+                hash('sha256', trim($deviceId))
+            )) {
+                return null;
+            }
+            if ($mode === 'require' || ($mode === 'auto' && $this->deviceMustSealLeases($clientId, $deviceId))) {
+                throw new ApiException('lease_sealing_required', 409);
+            }
+            return null;
+        }
+        $key = UltraLeaseSealer::parsePublicKey($header);
+        if ($key === null) {
+            throw new ApiException('lease_key_invalid', 400);
+        }
+        $this->pinUltraLeaseKey($clientId, $deviceId, UltraLeaseSealer::keyHash($key), $mode === 'require' || $mode === 'auto');
+        return $key;
+    }
+
+    /**
+     * "auto" mode: whether a keyless lease request from this device is
+     * refused. Lookup failures fail open, like the rest of the bookkeeping.
+     */
+    private function deviceMustSealLeases(int $clientId, string $deviceId): bool
+    {
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT first_seen_at, ultra_lease_key_sha256 FROM client_device_sessions
+                  WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+                ['client_id' => $clientId, 'device_id' => $deviceId]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_seal_policy_lookup_failed ' . $exception::class);
+            return false;
+        }
+        if (!is_array($row)) {
+            return false;
+        }
+        $reason = '';
+        if (trim((string) ($row['ultra_lease_key_sha256'] ?? '')) !== '') {
+            $reason = 'device-has-key';
+        } else {
+            $since = trim((string) (isset($this->config) ? $this->config->get('ULTRA_LEASE_SEALING_NEW_DEVICES_SINCE', '') : ''));
+            $sinceAt = $since !== '' ? strtotime($since . ' UTC') : false;
+            $firstSeen = strtotime(trim((string) ($row['first_seen_at'] ?? '')) . ' UTC');
+            if ($sinceAt !== false && $firstSeen !== false && $firstSeen >= $sinceAt) {
+                $reason = 'new-device';
+            }
+        }
+        if ($reason === '') {
+            return false;
+        }
+        error_log(sprintf(
+            'ultra_lease_sealing_required client=%d device=%s reason=%s',
+            $clientId,
+            substr(hash('sha256', $deviceId), 0, 16),
+            $reason
+        ));
+        return true;
+    }
+
+    /**
+     * One live lease key per device id. A different key is accepted once the
+     * pinned one has been idle for ULTRA_LEASE_KEY_REPIN_SECONDS (a reinstall
+     * that lost its key); while the pinned key is live the newcomer is refused
+     * under "require" and only logged otherwise. Bookkeeping failures (for
+     * example the columns not migrated yet) never block a lease.
+     */
+    private function pinUltraLeaseKey(int $clientId, string $deviceId, string $keyHash, bool $enforce): void
+    {
+        try {
+            $row = $this->db->fetchOne(
+                'SELECT ultra_lease_key_sha256, ultra_lease_key_seen_at FROM client_device_sessions
+                  WHERE client_id = :client_id AND device_id = :device_id LIMIT 1',
+                ['client_id' => $clientId, 'device_id' => $deviceId]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_key_pin_lookup_failed ' . $exception::class);
+            return;
+        }
+        if (!is_array($row)) {
+            return;
+        }
+        $now = time();
+        $pinned = strtolower(trim((string) ($row['ultra_lease_key_sha256'] ?? '')));
+        $seenText = trim((string) ($row['ultra_lease_key_seen_at'] ?? ''));
+        $seenAt = $seenText !== '' ? (int) strtotime($seenText . ' UTC') : 0;
+        $window = max(60, min(86400, (isset($this->config) ? $this->config->getInt('ULTRA_LEASE_KEY_REPIN_SECONDS', 900) : 900)));
+        if ($pinned !== '' && !hash_equals($pinned, $keyHash) && $seenAt > $now - $window) {
+            error_log(sprintf(
+                'ultra_lease_key_conflict client=%d device=%s enforce=%d',
+                $clientId,
+                substr(hash('sha256', $deviceId), 0, 16),
+                $enforce ? 1 : 0
+            ));
+            if ($enforce) {
+                throw new ApiException('lease_device_key_conflict', 409);
+            }
+            return;
+        }
+        if ($pinned === $keyHash && $seenAt > $now - 60) {
+            return;
+        }
+        try {
+            $this->db->execute(
+                'UPDATE client_device_sessions
+                    SET ultra_lease_key_sha256 = :key_hash, ultra_lease_key_seen_at = :seen_at
+                  WHERE client_id = :client_id AND device_id = :device_id',
+                [
+                    'key_hash' => $keyHash,
+                    'seen_at' => gmdate('Y-m-d H:i:s', $now),
+                    'client_id' => $clientId,
+                    'device_id' => $deviceId,
+                ]
+            );
+        } catch (\Throwable $exception) {
+            error_log('ultra_lease_key_pin_update_failed ' . $exception::class);
+        }
+    }
+
+    /**
+     * The desktop consumes /ultra/lease, not the broker grant in config pull.
+     * Carry the current server-authorized sidecar contract across that boundary.
+     * Native SOCKS5 has a separate transport contract and must not receive it.
+     */
+    private function attachExternalUotToLease(array $lease, array $grant, bool $isNative): array
+    {
+        unset($lease['external_uot']);
+        $external = $grant['external_uot'] ?? null;
+        if ($isNative || !is_array($external) || ($external['enabled'] ?? false) !== true) {
+            return $lease;
+        }
+        if ((int) ($lease['forward_id'] ?? 0) !== (int) ($grant['forward_id'] ?? 0)
+            || !hash_equals((string) ($lease['policy_generation'] ?? ''), (string) ($grant['policy_generation'] ?? ''))
+            || empty($external['target_digest'])
+            || !hash_equals((string) ($lease['target_digest'] ?? ''), (string) $external['target_digest'])) {
+            throw new ApiException('external_uot_scope_mismatch', 409);
+        }
+        $lease['external_uot'] = $external;
+        return $lease;
+    }
+
     public function pullConfigs(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessionService = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessionService->enforceFromRequest($client, $request, 'pull');
+        [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'pull');
         $deviceSession = $deviceSessionService->activeSessionForClientAndDevice((int) $client['id'], $deviceId);
 
         $sinceRevision = trim((string) $request->input('since_revision', ''));
         $waitSeconds = max(0, min(25, (int) $request->input('wait_seconds', 0)));
+        $runtimeArchitecture = $this->clientRuntimeArchitecture($request);
 
-        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
         $configRevision = (string) $snapshot['config_revision'];
         $forceApply = (bool) $snapshot['force_apply'];
 
@@ -188,7 +853,7 @@ final class ClientAgentController extends BaseController
             $deadline = microtime(true) + $waitSeconds;
             while (microtime(true) < $deadline) {
                 usleep(500000);
-                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
                 if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
                     break;
                 }
@@ -210,7 +875,14 @@ final class ClientAgentController extends BaseController
         $bondBinary = $snapshot['bond_binary'];
         $mptcpRuntime = $snapshot['mptcp_runtime'];
         $cfwgLatencyWatchdog = $snapshot['cfwg_latency_watchdog'];
+        // Keep the pull endpoint JSON-safe while older deployments finish
+        // rolling out the optional wstunnel artifact metadata.
+        $wstunnelBinary = is_array($snapshot['wstunnel_binary'] ?? null)
+            ? $snapshot['wstunnel_binary']
+            : [];
         $desiredBondSha256 = (string) $snapshot['desired_bond_sha256'];
+        $desiredUltraRuntimeVersion = (string) $snapshot['desired_ultra_runtime_version'];
+        $desiredUltraRuntimeSha256 = (string) $snapshot['desired_ultra_runtime_sha256'];
         $updateRequestToken = (string) $snapshot['update_request_token'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
@@ -225,15 +897,21 @@ final class ClientAgentController extends BaseController
             $forwards,
             (int) $client['id'],
             $deviceId,
-            $policyV2
+            $policyV2 || $this->isAndroidRequest($request),
+            UltraMode::parseOfflineValidityHeader($request->header(UltraMode::OFFLINE_VALIDITY_HEADER))
+        );
+        $delivery = self::pullDeliveryMetadata(
+            (string) $snapshot['config_revision'],
+            (int) $snapshot['next_poll_after_ms'],
+            $forwards
         );
 
-        $response = $this->json([
+        $responsePayload = [
             'ok' => true,
-            'config_revision' => (string) $snapshot['config_revision'],
+            'config_revision' => $delivery['config_revision'],
             'forward_revision' => (string) $snapshot['forward_revision'],
             'force_apply' => (bool) $snapshot['force_apply'],
-            'next_poll_after_ms' => (int) $snapshot['next_poll_after_ms'],
+            'next_poll_after_ms' => $delivery['next_poll_after_ms'],
             'client' => [
                 'id' => (int) $client['id'],
                 'name' => (string) $client['name'],
@@ -241,6 +919,7 @@ final class ClientAgentController extends BaseController
                 'group_id' => $client['group_id'] !== null ? (int) $client['group_id'] : null,
                 'diag_request_token' => (string) ($client['last_diag_request_token'] ?? ''),
                 'diag_status' => (string) ($client['last_diag_status'] ?? ''),
+                'debug_collection' => (new DebugCollectionStore($this->db, $this->config))->metadata($client),
                 'agent_config_json' => $agentConfig,
                 'agent_update_request_token' => $updateRequestToken,
                 'agent_update_requested_at' => (string) ($client['agent_update_requested_at'] ?? ''),
@@ -250,23 +929,60 @@ final class ClientAgentController extends BaseController
                 'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
                 'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
                 'desired_install_forward_runtime_sha256' => (string) ($installForwardRuntime['sha256'] ?? ''),
+                'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
+                'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
                 'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
                 'desired_bond_sha256' => $desiredBondSha256,
                 'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
                 'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
                 'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
                 'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
+                'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
+                'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
-        ]);
+        ];
+        if (is_array($snapshot['native_outbound'] ?? null)) {
+            $responsePayload['native_outbound'] = $snapshot['native_outbound'];
+        }
+        $response = $this->json($responsePayload);
         return $response->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
             'Pragma' => 'no-cache',
         ]);
+    }
+
+    /**
+     * Grant readiness is not part of the stable config revision. Never let an
+     * incomplete cold-start payload acknowledge that stable revision: a later
+     * material upload would otherwise be hidden behind an unnecessary 304.
+     * The retry revision is deterministic, contains no grant material, and
+     * cannot match stableConfigSnapshot. Native rules have no ordinary grant.
+     *
+     * @param array<int, array<string,mixed>> $forwards
+     * @return array{config_revision:string,next_poll_after_ms:int}
+     */
+    public static function pullDeliveryMetadata(string $revision, int $pollMs, array $forwards): array
+    {
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)
+                || !UltraMode::isBackendMode($forward['backend_mode'] ?? '')
+                || ($forward['service_status'] ?? '') !== 'active'
+                || !empty($forward['native_outbound_enabled'])) {
+                continue;
+            }
+            if (!is_array($forward[UltraMode::ACCESS_FIELD] ?? null)) {
+                return [
+                    'config_revision' => hash('sha256', "ultra-grants-pending\n" . $revision),
+                    'next_poll_after_ms' => 5000,
+                ];
+            }
+        }
+        return ['config_revision' => $revision, 'next_poll_after_ms' => $pollMs];
     }
 
     /**
@@ -278,19 +994,43 @@ final class ClientAgentController extends BaseController
      * @param array<string, mixed> $client
      * @return array<string, mixed>
      */
-    private function stableConfigSnapshot(int $clientId, ?array $deviceSession, array $client): array
+    private function stableConfigSnapshot(
+        int $clientId,
+        ?array $deviceSession,
+        array $client,
+        string $runtimeArchitecture = 'amd64'
+    ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
-        $clientAgent = $this->artifactMetadata('client_agent');
+        $clientAgentKey = 'client_agent_linux_' . $runtimeArchitecture;
+        $clientAgent = $this->artifactMetadata($clientAgentKey);
+        if ($clientAgent === []) {
+            $clientAgentKey = 'client_agent';
+            $clientAgent = $this->artifactMetadata($clientAgentKey);
+        }
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
+        $arm64 = $runtimeArchitecture === 'arm64';
+        $ultraClientRuntime = $this->artifactMetadata('ultra_client_runtime');
+        if ($arm64) {
+            $ultraClientRuntime = $this->artifactMetadata('ultra_client_runtime_linux_arm64');
+        }
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
+        if ($arm64) {
+            $bondBinary = $this->artifactMetadata('leikwan_bond_linux_arm64');
+        }
         $mptcpRuntime = $this->artifactMetadata('mptcp_client_runtime');
         $cfwgLatencyWatchdog = $this->artifactMetadata('cfwg_latency_watchdog');
+        $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_amd64');
+        if ($arm64) {
+            $wstunnelBinary = $this->artifactMetadata('wstunnel_linux_arm64');
+        }
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
+        $desiredUltraRuntimeVersion = (string) ($ultraClientRuntime['version'] ?? '');
+        $desiredUltraRuntimeSha256 = (string) ($ultraClientRuntime['binary_sha256'] ?? $ultraClientRuntime['sha256'] ?? '');
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
         if ($updateRequestToken === '') {
-            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), 'client_agent', 'auto-client-agent');
+            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), $clientAgentKey, 'auto-client-agent');
         }
 
         $agentConfig = $this->authoritativeAgentConfig($client);
@@ -308,27 +1048,47 @@ final class ClientAgentController extends BaseController
             $linuxProfileRuntime = $this->provisioning->linuxProfileRuntimeForClient($client, is_array($forwards) ? $forwards : []);
         }
 
-        $forwardRevision = self::forwardRevision($forwards);
+        $nativeOutbound = null;
+        try {
+            $nativeOutbound = $this->provisioning->nativeOutboundCapabilityForAssignedForwards(
+                is_array($forwards) ? $forwards : []
+            );
+        } catch (\Throwable) {
+            // Capability publication is optional; a lookup failure must keep
+            // the feature invisible and must not break ordinary config pulls.
+            $nativeOutbound = null;
+        }
+        $forwardRevision = self::forwardRevision($forwards, $nativeOutbound);
+        $debugCollection = (new DebugCollectionStore($this->db, $this->config))->metadata($client);
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
-            'client_agent' => $clientAgent,
+            $clientAgentKey => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
             'install_forward_runtime' => $installForwardRuntime,
+            'ultra_client_runtime' => $ultraClientRuntime,
             'leikwan_bond_linux_amd64' => $bondBinary,
+            'leikwan_bond_linux_' . $runtimeArchitecture => $bondBinary,
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
-        ]);
+            'wstunnel_binary' => $wstunnelBinary,
+        ], ['debug_collection' => $debugCollection, 'runtime_architecture' => $runtimeArchitecture]);
 
         return [
             'forwards' => $forwards,
+            'native_outbound' => $nativeOutbound,
             'agent_config' => $agentConfig,
             'linux_profile_runtime' => $linuxProfileRuntime,
             'client_agent' => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
             'install_forward_runtime' => $installForwardRuntime,
+            'ultra_client_runtime' => $ultraClientRuntime,
             'bond_binary' => $bondBinary,
+            'wstunnel_binary' => $wstunnelBinary,
+            'runtime_architecture' => $runtimeArchitecture,
             'mptcp_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'desired_bond_sha256' => $desiredBondSha256,
+            'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
+            'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
             'update_request_token' => $updateRequestToken,
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
@@ -340,7 +1100,7 @@ final class ClientAgentController extends BaseController
     /**
      * @param array<int, array<string, mixed>> $forwards
      */
-    public static function forwardRevision(array $forwards): string
+    public static function forwardRevision(array $forwards, ?array $nativeOutbound = null): string
     {
         $projection = [];
         foreach ($forwards as $forward) {
@@ -358,16 +1118,29 @@ final class ClientAgentController extends BaseController
                 'transport' => (string) ($forward['transport'] ?? ''),
                 'service_status' => (string) ($forward['service_status'] ?? ''),
                 'speed_limit_mbps' => (int) ($forward['speed_limit_mbps'] ?? 0),
+                'native_outbound' => !empty($forward['native_outbound'] ?? $forward['native_outbound_enabled'] ?? false),
+                'native_direction' => (string) ($forward['native_direction'] ?? $forward['native_direction_key'] ?? ''),
+                // Enabling, disabling or retuning the external UoT sidecar has
+                // to re-apply client runtime config. The per-combination
+                // digest (sidecar target, token, queue and frame knobs) is
+                // published by ProvisioningService::buildClientConfig.
+                'external_uot_revision' => (string) ($forward['forward_combination_external_uot_revision'] ?? ''),
             ];
         }
-        return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
+        if ($nativeOutbound === null) {
+            return hash('sha256', (string) json_encode($projection, JSON_UNESCAPED_SLASHES));
+        }
+        return hash('sha256', (string) json_encode([
+            'forwards' => $projection,
+            'native_outbound' => $nativeOutbound,
+        ], JSON_UNESCAPED_SLASHES));
     }
 
     /**
      * @param array<string, mixed> $agentConfig
      * @param array<string, array<string, mixed>> $artifactVersions
      */
-    public static function configRevision(string $forwardRevision, array $agentConfig, array $artifactVersions): string
+    public static function configRevision(string $forwardRevision, array $agentConfig, array $artifactVersions, array $extra = []): string
     {
         $artifacts = [];
         foreach ($artifactVersions as $key => $artifact) {
@@ -380,6 +1153,7 @@ final class ClientAgentController extends BaseController
             'forward_revision' => $forwardRevision,
             'agent_config' => $agentConfig,
             'artifacts' => $artifacts,
+            'extra' => $extra,
         ], JSON_UNESCAPED_SLASHES));
     }
 
@@ -392,11 +1166,30 @@ final class ClientAgentController extends BaseController
      * @param array<int, array<string, mixed>> $forwards
      * @return array<int, array<string, mixed>>
      */
-    private function attachUltraAccessGrants(array $forwards, int $clientId, string $deviceId, bool $policyV2 = false): array
-    {
+    private function attachUltraAccessGrants(
+        array $forwards,
+        int $clientId,
+        string $deviceId,
+        bool $policyV2 = false,
+        int $offlineValiditySeconds = 0,
+    ): array {
         $brokerForwards = $forwards;
+        $firstFlightRaw = isset($this->config) ? trim((string) $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '')) : '';
+        $firstFlightLines = [];
         if (isset($this->provisioning)) {
             $metadata = $this->provisioning->ultraLineMetadataForAssignedForwards($forwards);
+            // First-flight covers the whole direction: every enabled line, not
+            // only those whose material is fresh right now, or a line that gets
+            // material after the runtime starts would stay uncovered.
+            if ($firstFlightRaw !== '') {
+                try {
+                    foreach ($this->provisioning->ultraLineMetadataForAssignedForwards($forwards, false) as $id => $entry) {
+                        $firstFlightLines[(string) $id] = is_array($entry['lines'] ?? null) ? $entry['lines'] : [];
+                    }
+                } catch (\Throwable) {
+                    $firstFlightLines = [];
+                }
+            }
             foreach ($brokerForwards as $index => $forward) {
                 if (!is_array($forward)) {
                     continue;
@@ -411,10 +1204,29 @@ final class ClientAgentController extends BaseController
                 $brokerForwards[$index]['_ultra_destination_zone'] = $metadata[$forwardId]['destination_zone'];
                 $brokerForwards[$index]['_ultra_allowed_ingress_zones'] = $metadata[$forwardId]['allowed_ingress_zones'];
                 $brokerForwards[$index]['_ultra_fallback_policy'] = $metadata[$forwardId]['fallback_policy'];
+                // The external UoT sidecar contract is published per forward
+                // combination. It is handed to the broker (which normalizes it
+                // and adds the target digest) instead of the ordinary client
+                // config, so the sidecar secret only ever travels inside the
+                // short-lived Ultra grant.
+                if (is_array($metadata[$forwardId]['external_uot'] ?? null)) {
+                    $brokerForwards[$index]['external_uot'] = $metadata[$forwardId]['external_uot'];
+                }
             }
         }
         try {
-            $grants = $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
+            // Long grants only for a client that sent the offline-validity
+            // header; without it (or with a provider that cannot mint them) the
+            // call is exactly the short-path call it always was.
+            $grants = $offlineValiditySeconds > 0 && $this->ultraTokenProvider instanceof UltraOfflineValidityTokenProvider
+                ? $this->ultraTokenProvider->grantsForClientForwardsWithOfflineValidity(
+                    $clientId,
+                    $deviceId,
+                    $brokerForwards,
+                    $policyV2,
+                    $offlineValiditySeconds
+                )
+                : $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
         } catch (\Throwable) {
             return $policyV2 ? $this->scrubUltraForwards($forwards) : $forwards;
         }
@@ -459,9 +1271,119 @@ final class ClientAgentController extends BaseController
             if (!$policyV2) {
                 $grant['zone_aliases'] = $zoneAliases;
             }
+            if ($policyV2) {
+                $firstFlight = self::tcpFirstFlightForGrant(
+                    isset($this->config) ? $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '') : '',
+                    $forward,
+                    $grant,
+                    $firstFlightLines[$forwardId]
+                        ?? (is_array($brokerForwards[$index]['_ultra_lines'] ?? null) ? $brokerForwards[$index]['_ultra_lines'] : [])
+                );
+                if ($firstFlight !== null) {
+                    $grant['tcp_first_flight'] = $firstFlight;
+                }
+            }
             $forwards[$index][UltraMode::ACCESS_FIELD] = $grant;
         }
         return $forwards;
+    }
+
+    /**
+     * @param array<string,mixed> $forward
+     * @param array<string,mixed> $grant
+     * @param array<int, array<string,mixed>> $lines the forward's Ultra lines (source, line, zones)
+     * @return array<string,mixed>|null
+     */
+    public static function tcpFirstFlightForGrant(?string $raw, array $forward, array $grant, array $lines = []): ?array
+    {
+        $raw = trim((string) $raw);
+        if ($raw === '') {
+            return null;
+        }
+        try {
+            $rules = json_decode($raw, true, 16, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return null;
+        }
+        $direction = strtoupper(trim((string) ($forward['forward_combination_direction'] ?? '')));
+        $rule = is_array($rules) ? ($rules[$direction] ?? null) : null;
+        $target = trim((string) ($forward['target'] ?? ''));
+        $generation = strtolower(trim((string) ($grant['policy_generation'] ?? '')));
+        $expiresAt = trim((string) ($grant['expires_at'] ?? ''));
+        if (!is_array($rule)
+            || $target === ''
+            || preg_match('/^[a-f0-9]{64}$/', $generation) !== 1
+            || strtotime($expiresAt) === false
+            || strtotime($expiresAt) <= time()) {
+            return null;
+        }
+        $prefixBytes = (int) ($rule['prefix_bytes'] ?? 0);
+        $delayMs = (int) ($rule['delay_ms'] ?? 0);
+        // Without an explicit allowlist the rule covers every candidate the
+        // forward's own lines produce, so forwards and lines added later
+        // inherit it; the hashes are the ones the lease plane issues.
+        $explicit = $rule['candidate_hashes'] ?? null;
+        $rawHashes = is_array($explicit)
+            ? $explicit
+            : self::firstFlightCandidateHashes($lines, (string) ($grant['transport'] ?? $forward['transport_mode'] ?? 'tcp+udp'));
+        $candidateHashes = array_values(array_unique(array_map('strtolower', array_filter(
+            array_slice($rawHashes, 0, 16),
+            static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-f0-9]{64}$/', strtolower($value)) === 1
+        ))));
+        if ($prefixBytes < 1 || $prefixBytes > 16 || $delayMs < 1 || $delayMs > 1000 || $candidateHashes === []) {
+            return null;
+        }
+        // An optional target allowlist keeps a pilot to the targets the
+        // evidence came from instead of every forward of the direction.
+        if (array_key_exists('targets', $rule)) {
+            $targets = array_map(
+                static fn (mixed $value): string => strtolower(trim((string) $value)),
+                is_array($rule['targets']) ? array_slice($rule['targets'], 0, 16) : []
+            );
+            if (!in_array(strtolower($target), $targets, true)) {
+                return null;
+            }
+        }
+        return [
+            'target' => $target,
+            'policy_generation' => $generation,
+            'expires_at' => $expiresAt,
+            'candidate_hashes' => $candidateHashes,
+            'prefix_bytes' => $prefixBytes,
+            'delay_ms' => $delayMs,
+        ];
+    }
+
+    /**
+     * Candidate hashes for a forward's lines, as UltraMaterialService derives
+     * them when it issues leases (source, line, zones, lease protocol).
+     *
+     * @param array<int, array<string,mixed>> $lines
+     * @return array<int, string>
+     */
+    private static function firstFlightCandidateHashes(array $lines, string $transport): array
+    {
+        $protocol = strtolower(trim($transport));
+        if (!in_array($protocol, ['tcp', 'tcp+udp'], true)) {
+            return [];
+        }
+        $hashes = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $hash = UltraCandidateReputationService::candidateKeyHash([
+                'source_id' => (string) ($line['source_id'] ?? ''),
+                'line_id' => (int) ($line['line_id'] ?? 0),
+                'ingress_zone' => (string) ($line['ingress_zone'] ?? 'unknown'),
+                'destination_zone' => (string) ($line['destination_zone'] ?? 'unknown'),
+                'protocol' => $protocol,
+            ]);
+            if ($hash !== '') {
+                $hashes[$hash] = $hash;
+            }
+        }
+        return array_values($hashes);
     }
 
     private static function usesUltraPolicyV2(string $platform): bool
@@ -475,12 +1397,17 @@ final class ClientAgentController extends BaseController
     /** @param array<string,mixed> $forward @return array<string,mixed> */
     private function scrubUltraClientForward(array $forward): array
     {
+        foreach (['name', 'tenant_label', 'tenant_description', 'tenant_badge', 'forward_chain_name'] as $field) {
+            if (array_key_exists($field, $forward)) {
+                $forward[$field] = $this->redactUltraClientDisplayText($forward[$field]);
+            }
+        }
         foreach ([
             'client_token', 'credential', 'credentials', 'password', 'provider', 'providers',
             'line_client_id', 'line_client_name', 'line_client_host',
             'line_client_group_id', 'line_client_group_name', 'line_client_group_ids',
             'line_client_groups', 'line_group_mode', 'line_client_agent_config_json',
-            'forward_combination_direction', 'forward_combination_label',
+            'forward_combination_label',
             'forward_combination_name', 'bond_sidecar_point_id', 'bond_sidecar_point_name',
             'bond_sidecar_host', 'bond_sidecar_port', 'mptcp_sidecar_port',
             'bond_sidecar_cf_listen_port', 'bond_sidecar_cf_sni_host',
@@ -492,6 +1419,15 @@ final class ClientAgentController extends BaseController
             unset($forward[$field]);
         }
         return $forward;
+    }
+
+    private function redactUltraClientDisplayText(mixed $value): mixed
+    {
+        if (!is_string($value) || $value === '') {
+            return $value;
+        }
+        $redacted = preg_replace('/Leigod|雷神/iu', 'Ultra', $value);
+        return is_string($redacted) ? $redacted : 'Ultra';
     }
 
     /** @param array<int,array<string,mixed>> $forwards @return array<int,array<string,mixed>> */
@@ -508,15 +1444,47 @@ final class ClientAgentController extends BaseController
     public function heartbeat(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        $deviceSessionService = new ClientOnlineSessionService($this->db);
-        $deviceId = $deviceSessionService->deviceIdFromRequest($request);
-        $deviceSessionService->recordAndEnforce($client, $deviceId, $deviceSessionService->deviceMetadataFromRequest($request), 'heartbeat');
+        [$deviceSessionService, $deviceId] = $this->enforceClientRequest($client, $request, 'heartbeat');
         $ultraStatuses = $request->input('ultra_status', []);
+        $ultraStatusAccepted = 0;
+        // The runtime build identity reaches the panel in two shapes: the
+        // desktop client puts it inside each per-forward usage snapshot, the
+        // Linux/macOS agent puts it inside each per-forward status entry. Only
+        // the explicit argument used to be read, so no session row ever stored a
+        // fingerprint and the (already enabled) attestation enforcement had
+        // nothing to compare against.
+        $runtimeAttestation = $request->input('runtime_attestation');
+        if (!is_array($runtimeAttestation)) {
+            foreach ((array) $request->input('ultra_usage', []) as $usageEntry) {
+                if (is_array($usageEntry) && is_array($usageEntry['runtime_attestation'] ?? null)) {
+                    $runtimeAttestation = $usageEntry['runtime_attestation'];
+                    break;
+                }
+            }
+        }
         if (is_array($ultraStatuses)) {
             try {
-                $this->ultraClientStatus->ingest((int) $client['id'], $deviceId, $ultraStatuses);
+                $ultraStatusAccepted = $this->ultraClientStatus->ingest(
+                    (int) $client['id'],
+                    $deviceId,
+                    $ultraStatuses,
+                    is_array($runtimeAttestation) ? $runtimeAttestation : null
+                );
             } catch (\Throwable) {
                 // Runtime status is observational and must not interrupt the data-plane heartbeat.
+            }
+        }
+        $ultraCandidateFeedback = $request->input('ultra_candidate_feedback', []);
+        if (is_array($ultraCandidateFeedback)) {
+            try {
+                $this->ultraClientStatus->ingestFeedback(
+                    (int) $client['id'],
+                    $deviceId,
+                    $ultraCandidateFeedback
+                );
+            } catch (\Throwable) {
+                // Candidate reputation is observational and must not interrupt
+                // the ordinary heartbeat or forwarding path.
             }
         }
         $usageBytesIn = max(0, (int) $request->input('usage_bytes_in', 0));
@@ -529,8 +1497,12 @@ final class ClientAgentController extends BaseController
         }
         $runtimeState = $this->mergeRuntimeState($existingAgentConfig, [
             'supports_mptcp' => $request->input('supports_mptcp'),
+            'agent_architecture' => $this->clientRuntimeArchitecture($request),
+            'runtime_binary_mode' => $request->input('runtime_binary_mode'),
             'wireguard_public_key' => $request->input('wireguard_public_key'),
             'cfwg_watchdog_sha256' => $request->input('cfwg_watchdog_sha256'),
+            'wstunnel_sha256' => $request->input('wstunnel_sha256'),
+            'wstunnel_version' => $request->input('wstunnel_version'),
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
         ]);
@@ -558,9 +1530,11 @@ final class ClientAgentController extends BaseController
             $runtimeState['last_heartbeat_republish_at'] = $existingFingerprintAt;
         }
 
+        // A heartbeat without agent_version (Android sends none) must not
+        // blank the account's version for the Linux agent sharing the client.
         $this->db->execute(
             'UPDATE clients
-             SET agent_version = :agent_version,
+             SET agent_version = IF(CHAR_LENGTH(:agent_version_check) > 0, :agent_version, agent_version),
                  agent_config_json = :agent_config_json,
                  last_sync_at = :last_sync_at,
                  updated_at = :updated_at
@@ -568,6 +1542,7 @@ final class ClientAgentController extends BaseController
             [
                 'id' => $client['id'],
                 'agent_version' => (string) $request->input('agent_version', ''),
+                'agent_version_check' => trim((string) $request->input('agent_version', '')),
                 'agent_config_json' => $runtimeState !== [] ? json_encode($runtimeState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
                 'last_sync_at' => gmdate('Y-m-d H:i:s'),
                 'updated_at' => gmdate('Y-m-d H:i:s'),
@@ -583,6 +1558,7 @@ final class ClientAgentController extends BaseController
         $this->provisioning->recordAgentUsage('client', (int) $client['id'], $usageBytesIn, $usageBytesOut);
         $ultraUsage = $request->input('ultra_usage', []);
         $ultraActions = [];
+        $ultraUsageAcknowledged = true;
         if (is_array($ultraUsage)) {
             foreach (array_slice($ultraUsage, 0, 32) as $usage) {
                 if (!is_array($usage)) {
@@ -603,6 +1579,7 @@ final class ClientAgentController extends BaseController
                 } catch (\Throwable) {
                     // Usage accounting is retried by the client and must not
                     // interrupt the ordinary heartbeat response.
+                    $ultraUsageAcknowledged = false;
                 }
             }
         }
@@ -610,12 +1587,18 @@ final class ClientAgentController extends BaseController
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
         }
 
-        return $this->json(['ok' => true, 'ultra_actions' => array_values($ultraActions)]);
+        return $this->json([
+            'ok' => true,
+            'ultra_status_accepted' => $ultraStatusAccepted,
+            'ultra_usage_acknowledged' => $ultraUsageAcknowledged,
+            'ultra_actions' => array_values($ultraActions),
+        ]);
     }
 
     public function diagnosticsResult(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
         $requestToken = (string) $request->input('request_token', '');
         $results = is_array($request->input('results', [])) ? $request->input('results', []) : [];
         $error = (string) $request->input('error', '');
@@ -642,6 +1625,43 @@ final class ClientAgentController extends BaseController
         return $this->json(['ok' => true]);
     }
 
+    /**
+     * Receives one authenticated, pre-redacted debug-log chunk. Raw logs are
+     * written below private application storage and are never artifact files.
+     */
+    public function debugLogChunk(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
+        if (strlen($request->rawBody()) > 512 * 1024) {
+            return $this->noStoreJson(['ok' => false, 'error' => 'debug_chunk_too_large'], 413);
+        }
+        $uuid = (string) $request->input('collection_uuid', '');
+        $sequence = filter_var($request->input('sequence', null), FILTER_VALIDATE_INT);
+        // Accept the implementation field names as well as the public
+        // contract aliases so older/newer agents can upload to the same API.
+        $sha256 = (string) $request->input('sha256', $request->input('chunk_sha256', ''));
+        $chunk = $request->input('chunk_base64', $request->input('content_base64', ''));
+        if ($sequence === false || !is_string($chunk)) {
+            return $this->json(['ok' => false, 'error' => 'debug_chunk_invalid'], 422);
+        }
+
+        $result = (new DebugCollectionStore($this->db, $this->config))->append(
+            $client,
+            $uuid,
+            (int) $sequence,
+            $sha256,
+            $chunk,
+        );
+        return $this->noStoreJson([
+            'ok' => true,
+            'accepted' => (bool) ($result['accepted'] ?? false),
+            'duplicate' => (bool) ($result['duplicate'] ?? false),
+            'bytes_received' => (int) ($result['bytes_received'] ?? 0),
+            'byte_limit' => DebugCollectionStore::BYTE_LIMIT,
+        ]);
+    }
+
     public function desktopLogin(Request $request, array $params): Response
     {
         $email = strtolower(trim((string) $request->input('email', '')));
@@ -661,6 +1681,13 @@ final class ClientAgentController extends BaseController
             !password_verify($password, (string) $user['password_hash'])
         ) {
             return $this->json(['ok' => false, 'error' => 'invalid credentials'], 401);
+        }
+
+        $loginDevice = $this->requestDeviceIdentity($request, false, 'device_uuid_invalid');
+        if ($loginDevice !== '') {
+            $this->accessPolicy->preflightClientRequest([
+                'owner_user_id' => (int) $user['id'],
+            ], $request, $loginDevice);
         }
 
         // Find clients owned by this user
@@ -705,19 +1732,259 @@ final class ClientAgentController extends BaseController
         }
 
         $client = $this->db->fetchOne(
-            'SELECT id, name, agent_token FROM clients WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
+            'SELECT * FROM clients WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
             ['id' => $clientId, 'user_id' => $session['user_id'], 'status' => 'active']
         );
 
         if ($client === null) {
             return $this->json(['ok' => false, 'error' => 'client not found'], 404);
         }
+        // The online device limit is enforced on the config pull that follows
+        // select, not here: released desktop builds read this response with
+        // EnsureSuccessStatusCode and would show a bare HTTP 429, while they
+        // already explain client_online_limit_reached when the pull returns it.
+        $deviceId = $this->clientOnlineSessions()->deviceIdFromRequest($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'login', $deviceId);
 
         return $this->json([
             'ok' => true,
             'client_id' => (int) $client['id'],
             'client_name' => (string) $client['name'],
             'agent_token' => (string) $client['agent_token'],
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function accessPolicyClient(Request $request): array
+    {
+        $agentToken = trim((string) ($request->bearerToken() ?? $request->input('token', '')));
+        if ($agentToken !== '') {
+            $client = Auth::requireClientAgent($request, $this->db);
+            $requestedClientId = (int) $request->input('client_id', 0);
+            if ($requestedClientId > 0 && $requestedClientId !== (int) ($client['id'] ?? 0)) {
+                throw new ApiException('client_id_mismatch', 403);
+            }
+            return $client;
+        }
+
+        $desktopSessionToken = trim((string) $request->input('session_token', ''));
+        $clientId = (int) $request->input('client_id', 0);
+        if ($desktopSessionToken !== '' && $clientId > 0) {
+            $session = (new DesktopClientSessionService($this->db, $this->config))->findActive($desktopSessionToken);
+            if ($session === null) {
+                throw new ApiException('client_agent_auth_failed', 401);
+            }
+            $client = $this->db->fetchOne(
+                'SELECT * FROM clients
+                 WHERE id = :id AND owner_user_id = :user_id AND status = :status LIMIT 1',
+                ['id' => $clientId, 'user_id' => (int) $session['user_id'], 'status' => 'active']
+            );
+            if ($client === null) {
+                throw new ApiException('client_agent_auth_failed', 401);
+            }
+            return $client;
+        }
+
+        $enrollmentCode = trim((string) $request->input('enrollment_code', ''));
+        if ($enrollmentCode !== '') {
+            return $this->activeClientForEnrollmentCode($enrollmentCode);
+        }
+        throw new ApiException('client_agent_auth_failed', 401);
+    }
+
+    private function accessPolicyPlatform(Request $request): string
+    {
+        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? $request->input('platform', ''))));
+        // Routers join the location protocol through the same classifier the
+        // access policy applies, so openwrt/openwrt-* and the router form
+        // factor cannot drift between the two surfaces.
+        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)
+            && !AccessPolicyService::isRouterPlatform($platform)) {
+            throw new ApiException('location_platform_invalid', 422);
+        }
+        return $platform;
+    }
+
+    private function accessPolicyDeviceUuid(Request $request): string
+    {
+        return $this->requestDeviceIdentity($request, true, 'device_uuid_invalid');
+    }
+
+    private function accessPolicyAttemptId(Request $request): string
+    {
+        $attemptId = trim((string) ($request->header('x-attempt-id') ?? $request->input('attempt_id', '')));
+        if ($attemptId === '' || strlen($attemptId) > 128) {
+            throw new ApiException('location_attempt_invalid', 422);
+        }
+        return $attemptId;
+    }
+
+    /** @param array<string, mixed> $decision @return array<string, mixed> */
+    private function safeAccessDecision(array $decision): array
+    {
+        $safe = [];
+        foreach ([
+            'decision', 'location_required', 'geo_lock_enabled', 'province_code',
+            'main_province_code', 'next_location_check_at', 'reset_generation',
+            'province_changed', 'reset_blocked_device_count',
+        ] as $field) {
+            if (array_key_exists($field, $decision)) {
+                $safe[$field] = $decision[$field];
+            }
+        }
+        return $safe;
+    }
+
+    /**
+     * @param array<string, mixed> $client
+     * @return array{0:ClientOnlineSessionService,1:string}
+     */
+    private function enforceClientRequest(array $client, Request $request, string $touchType): array
+    {
+        $sessions = $this->clientOnlineSessions();
+        $deviceId = $sessions->deviceIdFromRequest($request);
+        $this->accessPolicy->authorizeClientRequest($client, $request, $touchType, $deviceId);
+        // Security: enforce device trust not only when the request claims the
+        // android platform (a spoofable header), but also whenever it presents
+        // an attested-android device id. Otherwise a trusted android device
+        // could launder its request past session validation simply by dropping
+        // X-Device-Platform.
+        if ($this->isAndroidRequest($request)
+            || $this->deviceControls->isManagedDeviceId((string) ($request->header('x-device-id') ?? ''))) {
+            $this->deviceControls->requireActive($client, $request);
+        }
+        return [$sessions, $sessions->enforceFromRequest($client, $request, $touchType)];
+    }
+
+    private function clientOnlineSessions(): ClientOnlineSessionService
+    {
+        return new ClientOnlineSessionService(
+            $this->db,
+            new TrustedClientIpResolver((string) ($this->config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
+        );
+    }
+
+    private function isAndroidRequest(Request $request): bool
+    {
+        return str_starts_with(strtolower(trim((string) ($request->header('x-device-platform') ?? ''))), 'android');
+    }
+
+    private function clientRuntimeArchitecture(Request $request): string
+    {
+        $raw = strtolower(trim((string) ($request->header('x-device-architecture')
+            ?? $request->input('agent_architecture', $request->input('architecture', '')))));
+        return in_array($raw, ['arm64', 'aarch64', 'armv8'], true) ? 'arm64' : 'amd64';
+    }
+
+    private function requireAndroidRequest(Request $request): void
+    {
+        if (!$this->isAndroidRequest($request)) {
+            throw new ApiException('android_platform_required', 403);
+        }
+    }
+
+    /** @param array<string, mixed> $client */
+    private function assertRequestedClientId(array $client, Request $request): void
+    {
+        $requestedClientId = (int) $request->input('client_id', 0);
+        if ($requestedClientId <= 0 || $requestedClientId !== (int) ($client['id'] ?? 0)
+            || (string) ($client['status'] ?? '') !== 'active') {
+            throw new ApiException('client_id_mismatch', 403);
+        }
+    }
+
+    private function requestedDeviceId(Request $request): string
+    {
+        return $this->requestDeviceIdentity($request, false, 'device_id_invalid');
+    }
+
+    private function requestDeviceIdentity(Request $request, bool $required, string $errorCode): string
+    {
+        $deviceId = '';
+        foreach ([
+            $request->header('x-device-uuid', ''),
+            $request->header('x-device-id', ''),
+            $request->input('device_uuid', ''),
+            $request->input('device_id', ''),
+        ] as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
+                throw new ApiException($errorCode, 422);
+            }
+            $deviceId = $candidate;
+        }
+        if (($required && $deviceId === '')
+            || strlen($deviceId) > 191
+            || preg_match('/[\x00-\x20\x7f]/', $deviceId) === 1) {
+            throw new ApiException($errorCode, 422);
+        }
+        return $deviceId;
+    }
+
+    /** @return array<string, mixed> */
+    private function activeClientForEnrollmentCode(string $code): array
+    {
+        $codeRow = $this->enrollmentCodes->findActive($code);
+        if ($codeRow === null) {
+            throw new ApiException('android_enrollment_code_invalid', 403);
+        }
+        return $this->activeClientForEnrollmentCodeRow($codeRow);
+    }
+
+    /** @param array<string, mixed> $codeRow @return array<string, mixed> */
+    private function activeClientForEnrollmentCodeRow(array $codeRow): array
+    {
+        $client = $this->db->fetchOne(
+            'SELECT * FROM clients WHERE id = :id AND status = :status LIMIT 1',
+            [
+                'id' => (int) ($codeRow['client_id'] ?? 0),
+                'status' => 'active',
+            ]
+        );
+        if ($client === null) {
+            throw new ApiException('android_enrollment_code_invalid', 403);
+        }
+        return $client;
+    }
+
+    /** @return array<string, mixed> */
+    private function activeClientForOpenWrtPairingCode(OpenWrtPairingCodeService $pairingCodes, string $code): array
+    {
+        $row = $pairingCodes->findByCode($code);
+        if ($row === null || $pairingCodes->isUsed($row)) {
+            throw new ApiException('openwrt_pairing_code_invalid', 403);
+        }
+        if ($pairingCodes->isExpired($row)) {
+            throw new ApiException('openwrt_pairing_code_expired', 403);
+        }
+        return $this->activeClientForOpenWrtPairingCodeRow($row);
+    }
+
+    /** @param array<string, mixed> $codeRow @return array<string, mixed> */
+    private function activeClientForOpenWrtPairingCodeRow(array $codeRow): array
+    {
+        $client = $this->db->fetchOne(
+            'SELECT * FROM clients WHERE id = :id AND status = :status LIMIT 1',
+            [
+                'id' => (int) ($codeRow['client_id'] ?? 0),
+                'status' => 'active',
+            ]
+        );
+        if ($client === null) {
+            throw new ApiException('openwrt_pairing_code_invalid', 403);
+        }
+        return $client;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function noStoreJson(array $payload, int $status = 200): Response
+    {
+        return $this->json($payload, $status)->withHeaders([
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
         ]);
     }
 
@@ -745,6 +2012,7 @@ final class ClientAgentController extends BaseController
             'cfwg_latency_watchdog',
             'runtime_refresh',
             'cfwg_edge_pins',
+            'ultra_selection_mode',
         ];
         $snapshot = array_fill_keys(array_merge(['master_url'], $managedKeys), null);
         $snapshot['master_url'] = $this->agentBaseUrl();
@@ -755,6 +2023,10 @@ final class ClientAgentController extends BaseController
                 $snapshot[$key] = $stored[$key];
             }
         }
+        // Ultra candidate racing is now the default runtime contract. Older
+        // agents stored the previous implicit "single" value; publishing
+        // "auto" here migrates them on the next authenticated config pull.
+        $snapshot['ultra_selection_mode'] = 'auto';
         $snapshot['cfwg_latency_watchdog'] = $this->mergeCfwgLatencyWatchdogDefaults(
             is_array($snapshot['cfwg_latency_watchdog']) ? $snapshot['cfwg_latency_watchdog'] : []
         );
@@ -847,12 +2119,18 @@ final class ClientAgentController extends BaseController
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }
         }
-        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256'] as $stringKey) {
+        foreach (['wireguard_public_key', 'cfwg_watchdog_sha256', 'wstunnel_sha256', 'wstunnel_version', 'agent_architecture'] as $stringKey) {
             if (array_key_exists($stringKey, $input)) {
                 $value = trim((string) ($input[$stringKey] ?? ''));
                 if ($value !== '') {
                     $merged[$stringKey] = $value;
                 }
+            }
+        }
+        if (array_key_exists('runtime_binary_mode', $input)) {
+            $mode = strtolower(trim((string) ($input['runtime_binary_mode'] ?? '')));
+            if (in_array($mode, ['frozen', 'python'], true)) {
+                $merged['runtime_binary_mode'] = $mode;
             }
         }
         foreach (['wireguard_listen_port', 'wireguard_fallback_tcp_port'] as $intKey) {

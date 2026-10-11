@@ -1,0 +1,207 @@
+package com.leikwan.bridge.runtime
+
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.security.MessageDigest
+import java.time.Instant
+
+class UltraModelsTest {
+
+    private val now = Instant.parse("2026-08-27T00:00:00Z")
+
+    @Test
+    fun `policy v2 accepts only a scoped short lived active grant`() {
+        val forward = sampleForward(policyJson())
+
+        val policy = UltraPolicy.from(forward, now)
+
+        assertNotNull(policy)
+        assertEquals(forward.forwardId, policy!!.forwardId)
+        assertEquals("tcp+udp", policy.transport)
+        assertEquals(targetDigest(forward.target), policy.targetDigest)
+        assertEquals("2026-08-27T00:04:00Z", policy.expiresAt.toString())
+    }
+
+    @Test
+    fun `policy v2 accepts panel tickets up to four kilobytes`() {
+        val forward = sampleForward(policyJson(sessionTicket = "t".repeat(2131)))
+
+        assertNotNull(UltraPolicy.from(forward, now))
+    }
+
+    @Test
+    fun `policy v2 drops bad target digest expired and malformed generation`() {
+        val good = sampleForward(policyJson())
+        val badDigest = good.copy(ultraAccess = policyJson(targetDigest = "b".repeat(64)))
+        val expired = good.copy(ultraAccess = policyJson(expiresAt = "2026-08-26T23:59:59Z"))
+        val malformedGeneration = good.copy(ultraAccess = policyJson(policyGeneration = "not-a-generation"))
+
+        assertNull(UltraPolicy.from(badDigest, now))
+        assertNull(UltraPolicy.from(expired, now))
+        assertNull(UltraPolicy.from(malformedGeneration, now))
+    }
+
+    @Test
+    fun `lease retains only narrow direct CIDRs and always protects provider endpoint`() {
+        val policy = UltraPolicy.from(sampleForward(policyJson()), now)!!
+        val lease = UltraLease.from(leaseJson(), policy, now)
+
+        assertNotNull(lease)
+        assertTrue(lease!!.directConnectivity.ipCidrs.contains("203.0.113.20/32"))
+        assertTrue(lease.directConnectivity.ipCidrs.contains("198.51.100.0/24"))
+        lease.wipe()
+    }
+
+    @Test
+    fun `lease rejects a broad direct CIDR instead of expanding bypass scope`() {
+        val policy = UltraPolicy.from(sampleForward(policyJson()), now)!!
+        val invalid = leaseJson().apply {
+            add("direct_ip_cidrs", JsonParser.parseString("[\"0.0.0.0/0\"]").asJsonArray)
+        }
+
+        assertNull(UltraLease.from(invalid, policy, now))
+    }
+
+    @Test
+    fun `policy carries the panel tcp first flight with every direction candidate`() {
+        val hashes = (1..7).map { it.toString().repeat(64) }
+        fun firstFlight(target: String = "origin.example:443", generation: String = "a".repeat(64)) =
+            policyJson().deepCopy().apply {
+                add("tcp_first_flight", JsonParser.parseString(
+                    """{"target":"$target","policy_generation":"$generation","expires_at":"2026-08-27T00:04:00Z",
+                       "candidate_hashes":${hashes.joinToString(",", "[", "]") { "\"$it\"" }},"prefix_bytes":4,"delay_ms":300}"""
+                ).asJsonObject)
+            }
+
+        val accepted = UltraPolicy.from(sampleForward(firstFlight()), now)!!.tcpFirstFlight!!
+        assertEquals(hashes, accepted.candidateHashes)
+        assertEquals(4, accepted.prefixBytes)
+        assertEquals(300, accepted.delayMillis)
+        val bootstrap = accepted.toBootstrapJson()
+        assertEquals(7, bootstrap.getAsJsonArray("candidate_hashes").size())
+        assertNull(bootstrap.get("policy_generation"))
+
+        // Bound to this forward's target and this grant's generation; the policy
+        // itself stays valid when the compatibility block does not apply.
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(target = "other.example:443")), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(generation = "d".repeat(64))), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(policyJson()), now)!!.tcpFirstFlight)
+    }
+
+    @Test
+    fun `policy accepts a 30 minute offline grant and the 3600 s ceiling`() {
+        val offline = sampleForward(policyJson(expiresAt = "2026-08-27T00:30:00Z"))
+        val ceiling = sampleForward(policyJson(expiresAt = "2026-08-27T01:00:00Z"))
+
+        assertEquals("2026-08-27T00:30:00Z", UltraPolicy.from(offline, now)!!.expiresAt.toString())
+        assertNotNull(UltraPolicy.from(ceiling, now))
+    }
+
+    @Test
+    fun `policy still rejects a grant beyond the 3600 s ceiling`() {
+        val tooLong = sampleForward(policyJson(expiresAt = "2026-08-27T01:00:01Z"))
+
+        assertNull(UltraPolicy.from(tooLong, now))
+    }
+
+    @Test
+    fun `policy keeps its other validation with a long grant`() {
+        val badDigest = sampleForward(
+            policyJson(expiresAt = "2026-08-27T00:30:00Z", targetDigest = "b".repeat(64)),
+        )
+        // renew_after (00:02) must stay before expires_at; a grant that expires first is invalid.
+        val expiresBeforeRenew = sampleForward(policyJson(expiresAt = "2026-08-27T00:01:00Z"))
+
+        assertNull(UltraPolicy.from(badDigest, now))
+        assertNull(UltraPolicy.from(expiresBeforeRenew, now))
+    }
+
+    @Test
+    fun `lease may run to a long policy expiry but never past it`() {
+        val policy = UltraPolicy.from(sampleForward(policyJson(expiresAt = "2026-08-27T00:30:00Z")), now)!!
+        val longLease = leaseJson().apply { addProperty("expires_at", "2026-08-27T00:30:00Z") }
+        val pastPolicy = leaseJson().apply { addProperty("expires_at", "2026-08-27T00:30:02Z") }
+
+        val lease = UltraLease.from(longLease, policy, now)
+        assertNotNull(lease)
+        assertEquals("2026-08-27T00:30:00Z", lease!!.expiresAt.toString())
+        lease.wipe()
+        assertNull(UltraLease.from(pastPolicy, policy, now))
+    }
+
+    private fun sampleForward(access: JsonObject): ForwardContract = ForwardContract(
+        forwardId = 42L,
+        serviceName = "Ultra test",
+        target = "origin.example:443",
+        listenPort = 11042,
+        mode = ForwardMode.ULTRA,
+        rawMode = "ultra",
+        backendMode = "ultra",
+        clientMode = "ultra",
+        transport = "tcp+udp",
+        serviceStatus = "active",
+        endpointMode = "managed",
+        sni = "",
+        pathPrefix = "",
+        speedLimitMbps = 20,
+        endpoints = emptyList(),
+        bonding = null,
+        mptcp = null,
+        ultraAccess = access,
+    )
+
+    private fun policyJson(
+        sessionTicket: String = "ticket-42",
+        targetDigest: String = targetDigest("origin.example:443"),
+        expiresAt: String = "2026-08-27T00:04:00Z",
+        policyGeneration: String = "a".repeat(64),
+    ): JsonObject = JsonParser.parseString(
+        """
+        {
+          "protocol":"leikwan-ultra-policy-v2",
+          "forward_id":42,
+          "session_ticket":"$sessionTicket",
+          "policy_generation":"$policyGeneration",
+          "issued_at":"2026-08-27T00:00:00Z",
+          "renew_after":"2026-08-27T00:02:00Z",
+          "expires_at":"$expiresAt",
+          "service_state":"active",
+          "transport":"tcp+udp",
+          "rate_limit_mbps":20,
+          "quota_remaining_bytes":1048576,
+          "target_digest":"$targetDigest"
+        }
+        """.trimIndent(),
+    ).asJsonObject
+
+    private fun leaseJson(): JsonObject = JsonParser.parseString(
+        """
+        {
+          "protocol":"leikwan-ultra-policy-v2",
+          "forward_id":42,
+          "session_ticket":"ticket-42",
+          "policy_generation":"${"a".repeat(64)}",
+          "lease_id":"ul2_test_lease_1234567890",
+          "expires_at":"2026-08-27T00:04:00Z",
+          "transport":"tcp+udp",
+          "rate_limit_mbps":20,
+          "quota_remaining_bytes":1048576,
+          "selection_ref":"selection_ref_1234567890",
+          "target_digest":"${targetDigest("origin.example:443")}",
+          "nonce_hash":"${"b".repeat(64)}",
+          "endpoint":{"ip":"203.0.113.20","port":5438},
+          "credential":{"user":"line-user","password":"line-password"},
+          "direct_ip_cidrs":["203.0.113.20/32","198.51.100.0/24"]
+        }
+        """.trimIndent(),
+    ).asJsonObject
+
+    private fun targetDigest(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+}

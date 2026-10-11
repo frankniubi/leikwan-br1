@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 import ipaddress
 import pathlib
 import re
@@ -44,6 +45,41 @@ UOT_SCHEDULER_DEFAULTS = {
     "max_datagram_bytes": 65_535,
     "udp_socket_buffer_bytes": 8_388_608,
 }
+
+DEFAULT_WSTUNNEL_BIN = "/usr/local/bin/wstunnel"
+
+
+def configured_binary(agent_config: dict, key: str, default: str) -> str:
+    """Return a path safe for both shell wrappers and systemd ExecStart."""
+    raw = str(agent_config.get(key, default) or default).strip()
+    if raw == "":
+        raw = default
+    if not re.fullmatch(r"/[A-Za-z0-9._+@%/-]+", raw):
+        raise ValueError(
+            f"{key} must be an absolute path containing only safe unit path characters"
+        )
+    return raw
+
+
+def client_agent_helper_command(agent_config: dict, alias: str, configured_path: str = "") -> str:
+    """Render a helper invocation for source and frozen agent installs.
+
+    Existing source installs keep their exact command shape.  Frozen installs
+    dispatch the requested helper from the single client-agent executable, so
+    generated systemd units do not depend on a directory of Python scripts.
+    """
+    mode = str(agent_config.get("runtime_binary_mode", "") or "").strip().lower()
+    if mode == "frozen":
+        binary = configured_binary(
+            agent_config,
+            "client_agent_bin",
+            "/usr/local/bin/leikwan-client-agent",
+        )
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", alias):
+            raise ValueError(f"invalid frozen helper alias: {alias}")
+        return f"{binary} --dispatch-as {alias}"
+    path = configured_path or f"/usr/local/bin/{alias}"
+    return f"/usr/bin/python3 {path}"
 
 UOT_SCHEDULER_LEGACY_PROFILE = {
     "aggregate_rate_bps": 300_000_000,
@@ -1090,6 +1126,7 @@ def append_wstunnel_direct_leg(
     remote_target: str,
     default_sni: str,
     default_path_prefix: str,
+    wstunnel_bin: str = DEFAULT_WSTUNNEL_BIN,
 ) -> None:
     host = str(endpoint.get("host", "") or "").strip()
     port = int_or_default(endpoint.get("port"), 0)
@@ -1098,7 +1135,7 @@ def append_wstunnel_direct_leg(
     leg_path_prefix = endpoint_path_prefix(endpoint, default_path_prefix)
     leg_sni = endpoint_sni(endpoint, default_sni)
     lines.append(
-        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{local_port}:{remote_target} "
+        f"{wstunnel_bin} client -L tcp://127.0.0.1:{local_port}:{remote_target} "
         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
     )
@@ -1110,6 +1147,10 @@ def endpoint_path_prefix(endpoint: dict, default_path_prefix: str) -> str:
 
 def endpoint_sni(endpoint: dict, default_sni: str) -> str:
     return str(endpoint.get("cf_sni_host", "") or endpoint.get("sni_host", "") or endpoint.get("cdn_host", "") or default_sni or endpoint.get("host", "") or "").strip()
+
+
+def normalize_ultra_selection_mode(value: object) -> str:
+    return "auto" if str(value or "").strip().lower() == "auto" else "single"
 
 
 def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
@@ -1133,6 +1174,8 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
     if transport not in {"tcp", "udp", "tcp+udp"}:
         raise RuntimeError("ultra transport invalid")
     control_socket = f"/run/ultra/forward-{forward_id}.control.sock"
+    selection_mode = normalize_ultra_selection_mode(agent_config.get("ultra_selection_mode", "auto"))
+    auto_select = selection_mode == "auto"
     zone_aliases: dict[str, list[str]] = {}
     raw_aliases = access.get("zone_aliases", {})
     if isinstance(raw_aliases, dict):
@@ -1151,7 +1194,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "control_socket": control_socket,
         "transport": transport,
         "max_tcp_connections": 512,
-        "udp_queue_packets": 64,
+        "udp_queue_packets": 256,
         "connect_timeout_seconds": 5,
         "location_cache_path": "/var/lib/ultra/location.json",
         "location_lock_path": "/run/ultra/location.lock",
@@ -1159,9 +1202,99 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "policy_generation": policy_generation,
         "target_digest": target_digest,
         "zone_aliases": zone_aliases,
-        "probe_timeout_ms": 800,
-        "probe_workers": 4,
+        "auto_select": auto_select,
+        "udp_prewarm": transport in {"udp", "tcp+udp"},
+        "udp_keepalive_interval_seconds": 5 if transport in {"udp", "tcp+udp"} else 0,
     }
+    raw_first_flight = access.get("tcp_first_flight")
+    if isinstance(raw_first_flight, dict):
+        first_target = str(raw_first_flight.get("target", "") or "").strip()
+        first_generation = str(raw_first_flight.get("policy_generation", "") or "").strip().lower()
+        first_expiry = str(raw_first_flight.get("expires_at", "") or "").strip()
+        allowed_hashes = {
+            str(value or "").strip().lower()
+            for value in (raw_first_flight.get("candidate_hashes", []) if isinstance(raw_first_flight.get("candidate_hashes", []), list) else [])[:16]
+            if re.fullmatch(r"[a-f0-9]{64}", str(value or "").strip().lower())
+        }
+        try:
+            prefix_bytes = int(raw_first_flight.get("prefix_bytes", 0) or 0)
+            delay_ms = int(raw_first_flight.get("delay_ms", 0) or 0)
+            expiry = datetime.datetime.fromisoformat(
+                re.sub(r"\.(\d{6})\d+", r".\1", first_expiry).replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            expiry = None
+            prefix_bytes = 0
+            delay_ms = 0
+        # Generation and expiry are checked at issue time only. The runtime
+        # reads this file once and matches each stream's authenticated
+        # candidate, while grants renew every few minutes: the rendered block
+        # must hold only stable fields, or every renewal would change the
+        # rendered signature and restart the forward.
+        candidate_hashes = sorted(allowed_hashes)
+        if (
+            first_target == config_payload["target"]
+            and first_generation == policy_generation
+            and expiry is not None
+            and expiry > datetime.datetime.now(datetime.timezone.utc).timestamp()
+            and 1 <= prefix_bytes <= 16
+            and 1 <= delay_ms <= 1000
+            and candidate_hashes
+        ):
+            config_payload["tcp_first_flight"] = {
+                "target": first_target,
+                "candidate_hashes": candidate_hashes,
+                "prefix_bytes": prefix_bytes,
+                "delay_ms": delay_ms,
+            }
+    # External UoT is an explicit per-forward opt-in. The sidecar token is
+    # written only to the root-readable runtime config (mode 0600); ordinary
+    # Ultra forwards never receive this block and keep native command-3 UDP.
+    raw_external_uot = access.get("external_uot")
+    if not isinstance(raw_external_uot, dict):
+        raw_external_uot = forward.get("external_uot")
+    if not isinstance(raw_external_uot, dict):
+        raw_external_uot = agent_config.get("external_uot")
+    if isinstance(raw_external_uot, dict) and bool(raw_external_uot.get("enabled", False)):
+        sidecar_target = str(raw_external_uot.get("sidecar_target", "") or "").strip()
+        token = str(raw_external_uot.get("token", "") or "").strip()
+        if not re.fullmatch(r"\[[0-9A-Fa-f:]+\]:[0-9]{1,5}|[A-Za-z0-9._-]+:[0-9]{1,5}", sidecar_target):
+            raise RuntimeError("external UoT sidecar target invalid")
+        if token == "" or len(token) > 8192 or any(char.isspace() for char in token):
+            raise RuntimeError("external UoT sidecar token invalid")
+        delivery_mode = str(raw_external_uot.get("delivery_mode", "raw") or "raw").strip().lower()
+        if delivery_mode not in {"raw", "reliable_datagram_v1"}:
+            raise RuntimeError("external UoT delivery mode unsupported")
+        def _bounded_external_int(key: str, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(raw_external_uot.get(key, default) or default)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(maximum, value))
+        config_payload["external_uot"] = {
+            "enabled": True,
+            "sidecar_target": sidecar_target,
+            "token": token,
+            "queue_packets": _bounded_external_int("queue_packets", 4096, 1, 4096),
+            "keepalive_seconds": _bounded_external_int("keepalive_seconds", 10, 5, 30),
+            "reconnect_grace_seconds": _bounded_external_int("reconnect_grace_seconds", 30, 5, 300),
+            "frame_payload_max": _bounded_external_int("frame_payload_max", 65507, 256, 65507),
+        }
+        # Keep raw bootstrap compatible with strict pre-mode runtimes. A
+        # requested reliable mode must never be silently downgraded to raw.
+        if delivery_mode != "raw":
+            config_payload["external_uot"]["delivery_mode"] = delivery_mode
+    if auto_select:
+        config_payload.update(
+            {
+                "probe_target": "1.1.1.1:53",
+                "probe_duration_seconds": 30,
+                "probe_timeout_ms": 800,
+                "probe_workers": 4,
+                "probe_samples": 30,
+                "probe_interval_ms": 1000,
+            }
+        )
     if config_payload["target"] == "":
         raise RuntimeError("ultra target missing")
     config_path = f"/etc/ultra/forward-{forward_id}.json"
@@ -1225,8 +1358,9 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
     bond_remote_target = str(bond.get("remote_target", "")).strip()
     bond_session_token = str(bond.get("session_token", "")).strip()
     bond_udp_session_token = str(bond.get("udp_session_token", "")).strip()
-    bond_bin = str(agent_config.get("bond_bin", "/usr/local/bin/leikwan-bond")).strip() or "/usr/local/bin/leikwan-bond"
-    bond_ingress_bin = str(agent_config.get("bond_ingress_bin", "/usr/local/bin/leikwan-ingress")).strip() or "/usr/local/bin/leikwan-ingress"
+    bond_bin = configured_binary(agent_config, "bond_bin", "/usr/local/bin/leikwan-bond")
+    bond_ingress_bin = configured_binary(agent_config, "bond_ingress_bin", "/usr/local/bin/leikwan-ingress")
+    wstunnel_bin = configured_binary(agent_config, "wstunnel_bin", DEFAULT_WSTUNNEL_BIN)
 
     usable_endpoints = []
     for endpoint in endpoints:
@@ -1260,23 +1394,23 @@ def render_forward_runtime(forward: dict, agent_config: dict) -> dict:
             endpoint_target = str(endpoint.get("runtime_target", target) or target)
             tcp_back = base + index
             udp_back = base + 200 + index
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+            lines.append(f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
             tcp_targets.append(f"127.0.0.1:{tcp_back}")
             if transport in ("udp", "tcp+udp"):
-                lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
+                lines.append(f"{wstunnel_bin} client -L udp://127.0.0.1:{udp_back}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{host}:{port} &")
                 udp_targets.append(f"127.0.0.1:{udp_back}")
         if transport in ("tcp", "tcp+udp"):
             tcp_race_listen_port = rate_tcp_port if speed_limit_mbps else listen_port
             tcp_race_listen_host = "127.0.0.1" if speed_limit_mbps else "0.0.0.0"
-            lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-tcp-race.py --listen {tcp_race_listen_host}:{tcp_race_listen_port} --targets {','.join(tcp_targets)} &")
+            lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-tcp-race.py')} --listen {tcp_race_listen_host}:{tcp_race_listen_port} --targets {','.join(tcp_targets)} &")
             if speed_limit_mbps:
-                lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{tcp_race_listen_port} --mbps {speed_limit_mbps} &")
+                lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{tcp_race_listen_port} --mbps {speed_limit_mbps} &")
         if transport in ("udp", "tcp+udp") and udp_targets:
             udp_fanout_listen_port = rate_udp_port if speed_limit_mbps else listen_port
             udp_fanout_listen_host = "127.0.0.1" if speed_limit_mbps else "0.0.0.0"
-            lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-udp-fanout.py --listen {udp_fanout_listen_host}:{udp_fanout_listen_port} --targets {','.join(udp_targets)} --repeat 1 &")
+            lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-udp-fanout.py')} --listen {udp_fanout_listen_host}:{udp_fanout_listen_port} --targets {','.join(udp_targets)} --repeat 1 &")
             if speed_limit_mbps:
-                lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{udp_fanout_listen_port} --mbps {speed_limit_mbps} &")
+                lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{udp_fanout_listen_port} --mbps {speed_limit_mbps} &")
         lines.append("wait -n")
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
         service_unit = f"""[Unit]
@@ -1396,7 +1530,7 @@ WantedBy=multi-user.target
                     direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
                     direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{direct_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{direct_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1409,7 +1543,7 @@ WantedBy=multi-user.target
                     )
                 else:
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{tcp_back}:{bond_remote_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1440,7 +1574,7 @@ WantedBy=multi-user.target
             )
             if use_local_rate_limit:
                 lines.append(
-                    f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp "
+                    f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} tcp "
                     f"--listen 0.0.0.0:{listen_port} --target 127.0.0.1:{tcp_listen_port} --mbps {use_local_rate_limit} &"
                 )
         if primary_transport in ("udp", "tcp+udp"):
@@ -1461,7 +1595,7 @@ WantedBy=multi-user.target
                     direct_target_port = int_or_default(endpoint.get("target_sidecar_port"), 0)
                     direct_target = f"127.0.0.1:{direct_target_port}" if direct_target_port > 0 else bond_remote_target
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{direct_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{udp_back}:{direct_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1474,7 +1608,7 @@ WantedBy=multi-user.target
                     )
                 else:
                     lines.append(
-                        f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
+                        f"{wstunnel_bin} client -L tcp://127.0.0.1:{udp_back}:{bond_remote_target} "
                         f"--tls-sni-override {leg_sni} --http-headers \"Host: {leg_sni}\" "
                         f"--http-upgrade-path-prefix \"{leg_path_prefix}\" wss://{host}:{port} &"
                     )
@@ -1507,7 +1641,7 @@ WantedBy=multi-user.target
             )
             if use_local_rate_limit:
                 lines.append(
-                    f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp "
+                    f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} udp "
                     f"--listen 0.0.0.0:{listen_port} --target 127.0.0.1:{udp_listen_port} --mbps {use_local_rate_limit} &"
                 )
         lines.append("wait -n")
@@ -1710,6 +1844,9 @@ WantedBy=multi-user.target
             "tcp_congestion_control": str(mptcp.get("tcp_congestion_control", "bbr") or "bbr"),
             "socket_buffer_bytes": int_or_default(mptcp.get("socket_buffer_bytes"), 8388608),
             "policy_mode": str(mptcp.get("policy_mode", "latency_first") or "latency_first"),
+            # Panel-supplied overlay MTU upper bound; the transit interfaces clamp it to the
+            # ultra runtime's measured payload ceiling before rendering MTU = <n>.
+            "mtu": int_or_default(mptcp.get("mtu"), 0),
             "initcwnd": int_or_default(mptcp.get("initcwnd"), 80),
             "initrwnd": int_or_default(mptcp.get("initrwnd"), 80),
             "add_addr_timeout": int_or_default(mptcp.get("add_addr_timeout"), 5),
@@ -1796,6 +1933,7 @@ WantedBy=multi-user.target
                 f"127.0.0.1:{direct_target_port}",
                 sni,
                 path_prefix,
+                wstunnel_bin,
             )
         if direct_legs:
             append_wait_for_local_listener(lines, [int(leg["local_port"]) for leg in direct_legs])
@@ -1818,7 +1956,7 @@ WantedBy=multi-user.target
                 if local_udp <= 0 or cf_host == "" or cf_port <= 0 or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
+                    f"{wstunnel_bin} client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 --tls-sni-override {cf_sni} --http-headers \"Host: {cf_sni}\" --http-upgrade-path-prefix \"{cf_path}\" wss://{cf_host}:{cf_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         # Slave-relayed cfwg/transit legs: route WG UDP through the slave's WSS mux.
@@ -1850,21 +1988,31 @@ WantedBy=multi-user.target
                 if local_udp <= 0 or slave_host == "" or slave_port <= 0 or slave_path == "" or cf_target_host == "" or cf_target_port <= 0:
                     continue
                 lines.append(
-                    f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 {slave_sni_args}{slave_host_header_args}--http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
+                    f"{wstunnel_bin} client -L udp://127.0.0.1:{local_udp}:{cf_target_host}:{cf_target_port}?timeout_sec=0 {slave_sni_args}{slave_host_header_args}--http-upgrade-path-prefix \"{slave_path}\" wss://{slave_host}:{slave_port} &"
                 )
                 cf_wg_ports.append(local_udp)
         if cf_wg_ports:
             append_wait_for_local_listener(lines, cf_wg_ports)
+        mptcp_command = client_agent_helper_command(agent_config, "leikwan-mptcp-client.py", helper_path)
         lines.append(
-            f"/usr/bin/python3 {helper_path} --config {config_path} --setup-underlays || "
+            f"{mptcp_command} --config {config_path} --setup-underlays || "
             f"echo \"mptcp setup-underlays returned $?; continuing to runtime listener\" >&2"
         )
+        # The overlay MTU follows the ultra runtime's measured payload ceiling, which rotates
+        # with the relay association. Keep a background re-apply loop running next to whichever
+        # forward runtime (Rust relay or Python client) owns this service, so a live ceiling
+        # change reaches the interface instead of waiting for the next restart.
+        if any(
+            isinstance(underlay, dict) and str(underlay.get("interface_name", "") or "").strip() != ""
+            for underlay in config_payload.get("underlays", [])
+        ):
+            lines.append(f"{mptcp_command} --config {config_path} --monitor-overlay-mtu &")
         lines.append(f'RUST_RELAY="{rust_relay_path}"')
         lines.append(f'if [ -x "$RUST_RELAY" ] && "$RUST_RELAY" --help >/dev/null 2>&1; then')
         lines.append(f'    exec "$RUST_RELAY" client --config {config_path}')
         lines.append(f'else')
         lines.append(f'    echo "rust relay unavailable or not runnable; falling back to python mptcp client" >&2')
-        lines.append(f'    exec /usr/bin/python3 {helper_path} --config {config_path}')
+        lines.append(f'    exec {mptcp_command} --config {config_path}')
         lines.append(f'fi')
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
         service_unit = f"""[Unit]
@@ -1907,11 +2055,11 @@ WantedBy=multi-user.target
     if speed_limit_mbps:
         lines = ["#!/usr/bin/env bash", "set -euo pipefail", "trap 'kill $(jobs -p) 2>/dev/null || true' EXIT"]
         if transport in ("tcp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
-            lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_tcp_port} --mbps {speed_limit_mbps} &")
+            lines.append(f"{wstunnel_bin} client -L tcp://127.0.0.1:{internal_tcp_port}:{endpoint_target} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} tcp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_tcp_port} --mbps {speed_limit_mbps} &")
         if transport in ("udp", "tcp+udp"):
-            lines.append(f"/usr/local/bin/wstunnel client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
-            lines.append(f"/usr/bin/python3 /usr/local/bin/leikwan-rate-limit.py udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_udp_port} --mbps {speed_limit_mbps} &")
+            lines.append(f"{wstunnel_bin} client -L udp://127.0.0.1:{internal_udp_port}:{endpoint_target}?timeout_sec=0 --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']} &")
+            lines.append(f"{client_agent_helper_command(agent_config, 'leikwan-rate-limit.py')} udp --listen 0.0.0.0:{listen_port} --target 127.0.0.1:{internal_udp_port} --mbps {speed_limit_mbps} &")
         lines.append("wait -n")
         start_script_path = f"/usr/local/bin/leikwan-client-start-{forward_id}.sh"
         service_unit = f"""[Unit]
@@ -1940,7 +2088,7 @@ WantedBy=multi-user.target
         listen_flags.append(f"-L tcp://[::]:{listen_port}:{endpoint_target}")
     if transport in ("udp", "tcp+udp"):
         listen_flags.append(f"-L udp://[::]:{listen_port}:{endpoint_target}?timeout_sec=0")
-    exec_start = f"/usr/local/bin/wstunnel client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
+    exec_start = f"{wstunnel_bin} client {' '.join(listen_flags)} --tls-sni-override {sni} --http-headers \"Host: {sni}\" --http-upgrade-path-prefix \"{path_prefix}\" wss://{endpoint['host']}:{endpoint['port']}"
     service_unit = f"""[Unit]
 Description=Leikwan Client {forward_id}
 After=network.target

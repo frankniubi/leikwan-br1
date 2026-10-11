@@ -5,6 +5,8 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val qaTest = project.findProperty("qatest") == "true"
+
 android {
     namespace = "com.leikwan.bridge"
     compileSdk = 34
@@ -13,14 +15,39 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 42
+        versionName = "0.2.40"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters += "arm64-v8a"
+            // Android acceptance and published builds include the x86_64 slice so
+            // the same TUN/native path can run on the local API 34 AVD.
+            abiFilters += "x86_64"
+        }
+        buildConfigField("String", "PANEL_URL", "\"https://v3.leikwanhost.com\"")
+        // QA-only: `-Pqatest=true` builds accept emulator devices and
+        // software-backed attestation. Must stay off for published builds;
+        // release behavior is unchanged when the property is absent.
+        buildConfigField(
+            "boolean",
+            "ALLOW_QA_TEST_DEVICE_EXCEPTIONS",
+            qaTest.toString(),
+        )
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 shrinking + obfuscation (optimizer still off via -dontoptimize in
+            // proguard-rules.pro, which guards the Kotlin suspend state-machine issue).
+            // 2026-10-02: verified on the API 34 QA emulator against production with a
+            // -Pqatest R8 build: fresh enrollment, catalog pull, sealed Ultra lease with the
+            // Keystore agreement key, Ultra runtime start, libbox TUN, renewal and stop.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
@@ -35,6 +62,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -99,6 +127,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("org.robolectric:robolectric:4.12.2")
+    testImplementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.test:core-ktx:1.6.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 

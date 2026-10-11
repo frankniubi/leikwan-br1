@@ -117,6 +117,15 @@ $grants = $broker->grantsForClientForwards(7, 'device-a', [[
     '_ultra_destination_zone' => 'tokyo',
     '_ultra_allowed_ingress_zones' => ['shanghai', 'beijing'],
     '_ultra_fallback_policy' => 'detected_then_any',
+    'external_uot' => [
+        'enabled' => true,
+        'sidecar_target' => '185.220.238.153:7443',
+        'token' => 'external-uot-test-token',
+        'queue_packets' => 512,
+        'keepalive_seconds' => 15,
+        'reconnect_grace_seconds' => 45,
+        'frame_payload_max' => 4096,
+    ],
 ], [
     'forward_id' => 43,
     'service_status' => 'active',
@@ -136,6 +145,35 @@ assertUltraContract(!array_key_exists('gateway_ips', $grant), 'legacy gateway me
 assertUltraContract(!array_key_exists('port', $grant), 'normal grant must not expose a business port');
 assertUltraContract(!array_key_exists('line_ids', $grant), 'normal grant must not expose line numbers');
 assertUltraContract(!str_contains(strtolower(json_encode($grant) ?: ''), 'credential'), 'normal grant exposed line material');
+assertUltraContract(($grant['external_uot']['enabled'] ?? false) === true, 'external UoT was not attached to a fresh grant');
+assertUltraContract(($grant['external_uot']['sidecar_target'] ?? '') === '185.220.238.153:7443', 'external UoT sidecar target mismatch');
+assertUltraContract(($grant['external_uot']['frame_payload_max'] ?? 0) === 4096, 'external UoT frame limit mismatch');
+
+$externalUotDisabledForward = [
+    'forward_id' => 42,
+    'service_id' => 5,
+    'service_status' => 'active',
+    'backend_mode' => 'ultra',
+    'target' => '198.51.100.10:443',
+    'transport' => 'tcp+udp',
+    'speed_limit_mbps' => 20,
+    '_ultra_line_ids' => [453],
+    '_ultra_lines' => [[
+        'ultra_line_id' => 10,
+        'line_id' => 453,
+        'source_id' => 'source-a',
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+        'sort_order' => 10,
+    ]],
+    '_ultra_line_direction' => 'Shanghai to Japan',
+    '_ultra_destination_zone' => 'tokyo',
+    '_ultra_allowed_ingress_zones' => ['shanghai', 'beijing'],
+    '_ultra_fallback_policy' => 'detected_then_any',
+];
+$cachedWithoutExternalUot = $broker->grantsForClientForwards(7, 'device-a', [$externalUotDisabledForward], true);
+assertUltraContract(isset($cachedWithoutExternalUot['42']), 'cached grant disappeared while removing external UoT');
+assertUltraContract(!isset($cachedWithoutExternalUot['42']['external_uot']), 'cached grant retained disabled external UoT');
 
 $quotaForward = [
     'forward_id' => 44,
@@ -155,6 +193,24 @@ $quotaForward = [
 ];
 $quotaGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(isset($quotaGrant['44']), 'quota canary grant was not issued');
+// Ordinary usage must not rotate the policy generation: every usage report
+// moved the remaining quota, minted a new generation and revoked the leases of
+// every active device every few seconds under load.
+$usageForward = $quotaForward;
+$usageForward['quota_remaining_bytes'] = 1536 * 1024 * 1024;
+$usageBase = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+$usageForward['quota_remaining_bytes'] -= 10 * 1024 * 1024;
+$usedGrant = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+assertUltraContract(
+    ($usedGrant['44']['policy_generation'] ?? '') === ($usageBase['44']['policy_generation'] ?? 'x'),
+    'ten megabytes of usage rotated the policy generation'
+);
+$usageForward['quota_remaining_bytes'] = 400 * 1024 * 1024;
+$halvedGrant = $broker->grantsForClientForwards(7, 'device-usage', [$usageForward], true);
+assertUltraContract(
+    ($halvedGrant['44']['policy_generation'] ?? '') !== ($usageBase['44']['policy_generation'] ?? ''),
+    'a quota that fell by more than half kept the policy generation'
+);
 $quotaForward['quota_remaining_bytes'] = 0;
 $exhaustedGrant = $broker->grantsForClientForwards(7, 'device-quota', [$quotaForward], true);
 assertUltraContract(!isset($exhaustedGrant['44']), 'cached grant survived an exhausted Panel quota');
@@ -185,6 +241,34 @@ assertUltraContract(($candidate['user'] ?? '') === 'line-user', 'server candidat
 assertUltraContract(($candidate['credential'] ?? '') === '1234567890123456', 'server candidate credential missing');
 assertUltraContract(preg_match('/^[A-Za-z0-9_-]{16,128}$/', (string) ($candidate['selection_ref'] ?? '')) === 1, 'opaque selection reference missing');
 assertUltraContract(!array_key_exists('line_id', $candidate), 'server candidate exposed line number');
+$selectionRefBeforeRotation = (string) ($candidate['selection_ref'] ?? '');
+$rotationTicket = $materials->issueUploadTicket('source-a', [453]);
+$rotationAccepted = $materials->acceptSourceUpload('source-a', $rotationTicket, [[
+    'line_id' => 453,
+    'generation' => 'material-generation-2',
+    'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 2),
+    'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $now + 1202),
+    'user' => 'line-user',
+    'credential' => '3234567890123456',
+    'relays' => [
+        ['ip' => '203.0.113.20', 'port' => 5438],
+        ['ip' => '203.0.113.21', 'port' => 5440],
+    ],
+    'probe' => ['ok' => true],
+]]);
+assertUltraContract($rotationAccepted === [453], 'rotated source material was not accepted');
+$rotatedCandidate = $materials->serverCandidateForClientToken(
+    (string) $grant['session_ticket'],
+    7,
+    'device-a',
+    42,
+    (string) $grant['policy_generation']
+);
+assertUltraContract(($rotatedCandidate['credential'] ?? '') === '3234567890123456', 'rotated source credential was not returned');
+assertUltraContract(
+    ($rotatedCandidate['selection_ref'] ?? '') === $selectionRefBeforeRotation,
+    'selection reference changed across credential generation rotation'
+);
 assertUltraContract(
     $materials->serverCandidateForClientToken((string) $grant['session_ticket'], 7, 'wrong-device', 42, (string) $grant['policy_generation']) === [],
     'token must be device scoped'
