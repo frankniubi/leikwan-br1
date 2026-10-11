@@ -112,7 +112,7 @@ func TestExternalUoTProbeFailureBelongsToLogicalUDP(t *testing.T) {
 	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
 	lease := testLease(policy, strings.Repeat("b", 64))
 	lease.CandidateKeyHash = strings.Repeat("c", 64)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	_, _, _, err := selectVerifiedExternalUoTCandidates(context.Background(), config, policy,
 		[]ProviderLease{lease}, RuntimeSnapshot{}, false, status.RecordProbeFailure,

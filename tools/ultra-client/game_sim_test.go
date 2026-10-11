@@ -712,7 +712,7 @@ func runUDPDataPlane(t *testing.T, relay *gameSimRelay) udpRunResult {
 		ConnectTimeoutSecs:       5,
 	}
 	store := gameSimStore(t, config, relay, "udp")
-	status := newStatusWriter(filepath.Join(t.TempDir(), "game-sim-udp-status.json"), config.ForwardID, 100*time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "game-sim-udp-status.json"), config.ForwardID, 100*time.Millisecond)
 	obs := &gameSimSocketObservations{}
 	uninstall := installGameSimHooks(obs)
 	defer uninstall()
@@ -817,7 +817,7 @@ func runTCPDataPlane(t *testing.T, relay *gameSimRelay) tcpRunResult {
 		ConnectTimeoutSecs: 5,
 	}
 	store := gameSimStore(t, config, relay, "tcp")
-	status := newStatusWriter(filepath.Join(t.TempDir(), "game-sim-tcp-status.json"), config.ForwardID, 100*time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "game-sim-tcp-status.json"), config.ForwardID, 100*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- serveTCP(ctx, config, store, status) }()

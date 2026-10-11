@@ -493,7 +493,7 @@ func TestTokyoGameSim(t *testing.T) {
 		ConnectTimeoutSecs:       5,
 	}
 	udpStore := tokyoStore(t, udpConfig, "udp", tokyoRelayHost, tokyoRelayTCPPort)
-	udpStatus := newStatusWriter(filepath.Join(t.TempDir(), "tokyo-udp-status.json"), udpConfig.ForwardID, 100*time.Millisecond)
+	udpStatus := newTestStatusWriter(t, filepath.Join(t.TempDir(), "tokyo-udp-status.json"), udpConfig.ForwardID, 100*time.Millisecond)
 	obs := &gameSimSocketObservations{}
 	uninstall := installGameSimHooks(obs)
 	udpCtx, udpCancel := context.WithCancel(context.Background())
@@ -559,7 +559,7 @@ func TestTokyoGameSim(t *testing.T) {
 		ConnectTimeoutSecs: 5,
 	}
 	tcpStore := tokyoStore(t, tcpConfig, "tcp", tokyoRelayHost, tokyoRelayTCPPort)
-	tcpStatus := newStatusWriter(filepath.Join(t.TempDir(), "tokyo-tcp-status.json"), tcpConfig.ForwardID, 100*time.Millisecond)
+	tcpStatus := newTestStatusWriter(t, filepath.Join(t.TempDir(), "tokyo-tcp-status.json"), tcpConfig.ForwardID, 100*time.Millisecond)
 	tcpCtx, tcpCancel := context.WithCancel(context.Background())
 	tcpServeErr := make(chan error, 1)
 	go func() { tcpServeErr <- serveTCP(tcpCtx, tcpConfig, tcpStore, tcpStatus) }()

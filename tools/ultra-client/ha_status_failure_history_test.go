@@ -8,7 +8,7 @@ import (
 )
 
 func TestHAStatusFailureHistorySurvivesNormalStreamChurn(t *testing.T) {
-	w := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	w := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer w.Close()
 	w.RecordHAEvent("tcp", "reset", "reset-generation")
 	for i := 0; i < 100; i++ {
@@ -28,7 +28,7 @@ func TestHAStatusFailureHistorySurvivesNormalStreamChurn(t *testing.T) {
 }
 
 func TestHAStatusFailureHistoryRemainsBoundedAndCountsEveryFailure(t *testing.T) {
-	w := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	w := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer w.Close()
 	for i := 0; i < 100; i++ {
 		w.RecordHAEvent("tcp", "reset", fmt.Sprintf("generation-%d", i))

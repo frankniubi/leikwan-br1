@@ -24,7 +24,7 @@ func TestCandidateQuarantineFiltersFreshGrantsAndWipesExcludedSecrets(t *testing
 	good.CandidateKeyHash = strings.Repeat("e", 64)
 	good.IP = "203.0.113.21"
 	badSecret := bad.Password
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	allowed, err := applyCandidateQuarantine(config, []ProviderLease{bad, good}, now, status)
 	if err != nil || len(allowed) != 1 || allowed[0].CandidateKeyHash != good.CandidateKeyHash {

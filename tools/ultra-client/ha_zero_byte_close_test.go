@@ -41,7 +41,7 @@ func tcpCandidateKeys(store *PolicyStore) []string {
 // must now move new streams to the healthy sibling.
 func TestZeroByteClosesIsolateThePathAndMoveNewStreams(t *testing.T) {
 	store, first, second := twoPathCandidateStore(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 263, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 263, time.Millisecond)
 	defer status.Close()
 	ident := zeroByteIdent(first, "boilhkt99u.imgamer.top:10016")
 	for stream := 1; stream <= zeroByteCloseStrikes; stream++ {
@@ -222,7 +222,7 @@ func TestZeroByteIsolationEscalates(t *testing.T) {
 // count, steer new streams to the sibling.
 func TestHATCPLoopbackProviderFinAfterFirstFlightAvoidsPath(t *testing.T) {
 	store, policy, leases := haStore(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(0, 1<<20, time.Now().Add(time.Minute), "loopback-zero-byte"); err != nil {

@@ -138,7 +138,7 @@ func TestSelectBestLeaseCarriesLeaseTierIntoProbeResult(t *testing.T) {
 
 func TestStatusPublishesSelectionTierWithoutProviderMaterial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	writer := newStatusWriter(path, 11, time.Millisecond)
+	writer := newTestStatusWriter(t, path, 11, time.Millisecond)
 	writer.UpdateTCPWithTier("tcp-entry-reference-abcdefghijklmnop", selectionTierPaid, 10*time.Millisecond)
 	writer.UpdateUDPProbeWithTier("udp-entry-reference-abcdefghijklmnop", selectionTierMixed, udpProbeResult{
 		SelectionTier: selectionTierUnknown,

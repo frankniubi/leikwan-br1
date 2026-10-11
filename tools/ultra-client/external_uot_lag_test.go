@@ -688,7 +688,7 @@ func runUoTLagScenario(t *testing.T, scenario uotLagScenario) uotLagResult {
 	if err := store.ReplaceBatch(policy, leaseA, []ProviderLease{leaseA, leaseB}); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Hour)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Hour)
 	defer status.Close()
 
 	listening := make(chan *net.UDPConn, 1)

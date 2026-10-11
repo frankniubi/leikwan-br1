@@ -236,7 +236,7 @@ func TestExternalUoTWriterKeepsUpAt10MbpsWithPerWriteCost(t *testing.T) {
 // 250 ms per packet, during which every other association's datagrams piled up
 // in the kernel and were dropped uncounted).
 func TestExternalUoTFullQueueNeverStallsTheReadLoop(t *testing.T) {
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
 	defer status.Close()
 	ctx := context.Background()
 	stuck := testUoTAssociation(ctx, 1, status)

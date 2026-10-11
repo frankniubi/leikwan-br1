@@ -31,7 +31,7 @@ func TestExternalUoTBlockedEnqueueStopsOnShutdown(t *testing.T) {
 	}
 }
 func TestExternalUoTQueueTimeoutCounters(t *testing.T) {
-	w := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
+	w := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 170, time.Hour)
 	a := &externalUoTAssociation{ctx: context.Background(), outbound: make(chan externalUoTQueued, 1), budget: newDatagramBudget(32), status: w}
 	if !a.enqueue([]byte("one")) || a.enqueue([]byte("two")) {
 		t.Fatal("admission result")

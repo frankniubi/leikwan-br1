@@ -127,7 +127,7 @@ func TestPolicyLapseKeepsRuntimeAndOnlyRevocationStopsIt(t *testing.T) {
 	// A revocation from before this runtime started must not turn a later
 	// lapse into a teardown.
 	store.Revoke(strings.Repeat("9", 64))
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 
 	first, firstLease := shortPolicy(strings.Repeat("a", 64), 600*time.Millisecond, "tcp")
@@ -217,7 +217,7 @@ func TestPolicyTransportChangeRestartsRuntime(t *testing.T) {
 }
 
 func TestLocationDoesNotOverrideLapsedStatus(t *testing.T) {
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	status.UpdatePolicyState(policyStateLapsed, time.Now())
 	status.UpdateLocation(LocationResult{Code: "shanghai", Source: "network"})
@@ -322,7 +322,7 @@ func TestRuntimeLoopBindsBeforeLocationAndSurvivesLapse(t *testing.T) {
 	config.LocationCachePath = filepath.Join(directory, "location.json")
 	config.LocationLockPath = filepath.Join(directory, "location.lock")
 	store := NewPolicyStore(config)
-	status := newStatusWriter(filepath.Join(directory, "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(directory, "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	status.UpdatePolicyState(policyStateAwaiting, time.Time{})
 

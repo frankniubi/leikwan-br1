@@ -75,7 +75,7 @@ func TestNativeStreamCandidateDialRetriesSiblingAndReportsFailure(t *testing.T) 
 	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
 		t.Fatalf("replace batch: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	snapshot, ok := store.Snapshot()
 	if !ok {
@@ -138,7 +138,7 @@ func TestNativeAssociationCandidatesRetrySiblingAndReportFailure(t *testing.T) {
 	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
 		t.Fatalf("replace batch: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	var attempts []string
 	session, selected, err := armNativeAssociationCandidates(
@@ -198,7 +198,7 @@ func TestNativeAssociationFailureReportsOnceAndMarksCandidate(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatalf("replace lease: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	association := &nativeSocks5UDPAssociation{
 		candidateKeyHash: lease.CandidateKeyHash,
@@ -289,7 +289,7 @@ func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -440,7 +440,7 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, providerListener.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -523,7 +523,7 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -605,7 +605,7 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -701,7 +701,7 @@ func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -35,7 +35,7 @@ func TestHATCPObservedOrderDoesNotDependOnClockResolution(t *testing.T) {
 func TestHATCPLoopbackProviderResetsAvoidOnlyLocalTCPPath(t *testing.T) {
 	store, policy, leases := haStore(t)
 	siblingStore, _, _ := haStore(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(0, 1<<20, time.Now().Add(time.Minute), "loopback-reset"); err != nil {
@@ -117,7 +117,7 @@ func TestHATCPLoopbackProviderResetsAvoidOnlyLocalTCPPath(t *testing.T) {
 // observation: a reply was received even though the local application rejects it.
 func TestHATCPLoopbackLocalResetAfterReplyDoesNotAvoidPath(t *testing.T) {
 	store, policy, leases := haStore(t)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(0, 1<<20, time.Now().Add(time.Minute), "loopback-local-reset"); err != nil {

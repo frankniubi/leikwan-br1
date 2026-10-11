@@ -1753,8 +1753,8 @@ func watchRuntimePolicyStatus(ctx context.Context, cancel context.CancelFunc, st
 		store.ClearExpired()
 		if store.RevocationCount() != revocations {
 			log.Printf("policy revoked; stopping the runtime")
-			cancel()
 			status.UpdatePolicyState(policyStateRevoked, time.Time{})
+			cancel()
 			return true
 		}
 		view := store.View()

@@ -83,7 +83,7 @@ func TestHAUDPFirstPacketRetriesBackup(t *testing.T) {
 	if err := store.ReplaceCandidates(snapshot.Policy, bad, []ProviderLease{bad, good}); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -106,7 +106,7 @@ func TestHAUDPFirstPacketRetriesBackup(t *testing.T) {
 }
 
 func TestHAStatusHistorySurvivesSuccessfulProbe(t *testing.T) {
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	st.RecordHAEvent("udp", "keepalive_timeout", "generation")
 	st.RecordUDPAttached("actual-session", "paid")
@@ -136,7 +136,7 @@ func TestHACeilingUnusableAssociationMovesToNextCandidate(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Revoke("") })
 
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status,
@@ -288,7 +288,7 @@ func tcpPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	client, local := tcpPair(t)
 	remote, provider := tcpPair(t)
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {
@@ -334,7 +334,7 @@ func TestHATCPRelayDoesNotScoreLocalSilentStream(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	ident := relayIdentity{
 		forward: 42, generation: policy.PolicyGeneration, selection: lease.SelectionRef,
@@ -370,7 +370,7 @@ func TestHATCPRelayAvoidsRepeatedRemoteReadResetLocally(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	ident := relayIdentity{
 		forward: 42, generation: policy.PolicyGeneration, selection: lease.SelectionRef,
@@ -430,7 +430,7 @@ func TestHATCPRelayAmbiguousSilentStreamsRemainEligible(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store, policy, leases := haStore(t)
 			key := haPathKey(leases[0])
-			status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+			status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 			defer status.Close()
 			streams := tc.streams
 			if streams == 0 {
@@ -529,7 +529,7 @@ func TestHAUDPSilentPathRecoversWithoutListenerRestart(t *testing.T) {
 	if err := store.ReplaceCandidates(ss.Policy, a, []ProviderLease{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
