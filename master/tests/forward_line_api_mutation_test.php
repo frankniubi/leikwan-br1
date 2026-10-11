@@ -459,7 +459,10 @@ namespace {
         fail('valid create must return 201 and call provisioning once');
     }
     $replay = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
-    if ($replay->status() !== 200 || ($replay->headers()['Location'] ?? '') !== '/api/v1/user/forwards/123' || count($fixture['provisioning']->calls) !== 1) {
+    if ($replay->status() !== 200
+        || array_key_exists('Location', $replay->headers())
+        || ($replay->headers()['Content-Location'] ?? '') !== '/api/v1/user/forwards/123'
+        || count($fixture['provisioning']->calls) !== 1) {
         fail('same idempotency key/request must replay without provisioning');
     }
     $changed = $payload;

@@ -185,6 +185,8 @@ server-assigned target, and the direction conflict contract.
 
 On success the response is `201`, includes `Location` and an ETag such as
 `"forward-123-r1"`, and contains the safe forward resource under `forward`.
+An idempotent replay returns `200` with `Content-Location` (not `Location`) and
+the same ETag.
 
 ## List and Detail
 

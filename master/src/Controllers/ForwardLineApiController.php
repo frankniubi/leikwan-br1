@@ -391,11 +391,15 @@ final class ForwardLineApiController extends BaseController
             throw new ApiException('idempotency_resource_inactive', 409);
         }
         $owned = $this->loadOwnedForward((int) $forward['id'], $userId, false);
+        // Content-Location, not Location: under php-fpm a 200 carries no
+        // Status line, and nginx turns any FastCGI response with a Location
+        // header but no Status into 302 Found, so the documented 200 replay
+        // reached tenants as a redirect (ticket ZZN-514526).
         return $this->resourceResponse(
             ['ok' => true, 'forward' => ForwardLineApiContract::presentForward($owned)],
             ForwardLineApiContract::etag($owned),
             200
-        )->withHeaders(['Location' => '/api/v1/user/forwards/' . (int) $owned['id']]);
+        )->withHeaders(['Content-Location' => '/api/v1/user/forwards/' . (int) $owned['id']]);
     }
 
     private function pathId(array $params, string $errorCode): int

@@ -183,7 +183,7 @@ curl -sS -X POST "https://panel.example.test/api/v1/user/services/42/forwards" \
   -d '{"route_id":14,"listen_port":null,"transport":"tcp","target":{"source":"manual","host":"203.0.113.10","port":443}}'
 ```
 
-成功：`201`，带 `Location: /api/v1/user/forwards/{id}` 与 `ETag`，body 为 `{"ok":true,"forward":{...}}`。
+成功：`201`，带 `Location: /api/v1/user/forwards/{id}` 与 `ETag`，body 为 `{"ok":true,"forward":{...}}`。幂等重放返回 `200`，带 `Content-Location`（而非 `Location`）与 `ETag`。
 
 服务端校验顺序（决定你先看到哪个错误）：
 认证 → 服务归属 → 服务 active → 功能权限 → Content-Type → 体积 → 字段校验 → Idempotency-Key → 幂等重放 → 配额 → 线路/节点可用性。
