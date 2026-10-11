@@ -99,7 +99,7 @@ Idempotency-Key: create-fwd-20261007-01
   <li><strong>手动填写</strong>：<code>{"source": "manual", "host": "…", "port": 443}</code>。<code>host</code> 可以是 IPv4、IPv6 或域名，最长 253 个字符，不能带 <code>http://</code>、路径或空格。</li>
   <li><strong>指向你的另一个服务</strong>：<code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>。<code>service_id</code> 必须是你名下、已分配公网 IP 的服务，这时不要填 <code>host</code>。否则 <code>fields</code> 里是 <code>"target.service_id"</code>：<code>not_found</code>（服务不存在）、<code>not_allowed</code>（不属于你）或 <code>no_public_ip</code>（该服务没有公网 IP，例如专线服务本身）。</li>
 </ul>
-<blockquote><p><strong>以下目标地址会被拒绝。</strong>转发目标由平台节点去连接，所以本机地址、链路本地地址和云元数据地址都不允许：<code>127.0.0.0/8</code>、<code>::1</code>、<code>169.254.0.0/16</code>（含 <code>169.254.169.254</code>）、<code>0.0.0.0</code>、<code>localhost</code>。这时返回 <code>422</code>，<code>fields</code> 里是 <code>"target.host": "reserved_range"</code>。内网地址 <code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code> 可以正常使用。</p></blockquote>
+<blockquote><p><strong>以下目标地址会被拒绝。</strong>转发目标由平台节点去连接，所以除公网地址外都不允许：本机地址（<code>127.0.0.0/8</code>、<code>::1</code>、<code>localhost</code>）、内网地址（<code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code>、<code>fc00::/7</code>）、链路本地与云元数据地址（<code>169.254.0.0/16</code>、<code>100.64.0.0/10</code>）、<code>0.0.0.0</code>、组播地址，以及 <code>127.1</code>、<code>2130706433</code> 这类简写 IP 和不带点的主机名。内网地址返回 <code>422</code>，<code>fields</code> 里是 <code>"target.host": "private_range"</code>；其余返回 <code>"reserved_range"</code> 或 <code>"invalid"</code>。Native Outbound 转发不受此限制。</p></blockquote>
 <h3>curl 示例</h3>
 <pre>curl -sS -X POST "https://v3.leikwanhost.com/api/v1/user/services/42/forwards" \
   -H "Authorization: Bearer $TOKEN" \
@@ -221,9 +221,13 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>422</td><td><code>forward_target_not_allowed</code></td><td>该线路只允许转发到指定的目标 IP 段，域名目标和段外地址都会被拒绝</td></tr>
     <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>、<code>native_outbound_direction_missing</code></td><td>线路不支持 Native Outbound</td></tr>
     <tr><td>428</td><td><code>idempotency_key_required</code>、<code>precondition_required</code></td><td>缺少 Idempotency-Key 或 If-Match</td></tr>
+    <tr><td>409</td><td><code>insufficient_balance</code></td><td>按量计费服务的钱包余额不足，充值后才能新增或启动转发</td></tr>
+    <tr><td>429</td><td><code>rate_limited</code></td><td>请求太频繁，按响应头 <code>Retry-After</code> 的秒数等待后重试</td></tr>
     <tr><td>500</td><td><code>operation_failed</code></td><td>平台内部错误，请稍后重试或联系客服</td></tr>
   </tbody>
 </table>
+
+<p>每个账号每分钟最多 120 个请求，其中修改类请求（POST、PATCH、DELETE）最多 30 个，新旧接口合并计算。超过后返回 <code>429 rate_limited</code>。</p>
 
 <h2>旧版接口</h2>
 <p><code>/api/user/…</code> 开头的旧接口仍然可用，但已经停止更新，也没有 ETag 和防重复创建保护。新的集成请只使用本文的 v1 接口。</p>

@@ -99,7 +99,7 @@ Idempotency-Key: create-fwd-20261007-01
   <li><strong>手動填寫</strong>：<code>{"source": "manual", "host": "…", "port": 443}</code>。<code>host</code> 可以是 IPv4、IPv6 或網域名稱，最長 253 個字元，不能帶 <code>http://</code>、路徑或空白。</li>
   <li><strong>指向你的另一個服務</strong>：<code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>。<code>service_id</code> 必須是你名下、已分配公網 IP 的服務，此時不要填 <code>host</code>。否則 <code>fields</code> 裡是 <code>"target.service_id"</code>：<code>not_found</code>（服務不存在）、<code>not_allowed</code>（不屬於你）或 <code>no_public_ip</code>（該服務沒有公網 IP，例如專線服務本身）。</li>
 </ul>
-<blockquote><p><strong>以下目標位址會被拒絕。</strong>轉發目標由平台節點去連線，所以本機位址、鏈路本地位址與雲端中繼資料位址都不允許：<code>127.0.0.0/8</code>、<code>::1</code>、<code>169.254.0.0/16</code>（含 <code>169.254.169.254</code>）、<code>0.0.0.0</code>、<code>localhost</code>。此時回傳 <code>422</code>，<code>fields</code> 裡是 <code>"target.host": "reserved_range"</code>。內網位址 <code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code> 可以正常使用。</p></blockquote>
+<blockquote><p><strong>以下目標位址會被拒絕。</strong>轉發目標由平台節點去連線，所以除公網位址外都不允許：本機位址（<code>127.0.0.0/8</code>、<code>::1</code>、<code>localhost</code>）、內網位址（<code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code>、<code>fc00::/7</code>）、鏈路本地與雲端中繼資料位址（<code>169.254.0.0/16</code>、<code>100.64.0.0/10</code>）、<code>0.0.0.0</code>、群播位址，以及 <code>127.1</code>、<code>2130706433</code> 這類簡寫 IP 與不帶點的主機名稱。內網位址回傳 <code>422</code>，<code>fields</code> 裡是 <code>"target.host": "private_range"</code>；其餘回傳 <code>"reserved_range"</code> 或 <code>"invalid"</code>。Native Outbound 轉發不受此限制。</p></blockquote>
 <h3>curl 範例</h3>
 <pre>curl -sS -X POST "https://v3.leikwanhost.com/api/v1/user/services/42/forwards" \
   -H "Authorization: Bearer $TOKEN" \
@@ -221,9 +221,13 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>422</td><td><code>forward_target_not_allowed</code></td><td>該線路只允許轉發到指定的目標 IP 段，網域目標與段外位址都會被拒絕</td></tr>
     <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>、<code>native_outbound_direction_missing</code></td><td>線路不支援 Native Outbound</td></tr>
     <tr><td>428</td><td><code>idempotency_key_required</code>、<code>precondition_required</code></td><td>缺少 Idempotency-Key 或 If-Match</td></tr>
+    <tr><td>409</td><td><code>insufficient_balance</code></td><td>按量計費服務的錢包餘額不足，儲值後才能新增或啟動轉發</td></tr>
+    <tr><td>429</td><td><code>rate_limited</code></td><td>請求太頻繁，依回應標頭 <code>Retry-After</code> 的秒數等待後重試</td></tr>
     <tr><td>500</td><td><code>operation_failed</code></td><td>平台內部錯誤，請稍後重試或聯絡客服</td></tr>
   </tbody>
 </table>
+
+<p>每個帳號每分鐘最多 120 個請求，其中修改類請求（POST、PATCH、DELETE）最多 30 個，新舊介面合併計算。超過後回傳 <code>429 rate_limited</code>。</p>
 
 <h2>舊版介面</h2>
 <p><code>/api/user/…</code> 開頭的舊介面仍可使用，但已停止更新，也沒有 ETag 與防重複建立保護。新的整合請只使用本文的 v1 介面。</p>

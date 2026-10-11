@@ -156,7 +156,7 @@ Idempotency-Key: create-fwd-20261007-01
 - `manual`：`{"source":"manual","host":"...","port":N}`。`host` 为 ASCII IPv4/IPv6/域名（≤253 字符），不允许 scheme、userinfo、路径、空白、控制字符、IPv6 zone。
   目标由平台节点代为连接，因此**保留地址段会被拒绝**（`422`，`fields: {"target.host": "reserved_range"}`）：
   环回 `127.0.0.0/8`、`::1`，链路本地 `169.254.0.0/16`（含云元数据 `169.254.169.254`），`0.0.0.0`，以及 `localhost` / `*.localhost`。
-  私有网段（`10/8`、`172.16/12`、`192.168/16`）仍可用于你自己的后端。
+  私有网段（`10/8`、`172.16/12`、`192.168/16`、`fc00::/7`）同样被拒绝（`fields: {"target.host": "private_range"}`），Native Outbound 不受限。
 - `service_ip`：`{"source":"service_ip","service_id":43,"port":8443}`。`service_id` 必须是你名下、**已分配公网 IP** 的服务，不接受 `host`。
   校验失败时 `fields` 为：`{"target.service_id": "not_found"}`（服务不存在）、`"not_allowed"`（不属于你）、`"no_public_ip"`（该服务没有公网 IP，例如专线服务本身）。
 

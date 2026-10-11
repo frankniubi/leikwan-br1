@@ -7,6 +7,7 @@ use Throwable;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\ApiRateLimiter;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\ProvisioningService;
@@ -276,7 +277,20 @@ final class ForwardLineApiController extends BaseController
         if ((string) ($user['role'] ?? '') !== 'tenant' || (string) ($user['status'] ?? '') !== 'active') {
             throw new ApiException('user_auth_failed', 401);
         }
+        self::throttleTenant($this->config, $request, (int) $user['id']);
         return $user;
+    }
+
+    /**
+     * Shared by the v1 and legacy tenant APIs so both draw on one budget.
+     */
+    public static function throttleTenant(\Leikwan\Master\Config $config, Request $request, int $userId): void
+    {
+        $limiter = ApiRateLimiter::fromConfig($config);
+        $limiter->hit('tenant-api:' . $userId, $config->getInt('FORWARD_API_RATE_PER_MINUTE', 120));
+        if (!in_array(strtoupper($request->method()), ['GET', 'HEAD'], true)) {
+            $limiter->hit('tenant-api-write:' . $userId, $config->getInt('FORWARD_API_MUTATION_RATE_PER_MINUTE', 30));
+        }
     }
 
     /** @param array<string, mixed> $service */
@@ -516,6 +530,8 @@ final class ForwardLineApiController extends BaseController
             'service_inactive' => 409,
             'forward_quota_exceeded' => 409,
             'forward_storage_quota_exceeded' => 409,
+            'insufficient_balance' => 409,
+            'rate_limited' => 429,
             'idempotency_conflict' => 409,
             'idempotency_resource_inactive' => 409,
             'route_unavailable' => 409,
@@ -551,6 +567,8 @@ final class ForwardLineApiController extends BaseController
             'unknown_fields' => 'The forward request contains unknown fields.',
             'route_unavailable' => 'The selected route is currently unavailable.',
             'forward_target_not_allowed' => 'The selected route only accepts target IP addresses on its allowlist.',
+            'insufficient_balance' => 'Top up your wallet before adding or starting forwards on this service.',
+            'rate_limited' => 'Too many requests. Retry after the time in the Retry-After header.',
         ];
         $error = [
             'code' => $code,
@@ -564,7 +582,11 @@ final class ForwardLineApiController extends BaseController
             $error['fields'] = $this->safeFields($fields);
         }
 
-        return $this->success(['ok' => false, 'error' => $error], $statuses[$code]);
+        $response = $this->success(['ok' => false, 'error' => $error], $statuses[$code]);
+        if ($code === 'rate_limited') {
+            $response = $response->withHeaders(['Retry-After' => (string) max(1, (int) ($details['retry_after'] ?? 60))]);
+        }
+        return $response;
     }
 
     /** @return array<string, string>|list<string> */

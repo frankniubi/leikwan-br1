@@ -486,7 +486,11 @@ final class ProvisioningService
     ): array
     {
         return $this->db->transaction(function () use ($serviceId, $payload, $actor, $idempotencyKeyHash, $requestHash, $activeForwardLimit, $mutationPolicy): array {
-            $this->lockForwardMutationService($serviceId, $mutationPolicy, 'service_not_found');
+            $lockedService = $this->lockForwardMutationService($serviceId, $mutationPolicy, 'service_not_found');
+            if ($mutationPolicy !== null) {
+                $this->assertTenantTargetIsPublic($payload);
+                $this->assertMeteredBalance($lockedService);
+            }
 
             if (is_string($idempotencyKeyHash) && $idempotencyKeyHash !== '') {
                 $existing = $this->db->fetchOne(
@@ -1081,9 +1085,7 @@ final class ProvisioningService
         if ((int) ($count['active_count'] ?? 0) >= $this->forwardLimitForService($serviceId)) {
             throw new ApiException('forward_quota_exceeded', 409);
         }
-        if (!empty($forward['balance_suspended_at']) && (float) ($lockedService['user_wallet_balance'] ?? 0) <= 0) {
-            throw new ApiException('insufficient_balance', 409);
-        }
+        $this->assertMeteredBalance($lockedService, !empty($forward['balance_suspended_at']));
         $routeId = (int) ($forward['forward_route_id'] ?? 0);
         if ($routeId > 0) {
             $this->visibleForwardRouteForService($routeId, $serviceId);
@@ -1093,6 +1095,52 @@ final class ProvisioningService
             (string) ($forward['target_host'] ?? ''),
             !empty($forward['native_outbound_enabled'])
         );
+    }
+
+    /**
+     * A tenant forward's target is dialed by our relays, which sit on our own
+     * private networks (WireGuard overlays, VM ranges), so tenants may not
+     * aim one at a private address. Native Outbound is exempt: its carrier
+     * runs on the tenant's device and the target is server-assigned. Service-IP
+     * targets are platform-assigned addresses of the tenant's own service.
+     * Hostnames resolve on the node and are not checked here.
+     *
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed>|null $current
+     */
+    private function assertTenantTargetIsPublic(array $payload, ?array $current = null): void
+    {
+        $native = array_key_exists('native_outbound', $payload)
+            ? $this->featureFlagValue($payload['native_outbound'])
+            : !empty($current['native_outbound_enabled'] ?? false);
+        if ($native) {
+            return;
+        }
+        $source = (string) ($payload['target_source'] ?? $current['target_source'] ?? 'manual');
+        if ($source === 'service_ip') {
+            return;
+        }
+        $host = trim((string) ($payload['target_host'] ?? $current['target_host'] ?? ''));
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false
+            && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE) === false) {
+            throw new ApiException('validation_failed', 422, ['fields' => ['target.host' => 'private_range']]);
+        }
+    }
+
+    /**
+     * Metered (pay-as-you-go) services draw on the wallet, so they may not
+     * add or restart traffic-carrying forwards at a zero balance. Monthly
+     * bundles are prepaid and most of those wallets sit at 0, so they are not
+     * gated unless the forward was balance-suspended.
+     *
+     * @param array<string, mixed> $lockedService
+     */
+    private function assertMeteredBalance(array $lockedService, bool $balanceSuspended = false): void
+    {
+        $metered = strtolower(trim((string) ($lockedService['billing_mode'] ?? ''))) === 'metered';
+        if (($metered || $balanceSuspended) && (float) ($lockedService['user_wallet_balance'] ?? 0) <= 0) {
+            throw new ApiException('insufficient_balance', 409);
+        }
     }
 
     private function assertForwardTargetAllowedByCombination(?array $combination, string $targetHost, bool $nativeOutbound): void
@@ -5379,8 +5427,12 @@ final class ProvisioningService
             if ($forward === null) {
                 throw new ApiException('forward_not_found', 404);
             }
-            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $lockedService = $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
+            if ($mutationPolicy !== null) {
+                $this->assertTenantTargetIsPublic($payload, $forward);
+                $this->assertMeteredBalance($lockedService);
+            }
             $this->revokeForwardEndpoints($forwardId, 'update');
             return $this->saveForward((int) $forward['service_id'], $forwardId, $payload, $actor);
         });
@@ -5403,6 +5455,9 @@ final class ProvisioningService
                 // Structural edits re-resolve the route; this narrow path must
                 // too, or a forward on a route removed from the plan stays editable.
                 $this->visibleForwardRouteForService((int) $forward['forward_route_id'], (int) $forward['service_id']);
+            }
+            if ($mutationPolicy !== null) {
+                $this->assertTenantTargetIsPublic($payload, $forward);
             }
 
             $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));

@@ -314,6 +314,7 @@ final class ServiceController extends BaseController
         if ((string) ($user['role'] ?? '') !== 'tenant') {
             throw new ApiException('user_auth_failed', 401);
         }
+        ForwardLineApiController::throttleTenant($this->config, $request, (int) $user['id']);
         return $user;
     }
 
@@ -374,6 +375,8 @@ final class ServiceController extends BaseController
             'feature_denied_delete_forwards' => 403,
             'feature_denied_rotate_client_token' => 403,
             'feature_denied_view_client_config' => 403,
+            'insufficient_balance' => 409,
+            'rate_limited' => 429,
             'operation_failed' => 500,
         ];
         if (!array_key_exists($code, $statuses)) {

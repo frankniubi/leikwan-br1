@@ -47,7 +47,7 @@ namespace Leikwan\Master\Database {
                 ];
             }
             if (str_contains($sql, 'FROM services')) {
-                return ['id' => 30, 'user_id' => 5, 'status' => 'active', 'expire_at' => $s['expire_at'], 'plan_id' => 0];
+                return ['id' => 30, 'user_id' => 5, 'status' => 'active', 'expire_at' => $s['expire_at'], 'plan_id' => 0, 'billing_mode' => $s['billing_mode'] ?? 'monthly_bundle'];
             }
             if (str_contains($sql, 'FROM users')) {
                 return ['id' => 5, 'role' => 'tenant', 'status' => 'active', 'wallet_balance' => $s['wallet'], 'feature_flags_json' => ''];
@@ -142,9 +142,44 @@ namespace {
     if ($code !== 'service_inactive') {
         fail('an expired service must not start forwards, got ' . var_export($code, true));
     }
+    $code = $refusal(['billing_mode' => 'metered', 'wallet' => '0.00'] + $base);
+    if ($code !== 'insufficient_balance') {
+        fail('a metered service must not start forwards at zero balance, got ' . var_export($code, true));
+    }
+    $code = $refusal(['wallet' => '0.00'] + $base);
+    if ($code !== null) {
+        fail('a prepaid monthly bundle with an empty wallet must still start forwards, got ' . var_export($code, true));
+    }
     $code = $refusal($base);
     if ($code !== null) {
         fail('a start within limits must pass the guards, got ' . var_export($code, true));
+    }
+
+    // Tenant create: private manual targets are refused; native is exempt.
+    $create = static function (array $payload, array $state) use ($envPath, $policy): ?array {
+        Database::$state = $state;
+        try {
+            (new ProvisioningService(new Config($envPath), new Database()))->createForward(30, $payload, 'user_api:5', null, null, 64, $policy);
+        } catch (ApiException $exception) {
+            return [$exception->getMessage(), $exception->details()['fields'] ?? null];
+        } catch (\Throwable $throwable) {
+            return null;
+        }
+        return null;
+    };
+    foreach (['10.0.0.5', '172.17.0.1', '192.168.1.1', 'fd00::1'] as $privateHost) {
+        $result = $create(['target_source' => 'manual', 'target_host' => $privateHost, 'target_port' => 443], $base);
+        if ($result !== ['validation_failed', ['target.host' => 'private_range']]) {
+            fail('tenant create to ' . $privateHost . ' must be refused as private_range, got ' . json_encode($result));
+        }
+    }
+    $result = $create(['target_source' => 'manual', 'target_host' => '10.0.0.5', 'target_port' => 443, 'native_outbound' => true], $base);
+    if (($result[1] ?? null) === ['target.host' => 'private_range']) {
+        fail('native outbound must be exempt from the private-range block');
+    }
+    $result = $create(['target_source' => 'manual', 'target_host' => '203.0.113.10', 'target_port' => 443], ['billing_mode' => 'metered', 'wallet' => '0.00'] + $base);
+    if (($result[0] ?? null) !== 'insufficient_balance') {
+        fail('a metered service must not create forwards at zero balance, got ' . json_encode($result));
     }
 
     @unlink($envPath);

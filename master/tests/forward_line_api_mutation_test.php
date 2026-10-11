@@ -300,7 +300,7 @@ namespace {
         }
         $db->seed('forwards', $rows);
         $provisioning = new ProvisioningService($db);
-        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64']), $db, $provisioning);
+        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64', 'FORWARD_API_RATE_PER_MINUTE' => '0', 'FORWARD_API_MUTATION_RATE_PER_MINUTE' => '0']), $db, $provisioning);
         return ['controller' => $controller, 'db' => $db, 'provisioning' => $provisioning, 'headers' => ['Authorization' => 'Bearer user-token']];
     }
 
