@@ -459,7 +459,10 @@ namespace {
         fail('valid create must return 201 and call provisioning once');
     }
     $replay = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
-    if ($replay->status() !== 200 || ($replay->headers()['Location'] ?? '') !== '/api/v1/user/forwards/123' || count($fixture['provisioning']->calls) !== 1) {
+    if ($replay->status() !== 200
+        || array_key_exists('Location', $replay->headers())
+        || ($replay->headers()['Content-Location'] ?? '') !== '/api/v1/user/forwards/123'
+        || count($fixture['provisioning']->calls) !== 1) {
         fail('same idempotency key/request must replay without provisioning');
     }
     $changed = $payload;
@@ -483,6 +486,35 @@ namespace {
         if (str_contains($response->body(), $forbidden)) {
             fail('provider availability error leaked internal detail ' . $forbidden);
         }
+    }
+
+    foreach ([
+        'target_service_ip_missing' => ['target.service_id' => 'no_public_ip'],
+        'target_service_not_allowed' => ['target.service_id' => 'not_allowed'],
+        'invalid_forward_target_source' => ['target.source' => 'invalid'],
+    ] as $internalCode => $expectedFields) {
+        $fixture = fixture(false);
+        $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+            $internalCode,
+            422,
+            ['target_service_id' => 40]
+        );
+        $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+        $error = responseBody($response)['error'] ?? [];
+        if ($response->status() !== 422 || ($error['code'] ?? '') !== 'validation_failed' || ($error['fields'] ?? null) !== $expectedFields) {
+            fail($internalCode . ' must surface as validation_failed with fields, got ' . $response->body());
+        }
+    }
+
+    $fixture = fixture(false);
+    $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+        'invalid_forward_payload',
+        422,
+        ['fields' => ['target.port' => 'out_of_range'], 'payload' => ['target_host' => 'SECRET_PAYLOAD']]
+    );
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+    if ((responseBody($response)['error']['fields'] ?? null) !== ['target.port' => 'out_of_range'] || str_contains($response->body(), 'SECRET_PAYLOAD')) {
+        fail('provisioning field reasons must pass through without the raw payload, got ' . $response->body());
     }
 
     $fixture = fixture(false);

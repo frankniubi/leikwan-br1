@@ -365,9 +365,11 @@ final class ServiceController extends BaseController
 
         $details = [];
         $sourceDetails = $throwable->details();
-        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
-            && is_array($sourceDetails['fields'] ?? null)) {
-            $details['fields'] = $sourceDetails['fields'];
+        $fields = is_array($sourceDetails['fields'] ?? null)
+            ? $sourceDetails['fields']
+            : ForwardLineApiContract::fieldsForInternalCode($internalCode);
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true) && is_array($fields)) {
+            $details['fields'] = $fields;
         }
         return new ApiException($code, $statuses[$code], $details);
     }

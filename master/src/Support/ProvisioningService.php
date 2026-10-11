@@ -11257,10 +11257,10 @@ final class ProvisioningService
         bool $allowAutomaticListenPort
     ): array {
         if ($targetPort < 1 || $targetPort > 65535) {
-            throw new ApiException('invalid_forward_payload', 422);
+            throw new ApiException('invalid_forward_payload', 422, ['fields' => ['target.port' => 'out_of_range']]);
         }
         if ($listenPort < 0 || $listenPort > 65535 || (!$allowAutomaticListenPort && $listenPort === 0)) {
-            throw new ApiException('invalid_forward_payload', 422);
+            throw new ApiException('invalid_forward_payload', 422, ['fields' => ['listen_port' => 'out_of_range']]);
         }
 
         return [ForwardLineApiContract::validateTargetHost($targetHost), $targetPort, $listenPort];

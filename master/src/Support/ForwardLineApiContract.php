@@ -284,6 +284,25 @@ final class ForwardLineApiContract
         }
     }
 
+    /**
+     * Field reasons for validation errors raised by the provisioning layer,
+     * which predates the `fields` contract. Without these, those errors
+     * reached tenants as a bare validation_failed with no hint of the cause.
+     *
+     * @return array<string, string>|null
+     */
+    public static function fieldsForInternalCode(string $internalCode): ?array
+    {
+        return match ($internalCode) {
+            'invalid_forward_target_source' => ['target.source' => 'invalid'],
+            'target_service_not_found' => ['target.service_id' => 'not_found'],
+            'target_service_not_allowed' => ['target.service_id' => 'not_allowed'],
+            'target_service_ip_missing' => ['target.service_id' => 'no_public_ip'],
+            'invalid_forward_payload' => ['forward' => 'invalid'],
+            default => null,
+        };
+    }
+
     /** @param array<string, mixed> $forward */
     public static function etag(array $forward): string
     {
@@ -319,13 +338,10 @@ final class ForwardLineApiContract
             $transport = 'tcp';
         }
 
-        // Only report an ingress endpoint when the row actually carries public
-        // ingress columns. Never fall back to cdn_host: that leaked the internal
-        // CDN host the contract promises not to expose, and the old port fallback
-        // always rendered a meaningless 0.
-        $ingressHost = trim((string) ($forward['ingress_host'] ?? $forward['public_host'] ?? ''));
-        $ingressPort = (int) ($forward['ingress_port'] ?? $forward['public_port'] ?? 0);
-
+        // ingress is a reserved field and the published contract fixes both
+        // members to null. forwards.public_port is the internal ingress port
+        // (443 for every CDN forward), so reporting it leaked topology and
+        // contradicted the docs; cdn_host was dropped for the same reason.
         return [
             'id' => (int) ($forward['id'] ?? 0),
             'service_id' => (int) ($forward['service_id'] ?? 0),
@@ -346,8 +362,8 @@ final class ForwardLineApiContract
                 'service_id' => isset($forward['target_service_id']) ? (int) $forward['target_service_id'] : null,
             ],
             'ingress' => [
-                'host' => $ingressHost !== '' ? $ingressHost : null,
-                'port' => $ingressPort > 0 ? $ingressPort : null,
+                'host' => null,
+                'port' => null,
             ],
             'state' => !empty($forward['enabled']) ? 'active' : 'deleted',
             'endpoint_count' => $endpointCount,

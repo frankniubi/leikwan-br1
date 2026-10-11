@@ -96,7 +96,7 @@ Idempotency-Key: create-fwd-20261007-01
 <h3>Targets</h3>
 <ul>
   <li><strong>Manual</strong>: <code>{"source": "manual", "host": "…", "port": 443}</code>. <code>host</code> is an IPv4 address, IPv6 address or domain name up to 253 characters, without <code>http://</code>, a path or spaces.</li>
-  <li><strong>Another of your services</strong>: <code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>. The service must be yours, and <code>host</code> must be left out.</li>
+  <li><strong>Another of your services</strong>: <code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>. The service must be yours and must have a public IP, and <code>host</code> must be left out. Otherwise <code>fields</code> contains <code>"target.service_id"</code> with <code>not_found</code>, <code>not_allowed</code> (not your service) or <code>no_public_ip</code> (the service has no public IP, such as a Forward Lines service itself).</li>
 </ul>
 <blockquote><p><strong>Some target addresses are refused.</strong> Platform nodes connect to your target, so loopback, link-local and cloud metadata addresses are not allowed: <code>127.0.0.0/8</code>, <code>::1</code>, <code>169.254.0.0/16</code> (including <code>169.254.169.254</code>), <code>0.0.0.0</code> and <code>localhost</code>. These return <code>422</code> with <code>"target.host": "reserved_range"</code> in <code>fields</code>. Private ranges such as <code>10.x</code>, <code>172.16–31.x</code> and <code>192.168.x</code> work normally.</p></blockquote>
 <h3>curl example</h3>
