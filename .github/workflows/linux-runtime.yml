@@ -108,6 +108,19 @@ jobs:
           printf '%s\n' "${failed_list[@]}" | sed 's/^/FAILED: /'
           [ "${#failed_list[@]}" -eq 0 ]
 
+      - name: Check every shell script parses
+        id: shell_syntax
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          bad=0
+          while IFS= read -r -d '' file; do
+            if ! bash -n "$file" 2>"/tmp/bash-n.log"; then bad=$((bad + 1)); echo "SYNTAX ERROR $file: $(head -1 /tmp/bash-n.log)"; fi
+          done < <(find install scripts client-agent sidecar-agent slave-agent deploy -name '*.sh' -print0; printf '%s\0' client.sh uot-forward.sh)
+          echo "shell scripts with syntax errors: $bad"
+          [ "$bad" -eq 0 ]
+
       - name: Upload Linux runtimes
         if: ${{ steps.runtime.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -126,6 +139,7 @@ jobs:
             runtime=${{ steps.runtime.outcome }}
             python_tests=${{ steps.python_tests.outcome }}
             php_tests=${{ steps.php_tests.outcome }}
+            shell_syntax=${{ steps.shell_syntax.outcome }}
         run: |
           set -euo pipefail
           failed=0
@@ -136,3 +150,42 @@ jobs:
             [ "${pair#*=}" = "success" ] || failed=1
           done
           exit "$failed"
+
+  frozen-agent:
+    name: Frozen Linux agent (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The release builds the no-GUI Linux agents with PyInstaller 6.x on the
+      # target architecture; the script itself runs each binary's --version.
+      - name: Build frozen client and sidecar agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet "pyinstaller==6.16.0"
+          PYINSTALLER_MODULE=1 PYTHON_BIN=python bash scripts/build-python-agent-binaries.sh "${{ matrix.arch }}"
+          ls -la artifacts/python-agent/
+
+      - name: Upload frozen agents
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-agent-${{ matrix.arch }}
+          path: artifacts/python-agent/
+          if-no-files-found: error
+          retention-days: 14

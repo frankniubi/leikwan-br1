@@ -130,6 +130,33 @@ jobs:
           $version = (Get-Item out/win-publish/LeikwanBridge.App.exe).VersionInfo.FileVersion
           "app version $version, $((Get-ChildItem out/win-publish).Count) files; headless $((Get-ChildItem out/headless-publish -Recurse -File).Count) files"
 
+      # An unknown argument makes the windowless client print its usage and exit 2:
+      # proof the published single-folder build starts and its runtime loads.
+      - name: Smoke-test the headless client
+        id: headless_smoke
+        if: ${{ steps.publish.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $output = & out/headless-publish/leikwan-bridge-headless.exe --ci-smoke-unknown-flag 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          $output
+          if ($code -ne 2 -or $output -notmatch "headless_invalid_arguments") { throw "headless smoke failed (exit $code)" }
+
+      - name: Parse every PowerShell script
+        id: powershell_parse
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($file in Get-ChildItem install, scripts -Recurse -Filter *.ps1) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $bad++; "PARSE ERROR $($file.FullName): $($errors[0].Message)" }
+          }
+          "parsed PowerShell scripts, $bad with errors"
+          if ($bad -gt 0) { exit 1 }
+
       - name: Upload Windows build outputs
         if: ${{ steps.publish.outcome == 'success' && steps.runtime.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -154,6 +181,8 @@ jobs:
             php_tests=${{ steps.php_tests.outcome }}
             runtime=${{ steps.runtime.outcome }}
             publish=${{ steps.publish.outcome }}
+            headless_smoke=${{ steps.headless_smoke.outcome }}
+            powershell_parse=${{ steps.powershell_parse.outcome }}
         run: |
           set -euo pipefail
           failed=0
