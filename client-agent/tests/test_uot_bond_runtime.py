@@ -91,16 +91,24 @@ class UotBondRuntimeTests(unittest.TestCase):
     def test_plain_tcp_mux_open_line_is_written_before_binary_frames(self) -> None:
         async def scenario() -> None:
             seen = {}
+            # Python 3.11's Server.wait_closed() does not wait for in-flight
+            # handlers, so the scenario must wait for the handler explicitly or
+            # asyncio.run() cancels it before it has read the first frame.
+            handler_done = asyncio.get_running_loop().create_future()
 
             async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-                seen["line"] = (await reader.readline()).decode("utf-8").strip()
-                writer.write(b"OK\n")
-                await writer.drain()
-                header = await reader.readexactly(4)
-                frame_len = struct.unpack(">I", header)[0]
-                seen["first_frame"] = await reader.readexactly(frame_len)
-                writer.close()
-                await writer.wait_closed()
+                try:
+                    seen["line"] = (await reader.readline()).decode("utf-8").strip()
+                    writer.write(b"OK\n")
+                    await writer.drain()
+                    header = await reader.readexactly(4)
+                    frame_len = struct.unpack(">I", header)[0]
+                    seen["first_frame"] = await reader.readexactly(frame_len)
+                    writer.close()
+                    await writer.wait_closed()
+                finally:
+                    if not handler_done.done():
+                        handler_done.set_result(None)
 
             server = await asyncio.start_server(handler, "127.0.0.1", 0)
             port = server.sockets[0].getsockname()[1]
@@ -119,6 +127,7 @@ class UotBondRuntimeTests(unittest.TestCase):
                 )
                 writer.close()
                 await writer.wait_closed()
+                await asyncio.wait_for(handler_done, timeout=5)
             finally:
                 server.close()
                 await server.wait_closed()

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import socket
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -31,6 +32,10 @@ class PoolSyncTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sync.validate_config({"listen_host": "0.0.0.0", "listen_port": 7443, "forwards": {}})
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "atomic_write uses os.fchmod (Linux sidecar only; absent on Windows before Python 3.13)",
+    )
     def test_atomic_write(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"

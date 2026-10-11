@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -23,6 +24,12 @@ BASE = {
 }
 
 
+LINUX_ONLY_WRITE = (
+    "the sidecar merge writes its config with os.fchmod "
+    "(Linux sidecar only; absent on Windows before Python 3.13)"
+)
+
+
 class ForwardMergeTests(unittest.TestCase):
     def run_main(self, document, base=None):
         with tempfile.TemporaryDirectory() as directory:
@@ -39,6 +46,7 @@ class ForwardMergeTests(unittest.TestCase):
                          if Path(str(config) + ".last-good").exists() else None)
         return code, result, written, reloads, mode, last_good
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_ONLY_WRITE)
     def test_adds_missing_forward_keeps_unrendered_and_knobs(self):
         document = {"listen_port": 9999, "forwards": {
             "192": {"token": "tw", "targets": ["78.105.182.229:2525"]},
@@ -56,6 +64,7 @@ class ForwardMergeTests(unittest.TestCase):
             self.assertEqual(0o600, mode)
         self.assertEqual(BASE, json.loads(last_good))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_ONLY_WRITE)
     def test_updates_changed_token_or_target(self):
         document = {"forwards": {"192": {"token": "tw2", "targets": ["78.105.182.229:2526"]}}}
         _, result, written, reloads, _, _ = self.run_main(document)

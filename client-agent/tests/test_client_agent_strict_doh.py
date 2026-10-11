@@ -1,5 +1,6 @@
 import io
 import pathlib
+import ssl
 import struct
 import unittest
 from unittest import mock
@@ -38,12 +39,23 @@ class FakeSocket:
 
 
 class FakeTLSContext:
+    # Python <= 3.11 HTTPSConnection.__init__ reads these off the context.
+    verify_mode = ssl.CERT_REQUIRED
+    check_hostname = True
+
     def __init__(self) -> None:
         self.server_hostname = None
 
     def wrap_socket(self, sock, server_hostname=None):
         self.server_hostname = server_hostname
         return sock
+
+
+def unbound_panel_egress():
+    # On Linux PANEL_EGRESS picks the host's physical interface and dials with a
+    # bound raw socket instead of socket.create_connection; pin it to "unbound"
+    # so the dial goes through the mocked create_connection on every platform.
+    return mock.patch.object(client_agent_module.PANEL_EGRESS, "interface_for_socket", return_value="")
 
 
 class StrictDoHTests(unittest.TestCase):
@@ -109,7 +121,7 @@ class StrictDoHTests(unittest.TestCase):
             method="GET",
         )
 
-        with mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
+        with unbound_panel_egress(), mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
             with client_agent_module.urlopen_with_leikwan_doh(request, timeout=7, resolver=resolver) as response:
                 self.assertEqual(b'{"ok":true}', response.read())
 
@@ -135,7 +147,7 @@ class StrictDoHTests(unittest.TestCase):
             method="GET",
         )
 
-        with mock.patch.object(
+        with unbound_panel_egress(), mock.patch.object(
             client_agent_module.socket,
             "create_connection",
             side_effect=[OSError("first address blocked"), fake_socket],

@@ -83,6 +83,10 @@ class TcpAccelSidepathSettingsTests(unittest.TestCase):
                 forward_fixture(), agent_config_fixture(_entry(remotes=[]))
             )
 
+    @unittest.skipUnless(
+        (REPO_ROOT / "artifacts/install-forward-runtime.py").is_file(),
+        "release mirror artifacts/install-forward-runtime.py is not tracked in git; runs on the release machine",
+    )
     def test_published_installer_is_byte_identical(self) -> None:
         source = (REPO_ROOT / "client-agent/install_forward_runtime.py").read_bytes()
         published = (REPO_ROOT / "artifacts/install-forward-runtime.py").read_bytes()

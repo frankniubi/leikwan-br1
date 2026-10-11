@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import socket
+import ssl
 import tempfile
 import threading
 import unittest
@@ -347,6 +348,9 @@ class BindToDeviceTests(unittest.TestCase):
     def test_https_connection_keeps_sni_and_uses_bound_dial(self):
         class FakeTLSContext:
             server_hostname = None
+            # Python <= 3.11 HTTPSConnection.__init__ reads these off the context.
+            verify_mode = ssl.CERT_REQUIRED
+            check_hostname = True
 
             def wrap_socket(self, sock, server_hostname=None):
                 FakeTLSContext.server_hostname = server_hostname

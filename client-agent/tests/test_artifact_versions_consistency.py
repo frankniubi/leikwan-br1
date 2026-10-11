@@ -6,6 +6,10 @@ import sys
 import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+# Release mirrors under artifacts/ are generated on the release machine and are
+# git-ignored (only versions.json and cfwg-latency-watchdog.py are tracked).
+CLIENT_AGENT_MIRROR = REPO_ROOT / "artifacts" / "client-agent.py"
+INSTALL_FORWARD_RUNTIME_MIRROR = REPO_ROOT / "artifacts" / "install-forward-runtime.py"
 
 
 class ArtifactVersionsConsistencyTests(unittest.TestCase):
@@ -28,24 +32,34 @@ class ArtifactVersionsConsistencyTests(unittest.TestCase):
         self.assertEqual(digest, client_agent["sha256"])
         self.assertEqual(agent_path.stat().st_size, client_agent["size_bytes"])
 
+    @unittest.skipUnless(
+        CLIENT_AGENT_MIRROR.is_file(),
+        "release mirror artifacts/client-agent.py is not tracked in git; runs on the release machine",
+    )
     def test_client_agent_artifact_mirror_matches_source(self) -> None:
         agent_path = REPO_ROOT / "client-agent" / "client_agent.py"
-        artifact_path = REPO_ROOT / "artifacts" / "client-agent.py"
+        artifact_path = CLIENT_AGENT_MIRROR
 
         self.assertEqual(agent_path.read_bytes(), artifact_path.read_bytes())
 
     def test_install_forward_runtime_artifact_and_manifest_match_source(self) -> None:
         source_path = REPO_ROOT / "client-agent" / "install_forward_runtime.py"
-        artifact_path = REPO_ROOT / "artifacts" / "install-forward-runtime.py"
+        artifact_path = INSTALL_FORWARD_RUNTIME_MIRROR
         versions_path = REPO_ROOT / "artifacts" / "versions.json"
 
-        self.assertEqual(source_path.read_bytes(), artifact_path.read_bytes())
-
+        # The tracked manifest must always describe the source file.
         import hashlib
         versions = json.loads(versions_path.read_text(encoding="utf-8"))
         runtime = versions["install_forward_runtime"]
         self.assertEqual(hashlib.sha256(source_path.read_bytes()).hexdigest(), runtime["sha256"])
         self.assertEqual(source_path.stat().st_size, runtime["size_bytes"])
+
+        if not artifact_path.is_file():
+            self.skipTest(
+                "release mirror artifacts/install-forward-runtime.py is not tracked in git; "
+                "manifest checked, mirror comparison runs on the release machine"
+            )
+        self.assertEqual(source_path.read_bytes(), artifact_path.read_bytes())
 
 
     def test_client_agent_installer_artifact_hash_is_current(self) -> None:
