@@ -1,0 +1,115 @@
+name: Windows client
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/macos-client
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Windows build and tests
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+          cache-dependency-path: tools/ultra-client/go.sum
+
+      # Windows runs every desktop test, including the Platform=Windows ones macOS skips.
+      - name: Run Core and App tests
+        id: dotnet_tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $failed = $false
+          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests/LeikwanBridge.Core.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.App.Tests/LeikwanBridge.App.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          if ($failed) { exit 1 }
+
+      - name: Run Go tests
+        id: go_tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-Location tools/ultra-client
+          go test -mod=readonly ./... -count=1
+          exit $LASTEXITCODE
+
+      - name: Build Windows Ultra runtime
+        id: runtime
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-ultra-windows.ps1 -Version 2026.10.12.0 -ShortSha $env:GITHUB_SHA.Substring(0, 8) -SkipDefenderScan
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish desktop app and headless client
+        id: publish
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet publish LeikwanBridge.Desktop/src/LeikwanBridge.App/LeikwanBridge.App.csproj -c Release -r win-x64 --self-contained true -o out/win-publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish LeikwanBridge.Desktop/src/LeikwanBridge.Headless/LeikwanBridge.Headless.csproj -c Release -r win-x64 --self-contained true -o out/headless-publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Item out/win-publish/LeikwanBridge.App.exe).VersionInfo.FileVersion
+          "app version $version, $((Get-ChildItem out/win-publish).Count) files; headless $((Get-ChildItem out/headless-publish -Recurse -File).Count) files"
+
+      - name: Upload Windows build outputs
+        if: ${{ steps.publish.outcome == 'success' && steps.runtime.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: |
+            artifacts/ultra/ultra-client_windows_amd64.exe
+            out/win-publish
+            out/headless-publish
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          OUTCOMES: >-
+            dotnet_tests=${{ steps.dotnet_tests.outcome }}
+            go_tests=${{ steps.go_tests.outcome }}
+            runtime=${{ steps.runtime.outcome }}
+            publish=${{ steps.publish.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          printf '### Windows gates\n\n| gate | outcome |\n|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+          for pair in $OUTCOMES; do
+            printf '| %s | %s |\n' "${pair%%=*}" "${pair#*=}" >>"$GITHUB_STEP_SUMMARY"
+            echo "$pair"
+            [ "${pair#*=}" = "success" ] || failed=1
+          done
+          exit "$failed"
