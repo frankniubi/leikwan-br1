@@ -39,7 +39,9 @@ public sealed class ProxyForwardLeaseTests
         Assert.Equal(alreadyRunning, supervisor.Running);
     }
 
+    // Listener ownership comes from iphlpapi, so only Windows can see a foreign owner.
     [Fact]
+    [Trait("Platform", "Windows")]
     public async Task RuntimeCannotAcceptForeignListenerWhileItsOwnProcessIsAlive()
     {
         using var temp = new TempStateDirectory();

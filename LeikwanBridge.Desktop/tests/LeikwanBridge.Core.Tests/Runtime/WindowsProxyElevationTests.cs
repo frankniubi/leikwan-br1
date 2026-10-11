@@ -5,6 +5,7 @@ using Xunit;
 
 namespace LeikwanBridge.Core.Tests.Runtime;
 
+[Trait("Platform", "Windows")]
 public sealed class WindowsProxyElevationTests
 {
     [Fact]

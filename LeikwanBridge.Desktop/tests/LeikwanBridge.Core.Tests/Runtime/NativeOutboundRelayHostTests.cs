@@ -13,7 +13,9 @@ public sealed class NativeOutboundRelayHostTests
     public async Task StartCandidates_UsesShortPrivateUnixControlPath()
     {
         using var temp = new TempStateDirectory();
-        var socketRoot = Path.Combine(Path.GetPathRoot(temp.Path)!, $"lk-{Guid.NewGuid():N}"[..11]);
+        // macOS keeps the filesystem root read-only; /tmp is just as short.
+        var shortRoot = OperatingSystem.IsWindows() ? Path.GetPathRoot(temp.Path)! : "/tmp";
+        var socketRoot = Path.Combine(shortRoot, $"lk-{Guid.NewGuid():N}"[..11]);
         Directory.CreateDirectory(socketRoot);
         var binary = Path.Combine(temp.Path, "ultra-client");
         File.WriteAllText(binary, "fixture");
