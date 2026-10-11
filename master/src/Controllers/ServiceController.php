@@ -215,6 +215,13 @@ final class ServiceController extends BaseController
             }
         } catch (ApiException $exception) {
             Auth::requireClientToken($request, $this->db, $forwardId);
+            $user = null;
+        }
+        if ($user !== null) {
+            $features = $this->provisioning->serviceSummary((int) $forward['service_id'])['effective_features'] ?? [];
+            if (empty($features['allow_view_client_config'])) {
+                throw new ApiException('feature_denied_view_client_config', 403);
+            }
         }
 
         // Ultra v2 never returns the legacy full forward config. The client
@@ -257,20 +264,30 @@ final class ServiceController extends BaseController
 
     public function regenerateClientToken(Request $request, array $params): Response
     {
-        $user = $this->requireTenant($request);
-        $serviceId = $this->idParam($params);
-        $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
-            'id' => $serviceId,
-            'user_id' => $user['id'],
-        ]);
-        if ($service === null) {
-            throw new ApiException('service_not_found', 404);
-        }
+        try {
+            $user = $this->requireTenant($request);
+            $serviceId = $this->idParam($params);
+            $service = $this->db->fetchOne('SELECT * FROM services WHERE id = :id AND user_id = :user_id LIMIT 1', [
+                'id' => $serviceId,
+                'user_id' => $user['id'],
+            ]);
+            if ($service === null) {
+                throw new ApiException('service_not_found', 404);
+            }
+            if (\Leikwan\Master\Support\ServiceStatus::effective($service) !== 'active') {
+                throw new ApiException('service_inactive', 409);
+            }
+            if (empty(($this->provisioning->serviceSummary($serviceId)['effective_features'] ?? [])['allow_rotate_client_token'])) {
+                throw new ApiException('feature_denied_rotate_client_token', 403);
+            }
 
-        return $this->json([
-            'ok' => true,
-            'token' => $this->provisioning->regenerateClientToken($serviceId),
-        ]);
+            return $this->json([
+                'ok' => true,
+                'token' => $this->provisioning->regenerateClientToken($serviceId),
+            ]);
+        } catch (\Throwable $throwable) {
+            return $this->legacyForwardErrorResponse($throwable);
+        }
     }
 
     public function listAllServices(Request $request, array $params): Response
@@ -297,6 +314,7 @@ final class ServiceController extends BaseController
         if ((string) ($user['role'] ?? '') !== 'tenant') {
             throw new ApiException('user_auth_failed', 401);
         }
+        ForwardLineApiController::throttleTenant($this->config, $request, (int) $user['id']);
         return $user;
     }
 
@@ -355,6 +373,10 @@ final class ServiceController extends BaseController
             'forward_target_not_allowed' => 422,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
+            'feature_denied_rotate_client_token' => 403,
+            'feature_denied_view_client_config' => 403,
+            'insufficient_balance' => 409,
+            'rate_limited' => 429,
             'operation_failed' => 500,
         ];
         if (!array_key_exists($code, $statuses)) {

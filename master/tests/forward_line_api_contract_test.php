@@ -381,6 +381,25 @@ $ungatedRoute = ForwardLineApiContract::presentRoute([
     'tenant_label' => 'Plain Route',
     'availability' => null,
 ]);
+foreach (['2130706433', '0x7f000001', '0x7f.1', '127.1', '0177.0.0.1', '0', 'localhost.'] as $shorthand) {
+    throwsCode(
+        static fn(): string => ForwardLineApiContract::validateTargetHost($shorthand),
+        'validation_failed',
+        'shorthand IPv4 literal must not pass as a hostname: ' . $shorthand
+    );
+}
+foreach (['224.0.0.1', 'ff02::1', '100.100.100.200', '100.64.0.1', '198.18.0.1', '64:ff9b::7f00:1', '2002:7f00:1::', 'ip6-localhost', 'ip6-loopback', 'metadata.google.internal', 'printer.local'] as $multicast) {
+    throwsCode(
+        static fn(): string => ForwardLineApiContract::validateTargetHost($multicast),
+        'validation_failed',
+        'multicast target must be rejected: ' . $multicast
+    );
+}
+throwsCode(static fn(): string => ForwardLineApiContract::validateTargetHost('intranet'), 'validation_failed', 'single-label host must be rejected');
+foreach (['example.com', 'a1.example.net', 'host-1.example.org', '8.8.8.8', '2001:4860:4860::8888'] as $hostname) {
+    same($hostname, ForwardLineApiContract::validateTargetHost($hostname), 'ordinary hostname still accepted: ' . $hostname);
+}
+
 foreach (['tcp', 'udp', 'tcp+udp'] as $transport) {
     trueValue(($ungatedRoute['transports'][$transport]['available'] ?? false) === true, 'ungated route should be available for ' . $transport);
 }

@@ -312,8 +312,12 @@ unclassified and are never restored automatically.
 JSON values use strict types. Ports are integers from 1 through 65535; only
 `listen_port` may be `null`. Manual hosts are ASCII IPv4, IPv6, or DNS names up
 to 253 characters. URL schemes, userinfo, paths, whitespace, control bytes,
-shell metacharacters, and IPv6 zone identifiers are rejected. Private and
-loopback targets remain valid for tenant-owned backends.
+shell metacharacters, and IPv6 zone identifiers are rejected. Only public
+targets are accepted: loopback, link-local, metadata, multicast and shorthand IPs
+fail with `reserved_range` or `invalid`, and private ranges (10/8, 172.16/12,
+192.168/16, fc00::/7) with `private_range`. Native Outbound forwards are exempt.
+Each account may send 120 requests a minute (30 of them changes); past that the
+API returns `429 rate_limited` with `Retry-After`.
 
 The stable error envelope is:
 

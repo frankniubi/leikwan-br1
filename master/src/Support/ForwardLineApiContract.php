@@ -254,10 +254,20 @@ final class ForwardLineApiContract
             // private ranges stay allowed for genuine tenant-owned backends.
             // (DNS names resolve on the node; authoritative resolution-time
             // filtering still belongs on the data-plane agents.)
-            if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE) === false) {
+            if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE) === false
+                || self::isNonRoutableTarget($host)) {
                 self::invalid(['target.host' => 'reserved_range']);
             }
             return $host;
+        }
+
+        // A name whose last label is numeric or hex is not a hostname but a
+        // shorthand IPv4 literal (2130706433, 0x7f000001, 127.1, 0177.0.0.1,
+        // 0). inet_aton on the nodes resolves these to loopback or 0.0.0.0,
+        // so they would slip past the reserved-range check above.
+        $labels = explode('.', rtrim($host, '.'));
+        if (preg_match('/\A(?:0x[0-9a-f]*|[0-9]+)\z/iD', (string) end($labels)) === 1) {
+            self::invalid(['target.host' => 'invalid']);
         }
 
         $label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
@@ -265,13 +275,45 @@ final class ForwardLineApiContract
             self::invalid(['target.host' => 'invalid']);
         }
 
-        // Defense-in-depth against the obvious loopback hostnames.
-        $lower = strtolower($host);
-        if ($lower === 'localhost' || str_ends_with($lower, '.localhost')) {
+        // Defense-in-depth against the obvious loopback hostnames, including
+        // the Debian /etc/hosts aliases for ::1.
+        $lower = strtolower(rtrim($host, '.'));
+        if ($lower === 'localhost' || str_ends_with($lower, '.localhost')
+            || $lower === 'ip6-localhost' || $lower === 'ip6-loopback'
+            || str_ends_with($lower, '.internal') || str_ends_with($lower, '.local')) {
             self::invalid(['target.host' => 'reserved_range']);
+        }
+        // A single-label name resolves through the node's search domains and
+        // /etc/hosts, never to a tenant's public backend.
+        if (!str_contains($lower, '.')) {
+            self::invalid(['target.host' => 'invalid']);
         }
 
         return $host;
+    }
+
+    /**
+     * Ranges FILTER_FLAG_NO_RES_RANGE lets through that a node must never dial
+     * for a tenant: multicast, 100.64.0.0/10 (shared address space, which holds
+     * Alibaba Cloud's 100.100.100.200 metadata service and Tailscale),
+     * 198.18.0.0/15, and the NAT64 / 6to4 prefixes that embed an arbitrary
+     * IPv4 address such as 127.0.0.1.
+     */
+    private static function isNonRoutableTarget(string $ip): bool
+    {
+        $packed = inet_pton($ip);
+        if ($packed === false) {
+            return true;
+        }
+        $b = array_values(unpack('C*', $packed));
+        if (count($b) === 4) {
+            return ($b[0] & 0xf0) === 0xe0
+                || ($b[0] === 100 && ($b[1] & 0xc0) === 64)
+                || ($b[0] === 198 && ($b[1] & 0xfe) === 18);
+        }
+        return $b[0] === 0xff
+            || ($b[0] === 0x20 && $b[1] === 0x02)
+            || substr($packed, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00";
     }
 
     /** @param array<string, mixed> $normalized */
