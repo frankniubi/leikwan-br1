@@ -65,9 +65,18 @@ require_once $root . '/src/Database/Database.php';
 require_once $root . '/src/Support/ApiException.php';
 require_once $root . '/src/Support/MigrationRunner.php';
 
-$newBodyPath = $root . '/resources/knowledgebase/en/getting-started-five-minute-overview.html';
-$newBody = file_get_contents($newBodyPath);
-assertRefreshMigration(is_string($newBody) && $newBody !== '', 'new body is missing');
+// The resource HTML under resources/knowledgebase/ keeps evolving after this
+// migration shipped (later guide rewrites), so the fixture is the body frozen
+// inside the migration itself: the first guarded UPDATE's body_html literal.
+// Normalise line endings so a CRLF checkout (Windows) sees the same LF bytes
+// the panel is deployed with; the guarded SHA-256 predicates are over LF text.
+$refreshSql = str_replace("\r\n", "\n", (string) file_get_contents($root . '/migrations/20260806_refresh_tenant_user_guides.sql'));
+$bodyStart = strpos($refreshSql, "body_html = '");
+$bodyEnd = $bodyStart === false ? false : strpos($refreshSql, "',\n    status = 'published'", $bodyStart);
+assertRefreshMigration($bodyStart !== false && $bodyEnd !== false, 'could not locate the five-minute body in the refresh migration');
+$bodyStart += strlen("body_html = '");
+$newBody = str_replace("''", "'", substr($refreshSql, $bodyStart, $bodyEnd - $bodyStart));
+assertRefreshMigration($newBody !== '' && str_contains($newBody, 'kb-screenshot-figure'), 'new body is missing');
 $oldBody = preg_replace('/<figure class="kb-screenshot-figure">.*?<\/figure>\R/s', '', $newBody);
 assertRefreshMigration(is_string($oldBody), 'could not derive old body fixture');
 assertRefreshMigration(
@@ -85,7 +94,7 @@ try {
     assertRefreshMigration(mkdir($migrationsDir, 0700, true) || is_dir($migrationsDir), 'could not create temporary directories');
     $migration = $root . '/migrations/20260806_refresh_tenant_user_guides.sql';
     assertRefreshMigration(is_file($migration), 'refresh migration is missing');
-    assertRefreshMigration(copy($migration, $migrationsDir . '/20260806_refresh_tenant_user_guides.sql'), 'could not copy refresh migration');
+    assertRefreshMigration(file_put_contents($migrationsDir . '/20260806_refresh_tenant_user_guides.sql', $refreshSql) !== false, 'could not copy refresh migration');
     file_put_contents($envPath, "DB_DRIVER=sqlite\nDB_NAME={$dbPath}\n");
 
     $config = new Config($envPath);

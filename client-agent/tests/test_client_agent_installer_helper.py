@@ -1,10 +1,19 @@
 import pathlib
 import shutil
 import subprocess
+import sys
 import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+# The client installer is a Linux shell script. On Windows, "bash" on PATH may be
+# the WSL launcher or Git Bash, neither of which is the installer's runtime.
+RUNS_LINUX_BASH = unittest.skipUnless(
+    sys.platform.startswith("linux") and shutil.which("bash"),
+    "runs the Linux installer's artifact-source selection under bash (Linux only)",
+)
 
 
 def _artifact_source_selection(source: str) -> str:
@@ -22,7 +31,7 @@ def _run_bash(script: str) -> subprocess.CompletedProcess:
 
 
 class ClientAgentInstallerHelperTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_unreachable_cloudflare_falls_back_to_the_aliyun_artifact_source(self) -> None:
         # A mainland-only host cannot reach Cloudflare; the Aliyun CDN serves
         # the same artifacts and becomes the download and persisted base.
@@ -66,7 +75,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         ])
         return _run_bash(script)
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_unconnectable_cloudflare_switches_as_soon_as_its_probe_fails(self) -> None:
         # Probes connect to the first address only, with a 3 s limit, so a
         # blackholed Cloudflare fails after about 3 s instead of 8 s per address.
@@ -85,7 +94,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("artifact source https://v3.leikwanhost.com is unreachable: timed out", completed.stderr)
         self.assertNotIn("probe limits missing", completed.stderr)
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_silent_cloudflare_is_abandoned_after_the_grace_period(self) -> None:
         # A stalled source that never finishes is dropped after 10 s.
         completed = self._select_with_stub(
@@ -99,7 +108,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("artifact source https://v3.leikwanhost.com did not answer within 10s", completed.stderr)
         self.assertIn("leftovers=0", completed.stdout)
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_answering_cloudflare_is_kept_even_when_aliyun_is_faster(self) -> None:
         # Connected but slow: the whole transfer runs past 3 s, which used to
         # push a healthy host onto Aliyun.
@@ -112,7 +121,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertEqual("", completed.stderr)
         self.assertIn("leftovers=0", completed.stdout)
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_every_source_down_fails_with_the_sources_tried(self) -> None:
         completed = self._select_with_stub("  echo 'connect timed out' >&2; return 1")
         self.assertNotEqual(0, completed.returncode)
@@ -121,7 +130,7 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
             completed.stderr,
         )
 
-    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @RUNS_LINUX_BASH
     def test_custom_artifact_source_has_no_fallback(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
         script = "\n".join([

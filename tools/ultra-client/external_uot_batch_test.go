@@ -244,6 +244,15 @@ func TestExternalUoTFullQueueNeverStallsTheReadLoop(t *testing.T) {
 	if !stuck.enqueue(datagram(0)) {
 		t.Fatal("initial admission")
 	}
+	// A StatusWriter writes (and fsyncs) its first snapshot synchronously on
+	// the updating goroutine; later updates inside the interval only arm a
+	// timer. Take that first write here, outside the timed loop: on a slow CI
+	// disk the fsync alone took longer than the bound below, which measured the
+	// disk rather than admission.
+	status.UpdateError("test_prime")
+	if status.writeCountValue() != 1 {
+		t.Fatal("the priming update did not take the status writer's first write")
+	}
 	started := time.Now()
 	for index := 1; index <= 50; index++ {
 		if stuck.enqueue(datagram(index)) {
@@ -270,10 +279,10 @@ func TestExternalUoTFullQueueNeverStallsTheReadLoop(t *testing.T) {
 // the writer (and the keepalive, which shares its lock) forever, and the batch
 // it could not write is kept for the replacement carrier.
 func TestExternalUoTCarrierWriteStallEndsCarrierAndKeepsBatch(t *testing.T) {
-	left, right := tcpPair(t)
-	_ = left.SetDeadline(time.Time{})
-	_ = left.SetWriteBuffer(16 << 10)
-	_ = right.SetReadBuffer(16 << 10)
+	// Buffers fixed before connect: a receive buffer shrunk on the connected
+	// socket lets the stopped relay keep accepting retransmitted bytes, so the
+	// stall comes late and the keepalive afterwards can still slip through.
+	left, _ := tcpPairWithBuffers(t, 16<<10, 16<<10)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	association := testUoTAssociation(ctx, 4096, nil)
@@ -303,7 +312,27 @@ func TestExternalUoTCarrierWriteStallEndsCarrierAndKeepsBatch(t *testing.T) {
 	if kept := association.takeRetry(); len(kept) == 0 {
 		t.Fatal("the unwritten batch was lost instead of kept for the next carrier")
 	}
-	if err := association.writeCarrierFrame(left, externalUoTFrame{msgType: externalUoTKeepalive}); !errors.Is(err, errRemoteWriteStall) {
-		t.Fatalf("a keepalive on the stalled carrier returned %v, want a bounded stall", err)
+	// A keepalive on the stalled carrier must not block for longer than the
+	// bound either. The first few may still be accepted: a socket that
+	// refused the large batch can keep a little room for a tiny write (BSD
+	// sockets, for one, refuse a large write once free space is below the send
+	// low-water mark but take a small one that fits). That room is finite, so
+	// keepalives end in a bounded stall instead of blocking with the lock held.
+	keepaliveDeadline := time.Now().Add(3 * time.Second)
+	for accepted := 0; ; accepted++ {
+		began := time.Now()
+		err := association.writeCarrierFrame(left, externalUoTFrame{msgType: externalUoTKeepalive})
+		if took := time.Since(began); took > association.writeStall+time.Second {
+			t.Fatalf("a keepalive on the stalled carrier blocked for %s with a %s bound", took, association.writeStall)
+		}
+		if errors.Is(err, errRemoteWriteStall) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("a keepalive on the stalled carrier returned %v, want a bounded stall", err)
+		}
+		if time.Now().After(keepaliveDeadline) {
+			t.Fatalf("the stalled carrier accepted %d keepalives without a stall", accepted+1)
+		}
 	}
 }

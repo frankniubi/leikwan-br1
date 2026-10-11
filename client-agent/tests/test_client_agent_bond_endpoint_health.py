@@ -1,5 +1,7 @@
 import json
 import pathlib
+import platform
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -16,6 +18,12 @@ client_agent_module = load_module(
     "client_agent_bond_endpoint_health_under_test",
     "client-agent/client_agent.py",
 )
+
+
+# apply_forward() -> semantic_agent_config() calls platform.release(). On Windows
+# with Python <= 3.12 the first call shells out (``ver``) via subprocess, which
+# these tests mock; resolve and cache the real value before any mock is active.
+platform.release()
 
 
 class ClientAgentBondEndpointHealthTests(unittest.TestCase):
@@ -383,6 +391,10 @@ class ClientAgentBondEndpointHealthTests(unittest.TestCase):
                     )
                 )
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "Ultra rollback restores files with os.fchmod (Linux client agent only; absent on Windows before Python 3.13)",
+    )
     def test_apply_forward_rolls_back_when_new_ultra_lease_delivery_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             agent = self.make_agent(tmp_dir)

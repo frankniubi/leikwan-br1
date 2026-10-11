@@ -159,7 +159,7 @@ foreach (['en', 'zh-Hans', 'zh-TW'] as $locale) {
         homepageFail($locale . ' homepage has double-encoded or corrupted text');
     }
 
-    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title', 'bridge-home-plate-key', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg', '/assets/carriers/ucloud.svg', '/assets/carriers/zenlayer.svg', '/assets/carriers/qcloud.svg', '/assets/carriers/ctyun-logo.png', '/assets/carriers/cucloud.png', '/assets/carriers/cmcloud.png'] as $marker) {
+    foreach (['bridge-home-hero', 'bridge-home-map', 'bridge-home-network', 'bridge-home-title', 'bridge-home-plate-key', 'bridge-home-carriers', 'bridge-home-closing', '/assets/carriers/ct.svg', '/assets/carriers/cu.svg', '/assets/carriers/cm.svg', '/assets/carriers/ucloud.svg', '/assets/carriers/zenlayer.svg', '/assets/carriers/qcloud-h.svg', '/assets/carriers/kpcloud.svg', '/assets/carriers/ctyun-logo.png', '/assets/carriers/cucloud.png', '/assets/carriers/cmcloud.png'] as $marker) {
         if (!str_contains($html, $marker)) {
             homepageFail($locale . ' homepage is missing ' . $marker);
         }

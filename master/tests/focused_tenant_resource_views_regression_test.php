@@ -31,7 +31,10 @@ foreach ($contracts as $methodName => $contract) {
 $clientsStart = strpos($source, 'public function clientsPage(');
 $clientsEnd = strpos($source, 'public function sidecarsPage(', $clientsStart ?: 0);
 $clients = substr($source, $clientsStart ?: 0, ($clientsEnd ?: 0) - ($clientsStart ?: 0));
-foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', 'Windows App', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token', 'runtime-attestation/refresh', '刷新运行时'] as $required) {
+// The Windows card label is now plain 'Windows' (GUI installer + update helper
+// + no-GUI service grouped in one card). The tenant runtime-attestation refresh
+// control is pinned by tenant_client_runtime_attestation_refresh_test.php.
+foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', "clientAppReleaseLabel('Windows', 'windows_client_app')", '无界面版 · Windows 系统服务', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token'] as $required) {
     if (!str_contains($clients, $required)) {
         throw new RuntimeException('tenant client install surface missing ' . $required);
     }

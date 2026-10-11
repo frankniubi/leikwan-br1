@@ -31,7 +31,8 @@ $wizard = substr((string) $tenant, $wizardStart, $wizardEnd - $wizardStart);
 
 foreach ([
     '<input type="hidden" name="target_source" value="manual">',
-    '<input type="text" name="target_host" placeholder="10.0.0.5 or example.com" required>',
+    // The field gained an id so the native-mode target picker can address it.
+    '<input type="text" name="target_host" id="native-target-host" placeholder="10.0.0.5 or example.com" required>',
 ] as $needle) {
     if (!str_contains($wizard, $needle)) {
         fail('missing manual LeiKwan Bridge target field: ' . $needle);

@@ -67,17 +67,35 @@ class SidecarAgentUpdateHelperTests(unittest.TestCase):
     def test_sidecar_update_helper_uses_artifact_base_when_present(self) -> None:
         source = (REPO_ROOT / "install" / "sidecar-agent-update.sh").read_text(encoding="utf-8")
 
-        self.assertIn('ARTIFACT_BASE=$(python3 - "${CONFIG_PATH}"', source)
-        self.assertIn('${ARTIFACT_BASE%/}/artifacts/install-bond-sidecar.sh', source)
-        self.assertIn('--artifact-base "${ARTIFACT_BASE}"', source)
+        # artifact_base_url from the sidecar config wins, falling back to the
+        # master URL; an explicit --artifact-base flag overrides both.
+        self.assertIn('ARTIFACT_BASE="$(config_value artifact_base_url "$MASTER_URL")"', source)
+        self.assertIn('--artifact-base) ARTIFACT_BASE_OVERRIDE="$2"; shift 2 ;;', source)
+        self.assertIn('ARTIFACT_BASE="$ARTIFACT_BASE_OVERRIDE"', source)
+        # The manifest and every relative artifact URL resolve against it, and
+        # the installer is handed the same base.
+        self.assertIn('download_artifact "${ARTIFACT_BASE%/}/artifacts/versions.json" "$VERSIONS_TMP"', source)
+        self.assertIn(r'''printf '%s/%s\n' "${ARTIFACT_BASE%/}" "${1#/}"''', source)
+        self.assertIn('"/artifacts/install-bond-sidecar.sh"', source)
+        self.assertIn('--artifact-base "$ARTIFACT_BASE"', source)
 
     def test_sidecar_update_helper_stops_runtime_and_agent_services(self) -> None:
+        # Since the guarded-installer rework (ecf287ff) the helper no longer
+        # stops services itself: it verifies installer/agent/binary against the
+        # manifest first, keeps the running services on any mismatch, and only
+        # then hands off to the installer, which rewrites and restarts the
+        # runtime and agent units.
         source = (REPO_ROOT / "install" / "sidecar-agent-update.sh").read_text(encoding="utf-8")
+        installer = (REPO_ROOT / "install" / "install-bond-sidecar.sh").read_text(encoding="utf-8")
 
-        self.assertIn('AGENT_SERVICE_NAME="${SERVICE_NAME}-agent"', source)
-        self.assertIn('systemctl stop "${SERVICE_NAME}.service"', source)
-        self.assertIn('systemctl stop "${MPTCP_SERVICE_NAME}.service"', source)
-        self.assertIn('systemctl stop "${AGENT_SERVICE_NAME}.service"', source)
+        self.assertNotIn("systemctl stop", source)
+        preflight_failure = source.index('"sidecar agent preflight mismatch; keeping current services"')
+        installer_run = source.index('LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER"')
+        self.assertLess(preflight_failure, installer_run)
+        self.assertIn('--service-name "$SERVICE_NAME"', source)
+
+        self.assertIn('AGENT_SERVICE_NAME="${SERVICE_NAME}-agent"', installer)
+        self.assertIn('systemctl restart "$AGENT_SERVICE_NAME.service"', installer)
 
 
     def test_sidecar_agent_config_patch_accepts_artifact_base_url(self) -> None:

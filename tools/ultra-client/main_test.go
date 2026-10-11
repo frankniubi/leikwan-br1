@@ -1069,12 +1069,29 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 	}
 	burstDeadline := time.Now().Add(3 * time.Second)
 	for index, client := range burst {
-		_ = client.SetReadDeadline(burstDeadline)
-		count, _, err := client.ReadFromUDP(response)
+		// UDP may drop a datagram on a loaded runner, so resend like a real client
+		// would; a runtime that blocks new clients still misses the deadline.
+		wantBurst := []byte(fmt.Sprintf("burst-%03d", index))
+		var count int
+		var err error
+		for {
+			wait := time.Now().Add(500 * time.Millisecond)
+			if wait.After(burstDeadline) {
+				wait = burstDeadline
+			}
+			_ = client.SetReadDeadline(wait)
+			count, _, err = client.ReadFromUDP(response)
+			var timeout net.Error
+			if err == nil || !errors.As(err, &timeout) || !timeout.Timeout() || !time.Now().Before(burstDeadline) {
+				break
+			}
+			if _, writeErr := client.WriteToUDP(wantBurst, destination); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
 		if err != nil {
 			t.Fatalf("burst client %d did not receive a response: %v", index, err)
 		}
-		wantBurst := []byte(fmt.Sprintf("burst-%03d", index))
 		if !bytes.Equal(response[:count], wantBurst) {
 			t.Fatalf("burst client %d response = %q, want %q", index, response[:count], wantBurst)
 		}

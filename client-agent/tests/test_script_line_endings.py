@@ -16,9 +16,14 @@ class ScriptLineEndingTests(unittest.TestCase):
         scripts = [
             REPO_ROOT / "client-agent" / "client_agent.py",
             REPO_ROOT / "client-agent" / "install_forward_runtime.py",
+        ]
+        # Release mirrors are git-ignored and only exist on the release
+        # machine; check them there, but never let their absence fail CI.
+        release_mirrors = [
             REPO_ROOT / "artifacts" / "client-agent.py",
             REPO_ROOT / "artifacts" / "install-forward-runtime.py",
         ]
+        scripts.extend(mirror for mirror in release_mirrors if mirror.is_file())
 
         offenders: list[str] = []
         for script in scripts:

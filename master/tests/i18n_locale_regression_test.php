@@ -786,6 +786,9 @@ $coverageFiles = [
 $textAllowlist = [
     (string) realpath(__DIR__ . '/../src/Controllers/BaseController.php') => [
         "format('F Y'))) . '",
+        // Parent-brand provenance: rendered as 利群主機 · <span lang="en">LeiKwan Host</span>,
+        // a bilingual lockup that must stay in English in every locale.
+        'LeiKwan Host',
     ],
     (string) realpath(__DIR__ . '/../src/Controllers/AuthController.php') => [
         "knowledgebaseStyles() .",

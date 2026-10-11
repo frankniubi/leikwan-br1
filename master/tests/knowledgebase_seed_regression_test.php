@@ -61,6 +61,10 @@ try {
     assertSeedRegression(is_file($migrationPath), 'committed generated migration is missing');
     $committed = file_get_contents($migrationPath);
     assertSeedRegression(is_string($committed), 'committed generated migration is unreadable');
+    // Compare modulo line endings: a CRLF checkout rewrites both the resource
+    // HTML the builder reads and the committed file, but not identically.
+    $committed = str_replace("\r\n", "\n", $committed);
+    $generated = str_replace("\r\n", "\n", $generated);
     assertSeedRegression($generated === $committed, 'committed generated migration is stale; regenerate it with the seed builder');
 
     $legacyKeys = [

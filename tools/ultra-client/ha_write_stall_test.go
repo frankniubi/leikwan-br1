@@ -46,16 +46,17 @@ func captureLog(t *testing.T) *lockedLog {
 
 // stallPair returns a local client pair and a relay pair with no socket
 // deadlines (the tests bound themselves) and small buffers on the relay leg,
-// so a relay that stops reading blocks the runtime's writes quickly.
+// so a relay that stops reading blocks the runtime's writes quickly. The relay
+// buffers are fixed before connect (see tcpPairWithBuffers): shrinking them on
+// the connected sockets made Linux deliver even a reading relay's progress in
+// ~200 ms bursts, which a short bound scored as a stall.
 func stallPair(t *testing.T) (client, local, remote, provider *net.TCPConn) {
 	t.Helper()
 	client, local = tcpPair(t)
-	remote, provider = tcpPair(t)
-	for _, connection := range []*net.TCPConn{client, local, remote, provider} {
+	remote, provider = tcpPairWithBuffers(t, 16<<10, 16<<10)
+	for _, connection := range []*net.TCPConn{client, local} {
 		_ = connection.SetDeadline(time.Time{})
 	}
-	_ = remote.SetWriteBuffer(16 << 10)
-	_ = provider.SetReadBuffer(16 << 10)
 	return client, local, remote, provider
 }
 
@@ -216,7 +217,21 @@ func fillUntilBlocked(t *testing.T, client *net.TCPConn) {
 // The local client closing while the upstream copy is blocked in a write to a
 // relay that stopped reading used to leave the stream alive for 452-673 s,
 // until the unit stopped (reason=canceled). The blocked write now ends it
-// within the stall bound.
+// within a few stall bounds.
+//
+// "A few", not one: the Linux kernel accepts a little more data (8 KiB here)
+// on each of the first fresh write() calls into a send buffer the relay has
+// stopped draining, even though TCP_INFO shows nothing more acknowledged.
+// writeAllProgress counts those bytes as progress and re-arms a whole bound,
+// so a relay that stopped reading is declared stalled after up to three
+// bounds on Linux (measured: 3 x 1.5 s with no byte acknowledged after the
+// first 48 ms), against one on Windows.
+const localCloseStallBound = 500 * time.Millisecond
+
+// localCloseStallAllowance is how long the bounded stream may live: the
+// 300 ms fill, three bounds, and scheduling slack.
+const localCloseStallAllowance = 4*localCloseStallBound + time.Second
+
 func TestLocalCloseDuringBlockedRemoteWriteEndsPromptly(t *testing.T) {
 	t.Run("before", func(t *testing.T) {
 		// Without the progress bound the same stream outlives its client: this
@@ -234,7 +249,7 @@ func TestLocalCloseDuringBlockedRemoteWriteEndsPromptly(t *testing.T) {
 		select {
 		case <-done:
 			t.Fatal("the scenario did not reproduce: the unbounded stream ended by itself")
-		case <-time.After(1500 * time.Millisecond):
+		case <-time.After(localCloseStallAllowance):
 		}
 		cancel()
 		waitDone(t, done, 3*time.Second, "canceled stream")
@@ -242,14 +257,14 @@ func TestLocalCloseDuringBlockedRemoteWriteEndsPromptly(t *testing.T) {
 	t.Run("after", func(t *testing.T) {
 		store, first, _ := twoPathCandidateStore(t)
 		status := stallStatus(t)
-		bound := 1500 * time.Millisecond
+		bound := localCloseStallBound
 		client, local, remote, _ := stallPair(t)
 		started := time.Now()
 		done := runRelay(store, status, stallLimiter(t), local, remote, stallIdentity(first, bound))
 		fillUntilBlocked(t, client)
 		client.Close()
-		waitDone(t, done, bound+3*time.Second, "stream whose client closed")
-		if lived := time.Since(started); lived > bound+2*time.Second {
+		waitDone(t, done, localCloseStallAllowance+3*time.Second, "stream whose client closed")
+		if lived := time.Since(started); lived > localCloseStallAllowance {
 			t.Fatalf("stream lived %s with a %s stall bound", lived, bound)
 		}
 		if len(stallEvents(status)) != 1 {

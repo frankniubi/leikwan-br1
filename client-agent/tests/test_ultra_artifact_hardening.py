@@ -46,6 +46,10 @@ def gnu_stack_flags(data: bytes) -> int | None:
 
 
 class UltraArtifactHardeningTests(unittest.TestCase):
+    @unittest.skipUnless(
+        ARTIFACT_PATH.is_file(),
+        "release binary artifacts/ultra/ultra-client_linux_amd64 is not tracked in git; runs on the release machine",
+    )
     def test_linux_artifact_is_obfuscated_pie_and_stripped(self) -> None:
         data = ARTIFACT_PATH.read_bytes()
         sections = elf_sections(data)
@@ -74,16 +78,20 @@ class UltraArtifactHardeningTests(unittest.TestCase):
         ]:
             self.assertFalse(marker in data, f"artifact leaks plaintext marker: {marker!r}")
 
+    def test_linux_runtime_manifest_and_build_script_hardening(self) -> None:
         manifest = json.loads(VERSIONS_PATH.read_text(encoding="utf-8"))["ultra_client_runtime"]
         self.assertEqual("garble-v0.17.0", manifest.get("obfuscator"))
+        # garble tiny mode was dropped (b089a4e2): the runtime built with it
+        # crashed silently under sustained UDP load, so it must not come back.
         self.assertEqual(
-            ["cgo-disabled", "pie", "relro", "nx-stack", "trimpath", "stripped", "garble-identifiers", "garble-literals", "garble-tiny"],
+            ["cgo-disabled", "pie", "relro", "nx-stack", "trimpath", "stripped", "garble-identifiers", "garble-literals"],
             manifest.get("hardening"),
         )
 
         build_script = (REPO_ROOT / "scripts" / "build-ultra-linux.ps1").read_text(encoding="utf-8")
-        for marker in ["v0.17.0", "-literals", "-tiny", "-buildmode=pie", "-trimpath", "-buildvcs=false", "-s -w -buildid="]:
+        for marker in ["v0.17.0", "-literals", "-buildmode=pie", "-trimpath", "-buildvcs=false", "-s -w -buildid="]:
             self.assertIn(marker, build_script)
+        self.assertNotIn("-tiny", build_script)
 
         # A supplied -ShortSha must survive: reading $LASTEXITCODE before git ran
         # replaced it with "unknown" (a fresh session reports $null, which is

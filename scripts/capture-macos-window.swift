@@ -16,7 +16,8 @@ guard CommandLine.arguments.count == 5,
 
 let output = CommandLine.arguments[4]
 var windowID: CGWindowID?
-let deadline = Date().addingTimeInterval(15)
+// First launch on a fresh runner compiles Skia Metal shaders; give the window time to appear.
+let deadline = Date().addingTimeInterval(45)
 while Date() < deadline && windowID == nil {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
