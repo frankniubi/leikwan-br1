@@ -37,9 +37,27 @@ foreach ([$auth, $provisioning] as $source) {
         failClientConfigBoundary('client token/config defense must reject inactive service or deleted forward');
     }
 }
-if (!str_contains($tenant, '$serviceIsActive')
-    || !str_contains($tenant, "!empty(\$features['allow_view_client_config']) && \$serviceIsActive")) {
-    failClientConfigBoundary('tenant service page must suppress runtime config for inactive services');
+// The tenant service page used to render a "View client config" preview gated
+// on an active service. The simplified service detail (618ffe0f) removed the
+// raw config/token preview entirely, which is a strictly stronger boundary:
+// pin that no runtime client config is built or shown from that page.
+$detailStart = strpos($tenant, 'public function serviceDetail(');
+$detailEnd = $detailStart === false ? false : strpos($tenant, 'public function forwardWizardRedirect(', $detailStart);
+if ($detailStart === false || $detailEnd === false) {
+    failClientConfigBoundary('tenant service page (serviceDetail) not found');
+}
+$serviceDetail = substr($tenant, $detailStart, $detailEnd - $detailStart);
+if (!str_contains($serviceDetail, 'ServiceStatus::effective($service)')) {
+    failClientConfigBoundary('tenant service page must derive the effective service status');
+}
+foreach ([
+    'buildClientConfig(',
+    'View client config',
+    "allow_view_client_config",
+] as $forbidden) {
+    if (str_contains($serviceDetail, $forbidden)) {
+        failClientConfigBoundary('tenant service page must not expose runtime client config: ' . $forbidden);
+    }
 }
 
 echo "ok\n";

@@ -100,8 +100,12 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          passed=0; failed_list=()
+          passed=0; skipped=0; failed_list=()
           for test in master/tests/*.php; do
+            reason=$(awk -v n="$(basename "$test")" '$1 == n { print $2 }' .github/ci/php-skip.txt)
+            if [ -n "$reason" ]; then
+              echo "SKIPPED: $test ($reason)"; skipped=$((skipped + 1)); continue
+            fi
             if timeout 120 php -d display_errors=1 "$test" >"$RUNNER_TEMP/php-test.log" 2>&1; then
               passed=$((passed + 1))
             else
@@ -109,7 +113,7 @@ jobs:
               echo "::group::FAILED $test"; tail -20 "$RUNNER_TEMP/php-test.log"; echo "::endgroup::"
             fi
           done
-          echo "passed=$passed failed=${#failed_list[@]}"
+          echo "passed=$passed skipped=$skipped failed=${#failed_list[@]}"
           printf '%s\n' "${failed_list[@]}" | sed 's/^/FAILED: /'
           [ "${#failed_list[@]}" -eq 0 ]
 

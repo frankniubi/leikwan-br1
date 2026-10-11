@@ -106,6 +106,7 @@ namespace Leikwan\Master\Database {
 
             if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port FROM sidecar_points WHERE id = :id LIMIT 1')
                 || str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1')
+                || str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, token_secret FROM sidecar_points WHERE id = :id LIMIT 1')
                 || str_contains($normalized, 'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1')) {
                 $point = $this->findById('sidecar_points', (int) ($params['id'] ?? 0));
                 if ($point === null) {
@@ -118,6 +119,7 @@ namespace Leikwan\Master\Database {
                     'bond_listen_port' => $point['bond_listen_port'] ?? 0,
                     'mptcp_listen_port' => $point['mptcp_listen_port'] ?? 0,
                     'cf_listen_port' => $point['cf_listen_port'] ?? 0,
+                    'token_secret' => $point['token_secret'] ?? '',
                 ];
             }
 
@@ -212,6 +214,9 @@ namespace {
             'name' => 'szhk-ixp1',
             'sidecar_host' => '138.252.162.120',
             'listen_port' => 9000,
+            // The underlay now mints a signed pre-connect session token with the
+            // point's own secret, so a point carries one like production rows do.
+            'token_secret' => 'szhk-ixp1-point-secret',
             'agent_config_json' => json_encode([
                 'supports_mptcp' => true,
                 'wireguard_public_key' => 'sidecar-public-key',

@@ -213,13 +213,25 @@ PHP;
 
 file_put_contents($helperPath, $helperCode);
 
-$command = escapeshellarg(PHP_BINARY)
-    . ' -n'
-    . ' -d extension_dir=' . escapeshellarg($extDir)
-    . ' -d extension=pdo_sqlite'
-    . ' -d extension=sqlite3 '
-    . escapeshellarg($helperPath)
-    . ' ' . escapeshellarg($root);
+if (extension_loaded('pdo_sqlite')) {
+    // The running interpreter already has the driver (CI, or a php.ini that
+    // enables it). Reuse the same configuration instead of `-n`: on Linux
+    // builds PDO itself is a shared module, so `-n -d extension=pdo_sqlite`
+    // would start a child without the PDO class at all.
+    $loadedIni = php_ini_loaded_file();
+    $command = escapeshellarg(PHP_BINARY)
+        . ($loadedIni !== false ? ' -c ' . escapeshellarg($loadedIni) : '')
+        . ' ' . escapeshellarg($helperPath)
+        . ' ' . escapeshellarg($root);
+} else {
+    $command = escapeshellarg(PHP_BINARY)
+        . ' -n'
+        . ' -d extension_dir=' . escapeshellarg($extDir)
+        . ' -d extension=pdo_sqlite'
+        . ' -d extension=sqlite3 '
+        . escapeshellarg($helperPath)
+        . ' ' . escapeshellarg($root);
+}
 
 $output = [];
 $exitCode = 0;

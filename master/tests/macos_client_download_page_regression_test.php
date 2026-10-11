@@ -54,7 +54,9 @@ if (!is_int($start) || !is_int($end) || $end <= $start) {
     failMacDownloadPage('failed to isolate tenant clientsPage');
 }
 $clientsPage = substr($tenant, $start, $end - $start);
-foreach (['renderMacClientInstallSection()', '$macosInstallSection'] as $required) {
+// The GUI section from the shared helper is merged with the macOS no-GUI
+// (launchd) block into one card and rendered as $macosSection.
+foreach (['$macosGuiSectionRaw = $this->renderMacClientInstallSection();', '. $macosSection'] as $required) {
     if (!str_contains($clientsPage, $required)) {
         failMacDownloadPage('tenant download page missing ' . $required);
     }

@@ -29,7 +29,8 @@ function source(string $relativePath): string
     if (!is_string($source) || $source === '') {
         fail('failed to read ' . $relativePath);
     }
-    return $source;
+    // Line-ending agnostic: a CRLF checkout must not defeat the /m-anchored checks.
+    return str_replace("\r\n", "\n", $source);
 }
 
 $bootstrap = source('src/Bootstrap.php');

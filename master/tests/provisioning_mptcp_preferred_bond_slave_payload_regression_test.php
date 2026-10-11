@@ -28,7 +28,7 @@ namespace Leikwan\Master\Database {
                 $row = $this->findById('clients', (int) ($params['id'] ?? 0));
                 return $row === null ? null : ['agent_config_json' => $row['agent_config_json'] ?? null];
             }
-            if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port FROM sidecar_points WHERE id = :id LIMIT 1')) {
+            if (str_contains($normalized, 'SELECT agent_config_json, sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, token_secret FROM sidecar_points WHERE id = :id LIMIT 1')) {
                 return $this->findById('sidecar_points', (int) ($params['id'] ?? 0));
             }
             if (str_contains($normalized, 'SELECT sidecar_host, listen_port, bond_listen_port, mptcp_listen_port, cf_listen_port, agent_config_json FROM sidecar_points WHERE id = :id LIMIT 1')) {

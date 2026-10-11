@@ -104,6 +104,13 @@ namespace {
     //    only holds on the platform the panel runs (Linux); pin it there and
     //    state the limitation instead of pretending otherwise.
     $before = filemtime($sandbox . '/artifacts/ultra/one.bin');
+    // stat() exposes ctime at one-second resolution, so a rewrite in the same
+    // second as step 3 would leave (size, mtime, ctime) genuinely identical.
+    // Real publishes are never sub-second apart; step past the boundary so the
+    // assertion exercises the ctime key rather than racing the clock.
+    if (PHP_OS_FAMILY !== 'Windows') {
+        sleep(1);
+    }
     file_put_contents($sandbox . '/artifacts/ultra/one.bin', str_repeat('c', 2048));
     touch($sandbox . '/artifacts/ultra/one.bin', $before);
     clearstatcache();

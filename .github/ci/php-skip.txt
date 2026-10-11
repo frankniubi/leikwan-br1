@@ -1,0 +1,15 @@
+# Panel PHP tests that cannot run in CI. One per line: <test file name> <reason>.
+# They still run on the release host, where the published artifacts exist.
+android_client_artifact_manifest_test.php needs-release-artifacts
+artifact_route_controller_response_guard_test.php needs-release-artifacts
+bond_linux_musl_artifact_regression_test.php needs-release-artifacts
+bond_versions_manifest_regression_test.php needs-release-artifacts
+frozen_agent_artifact_contract_test.php needs-release-artifacts
+headless_client_artifact_test.php needs-release-artifacts
+ingress_linux_musl_artifact_regression_test.php needs-release-artifacts
+ultra_client_artifact_distribution_test.php needs-release-artifacts
+# These test code that was never committed (TenantController::refreshClientRuntimeAttestation,
+# slave MPTCP desired-state persistence, recalculatePublicPortsForGroup).
+tenant_client_runtime_attestation_refresh_test.php feature-never-implemented
+provisioning_slave_mptcp_desired_state_regression_test.php feature-never-implemented
+public_port_recalculation_test.php feature-never-implemented

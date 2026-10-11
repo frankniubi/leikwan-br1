@@ -10,7 +10,8 @@ foreach ([
     '.bridge-home-primary:hover',
     '.bridge-home-carrier-mark',
     '.bridge-home-page :is(a, button, select):focus-visible',
-    'transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease',
+    // Interactive controls animate lift + fill + edge together (Atlas redesign).
+    'transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease',
     '@media (prefers-reduced-motion: reduce)',
     '.bridge-home-title',
     '.bridge-home-title-zh',
