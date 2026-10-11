@@ -15,8 +15,8 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 39
-        versionName = "0.2.37"
+        versionCode = 41
+        versionName = "0.2.39"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
@@ -127,6 +127,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("org.robolectric:robolectric:4.12.2")
+    testImplementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.test:core-ktx:1.6.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 

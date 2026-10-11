@@ -401,7 +401,9 @@ class TunnelOrchestrator internal constructor(
                     val accepted = if (leases.size == 1) {
                         nativeLeaseSender(planned.controlSocketFile.absolutePath, leases.first())
                     } else {
-                        nativeLeaseBatchSender(planned.controlSocketFile.absolutePath, leases)
+                        ConnectProgress.selectingRoutes(leases.size) {
+                            nativeLeaseBatchSender(planned.controlSocketFile.absolutePath, leases)
+                        }
                     }
                     if (!accepted) {
                         throw Exception("Native lease was rejected by the local runtime")
@@ -593,7 +595,9 @@ class TunnelOrchestrator internal constructor(
                     val accepted = if (leases.size == 1) {
                         ultraLeaseSender(planned.controlSocketFile.absolutePath, policy, leases.first())
                     } else {
-                        ultraLeaseBatchSender(planned.controlSocketFile.absolutePath, policy, leases)
+                        ConnectProgress.selectingRoutes(leases.size) {
+                            ultraLeaseBatchSender(planned.controlSocketFile.absolutePath, policy, leases)
+                        }
                     }
                     if (!accepted) {
                         throw Exception("Ultra lease was rejected by the local runtime")
