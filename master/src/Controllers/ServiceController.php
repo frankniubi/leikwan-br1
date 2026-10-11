@@ -206,6 +206,7 @@ final class ServiceController extends BaseController
                  WHERE f.id = :id
                    AND f.enabled = 1
                    AND s.status = :active_status
+                   AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())
                  LIMIT 1',
                 ['id' => $forwardId, 'active_status' => 'active']
             );
@@ -228,6 +229,7 @@ final class ServiceController extends BaseController
                  WHERE f.id = :id
                    AND f.enabled = 1
                    AND s.status = :active_status
+                   AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())
                  LIMIT 1',
                 ['id' => $forwardId, 'active_status' => 'active']
             );
@@ -350,6 +352,7 @@ final class ServiceController extends BaseController
             'forward_version_conflict' => 412,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
             'operation_failed' => 500,
@@ -372,7 +375,10 @@ final class ServiceController extends BaseController
     /** @param array<string, mixed> $service */
     private function assertServiceActive(array $service): void
     {
-        if ((string) ($service['status'] ?? '') !== 'active') {
+        // Effective status: services.status is never written 'expired', so a raw
+        // check kept serving a service past expire_at. When expire_at is absent
+        // from the loaded row this behaves exactly as before.
+        if (\Leikwan\Master\Support\ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
     }

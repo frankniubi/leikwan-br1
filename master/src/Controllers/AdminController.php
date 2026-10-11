@@ -10,6 +10,7 @@ use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\AccessPolicyStore;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ExternalUoTDefaults;
+use Leikwan\Master\Support\ForwardTargetAllowlist;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\LeigodActivationGateContext;
 use Leikwan\Master\Support\LeigodNormalizationActivationContext;
@@ -3034,6 +3035,7 @@ final class AdminController extends BaseController
                   <div class="field" style="margin-top:14px;" data-non-ultra-field><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
                   ' . $donationSection . '
                   ' . $slavePickerSection . '
+                  <div class="field" style="margin-top:14px;"><label>Target allowlist (CIDR)</label><textarea name="allowed_target_cidrs" rows="6" placeholder="103.183.26.0/23&#10;163.53.52.0/22">' . $this->escape((string) ($editing['allowed_target_cidrs'] ?? '')) . '</textarea><p class="muted">One CIDR per line. When set, forwards on this combination must target an IP inside these networks (hostnames are refused). Leave empty for no restriction. Currently ' . ForwardTargetAllowlist::count($editing['allowed_target_cidrs'] ?? '') . ' entries.</p></div>
                   <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
                   <div class="card" style="margin-top:16px;">
                     <h3 style="margin-bottom:8px;">Tenant sees:</h3>

@@ -131,12 +131,25 @@
     "Forward Routes": "Forward Routes",
     "Actions": "Actions",
     "Reason": "Reason",
-    "Permanent device bans require administrator release.": "Permanent device bans require administrator release."
+    "Permanent device bans require administrator release.": "Permanent device bans require administrator release.",
+    "API token": "API token",
+    "Use this token as": "Use this token as",
+    "when calling the Forward Lines API. It is not the Agent Token shown on the Clients page.": "when calling the Forward Lines API. It is not the Agent Token shown on the Clients page.",
+    "Show API token": "Show API token",
+    "Copy API token": "Copy API token",
+    "No API token yet.": "No API token yet.",
+    "Reset API token": "Reset API token",
+    "Generate API token": "Generate API token",
+    "Read the API guide": "Read the API guide",
+    "API token reset. Update your programs with the new token.": "API token reset. Update your programs with the new token.",
+    "Unable to reset the API token.": "Unable to reset the API token.",
+    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:"
   },
   "attributes": {
     "UUID, IP, CIDR, province, city, or country": "UUID, IP, CIDR, province, city, or country",
     "Confirm kicking all application devices": "Confirm kicking all application devices",
     "Confirm kicking this client": "Confirm kicking this client",
-    "Confirm banning this device": "Confirm banning this device"
+    "Confirm banning this device": "Confirm banning this device",
+    "Reset the API token? Programs using the old token stop working immediately.": "Reset the API token? Programs using the old token stop working immediately."
   }
 }

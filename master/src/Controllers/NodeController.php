@@ -51,6 +51,13 @@ final class NodeController extends BaseController
 
         $groupKey = (string) ($request->input('group_key', 'default'));
         $credentialProfileId = (int) $request->input('credential_profile_id', 0);
+        // Security: a user-enrolled (BYOS) node may never bind an operator-owned
+        // credential profile. Those profiles carry provider secrets (e.g. the
+        // Cloudflare Global API key) that are merged into task payloads on pull.
+        // Only platform enrollment (the global token) may select one.
+        if ($byosToken !== null) {
+            $credentialProfileId = 0;
+        }
         $credentialProfile = null;
         if ($credentialProfileId > 0) {
             $credentialProfile = $this->db->fetchOne('SELECT * FROM credential_profiles WHERE id = :id LIMIT 1', ['id' => $credentialProfileId]);
@@ -940,13 +947,20 @@ final class NodeController extends BaseController
      */
     private function findDuplicateNodes(array $currentNode): array
     {
+        // Security: a node may only ever see (and later delete) duplicates that
+        // share its ownership boundary. Without this a user-enrolled (BYOS) node
+        // could match a platform node by spoofing the name/public IP visible in
+        // client configs and then hijack its endpoints via deduplicate().
+        // `<=>` is NULL-safe so platform nodes (owner_service_id IS NULL) only
+        // match other platform nodes.
         $candidates = $this->db->fetchAll(
             'SELECT n.*, g.group_key, g.name AS group_name
              FROM nodes n
              LEFT JOIN node_groups g ON g.id = n.group_id
              WHERE n.id <> :id
+               AND n.owner_service_id <=> :owner_service_id
              ORDER BY n.updated_at DESC, n.id DESC',
-            ['id' => $currentNode['id']]
+            ['id' => $currentNode['id'], 'owner_service_id' => $currentNode['owner_service_id'] ?? null]
         );
 
         $duplicates = [];
@@ -985,10 +999,19 @@ final class NodeController extends BaseController
             && (int) ($candidate['group_id'] ?? 0) > 0
             && (int) $currentNode['group_id'] === (int) $candidate['group_id'];
 
-        $signals = [];
-        if ($currentMachineId !== '' && $candidateMachineId !== '' && hash_equals($currentMachineId, $candidateMachineId)) {
-            $signals[] = 'machine_id';
+        // Security: deletion eligibility REQUIRES a hardware machine_id match.
+        // name/public_ip/private_ip are all attacker-controllable (public IPs
+        // ship in client configs, private IPs are guessable), so on their own
+        // they must never make a node eligible for deduplicate() deletion. A
+        // genuine re-registration of the same box keeps the same machine_id.
+        $machineIdMatch = $currentMachineId !== ''
+            && $candidateMachineId !== ''
+            && hash_equals($currentMachineId, $candidateMachineId);
+        if (!$machineIdMatch) {
+            return [];
         }
+
+        $signals = ['machine_id'];
 
         $samePublicIp = $currentPublicIp !== '' && $candidatePublicIp !== '' && hash_equals($currentPublicIp, $candidatePublicIp);
         $samePrivateIp = $currentPrivateIp !== '' && $candidatePrivateIp !== '' && hash_equals($currentPrivateIp, $candidatePrivateIp);

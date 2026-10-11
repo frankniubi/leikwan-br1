@@ -1148,6 +1148,17 @@ final class DeviceControlService
         return $deviceId;
     }
 
+    /**
+     * True when the device id is in the attested-Android namespace. Such a
+     * device must always pass requireActive(): its session cannot be skipped by
+     * omitting the X-Device-Platform header. Format-only (no DB hit) so it is
+     * cheap to call on every request.
+     */
+    public function isManagedDeviceId(string $deviceId): bool
+    {
+        return preg_match('/^android-client-[1-9][0-9]*-[a-f0-9]{32}$/', trim($deviceId)) === 1;
+    }
+
     private function decodeRenewalField(string $value): string
     {
         $value = trim($value);

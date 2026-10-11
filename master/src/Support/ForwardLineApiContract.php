@@ -108,9 +108,13 @@ final class ForwardLineApiContract
     public static function mergePatch(array $current, array $changes): array
     {
         $currentSource = (string) ($current['target_source'] ?? 'manual');
+        // The stored column is `native_outbound_enabled`; reading the wrong key
+        // made every existing native forward look non-native, so a patch could
+        // silently rewrite its target and the documented
+        // forbidden_for_native_outbound guard never fired.
         $native = array_key_exists('native_outbound', $changes)
             ? self::boolean($changes['native_outbound'], 'native_outbound')
-            : !empty($current['native_outbound']);
+            : !empty($current['native_outbound_enabled'] ?? $current['native_outbound'] ?? false);
         if ($native) {
             if (array_key_exists('target', $changes)
                 || array_key_exists('target_host', $changes)
@@ -242,12 +246,29 @@ final class ForwardLineApiContract
 
         if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
             || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            // Security (SSRF): a non-native forward target is dialed by our
+            // slave/sidecar/relay, not by the user's own device. Loopback,
+            // link-local (incl. 169.254.169.254 cloud metadata), unspecified and
+            // other reserved ranges would turn our infrastructure into an open
+            // proxy into internal networks, so they are rejected here. RFC1918
+            // private ranges stay allowed for genuine tenant-owned backends.
+            // (DNS names resolve on the node; authoritative resolution-time
+            // filtering still belongs on the data-plane agents.)
+            if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE) === false) {
+                self::invalid(['target.host' => 'reserved_range']);
+            }
             return $host;
         }
 
         $label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
         if (preg_match('/\A(?=.{1,253}\z)' . $label . '(?:\.' . $label . ')*\z/D', $host) !== 1) {
             self::invalid(['target.host' => 'invalid']);
+        }
+
+        // Defense-in-depth against the obvious loopback hostnames.
+        $lower = strtolower($host);
+        if ($lower === 'localhost' || str_ends_with($lower, '.localhost')) {
+            self::invalid(['target.host' => 'reserved_range']);
         }
 
         return $host;
@@ -288,6 +309,13 @@ final class ForwardLineApiContract
             $transport = 'tcp';
         }
 
+        // Only report an ingress endpoint when the row actually carries public
+        // ingress columns. Never fall back to cdn_host: that leaked the internal
+        // CDN host the contract promises not to expose, and the old port fallback
+        // always rendered a meaningless 0.
+        $ingressHost = trim((string) ($forward['ingress_host'] ?? $forward['public_host'] ?? ''));
+        $ingressPort = (int) ($forward['ingress_port'] ?? $forward['public_port'] ?? 0);
+
         return [
             'id' => (int) ($forward['id'] ?? 0),
             'service_id' => (int) ($forward['service_id'] ?? 0),
@@ -308,8 +336,8 @@ final class ForwardLineApiContract
                 'service_id' => isset($forward['target_service_id']) ? (int) $forward['target_service_id'] : null,
             ],
             'ingress' => [
-                'host' => (string) ($forward['ingress_host'] ?? $forward['public_host'] ?? $forward['cdn_host'] ?? ''),
-                'port' => (int) ($forward['ingress_port'] ?? $forward['public_port'] ?? 0),
+                'host' => $ingressHost !== '' ? $ingressHost : null,
+                'port' => $ingressPort > 0 ? $ingressPort : null,
             ],
             'state' => !empty($forward['enabled']) ? 'active' : 'deleted',
             'endpoint_count' => $endpointCount,

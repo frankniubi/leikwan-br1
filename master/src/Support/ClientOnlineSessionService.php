@@ -310,6 +310,15 @@ final class ClientOnlineSessionService
             if ($candidate === '') {
                 continue;
             }
+            // Security: `legacy-` is the server's reserved namespace for
+            // synthesized device ids, which are exempt from the online-device
+            // limit. A client must not be able to self-assign into it (e.g.
+            // `X-Device-Id: legacy-<random>`) to mint unlimited exempt devices.
+            // Ignore such values and fall through to the server-derived id,
+            // which is bounded to the caller's UA+IP.
+            if (str_starts_with(strtolower($candidate), self::LEGACY_DEVICE_PREFIX)) {
+                continue;
+            }
             if ($deviceId !== '' && !hash_equals($deviceId, $candidate)) {
                 throw new ApiException('device_id_invalid', 422);
             }

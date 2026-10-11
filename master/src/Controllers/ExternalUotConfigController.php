@@ -412,8 +412,14 @@ final class ExternalUotConfigController extends BaseController
      */
     private function resolvePoint(string $agentToken): ?array
     {
+        // Security: this endpoint returns the fleet-wide external-UoT config —
+        // every matching combination's external_uot_token and the tenant target
+        // bound to it. Only operator/platform sidecar points (owner_user_id IS
+        // NULL) may authenticate here. Without this a tenant could create a
+        // sidecar point whose sidecar_host equals the operator external-UoT host
+        // and harvest other tenants' tokens and backend targets.
         $point = $this->db->fetchOne(
-            'SELECT id, name, sidecar_host, agent_token, is_active, last_status FROM sidecar_points WHERE agent_token = ? LIMIT 1',
+            'SELECT id, name, sidecar_host, agent_token, is_active, last_status FROM sidecar_points WHERE agent_token = ? AND owner_user_id IS NULL LIMIT 1',
             [$agentToken]
         );
         if (!is_array($point) || !hash_equals((string) ($point['agent_token'] ?? ''), $agentToken)) {

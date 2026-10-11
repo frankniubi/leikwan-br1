@@ -1,0 +1,222 @@
+<h2>這篇文件適合誰</h2>
+<p>如果你想用自己的程式或腳本管理轉發規則——批次建立、依需要切換線路、接入你自己的系統——就使用專線 API。日常手動操作直接在控制台完成即可，不需要 API。</p>
+<p>API 只管理「轉發規則」本身：使用哪條線路、本機監聽哪個連接埠、轉發到哪個目標。節點、線路組合、通道憑證由平台負責，不會出現在 API 裡。實際連線仍由 LeiKwan 用戶端取得設定後建立。</p>
+
+<h2>認證</h2>
+<pre>Authorization: Bearer &lt;你的 API 令牌&gt;</pre>
+<ul>
+  <li>只接受請求標頭裡的 Bearer 令牌，不接受寫在網址裡的令牌。</li>
+  <li>API 令牌在控制台「帳戶安全 → API 令牌」中查看，也可以在那裡重設；重設後舊令牌立即失效。請像密碼一樣保管，不要印到日誌裡。</li>
+  <li>API 令牌不是「用戶端」頁面上的用戶端令牌（Agent Token）。用用戶端令牌呼叫 API 會回傳 <code>401 user_auth_failed</code>。</li>
+  <li>令牌無效或帳號已停用時，一律回傳 <code>401 user_auth_failed</code>。</li>
+</ul>
+
+<h2>通用規則</h2>
+<table>
+  <thead><tr><th>項目</th><th>規則</th></tr></thead>
+  <tbody>
+    <tr><td>位址</td><td><code>https://v3.leikwanhost.com</code></td></tr>
+    <tr><td>格式</td><td>請求與回應都是 JSON（UTF-8）</td></tr>
+    <tr><td>寫入請求</td><td>必須帶 <code>Content-Type: application/json</code>，否則回傳 <code>415</code>；請求內容不超過 16 KiB，否則回傳 <code>413</code></td></tr>
+    <tr><td>資料型別</td><td>連接埠與 ID 必須是 JSON 數字，不能寫成字串</td></tr>
+    <tr><td>多餘欄位</td><td>出現文件以外的欄位時回傳 <code>422 unknown_fields</code></td></tr>
+    <tr><td>版本號</td><td>單條轉發的回應帶 <code>ETag</code>，例如 <code>"forward-123-r3"</code>；修改與刪除必須用 <code>If-Match</code> 帶上它</td></tr>
+    <tr><td>防重複建立</td><td>建立時必須帶 <code>Idempotency-Key</code>，8–64 個字元，只能使用英文字母、數字與 <code>. _ : -</code></td></tr>
+  </tbody>
+</table>
+
+<h2>介面一覽</h2>
+<table>
+  <thead><tr><th>方法</th><th>路徑</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服務ID}/forward-options</code></td><td>查詢可用線路、傳輸方式與額度</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服務ID}/forwards</code></td><td>列出該服務下生效中的轉發</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/v1/user/services/{服務ID}/forwards</code></td><td>建立轉發</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/forwards/{轉發ID}</code></td><td>查看單條轉發與它的 ETag</td></tr>
+    <tr><td><code>PATCH</code></td><td><code>/api/v1/user/forwards/{轉發ID}</code></td><td>修改轉發</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/api/v1/user/forwards/{轉發ID}</code></td><td>刪除轉發</td></tr>
+  </tbody>
+</table>
+<p>服務 ID 可以在控制台「服務」頁面看到。路徑裡的 ID 寫錯、不屬於你、或轉發已刪除，一律回傳 <code>404</code>，不區分具體原因。</p>
+
+<h2>第一步：查詢可用線路</h2>
+<pre>GET /api/v1/user/services/42/forward-options</pre>
+<pre>{
+  "ok": true,
+  "transports": ["tcp", "udp", "tcp+udp"],
+  "forward_limit": 64,
+  "active_forward_count": 2,
+  "capabilities": {
+    "allow_manage_forwards": true,
+    "allow_delete_forwards": true
+  },
+  "routes": [
+    {
+      "id": 14,
+      "label": "滬日專線",
+      "description": "上海 → 東京",
+      "badge": "stable",
+      "transports": {
+        "tcp":     {"available": true,  "healthy_node_count": 2, "unavailable_reason": null},
+        "udp":     {"available": false, "healthy_node_count": 0, "unavailable_reason": "no_healthy_nodes"},
+        "tcp+udp": {"available": true,  "healthy_node_count": 2, "unavailable_reason": null}
+      }
+    }
+  ]
+}</pre>
+<ul>
+  <li><code>routes</code> 只包含你的套餐可以使用的線路，建立轉發時使用其中的 <code>id</code>。</li>
+  <li><code>forward_limit</code> 是該服務最多可同時生效的轉發條數，<code>active_forward_count</code> 是目前已使用的條數。</li>
+  <li><code>unavailable_reason</code> 可能是 <code>route_unavailable</code>、<code>no_healthy_nodes</code>、<code>transport_unavailable</code> 或 <code>not_configured</code>。</li>
+</ul>
+
+<h2>建立轉發</h2>
+<pre>POST /api/v1/user/services/42/forwards
+Authorization: Bearer &lt;你的 API 令牌&gt;
+Content-Type: application/json
+Idempotency-Key: create-fwd-20261007-01
+
+{
+  "route_id": 14,
+  "listen_port": null,
+  "transport": "tcp",
+  "target": {"source": "manual", "host": "203.0.113.10", "port": 443}
+}</pre>
+<table>
+  <thead><tr><th>欄位</th><th>必填</th><th>說明</th></tr></thead>
+  <tbody>
+    <tr><td><code>route_id</code></td><td>是</td><td>第一步查到的線路 ID</td></tr>
+    <tr><td><code>listen_port</code></td><td>是</td><td>用戶端裝置上的本機監聽連接埠，1–65535；填 <code>null</code> 自動分配</td></tr>
+    <tr><td><code>transport</code></td><td>是</td><td><code>tcp</code>、<code>udp</code> 或 <code>tcp+udp</code></td></tr>
+    <tr><td><code>target</code></td><td>是</td><td>轉發目標，見下方說明（Native Outbound 轉發除外）</td></tr>
+    <tr><td><code>native_outbound</code></td><td>否</td><td>預設 <code>false</code>，見「Native Outbound」一節</td></tr>
+  </tbody>
+</table>
+<h3>轉發目標</h3>
+<ul>
+  <li><strong>手動填寫</strong>：<code>{"source": "manual", "host": "…", "port": 443}</code>。<code>host</code> 可以是 IPv4、IPv6 或網域名稱，最長 253 個字元，不能帶 <code>http://</code>、路徑或空白。</li>
+  <li><strong>指向你的另一個服務</strong>：<code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>。<code>service_id</code> 必須是你名下的服務，此時不要填 <code>host</code>。</li>
+</ul>
+<blockquote><p><strong>以下目標位址會被拒絕。</strong>轉發目標由平台節點去連線，所以本機位址、鏈路本地位址與雲端中繼資料位址都不允許：<code>127.0.0.0/8</code>、<code>::1</code>、<code>169.254.0.0/16</code>（含 <code>169.254.169.254</code>）、<code>0.0.0.0</code>、<code>localhost</code>。此時回傳 <code>422</code>，<code>fields</code> 裡是 <code>"target.host": "reserved_range"</code>。內網位址 <code>10.x</code>、<code>172.16–31.x</code>、<code>192.168.x</code> 可以正常使用。</p></blockquote>
+<h3>curl 範例</h3>
+<pre>curl -sS -X POST "https://v3.leikwanhost.com/api/v1/user/services/42/forwards" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: create-fwd-20261007-01" \
+  -H "Content-Type: application/json" \
+  -d '{"route_id":14,"listen_port":null,"transport":"tcp","target":{"source":"manual","host":"203.0.113.10","port":443}}'</pre>
+<p>建立成功回傳 <code>201</code>，回應標頭裡有 <code>Location</code> 與 <code>ETag</code>，回應內容是 <code>{"ok": true, "forward": {…}}</code>。</p>
+
+<h2>查看轉發</h2>
+<pre>GET /api/v1/user/services/42/forwards
+GET /api/v1/user/forwards/123</pre>
+<p>列表只回傳生效中的轉發，而且<strong>不帶 ETag</strong>。要修改或刪除某條轉發，請先查看它的詳情取得 ETag。單條轉發的格式如下：</p>
+<pre>{
+  "id": 123,
+  "service_id": 42,
+  "route": {"id": 14, "label": "滬日專線"},
+  "listen_port": 11024,
+  "transport": "tcp",
+  "native_outbound": false,
+  "native_direction": null,
+  "target": {"source": "manual", "host": "203.0.113.10", "port": 443, "service_id": null},
+  "ingress": {"host": null, "port": null},
+  "state": "active",
+  "endpoint_count": 1,
+  "active_endpoint_count": 1,
+  "revision": 3,
+  "created_at": "2026-10-07 03:00:00",
+  "updated_at": "2026-10-07 03:05:00"
+}</pre>
+<ul>
+  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。</li>
+  <li><code>ingress</code> 是保留欄位，目前固定為 <code>null</code>，請不要依賴它。連線資訊由用戶端自動取得。</li>
+</ul>
+
+<h2>修改轉發</h2>
+<pre>PATCH /api/v1/user/forwards/123
+Authorization: Bearer &lt;你的 API 令牌&gt;
+Content-Type: application/json
+If-Match: "forward-123-r3"
+
+{
+  "transport": "tcp+udp",
+  "target": {"source": "manual", "host": "backend.example.com", "port": 8443}
+}</pre>
+<ul>
+  <li>可以修改 <code>route_id</code>、<code>listen_port</code>、<code>transport</code>、<code>target</code>（可以只改其中一部分），以及關閉 <code>native_outbound</code>。至少要帶一個欄位。</li>
+  <li>修改成功後回傳新的轉發與新的 ETag。</li>
+  <li>換線路、換傳輸方式、改目標類型、或把 <code>listen_port</code> 改成 <code>null</code> 重新分配時，平台會重新安排節點。若線路暫時不可用，回傳 <code>409 route_unavailable</code>，原本的轉發保持不變。</li>
+  <li>從手動目標改成指向服務（或反過來）時，要在同一次請求裡帶齊 <code>source</code> 與 <code>service_id</code>（或 <code>host</code>）。</li>
+  <li>每次修改都會重建這條轉發的連線，請不要高頻呼叫。</li>
+</ul>
+
+<h2>刪除轉發</h2>
+<pre>DELETE /api/v1/user/forwards/123
+Authorization: Bearer &lt;你的 API 令牌&gt;
+If-Match: "forward-123-r4"</pre>
+<ul>
+  <li>刪除成功回傳 <code>204</code>，沒有回應內容。ETag 不一致時不會刪除任何東西。</li>
+  <li>每個服務最多保留 512 條已刪除紀錄，超過後無法再建立轉發（回傳 <code>409 forward_storage_quota_exceeded</code>），需要聯絡客服清理。請不要反覆建立再刪除。</li>
+</ul>
+
+<h2>Native Outbound（裝置端出站）</h2>
+<p>Native Outbound 轉發由你的裝置直接出站，而不是經過平台入口。建立時不需要填 <code>target</code>：</p>
+<pre>{"route_id": 14, "listen_port": null, "transport": "tcp+udp", "native_outbound": true}</pre>
+<table>
+  <thead><tr><th>條件</th><th>不符合時回傳</th></tr></thead>
+  <tbody>
+    <tr><td>線路支援 Native Outbound，而且 <code>transport</code> 是 <code>tcp+udp</code></td><td><code>422 native_outbound_requires_ultra_tcp_udp</code></td></tr>
+    <tr><td>你的套餐開啟了 Native Outbound</td><td><code>403 native_outbound_not_allowed</code></td></tr>
+    <tr><td>線路設定了方向</td><td><code>422 native_outbound_direction_missing</code></td></tr>
+    <tr><td>同一個服務裡，這個方向還沒有其他 Native Outbound 轉發</td><td><code>409 native_direction_conflict</code></td></tr>
+  </tbody>
+</table>
+<p>要關閉 Native Outbound，用 PATCH 送出 <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>。要把一般轉發改成 Native Outbound，請新建一條，或在控制台裡修改。</p>
+
+<h2>逾時重試與並行</h2>
+<ul>
+  <li>查詢類請求可以隨意重試。</li>
+  <li>建立請求逾時沒收到結果時，用<strong>同一個</strong> <code>Idempotency-Key</code> 與<strong>完全相同</strong>的內容重試，會回傳原本那條轉發（<code>200</code>），不會重複建立。</li>
+  <li>同一個 <code>Idempotency-Key</code> 送出不同內容，回傳 <code>409 idempotency_conflict</code>；原本那條已被刪除，回傳 <code>409 idempotency_resource_inactive</code>。</li>
+  <li>修改或刪除收到 <code>412 forward_version_conflict</code>，代表轉發已被改過：重新查看詳情，確認後用新的 ETag 再操作。</li>
+  <li>同時送出多個建立請求也不會超出 <code>forward_limit</code>。</li>
+</ul>
+
+<h2>錯誤碼</h2>
+<p>出錯時一律回傳：</p>
+<pre>{
+  "ok": false,
+  "error": {
+    "code": "validation_failed",
+    "message": "The forward request is invalid.",
+    "fields": {"target.port": "out_of_range"}
+  }
+}</pre>
+<p><code>validation_failed</code> 的 <code>fields</code> 是「欄位 → 原因」的物件；<code>unknown_fields</code> 的 <code>fields</code> 是多餘欄位名稱的清單，例如 <code>["target.foo"]</code>。</p>
+<table>
+  <thead><tr><th>HTTP</th><th>錯誤碼</th><th>含義</th></tr></thead>
+  <tbody>
+    <tr><td>401</td><td><code>user_auth_failed</code></td><td>令牌無效或帳號已停用</td></tr>
+    <tr><td>403</td><td><code>feature_denied_manage_forwards</code>、<code>feature_denied_delete_forwards</code></td><td>套餐不允許這個操作</td></tr>
+    <tr><td>403</td><td><code>native_outbound_not_allowed</code></td><td>套餐未開啟 Native Outbound</td></tr>
+    <tr><td>404</td><td><code>service_not_found</code>、<code>forward_not_found</code></td><td>不存在、不屬於你或已刪除</td></tr>
+    <tr><td>409</td><td><code>service_inactive</code></td><td>服務已停用或已到期</td></tr>
+    <tr><td>409</td><td><code>forward_quota_exceeded</code></td><td>生效轉發數已達上限</td></tr>
+    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>已刪除紀錄達到上限</td></tr>
+    <tr><td>409</td><td><code>idempotency_conflict</code>、<code>idempotency_resource_inactive</code></td><td>見「逾時重試與並行」</td></tr>
+    <tr><td>409</td><td><code>route_unavailable</code></td><td>線路目前不可用</td></tr>
+    <tr><td>409</td><td><code>native_direction_conflict</code></td><td>該方向已有 Native Outbound 轉發</td></tr>
+    <tr><td>412</td><td><code>forward_version_conflict</code></td><td>If-Match 與目前版本不一致</td></tr>
+    <tr><td>413</td><td><code>request_too_large</code></td><td>請求內容超過 16 KiB</td></tr>
+    <tr><td>415</td><td><code>unsupported_media_type</code></td><td>不是 <code>application/json</code></td></tr>
+    <tr><td>422</td><td><code>validation_failed</code>、<code>unknown_fields</code></td><td>欄位不合法，或有多餘欄位</td></tr>
+    <tr><td>422</td><td><code>idempotency_key_invalid</code></td><td>Idempotency-Key 格式不對</td></tr>
+    <tr><td>422</td><td><code>forward_route_not_allowed</code>、<code>forward_route_has_no_enabled_combination</code></td><td>線路不在你的套餐內，或線路暫未開放</td></tr>
+    <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>、<code>native_outbound_direction_missing</code></td><td>線路不支援 Native Outbound</td></tr>
+    <tr><td>428</td><td><code>idempotency_key_required</code>、<code>precondition_required</code></td><td>缺少 Idempotency-Key 或 If-Match</td></tr>
+    <tr><td>500</td><td><code>operation_failed</code></td><td>平台內部錯誤，請稍後重試或聯絡客服</td></tr>
+  </tbody>
+</table>
+
+<h2>舊版介面</h2>
+<p><code>/api/user/…</code> 開頭的舊介面仍可使用，但已停止更新，也沒有 ETag 與防重複建立保護。新的整合請只使用本文的 v1 介面。</p>

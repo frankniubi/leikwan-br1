@@ -1861,7 +1861,7 @@
     "Next self-change": "下次可自助修改",
     "Reset pending": "等待重置",
     "Copy Client ID": "复制客户端 ID",
-    "Copy Agent Token": "复制令牌",
+    "Copy Agent Token": "复制客户端令牌",
     "Download APK": "下载 APK",
     "Default Client": "默认客户端",
     "Copy": "复制",
@@ -1939,7 +1939,19 @@
     "Create SSL Certificate": "新建 SSL 证书",
     "Error:": "错误：",
     "Status:": "状态：",
-    "Last Run:": "最近运行："
+    "Last Run:": "最近运行：",
+    "API token": "API 令牌",
+    "Use this token as": "调用专线 API 时，请用",
+    "when calling the Forward Lines API. It is not the Agent Token shown on the Clients page.": "携带此令牌。它和「客户端」页面上的客户端令牌不是同一个。",
+    "Show API token": "显示 API 令牌",
+    "Copy API token": "复制 API 令牌",
+    "No API token yet.": "还没有 API 令牌。",
+    "Reset API token": "重置 API 令牌",
+    "Generate API token": "生成 API 令牌",
+    "Read the API guide": "查看 API 文档",
+    "API token reset. Update your programs with the new token.": "API 令牌已重置，请在你的程序里换成新令牌。",
+    "Unable to reset the API token.": "API 令牌重置失败。",
+    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "客户端令牌只给客户端软件用。调用专线 API 请使用单独的 API 令牌："
   },
   "attributes": {
     "Label": "标签",
@@ -2014,6 +2026,7 @@
     "Confirm kicking this client": "确定让这台设备下线吗？",
     "Confirm banning this device": "确定封禁这台设备吗？",
     "Language": "语言",
-    "Page views": "页面视图"
+    "Page views": "页面视图",
+    "Reset the API token? Programs using the old token stop working immediately.": "确定重置 API 令牌吗？使用旧令牌的程序会立即失效。"
   }
 }

@@ -1085,6 +1085,7 @@ final class TenantController extends BaseController
             . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
             . '<select id="main-province" name="province" required>' . $options . '</select></div>'
             . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
+            . $this->renderApiTokenCard(trim((string) ($user['api_token'] ?? '')), $csrf)
             . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
             . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
             . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
@@ -1094,6 +1095,53 @@ final class TenantController extends BaseController
             . $deviceRows . '</tbody></table></div></section>';
 
         return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    private function renderApiTokenCard(string $apiToken, string $csrf): string
+    {
+        // users.api_token authenticates the Forward Lines API. It is a separate
+        // credential from the client Agent Token, which tenants kept pasting
+        // into API calls because nothing else on the console showed a token.
+        $tokenBlock = $apiToken !== ''
+            ? '<details><summary>Show API token</summary><code>' . $this->escape($apiToken) . '</code></details>'
+                . '<div class="actions">' . $this->renderCopyButton('Copy API token', $apiToken) . '</div>'
+            : '<p class="muted">No API token yet.</p>';
+        $resetLabel = $apiToken !== '' ? 'Reset API token' : 'Generate API token';
+
+        return '<section class="card"><h3>API token</h3>'
+            . '<p class="muted">Use this token as <code>Authorization: Bearer</code> when calling the Forward Lines API. '
+            . 'It is not the Agent Token shown on the Clients page.</p>'
+            . $tokenBlock
+            . '<div class="actions">'
+            . '<form class="inline" method="post" action="/tenant/security/api-token/reset" data-confirm="Reset the API token? Programs using the old token stop working immediately." onsubmit="return confirm(this.dataset.confirm);">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<button class="button danger" type="submit">' . $resetLabel . '</button></form>'
+            . '<a class="button ghost" href="/knowledgebase?thread=forward-lines-api">Read the API guide</a>'
+            . '</div></section>';
+    }
+
+    public function resetApiToken(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->db->execute(
+                'UPDATE users SET api_token = :token, updated_at = :updated_at WHERE id = :id',
+                [
+                    'token' => bin2hex(random_bytes(24)),
+                    'updated_at' => gmdate('Y-m-d H:i:s'),
+                    'id' => (int) $user['id'],
+                ]
+            );
+            SessionAuth::flash('success', 'API token reset. Update your programs with the new token.');
+        } catch (\Throwable) {
+            SessionAuth::flash('error', 'Unable to reset the API token.');
+        }
+        return Response::redirect('/tenant/security');
     }
 
     public function changeMainProvince(Request $request, array $params): Response
@@ -1286,6 +1334,7 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCopyButton('Copy Client ID', (string) $clientId) . '</div></div>'
             . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
             . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
+            . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Agent Token is only for the client app. The Forward Lines API uses a separate API token: <a href="/tenant/security">Account Security</a></p>'
             . '</section>'
             . '<form method="post" action="/tenant/clients/android-enrollment-code">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
@@ -1711,6 +1760,10 @@ final class TenantController extends BaseController
 
             $payload = $request->body();
             $payload['owner_user_id'] = (int) $user['id'];
+            // Security: a tenant must not choose its own sidecar agent_token
+            // (predictable/colliding tokens, or impersonation). The service
+            // generates one on create and keeps the existing one on edit.
+            unset($payload['agent_token']);
             $this->provisioning->saveSidecarPoint($payload);
             SessionAuth::flash('success', 'Transport endpoint saved.');
         } catch (\Throwable $throwable) {
@@ -2520,7 +2573,27 @@ final class TenantController extends BaseController
 
             $currentClientProfiles = count($this->provisioning->listClientsForUser((int) $user['id']));
             $maxClientProfiles = $this->provisioning->maxClientProfilesForTenantOwnedClients((int) $user['id']);
-            $isCreate = (int) $request->input('id', 0) <= 0;
+            $clientId = (int) $request->input('id', 0);
+            $isCreate = $clientId <= 0;
+
+            // Security: a tenant may only edit a client it owns. saveClient()
+            // loads/updates purely by id, so without this an attacker could POST
+            // id=<victim client> and take the client (and its bound forwards)
+            // over by resetting owner_user_id to themselves.
+            if (!$isCreate) {
+                $ownedClient = $this->db->fetchOne(
+                    'SELECT id FROM clients WHERE id = :id AND owner_user_id = :user_id LIMIT 1',
+                    ['id' => $clientId, 'user_id' => $user['id']]
+                );
+                if ($ownedClient === null) {
+                    throw new ApiException('client_not_found', 404);
+                }
+            }
+
+            // Security: the online device limit is a billed entitlement. It is
+            // clamped to the owner's plan default, never taken raw from the form.
+            $planDeviceLimit = $this->provisioning->defaultClientOnlineDeviceLimitForTenant((int) $user['id']);
+            $deviceLimit = min(max(1, (int) $request->input('online_device_limit', 1)), $planDeviceLimit);
 
             if ($isCreate) {
                 if ($currentClientProfiles >= $maxClientProfiles) {
@@ -2558,7 +2631,7 @@ final class TenantController extends BaseController
                 'nic_name' => $request->input('nic_name'),
                 'port_range_start' => $request->input('port_range_start'),
                 'port_range_end' => $request->input('port_range_end'),
-                'online_device_limit' => $request->input('online_device_limit', 1),
+                'online_device_limit' => $deviceLimit,
                 'traffic_multiplier' => $request->input('traffic_multiplier', '1.00'),
                 'default_endpoint_mode' => $request->input('default_endpoint_mode', 'slave_group'),
                 'default_node_group_key' => $request->input('default_node_group_key'),
@@ -3527,6 +3600,7 @@ final class TenantController extends BaseController
                 'feature_denied_manage_forwards', 'feature_denied_delete_forwards' => 'Your plan or account does not allow this forward operation.',
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
+                'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
                 default => 'The forward operation could not be completed.',
             };

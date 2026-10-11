@@ -169,6 +169,10 @@ final class ForwardLineApiController extends BaseController
             $structural = array_key_exists('forward_route_id', $changes)
                 || array_key_exists('target_source', $changes)
                 || array_key_exists('target_service_id', $changes)
+                // Toggling native outbound rewrites the target and placement, so
+                // it must take the structural (saveForward) path rather than the
+                // narrow non-structural update that ignores native_outbound.
+                || array_key_exists('native_outbound', $changes)
                 || (array_key_exists('transport_mode', $changes)
                     && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
                 || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
@@ -236,7 +240,9 @@ final class ForwardLineApiController extends BaseController
     /** @param array<string, mixed> $service */
     private function assertServiceMutationAllowed(array $service, bool $delete): void
     {
-        if ((string) ($service['status'] ?? '') !== 'active') {
+        // Use the effective status: services.status is never written 'expired',
+        // so a raw check let a service past expire_at keep managing forwards.
+        if (\Leikwan\Master\Support\ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
         $features = $this->effectiveFeatures($service);
@@ -436,6 +442,21 @@ final class ForwardLineApiController extends BaseController
             'target_service_not_found' => 'validation_failed',
             'target_service_not_allowed' => 'validation_failed',
             'target_service_ip_missing' => 'validation_failed',
+            // Internal placement/combination constraints resolved server-side.
+            // Map to stable public codes so tenants get a 409/422 instead of an
+            // opaque 500, without leaking internal node/sidecar topology names.
+            'forward_combination_not_found' => 'route_unavailable',
+            'forward_combination_not_allowed' => 'route_unavailable',
+            'node_group_not_allowed' => 'forward_route_not_allowed',
+            'line_client_required' => 'route_unavailable',
+            'line_client_not_allowed' => 'route_unavailable',
+            'line_client_group_not_allowed' => 'route_unavailable',
+            'ultra_reprovision_unavailable' => 'route_unavailable',
+            'shared_sidecar_public_port_forbidden' => 'route_unavailable',
+            'sidecar_must_be_overseas_for_aggregation' => 'route_unavailable',
+            'invalid_forward_combination_client_mode' => 'route_unavailable',
+            'endpoint_mode_not_supported_yet' => 'route_unavailable',
+            'native_target_port_unavailable' => 'route_unavailable',
         ];
         $code = $aliases[$internalCode] ?? $internalCode;
         $statuses = [
@@ -456,10 +477,17 @@ final class ForwardLineApiController extends BaseController
             'idempotency_key_invalid' => 422,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'idempotency_key_required' => 428,
             'precondition_required' => 428,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
+            // Native outbound codes (see docs/api/native-outbound.md). Without
+            // these the native path's exceptions collapsed to 500.
+            'native_outbound_not_allowed' => 403,
+            'native_outbound_requires_ultra_tcp_udp' => 422,
+            'native_outbound_direction_missing' => 422,
+            'native_direction_conflict' => 409,
             'operation_failed' => 500,
         ];
         if (!array_key_exists($code, $statuses)) {
@@ -474,6 +502,7 @@ final class ForwardLineApiController extends BaseController
             'validation_failed' => 'The forward request is invalid.',
             'unknown_fields' => 'The forward request contains unknown fields.',
             'route_unavailable' => 'The selected route is currently unavailable.',
+            'forward_target_not_allowed' => 'The selected route only accepts target IP addresses on its allowlist.',
         ];
         $error = [
             'code' => $code,

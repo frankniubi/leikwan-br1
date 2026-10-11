@@ -1007,6 +1007,75 @@ final class ProvisioningService
         ];
     }
 
+    /**
+     * Target allowlist for a combination save. An omitted field keeps the stored
+     * list (CLI seeders call saveForwardCombination without it); an explicit
+     * empty field clears it. A new or changed list must still admit every
+     * enabled forward already on the combination, otherwise those forwards
+     * would keep running against targets the route no longer accepts.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function normalizeCombinationTargetAllowlist(array $payload, int $combinationId): ?string
+    {
+        if (!array_key_exists('allowed_target_cidrs', $payload)) {
+            if ($combinationId <= 0) {
+                return null;
+            }
+            $existing = $this->db->fetchOne(
+                'SELECT allowed_target_cidrs FROM forward_combinations WHERE id = :id LIMIT 1',
+                ['id' => $combinationId]
+            );
+            $stored = trim((string) ($existing['allowed_target_cidrs'] ?? ''));
+            return $stored !== '' ? $stored : null;
+        }
+
+        $allowlist = ForwardTargetAllowlist::normalize($payload['allowed_target_cidrs']);
+        if ($allowlist === null || $combinationId <= 0) {
+            return $allowlist;
+        }
+        $outside = [];
+        foreach ($this->db->fetchAll(
+            'SELECT id, target_host, native_outbound_enabled
+             FROM forwards
+             WHERE forward_combination_id = :id AND enabled = 1',
+            ['id' => $combinationId]
+        ) as $forward) {
+            if (!empty($forward['native_outbound_enabled'])
+                || !ForwardTargetAllowlist::allows($allowlist, (string) ($forward['target_host'] ?? ''))) {
+                $outside[] = (int) ($forward['id'] ?? 0);
+            }
+        }
+        if ($outside !== []) {
+            throw new ApiException('forward_target_allowlist_conflict', 422, [
+                'forward_ids' => array_slice($outside, 0, 50),
+                'message' => count($outside) . ' enabled forward(s) on this combination target addresses outside the allowlist: #'
+                    . implode(', #', array_slice($outside, 0, 20)),
+            ]);
+        }
+        return $allowlist;
+    }
+
+    /**
+     * Refuse a forward target the combination's allowlist does not cover. Native
+     * outbound carries arbitrary destinations, so it can never satisfy a list.
+     *
+     * @param array<string, mixed>|null $combination
+     */
+    private function assertForwardTargetAllowedByCombination(?array $combination, string $targetHost, bool $nativeOutbound): void
+    {
+        $allowlist = (string) ($combination['allowed_target_cidrs'] ?? '');
+        if (!ForwardTargetAllowlist::isRestricted($allowlist)) {
+            return;
+        }
+        if ($nativeOutbound || !ForwardTargetAllowlist::allows($allowlist, $targetHost)) {
+            throw new ApiException('forward_target_not_allowed', 422, [
+                'forward_combination_id' => (int) ($combination['id'] ?? 0),
+                'message' => 'This route only accepts target IP addresses on its allowlist.',
+            ]);
+        }
+    }
+
     /** @param array<int, array{ultra_line_id:int,sort_order:int}> $memberships */
     private function saveUltraLineMemberships(int $combinationId, array $memberships): void
     {
@@ -1127,6 +1196,7 @@ final class ProvisioningService
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
+        $allowedTargetCidrs = $this->normalizeCombinationTargetAllowlist($payload, $id);
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $ultraPolicy = $this->normalizeUltraCombinationPolicy($payload, $backendMode);
         $externalUoT = $this->normalizeExternalUoTCombination($payload, $backendMode, $id);
@@ -1284,6 +1354,7 @@ final class ProvisioningService
             'donation_revoke_window_seconds' => $donationRevokeWindowSeconds,
             'donation_min_open_ports' => $donationMinOpenPorts,
             'bond_ingress_mode' => $bondIngressMode,
+            'allowed_target_cidrs' => $allowedTargetCidrs,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
             'notes' => $notes !== '' ? $notes : null,
@@ -1352,6 +1423,7 @@ final class ProvisioningService
                          donation_revoke_window_seconds = :donation_revoke_window_seconds,
                          donation_min_open_ports = :donation_min_open_ports,
                          bond_ingress_mode = :bond_ingress_mode,
+                         allowed_target_cidrs = :allowed_target_cidrs,
                          is_active = :is_active,
                          sort_order = :sort_order,
                          notes = :notes,
@@ -5313,6 +5385,11 @@ final class ProvisioningService
                 $listenPort,
                 false
             );
+            $this->assertForwardTargetAllowedByCombination(
+                $this->forwardCombinationById((int) ($forward['forward_combination_id'] ?? 0)),
+                $targetHost,
+                !empty($forward['native_outbound_enabled'])
+            );
 
             // Regression sentinel: ultra_target_change_reprovisions_lease_plane
             // An Ultra forward is provisioned by a short-lived LEASE, and the
@@ -6334,19 +6411,31 @@ final class ProvisioningService
         $suspended = [];
 
         foreach ($entries as $entry) {
-            $serviceId = (int) ($entry['service_id'] ?? 0);
             $endpointId = (int) ($entry['endpoint_id'] ?? 0);
             $bytesIn = max(0, (int) ($entry['bytes_in'] ?? 0));
             $bytesOut = max(0, (int) ($entry['bytes_out'] ?? 0));
-            if ($serviceId <= 0 || $endpointId <= 0) {
+            if ($endpointId <= 0) {
                 continue;
             }
 
+            // Security: the billed service is derived from the endpoint's own
+            // forward, not from the caller-supplied `service_id`. Otherwise any
+            // node (including a user-enrolled BYOS slave) could post usage for
+            // its own endpoint but charge it to an arbitrary victim service and
+            // force a traffic suspension. A node may only ever bill a service it
+            // genuinely hosts an endpoint for.
             $endpoint = $this->db->fetchOne(
-                'SELECT * FROM service_endpoints WHERE id = :id AND node_id = :node_id LIMIT 1',
+                'SELECT se.*, f.service_id AS forward_service_id
+                 FROM service_endpoints se
+                 INNER JOIN forwards f ON f.id = se.forward_id
+                 WHERE se.id = :id AND se.node_id = :node_id LIMIT 1',
                 ['id' => $endpointId, 'node_id' => $node['id']]
             );
             if ($endpoint === null) {
+                continue;
+            }
+            $serviceId = (int) ($endpoint['forward_service_id'] ?? 0);
+            if ($serviceId <= 0) {
                 continue;
             }
 
@@ -6986,6 +7075,10 @@ final class ProvisioningService
                 : $this->allocateNativeTargetPort($forwardId);
             $targetSource = 'manual';
             $targetServiceId = 0;
+        }
+
+        if ($forwardCombinationId > 0) {
+            $this->assertForwardTargetAllowedByCombination($combination ?? null, $targetHost, $nativeOutboundRequested);
         }
 
         $availableClients = $this->availableClientsForService($serviceId);
@@ -13618,21 +13711,33 @@ final class ProvisioningService
             throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
         }
 
-        $after = $walletBalance - $amount;
         $now = $this->now();
-        $this->db->execute(
+        // Security: debit atomically with a balance guard in the WHERE clause.
+        // The previous read-then-absolute-write pattern let two concurrent
+        // requests (from separate sessions) both see the same balance and each
+        // succeed, double-spending the wallet. A conditional decrement commits
+        // only if the funds are still there, and a 0 row-count means another
+        // request won the race.
+        $affected = $this->db->execute(
             'UPDATE users
-             SET wallet_balance = :wallet_balance,
+             SET wallet_balance = wallet_balance - :amount,
                  wallet_currency = :wallet_currency,
                  updated_at = :updated_at
-             WHERE id = :id',
+             WHERE id = :id
+               AND wallet_balance >= :amount_guard',
             [
                 'id' => $userId,
-                'wallet_balance' => $this->normalizeMoney($after),
+                'amount' => $this->normalizeMoney($amount),
+                'amount_guard' => $this->normalizeMoney($amount),
                 'wallet_currency' => $targetCurrency,
                 'updated_at' => $now,
             ]
         );
+        if ((int) $affected < 1) {
+            throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your wallet balance is not enough for this action.']);
+        }
+        $fresh = $this->db->fetchOne('SELECT wallet_balance FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        $after = (float) ($fresh['wallet_balance'] ?? ($walletBalance - $amount));
 
         $this->db->insert('wallet_transactions', [
             'user_id' => $userId,
