@@ -300,7 +300,7 @@ namespace {
         }
         $db->seed('forwards', $rows);
         $provisioning = new ProvisioningService($db);
-        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64']), $db, $provisioning);
+        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64', 'FORWARD_API_RATE_PER_MINUTE' => '0', 'FORWARD_API_MUTATION_RATE_PER_MINUTE' => '0']), $db, $provisioning);
         return ['controller' => $controller, 'db' => $db, 'provisioning' => $provisioning, 'headers' => ['Authorization' => 'Bearer user-token']];
     }
 
@@ -313,6 +313,12 @@ namespace {
     $response = $fixture['controller']->create(new Request('POST', '/api/v1/user/services/42/forwards', [], [], $fixture['headers'] + ['Content-Type' => 'text/plain'], '{}'), ['id' => '42']);
     if ($response->status() !== 415) {
         fail('non-JSON create must return 415');
+    }
+
+    $fixture = fixture(false);
+    $response = $fixture['controller']->create(new Request('POST', '/api/v1/user/services/42/forwards', [], [], $fixture['headers'] + ['Content-Type' => 'application/json', 'Idempotency-Key' => 'valid-key-1'], '[1,2]'), ['id' => '42']);
+    if ($response->status() !== 422 || (responseBody($response)['error']['fields'] ?? null) !== ['body' => 'json_object_required']) {
+        fail('a JSON array body must be rejected as json_object_required, got ' . $response->body());
     }
 
     $fixture = fixture(false);
@@ -544,6 +550,19 @@ namespace {
     $patchPolicy = $fixture['provisioning']->calls[0][5] ?? [];
     if (($patchPolicy['user_id'] ?? null) !== 7 || ($patchPolicy['feature'] ?? null) !== 'allow_manage_forwards') {
         fail('patch must recheck tenant ownership and manage feature inside the transaction');
+    }
+    $fixture = fixture(true);
+    $nativeRows = $fixture['db']->rows('forwards');
+    foreach ($nativeRows as &$nativeRow) {
+        if ((int) $nativeRow['id'] === 123) {
+            $nativeRow = array_merge($nativeRow, ['native_outbound_enabled' => 1, 'target_host' => '127.0.0.1', 'target_port' => 26254, 'transport_mode' => 'tcp+udp']);
+        }
+    }
+    unset($nativeRow);
+    $fixture['db']->seed('forwards', $nativeRows);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['listen_port' => 23456]), ['id' => '123']);
+    if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
+        fail('a native forward listen_port patch must use the structural update, got ' . $response->status() . ' ' . $response->body());
     }
     $fixture = fixture(true);
     $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['transport' => 'udp']), ['id' => '123']);

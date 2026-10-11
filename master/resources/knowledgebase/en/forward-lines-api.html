@@ -69,6 +69,7 @@
   <li><code>routes</code> lists only the routes your plan includes. Use a route's <code>id</code> when you create a forward.</li>
   <li><code>forward_limit</code> is how many forwards the service may have active at once; <code>active_forward_count</code> is how many it has now.</li>
   <li><code>unavailable_reason</code> is one of <code>route_unavailable</code>, <code>no_healthy_nodes</code>, <code>transport_unavailable</code> or <code>not_configured</code>.</li>
+  <li>A <code>healthy_node_count</code> of <code>0</code> only means the route has no live node data (true of every Ultra route), not that it is unhealthy. Go by <code>available</code>.</li>
 </ul>
 
 <h2>Create a forward</h2>
@@ -98,7 +99,7 @@ Idempotency-Key: create-fwd-20261007-01
   <li><strong>Manual</strong>: <code>{"source": "manual", "host": "…", "port": 443}</code>. <code>host</code> is an IPv4 address, IPv6 address or domain name up to 253 characters, without <code>http://</code>, a path or spaces.</li>
   <li><strong>Another of your services</strong>: <code>{"source": "service_ip", "service_id": 43, "port": 8443}</code>. The service must be yours and must have a public IP, and <code>host</code> must be left out. Otherwise <code>fields</code> contains <code>"target.service_id"</code> with <code>not_found</code>, <code>not_allowed</code> (not your service) or <code>no_public_ip</code> (the service has no public IP, such as a Forward Lines service itself).</li>
 </ul>
-<blockquote><p><strong>Some target addresses are refused.</strong> Platform nodes connect to your target, so loopback, link-local and cloud metadata addresses are not allowed: <code>127.0.0.0/8</code>, <code>::1</code>, <code>169.254.0.0/16</code> (including <code>169.254.169.254</code>), <code>0.0.0.0</code> and <code>localhost</code>. These return <code>422</code> with <code>"target.host": "reserved_range"</code> in <code>fields</code>. Private ranges such as <code>10.x</code>, <code>172.16–31.x</code> and <code>192.168.x</code> work normally.</p></blockquote>
+<blockquote><p><strong>Only public target addresses are accepted.</strong> Platform nodes connect to your target, so these are refused: loopback (<code>127.0.0.0/8</code>, <code>::1</code>, <code>localhost</code>), private ranges (<code>10.x</code>, <code>172.16–31.x</code>, <code>192.168.x</code>, <code>fc00::/7</code>), link-local and cloud metadata (<code>169.254.0.0/16</code>, <code>100.64.0.0/10</code>), <code>0.0.0.0</code>, multicast, shorthand IPs such as <code>127.1</code> or <code>2130706433</code>, and host names without a dot. Private ranges return <code>422</code> with <code>"target.host": "private_range"</code> in <code>fields</code>; the rest return <code>"reserved_range"</code> or <code>"invalid"</code>. Native Outbound forwards are not affected.</p></blockquote>
 <h3>curl example</h3>
 <pre>curl -sS -X POST "https://v3.leikwanhost.com/api/v1/user/services/42/forwards" \
   -H "Authorization: Bearer $TOKEN" \
@@ -131,6 +132,8 @@ GET /api/v1/user/forwards/123</pre>
 <ul>
   <li><code>revision</code> goes up by one on every change; the ETag is <code>"forward-{id}-r{revision}"</code>. It may arrive as <code>W/"forward-{id}-r{revision}"</code>; send it back in <code>If-Match</code> exactly as received.</li>
   <li><code>ingress</code> is reserved and is always <code>null</code> for now, so don't rely on it. The client fetches its connection details on its own.</li>
+  <li><code>endpoint_count</code> and <code>active_endpoint_count</code> count internal platform ingress points. They are always <code>0</code> for Ultra forwards, so don't use them to judge whether a forward works.</li>
+  <li><code>created_at</code> and <code>updated_at</code> are in UTC.</li>
 </ul>
 
 <h2>Update a forward</h2>
@@ -157,7 +160,7 @@ Authorization: Bearer &lt;your API token&gt;
 If-Match: "forward-123-r4"</pre>
 <ul>
   <li>A successful delete returns <code>204</code> with no body. A stale ETag deletes nothing.</li>
-  <li>Each service keeps up to 512 deleted forwards. Past that, creates fail with <code>409 forward_storage_quota_exceeded</code> until support clears them, so avoid create-and-delete loops.</li>
+  <li>Each service can store up to 512 forward records, deleted ones included. Past that, creates fail with <code>409 forward_storage_quota_exceeded</code> until support clears them, so avoid create-and-delete loops.</li>
 </ul>
 
 <h2>Native Outbound</h2>
@@ -172,12 +175,12 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>No other Native Outbound forward on the service uses that direction</td><td><code>409 native_direction_conflict</code></td></tr>
   </tbody>
 </table>
-<p>To turn Native Outbound off, send a PATCH with <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>. To turn an existing forward into a Native Outbound forward, create a new one or change it in the console.</p>
+<p>To turn Native Outbound off, send a PATCH with <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>. To turn an existing forward into a Native Outbound forward, send a PATCH with <code>{"native_outbound": true, "transport": "tcp+udp"}</code>; the rules in the table above apply. A Native Outbound forward's <code>target</code> is assigned by the platform, shows as <code>127.0.0.1</code>, and cannot be changed.</p>
 
 <h2>Retries and concurrency</h2>
 <ul>
   <li>Reads can be retried freely.</li>
-  <li>If a create times out, retry with the <strong>same</strong> <code>Idempotency-Key</code> and the <strong>same</strong> body. You get the original forward back (<code>200</code>) instead of a duplicate.</li>
+  <li>If a create times out, retry with the <strong>same</strong> <code>Idempotency-Key</code> and the <strong>same</strong> body. You get the original forward back (<code>200</code>, with <code>Content-Location</code> and <code>ETag</code> headers but no <code>Location</code>) instead of a duplicate.</li>
   <li>Reusing a key with a different body returns <code>409 idempotency_conflict</code>. If the original forward was deleted, you get <code>409 idempotency_resource_inactive</code>.</li>
   <li><code>412 forward_version_conflict</code> on an update or delete means the forward changed. Read it again, check it, then retry with the new ETag.</li>
   <li>Concurrent creates can never push a service past its <code>forward_limit</code>.</li>
@@ -201,9 +204,11 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>403</td><td><code>feature_denied_manage_forwards</code>, <code>feature_denied_delete_forwards</code></td><td>Your plan doesn't allow this action</td></tr>
     <tr><td>403</td><td><code>native_outbound_not_allowed</code></td><td>Your plan doesn't include Native Outbound</td></tr>
     <tr><td>404</td><td><code>service_not_found</code>, <code>forward_not_found</code></td><td>Doesn't exist, isn't yours, or was deleted</td></tr>
+    <tr><td>404</td><td><code>not_found</code></td><td>No such API path</td></tr>
+    <tr><td>405</td><td><code>method_not_allowed</code></td><td>The path doesn't support this HTTP method; the <code>Allow</code> header lists the ones it does</td></tr>
     <tr><td>409</td><td><code>service_inactive</code></td><td>The service is suspended or has expired</td></tr>
     <tr><td>409</td><td><code>forward_quota_exceeded</code></td><td>The service has reached its active forward limit</td></tr>
-    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>Too many deleted forwards are being kept</td></tr>
+    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>The service has reached its limit of stored forward records, deleted ones included</td></tr>
     <tr><td>409</td><td><code>idempotency_conflict</code>, <code>idempotency_resource_inactive</code></td><td>See Retries and concurrency</td></tr>
     <tr><td>409</td><td><code>route_unavailable</code></td><td>The route is unavailable right now</td></tr>
     <tr><td>409</td><td><code>native_direction_conflict</code></td><td>That direction already has a Native Outbound forward</td></tr>
@@ -213,11 +218,16 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>422</td><td><code>validation_failed</code>, <code>unknown_fields</code></td><td>A field is invalid, or there are extra fields</td></tr>
     <tr><td>422</td><td><code>idempotency_key_invalid</code></td><td>The Idempotency-Key has the wrong format</td></tr>
     <tr><td>422</td><td><code>forward_route_not_allowed</code>, <code>forward_route_has_no_enabled_combination</code></td><td>The route isn't in your plan or isn't open yet</td></tr>
+    <tr><td>422</td><td><code>forward_target_not_allowed</code></td><td>The route only forwards to listed target IP ranges; domain targets and addresses outside them are refused</td></tr>
     <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>, <code>native_outbound_direction_missing</code></td><td>The route doesn't support Native Outbound</td></tr>
     <tr><td>428</td><td><code>idempotency_key_required</code>, <code>precondition_required</code></td><td>Missing Idempotency-Key or If-Match</td></tr>
+    <tr><td>409</td><td><code>insufficient_balance</code></td><td>A metered service's wallet is empty; top up before adding or starting forwards</td></tr>
+    <tr><td>429</td><td><code>rate_limited</code></td><td>Too many requests; wait the number of seconds in the <code>Retry-After</code> header</td></tr>
     <tr><td>500</td><td><code>operation_failed</code></td><td>Platform error; retry later or contact support</td></tr>
   </tbody>
 </table>
+
+<p>Each account may send up to 120 requests a minute, of which at most 30 may be changes (POST, PATCH, DELETE), counted across the v1 and legacy endpoints together. Past that you get <code>429 rate_limited</code>.</p>
 
 <h2>Legacy endpoints</h2>
 <p>The older <code>/api/user/…</code> endpoints still work but are no longer updated and have no ETag or duplicate protection. Build new integrations on the v1 endpoints in this guide only.</p>

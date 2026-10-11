@@ -1018,9 +1018,13 @@ func buildGameSimReport(relay *gameSimRelay, udp udpRunResult, tcp tcpRunResult)
 }
 
 func writeGameSimReport(t *testing.T, report string) {
+	repoTmp := filepath.Join("..", "..", ".tmp")
+	_ = os.MkdirAll(repoTmp, 0o755)
 	paths := []string{
 		filepath.FromSlash("C:/Users/frankniubi/Downloads/leikwan-br1/.tmp/game-sim-local.md"),
-		filepath.Join("..", "..", ".tmp", "game-sim-local.md"),
+		filepath.Join(repoTmp, "game-sim-local.md"),
+		// A fresh CI checkout has no .tmp of its own; the report is diagnostic only.
+		filepath.Join(t.TempDir(), "game-sim-local.md"),
 	}
 	var written string
 	for _, path := range paths {

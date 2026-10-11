@@ -2320,7 +2320,7 @@ final class TenantController extends BaseController
             if ($service === null) {
                 throw new ApiException('service_not_found', 404);
             }
-            if ((string) ($service['status'] ?? '') !== 'active') {
+            if (ServiceStatus::effective($service) !== 'active') {
                 throw new ApiException('service_inactive', 409);
             }
 
@@ -2439,7 +2439,7 @@ final class TenantController extends BaseController
             $serviceId = $this->idParam($params);
             $forwardId = (int) ($params['fid'] ?? 0);
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id, s.status AS service_status, fr.tenant_label AS forward_route_label
+                'SELECT f.*, s.user_id, s.status AS service_status, s.expire_at AS service_expire_at, fr.tenant_label AS forward_route_label
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
                  LEFT JOIN forward_routes fr ON fr.id = f.forward_route_id
@@ -2519,7 +2519,7 @@ final class TenantController extends BaseController
             $forwardId = (int) ($params['fid'] ?? 0);
             SessionAuth::validateCsrf($request);
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id, s.status AS service_status
+                'SELECT f.*, s.user_id, s.status AS service_status, s.expire_at AS service_expire_at
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
                  WHERE f.id = :id AND f.service_id = :service_id AND f.enabled = 1 LIMIT 1',
@@ -2929,7 +2929,7 @@ final class TenantController extends BaseController
             $forwardId = $this->idParam($params);
             SessionAuth::validateCsrf($request);
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id, s.status AS service_status
+                'SELECT f.*, s.user_id, s.status AS service_status, s.expire_at AS service_expire_at
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
                  WHERE f.id = :id AND f.enabled = 1 LIMIT 1',
@@ -2980,7 +2980,7 @@ final class TenantController extends BaseController
             }
 
             $forward = $this->db->fetchOne(
-                'SELECT f.*, s.user_id, s.status AS service_status
+                'SELECT f.*, s.user_id, s.status AS service_status, s.expire_at AS service_expire_at
                  FROM forwards f
                  INNER JOIN services s ON s.id = f.service_id
                  WHERE f.id = :id AND f.service_id = :service_id AND f.user_deleted_at IS NULL LIMIT 1',
@@ -3028,6 +3028,7 @@ final class TenantController extends BaseController
             if ($service === null) {
                 throw new ApiException('service_not_found', 404);
             }
+            $this->assertTenantServiceActive($service);
             $summary = $this->provisioning->serviceSummary($serviceId);
             if (empty(($summary['effective_features'] ?? [])['allow_rotate_client_token'])) {
                 throw new ApiException('feature_denied_rotate_client_token', 403);
@@ -3283,8 +3284,13 @@ final class TenantController extends BaseController
     /** @param array<string, mixed> $serviceOrForward */
     private function assertTenantServiceActive(array $serviceOrForward): void
     {
-        $status = (string) ($serviceOrForward['status'] ?? $serviceOrForward['service_status'] ?? '');
-        if ($status !== 'active') {
+        // The status column is never written as 'expired'; expiry comes from
+        // expire_at, so check the effective status or an expired service keeps
+        // full control of its forwards from the console.
+        $service = array_key_exists('service_status', $serviceOrForward)
+            ? ['status' => $serviceOrForward['service_status'], 'expire_at' => $serviceOrForward['service_expire_at'] ?? null]
+            : $serviceOrForward;
+        if (ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
     }
@@ -3627,6 +3633,8 @@ final class TenantController extends BaseController
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
                 'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
+                'forward_route_not_allowed' => 'This route is no longer included in your plan.',
+                'insufficient_balance' => 'Top up your wallet before starting this forward.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
                 default => 'The forward operation could not be completed.',
             };
