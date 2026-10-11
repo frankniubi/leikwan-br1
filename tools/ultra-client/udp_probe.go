@@ -33,6 +33,11 @@ type udpProbeResult struct {
 	TCPReceived   int
 	TCPRTT        time.Duration
 	TCPError      error
+	// TCPEmptyClose marks a relay that completed the probe handshake but closed
+	// the probe's first flight without returning a byte (the relay that took
+	// down forward 263 on 2026-10-11). It demotes the candidate instead of
+	// failing it, so a route where every relay does this still has a selection.
+	TCPEmptyClose bool
 	// PayloadCeiling is the payload size this candidate is known to carry: the
 	// panel-declared relay_payload_ceiling, or a locally measured value.
 	// 0 without PayloadCeilingMeasured means unknown, not unusable.
@@ -182,6 +187,7 @@ func dualProbeResult(udp, tcp udpProbeResult) udpProbeResult {
 	result.TCPReceived = tcp.TCPReceived
 	result.TCPRTT = tcp.TCPRTT
 	result.TCPError = tcp.TCPError
+	result.TCPEmptyClose = tcp.TCPEmptyClose
 	udpFailure := udp.Err
 	if udpFailure == nil && !udp.pathUsable(udp.Sent, udp.Received) {
 		udpFailure = errProbeUnavailable
@@ -234,6 +240,9 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 		rUsable := r.usableFor(transport) && rQualitySent > 0 && !r.ceilingUnusable()
 		if lUsable != rUsable {
 			return lUsable
+		}
+		if strings.Contains(transport, "tcp") && l.TCPEmptyClose != r.TCPEmptyClose {
+			return !l.TCPEmptyClose
 		}
 		if lTier, rTier := selectionTierRank(l.SelectionTier), selectionTierRank(r.SelectionTier); lTier != rTier {
 			return lTier < rTier
@@ -319,15 +328,29 @@ func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, poli
 		started := time.Now()
 		connection, dialErr := dialStreamConfig(config, lease, host, port, probeTimeout(config))
 		if dialErr == nil {
+			rtt := time.Since(started)
+			reply := checkTCPProbeReply(ctx, connection, tcpProbeReplyWait(config))
 			_ = connection.Close()
 			result.TCPReceived++
-			totalRTT += time.Since(started)
+			totalRTT += rtt
 			result.TCPRTT = totalRTT / time.Duration(result.TCPReceived)
 			result.MedianRTT = result.TCPRTT
 			result.P95RTT = result.TCPRTT
-			return result
+			// A relay that lost its upstream completes the handshake and then
+			// closes the first flight empty, so the handshake alone cannot
+			// tell it from a working relay. Retry it like a lost SYN; keep the
+			// verdict only if every attempt ends that way.
+			result.TCPEmptyClose = errors.Is(reply, errProbeRelayClosedEmpty)
+			if !result.TCPEmptyClose {
+				return result
+			}
+			continue
 		}
 		lastErr = dialErr
+	}
+	if result.TCPReceived > 0 {
+		log.Printf("tcp probe relay closed the first flight empty selection_ref=%s attempts=%d", lease.SelectionRef, result.TCPSent)
+		return result
 	}
 	result.TCPError = wrapProbeFailure(errProbeTCPFailed, lastErr)
 	result.Err = result.TCPError
