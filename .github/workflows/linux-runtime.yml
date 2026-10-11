@@ -191,7 +191,7 @@ jobs:
           /opt/pyinstaller/bin/pip install --quiet "pyinstaller==6.16.0"
           PYINSTALLER=/opt/pyinstaller/bin/pyinstaller PYTHON_BIN=/opt/pyinstaller/bin/python bash scripts/build-python-agent-binaries.sh "${{ matrix.arch }}"
           ls -la artifacts/python-agent/
-          ldd --version | head -1
+          ldd --version | sed -n 1p
 
       - name: Upload frozen agents
         uses: actions/upload-artifact@v4
