@@ -352,6 +352,7 @@ final class ServiceController extends BaseController
             'forward_version_conflict' => 412,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
             'operation_failed' => 500,

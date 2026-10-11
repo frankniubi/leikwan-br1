@@ -477,6 +477,7 @@ final class ForwardLineApiController extends BaseController
             'idempotency_key_invalid' => 422,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'idempotency_key_required' => 428,
             'precondition_required' => 428,
             'feature_denied_manage_forwards' => 403,
@@ -501,6 +502,7 @@ final class ForwardLineApiController extends BaseController
             'validation_failed' => 'The forward request is invalid.',
             'unknown_fields' => 'The forward request contains unknown fields.',
             'route_unavailable' => 'The selected route is currently unavailable.',
+            'forward_target_not_allowed' => 'The selected route only accepts target IP addresses on its allowlist.',
         ];
         $error = [
             'code' => $code,

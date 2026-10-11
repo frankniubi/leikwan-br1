@@ -1007,6 +1007,75 @@ final class ProvisioningService
         ];
     }
 
+    /**
+     * Target allowlist for a combination save. An omitted field keeps the stored
+     * list (CLI seeders call saveForwardCombination without it); an explicit
+     * empty field clears it. A new or changed list must still admit every
+     * enabled forward already on the combination, otherwise those forwards
+     * would keep running against targets the route no longer accepts.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function normalizeCombinationTargetAllowlist(array $payload, int $combinationId): ?string
+    {
+        if (!array_key_exists('allowed_target_cidrs', $payload)) {
+            if ($combinationId <= 0) {
+                return null;
+            }
+            $existing = $this->db->fetchOne(
+                'SELECT allowed_target_cidrs FROM forward_combinations WHERE id = :id LIMIT 1',
+                ['id' => $combinationId]
+            );
+            $stored = trim((string) ($existing['allowed_target_cidrs'] ?? ''));
+            return $stored !== '' ? $stored : null;
+        }
+
+        $allowlist = ForwardTargetAllowlist::normalize($payload['allowed_target_cidrs']);
+        if ($allowlist === null || $combinationId <= 0) {
+            return $allowlist;
+        }
+        $outside = [];
+        foreach ($this->db->fetchAll(
+            'SELECT id, target_host, native_outbound_enabled
+             FROM forwards
+             WHERE forward_combination_id = :id AND enabled = 1',
+            ['id' => $combinationId]
+        ) as $forward) {
+            if (!empty($forward['native_outbound_enabled'])
+                || !ForwardTargetAllowlist::allows($allowlist, (string) ($forward['target_host'] ?? ''))) {
+                $outside[] = (int) ($forward['id'] ?? 0);
+            }
+        }
+        if ($outside !== []) {
+            throw new ApiException('forward_target_allowlist_conflict', 422, [
+                'forward_ids' => array_slice($outside, 0, 50),
+                'message' => count($outside) . ' enabled forward(s) on this combination target addresses outside the allowlist: #'
+                    . implode(', #', array_slice($outside, 0, 20)),
+            ]);
+        }
+        return $allowlist;
+    }
+
+    /**
+     * Refuse a forward target the combination's allowlist does not cover. Native
+     * outbound carries arbitrary destinations, so it can never satisfy a list.
+     *
+     * @param array<string, mixed>|null $combination
+     */
+    private function assertForwardTargetAllowedByCombination(?array $combination, string $targetHost, bool $nativeOutbound): void
+    {
+        $allowlist = (string) ($combination['allowed_target_cidrs'] ?? '');
+        if (!ForwardTargetAllowlist::isRestricted($allowlist)) {
+            return;
+        }
+        if ($nativeOutbound || !ForwardTargetAllowlist::allows($allowlist, $targetHost)) {
+            throw new ApiException('forward_target_not_allowed', 422, [
+                'forward_combination_id' => (int) ($combination['id'] ?? 0),
+                'message' => 'This route only accepts target IP addresses on its allowlist.',
+            ]);
+        }
+    }
+
     /** @param array<int, array{ultra_line_id:int,sort_order:int}> $memberships */
     private function saveUltraLineMemberships(int $combinationId, array $memberships): void
     {
@@ -1127,6 +1196,7 @@ final class ProvisioningService
         if (!in_array($selfLegOuterTransport, ['cnix', 'cf', 'leigod'], true)) {
             throw new ApiException('invalid_self_leg_outer_transport', 422, ['self_leg_outer_transport' => $selfLegOuterTransport]);
         }
+        $allowedTargetCidrs = $this->normalizeCombinationTargetAllowlist($payload, $id);
         $sidecarRequired = $this->sidecarRequiredForRuntime($backendMode, $clientMode, $runtimePreference);
         $ultraPolicy = $this->normalizeUltraCombinationPolicy($payload, $backendMode);
         $externalUoT = $this->normalizeExternalUoTCombination($payload, $backendMode, $id);
@@ -1284,6 +1354,7 @@ final class ProvisioningService
             'donation_revoke_window_seconds' => $donationRevokeWindowSeconds,
             'donation_min_open_ports' => $donationMinOpenPorts,
             'bond_ingress_mode' => $bondIngressMode,
+            'allowed_target_cidrs' => $allowedTargetCidrs,
             'is_active' => $isActive,
             'sort_order' => $sortOrder,
             'notes' => $notes !== '' ? $notes : null,
@@ -1352,6 +1423,7 @@ final class ProvisioningService
                          donation_revoke_window_seconds = :donation_revoke_window_seconds,
                          donation_min_open_ports = :donation_min_open_ports,
                          bond_ingress_mode = :bond_ingress_mode,
+                         allowed_target_cidrs = :allowed_target_cidrs,
                          is_active = :is_active,
                          sort_order = :sort_order,
                          notes = :notes,
@@ -5313,6 +5385,11 @@ final class ProvisioningService
                 $listenPort,
                 false
             );
+            $this->assertForwardTargetAllowedByCombination(
+                $this->forwardCombinationById((int) ($forward['forward_combination_id'] ?? 0)),
+                $targetHost,
+                !empty($forward['native_outbound_enabled'])
+            );
 
             // Regression sentinel: ultra_target_change_reprovisions_lease_plane
             // An Ultra forward is provisioned by a short-lived LEASE, and the
@@ -6998,6 +7075,10 @@ final class ProvisioningService
                 : $this->allocateNativeTargetPort($forwardId);
             $targetSource = 'manual';
             $targetServiceId = 0;
+        }
+
+        if ($forwardCombinationId > 0) {
+            $this->assertForwardTargetAllowedByCombination($combination ?? null, $targetHost, $nativeOutboundRequested);
         }
 
         $availableClients = $this->availableClientsForService($serviceId);

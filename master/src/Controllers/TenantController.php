@@ -3600,6 +3600,7 @@ final class TenantController extends BaseController
                 'feature_denied_manage_forwards', 'feature_denied_delete_forwards' => 'Your plan or account does not allow this forward operation.',
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
+                'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
                 default => 'The forward operation could not be completed.',
             };
