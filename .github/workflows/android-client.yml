@@ -48,10 +48,15 @@ jobs:
           version="2026.10.12.0.${GITHUB_SHA:0:8}"
           mkdir -p out
           cd tools/ultra-client
-          for pair in arm64:arm64 amd64:x86_64; do
-            goarch="${pair%%:*}"; abi="${pair#*:}"
-            GOOS=android GOARCH="$goarch" CGO_ENABLED=0 "$(go env GOPATH)/bin/garble" -literals build \
-              -trimpath -buildvcs=false \
+          # android/amd64 cannot link internally, so x86_64 uses cgo with the NDK clang,
+          # as scripts/build-ultra-android.ps1 does for releases.
+          ndk_bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for pair in arm64:arm64:0 amd64:x86_64:1; do
+            goarch="${pair%%:*}"; rest="${pair#*:}"; abi="${rest%%:*}"; cgo="${rest#*:}"
+            cc=""
+            if [ "$cgo" = "1" ]; then cc="$ndk_bin/x86_64-linux-android21-clang"; fi
+            GOOS=android GOARCH="$goarch" CGO_ENABLED="$cgo" CC="$cc" "$(go env GOPATH)/bin/garble" -literals build \
+              -buildmode=pie -trimpath -buildvcs=false \
               -ldflags "-s -w -buildid= -X main.runtimeBuildVersion=$version" \
               -o "../../out/ultra-client_android_$abi" .
             sha256sum "../../out/ultra-client_android_$abi"
