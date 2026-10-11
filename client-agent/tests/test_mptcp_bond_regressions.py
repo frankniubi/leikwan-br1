@@ -1222,14 +1222,6 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     ["leikwan-client-26"],
                 )
 
-    # KNOWN PRODUCTION BUG (since c3ba79ab, 2026-09-21): _apply_forward_locked
-    # reads WRITTEN_RUNTIME_CONTENT[path] as the "previous" content *after*
-    # write_text_if_changed() has already stored the new content there, so the
-    # restart-relevance check compares the new content with itself and a
-    # file-only change never restarts the unit. Fixing it needs a client_agent.py
-    # change plus a versions.json/AGENT_VERSION release bump. Remove this marker
-    # with that fix; pytest reports an unexpected success until then.
-    @unittest.expectedFailure
     def test_apply_forward_restarts_aux_unit_when_only_aux_config_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"

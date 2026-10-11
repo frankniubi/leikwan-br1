@@ -706,7 +706,7 @@ func runUDPDataPlane(t *testing.T, relay *gameSimRelay) udpRunResult {
 		Transport:                "udp",
 		UDPPrewarm:               true,
 		UDPKeepaliveIntervalSecs: 5,
-		UDPQueuePackets:          512,
+		UDPQueuePackets:          1024,
 		UDPMaxAssociations:       16,
 		UDPSetupWorkers:          8,
 		ConnectTimeoutSecs:       5,

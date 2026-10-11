@@ -113,7 +113,7 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 ["target_digest"] = leases[0].TargetDigest,
                 ["auto_select"] = autoSelect,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 256,
+                ["udp_queue_packets"] = 1024,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
                 // Without these the runtime falls back to the Linux paths,

@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.10.02.1"
+AGENT_VERSION = "2026.10.12.1"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
@@ -4946,6 +4946,16 @@ class ClientAgent:
             for file_entry in unit.get("files", []):
                 extra_path = pathlib.Path(str(file_entry["path"]))
                 desired_content = str(file_entry.get("content", ""))
+                # Read the previous content before writing: write_text_if_changed
+                # records the new content, which then compared equal to itself and
+                # an aux-config-only change (a new UoT session token) never
+                # restarted its unit.
+                previous_content = WRITTEN_RUNTIME_CONTENT.get(str(extra_path))
+                if previous_content is None and extra_path.exists():
+                    try:
+                        previous_content = extra_path.read_text(encoding="utf-8")
+                    except OSError:
+                        previous_content = None
                 file_changed = self.write_text_if_changed(
                     extra_path,
                     desired_content,
@@ -4957,7 +4967,6 @@ class ClientAgent:
                     # content actually differs. A bare policy_generation rotation
                     # rewrites the file and must not cycle the service; the new
                     # lease is delivered to the running runtime instead.
-                    previous_content = WRITTEN_RUNTIME_CONTENT.get(str(extra_path))
                     if previous_content is None:
                         restart_relevant = True
                     else:

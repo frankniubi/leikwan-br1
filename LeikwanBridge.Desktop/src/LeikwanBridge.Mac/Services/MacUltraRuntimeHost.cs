@@ -129,7 +129,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["target_digest"] = leases[0].TargetDigest,
                 ["auto_select"] = autoSelect,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 256,
+                ["udp_queue_packets"] = 1024,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),

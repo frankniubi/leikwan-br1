@@ -430,11 +430,12 @@ func writeXor(writer io.Writer, payload []byte) error {
 // accepted the connection and then stopped reading used to pin the stream in a
 // blocking write until the runtime stopped (452-673 s in the 2026-09-24
 // matrix), and every later stream kept choosing the same dead candidate. The
-// deadline is re-armed whenever the socket accepts a byte, so it measures time
-// without progress, never the duration of a slow write. Silence the other way
-// (an upload that gets no reply, or a stream with nothing to send) never
-// blocks a write and never trips it.
-const remoteWriteProgressTimeout = 10 * time.Second
+// bound measures time without progress (acknowledged bytes where the send queue
+// is readable), never the duration of a slow write. Silence the other way (an
+// upload that gets no reply, or a stream with nothing to send) never blocks a
+// write and never trips it. Five seconds without a single acknowledgement is
+// well past normal retransmission gaps on the relay paths.
+const remoteWriteProgressTimeout = 5 * time.Second
 
 // Bounds for the operator-configurable tcp_write_stall_seconds.
 const (
@@ -477,15 +478,22 @@ func isWriteTimeout(err error) bool {
 }
 
 // writeAllProgress writes payload, re-arming the deadline before every attempt.
-// A deadline that expires after the socket accepted at least one byte is
-// progress, so the remainder is retried under a fresh deadline; only an attempt
-// that accepted nothing for the whole bound is a stall.
+// Where the send queue is readable (Linux, Android, macOS) progress means bytes
+// the peer acknowledged, so a stall is declared one bound after the last ack
+// even while the kernel keeps accepting small writes. Elsewhere a deadline that
+// expires after the socket accepted at least one byte is progress, and only an
+// attempt that accepted nothing for the whole bound is a stall.
 func writeAllProgress(destination net.Conn, payload []byte, deadline progressWriteDeadline) error {
 	if deadline == nil {
 		return writeAll(destination, payload)
 	}
+	acks := newSendAckProgress(destination)
 	for len(payload) > 0 {
-		if err := destination.SetWriteDeadline(deadline()); err != nil {
+		next := deadline()
+		if acks != nil {
+			next = acks.deadline(next)
+		}
+		if err := destination.SetWriteDeadline(next); err != nil {
 			return err
 		}
 		count, err := destination.Write(payload)
@@ -493,9 +501,12 @@ func writeAllProgress(destination net.Conn, payload []byte, deadline progressWri
 			return errors.New("writer returned invalid count")
 		}
 		payload = payload[count:]
+		if acks != nil && !acks.observe(count) {
+			acks = nil
+		}
 		if err != nil {
 			if isWriteTimeout(err) {
-				if count > 0 {
+				if count > 0 && (acks == nil || !acks.expired()) {
 					continue
 				}
 				return fmt.Errorf("%w: %w", errRemoteWriteStall, err)
@@ -1976,7 +1987,8 @@ type udpRuntimeLimits struct {
 func resolveUDPLimits(config Config) udpRuntimeLimits {
 	queuePackets := config.UDPQueuePackets
 	if queuePackets < 1 || queuePackets > 4096 {
-		queuePackets = 256
+		// Enough to ride out a ~1.5 s scheduling stall at an 800 pps burst.
+		queuePackets = 1024
 	}
 	maxAssociations := config.UDPMaxAssociations
 	if maxAssociations < 1 || maxAssociations > 8192 {

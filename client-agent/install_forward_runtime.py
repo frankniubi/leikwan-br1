@@ -1194,7 +1194,7 @@ def render_ultra_runtime(forward: dict, agent_config: dict) -> dict:
         "control_socket": control_socket,
         "transport": transport,
         "max_tcp_connections": 512,
-        "udp_queue_packets": 256,
+        "udp_queue_packets": 1024,
         "connect_timeout_seconds": 5,
         "location_cache_path": "/var/lib/ultra/location.json",
         "location_lock_path": "/run/ultra/location.lock",

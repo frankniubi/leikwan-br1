@@ -173,7 +173,7 @@ class UltraRuntimeTests(unittest.TestCase):
         self.assertEqual("/run/ultra/forward-42.control.sock", config["control_socket"])
         self.assertEqual(42, config["forward_id"])
         self.assertEqual("203.0.113.10:443", config["target"])
-        self.assertEqual(256, config["udp_queue_packets"])
+        self.assertEqual(1024, config["udp_queue_packets"])
         self.assertEqual("/run/ultra/forward-42.status.json", config["status_path"])
         self.assertEqual("/var/lib/ultra/location.json", config["location_cache_path"])
         self.assertEqual("/run/ultra/location.lock", config["location_lock_path"])
