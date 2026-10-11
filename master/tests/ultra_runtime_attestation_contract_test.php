@@ -205,9 +205,16 @@ namespace {
         ];
     }
 
-    function ultraAttestationStatusService(Config $config): UltraClientStatusService
+    // Defaults to a manifest that does not exist, so a case sees only the
+    // fingerprints its own config names and not the repository's releases.
+    function ultraAttestationStatusService(Config $config, ?string $manifestPath = null): UltraClientStatusService
     {
-        return new UltraClientStatusService($config, new Database(), static fn(): int => ULTRA_ATTESTATION_NOW);
+        return new UltraClientStatusService(
+            $config,
+            new Database(),
+            static fn(): int => ULTRA_ATTESTATION_NOW,
+            releaseManifestPath: $manifestPath ?? __DIR__ . '/no-such-release-manifest.json',
+        );
     }
 
     /** @param array<string, mixed> $overrides */
@@ -409,6 +416,60 @@ namespace {
         ($unconfiguredRows[0]['reason'] ?? '') === 'no_allowlist_configured',
         'an empty allow-list must be reported as unconfigured, not as a mismatch'
     );
+
+    // Released builds are known without configuration: the hand-kept list went
+    // stale after every runtime release and flagged every current client.
+    $releasedManifestPath = tempnam(sys_get_temp_dir(), 'lw-ultra-attest-manifest-');
+    file_put_contents($releasedManifestPath, json_encode([
+        'ultra-runtime-linux-amd64' => ['attestation' => [
+            'fingerprint' => '2026.10.10.2.096CA638',
+            'self_sha256' => str_repeat('e', 64),
+        ]],
+        'ultra-runtime-windows-amd64' => ['attestation' => [
+            'fingerprint' => '2026.10.10.2.096ca638',
+            'self_sha256' => 'not-a-hash',
+        ]],
+        'client-agent' => ['version' => '2026.10.10.2'],
+    ]));
+    $releasedConfig = new Config(ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY => json_encode(['2026.10.02.1.d1bac327' => [str_repeat('f', 64)]]),
+        'ULTRA_RUNTIME_FINGERPRINTS' => str_repeat('d', 8),
+    ]));
+    $released = ultraAttestationStatusService($releasedConfig, $releasedManifestPath);
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.10.10.2.096ca638') === 'known',
+        'a fingerprint published in versions.json must be known without configuration'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.10.02.1.d1bac327') === 'known',
+        'a fingerprint kept in the rollover extra hashes must stay known'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState(str_repeat('d', 8)) === 'known',
+        'the configured list must still add builds the panel never published'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.09.19.1.f18d01fb') === 'mismatch',
+        'a fingerprint that is neither released nor configured must be a mismatch'
+    );
+    assertUltraRuntimeAttestation(
+        count($released->runtimeFingerprintAllowlist()) === 3,
+        'released, rollover and configured fingerprints must be merged without duplicates'
+    );
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = '2026.09.19.1.f18d01fb';
+    $releasedRows = $released->runtimeAttestationMismatches(50);
+    assertUltraRuntimeAttestation(
+        count($releasedRows) === 1 && ($releasedRows[0]['reason'] ?? '') === 'fingerprint_not_allowlisted',
+        'an unreleased fingerprint must be listed as a mismatch'
+    );
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = '2026.10.10.2.096ca638';
+    assertUltraRuntimeAttestation(
+        $released->runtimeAttestationMismatches(50) === [],
+        'a released fingerprint must not be listed as a mismatch'
+    );
+    @unlink($releasedManifestPath);
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = $unknownFingerprint;
 
     // ---------------------------------------------------------------------
     // 4. Abuse limits: each cap refuses only when configured, and never at 0.

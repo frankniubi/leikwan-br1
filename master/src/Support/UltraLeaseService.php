@@ -548,19 +548,22 @@ final class UltraLeaseService
      */
     private function releasedRuntimeHashes(): array
     {
-        if ($this->releasedRuntimeHashes !== null) {
-            return $this->releasedRuntimeHashes;
-        }
-        $this->releasedRuntimeHashes = [];
-        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
-        if (!is_file($path)) {
-            return $this->releasedRuntimeHashes;
-        }
-        $decoded = json_decode((string) @file_get_contents($path), true);
-        if (!is_array($decoded)) {
-            return $this->releasedRuntimeHashes;
-        }
-        foreach ($decoded as $entry) {
+        return $this->releasedRuntimeHashes ??= self::releasedRuntimeHashMap($this->config);
+    }
+
+    /**
+     * The released fingerprint => hashes map behind enforcement, shared with
+     * the admin attestation view so both judge sessions against the same
+     * releases. $manifestPath defaults to the live artifacts/versions.json.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function releasedRuntimeHashMap(Config $config, ?string $manifestPath = null): array
+    {
+        $released = [];
+        $path = $manifestPath ?? dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
+        $decoded = is_file($path) ? json_decode((string) @file_get_contents($path), true) : null;
+        foreach (is_array($decoded) ? $decoded : [] as $entry) {
             if (!is_array($entry)) {
                 continue;
             }
@@ -573,14 +576,11 @@ final class UltraLeaseService
             if ($fingerprint === '' || preg_match('/^[a-f0-9]{64}$/', $hash) !== 1) {
                 continue;
             }
-            if (!isset($this->releasedRuntimeHashes[$fingerprint])) {
-                $this->releasedRuntimeHashes[$fingerprint] = [];
-            }
-            if (!in_array($hash, $this->releasedRuntimeHashes[$fingerprint], true)) {
-                $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+            if (!in_array($hash, $released[$fingerprint] ?? [], true)) {
+                $released[$fingerprint][] = $hash;
             }
         }
-        $extra = json_decode((string) $this->config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
+        $extra = json_decode((string) $config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
         foreach (is_array($extra) ? $extra : [] as $fingerprint => $hashes) {
             $fingerprint = strtolower(trim((string) $fingerprint));
             if ($fingerprint === '' || !is_array($hashes)) {
@@ -589,14 +589,14 @@ final class UltraLeaseService
             foreach ($hashes as $hash) {
                 $hash = strtolower(trim((string) $hash));
                 if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1
-                    && !in_array($hash, $this->releasedRuntimeHashes[$fingerprint] ?? [], true)) {
-                    $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+                    && !in_array($hash, $released[$fingerprint] ?? [], true)) {
+                    $released[$fingerprint][] = $hash;
                 }
             }
         }
         // One fingerprint can ship several platform binaries; a client only ever
         // reports one of them, so every published hash for the fingerprint counts.
-        return $this->releasedRuntimeHashes;
+        return $released;
     }
 
     /**

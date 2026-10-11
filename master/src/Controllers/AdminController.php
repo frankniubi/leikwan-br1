@@ -3319,8 +3319,9 @@ final class AdminController extends BaseController
                 $rows = '<tr><td colspan="11" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
             }
             $content = '<section class="card">'
-                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is normally report-only. Refresh runtime clears one cached identity so the client can start once and publish a fresh attestation on its next heartbeat. These sessions report a runtime build fingerprint that is not in '
-                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (allow-list entries: ' . $allowlistSize . '); no lease is denied from this view.</div>'
+                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is normally report-only. Refresh runtime clears one cached identity so the client can start once and publish a fresh attestation on its next heartbeat. These sessions report a runtime build fingerprint that is neither a released build (artifacts/versions.json, '
+                . UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY . ') nor listed in '
+                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (known fingerprints: ' . $allowlistSize . '); no lease is denied from this view.</div>'
                 . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th><th>Action</th></tr></thead><tbody>'
                 . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'refusals') {
