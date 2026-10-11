@@ -1062,6 +1062,39 @@ final class ProvisioningService
      *
      * @param array<string, mixed>|null $combination
      */
+    /**
+     * A tenant starting a paused forward must pass the same limits as creating
+     * one. Without this, pause → create → start ran past forward_limit, a
+     * balance-suspended forward could be restarted at zero balance, and a
+     * forward kept running on a route or target its plan no longer allowed.
+     *
+     * @param array<string, mixed> $forward
+     * @param array<string, mixed> $lockedService
+     */
+    private function assertForwardMayStart(array $forward, array $lockedService): void
+    {
+        $serviceId = (int) ($forward['service_id'] ?? 0);
+        $count = $this->db->fetchOne(
+            'SELECT COUNT(*) AS active_count FROM forwards WHERE service_id = :service_id AND enabled = 1',
+            ['service_id' => $serviceId]
+        );
+        if ((int) ($count['active_count'] ?? 0) >= $this->forwardLimitForService($serviceId)) {
+            throw new ApiException('forward_quota_exceeded', 409);
+        }
+        if (!empty($forward['balance_suspended_at']) && (float) ($lockedService['user_wallet_balance'] ?? 0) <= 0) {
+            throw new ApiException('insufficient_balance', 409);
+        }
+        $routeId = (int) ($forward['forward_route_id'] ?? 0);
+        if ($routeId > 0) {
+            $this->visibleForwardRouteForService($routeId, $serviceId);
+        }
+        $this->assertForwardTargetAllowedByCombination(
+            $this->forwardCombinationById((int) ($forward['forward_combination_id'] ?? 0)),
+            (string) ($forward['target_host'] ?? ''),
+            !empty($forward['native_outbound_enabled'])
+        );
+    }
+
     private function assertForwardTargetAllowedByCombination(?array $combination, string $targetHost, bool $nativeOutbound): void
     {
         $allowlist = (string) ($combination['allowed_target_cidrs'] ?? '');
@@ -5366,6 +5399,11 @@ final class ProvisioningService
             }
             $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
+            if ($mutationPolicy !== null && (int) ($forward['forward_route_id'] ?? 0) > 0) {
+                // Structural edits re-resolve the route; this narrow path must
+                // too, or a forward on a route removed from the plan stays editable.
+                $this->visibleForwardRouteForService((int) $forward['forward_route_id'], (int) $forward['service_id']);
+            }
 
             $listenPort = max(0, (int) ($payload['listen_port'] ?? $forward['listen_port'] ?? 0));
             $targetHost = trim((string) ($payload['target_host'] ?? $forward['target_host'] ?? ''));
@@ -5647,12 +5685,15 @@ final class ProvisioningService
             if ($forward === null) {
                 throw new ApiException('forward_not_found', 404);
             }
-            $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
+            $lockedService = $this->lockForwardMutationService((int) $forward['service_id'], $mutationPolicy, 'forward_not_found');
             $this->assertExpectedForwardRevision($forward, $expectedRevision);
             $nextRevision = max(1, (int) ($forward['api_revision'] ?? 1)) + 1;
             $now = $this->now();
 
             if ($enabled) {
+                if ($mutationPolicy !== null && (int) ($forward['enabled'] ?? 0) !== 1) {
+                    $this->assertForwardMayStart($forward, $lockedService);
+                }
                 $nativeDirectionKey = $this->reactivatedNativeDirectionKey($forward);
                 $this->db->execute(
                     'UPDATE forwards
@@ -11358,7 +11399,7 @@ final class ProvisioningService
         if ($expectedUserId <= 0 || (int) ($service['user_id'] ?? 0) !== $expectedUserId) {
             throw new ApiException($notFoundCode, 404);
         }
-        if ((string) ($service['status'] ?? '') !== 'active') {
+        if (ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
 

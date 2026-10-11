@@ -48,9 +48,40 @@ final class Router
             return $this->dispatchHandler($route['handler'], $route['method'], $route['pattern'], $request, $params);
         }
 
+        if (str_starts_with($request->path(), '/api/v1/')) {
+            return $this->versionedApiMiss($request);
+        }
+
         return Response::json(404, [
             'error' => 'not_found',
             'path' => $request->path(),
+        ]);
+    }
+
+    /**
+     * The v1 API promises one error envelope for every response, including
+     * unknown paths and unsupported methods, so its misses do not use the
+     * legacy {error, path} body.
+     */
+    private function versionedApiMiss(Request $request): Response
+    {
+        $allowed = [];
+        foreach ($this->routes as $route) {
+            $regex = '#^' . preg_replace('/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/', '[^/]+', $route['pattern']) . '$#';
+            if (preg_match($regex, $request->path()) === 1) {
+                $allowed[] = $route['method'];
+            }
+        }
+        if ($allowed !== []) {
+            $allowed = array_values(array_unique($allowed));
+            return Response::json(405, [
+                'ok' => false,
+                'error' => ['code' => 'method_not_allowed', 'message' => 'This method is not supported for this resource.'],
+            ])->withHeaders(['Allow' => implode(', ', $allowed)]);
+        }
+        return Response::json(404, [
+            'ok' => false,
+            'error' => ['code' => 'not_found', 'message' => 'The requested resource was not found.'],
         ]);
     }
 

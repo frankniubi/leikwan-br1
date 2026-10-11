@@ -210,6 +210,11 @@ final class ForwardLineApiController extends BaseController
                 // it must take the structural (saveForward) path rather than the
                 // narrow non-structural update that ignores native_outbound.
                 || array_key_exists('native_outbound', $changes)
+                // A native forward's target is the server-assigned loopback
+                // port, which the non-structural path re-validates as a tenant
+                // target and rejects as reserved_range, so every native edit
+                // (even listen_port alone) goes through saveForward.
+                || !empty($forward['native_outbound_enabled'])
                 || (array_key_exists('transport_mode', $changes)
                     && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
                 || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
@@ -302,7 +307,9 @@ final class ForwardLineApiController extends BaseController
         }
         if ($request->rawBody() !== '') {
             $decoded = json_decode($request->rawBody(), true);
-            if (!is_array($decoded)) {
+            // A JSON array also decodes to a PHP array; reject it here so it
+            // is not reported as unknown_fields ["0", "1", ...].
+            if (!is_array($decoded) || ($decoded !== [] && array_is_list($decoded))) {
                 throw new ApiException('validation_failed', 422, ['fields' => ['body' => 'json_object_required']]);
             }
             return $decoded;

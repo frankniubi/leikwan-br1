@@ -69,6 +69,7 @@
   <li><code>routes</code> 只包含你的套餐可以使用的線路，建立轉發時使用其中的 <code>id</code>。</li>
   <li><code>forward_limit</code> 是該服務最多可同時生效的轉發條數，<code>active_forward_count</code> 是目前已使用的條數。</li>
   <li><code>unavailable_reason</code> 可能是 <code>route_unavailable</code>、<code>no_healthy_nodes</code>、<code>transport_unavailable</code> 或 <code>not_configured</code>。</li>
+  <li><code>healthy_node_count</code> 為 <code>0</code> 只表示該線路沒有即時節點資料（Ultra 線路都是如此），不代表線路不健康。請以 <code>available</code> 為準。</li>
 </ul>
 
 <h2>建立轉發</h2>
@@ -131,6 +132,8 @@ GET /api/v1/user/forwards/123</pre>
 <ul>
   <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。收到的值可能帶 <code>W/</code> 前綴（<code>W/"forward-{id}-r{revision}"</code>），原樣放進 <code>If-Match</code> 即可。</li>
   <li><code>ingress</code> 是保留欄位，目前固定為 <code>null</code>，請不要依賴它。連線資訊由用戶端自動取得。</li>
+  <li><code>endpoint_count</code> 與 <code>active_endpoint_count</code> 是平台內部入口的數量，Ultra 轉發恆為 <code>0</code>，不能用來判斷轉發是否可用。</li>
+  <li><code>created_at</code> 與 <code>updated_at</code> 是 UTC 時間。</li>
 </ul>
 
 <h2>修改轉發</h2>
@@ -157,7 +160,7 @@ Authorization: Bearer &lt;你的 API 令牌&gt;
 If-Match: "forward-123-r4"</pre>
 <ul>
   <li>刪除成功回傳 <code>204</code>，沒有回應內容。ETag 不一致時不會刪除任何東西。</li>
-  <li>每個服務最多保留 512 條已刪除紀錄，超過後無法再建立轉發（回傳 <code>409 forward_storage_quota_exceeded</code>），需要聯絡客服清理。請不要反覆建立再刪除。</li>
+  <li>每個服務最多保存 512 條轉發紀錄（包括已刪除的），超過後無法再建立轉發（回傳 <code>409 forward_storage_quota_exceeded</code>），需要聯絡客服清理。請不要反覆建立再刪除。</li>
 </ul>
 
 <h2>Native Outbound（裝置端出站）</h2>
@@ -172,12 +175,12 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>同一個服務裡，這個方向還沒有其他 Native Outbound 轉發</td><td><code>409 native_direction_conflict</code></td></tr>
   </tbody>
 </table>
-<p>要關閉 Native Outbound，用 PATCH 送出 <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>。要把一般轉發改成 Native Outbound，請新建一條，或在控制台裡修改。</p>
+<p>要關閉 Native Outbound，用 PATCH 送出 <code>{"native_outbound": false, "target": {"source": "manual", "host": "…", "port": …}}</code>。要把一般轉發改成 Native Outbound，用 PATCH 送出 <code>{"native_outbound": true, "transport": "tcp+udp"}</code>，規則與上表相同。Native Outbound 轉發的 <code>target</code> 由平台分配，顯示為 <code>127.0.0.1</code>，不能修改。</p>
 
 <h2>逾時重試與並行</h2>
 <ul>
   <li>查詢類請求可以隨意重試。</li>
-  <li>建立請求逾時沒收到結果時，用<strong>同一個</strong> <code>Idempotency-Key</code> 與<strong>完全相同</strong>的內容重試，會回傳原本那條轉發（<code>200</code>），不會重複建立。</li>
+  <li>建立請求逾時沒收到結果時，用<strong>同一個</strong> <code>Idempotency-Key</code> 與<strong>完全相同</strong>的內容重試，會回傳原本那條轉發（<code>200</code>，回應標頭帶 <code>Content-Location</code> 與 <code>ETag</code>，沒有 <code>Location</code>），不會重複建立。</li>
   <li>同一個 <code>Idempotency-Key</code> 送出不同內容，回傳 <code>409 idempotency_conflict</code>；原本那條已被刪除，回傳 <code>409 idempotency_resource_inactive</code>。</li>
   <li>修改或刪除收到 <code>412 forward_version_conflict</code>，代表轉發已被改過：重新查看詳情，確認後用新的 ETag 再操作。</li>
   <li>同時送出多個建立請求也不會超出 <code>forward_limit</code>。</li>
@@ -201,9 +204,11 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>403</td><td><code>feature_denied_manage_forwards</code>、<code>feature_denied_delete_forwards</code></td><td>套餐不允許這個操作</td></tr>
     <tr><td>403</td><td><code>native_outbound_not_allowed</code></td><td>套餐未開啟 Native Outbound</td></tr>
     <tr><td>404</td><td><code>service_not_found</code>、<code>forward_not_found</code></td><td>不存在、不屬於你或已刪除</td></tr>
+    <tr><td>404</td><td><code>not_found</code></td><td>介面路徑不存在</td></tr>
+    <tr><td>405</td><td><code>method_not_allowed</code></td><td>該路徑不支援這個 HTTP 方法，回應標頭 <code>Allow</code> 列出可用方法</td></tr>
     <tr><td>409</td><td><code>service_inactive</code></td><td>服務已停用或已到期</td></tr>
     <tr><td>409</td><td><code>forward_quota_exceeded</code></td><td>生效轉發數已達上限</td></tr>
-    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>已刪除紀錄達到上限</td></tr>
+    <tr><td>409</td><td><code>forward_storage_quota_exceeded</code></td><td>轉發紀錄（含已刪除）達到上限</td></tr>
     <tr><td>409</td><td><code>idempotency_conflict</code>、<code>idempotency_resource_inactive</code></td><td>見「逾時重試與並行」</td></tr>
     <tr><td>409</td><td><code>route_unavailable</code></td><td>線路目前不可用</td></tr>
     <tr><td>409</td><td><code>native_direction_conflict</code></td><td>該方向已有 Native Outbound 轉發</td></tr>
@@ -213,6 +218,7 @@ If-Match: "forward-123-r4"</pre>
     <tr><td>422</td><td><code>validation_failed</code>、<code>unknown_fields</code></td><td>欄位不合法，或有多餘欄位</td></tr>
     <tr><td>422</td><td><code>idempotency_key_invalid</code></td><td>Idempotency-Key 格式不對</td></tr>
     <tr><td>422</td><td><code>forward_route_not_allowed</code>、<code>forward_route_has_no_enabled_combination</code></td><td>線路不在你的套餐內，或線路暫未開放</td></tr>
+    <tr><td>422</td><td><code>forward_target_not_allowed</code></td><td>該線路只允許轉發到指定的目標 IP 段，網域目標與段外位址都會被拒絕</td></tr>
     <tr><td>422</td><td><code>native_outbound_requires_ultra_tcp_udp</code>、<code>native_outbound_direction_missing</code></td><td>線路不支援 Native Outbound</td></tr>
     <tr><td>428</td><td><code>idempotency_key_required</code>、<code>precondition_required</code></td><td>缺少 Idempotency-Key 或 If-Match</td></tr>
     <tr><td>500</td><td><code>operation_failed</code></td><td>平台內部錯誤，請稍後重試或聯絡客服</td></tr>
