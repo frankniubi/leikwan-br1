@@ -129,7 +129,7 @@ GET /api/v1/user/forwards/123</pre>
   "updated_at": "2026-10-07 03:05:00"
 }</pre>
 <ul>
-  <li><code>revision</code> goes up by one on every change; the ETag is <code>"forward-{id}-r{revision}"</code>.</li>
+  <li><code>revision</code> goes up by one on every change; the ETag is <code>"forward-{id}-r{revision}"</code>. It may arrive as <code>W/"forward-{id}-r{revision}"</code>; send it back in <code>If-Match</code> exactly as received.</li>
   <li><code>ingress</code> is reserved and is always <code>null</code> for now, so don't rely on it. The client fetches its connection details on its own.</li>
 </ul>
 

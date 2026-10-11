@@ -129,7 +129,7 @@ GET /api/v1/user/forwards/123</pre>
   "updated_at": "2026-10-07 03:05:00"
 }</pre>
 <ul>
-  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。</li>
+  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。收到的值可能带 <code>W/</code> 前缀（<code>W/"forward-{id}-r{revision}"</code>），原样放进 <code>If-Match</code> 即可。</li>
   <li><code>ingress</code> 是保留字段，目前固定为 <code>null</code>，请不要依赖它。连接信息由客户端自动获取。</li>
 </ul>
 

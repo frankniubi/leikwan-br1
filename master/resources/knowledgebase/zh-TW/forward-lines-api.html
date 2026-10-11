@@ -129,7 +129,7 @@ GET /api/v1/user/forwards/123</pre>
   "updated_at": "2026-10-07 03:05:00"
 }</pre>
 <ul>
-  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。</li>
+  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。收到的值可能帶 <code>W/</code> 前綴（<code>W/"forward-{id}-r{revision}"</code>），原樣放進 <code>If-Match</code> 即可。</li>
   <li><code>ingress</code> 是保留欄位，目前固定為 <code>null</code>，請不要依賴它。連線資訊由用戶端自動取得。</li>
 </ul>
 
