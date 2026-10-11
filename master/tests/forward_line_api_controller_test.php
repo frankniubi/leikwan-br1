@@ -145,6 +145,9 @@ namespace Leikwan\Master\Database {
         /** @param array<string, mixed> $params @return list<array<string, mixed>> */
         public function fetchAll(string $sql, array $params = []): array
         {
+            if (str_contains($sql, 'FROM services') && str_contains($sql, 'WHERE s.user_id = :user_id')) {
+                return array_values(array_filter($this->tables['services'] ?? [], static fn(array $row): bool => (int) ($row['user_id'] ?? 0) === (int) ($params['user_id'] ?? 0)));
+            }
             if (str_contains($sql, 'COUNT(*) AS active_count')) {
                 $count = count(array_filter($this->tables['forwards'] ?? [], static fn(array $row): bool => (int) ($row['service_id'] ?? 0) === (int) ($params['service_id'] ?? 0) && (int) ($row['enabled'] ?? 0) === 1));
                 return [['active_count' => $count]];
@@ -285,6 +288,38 @@ namespace {
             fail('options leaked internal field/value ' . $forbidden);
         }
     }
+
+    // The service list is how a tenant finds the id the paths take: services.id,
+    // never another tenant's service and never the Client ID.
+    $db->seed('services', [
+        ['id' => 42, 'user_id' => 7, 'plan_id' => 6, 'plan_name' => 'Safe plan', 'name' => 'Tenant service', 'status' => 'active', 'whmcs_service_id' => 'WHMCS-SECRET'],
+        ['id' => 43, 'user_id' => 8, 'plan_id' => 6, 'name' => 'Other tenant', 'status' => 'active'],
+        ['id' => 44, 'user_id' => 7, 'plan_id' => 6, 'name' => 'Lapsed service', 'status' => 'active', 'expire_at' => '2020-01-01 00:00:00'],
+    ]);
+    $serviceList = $controller->services(new Request('GET', '/api/v1/user/services', [], [], $headers, ''), []);
+    $listedServices = body($serviceList)['services'] ?? null;
+    if ($serviceList->status() !== 200 || !is_array($listedServices)) {
+        fail('service list should return 200, got ' . $serviceList->status() . ' ' . $serviceList->body());
+    }
+    if (array_column($listedServices, 'id') !== [42, 44]) {
+        fail('service list must return exactly the caller services by services.id');
+    }
+    if (($listedServices[0]['active_forward_count'] ?? null) !== 1 || ($listedServices[0]['plan']['name'] ?? null) !== 'Safe plan') {
+        fail('service list must use the same safe service shape as the other endpoints');
+    }
+    if (($listedServices[1]['status'] ?? '') !== 'expired') {
+        fail('service list must report the effective status of a lapsed service');
+    }
+    if (str_contains($serviceList->body(), 'WHMCS-SECRET') || str_contains($serviceList->body(), 'Other tenant')) {
+        fail('service list leaked a billing id or another tenant service');
+    }
+    $db->seed('services', [[
+        'id' => 42,
+        'user_id' => 7,
+        'plan_id' => 6,
+        'name' => 'Tenant service',
+        'status' => 'active',
+    ]]);
 
     $missing = $controller->show(new Request('GET', '/api/v1/user/forwards/999', [], [], $headers, ''), ['id' => '999']);
     if ($missing->status() !== 404) {

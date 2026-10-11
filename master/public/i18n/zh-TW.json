@@ -1951,7 +1951,14 @@
     "Read the API guide": "查看 API 文件",
     "API token reset. Update your programs with the new token.": "API 令牌已重設，請在你的程式裡換成新令牌。",
     "Unable to reset the API token.": "API 令牌重設失敗。",
-    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "用戶端令牌只給用戶端軟體使用。呼叫專線 API 請使用獨立的 API 令牌："
+    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "用戶端令牌只給用戶端軟體使用。呼叫專線 API 請使用獨立的 API 令牌：",
+    "Service IDs": "服務 ID",
+    "API paths such as": "像",
+    "take a Service ID. It is not the Client ID on the Clients page.": "這樣的 API 路徑要填服務 ID，不是「用戶端」頁面上的用戶端 ID。",
+    "No services yet.": "還沒有服務。",
+    "Service ID": "服務 ID",
+    "used by the Forward Lines API": "專線 API 使用這個 ID",
+    "The Client ID is not a Service ID. API paths take the Service ID listed on Account Security.": "用戶端 ID 不是服務 ID。呼叫 API 請使用「帳戶安全」頁列出的服務 ID。"
   },
   "attributes": {
     "Label": "標籤",

@@ -344,6 +344,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/user/forwards/{id}/client-config', [$services, 'clientConfig']);
         $this->router->add('POST', '/api/user/services/{id}/regenerate-client-token', [$services, 'regenerateClientToken']);
 
+        $this->router->add('GET', '/api/v1/user/services', [$forwardApi, 'services']);
         $this->router->add('GET', '/api/v1/user/services/{id}/forward-options', [$forwardApi, 'options']);
         $this->router->add('GET', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'index']);
         $this->router->add('POST', '/api/v1/user/services/{id}/forwards', [$forwardApi, 'create']);

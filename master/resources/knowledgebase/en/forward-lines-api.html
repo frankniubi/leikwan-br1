@@ -29,6 +29,7 @@
 <table>
   <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
   <tbody>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services</code></td><td>Your services and their service IDs</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{service_id}/forward-options</code></td><td>Available routes, transports and quota</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{service_id}/forwards</code></td><td>Active forwards on the service</td></tr>
     <tr><td><code>POST</code></td><td><code>/api/v1/user/services/{service_id}/forwards</code></td><td>Create a forward</td></tr>
@@ -37,7 +38,7 @@
     <tr><td><code>DELETE</code></td><td><code>/api/v1/user/forwards/{forward_id}</code></td><td>Delete a forward</td></tr>
   </tbody>
 </table>
-<p>Your service ID is on the console's Services page. An ID that is malformed, belongs to someone else, or points to a deleted forward always returns <code>404</code>, with no further detail.</p>
+<p>Get your service IDs from <code>GET /api/v1/user/services</code>; they are also listed under the API token on the console's Account Security page and on each service's detail page. A service ID is <strong>not</strong> the Client ID on the Clients page, nor the WHMCS service number; the wrong ID returns <code>404 service_not_found</code>. An ID that is malformed, belongs to someone else, or points to a deleted forward always returns <code>404</code>, with no further detail.</p>
 
 <h2>Step 1: list available routes</h2>
 <pre>GET /api/v1/user/services/42/forward-options</pre>

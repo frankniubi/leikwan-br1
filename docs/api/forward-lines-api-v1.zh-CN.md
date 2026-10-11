@@ -37,6 +37,7 @@ Authorization: Bearer <user-api-token>
 
 | 方法 | 路径 | 必需头 | 结果 |
 | --- | --- | --- | --- |
+| `GET` | `/api/v1/user/services` | Bearer | 你名下的服务及其 `service_id`（即 `services.id`，不是客户端 ID，也不是 WHMCS 服务编号） |
 | `GET` | `/api/v1/user/services/{service_id}/forward-options` | Bearer | 可选线路、传输方式、配额、权限 |
 | `GET` | `/api/v1/user/services/{service_id}/forwards` | Bearer | 该服务下所有生效中的转发 |
 | `POST` | `/api/v1/user/services/{service_id}/forwards` | Bearer、Content-Type、Idempotency-Key | 创建（`201`）或幂等重放（`200`） |

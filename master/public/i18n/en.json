@@ -143,7 +143,14 @@
     "Read the API guide": "Read the API guide",
     "API token reset. Update your programs with the new token.": "API token reset. Update your programs with the new token.",
     "Unable to reset the API token.": "Unable to reset the API token.",
-    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:"
+    "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:": "The Agent Token is only for the client app. The Forward Lines API uses a separate API token:",
+    "Service IDs": "Service IDs",
+    "API paths such as": "API paths such as",
+    "take a Service ID. It is not the Client ID on the Clients page.": "take a Service ID. It is not the Client ID on the Clients page.",
+    "No services yet.": "No services yet.",
+    "Service ID": "Service ID",
+    "used by the Forward Lines API": "used by the Forward Lines API",
+    "The Client ID is not a Service ID. API paths take the Service ID listed on Account Security.": "The Client ID is not a Service ID. API paths take the Service ID listed on Account Security."
   },
   "attributes": {
     "UUID, IP, CIDR, province, city, or country": "UUID, IP, CIDR, province, city, or country",

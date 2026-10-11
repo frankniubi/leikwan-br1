@@ -368,7 +368,7 @@ final class TenantController extends BaseController
                 <div class="console-service-head">
                   <div>
                     <h3>' . $this->escape((string) $service['name']) . '</h3>
-                    <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . '</div>
+                    <div class="muted">' . $this->escape((string) ($service['plan_name'] ?? '—')) . ' · <span>Service ID</span> <code>' . (int) $service['id'] . '</code></div>
                   </div>
                   ' . $this->tenantServiceStatusBadge($service) . '
                 </div>
@@ -745,7 +745,7 @@ final class TenantController extends BaseController
                 : '<span>metered</span>';
 
             $serviceRows .= '<tr>
-                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a></td>
+                <td><a href="/tenant/services/' . (int) $service['id'] . '"><strong>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</strong></a><br><span class="muted">Service ID</span> <code>' . (int) $service['id'] . '</code></td>
                 <td>' . $this->tenantServiceStatusBadge($service) . '</td>
                 <td>' . $this->escape((string) ($service['plan_name'] ?? '')) . '</td>
                 <td>' . $currentBandwidth . ' Mbps</td>
@@ -1085,7 +1085,14 @@ final class TenantController extends BaseController
             . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
             . '<select id="main-province" name="province" required>' . $options . '</select></div>'
             . '</div><div class="actions"><button class="button" type="submit">Change main province</button></div></form></section>'
-            . $this->renderApiTokenCard(trim((string) ($user['api_token'] ?? '')), $csrf)
+            . $this->renderApiTokenCard(
+                trim((string) ($user['api_token'] ?? '')),
+                $csrf,
+                $this->db->fetchAll(
+                    'SELECT id, name FROM services WHERE user_id = :user_id ORDER BY id ASC',
+                    ['user_id' => $user['id']]
+                )
+            )
             . '<section class="card"><div class="hero"><div><h3>Devices</h3>'
             . '<p class="muted">Kick all devices to reset application sessions. Your web Panel session stays active.</p></div>'
             . '<form method="post" action="/tenant/security/kick-all" data-confirm="Confirm kicking all application devices" onsubmit="return confirm(this.dataset.confirm);">'
@@ -1097,7 +1104,8 @@ final class TenantController extends BaseController
         return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
     }
 
-    private function renderApiTokenCard(string $apiToken, string $csrf): string
+    /** @param array<int, array<string, mixed>> $services */
+    private function renderApiTokenCard(string $apiToken, string $csrf, array $services = []): string
     {
         // users.api_token authenticates the Forward Lines API. It is a separate
         // credential from the client Agent Token, which tenants kept pasting
@@ -1107,11 +1115,27 @@ final class TenantController extends BaseController
                 . '<div class="actions">' . $this->renderCopyButton('Copy API token', $apiToken) . '</div>'
             : '<p class="muted">No API token yet.</p>';
         $resetLabel = $apiToken !== '' ? 'Reset API token' : 'Generate API token';
+        // The API paths take services.id. Tenants used the Client ID from the
+        // Clients page (or the WHMCS id) instead, which only works when the
+        // numbers happen to collide and otherwise returns service_not_found.
+        $serviceRows = '';
+        foreach ($services as $service) {
+            $serviceId = (int) ($service['id'] ?? 0);
+            $serviceRows .= '<dt>' . $this->escape((string) ($service['name'] ?? 'Service')) . '</dt>'
+                . '<dd><code>' . $serviceId . '</code> ' . $this->renderCopyButton('Copy', (string) $serviceId, 'ghost') . '</dd>';
+        }
+        $serviceBlock = '<h4>Service IDs</h4>'
+            . '<p class="muted">API paths such as <code>/api/v1/user/services/{id}/forwards</code> take a Service ID. '
+            . 'It is not the Client ID on the Clients page.</p>'
+            . ($serviceRows !== ''
+                ? '<dl class="console-kv">' . $serviceRows . '</dl>'
+                : '<p class="muted">No services yet.</p>');
 
         return '<section class="card"><h3>API token</h3>'
             . '<p class="muted">Use this token as <code>Authorization: Bearer</code> when calling the Forward Lines API. '
             . 'It is not the Agent Token shown on the Clients page.</p>'
             . $tokenBlock
+            . $serviceBlock
             . '<div class="actions">'
             . '<form class="inline" method="post" action="/tenant/security/api-token/reset" data-confirm="Reset the API token? Programs using the old token stop working immediately." onsubmit="return confirm(this.dataset.confirm);">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
@@ -1335,6 +1359,7 @@ final class TenantController extends BaseController
             . '<div><strong>Agent Token</strong><code>' . $this->escape($agentToken) . '</code>'
             . '<div class="actions">' . $this->renderCopyButton('Copy Agent Token', $agentToken) . '</div></div>'
             . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Agent Token is only for the client app. The Forward Lines API uses a separate API token: <a href="/tenant/security">Account Security</a></p>'
+            . '<p class="muted" style="grid-column:1 / -1;margin:0;">The Client ID is not a Service ID. API paths take the Service ID listed on Account Security.</p>'
             . '</section>'
             . '<form method="post" action="/tenant/clients/android-enrollment-code">'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
@@ -2152,6 +2177,7 @@ final class TenantController extends BaseController
               <section class="card">
                 <h3>Service Info</h3>
                 ' . $kv([
+                    ['Service ID', '<code>' . (int) $service['id'] . '</code> <span class="muted">used by the Forward Lines API</span>'],
                     ['Plan', '<strong>' . $this->escape((string) ($summary['plan_name'] ?? '')) . '</strong>'],
                     ['Expires', $this->escape((string) $service['expire_at'])],
                     ['Bandwidth', (int) $service['bandwidth_limit_mbps'] . ' Mbps'],

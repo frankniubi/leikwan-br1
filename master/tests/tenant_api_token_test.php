@@ -202,6 +202,18 @@ try {
     assertContains('Generate API token', $empty, 'missing token offers generation');
     assertNotContains('data-copy-text', $empty, 'missing token has nothing to copy');
 
+    // The card lists the Service IDs the API paths take, so tenants stop
+    // sending the Client ID instead.
+    $withServices = (string) $render->invoke($tenantController, $newToken, 'csrf-value', [
+        ['id' => 30, 'name' => 'Holiday plan'],
+        ['id' => 37, 'name' => '<b>Mine</b>'],
+    ]);
+    assertContains('<code>30</code>', $withServices, 'card shows each Service ID');
+    assertContains('data-copy-text="37"', $withServices, 'card offers copying a Service ID');
+    assertContains('not the Client ID', $withServices, 'card distinguishes the Client ID');
+    assertNotContains('<b>Mine</b>', $withServices, 'service names must be escaped');
+    assertContains('No services yet.', $card, 'no services is explained');
+
     $hostile = (string) $render->invoke($tenantController, '"><script>x</script>', 'csrf-value');
     assertNotContains('<script>x</script>', $hostile, 'token must be escaped');
 } finally {
