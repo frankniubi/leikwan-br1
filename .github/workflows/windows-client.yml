@@ -60,6 +60,54 @@ jobs:
           go test -mod=readonly ./... -count=1
           exit $LASTEXITCODE
 
+      - name: Run Rust tests
+        id: rust_tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cargo test --manifest-path wstunnel-main/Cargo.toml --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot
+          exit $LASTEXITCODE
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run client agent and release tooling tests
+        id: python_tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pytest cryptography
+          python -m pytest client-agent/tests tests -q -p no:cacheprovider
+          exit $LASTEXITCODE
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: ":mbstring, pdo_sqlite, sqlite3, curl, openssl, sodium"
+          coverage: none
+
+      - name: Run panel PHP tests
+        id: php_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          passed=0; failed_list=()
+          for test in master/tests/*.php; do
+            if timeout 120 php -d display_errors=1 "$test" >"$RUNNER_TEMP/php-test.log" 2>&1; then
+              passed=$((passed + 1))
+            else
+              failed_list+=("$test")
+              echo "::group::FAILED $test"; tail -20 "$RUNNER_TEMP/php-test.log"; echo "::endgroup::"
+            fi
+          done
+          echo "passed=$passed failed=${#failed_list[@]}"
+          printf '%s\n' "${failed_list[@]}" | sed 's/^/FAILED: /'
+          [ "${#failed_list[@]}" -eq 0 ]
+
       - name: Build Windows Ultra runtime
         id: runtime
         continue-on-error: true
@@ -101,6 +149,9 @@ jobs:
           OUTCOMES: >-
             dotnet_tests=${{ steps.dotnet_tests.outcome }}
             go_tests=${{ steps.go_tests.outcome }}
+            rust_tests=${{ steps.rust_tests.outcome }}
+            python_tests=${{ steps.python_tests.outcome }}
+            php_tests=${{ steps.php_tests.outcome }}
             runtime=${{ steps.runtime.outcome }}
             publish=${{ steps.publish.outcome }}
         run: |
