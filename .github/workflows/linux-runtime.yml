@@ -1,0 +1,138 @@
+name: Linux runtime, agent and panel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/macos-client
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Linux build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Production PHP is 8.3 without mbstring; mb_* calls there are fatal.
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: ":mbstring, pdo_sqlite, sqlite3, curl, openssl, sodium"
+          coverage: none
+
+      - name: Run Go tests
+        id: go_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          for module in tools/ultra-client tools/uot-sidecar tools/leikwand tools/lguot tools/linux-arm64-installer; do
+            echo "::group::go test $module"
+            (cd "$module" && go test -mod=readonly ./... -count=1) || { echo "FAILED: $module"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Build Linux Ultra runtime (amd64, arm64)
+        id: runtime
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install mvdan.cc/garble@v0.17.0
+          version="2026.10.12.0.${GITHUB_SHA:0:8}"
+          mkdir -p out
+          cd tools/ultra-client
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 "$(go env GOPATH)/bin/garble" -literals build \
+              -buildmode=pie -trimpath -buildvcs=false \
+              -ldflags "-s -w -buildid= -X main.runtimeBuildVersion=$version" \
+              -o "../../out/ultra-client_linux_$arch" .
+            for marker in leikwan-ultra-policy-v2 parseTarget credentialChecksum runtimeAttestation copyInbound selfExecutableHash ParseNativeRoutePolicy; do
+              if grep -a -q -F "$marker" "../../out/ultra-client_linux_$arch"; then
+                echo "obfuscation guard failed: $arch $marker"; exit 1
+              fi
+            done
+            grep -a -q -F "$version" "../../out/ultra-client_linux_$arch"
+            sha256sum "../../out/ultra-client_linux_$arch"
+          done
+
+      - name: Run client agent and release tooling tests
+        id: python_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pytest cryptography
+          python -m pytest client-agent/tests tests -q -p no:cacheprovider
+
+      - name: Run panel PHP tests
+        id: php_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          passed=0; failed_list=()
+          for test in master/tests/*.php; do
+            if timeout 120 php -d display_errors=1 "$test" >"/tmp/php-test.log" 2>&1; then
+              passed=$((passed + 1))
+            else
+              failed_list+=("$test")
+              echo "::group::FAILED $test"; tail -20 /tmp/php-test.log; echo "::endgroup::"
+            fi
+          done
+          echo "passed=$passed failed=${#failed_list[@]}"
+          printf '%s\n' "${failed_list[@]}" | sed 's/^/FAILED: /'
+          [ "${#failed_list[@]}" -eq 0 ]
+
+      - name: Upload Linux runtimes
+        if: ${{ steps.runtime.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-runtime
+          path: out/ultra-client_linux_*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Gate summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          OUTCOMES: >-
+            go_tests=${{ steps.go_tests.outcome }}
+            runtime=${{ steps.runtime.outcome }}
+            python_tests=${{ steps.python_tests.outcome }}
+            php_tests=${{ steps.php_tests.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          printf '### Linux gates\n\n| gate | outcome |\n|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+          for pair in $OUTCOMES; do
+            printf '| %s | %s |\n' "${pair%%=*}" "${pair#*=}" >>"$GITHUB_STEP_SUMMARY"
+            echo "$pair"
+            [ "${pair#*=}" = "success" ] || failed=1
+          done
+          exit "$failed"
