@@ -15,23 +15,34 @@ guard CommandLine.arguments.count == 5,
 }
 
 let output = CommandLine.arguments[4]
+// macOS clamps a window to the visible screen, and a hosted runner's display
+// can be smaller than the requested window (the arm64 runners are), so expect
+// at most what fits.
+let visible = NSScreen.main?.visibleFrame.size ?? CGSize(width: expectedWidth, height: expectedHeight)
+let fitWidth = min(expectedWidth, Int(visible.width))
+let fitHeight = min(expectedHeight, Int(visible.height))
 var windowID: CGWindowID?
+var seen: [String] = []
 // First launch on a fresh runner compiles Skia Metal shaders; give the window time to appear.
 let deadline = Date().addingTimeInterval(45)
 while Date() < deadline && windowID == nil {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+    seen = []
     for window in windows {
         guard let ownerPID = window[kCGWindowOwnerPID as String] as? NSNumber,
               ownerPID.int32Value == pid,
               let layer = window[kCGWindowLayer as String] as? NSNumber,
-              layer.intValue == 0,
               let number = window[kCGWindowNumber as String] as? NSNumber,
               let bounds = window[kCGWindowBounds as String] as? [String: Any],
               let width = bounds["Width"] as? NSNumber,
-              let height = bounds["Height"] as? NSNumber,
-              width.doubleValue >= Double(expectedWidth - 20),
-              height.doubleValue >= Double(expectedHeight - 20) else {
+              let height = bounds["Height"] as? NSNumber else {
+            continue
+        }
+        seen.append("layer=\(layer.intValue) \(width.intValue)x\(height.intValue)")
+        guard layer.intValue == 0,
+              width.doubleValue >= Double(fitWidth - 20),
+              height.doubleValue >= Double(fitHeight - 20) else {
             continue
         }
         windowID = CGWindowID(number.uint32Value)
@@ -42,7 +53,10 @@ while Date() < deadline && windowID == nil {
     }
 }
 
-guard let id = windowID else { fail("application window not found") }
+guard let id = windowID else {
+    let alive = kill(pid, 0) == 0
+    fail("application window not found: process \(alive ? "running" : "exited"), screen \(Int(visible.width))x\(Int(visible.height)), want >= \(fitWidth - 20)x\(fitHeight - 20), its windows: \(seen.isEmpty ? "none" : seen.joined(separator: ", "))")
+}
 let capture = Process()
 capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
 capture.arguments = ["-x", "-l", String(id), output]
@@ -55,8 +69,8 @@ guard capture.terminationStatus == 0,
     fail("window capture failed")
 }
 
-guard bitmap.pixelsWide >= expectedWidth - 20,
-      bitmap.pixelsHigh >= expectedHeight - 20 else {
+guard bitmap.pixelsWide >= fitWidth - 20,
+      bitmap.pixelsHigh >= fitHeight - 20 else {
     fail("captured window dimensions are too small")
 }
 
