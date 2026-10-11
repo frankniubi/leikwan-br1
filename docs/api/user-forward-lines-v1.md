@@ -25,6 +25,7 @@ and are limited to 16 KiB.
 
 | Method | Path | Required headers | Result |
 | --- | --- | --- | --- |
+| `GET` | `/api/v1/user/services` | Bearer | The tenant's services and their `service_id` (`services.id`, not the Client ID or the WHMCS service id) |
 | `GET` | `/api/v1/user/services/{service_id}/forward-options` | Bearer | Public route choices, transports, capabilities, and quota |
 | `GET` | `/api/v1/user/services/{service_id}/forwards` | Bearer | Active forwards owned by the tenant |
 | `POST` | `/api/v1/user/services/{service_id}/forwards` | Bearer, `Content-Type`, `Idempotency-Key` | Creates or replays one forward; `201` on create |

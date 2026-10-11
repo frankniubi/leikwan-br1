@@ -29,6 +29,7 @@
 <table>
   <thead><tr><th>方法</th><th>路径</th><th>作用</th></tr></thead>
   <tbody>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services</code></td><td>列出你名下的服务和它们的服务 ID</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服务ID}/forward-options</code></td><td>查询可用线路、传输方式和配额</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服务ID}/forwards</code></td><td>列出该服务下生效中的转发</td></tr>
     <tr><td><code>POST</code></td><td><code>/api/v1/user/services/{服务ID}/forwards</code></td><td>创建转发</td></tr>
@@ -37,7 +38,7 @@
     <tr><td><code>DELETE</code></td><td><code>/api/v1/user/forwards/{转发ID}</code></td><td>删除转发</td></tr>
   </tbody>
 </table>
-<p>服务 ID 在控制台「服务」页面可以看到。路径里的 ID 写错、不属于你、或转发已删除，都统一返回 <code>404</code>，不区分具体原因。</p>
+<p>服务 ID 可以调用 <code>GET /api/v1/user/services</code> 获取，也列在控制台「账户安全」页的 API 令牌下方，以及每个服务的详情页里。它<strong>不是</strong>「客户端」页面上的客户端 ID，也不是商城服务编号；用错 ID 会得到 <code>404 service_not_found</code>。路径里的 ID 写错、不属于你、或转发已删除，都统一返回 <code>404</code>，不区分具体原因。</p>
 
 <h2>第一步：查询可用线路</h2>
 <pre>GET /api/v1/user/services/42/forward-options</pre>
@@ -128,7 +129,7 @@ GET /api/v1/user/forwards/123</pre>
   "updated_at": "2026-10-07 03:05:00"
 }</pre>
 <ul>
-  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。</li>
+  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。收到的值可能带 <code>W/</code> 前缀（<code>W/"forward-{id}-r{revision}"</code>），原样放进 <code>If-Match</code> 即可。</li>
   <li><code>ingress</code> 是保留字段，目前固定为 <code>null</code>，请不要依赖它。连接信息由客户端自动获取。</li>
 </ul>
 

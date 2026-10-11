@@ -293,7 +293,17 @@ final class ForwardLineApiContract
     /** @param array<string, mixed> $forward */
     public static function matchesEtag(?string $ifMatch, array $forward): bool
     {
-        return is_string($ifMatch) && hash_equals(self::etag($forward), $ifMatch);
+        if (!is_string($ifMatch)) {
+            return false;
+        }
+        // Cloudflare weakens the ETag when it compresses the response, so the
+        // only value a client ever receives is W/"forward-{id}-r{rev}". The
+        // revision is exact either way, so the weak form names the same version.
+        $candidate = trim($ifMatch);
+        if (str_starts_with($candidate, 'W/')) {
+            $candidate = substr($candidate, 2);
+        }
+        return hash_equals(self::etag($forward), $candidate);
     }
 
     /** @param array<string, mixed> $forward */

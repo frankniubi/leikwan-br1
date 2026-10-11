@@ -29,6 +29,7 @@
 <table>
   <thead><tr><th>方法</th><th>路徑</th><th>用途</th></tr></thead>
   <tbody>
+    <tr><td><code>GET</code></td><td><code>/api/v1/user/services</code></td><td>列出你名下的服務與它們的服務 ID</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服務ID}/forward-options</code></td><td>查詢可用線路、傳輸方式與額度</td></tr>
     <tr><td><code>GET</code></td><td><code>/api/v1/user/services/{服務ID}/forwards</code></td><td>列出該服務下生效中的轉發</td></tr>
     <tr><td><code>POST</code></td><td><code>/api/v1/user/services/{服務ID}/forwards</code></td><td>建立轉發</td></tr>
@@ -37,7 +38,7 @@
     <tr><td><code>DELETE</code></td><td><code>/api/v1/user/forwards/{轉發ID}</code></td><td>刪除轉發</td></tr>
   </tbody>
 </table>
-<p>服務 ID 可以在控制台「服務」頁面看到。路徑裡的 ID 寫錯、不屬於你、或轉發已刪除，一律回傳 <code>404</code>，不區分具體原因。</p>
+<p>服務 ID 可以呼叫 <code>GET /api/v1/user/services</code> 取得，也列在控制台「帳戶安全」頁的 API 令牌下方，以及每個服務的詳情頁裡。它<strong>不是</strong>「用戶端」頁面上的用戶端 ID，也不是商城服務編號；用錯 ID 會得到 <code>404 service_not_found</code>。路徑裡的 ID 寫錯、不屬於你、或轉發已刪除，一律回傳 <code>404</code>，不區分具體原因。</p>
 
 <h2>第一步：查詢可用線路</h2>
 <pre>GET /api/v1/user/services/42/forward-options</pre>
@@ -128,7 +129,7 @@ GET /api/v1/user/forwards/123</pre>
   "updated_at": "2026-10-07 03:05:00"
 }</pre>
 <ul>
-  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。</li>
+  <li><code>revision</code> 每修改一次加 1，ETag 就是 <code>"forward-{id}-r{revision}"</code>。收到的值可能帶 <code>W/</code> 前綴（<code>W/"forward-{id}-r{revision}"</code>），原樣放進 <code>If-Match</code> 即可。</li>
   <li><code>ingress</code> 是保留欄位，目前固定為 <code>null</code>，請不要依賴它。連線資訊由用戶端自動取得。</li>
 </ul>
 

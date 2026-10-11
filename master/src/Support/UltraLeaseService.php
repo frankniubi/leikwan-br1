@@ -77,6 +77,13 @@ final class UltraLeaseService
      * rollout window, then remove them.
      */
     public const ATTESTATION_EXTRA_HASHES_KEY = 'ULTRA_ATTESTATION_EXTRA_HASHES_JSON';
+    /**
+     * Operator-approved non-official runtimes (self-built or containerised
+     * agents), as comma-separated "<client_id>:<device_id>" pairs. A listed
+     * device skips the attestation check entirely. The pair is scoped to its
+     * client so another account cannot borrow an exempt device id.
+     */
+    public const ATTESTATION_EXEMPT_DEVICES_KEY = 'ULTRA_ATTESTATION_EXEMPT_DEVICES';
     public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
 
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
@@ -451,6 +458,9 @@ final class UltraLeaseService
         if (strtolower(trim((string) $this->config->get(self::ATTESTATION_ENFORCEMENT_KEY, 'report'))) !== 'enforce') {
             return null;
         }
+        if ($this->deviceIsAttestationExempt($clientId, $deviceHash)) {
+            return null;
+        }
         $expected = $this->releasedRuntimeHashes();
         if ($expected === []) {
             return null;
@@ -518,6 +528,30 @@ final class UltraLeaseService
         return self::ERROR_RUNTIME_UNATTESTED;
     }
 
+    /** Whether ULTRA_ATTESTATION_EXEMPT_DEVICES lists this client's device. */
+    private function deviceIsAttestationExempt(int $clientId, string $deviceHash): bool
+    {
+        return self::deviceListed($this->config->get(self::ATTESTATION_EXEMPT_DEVICES_KEY, ''), $clientId, $deviceHash);
+    }
+
+    /**
+     * Whether a comma-separated "<client_id>:<device_id>" list names this
+     * client's device. $deviceHash is sha256 of the trimmed device id.
+     */
+    public static function deviceListed(?string $configured, int $clientId, string $deviceHash): bool
+    {
+        foreach (explode(',', (string) $configured) as $entry) {
+            [$entryClient, $entryDevice] = array_pad(explode(':', trim($entry), 2), 2, '');
+            $entryClient = trim($entryClient);
+            $entryDevice = trim($entryDevice);
+            if ($entryDevice !== '' && ctype_digit($entryClient) && (int) $entryClient === $clientId
+                && hash_equals(hash('sha256', $entryDevice), $deviceHash)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Platform prefixes the attestation check applies to ("linux" by default). */
     private function platformIsEnforced(string $platform): bool
     {
@@ -548,19 +582,22 @@ final class UltraLeaseService
      */
     private function releasedRuntimeHashes(): array
     {
-        if ($this->releasedRuntimeHashes !== null) {
-            return $this->releasedRuntimeHashes;
-        }
-        $this->releasedRuntimeHashes = [];
-        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
-        if (!is_file($path)) {
-            return $this->releasedRuntimeHashes;
-        }
-        $decoded = json_decode((string) @file_get_contents($path), true);
-        if (!is_array($decoded)) {
-            return $this->releasedRuntimeHashes;
-        }
-        foreach ($decoded as $entry) {
+        return $this->releasedRuntimeHashes ??= self::releasedRuntimeHashMap($this->config);
+    }
+
+    /**
+     * The released fingerprint => hashes map behind enforcement, shared with
+     * the admin attestation view so both judge sessions against the same
+     * releases. $manifestPath defaults to the live artifacts/versions.json.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function releasedRuntimeHashMap(Config $config, ?string $manifestPath = null): array
+    {
+        $released = [];
+        $path = $manifestPath ?? dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
+        $decoded = is_file($path) ? json_decode((string) @file_get_contents($path), true) : null;
+        foreach (is_array($decoded) ? $decoded : [] as $entry) {
             if (!is_array($entry)) {
                 continue;
             }
@@ -573,14 +610,11 @@ final class UltraLeaseService
             if ($fingerprint === '' || preg_match('/^[a-f0-9]{64}$/', $hash) !== 1) {
                 continue;
             }
-            if (!isset($this->releasedRuntimeHashes[$fingerprint])) {
-                $this->releasedRuntimeHashes[$fingerprint] = [];
-            }
-            if (!in_array($hash, $this->releasedRuntimeHashes[$fingerprint], true)) {
-                $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+            if (!in_array($hash, $released[$fingerprint] ?? [], true)) {
+                $released[$fingerprint][] = $hash;
             }
         }
-        $extra = json_decode((string) $this->config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
+        $extra = json_decode((string) $config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
         foreach (is_array($extra) ? $extra : [] as $fingerprint => $hashes) {
             $fingerprint = strtolower(trim((string) $fingerprint));
             if ($fingerprint === '' || !is_array($hashes)) {
@@ -589,14 +623,14 @@ final class UltraLeaseService
             foreach ($hashes as $hash) {
                 $hash = strtolower(trim((string) $hash));
                 if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1
-                    && !in_array($hash, $this->releasedRuntimeHashes[$fingerprint] ?? [], true)) {
-                    $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+                    && !in_array($hash, $released[$fingerprint] ?? [], true)) {
+                    $released[$fingerprint][] = $hash;
                 }
             }
         }
         // One fingerprint can ship several platform binaries; a client only ever
         // reports one of them, so every published hash for the fingerprint counts.
-        return $this->releasedRuntimeHashes;
+        return $released;
     }
 
     /**

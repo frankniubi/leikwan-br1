@@ -10,6 +10,7 @@ use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\ServiceStatus;
 
 final class ForwardLineApiController extends BaseController
 {
@@ -19,6 +20,42 @@ final class ForwardLineApiController extends BaseController
         private ProvisioningService $provisioning,
     ) {
         parent::__construct($config, $db);
+    }
+
+    /**
+     * The service ids every other endpoint takes. They are services.id, not the
+     * Client ID on the Clients page nor the WHMCS service id, and tenants could
+     * not find them anywhere, so a program can discover them here first.
+     */
+    public function services(Request $request, array $params): Response
+    {
+        return $this->run(function () use ($request): Response {
+            $user = $this->authenticateTenant($request);
+            $rows = $this->db->fetchAll(
+                'SELECT s.*, u.feature_flags_json AS user_feature_flags_json,
+                        p.name AS plan_name, p.feature_flags_json AS plan_feature_flags_json
+                 FROM services s
+                 INNER JOIN users u ON u.id = s.user_id
+                 LEFT JOIN service_plans p ON p.id = s.plan_id
+                 WHERE s.user_id = :user_id
+                 ORDER BY s.id ASC',
+                ['user_id' => (int) $user['id']]
+            );
+            $services = [];
+            foreach ($rows as $service) {
+                $serviceId = (int) ($service['id'] ?? 0);
+                $service['status'] = ServiceStatus::effective($service);
+                $service['effective_features'] = $this->effectiveFeatures($service);
+                $service['active_forward_count'] = $this->activeForwardCount($serviceId);
+                $service['forward_limit'] = $this->provisioning->forwardLimitForService($serviceId);
+                $services[] = ForwardLineApiContract::presentService($service);
+            }
+
+            return $this->success([
+                'ok' => true,
+                'services' => $services,
+            ]);
+        });
     }
 
     public function options(Request $request, array $params): Response

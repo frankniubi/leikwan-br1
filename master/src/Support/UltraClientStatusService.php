@@ -12,9 +12,12 @@ final class UltraClientStatusService
     public const MAX_STATUS_BYTES = 65536;
 
     /**
-     * Comma-separated allow-list of known-good runtime build fingerprints.
-     * Empty (the default) means "no baseline": every attested session is
-     * reported as unknown and nothing is ever denied.
+     * Comma-separated extra known-good runtime build fingerprints, on top of
+     * every released one (artifacts/versions.json plus
+     * ULTRA_ATTESTATION_EXTRA_HASHES_JSON, the same set lease enforcement
+     * accepts). Use it only for builds the panel never published. With no
+     * releases and nothing configured there is no baseline: every attested
+     * session is reported as unknown and nothing is ever denied.
      */
     public const RUNTIME_FINGERPRINTS_KEY = 'ULTRA_RUNTIME_FINGERPRINTS';
     /**
@@ -39,6 +42,7 @@ final class UltraClientStatusService
         private $clock = null,
         ?UltraCandidateReputationService $candidateReputation = null,
         ?UltraCandidateReviewService $candidateReviews = null,
+        private ?string $releaseManifestPath = null,
     ) {
         $this->clock ??= static fn(): int => time();
         $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
@@ -405,9 +409,16 @@ final class UltraClientStatusService
         if ($this->runtimeFingerprints !== null) {
             return $this->runtimeFingerprints;
         }
+        // Released fingerprints come first so a runtime release is known the
+        // moment it is published; the configured list was hand-maintained and
+        // went stale after every release, flagging all current clients.
         $configured = (string) ($this->config->get(self::RUNTIME_FINGERPRINTS_KEY, '') ?? '');
+        $candidates = array_merge(
+            array_map('strval', array_keys(UltraLeaseService::releasedRuntimeHashMap($this->config, $this->releaseManifestPath))),
+            explode(',', $configured)
+        );
         $list = [];
-        foreach (explode(',', $configured) as $entry) {
+        foreach ($candidates as $entry) {
             $fingerprint = self::runtimeFingerprintOrNull(trim($entry));
             if ($fingerprint !== null) {
                 $list[$fingerprint] = true;
@@ -423,7 +434,7 @@ final class UltraClientStatusService
     }
 
     /**
-     * known    -> attested fingerprint is in the operator allow-list
+     * known    -> attested fingerprint is released or in the operator allow-list
      * mismatch -> attested fingerprint is not in a non-empty allow-list
      * unknown  -> no attestation, unusable attestation, or no allow-list yet
      */
