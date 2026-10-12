@@ -123,6 +123,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             server.startOrReloadService(config, OverrideOptions())
 
             isRunning = true
+            TrafficMonitor.onStarted()
             startupState = VpnStartupState.RUNNING
             lastStartError = null
             updateNotification(getString(R.string.vpn_notification_connected))
@@ -167,6 +168,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         // reachable after the VPN runtime has been stopped.
         configJson = null
         isRunning = false
+        TrafficMonitor.onStopped()
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
             lastStartError = null
@@ -176,6 +178,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        TrafficMonitor.onStopped()
         closeRuntime()
         instance = null
         isRunning = false
@@ -208,6 +211,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     ?.takeIf { it.isNotEmpty() },
                 inet4RouteExcludes = options.inet4RouteExcludeAddress.toRoutePrefixes(),
                 inet6RouteExcludes = options.inet6RouteExcludeAddress.toRoutePrefixes(),
+                includePackages = options.includePackage.toList(),
+                excludePackages = options.excludePackage.toList(),
             ),
             ownerPackageName = packageName,
         )
@@ -241,9 +246,22 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.w(TAG, "TUN route exclusions require API 33 or newer")
         }
         plan.dnsServers.forEach { dns -> builder.addDnsServer(dns) }
-        plan.disallowedPackageNames.forEach { packageName ->
-            builder.addDisallowedApplication(packageName)
-            Log.i(TAG, "Excluded VPN owner package from captured traffic: $packageName")
+        // Apps that are not installed are skipped; Android rejects unknown packages.
+        val allowed = plan.allowedPackageNames.count { packageName ->
+            runCatching { builder.addAllowedApplication(packageName) }.isSuccess
+        }
+        if (plan.allowedPackageNames.isNotEmpty()) {
+            Log.i(TAG, "Per-app VPN: $allowed of ${plan.allowedPackageNames.size} selected apps use the VPN")
+        }
+        if (allowed == 0) {
+            // No selected app is installed (or every app uses the VPN): capture all apps but
+            // keep this app, and its runtimes, outside its own VPN.
+            val disallowed = plan.disallowedPackageNames.ifEmpty { listOf(packageName) }
+            disallowed.forEach { excluded ->
+                runCatching { builder.addDisallowedApplication(excluded) }
+                    .onFailure { Log.w(TAG, "Cannot exclude $excluded from the VPN", it) }
+            }
+            Log.i(TAG, "Per-app VPN: ${disallowed.size} apps excluded from captured traffic")
         }
 
         val replacement = builder.establish() ?: throw Exception("VPN permission not granted")
@@ -257,6 +275,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun useProcFS(): Boolean = false
 
+    /** Owning app of a connection, for sing-box `package_name` rules (Android 10+). */
     override fun findConnectionOwner(
         ipProtocol: Int,
         sourceAddress: String?,
@@ -264,7 +283,22 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         destinationAddress: String?,
         destinationPort: Int,
     ): ConnectionOwner {
-        return ConnectionOwner()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || sourceAddress == null || destinationAddress == null) {
+            throw java.io.IOException("connection_owner_unavailable")
+        }
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+            ?: throw java.io.IOException("connection_owner_unavailable")
+        val uid = connectivity.getConnectionOwnerUid(
+            ipProtocol,
+            java.net.InetSocketAddress(sourceAddress, sourcePort),
+            java.net.InetSocketAddress(destinationAddress, destinationPort),
+        )
+        if (uid == android.os.Process.INVALID_UID) throw java.io.IOException("connection_owner_not_found")
+        val packages = packageManager.getPackagesForUid(uid)?.toList().orEmpty()
+        return ConnectionOwner().apply {
+            userId = uid
+            setAndroidPackageNames(stringIterator(packages))
+        }
     }
 
     override fun readWIFIState(): WIFIState? = null
@@ -303,6 +337,13 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             override fun hasNext() = items.hasNext()
             override fun next(): io.nekohasekai.libbox.NetworkInterface = items.next()
         }
+    }
+
+    private fun StringIterator?.toList(): List<String> {
+        if (this == null) return emptyList()
+        val values = mutableListOf<String>()
+        while (hasNext()) values += next()
+        return values
     }
 
     private fun stringIterator(values: List<String>): StringIterator {
@@ -447,6 +488,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             addCommand(Libbox.CommandLog)
             addCommand(Libbox.CommandConnections)
             addCommand(Libbox.CommandStatus)
+            // Go time.Duration: one dashboard sample per second.
+            statusInterval = 1_000_000_000L
         }
         runCatching {
             CommandClient(BoxDiagnosticsHandler(), options).also { client ->
@@ -509,6 +552,13 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
         override fun writeStatus(message: StatusMessage?) {
             if (message == null) return
+            TrafficMonitor.report(
+                uplink = message.uplink,
+                downlink = message.downlink,
+                uplinkTotal = message.uplinkTotal,
+                downlinkTotal = message.downlinkTotal,
+                connections = message.connectionsOut,
+            )
             Log.d(
                 TAG,
                 "box status in=${message.connectionsIn} out=${message.connectionsOut} " +

@@ -16,6 +16,7 @@ use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
+use Leikwan\Master\Support\HostedNodeService;
 use Leikwan\Master\Support\LeigodTokenBroker;
 use Leikwan\Master\Support\UltraOfflineValidityTokenProvider;
 use Leikwan\Master\Support\LeigodTokenProvider;
@@ -942,6 +943,9 @@ final class ClientAgentController extends BaseController
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
+                // Hosted user nodes change marker; devices fetch the nodes
+                // themselves from /api/client/hosted-nodes when it moves.
+                'hosted_nodes_revision' => (string) ($snapshot['hosted_nodes_revision'] ?? ''),
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
@@ -1060,6 +1064,12 @@ final class ClientAgentController extends BaseController
         }
         $forwardRevision = self::forwardRevision($forwards, $nativeOutbound);
         $debugCollection = (new DebugCollectionStore($this->db, $this->config))->metadata($client);
+        $hostedNodesRevision = $this->hostedNodesRevision($client);
+        $revisionExtra = ['debug_collection' => $debugCollection, 'runtime_architecture' => $runtimeArchitecture];
+        if ($hostedNodesRevision !== '') {
+            // Only clients that host nodes see a revision change from this.
+            $revisionExtra['hosted_nodes'] = $hostedNodesRevision;
+        }
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             $clientAgentKey => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
@@ -1070,7 +1080,7 @@ final class ClientAgentController extends BaseController
             'mptcp_client_runtime' => $mptcpRuntime,
             'cfwg_latency_watchdog' => $cfwgLatencyWatchdog,
             'wstunnel_binary' => $wstunnelBinary,
-        ], ['debug_collection' => $debugCollection, 'runtime_architecture' => $runtimeArchitecture]);
+        ], $revisionExtra);
 
         return [
             'forwards' => $forwards,
@@ -1092,9 +1102,25 @@ final class ClientAgentController extends BaseController
             'update_request_token' => $updateRequestToken,
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
+            'hosted_nodes_revision' => $hostedNodesRevision,
             'force_apply' => false,
             'next_poll_after_ms' => 30000,
         ];
+    }
+
+    /**
+     * Hosted-node change marker ('' without hosted nodes). Optional: a lookup
+     * failure keeps the feature invisible and never breaks the config pull.
+     *
+     * @param array<string, mixed> $client
+     */
+    private function hostedNodesRevision(array $client): string
+    {
+        try {
+            return HostedNodeService::fromConfig($this->config, $this->db)->revisionForClient($client);
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     /**

@@ -1,12 +1,5 @@
 package com.leikwan.bridge.ui.connections
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,90 +11,84 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.DataUsage
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Lan
+import androidx.compose.material.icons.outlined.ListAlt
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leikwan.bridge.R
-import com.leikwan.bridge.data.ProxyNode
-import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.routing.AppPolicy
+import com.leikwan.bridge.routing.AppVpnScope
+import com.leikwan.bridge.service.TrafficFormat
+import com.leikwan.bridge.service.TrafficMonitor
+import com.leikwan.bridge.service.TrafficSnapshot
 import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.UpdateBanner
 import com.leikwan.bridge.ui.shared.deviceLimitMessage
+import com.leikwan.bridge.ui.theme.LocalStatusColors
+import com.leikwan.bridge.update.AppUpdateController
+import com.leikwan.bridge.update.AppUpdateState
+import kotlinx.coroutines.delay
 
+/** Dashboard tab, laid out after FlClash: a status header over a grid of small widget cards. */
 @Composable
 fun ConnectionsScreen(
+    viewModel: ConnectionsViewModel,
+    onOpenServices: () -> Unit = {},
+    onOpenAppRouting: () -> Unit = {},
     onImportNode: () -> Unit = {},
-    viewModel: ConnectionsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsState()
-    val activity = LocalContext.current as? MainActivity
-    var nodePickerForward by remember { mutableStateOf<Long?>(null) }
+    val traffic by TrafficMonitor.state.collectAsState()
+    val updateState by AppUpdateController.state.collectAsState()
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { viewModel.refreshLocalSettings() }
 
     ConnectionsScreenContent(
         state = state,
-        onToggle = onToggle(viewModel, state, activity),
-        onSelectForward = viewModel::selectForward,
-        onOpenNodePicker = { forwardId -> nodePickerForward = forwardId },
-        onRefresh = viewModel::refreshForwards,
+        traffic = traffic,
+        updateState = updateState,
+        onUpdate = { AppUpdateController.downloadAndInstall(context) },
+        onSetRuleMode = viewModel::setRuleMode,
+        onOpenServices = onOpenServices,
+        onOpenAppRouting = onOpenAppRouting,
         onImportNode = onImportNode,
-        onNativeSelected = viewModel::setNativeSelected,
-        onNativeForward = viewModel::setNativeForward,
-        onNativeRouteScope = viewModel::setNativeRouteScope,
-        onNativeBypassChina = viewModel::setNativeBypassChina,
-        onNativeRoutePolicy = viewModel::setNativeRoutePolicy,
     )
-
-    nodePickerForward?.let { forwardId ->
-        NodePickerDialog(
-            forwardId = forwardId,
-            nodes = state.nodes,
-            nodeByForward = state.nodeByForward,
-            onPick = { nodeId -> viewModel.selectNodeForForward(forwardId, nodeId); nodePickerForward = null },
-            onImport = { onImportNode(); nodePickerForward = null },
-            onDismiss = { nodePickerForward = null },
-        )
-    }
 }
 
-/** Ask Android for VPN consent before the first tunnel start. */
-private fun onToggle(
+/** Starts or stops the tunnel, asking Android for VPN consent before the first start. */
+internal fun connectToggle(
     viewModel: ConnectionsViewModel,
     state: ConnectionsUiState,
     activity: MainActivity?,
@@ -117,84 +104,76 @@ private fun onToggle(
 @Composable
 internal fun ConnectionsScreenContent(
     state: ConnectionsUiState,
-    onToggle: () -> Unit,
-    onSelectForward: (Long) -> Unit,
-    onOpenNodePicker: (Long) -> Unit,
-    onRefresh: () -> Unit,
-    onImportNode: () -> Unit,
-    onNativeSelected: (Boolean) -> Unit = {},
-    onNativeForward: (Long) -> Unit = {},
-    onNativeRouteScope: (String) -> Unit = {},
-    onNativeBypassChina: (Boolean) -> Unit = {},
-    onNativeRoutePolicy: (String) -> Unit = {},
+    traffic: TrafficSnapshot = TrafficSnapshot(),
+    updateState: AppUpdateState = AppUpdateState.Idle,
+    onUpdate: () -> Unit = {},
+    onSetRuleMode: (Boolean) -> Unit = {},
+    onOpenServices: () -> Unit = {},
+    onOpenAppRouting: () -> Unit = {},
+    onImportNode: () -> Unit = {},
 ) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        state.deviceLimit?.let { notice ->
-            DeviceLimitCard(notice)
-            Spacer(Modifier.height(16.dp))
-        }
-
-        MasterSwitchCard(state = state, onToggle = onToggle)
-        Spacer(Modifier.height(16.dp))
-
-        state.error?.let { err ->
-            Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(8.dp))
-        }
-
-        StandardProxyCard(
-            state = state,
-            onSelectForward = onSelectForward,
-            onOpenNodePicker = onOpenNodePicker,
-            onRefresh = onRefresh,
-            onImportNode = onImportNode,
-        )
-
-        if (state.nativeVisible) {
-            Spacer(Modifier.height(16.dp))
-            NativeOutboundCard(
-                state = state,
-                onSelected = onNativeSelected,
-                onForward = onNativeForward,
-                onRouteScope = onNativeRouteScope,
-                onBypassChina = onNativeBypassChina,
-                onRoutePolicy = onNativeRoutePolicy,
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-        SecurityNoteCard()
-    }
-}
-
-/** Persistent while the panel refuses this device for a full online device limit. */
-@Composable
-private fun DeviceLimitCard(notice: DeviceLimitNotice) {
-    val context = LocalContext.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        ),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-            Text(stringResource(R.string.device_limit_title), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(6.dp))
-            Text(context.deviceLimitMessage(notice), style = MaterialTheme.typography.bodyMedium)
+        DashboardHeader(state = state, traffic = traffic)
+
+        UpdateBanner(state = updateState, onUpdate = onUpdate)
+        state.deviceLimit?.let { notice -> DeviceLimitCard(notice) }
+        state.error?.let { err ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ) {
+                Text(err, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+            }
         }
+        if (!state.hasUsablePath && !state.isLoading) {
+            EmptyNodeCard(onImportNode = onImportNode)
+        }
+
+        NetworkSpeedCard(traffic = traffic)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutboundModeCard(ruleMode = state.ruleMode, onSetRuleMode = onSetRuleMode)
+                AppRoutingCard(state = state, onClick = onOpenAppRouting)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                CurrentServiceCard(state = state, onClick = onOpenServices)
+                TrafficUsageCard(traffic = traffic)
+                ValueCard(
+                    icon = Icons.Outlined.Lan,
+                    title = stringResource(R.string.dash_connections),
+                    value = traffic.connections.toString(),
+                )
+            }
+        }
+
+        // Room for the floating navigation dock.
+        Spacer(Modifier.height(88.dp))
     }
 }
 
 @Composable
-private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
-    val statusColor = when (state.vpnStatus) {
-        VpnStatus.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant
-        VpnStatus.CONNECTING -> Color(0xFFF59E0B)
-        VpnStatus.CONNECTED -> Color(0xFF22C55E)
+private fun DashboardHeader(state: ConnectionsUiState, traffic: TrafficSnapshot) {
+    val status = LocalStatusColors.current
+    val connecting = state.vpnStatus == VpnStatus.CONNECTING
+    val selectingRoutes = connecting && (state.selectingRouteCandidates ?: 0) > 1
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    if (state.vpnStatus == VpnStatus.CONNECTED && traffic.runningSinceMs > 0) {
+        LaunchedEffect(traffic.runningSinceMs) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1_000)
+            }
+        }
     }
-    val selectingRoutes = state.vpnStatus == VpnStatus.CONNECTING &&
-        (state.selectingRouteCandidates ?: 0) > 1
     val statusText = when (state.vpnStatus) {
         VpnStatus.CONNECTING -> if (selectingRoutes) {
             stringResource(R.string.connections_status_selecting_routes, state.selectingRouteCandidates ?: 0)
@@ -206,573 +185,217 @@ private fun MasterSwitchCard(state: ConnectionsUiState, onToggle: () -> Unit) {
         } else {
             stringResource(R.string.connections_status_no_node)
         }
-        VpnStatus.CONNECTED -> {
-            val name = state.selectedForwardForwardName()
-            stringResource(R.string.connections_status_connected_format, name, state.bridgedListenPort)
-        }
-    }
-
-    val connecting = state.vpnStatus == VpnStatus.CONNECTING
-    val dotAlpha = if (connecting) {
-        val pulse = rememberInfiniteTransition(label = "connect-pulse")
-        pulse.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.25f,
-            animationSpec = infiniteRepeatable(tween(durationMillis = 700), RepeatMode.Reverse),
-            label = "connect-pulse-alpha",
-        ).value
-    } else {
-        1f
-    }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(20.dp).fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.connections_master_title), style = MaterialTheme.typography.titleLarge)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            modifier = Modifier.size(10.dp).alpha(dotAlpha),
-                            shape = MaterialTheme.shapes.small,
-                            color = statusColor,
-                        ) {}
-                        Spacer(Modifier.width(8.dp))
-                        Text(statusText, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                Switch(
-                    checked = state.vpnStatus != VpnStatus.DISCONNECTED,
-                    onCheckedChange = { onToggle() },
-                    enabled = !connecting,
-                )
-            }
-            if (connecting) {
-                Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = statusColor)
-                if (selectingRoutes) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        stringResource(R.string.connections_status_selecting_routes_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun ConnectionsUiState.selectedForwardForwardName(): String {
-    val forward = forwards.firstOrNull { it.forwardId == selectedForwardId } ?: return ""
-    return forward.direction.takeIf { it.isNotBlank() } ?: forward.serviceName
-}
-
-@Composable
-private fun SectionDrawerHeader(
-    title: String,
-    summary: String? = null,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    trailingContent: @Composable () -> Unit = {},
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleLarge)
-            summary?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        trailingContent()
-        IconButton(onClick = onToggle) {
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = stringResource(
-                    if (expanded) R.string.connections_section_collapse
-                    else R.string.connections_section_expand,
-                ),
-            )
-        }
-    }
-}
-
-@Composable
-private fun StandardProxyCard(
-    state: ConnectionsUiState,
-    onSelectForward: (Long) -> Unit,
-    onOpenNodePicker: (Long) -> Unit,
-    onRefresh: () -> Unit,
-    onImportNode: () -> Unit,
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column {
-            SectionDrawerHeader(
-                title = stringResource(R.string.connections_standard_title),
-                summary = stringResource(R.string.connections_standard_summary),
-                expanded = expanded,
-                onToggle = { expanded = !expanded },
-                trailingContent = {
-                    Text(
-                        stringResource(R.string.connections_optional),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
-            )
-            if (expanded) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
-                    if (!state.hasUsablePath) {
-                        EmptyNodeState(
-                            state = state,
-                            onImportNode = onImportNode,
-                            onRefresh = onRefresh,
-                        )
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                stringResource(R.string.connections_pairing_heading),
-                                style = MaterialTheme.typography.titleLarge,
-                            )
-                            IconButton(onClick = onRefresh) {
-                                Icon(Icons.Default.Refresh, stringResource(R.string.connections_refresh))
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-
-                        if (state.isLoading) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Spacer(Modifier.height(8.dp))
-                        }
-
-                        if (state.forwards.isEmpty()) {
-                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                                Text(
-                                    stringResource(R.string.connections_empty_forwards),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        } else {
-                            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(state.forwards, key = { it.forwardId }) { forward ->
-                                    PairingCard(
-                                        forward = forward,
-                                        node = state.nodeFor(forward.forwardId),
-                                        selected = forward.forwardId == state.selectedForwardId,
-                                        isConnected = state.vpnStatus != VpnStatus.DISCONNECTED,
-                                        nativeMode = state.nativeSelected && forward.forwardId == state.nativeForwardId,
-                                        onSelect = { onSelectForward(forward.forwardId) },
-                                        onOpenNodePicker = { onOpenNodePicker(forward.forwardId) },
-                                    )
-                                }
-                                item(key = "import-more") {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                        horizontalArrangement = Arrangement.Center,
-                                    ) {
-                                        TextButton(onClick = onImportNode) {
-                                            Text(stringResource(R.string.connections_import_more))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NativeOutboundCard(
-    state: ConnectionsUiState,
-    onSelected: (Boolean) -> Unit,
-    onForward: (Long) -> Unit,
-    onRouteScope: (String) -> Unit,
-    onBypassChina: (Boolean) -> Unit,
-    onRoutePolicy: (String) -> Unit,
-) {
-    var drawerExpanded by rememberSaveable { mutableStateOf(false) }
-    var carrierExpanded by rememberSaveable { mutableStateOf(false) }
-    val carrier = state.nativeCarrier
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column {
-            SectionDrawerHeader(
-                title = stringResource(R.string.connections_native_title),
-                summary = carrier?.direction?.takeIf { it.isNotBlank() }
-                    ?: stringResource(R.string.connections_native_unknown),
-                expanded = drawerExpanded,
-                onToggle = {
-                    val nextExpanded = !drawerExpanded
-                    drawerExpanded = nextExpanded
-                    if (!nextExpanded) carrierExpanded = false
-                },
-                trailingContent = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            stringResource(R.string.connections_optional),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
-                    }
-                },
-            )
-            if (drawerExpanded) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
-                    Spacer(Modifier.height(4.dp))
-                    if (carrier?.unrestrictedAllowed == true) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(stringResource(R.string.connections_native_unrestricted))
-                            Switch(
-                                checked = state.nativeRoutePolicy == "unrestricted",
-                                onCheckedChange = { enabled ->
-                                    onRoutePolicy(if (enabled) "unrestricted" else "restricted")
-                                },
-                                enabled = state.vpnStatus == VpnStatus.DISCONNECTED,
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
-                        ExposedDropdownMenuBox(
-                            expanded = carrierExpanded,
-                            onExpandedChange = { carrierExpanded = it },
-                        ) {
-                            OutlinedTextField(
-                                value = carrier?.direction.orEmpty(),
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text(stringResource(R.string.connections_native_forward)) },
-                                modifier = Modifier.fillMaxWidth().menuAnchor(),
-                                trailingIcon = {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = carrierExpanded)
-                                },
-                            )
-                            ExposedDropdownMenu(
-                                expanded = carrierExpanded,
-                                onDismissRequest = { carrierExpanded = false },
-                            ) {
-                                state.nativeOutbound?.forwards.orEmpty().forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.direction) },
-                                        onClick = {
-                                            carrierExpanded = false
-                                            onForward(option.forwardId)
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    val hasRestrictedScope = state.nativeScopes.any {
-                        it.equals("cn_only", ignoreCase = true) || it.equals("intl_only", ignoreCase = true)
-                    }
-                    if (hasRestrictedScope) {
-                        Text(
-                            stringResource(R.string.connections_native_scope),
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        state.nativeScopes.forEach { scope ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().clickable { onRouteScope(scope) },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                RadioButton(
-                                    selected = state.nativeRouteScope == scope,
-                                    onClick = { onRouteScope(scope) },
-                                )
-                                Text(when {
-                                    scope.equals("cn_only", ignoreCase = true) ->
-                                        stringResource(R.string.connections_native_scope_cn_only)
-                                    scope.equals("intl_only", ignoreCase = true) ->
-                                        stringResource(R.string.connections_native_scope_intl_only)
-                                    else -> stringResource(R.string.connections_native_scope_global)
-                                })
-                            }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(stringResource(R.string.connections_native_bypass_china))
-                        Switch(
-                            checked = state.nativeBypassChina,
-                            onCheckedChange = onBypassChina,
-                            enabled = state.nativeRouteScope == "global",
-                        )
-                    }
-                    Text(
-                        stringResource(R.string.connections_native_no_node),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmptyNodeState(
-    state: ConnectionsUiState,
-    onImportNode: () -> Unit,
-    onRefresh: () -> Unit,
-) {
-    if (state.isLoading) {
-        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
-    } else {
-        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
-            Column(
-                modifier = Modifier.padding(20.dp).fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(stringResource(R.string.connections_empty_title), style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    stringResource(R.string.connections_empty_body),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
-                Spacer(Modifier.height(14.dp))
-                TextButton(onClick = onImportNode) {
-                    Text(stringResource(R.string.connections_empty_import))
-                }
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Text(
-            stringResource(R.string.connections_wait_match),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-
-        if (state.forwards.isEmpty() && !state.isLoading) {
-            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                Text(stringResource(R.string.connections_empty_forwards), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+        VpnStatus.CONNECTED -> if (traffic.runningSinceMs > 0) {
+            stringResource(R.string.dash_status_running_format, TrafficFormat.duration(now - traffic.runningSinceMs))
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(state.forwards, key = { it.forwardId }) { forward ->
-                    WaitingForwardCard(forward, onRefresh)
-                }
-            }
+            stringResource(R.string.connections_status_connected_format, state.selectedRouteLabel())
         }
     }
-}
-
-@Composable
-private fun WaitingForwardCard(forward: ForwardListItem, onRefresh: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-    ) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(R.string.nav_dashboard), style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    forward.direction.takeIf { it.isNotBlank() } ?: forward.serviceName,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    stringResource(R.string.connections_forward_target_format, forward.target),
-                    style = MaterialTheme.typography.bodySmall,
+                    statusText,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                )
-                Text(
-                    stringResource(R.string.connections_listen_format, forward.listenPort),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
                 )
             }
-            AssistChip(
-                onClick = onRefresh,
-                label = { Text(stringResource(R.string.connections_wait_match)) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun PairingCard(
-    forward: ForwardListItem,
-    node: ProxyNode?,
-    selected: Boolean,
-    isConnected: Boolean,
-    nativeMode: Boolean = false,
-    onSelect: () -> Unit,
-    onOpenNodePicker: () -> Unit,
-) {
-    val border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onSelect,
-        enabled = !isConnected,
-        border = border,
-        colors = if (selected) {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
-        } else {
-            CardDefaults.cardColors()
-        },
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = selected, onClick = onSelect)
-                Spacer(Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    // Forward identity: direction + dest ip:port.
-                    Text(
-                        forward.direction.takeIf { it.isNotBlank() } ?: forward.serviceName,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        stringResource(R.string.connections_forward_target_format, forward.target),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stringResource(R.string.connections_listen_format, forward.listenPort),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontFamily = FontFamily.Monospace,
+            when (state.vpnStatus) {
+                VpnStatus.CONNECTED -> Surface(shape = CircleShape, color = status.connected, modifier = Modifier.size(40.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White)
+                    }
+                }
+                VpnStatus.CONNECTING -> CircularProgressIndicator(
+                    modifier = Modifier.size(32.dp),
+                    color = status.connecting,
+                    strokeWidth = 3.dp,
+                )
+                VpnStatus.DISCONNECTED -> Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (nativeMode) {
-                            Text(
-                                stringResource(R.string.connections_native_title),
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        } else {
-                            TextButton(onClick = onOpenNodePicker) {
-                                val nodeLabel = node?.name ?: stringResource(R.string.connections_node_placeholder)
-                                Text(stringResource(R.string.connections_node_format, nodeLabel))
-                            }
-                        }
                     }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AssistChip(onClick = {}, label = { Text(forward.methodDisplay) })
-                AssistChip(onClick = {}, label = { Text(forward.transport.uppercase()) })
-                forward.speedLimitMbps?.let {
-                    AssistChip(onClick = {}, label = { Text(stringResource(R.string.connections_speed_mbps_format, it)) })
-                }
-            }
+        }
+        if (connecting) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = status.connecting)
+        }
+        if (selectingRoutes) {
+            Text(
+                stringResource(R.string.connections_status_selecting_routes_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+    }
+}
+
+/** Persistent while the panel refuses this device for a full online device limit. */
+@Composable
+private fun DeviceLimitCard(notice: DeviceLimitNotice) {
+    val context = LocalContext.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+            Text(stringResource(R.string.device_limit_title), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text(context.deviceLimitMessage(notice), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 @Composable
-private fun SecurityNoteCard() {
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
-        Column(modifier = Modifier.padding(14.dp)) {
+private fun NetworkSpeedCard(traffic: TrafficSnapshot) {
+    WidgetCard(
+        icon = Icons.Outlined.Speed,
+        title = stringResource(R.string.dash_network_speed),
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = false,
+        trailing = {
             Text(
-                stringResource(R.string.connections_gate),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                stringResource(R.string.connections_gate_body),
+                "↑ ${TrafficFormat.rate(traffic.uplink)}  ↓ ${TrafficFormat.rate(traffic.downlink)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        },
+    ) {
+        SpeedChart(
+            values = traffic.history,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth().height(128.dp),
+        )
+    }
+}
+
+@Composable
+private fun OutboundModeCard(ruleMode: Boolean, onSetRuleMode: (Boolean) -> Unit) {
+    WidgetCard(icon = Icons.AutoMirrored.Outlined.CallSplit, title = stringResource(R.string.dash_outbound_mode)) {
+        ModeOption(
+            icon = Icons.Outlined.ListAlt,
+            label = stringResource(R.string.dash_mode_rule),
+            selected = ruleMode,
+            onClick = { onSetRuleMode(true) },
+        )
+        ModeOption(
+            icon = Icons.Outlined.Language,
+            label = stringResource(R.string.dash_mode_global),
+            selected = !ruleMode,
+            onClick = { onSetRuleMode(false) },
+        )
+    }
+}
+
+@Composable
+private fun ModeOption(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.small,
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(label, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 @Composable
-private fun NodePickerDialog(
-    forwardId: Long,
-    nodes: List<ProxyNode>,
-    nodeByForward: Map<Long, Long>,
-    onPick: (Long) -> Unit,
-    onImport: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val selectedNodeId = nodeByForward[forwardId]
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.connections_node_picker_title)) },
-        text = {
-            if (nodes.isEmpty()) {
-                Text(stringResource(R.string.connections_node_picker_empty))
-            } else {
-                Column {
-                    nodes.forEach { node ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().clickable { onPick(node.id) },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = node.id == selectedNodeId, onClick = { onPick(node.id) })
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(node.name, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    // The node's real server host:port is intentionally NOT shown: the
-                                    // local outbound dials only 127.0.0.1:<forward listen port> (the
-                                    // bridge), and the real server address is used by the forward
-                                    // process on the far side. Expose just the protocol, not the server.
-                                    node.type,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
+private fun CurrentServiceCard(state: ConnectionsUiState, onClick: () -> Unit) {
+    val label = state.selectedRouteLabel()
+    WidgetCard(
+        icon = Icons.Outlined.Hub,
+        title = stringResource(R.string.dash_current_service),
+        onClick = onClick,
+    ) {
+        Text(
+            label.ifBlank { stringResource(R.string.dash_no_service) },
+            style = MaterialTheme.typography.titleMedium,
+            color = if (label.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun TrafficUsageCard(traffic: TrafficSnapshot) {
+    val upColor = MaterialTheme.colorScheme.tertiary
+    val downColor = MaterialTheme.colorScheme.primary
+    WidgetCard(icon = Icons.Outlined.DataUsage, title = stringResource(R.string.dash_traffic_usage)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TrafficDonut(
+                upload = traffic.uplinkTotal,
+                download = traffic.downlinkTotal,
+                uploadColor = upColor,
+                downloadColor = downColor,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.size(52.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                LegendLine(color = upColor, text = "↑ " + TrafficFormat.bytes(traffic.uplinkTotal))
+                LegendLine(color = downColor, text = "↓ " + TrafficFormat.bytes(traffic.downlinkTotal))
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onImport) { Text(stringResource(R.string.connections_import_more)) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
-        },
-    )
+        }
+    }
+}
+
+@Composable
+private fun LegendLine(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(shape = CircleShape, color = color, modifier = Modifier.size(8.dp)) {}
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+    }
+}
+
+@Composable
+private fun AppRoutingCard(state: ConnectionsUiState, onClick: () -> Unit) {
+    val config = state.appRouting
+    val scopeText = if (config.scope == AppVpnScope.ALL_APPS) {
+        stringResource(R.string.dash_app_all)
+    } else {
+        stringResource(R.string.dash_app_selected_format, config.entries.count { it.policy != AppPolicy.BYPASS })
+    }
+    val ruleCount = config.routingRules().size
+    WidgetCard(
+        icon = Icons.Outlined.Apps,
+        title = stringResource(R.string.dash_app_routing),
+        onClick = onClick,
+    ) {
+        Text(scopeText, style = MaterialTheme.typography.titleMedium)
+        Text(
+            stringResource(R.string.dash_app_rules_format, ruleCount),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ValueCard(icon: ImageVector, title: String, value: String) {
+    WidgetCard(icon = icon, title = title) {
+        Text(value, style = MaterialTheme.typography.titleLarge)
+    }
 }

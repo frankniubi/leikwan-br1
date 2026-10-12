@@ -18,4 +18,6 @@ data class RoutingPolicySnapshot(
     val compileTimestampMs: Long,
     val warnings: List<String>,
     val precedenceVersion: Int,
+    /** Per-app rules (`package_name`); they outrank country and category rules. */
+    val userAppRules: List<AppRoutingRule> = emptyList(),
 )

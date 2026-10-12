@@ -3,6 +3,7 @@ package com.leikwan.bridge.ui.connections
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onLast
@@ -63,9 +64,8 @@ class ConnectionsScreenTest {
     fun nativeOptionStaysInvisibleWithoutEntitlement() {
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(forwards = listOf(forward)),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -81,14 +81,13 @@ class ConnectionsScreenTest {
     fun entitledNativeOptionExposesRouteScopesAndNoNodeCopy() {
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(
                         forwards = listOf(forward),
                         nativeOutbound = capability,
                         nativeForwardId = forward.forwardId,
                         nativeRouteScope = "global",
                     ),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -138,14 +137,13 @@ class ConnectionsScreenTest {
 
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(
                         forwards = listOf(nonInternationalForward),
                         nativeOutbound = globalOnlyCapability,
                         nativeForwardId = nonInternationalForward.forwardId,
                         nativeRouteScope = "global",
                     ),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -196,14 +194,13 @@ class ConnectionsScreenTest {
 
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(
                         forwards = listOf(intlForward),
                         nativeOutbound = intlCapability,
                         nativeForwardId = intlForward.forwardId,
                         nativeRouteScope = "intl_only",
                     ),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -226,14 +223,13 @@ class ConnectionsScreenTest {
         )
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(
                         forwards = listOf(forward),
                         nativeOutbound = entitled,
                         nativeForwardId = forward.forwardId,
                         nativeRouteScope = "global",
                     ),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -246,7 +242,7 @@ class ConnectionsScreenTest {
     }
 
     @Test
-    fun standardProxyDrawerStartsCollapsedAndExpandsToPairingControls() {
+    fun servicesListShowsEachForwardWithItsPairedNode() {
         val node = com.leikwan.bridge.data.ProxyNode(
             id = 17L,
             name = "QA node",
@@ -257,12 +253,11 @@ class ConnectionsScreenTest {
         )
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
+                ServicesScreenContent(
                     state = ConnectionsUiState(
                         forwards = listOf(forward),
                         nodes = listOf(node),
                     ),
-                    onToggle = {},
                     onSelectForward = {},
                     onOpenNodePicker = {},
                     onRefresh = {},
@@ -271,33 +266,22 @@ class ConnectionsScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("Standard proxy").assertExists()
-        composeRule.onNodeWithText("Your node × Service forward").assertDoesNotExist()
-        composeRule.onAllNodesWithContentDescription("Expand").onFirst().performClick()
-        composeRule.onNodeWithText("Your node × Service forward").assertExists()
+        // The page title and the list header both read "Services".
+        composeRule.onAllNodesWithText("Services").onFirst().assertExists()
         composeRule.onNodeWithText("QA node").assertExists()
-        composeRule.onAllNodesWithContentDescription("Collapse").onFirst().performClick()
-        composeRule.onNodeWithText("Your node × Service forward").assertDoesNotExist()
+        composeRule.onNodeWithText("Add your node").assertDoesNotExist()
+        composeRule.onNodeWithText("127.0.0.1", substring = true).assertDoesNotExist()
     }
 
     @Test
-    fun standardProxyDrawerKeepsEmptyNodeStateCollapsed() {
+    fun withoutANodeTheHomeScreenOffersTheImport() {
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
-                    state = ConnectionsUiState(forwards = listOf(forward)),
-                    onToggle = {},
-                    onSelectForward = {},
-                    onOpenNodePicker = {},
-                    onRefresh = {},
-                    onImportNode = {},
-                )
+                ConnectionsScreenContent(state = ConnectionsUiState(forwards = listOf(forward)))
             }
         }
 
-        composeRule.onNodeWithText("Standard proxy").assertExists()
-        composeRule.onNodeWithText("No node yet").assertDoesNotExist()
-        composeRule.onAllNodesWithContentDescription("Expand").onFirst().performClick()
+        composeRule.onNodeWithText("Add your node").assertExists()
         composeRule.onNodeWithText("No node yet").assertExists()
     }
 }

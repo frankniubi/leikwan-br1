@@ -10,6 +10,10 @@ import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.clientrules.PendingClientRuleOperation
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import androidx.room.Room
+import com.leikwan.bridge.data.AppDatabase
+import com.leikwan.bridge.data.hosted.HostedNodePairingStore
+import com.leikwan.bridge.data.hosted.HostedNodeSync
 import com.leikwan.bridge.security.DeviceSecurityResult
 import com.leikwan.bridge.session.DeviceAckRequest
 import com.leikwan.bridge.session.DeviceAckResponse
@@ -478,6 +482,77 @@ class PanelRepositoryRouteRuleSyncTest {
         }
         """.trimIndent()
     )
+
+    @Test
+    fun `pullCatalog syncs hosted nodes only when the hosted revision moves`() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).allowMainThreadQueries().build()
+        val hostedApi = ListOnlyHostedNodeApi()
+        val hostedPrefs = context.getSharedPreferences("route-rule-repo-hosted", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        val sync = HostedNodeSync(
+            api = { hostedApi },
+            authHeader = { "Bearer agent-token" },
+            clientIdProvider = { 7L },
+            dao = db.proxyNodeDao(),
+            store = HostedNodePairingStore(hostedPrefs),
+        )
+        val hostedRepo = PanelRepository(
+            context = context,
+            prefsOverride = testPrefs,
+            apiOverride = api,
+            routeRuleStore = store,
+            deviceIdProvider = { deviceId },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+            hostedNodeSyncOverride = sync,
+        )
+        val withRevision = JsonObject().apply { addProperty("hosted_nodes_revision", "rev1") }
+        api.pullResponse = PullConfigsResponse(ok = true, client = withRevision, forwards = emptyList())
+
+        hostedRepo.pullCatalog()
+        assertEquals(1, hostedApi.listCalls)
+        assertEquals(11L, db.proxyNodeDao().getHosted().single().hostedId)
+
+        hostedRepo.pullCatalog()
+        assertEquals("same revision: no fetch", 1, hostedApi.listCalls)
+
+        api.pullResponse = PullConfigsResponse(ok = true, client = JsonObject(), forwards = emptyList())
+        hostedRepo.pullCatalog()
+        assertEquals("older panel without the field: no fetch", 1, hostedApi.listCalls)
+
+        hostedApi.fail = true
+        api.pullResponse = PullConfigsResponse(
+            ok = true,
+            client = JsonObject().apply { addProperty("hosted_nodes_revision", "rev2") },
+            forwards = emptyList(),
+        )
+        hostedRepo.pullCatalog()
+        assertEquals("a hosted-node failure never fails the pull", 2, hostedApi.listCalls)
+        assertEquals("the last synced nodes are kept", 1, db.proxyNodeDao().getHosted().size)
+        db.close()
+    }
+
+    private class ListOnlyHostedNodeApi : HostedNodeApi {
+        var listCalls = 0
+        var fail = false
+
+        override suspend fun list(auth: String): Response<HostedNodesResponse> {
+            listCalls++
+            if (fail) throw java.io.IOException("offline")
+            return Response.success(
+                HostedNodesResponse(
+                    ok = true,
+                    revision = "rev1",
+                    nodes = listOf(HostedNodeDto(id = 11, name = "Home", uri = "socks5://alice:wonder@198.51.100.7:1080#Home")),
+                    pairings = emptyList(),
+                ),
+            )
+        }
+
+        override suspend fun create(auth: String, request: HostedNodeUploadRequest): Response<HostedNodesResponse> = error("unused")
+        override suspend fun batchCreate(auth: String, request: HostedNodeBatchRequest): Response<HostedNodesResponse> = error("unused")
+        override suspend fun update(auth: String, nodeId: Long, request: HostedNodeUpdateRequest): Response<HostedNodesResponse> = error("unused")
+        override suspend fun delete(auth: String, nodeId: Long): Response<HostedNodesResponse> = error("unused")
+        override suspend fun pair(auth: String, forwardId: Long, request: HostedNodePairingRequest): Response<HostedNodesResponse> = error("unused")
+    }
 
     private fun newRepository(routeRuleStore: ClientRouteRuleStore): PanelRepository = PanelRepository(
         context = context,

@@ -45,6 +45,7 @@ import com.leikwan.bridge.clientrules.RouteDirection
 
 @Composable
 fun ClientRulesScreen(
+    showTitle: Boolean = true,
     viewModel: ClientRulesViewModel = viewModel(factory = ClientRulesViewModel.factory(LocalContext.current)),
 ) {
     val state by viewModel.state.collectAsState()
@@ -58,6 +59,7 @@ fun ClientRulesScreen(
         onSubmit = viewModel::submitDraft,
         onToggleRule = viewModel::toggleRuleEnabled,
         onDeleteRule = viewModel::deleteRule,
+        showTitle = showTitle,
     )
 }
 
@@ -72,6 +74,7 @@ internal fun ClientRulesScreenContent(
     onSubmit: () -> Unit,
     onToggleRule: (String) -> Unit,
     onDeleteRule: (String) -> Unit,
+    showTitle: Boolean = true,
 ) {
     Column(
         modifier = Modifier
@@ -79,8 +82,10 @@ internal fun ClientRulesScreenContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text(stringResource(R.string.client_rules_title), style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
+        if (showTitle) {
+            Text(stringResource(R.string.client_rules_title), style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+        }
         Text(
             stringResource(R.string.client_rules_description),
             style = MaterialTheme.typography.bodyMedium,

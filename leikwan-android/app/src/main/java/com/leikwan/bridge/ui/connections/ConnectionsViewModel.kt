@@ -10,6 +10,7 @@ import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.data.hosted.HostedNodePairingStore
 import com.leikwan.bridge.net.PanelNetwork
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardListItem
@@ -19,6 +20,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.service.ConnectProgress
+import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.TunnelOrchestrator
@@ -73,6 +75,9 @@ data class ConnectionsUiState(
     val deviceLimit: DeviceLimitNotice? = null,
     /** Candidate routes the runtime is probing while connecting, or null outside route selection. */
     val selectingRouteCandidates: Int? = null,
+    /** Outbound mode: true = rules (routing selector), false = global (everything tunnelled). */
+    val ruleMode: Boolean = false,
+    val appRouting: AppRoutingConfig = AppRoutingConfig(),
 ) {
     val hasNode: Boolean get() = nodes.isNotEmpty()
     val nativeVisible: Boolean get() = nativeOutbound?.isUsable() == true
@@ -113,10 +118,16 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val startNativeConnect: suspend (Long, String, Boolean, String) -> Unit = { id, scope, bypass, policy ->
         TunnelOrchestrator.forApplication(app).startNativeForForward(id, scope, bypass, policy)
     },
+    /** forwardId -> node id paired on the panel for hosted nodes; shared by every device of the client. */
+    private val hostedPairings: StateFlow<Map<Long, Long>> = HostedNodePairingStore.from(app).pairings,
+    private val pushHostedPairing: suspend (Long, Long) -> Unit = { forwardId, nodeId ->
+        PanelRepository(app).hostedNodes.pushPairing(forwardId, nodeId)
+    },
     private val deviceLimitState: StateFlow<DeviceLimitNotice?> = DeviceLimitGate.state,
     private val deviceLimitRetryMs: Long = DEVICE_LIMIT_RETRY_MS,
     private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
     private val routeSelectionState: StateFlow<Int?> = ConnectProgress.selectingRouteCandidates,
+    vpnRunning: Boolean = LeikwanVpnService.isRunning,
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
@@ -127,15 +138,28 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val _state = MutableStateFlow(
         ConnectionsUiState(
             selectedForwardId = prefs.selectedForwardId,
-            vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
+            vpnStatus = if (vpnRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             nativeSelected = prefs.nativeOutboundSelected,
             nativeForwardId = prefs.nativeOutboundForwardId,
             nativeRouteScope = prefs.nativeOutboundRouteScope,
             nativeBypassChina = prefs.nativeOutboundBypassChina,
             nativeRoutePolicy = normalizeNativeRoutePolicy(prefs.nativeOutboundRoutePolicy),
+            ruleMode = prefs.routingSelectorEnabled,
+            appRouting = prefs.appRouting,
         )
     )
     val state = _state.asStateFlow()
+
+    /** Re-reads settings edited on other pages (outbound mode, per-app routing). */
+    fun refreshLocalSettings() {
+        _state.update { it.copy(ruleMode = prefs.routingSelectorEnabled, appRouting = prefs.appRouting) }
+    }
+
+    /** Rule mode applies user routing rules; global sends everything through the tunnel. */
+    fun setRuleMode(enabled: Boolean) {
+        prefs.routingSelectorEnabled = enabled
+        _state.update { it.copy(ruleMode = enabled) }
+    }
 
     init {
         viewModelScope.launch {
@@ -143,6 +167,18 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         }
         viewModelScope.launch {
             routeSelectionState.collect { count -> _state.update { it.copy(selectingRouteCandidates = count) } }
+        }
+        viewModelScope.launch {
+            // A pairing changed on the panel (console or another device) re-asserts here; a local
+            // pick made afterwards wins on this device until the panel pairing changes again.
+            hostedPairings.collect { pairings ->
+                _state.update { current ->
+                    val applied = pairings.filter { (_, nodeId) -> current.nodes.any { it.id == nodeId } }
+                    val next = current.copy(nodeByForward = current.nodeByForward + applied)
+                    applied[next.selectedForwardId]?.let { prefs.selectedProxyId = it }
+                    next
+                }
+            }
         }
         viewModelScope.launch {
             nodeFlows().collect { all ->
@@ -165,9 +201,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         prior: Map<Long, Long>,
     ): Map<Long, Long> {
         if (enabled.isEmpty()) return emptyMap()
+        val hosted = hostedPairings.value
         return forwards.associate { forward ->
             val nodeId = prior[forward.forwardId]
                 ?.takeIf { id -> enabled.any { it.id == id } }
+                ?: hosted[forward.forwardId]?.takeIf { id -> enabled.any { it.id == id } }
                 ?: enabled.first().id
             forward.forwardId to nodeId
         }
@@ -249,7 +287,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 val nativeAuthorizationChanged = wasNativeActive && (
                     !nativeSelected
                         || nativeId != activeNativeForwardId
-                        || nativeDirection != activeNativeDirection
+                        // A view model created over a running tunnel has not seen its carrier yet;
+                        // an unknown direction is not a changed one.
+                        || (activeNativeDirection.isNotEmpty() && nativeDirection != activeNativeDirection)
                         || nativeScope != activeNativeRouteScope
                         || nativePolicy != activeNativeRoutePolicy
                 )
@@ -349,6 +389,12 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         prefs.selectedProxyId = nodeId
         _state.update {
             it.copy(nodeByForward = it.nodeByForward + (forwardId to nodeId))
+        }
+        // A hosted node becomes this forward's pairing on every device of the client; a local-only
+        // node stays a pick on this device. Best effort: offline, the local pick still applies.
+        viewModelScope.launch {
+            runCatching { pushHostedPairing(forwardId, nodeId) }
+                .onFailure { Log.w(TAG, "Hosted pairing not synced", it) }
         }
     }
 

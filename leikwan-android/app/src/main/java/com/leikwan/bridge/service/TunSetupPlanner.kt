@@ -15,6 +15,10 @@ data class TunOptionSnapshot(
     val dnsServer: String?,
     val inet4RouteExcludes: List<RoutePrefix> = emptyList(),
     val inet6RouteExcludes: List<RoutePrefix> = emptyList(),
+    /** Per-app scope from the config: only these apps use the VPN (empty = all apps). */
+    val includePackages: List<String> = emptyList(),
+    /** Per-app scope from the config: these apps never use the VPN. */
+    val excludePackages: List<String> = emptyList(),
 )
 
 data class TunSetupPlan(
@@ -28,6 +32,12 @@ data class TunSetupPlan(
     val bindActiveNetwork: Boolean,
     val inet4RouteExcludes: List<RoutePrefix> = emptyList(),
     val inet6RouteExcludes: List<RoutePrefix> = emptyList(),
+    /**
+     * When non-empty, only these apps use the VPN (VpnService.Builder.addAllowedApplication) and
+     * [disallowedPackageNames] is empty: Android forbids mixing the two lists. This app is never
+     * listed, so it stays outside its own VPN either way.
+     */
+    val allowedPackageNames: List<String> = emptyList(),
 )
 
 object TunSetupPlanner {
@@ -63,10 +73,13 @@ object TunSetupPlanner {
             emptyList()
         }
         val dnsServers = listOf(snapshot.dnsServer?.takeIf { it.isNotBlank() } ?: fallbackDnsServer)
-        val disallowedPackageNames = ownerPackageName
-            ?.takeIf { it.isNotBlank() }
-            ?.let(::listOf)
-            ?: emptyList()
+        val owner = ownerPackageName?.takeIf { it.isNotBlank() }
+        val allowedPackageNames = snapshot.includePackages.filter { it.isNotBlank() && it != owner }.distinct()
+        val disallowedPackageNames = if (allowedPackageNames.isNotEmpty()) {
+            emptyList()
+        } else {
+            (listOfNotNull(owner) + snapshot.excludePackages.filter { it.isNotBlank() }).distinct()
+        }
 
         return TunSetupPlan(
             inet4Addresses = inet4Addresses,
@@ -79,6 +92,7 @@ object TunSetupPlanner {
             bindActiveNetwork = true,
             inet4RouteExcludes = snapshot.inet4RouteExcludes,
             inet6RouteExcludes = snapshot.inet6RouteExcludes,
+            allowedPackageNames = allowedPackageNames,
         )
     }
 }

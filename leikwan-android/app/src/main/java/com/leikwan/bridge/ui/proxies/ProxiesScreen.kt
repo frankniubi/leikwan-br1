@@ -1,5 +1,13 @@
 package com.leikwan.bridge.ui.proxies
 
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Surface
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Box
@@ -14,6 +22,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.PhonelinkErase
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -21,6 +32,9 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -28,6 +42,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.leikwan.bridge.data.hosted.HostedNodeIdentity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -56,6 +72,8 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     var showQrScan by remember { mutableStateOf(false) }
     var showFabMenu by remember { mutableStateOf(false) }
     var editingNode by remember { mutableStateOf<com.leikwan.bridge.data.ProxyNode?>(null) }
+    val hiddenCloudNodes by viewModel.hiddenCloudNodes.collectAsState()
+    var showHiddenCloudNodes by remember { mutableStateOf(false) }
 
     if (showQrScan) {
         QrScanScreen(
@@ -66,8 +84,32 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.titleLarge)
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            // Title row; the cloud actions are icons so the page stays quiet.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.proxies_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                if (hiddenCloudNodes.isNotEmpty()) {
+                    IconButton(onClick = { showHiddenCloudNodes = true }, enabled = !state.isLoading) {
+                        Icon(
+                            Icons.Outlined.VisibilityOff,
+                            contentDescription = stringResource(R.string.hosted_node_hidden_format, hiddenCloudNodes.size),
+                        )
+                    }
+                }
+                IconButton(onClick = { viewModel.refreshFromCloud() }, enabled = !state.isLoading) {
+                    Icon(Icons.Outlined.CloudDownload, contentDescription = stringResource(R.string.hosted_node_refresh))
+                }
+                IconButton(onClick = { viewModel.syncAllToCloud() }, enabled = !state.isLoading) {
+                    Icon(Icons.Outlined.CloudUpload, contentDescription = stringResource(R.string.hosted_node_sync_all))
+                }
+            }
             Spacer(Modifier.height(8.dp))
 
             state.error?.let { err ->
@@ -85,98 +127,93 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                     Text(stringResource(R.string.proxies_empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                val sections = remember(state.nodes) { ProxyListSections.build(state.nodes) }
-                val proxySummaryText = ProxySummaryText(
-                    unknown = stringResource(R.string.common_unknown),
-                    methodFormat = stringResource(R.string.proxy_summary_method_format),
-                    uuidFormat = stringResource(R.string.proxy_summary_uuid_format),
-                    publicKeyFormat = stringResource(R.string.proxy_summary_public_key_format),
-                    addressFormat = stringResource(R.string.proxy_summary_address_format),
-                )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    sections.forEach { section ->
-                        item(key = "section-${section.title}") {
-                            val sectionTitle = if (section.title == "Other") {
-                                stringResource(R.string.proxies_section_other)
-                            } else {
-                                section.title
-                            }
-                            Text(
-                                text = sectionTitle,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
-                            )
-                        }
-                        itemsIndexed(
-                            items = section.nodes,
-                            key = { _, node -> node.id },
-                        ) { _, node ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = { viewModel.selectNode(node) },
-                                border = if (state.selectedProxyId == node.id) {
-                                    BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-                                } else {
-                                    null
-                                },
+                // A node is shown as "your own node": no protocol, server or credential details.
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 160.dp),
+                ) {
+                    itemsIndexed(
+                        items = state.nodes,
+                        key = { _, node -> node.id },
+                    ) { _, node ->
+                        val selected = state.selectedProxyId == node.id
+                        Surface(
+                            onClick = { viewModel.selectNode(node) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.large,
+                            color = if (selected) MaterialTheme.colorScheme.secondaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerLow,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp).fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        val summaryLines = remember(
-                                            node.id,
-                                            node.type,
-                                            node.originalServer,
-                                            node.originalPort,
-                                            node.configJson,
-                                            proxySummaryText,
-                                        ) {
-                                            ProxyProtocolDraftParser.summaryLines(node, proxySummaryText)
-                                        }
-                                        Text(node.name, style = MaterialTheme.typography.titleMedium)
-                                        if (state.selectedProxyId == node.id) {
-                                            Text(
-                                                stringResource(R.string.proxies_selected_proxy),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.primary,
-                                            )
-                                        }
-                                        summaryLines.forEach { line ->
-                                            Text(
-                                                line,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                    Row {
-                                        IconButton(onClick = { viewModel.duplicateNode(node) }) {
-                                            Icon(Icons.Default.ContentCopy, stringResource(R.string.proxies_duplicate_proxy))
-                                        }
-                                        IconButton(onClick = { editingNode = node }) {
-                                            Icon(Icons.Default.Edit, stringResource(R.string.proxies_modify_proxy))
-                                        }
-                                        Switch(
-                                            checked = node.enabled,
-                                            onCheckedChange = {
-                                                val willEnable = !node.enabled
-                                                viewModel.toggleNode(node)
-                                                if (willEnable) {
-                                                    viewModel.selectNode(node)
-                                                }
-                                            },
-                                        )
-                                        IconButton(onClick = { viewModel.deleteNode(node) }) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        node.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (node.hostedId != null) {
                                             Icon(
-                                                Icons.Default.Delete,
-                                                stringResource(R.string.common_delete),
-                                                tint = MaterialTheme.colorScheme.error,
+                                                Icons.Outlined.Cloud,
+                                                contentDescription = stringResource(R.string.hosted_node_badge),
+                                                modifier = Modifier.size(14.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                        }
+                                        Text(
+                                            stringResource(R.string.own_node_label),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = node.enabled,
+                                    onCheckedChange = {
+                                        val willEnable = !node.enabled
+                                        viewModel.toggleNode(node)
+                                        if (willEnable) {
+                                            viewModel.selectNode(node)
+                                        }
+                                    },
+                                )
+                                var menuOpen by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(onClick = { menuOpen = true }) {
+                                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.proxies_more_actions))
+                                    }
+                                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.proxies_modify_proxy)) },
+                                            onClick = { menuOpen = false; editingNode = node },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.proxies_duplicate_proxy)) },
+                                            onClick = { menuOpen = false; viewModel.duplicateNode(node) },
+                                        )
+                                        if (node.hostedId == null && HostedNodeIdentity.isUploadable(node)) {
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.hosted_node_upload)) },
+                                                onClick = { menuOpen = false; viewModel.uploadToCloud(node) },
                                             )
                                         }
+                                        if (node.hostedId != null) {
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.hosted_node_remove_local)) },
+                                                onClick = { menuOpen = false; viewModel.removeFromThisDevice(node) },
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error)
+                                            },
+                                            onClick = { menuOpen = false; viewModel.deleteNode(node) },
+                                        )
                                     }
                                 }
                             }
@@ -187,7 +224,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
         }
 
         Column(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 112.dp),
             horizontalAlignment = Alignment.End,
         ) {
             if (showFabMenu) {
@@ -208,6 +245,39 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                 Icon(Icons.Default.Add, stringResource(R.string.proxies_add_proxy))
             }
         }
+    }
+
+    if (showHiddenCloudNodes) {
+        AlertDialog(
+            onDismissRequest = { showHiddenCloudNodes = false },
+            title = { Text(stringResource(R.string.hosted_node_hidden_title)) },
+            text = {
+                Column {
+                    hiddenCloudNodes.forEach { (hostedId, name) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(name, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { viewModel.restoreHiddenCloudNodes(listOf(hostedId)) }) {
+                                Text(stringResource(R.string.hosted_node_restore))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.restoreHiddenCloudNodes(); showHiddenCloudNodes = false }) {
+                    Text(stringResource(R.string.hosted_node_restore_all))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHiddenCloudNodes = false }) {
+                    Text(stringResource(R.string.hosted_node_close))
+                }
+            },
+        )
     }
 
     if (showAddUri) {

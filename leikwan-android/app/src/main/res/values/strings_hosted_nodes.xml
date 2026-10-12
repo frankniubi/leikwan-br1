@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hosted user nodes ("上云"). Kept in their own file so the main strings.xml stays untouched. -->
+<resources>
+    <string name="hosted_node_badge">Cloud</string>
+    <string name="hosted_node_upload">Upload to cloud</string>
+    <string name="hosted_node_sync_all">Sync all to cloud</string>
+    <string name="hosted_node_refresh">Refresh from cloud</string>
+    <string name="hosted_node_uploaded">Uploaded to cloud</string>
+    <string name="hosted_node_refreshed">Cloud nodes updated</string>
+    <string name="hosted_node_deleted">Deleted from cloud</string>
+    <string name="hosted_node_sync_all_result">Uploaded %1$d, already in cloud %2$d, unsupported %3$d, failed %4$d</string>
+    <string name="hosted_node_error_format">Cloud sync failed: %1$s</string>
+    <string name="hosted_node_remove_local">Remove from this device</string>
+    <string name="hosted_node_removed_local">Removed from this device. Other devices keep it.</string>
+    <string name="hosted_node_hidden_format">Hidden cloud nodes (%1$d)</string>
+    <string name="hosted_node_hidden_title">Hidden on this device</string>
+    <string name="hosted_node_restore">Restore</string>
+    <string name="hosted_node_restore_all">Restore all</string>
+    <string name="hosted_node_restored">Restored on this device</string>
+    <string name="hosted_node_close">Close</string>
+</resources>

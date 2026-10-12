@@ -9,6 +9,7 @@ use Leikwan\Master\Controllers\ExternalUotConfigController;
 use Leikwan\Master\Controllers\AuthController;
 use Leikwan\Master\Controllers\ClientAgentController;
 use Leikwan\Master\Controllers\HealthController;
+use Leikwan\Master\Controllers\HostedNodeController;
 use Leikwan\Master\Controllers\ForwardLineApiController;
 use Leikwan\Master\Controllers\NodeController;
 use Leikwan\Master\Controllers\OidcController;
@@ -172,6 +173,7 @@ final class Bootstrap
         $ultraSource = new UltraSourceController($this->config, $this->db, $ultraMaterials, $ultraInventory, $ultraReviews);
         $sidecarAgent = new SidecarAgentController($this->config, $this->db, $this->provisioning);
         $tenant = new TenantController($this->config, $this->db, $this->provisioning, $accessPolicy);
+        $hostedNodes = new HostedNodeController($this->config, $this->db, $this->provisioning, accessPolicy: $accessPolicy);
         $artifacts = new ArtifactController($this->config);
         $externalUotConfig = new ExternalUotConfigController($this->config);
 
@@ -298,6 +300,12 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/clients/unban', [$tenant, 'unbanClientDevice']);
         $this->router->add('POST', '/tenant/clients/android-enrollment-code', [$tenant, 'createAndroidEnrollmentCode']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
+        $this->router->add('GET', '/tenant/hosted-nodes', [$hostedNodes, 'tenantPage']);
+        $this->router->add('POST', '/tenant/hosted-nodes', [$hostedNodes, 'tenantCreate']);
+        $this->router->add('POST', '/tenant/hosted-nodes/pairings', [$hostedNodes, 'tenantPair']);
+        $this->router->add('POST', '/tenant/hosted-nodes/{id}/delete', [$hostedNodes, 'tenantDelete']);
+        $this->router->add('GET', '/tenant/hosted-nodes/{id}/edit', [$hostedNodes, 'tenantEditPage']);
+        $this->router->add('POST', '/tenant/hosted-nodes/{id}/edit', [$hostedNodes, 'tenantUpdate']);
         $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
         $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
         $this->router->add('POST', '/tenant-transport-endpoints/{id}/delete', [$tenant, 'deleteSidecarPoint']);
@@ -378,6 +386,12 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
         $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
+        $this->router->add('GET', '/api/client/hosted-nodes', [$hostedNodes, 'clientList']);
+        $this->router->add('POST', '/api/client/hosted-nodes', [$hostedNodes, 'clientCreate']);
+        $this->router->add('POST', '/api/client/hosted-nodes/batch', [$hostedNodes, 'clientBatchCreate']);
+        $this->router->add('PUT', '/api/client/hosted-nodes/{id}', [$hostedNodes, 'clientUpdate']);
+        $this->router->add('DELETE', '/api/client/hosted-nodes/{id}', [$hostedNodes, 'clientDelete']);
+        $this->router->add('PUT', '/api/client/hosted-node-pairings/{forwardId}', [$hostedNodes, 'clientPair']);
         $this->router->add('POST', '/api/client/ultra/materials', [$clientAgent, 'resolveUltraMaterials']);
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
