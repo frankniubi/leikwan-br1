@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "260fc557c51ede2197aa6828696f6c8420d2091277fe4bda040279d09884bf98",
-    "size_bytes": 74633617,
-    "version": "0.2.42",
-    "version_code": 44
+    "sha256": "829e7999a1091c6e249fe1eb97b2bdaf9e8bdbfa4ca1cbf111cc43cd7c425561",
+    "size_bytes": 74666385,
+    "version": "0.2.43",
+    "version_code": 45
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -783,9 +783,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
     },
-    "sha256": "4406375937e4a2d9f18daa91e671f0fb98fb2c3fa6f3196bececb11905a373c7",
-    "size_bytes": 69931706,
-    "version": "0.1.20.66"
+    "sha256": "68364949169c5ba57bad53ef03304ab4be8809fa99c3bdb3dc5805f90bec2ce7",
+    "size_bytes": 69920776,
+    "version": "0.1.20.67"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
