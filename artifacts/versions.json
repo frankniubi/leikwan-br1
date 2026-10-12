@@ -306,10 +306,10 @@
       "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
       "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
     },
-    "sha256": "daacaecb05f334302eb07293f24d0fff811f0e502444bdf5465723a66bfd82c5",
-    "size_bytes": 78550610,
-    "version": "1.0.57",
-    "source_commit": "1be261cf68bbecf600d549b211ccb4fed23cecd8"
+    "sha256": "7b9f1e0d7b3dc7c34d9a4015ffbe7b2b642e3d746af9ebdb5fd15b1c968d44ae",
+    "size_bytes": 78536706,
+    "version": "1.0.58",
+    "source_commit": "9a195d7896d3d4a160a19af2eee8c51731d089b1"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -353,10 +353,10 @@
       "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
       "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
     },
-    "sha256": "ca89fcb28d13810318849575f62b731b8f05a3112e3cd1bc8a1e3263f2504ee6",
-    "size_bytes": 70041749,
-    "version": "1.0.57",
-    "source_commit": "1be261cf68bbecf600d549b211ccb4fed23cecd8"
+    "sha256": "09d0940391701e018c3ddc69934d6cf4838c6cb7048e248ce3c8cf79a6275ef8",
+    "size_bytes": 70044374,
+    "version": "1.0.58",
+    "source_commit": "9a195d7896d3d4a160a19af2eee8c51731d089b1"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -385,9 +385,9 @@
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
     "path": "install/install-macos-headless.sh",
-    "sha256": "5489c1b5f08499e6ed06915cd84a1cdd189209b23b4324cd602d4753ac87fc83",
-    "size_bytes": 20727,
-    "version": "1.0.57",
+    "sha256": "6f03f39971a4ec75ee7b7817279278291c19a8a20176643c1601e0e26374a4b4",
+    "size_bytes": 20788,
+    "version": "1.0.58",
     "artifact_url": "/artifacts/install-macos-headless.sh"
   },
   "macos_headless_uninstaller": {
@@ -783,9 +783,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
     },
-    "sha256": "1956f31db2559fa298214a39ee13d37f9f673a5a46c9af88050eee84e33abf18",
-    "size_bytes": 69835530,
-    "version": "0.1.20.64"
+    "sha256": "16a881750866adc8e6441ed7333766daa07a1a7724e6f0b0c35e160a3864b5e9",
+    "size_bytes": 69929896,
+    "version": "0.1.20.65"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -793,9 +793,9 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "ad25907921d52c346e84fa8e71aba7d3cc12b9343404a4f8d2c7d831bb6e056e",
-    "size_bytes": 63787671,
-    "version": "0.1.20.64",
+    "sha256": "47ac789b8a2d8641e2aedf7aff5e68f442778dd504c8ddc70919d9d261904b62",
+    "size_bytes": 63789535,
+    "version": "0.1.20.65",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -808,9 +808,9 @@
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "52628049e3f2b30f44500276908c4d6abd1db888c79f8840aa85a8157f9bd997",
-    "size_bytes": 16815,
-    "version": "0.1.20.64",
+    "sha256": "f752b758479c8691ac755f694e30166f879ec5a8d0738164da8f0d1d80471017",
+    "size_bytes": 16837,
+    "version": "0.1.20.65",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {
