@@ -322,7 +322,7 @@ jobs:
           for dimensions in 1440x900 1024x768; do
             width="${dimensions%x*}"
             height="${dimensions#*x}"
-            for state in login dashboard forwards settings; do
+            for state in login dashboard forwards services nodes pairing settings; do
               LEIKWAN_TEST_UI=1 "$executable" \
                 --ui-fixture "$state" \
                 --window-width "$width" \
@@ -333,7 +333,7 @@ jobs:
             done
           done
           trap - EXIT
-          test "$(find "$screenshots" -type f -name '*.png' | wc -l | tr -d ' ')" = "8"
+          test "$(find "$screenshots" -type f -name '*.png' | wc -l | tr -d ' ')" = "14"
 
       - name: Run native Ultra canary leak gate
         id: leak_gate
@@ -476,7 +476,7 @@ jobs:
               screenshots = sorted((directory / "screenshots").glob("*.png"))
               expected_shots = {
                   f"{state}-{size}.png"
-                  for state in ("login", "dashboard", "forwards", "settings")
+                  for state in ("login", "dashboard", "forwards", "services", "nodes", "pairing", "settings")
                   for size in ("1440x900", "1024x768")
               }
               if {shot.name for shot in screenshots} != expected_shots:
