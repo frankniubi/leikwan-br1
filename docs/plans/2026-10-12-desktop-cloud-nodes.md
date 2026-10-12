@@ -126,20 +126,6 @@ Windows additions that make hosted nodes run: SOCKS5 outbound (`socks5` profile 
 Shadowsocks SIP003 plugins (`obfs-local`, `v2ray-plugin`), VLESS `httpupgrade`, REALITY defaults to uTLS
 `chrome`, and the ws/httpupgrade `Host` keeps the real host when dialing `127.0.0.1`.
 
-## 3a. Forward listeners: loopback unless inbound proxy is allowed
-
-The pull's `client.allow_inbound_proxy` (from `clients.allow_inbound_proxy`, default 0; absent on older panels)
-decides where desktop forward listeners bind. `ConfigPollingService` copies it onto every
-`ForwardConfig.AllowInboundProxy`; `ForwardConfig.ListenHost` / `WstunnelListenHost` give the bind address:
-
-- false (default): `127.0.0.1` for bond (tcp/udp), the UDP UoT sidepath, MPTCP and single/race wstunnel.
-- true: all interfaces (`0.0.0.0` / `[::]`), the previous behavior.
-- Ultra listeners stay on `127.0.0.1` either way.
-
-Toggling the flag changes the panel config revision (only for enabled clients) and the forward signature, so the
-runtime rebinds. UIs should show any "other devices on your LAN can connect" hint only when
-`ClientMeta.AllowInboundProxy` is true.
-
 ## 4. Windows wiring (for reference)
 
 - `MainViewModel` builds `HostedNodeSyncService(() => _api, new WindowsProxyProfileNodeRepository(_proxyService), new JsonFileHostedNodeSyncStateStore(<state dir>/hosted-nodes-state.json), () => active client id)`.

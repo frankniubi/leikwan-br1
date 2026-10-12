@@ -1496,7 +1496,6 @@ public partial class MainViewModel : ObservableObject
             if (IsShuttingDown || _diagnostics is null || _api is null)
                 return;
             _diagnostics.QueueDebugLogUpload(client, _api, _lifecycleCts.Token);
-            ApplyClientMeta(client);
             _ = SyncHostedNodesIfChangedAsync(client.HostedNodesRevision, _lifecycleCts.Token);
         };
         _pollingService.ClientUpdated += _clientUpdatedHandler;

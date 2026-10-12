@@ -1173,7 +1173,6 @@
                                 <TextBlock x:Name="ProxyStatusText" Text="{DynamicResource ProxyReady}" FontSize="12"
                                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,8"/>
                                 <TextBlock Text="{DynamicResource ProxyExternalConnectionHint}" FontSize="11"
-                                   Visibility="{Binding AllowInboundProxy, Converter={StaticResource BoolToVis}}"
                                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
 
                                 <Expander x:Name="ProxyNodeEditorExpander" IsExpanded="False" Header="{DynamicResource ProxyConnectionTitle}"

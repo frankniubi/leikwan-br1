@@ -107,13 +107,11 @@ public sealed class RedesignLayoutTests
     }
 
     [Fact]
-    public void LanConnectionHintIsShownOnlyWhenThePanelAllowsInboundProxy()
+    public void LanConnectionHintIsAlwaysShownOnTheProxyPage()
     {
         var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
         var hint = Assert.Single(document.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource ProxyExternalConnectionHint}");
-        Assert.Equal("{Binding AllowInboundProxy, Converter={StaticResource BoolToVis}}", (string?)hint.Attribute("Visibility"));
-        var code = File.ReadAllText(AppFile("ViewModels", "MainViewModel.cs"));
-        Assert.Contains("ApplyClientMeta(client);", code, StringComparison.Ordinal);
+        Assert.Null(hint.Attribute("Visibility"));
     }
 
     private static HashSet<string> Keys(XDocument document)

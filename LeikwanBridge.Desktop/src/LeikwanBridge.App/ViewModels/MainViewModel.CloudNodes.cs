@@ -25,12 +25,6 @@ public partial class MainViewModel
     [ObservableProperty] private string _cloudStatusText = string.Empty;
     [ObservableProperty] private bool _hasCloudError;
 
-    /// <summary>
-    /// client.allow_inbound_proxy from the last pull. Forward listeners bind 127.0.0.1 unless
-    /// this is true; the "connect from your LAN" hint is shown only then.
-    /// </summary>
-    [ObservableProperty] private bool _allowInboundProxy;
-
     /// <summary>Panel API used for hosted nodes. Defaults to the signed-in client's API; tests substitute it.</summary>
     public Func<IHostedNodeApi?>? HostedNodeApiFactory { get; set; }
 
@@ -66,13 +60,6 @@ public partial class MainViewModel
     {
         await EnsureProxyServiceAsync(ct);
         return _nodeSync ?? throw new InvalidOperationException("hosted_nodes_unavailable");
-    }
-
-    /// <summary>Applies the per-client flags of a config pull (UI thread safe).</summary>
-    public void ApplyClientMeta(ClientMeta client)
-    {
-        ArgumentNullException.ThrowIfNull(client);
-        PostToUi(() => AllowInboundProxy = client.AllowInboundProxy);
     }
 
     /// <summary>Called after each config pull with client.hosted_nodes_revision; never throws.</summary>

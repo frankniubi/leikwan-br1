@@ -131,16 +131,6 @@ public sealed class CloudNodesViewModelTests : IDisposable
     }
 
     [Fact]
-    public void InboundProxyFlagFollowsThePull()
-    {
-        Assert.False(_vm.AllowInboundProxy);
-        _vm.ApplyClientMeta(new ClientMeta { Id = 7, AllowInboundProxy = true });
-        Assert.True(_vm.AllowInboundProxy);
-        _vm.ApplyClientMeta(new ClientMeta { Id = 7 });
-        Assert.False(_vm.AllowInboundProxy);
-    }
-
-    [Fact]
     public void ErrorCodesMapToLocalizedTextKeys()
     {
         Assert.Equal("NodesErrorUntrusted", MainViewModel.DescribeCloudError("device_untrusted"));
