@@ -23,6 +23,8 @@ final class UltraLeaseManager {
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
     private var alerts: [Int64: String] = [:]
+    /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
+    private var candidateEndpoints: [Int64: [String: String]] = [:]
 
     init(session: TunnelPanelSession, forwards: [UltraForwardLaunch]) {
         let credentials = PanelCredentials(
@@ -206,6 +208,7 @@ final class UltraLeaseManager {
             for index in discarded.indices { discarded[index].wipe() }
             throw CancellationError()
         }
+        recordEndpoints(leases, for: forward.forwardID)
         let socketPath = forward.controlSocketPath
         let slow = forward.autoSelect
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
@@ -219,6 +222,55 @@ final class UltraLeaseManager {
                 continuation.resume(returning: accepted)
             }
         }
+    }
+
+    // MARK: Endpoints
+
+    /// Remembers which relay endpoint each delivered candidate points at, keyed by lease hash,
+    /// so the app can show the entry the runtime actually selected.
+    private func recordEndpoints(_ leases: [UltraLease], for forwardID: Int64) {
+        var map: [String: String] = [:]
+        for lease in leases {
+            let host = lease.endpointIp.contains(":") ? "[\(lease.endpointIp)]" : lease.endpointIp
+            map[lease.leaseHash.lowercased()] = "\(host):\(lease.endpointPort)"
+        }
+        lock.lock()
+        candidateEndpoints[forwardID] = map
+        lock.unlock()
+    }
+
+    /// Forward id → "ip:port" of the relay entry in use: the candidate the runtime's status file
+    /// reports as selected (UDP first, then TCP), or the only candidate when there was one.
+    func activeEndpoints() -> [Int64: String] {
+        lock.lock()
+        let candidates = candidateEndpoints
+        lock.unlock()
+        var result: [Int64: String] = [:]
+        for forward in forwards {
+            guard let map = candidates[forward.forwardID], !map.isEmpty else { continue }
+            if let hash = Self.selectedLeaseHash(statusPath: forward.statusPath), let endpoint = map[hash] {
+                result[forward.forwardID] = endpoint
+            } else if map.count == 1, let only = map.values.first {
+                result[forward.forwardID] = only
+            }
+        }
+        return result
+    }
+
+    private static func selectedLeaseHash(statusPath: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statusPath)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        for key in ["active_udp", "udp_runtime_session", "latest_tcp"] {
+            if let selection = object[key] as? [String: Any],
+               let hash = selection["lease_hash"] as? String,
+               !hash.isEmpty {
+                return hash.lowercased()
+            }
+        }
+        return nil
     }
 
     // MARK: Helpers

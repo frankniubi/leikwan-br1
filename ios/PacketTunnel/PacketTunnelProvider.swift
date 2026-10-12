@@ -123,6 +123,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.memory = libbox.memory
             snapshot.runtimes = runtimes.statuses()
             snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
+            if let endpoints = ultraLeases?.activeEndpoints(), !endpoints.isEmpty {
+                var byForward: [String: String] = [:]
+                for (forwardID, endpoint) in endpoints {
+                    byForward[String(forwardID)] = endpoint
+                }
+                snapshot.ultraEndpoints = byForward
+            }
             if !failedBindings.isEmpty {
                 let failures = failedBindings
                 snapshot.bindingErrors = failures.keys.sorted().map { key in "\(key): \(failures[key] ?? "")" }

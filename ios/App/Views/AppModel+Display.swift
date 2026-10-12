@@ -16,6 +16,15 @@ extension AppModel {
         return "未选择线路"
     }
 
+    /// Entry "ip:port" for a forward card. Ultra entries come from the lease the
+    /// runtime selected (last known value while disconnected).
+    func endpointText(for forward: IOSSupportedForward) -> String {
+        if forward.kind == .ultra, let endpoint = tunnel.ultraEndpoints[forward.forwardId] {
+            return endpoint
+        }
+        return forward.endpointSummary
+    }
+
     var routeDetail: String? {
         if isNativeOutboundActive, let selection = nativeOutboundSelection {
             return "原生出口 · " + selection.routeScope.displayName
@@ -40,7 +49,7 @@ extension IOSSupportedForward {
     var endpointSummary: String {
         let endpoints = contract.endpoints
         guard let first = endpoints.first else {
-            return kind == .ultra ? "入口由 Ultra 租约分配" : "无可用入口"
+            return "—"
         }
         let host = first.host.contains(":") ? "[\(first.host)]" : first.host
         let more = endpoints.count > 1 ? "  +\(endpoints.count - 1)" : ""

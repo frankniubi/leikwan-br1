@@ -13,6 +13,9 @@ final class TunnelController: ObservableObject {
     @Published private(set) var lastError: String?
     /// Last 60 one-second traffic samples, oldest first, for the speed chart.
     @Published private(set) var speedHistory: [SpeedSample] = []
+    /// Ultra forward id → relay entry "ip:port" last reported by the tunnel; kept across
+    /// launches so the card still shows it while disconnected.
+    @Published private(set) var ultraEndpoints: [Int64: String] = TunnelController.loadUltraEndpoints()
 
     /// When the current connection came up (for the run-time counter).
     var connectedSince: Date? { manager?.connection.connectedDate }
@@ -146,6 +149,18 @@ final class TunnelController: ObservableObject {
             return
         }
         self.snapshot = snapshot
+        if let reported = snapshot.ultraEndpoints, !reported.isEmpty {
+            var merged = ultraEndpoints
+            for (key, endpoint) in reported {
+                if let forwardID = Int64(key) {
+                    merged[forwardID] = endpoint
+                }
+            }
+            if merged != ultraEndpoints {
+                ultraEndpoints = merged
+                Self.saveUltraEndpoints(merged)
+            }
+        }
         speedHistory.append(SpeedSample(date: Date(), uplink: snapshot.uplink, downlink: snapshot.downlink))
         if speedHistory.count > 60 {
             speedHistory.removeFirst(speedHistory.count - 60)
@@ -180,4 +195,29 @@ struct SpeedSample: Identifiable, Equatable {
     let downlink: Int64
 
     var id: Date { date }
+}
+
+extension TunnelController {
+    nonisolated private static let ultraEndpointsKey = "ultra_endpoints"
+
+    nonisolated static func loadUltraEndpoints() -> [Int64: String] {
+        guard let stored = UserDefaults.standard.dictionary(forKey: ultraEndpointsKey) as? [String: String] else {
+            return [:]
+        }
+        var result: [Int64: String] = [:]
+        for (key, value) in stored {
+            if let forwardID = Int64(key) {
+                result[forwardID] = value
+            }
+        }
+        return result
+    }
+
+    nonisolated static func saveUltraEndpoints(_ endpoints: [Int64: String]) {
+        var stored: [String: String] = [:]
+        for (forwardID, value) in endpoints {
+            stored[String(forwardID)] = value
+        }
+        UserDefaults.standard.set(stored, forKey: ultraEndpointsKey)
+    }
 }

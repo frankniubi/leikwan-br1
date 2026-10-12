@@ -137,6 +137,7 @@ struct ProxiesView: View {
 
 private struct BindingCard: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var tunnel: TunnelController
     @EnvironmentObject private var latency: LatencyStore
     let row: BindingRow
 
@@ -167,7 +168,7 @@ private struct BindingCard: View {
                         .font(.headline)
                         .foregroundStyle(Palette.onSurface)
                         .lineLimit(1)
-                    Text(forward.endpointSummary)
+                    Text(model.endpointText(for: forward))
                         .font(.caption.monospaced())
                         .foregroundStyle(Palette.onSurfaceVariant)
                         .lineLimit(1)

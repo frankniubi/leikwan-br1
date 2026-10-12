@@ -198,6 +198,8 @@ struct TunnelStatusSnapshot: Codable, Equatable {
     /// Terminal panel/runtime problem the app should surface (kicked,
     /// device limit, runtime failed).
     var alert: String?
+    /// Ultra forward id (decimal string) → relay entry "ip:port" currently in use.
+    var ultraEndpoints: [String: String]?
     /// Non-default bindings whose runtimes failed to start ("f:12: <error>"); nil when none.
     var bindingErrors: [String]? = nil
 }
