@@ -21,13 +21,17 @@ struct ProxiesView: View {
                         NativeOutboundSection()
                     }
 
-                    SectionTitle("绑定", trailing: hiddenBadge)
-                    Text("每个转发绑定一个节点，所有启用的绑定同时运行；在「规则」里可以指定某个 App 走哪个绑定，其余走默认绑定。")
-                        .font(.caption)
-                        .foregroundStyle(Palette.onSurfaceVariant)
+                    SectionTitle("绑定", trailing: bindingsBadge)
+                    if model.isNativeOutboundActive {
+                        NativeActiveBanner()
+                    } else {
+                        Text("每个转发绑定一个节点，所有启用的绑定同时运行；在「规则」里可以指定某个 App 走哪个绑定，其余走默认绑定。")
+                            .font(.caption)
+                            .foregroundStyle(Palette.onSurfaceVariant)
+                    }
                     LazyVGrid(columns: bindingColumns, spacing: Metrics.gutter) {
                         ForEach(model.bindingRows) { row in
-                            BindingCard(row: row)
+                            BindingCard(row: row, suspended: model.isNativeOutboundActive)
                         }
                     }
 
@@ -67,7 +71,10 @@ struct ProxiesView: View {
         }
     }
 
-    private var hiddenBadge: AnyView? {
+    private var bindingsBadge: AnyView? {
+        if model.isNativeOutboundActive {
+            return AnyView(Pill(text: "已暂停", fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
+        }
         guard let hidden = model.catalog?.unsupportedHiddenCount, hidden > 0 else { return nil }
         return AnyView(Pill(text: "已隐藏 \(hidden) 条不支持的转发"))
     }
@@ -140,6 +147,11 @@ private struct BindingCard: View {
     @EnvironmentObject private var tunnel: TunnelController
     @EnvironmentObject private var latency: LatencyStore
     let row: BindingRow
+    /// Native outbound is on: Connect runs no binding, so the card shows off and is read-only.
+    var suspended = false
+
+    /// This binding runs on Connect.
+    private var isRunning: Bool { row.isEnabled && !suspended }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -147,19 +159,19 @@ private struct BindingCard: View {
                 if let forward = row.forward {
                     Pill(
                         text: "#\(forward.forwardId) · \(forward.kindLabel)",
-                        fill: row.isEnabled ? Palette.primary : Palette.secondaryContainer,
-                        foreground: row.isEnabled ? Palette.onPrimary : Palette.onSecondaryContainer
+                        fill: isRunning ? Palette.primary : Palette.secondaryContainer,
+                        foreground: isRunning ? Palette.onPrimary : Palette.onSecondaryContainer
                     )
                 } else {
                     Pill(text: "直连")
                 }
-                if row.isDefault {
+                if row.isDefault && !suspended {
                     Pill(text: "默认", fill: Palette.successContainer, foreground: Palette.onSuccessContainer)
                 }
                 Spacer()
                 Toggle("启用", isOn: enabledBinding)
                     .labelsHidden()
-                    .disabled(row.node == nil && row.forward?.kind != .ultra)
+                    .disabled(suspended || (row.node == nil && row.forward?.kind != .ultra))
             }
 
             if let forward = row.forward {
@@ -181,7 +193,7 @@ private struct BindingCard: View {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.onSurfaceVariant)
-                if let forward = row.forward {
+                if let forward = row.forward, !suspended {
                     Menu {
                         Button("不绑定节点") {
                             Task { await model.setNode(nil, forForward: forward.forwardId) }
@@ -220,7 +232,7 @@ private struct BindingCard: View {
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)
                 Spacer()
-                if !row.isDefault && row.isEnabled {
+                if !row.isDefault && isRunning {
                     Button("设为默认") {
                         model.setDefaultBinding(row.id)
                     }
@@ -228,7 +240,7 @@ private struct BindingCard: View {
                 }
             }
 
-            if let reason = row.skipReason {
+            if let reason = row.skipReason, !suspended {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(Palette.onWarningContainer)
@@ -238,8 +250,8 @@ private struct BindingCard: View {
             }
         }
         .padding(14)
-        .card(selected: row.isDefault && row.isEnabled)
-        .opacity(row.isEnabled ? 1 : 0.75)
+        .card(selected: row.isDefault && isRunning)
+        .opacity(suspended ? 0.5 : (row.isEnabled ? 1 : 0.75))
         .task(id: row.node?.id) {
             if let node = row.node, latency.result(for: node) == nil {
                 await latency.test(node)
@@ -264,7 +276,7 @@ private struct BindingCard: View {
                     .font(.subheadline)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
-            if row.forward != nil {
+            if row.forward != nil && !suspended {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)
@@ -274,9 +286,42 @@ private struct BindingCard: View {
 
     private var enabledBinding: Binding<Bool> {
         Binding(
-            get: { row.isEnabled },
+            get: { isRunning },
             set: { model.setBindingEnabled(row.id, enabled: $0) }
         )
+    }
+}
+
+/// Over the bindings while native outbound is on: says which exit is in use and switches back.
+private struct NativeActiveBanner: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var tunnel: TunnelController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text("正在使用原生出口「\(nativeTitle)」，下面的绑定不会运行（设置会保留）。")
+            } icon: {
+                Image(systemName: "pause.circle.fill")
+            }
+            .font(.subheadline)
+            .foregroundStyle(Palette.onWarningContainer)
+            Button {
+                model.setNativeOutboundEnabled(false)
+            } label: {
+                Text(tunnel.isConnected || tunnel.isBusy ? "改用绑定（会先断开当前连接）" : "改用绑定")
+                    .font(.subheadline.weight(.semibold))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.warningContainer, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var nativeTitle: String {
+        guard let carrier = model.selectedNativeOutboundCarrier else { return "原生出口" }
+        let direction = model.nativeOutboundForward(for: carrier)?.directionTitle ?? model.nativeOutboundTitle(for: carrier)
+        return "#\(carrier.forwardId) \(direction)"
     }
 }
 

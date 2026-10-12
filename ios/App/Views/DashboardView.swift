@@ -422,7 +422,7 @@ private struct CurrentRouteCard: View {
                     }
                 }
                 Spacer(minLength: 0)
-                if let node = model.selectedNode {
+                if let node = model.defaultBindingRow?.node {
                     let result = latency.result(for: node)
                     Text(LatencyStyle.text(result?.milliseconds, failed: result?.failed ?? false))
                         .font(.caption.monospacedDigit().weight(.semibold))
@@ -434,8 +434,8 @@ private struct CurrentRouteCard: View {
             .card()
         }
         .buttonStyle(.plain)
-        .task(id: model.selectedNodeID) {
-            if let node = model.selectedNode, latency.result(for: node) == nil {
+        .task(id: model.defaultBindingRow?.node?.id) {
+            if let node = model.defaultBindingRow?.node, latency.result(for: node) == nil {
                 await latency.test(node)
             }
         }

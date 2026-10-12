@@ -7,13 +7,16 @@ extension AppModel {
         if isNativeOutboundActive, let carrier = selectedNativeOutboundCarrier {
             return nativeOutboundTitle(for: carrier)
         }
-        if let forward = selectedForward {
-            return forward.serviceName.isEmpty ? "转发 #\(forward.forwardId)" : forward.serviceName
-        }
-        if let node = selectedNode {
-            return node.displayName
+        if let row = defaultBindingRow {
+            return row.title
         }
         return "未选择线路"
+    }
+
+    /// The binding Connect routes untargeted traffic through (nil while native outbound is on).
+    var defaultBindingRow: BindingRow? {
+        guard !isNativeOutboundActive, let id = resolvedBindings.defaultBinding?.id else { return nil }
+        return bindingRows.first { $0.id == id }
     }
 
     /// Entry "ip:port" for a forward card. Ultra entries come from the lease the
@@ -27,13 +30,12 @@ extension AppModel {
 
     var routeDetail: String? {
         if isNativeOutboundActive, let selection = nativeOutboundSelection {
-            return "原生出口 · " + selection.routeScope.displayName
+            return "原生出口 · " + selection.routeScope.displayName + " · 绑定已暂停"
         }
-        let node = selectedNode?.displayName
-        if let forward = selectedForward {
-            return [forward.kindLabel, node].compactMap { $0 }.joined(separator: " · ")
-        }
-        return node == nil ? "在「线路」里选择转发和节点" : "直连节点"
+        guard let row = defaultBindingRow else { return "在「线路」里选择转发和节点" }
+        let count = resolvedBindings.active.count
+        let kind = row.forward?.kindLabel ?? "直连节点"
+        return count > 1 ? "绑定出口 · \(kind) · 默认，共 \(count) 个绑定" : "绑定出口 · \(kind)"
     }
 }
 
