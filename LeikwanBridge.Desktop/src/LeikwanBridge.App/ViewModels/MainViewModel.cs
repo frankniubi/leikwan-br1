@@ -331,7 +331,8 @@ public partial class MainViewModel : ObservableObject
                 tunMtu: _config.GetEffectiveProxyTunMtu(),
                 tunStack: _config.GetEffectiveProxyTunStack(),
                 chinaIpListPath: _config.GetEffectiveProxyChinaIpList(),
-                preferredEgressInterface: _config.PreferredEgressInterface);
+                preferredEgressInterface: _config.PreferredEgressInterface,
+                ruleSetDirectory: _config.GetEffectiveProxyRuleSetDirectory());
             _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
             CreateNodeSync(stateDir);
         }

@@ -183,6 +183,35 @@ public sealed class WindowsProxyConnectionServiceTests
     }
 
     [Fact]
+    public async Task NativeServiceReadsRuleSetsFromTheSingBoxDirectory()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        foreach (var name in new[] { NativeChinaRuleSets.GeoIpFileName, NativeChinaRuleSets.GeoSiteFileName })
+            await File.WriteAllBytesAsync(Path.Combine(temp.Path, name), [(byte)'S', (byte)'R', (byte)'S', 1]);
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")),
+            executable,
+            Path.Combine(temp.Path, "runtime"),
+            process,
+            new FakeSystemProxy(),
+            new FakeProcessAdapter(),
+            nativeRelayHost: new FakeNativeRelayHost());
+        await service.InitializeAsync();
+        using var lease = CreateMtuLease(158);
+
+        await service.StartNativeAsync(WindowsProxyMode.Http, lease);
+
+        using var config = JsonDocument.Parse(process.LastConfigJson);
+        var sets = config.RootElement.GetProperty("route").GetProperty("rule_set").EnumerateArray().ToList();
+        Assert.Equal(2, sets.Count);
+        Assert.All(sets, set => Assert.Equal("local", set.GetProperty("type").GetString()));
+        Assert.Equal(Path.Combine(temp.Path, "geoip-cn.srs"), sets[0].GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async Task NativeTunStartUsesAnonymousLeaseAndWipesItOnStop()
     {
         using var temp = new TempStateDirectory();

@@ -15,7 +15,6 @@ public static class WindowsProxyConfigBuilder
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
-    private const string NativeRuleSetDownloadHost = "raw.githubusercontent.com";
 
     public static string NormalizeTunStack(string? value)
     {
@@ -90,7 +89,8 @@ public static class WindowsProxyConfigBuilder
         string? nativeProxyHost = null,
         int? nativeProxyPort = null,
         string? nativeRoutePolicy = null,
-        int measuredPayloadCeiling = 0)
+        int measuredPayloadCeiling = 0,
+        string? ruleSetDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -106,6 +106,13 @@ public static class WindowsProxyConfigBuilder
         var chinaIpCidrs = lease.RouteScope == "global" && bypassChinaMainland
             ? LoadChinaIpCidrs(chinaIpListPath)
             : [];
+        var includeChinaRuleSets = IsNativeRestrictedScope(lease.RouteScope) || chinaIpCidrs.Count > 0;
+        // Bundled rule-sets (bin\geoip-cn.srs, bin\geosite-cn.srs) keep
+        // startup off GitHub: sing-box does not open its inbounds until a
+        // remote rule-set's first download finishes.
+        var localRuleSets = includeChinaRuleSets
+            ? NativeChinaRuleSets.TryResolve(ruleSetDirectory)
+            : null;
         var bypassIps = new List<string>();
         var bypassDomains = new List<string>();
         // The app-private relay still opens the provider connection outside
@@ -114,8 +121,10 @@ public static class WindowsProxyConfigBuilder
         AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
-        if (IsNativeRestrictedScope(lease.RouteScope))
-            AddHost(NativeRuleSetDownloadHost, bypassIps, bypassDomains);
+        // Only the remote fallback downloads rule-sets; restricted scopes
+        // fetch them directly instead of through the relay.
+        if (IsNativeRestrictedScope(lease.RouteScope) && localRuleSets is null)
+            AddHost(NativeChinaRuleSets.RemoteDownloadHost, bypassIps, bypassDomains);
 
         using var fragment = JsonDocument.Parse(
             NativeOutboundConfigBuilder.Build(
@@ -162,11 +171,12 @@ public static class WindowsProxyConfigBuilder
                     ? "custom-0"
                     : null),
         };
-        AddNativeChinaRuleSets(
-            root["route"]!.AsObject(),
-            lease.RouteScope,
-            chinaIpCidrs.Count > 0,
-            lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        if (includeChinaRuleSets)
+        {
+            root["route"]!.AsObject()["rule_set"] = NativeChinaRuleSets.BuildDefinitions(
+                localRuleSets,
+                lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        }
 
         return new WindowsProxyConfigResult(
             root.ToJsonString(),
@@ -643,38 +653,6 @@ public static class WindowsProxyConfigBuilder
                 : "local",
             ["rules"] = rules,
             ["final"] = nativeRouteScope == "cn_only" ? "direct" : "proxy",
-        };
-    }
-
-    private static void AddNativeChinaRuleSets(
-        JsonObject route,
-        string routeScope,
-        bool includeChinaBypass,
-        string downloadDetour = "proxy")
-    {
-        if (!IsNativeRestrictedScope(routeScope) && !includeChinaBypass)
-            return;
-        downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
-            ? "direct"
-            : "proxy";
-        route["rule_set"] = new JsonArray
-        {
-            new JsonObject
-            {
-                ["tag"] = "geoip-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
-            new JsonObject
-            {
-                ["tag"] = "geosite-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
         };
     }
 

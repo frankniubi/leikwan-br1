@@ -26,6 +26,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
     private readonly int _tunMtu;
     private readonly string _tunStack;
     private readonly string _chinaIpListPath;
+    private readonly string _ruleSetDirectory;
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly IWindowsTunMtuReader _tunMtuReader;
     private readonly TimeSpan _mtuApplyMinInterval;
@@ -67,7 +68,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         INativeOutboundRelayHost? nativeRelayHost = null,
         IWindowsTunMtuReader? tunMtuReader = null,
         TimeSpan? mtuApplyMinInterval = null,
-        string? preferredEgressInterface = null)
+        string? preferredEgressInterface = null,
+        string? ruleSetDirectory = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _singBoxPath = singBoxPath ?? string.Empty;
@@ -88,6 +90,11 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         _pendingTunMtu = tunMtu;
         _tunStack = tunStack;
         _chinaIpListPath = chinaIpListPath ?? string.Empty;
+        // geoip-cn.srs / geosite-cn.srs ship next to sing-box (bin\), like
+        // CN.conf; BuildNative falls back to remote rule-sets without them.
+        _ruleSetDirectory = string.IsNullOrWhiteSpace(ruleSetDirectory)
+            ? Path.GetDirectoryName(_singBoxPath) ?? string.Empty
+            : ruleSetDirectory;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
         _tunMtuReader = tunMtuReader ?? new WindowsTunMtuReader();
         _mtuApplyMinInterval = mtuApplyMinInterval ?? MtuApplyDefaultInterval;
@@ -742,7 +749,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
                 customDnsServers,
                 nativeProxyHost: "127.0.0.1",
                 nativeProxyPort: nativeRelayPort,
-                measuredPayloadCeiling: _measuredPayloadCeiling);
+                measuredPayloadCeiling: _measuredPayloadCeiling,
+                ruleSetDirectory: _ruleSetDirectory);
 
             Publish(new WindowsProxySnapshot(
                 WindowsProxyConnectionState.Starting,
