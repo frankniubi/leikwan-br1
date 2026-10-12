@@ -50,9 +50,15 @@ class DmgLayoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'top-level'):
             layout.validate(self.volume, '1.0.9', 'arm64')
 
-    def test_wrong_architecture_is_rejected(self):
+    def test_intel_apphost_is_rejected(self):
         (self.volume / 'Applications').symlink_to('/Applications', target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, 'architecture'):
+        (self.app / 'Contents/MacOS/LeikwanBridge.Mac').write_bytes(struct.pack('<II', 0xfeedfacf, 0x1000007) + bytes(24))
+        with self.assertRaisesRegex(ValueError, 'architecture mismatch'):
+            layout.validate(self.volume, '1.0.9', 'arm64')
+
+    def test_intel_architecture_is_unsupported(self):
+        (self.volume / 'Applications').symlink_to('/Applications', target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'Apple Silicon'):
             layout.validate(self.volume, '1.0.9', 'x86_64')
 
     def test_wrong_version_is_rejected(self):

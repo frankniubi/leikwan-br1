@@ -7,7 +7,7 @@
 # The daemon runs the same application bundle as the windowed client, in its
 # --headless lifecycle: no GUI session, no Avalonia, same Core services, same
 # runtime attestation and update pinning. The installer is self-bootstrapping:
-# it reads the public client manifest, downloads the correct architecture's
+# it reads the public client manifest, downloads the Apple Silicon (arm64)
 # self-contained DMG, verifies its size and SHA-256, installs the app bundle,
 # and only then registers launchd. Remove it with --uninstall.
 #
@@ -352,7 +352,10 @@ version_at_least() {
 ensure_app_bundle() {
   case "$(uname -m)" in
     arm64|aarch64) manifest_key="macos_client_app_arm64" ;;
-    x86_64|amd64) manifest_key="macos_client_app_x64" ;;
+    x86_64|amd64)
+      echo "install-macos-headless: Apple Silicon (arm64) required: the LeiKwan Bridge macOS client no longer supports Intel (x86_64) Macs" >&2
+      exit 1
+      ;;
     *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
   esac
 

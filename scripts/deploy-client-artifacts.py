@@ -21,14 +21,13 @@ import tempfile
 from datetime import datetime, timezone
 
 MANIFEST = 'artifacts/versions.json'
+# The macOS client ships for Apple Silicon only: there are no macOS x64 keys.
 CANONICAL = {
     'windows_client_app': ('artifacts/windows/leikwan-bridge-setup.exe', '/artifacts/leikwan-bridge-setup.exe'),
     'android_client_apk': ('artifacts/android/leikwan-android-client.apk', '/artifacts/leikwan-android-client.apk'),
     'client_agent': ('client-agent/client_agent.py', '/artifacts/client-agent.py'),
     'macos_client_app_arm64': ('artifacts/macos/leikwan-bridge-arm64.dmg', '/artifacts/macos/leikwan-bridge-arm64.dmg'),
-    'macos_client_app_x64': ('artifacts/macos/leikwan-bridge-x64.dmg', '/artifacts/macos/leikwan-bridge-x64.dmg'),
     'macos_client_update_arm64': ('artifacts/macos/leikwan-bridge-update-arm64.zip', '/artifacts/macos/leikwan-bridge-update-arm64.zip'),
-    'macos_client_update_x64': ('artifacts/macos/leikwan-bridge-update-x64.zip', '/artifacts/macos/leikwan-bridge-update-x64.zip'),
     'windows_headless_client': ('artifacts/windows/leikwan-bridge-headless-win-x64.zip', '/artifacts/windows/leikwan-bridge-headless-win-x64.zip'),
     'windows_headless_installer': ('install/install-windows-headless.ps1', '/artifacts/install-windows-headless.ps1'),
     'windows_headless_uninstaller': ('install/uninstall-windows-headless.ps1', '/artifacts/uninstall-windows-headless.ps1'),
@@ -50,7 +49,6 @@ CANONICAL = {
     'ultra_client_runtime_linux_arm64': ('artifacts/ultra/ultra-client_linux_arm64', '/artifacts/ultra/ultra-client_linux_arm64'),
     'ultra_client_runtime_windows': ('artifacts/ultra/ultra-client_windows_amd64.exe', '/artifacts/ultra/ultra-client_windows_amd64.exe'),
     'ultra_client_runtime_macos_arm64': ('artifacts/ultra/ultra-client_macos_arm64', '/artifacts/ultra/ultra-client_macos_arm64'),
-    'ultra_client_runtime_macos_x64': ('artifacts/ultra/ultra-client_macos_amd64', '/artifacts/ultra/ultra-client_macos_amd64'),
     'uot_sidecar_linux_amd64': ('artifacts/uot-sidecar/uot-sidecar_linux_amd64', '/artifacts/uot-sidecar/uot-sidecar_linux_amd64'),
     'uot_sidecar_linux_arm64': ('artifacts/uot-sidecar/uot-sidecar_linux_arm64', '/artifacts/uot-sidecar/uot-sidecar_linux_arm64'),
 }
@@ -145,6 +143,9 @@ def validate_plan(root, stage, plan):
         raise ValueError('expected a full source commit')
     entries = plan['payloads'] + [plan['manifest']]
     new_keys = set(plan.get('new_entries', []))
+    unknown_keys = set(plan['versions']) - set(CANONICAL)
+    if unknown_keys:
+        raise ValueError('not a releasable artifact: ' + ', '.join(sorted(unknown_keys)))
     if not new_keys <= set(plan['versions']):
         raise ValueError('new entry outside the release versions')
     new_paths = {CANONICAL[key][0] for key in new_keys}
@@ -171,9 +172,9 @@ def validate_plan(root, stage, plan):
     selected_mac = mac_keys & set(plan['versions'])
     if selected_mac:
         if selected_mac != mac_keys or len({plan['versions'][key] for key in mac_keys}) != 1:
-            raise ValueError('macOS DMG/ZIP matrix must use one version and both architectures')
+            raise ValueError('macOS DMG/ZIP matrix must use one version and ship both the DMG and the update ZIP')
         for key in mac_keys:
-            architecture = 'arm64' if key.endswith('_arm64') else 'x86_64'
+            architecture = 'arm64'
             artifact_format = 'zip' if '_update_' in key else 'dmg'
             if after[key].get('architecture') != architecture or after[key].get('format') != artifact_format:
                 raise ValueError('macOS architecture/format mismatch: ' + key)

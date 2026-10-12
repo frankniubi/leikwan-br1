@@ -23,11 +23,11 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/package-macos-client.sh --rid <osx-arm64|osx-x64> --version <version> --publish-dir <path> --helper-dir <path> --helper-hashes <path> [options]
+Usage: scripts/package-macos-client.sh --rid osx-arm64 --version <version> --publish-dir <path> --helper-dir <path> --helper-hashes <path> [options]
   --output-dir <path>       Artifact output directory
   --source-commit <sha>     Source revision for metadata
   --managed-load-receipt <path>
-                            Hash-bound probe receipt for cross-architecture packaging
+                            Hash-bound probe receipt when packaging arm64 on a non-arm64 host
   --dry-run                 Validate inputs without creating an app/DMG/ZIP
 
 Metadata merge mode:
@@ -82,9 +82,7 @@ versions_path = pathlib.Path(sys.argv[2]).resolve()
 metadata_path = pathlib.Path(sys.argv[3]).resolve()
 specifications = {
     "macos_client_app_arm64": ("artifacts/macos/leikwan-bridge-arm64.dmg", "/artifacts/macos/leikwan-bridge-arm64.dmg", "arm64", "dmg"),
-    "macos_client_app_x64": ("artifacts/macos/leikwan-bridge-x64.dmg", "/artifacts/macos/leikwan-bridge-x64.dmg", "x86_64", "dmg"),
     "macos_client_update_arm64": ("artifacts/macos/leikwan-bridge-update-arm64.zip", "/artifacts/macos/leikwan-bridge-update-arm64.zip", "arm64", "zip"),
-    "macos_client_update_x64": ("artifacts/macos/leikwan-bridge-update-x64.zip", "/artifacts/macos/leikwan-bridge-update-x64.zip", "x86_64", "zip"),
 }
 
 if versions_path != (root / "artifacts" / "versions.json").resolve():
@@ -184,8 +182,8 @@ fi
 
 case "$rid" in
   osx-arm64) architecture="arm64"; suffix="arm64" ;;
-  osx-x64) architecture="x86_64"; suffix="x64" ;;
-  *) fail "--rid must be osx-arm64 or osx-x64" ;;
+  osx-x64) fail "osx-x64 is no longer packaged: the macOS client supports Apple Silicon (osx-arm64) only" ;;
+  *) fail "--rid must be osx-arm64 (the macOS client supports Apple Silicon only)" ;;
 esac
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"
 [[ -d "$publish_dir" ]] || fail "publish directory missing"
@@ -240,7 +238,6 @@ check_architecture() {
   detected="$(file -b "$path" 2>/dev/null || true)"
   case "$architecture" in
     arm64) printf '%s' "$detected" | grep -Eqi 'Mach-O.*(arm64|aarch64)' || fail "wrong architecture for $(basename "$path"): $detected" ;;
-    x86_64) printf '%s' "$detected" | grep -Eqi 'Mach-O.*(x86_64|x86-64)' || fail "wrong architecture for $(basename "$path"): $detected" ;;
   esac
 }
 

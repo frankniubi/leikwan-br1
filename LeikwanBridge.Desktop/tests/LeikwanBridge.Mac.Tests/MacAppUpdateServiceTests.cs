@@ -12,25 +12,74 @@ namespace LeikwanBridge.Mac.Tests;
 
 public sealed class MacAppUpdateServiceTests
 {
-    [Theory]
-    [InlineData("arm64", "macos_client_update_arm64", "arm64")]
-    [InlineData("x64", "macos_client_update_x64", "x86_64")]
-    public async Task CheckAsync_SelectsOnlyTheCurrentArchitecture(
-        string processArchitecture,
-        string expectedKey,
-        string expectedArchitecture)
+    [Fact]
+    public async Task CheckAsync_SelectsTheAppleSiliconArtifacts()
     {
         using var temp = new TempDirectory();
         using var http = BuildHttp(request => JsonResponse(ManifestJson()));
-        using var service = CreateService(temp, processArchitecture, http);
+        using var service = CreateService(temp, "arm64", http);
 
         var artifact = await service.CheckAsync("https://panel.example.test", "1.0.0");
 
         Assert.NotNull(artifact);
-        Assert.Equal(expectedArchitecture, artifact.Architecture);
-        Assert.Contains(expectedKey.EndsWith("arm64", StringComparison.Ordinal) ? "arm64" : "x64", artifact.ArtifactUrl);
+        Assert.Equal("arm64", artifact.Architecture);
+        Assert.Contains("update-arm64.zip", artifact.ArtifactUrl);
         Assert.NotNull(artifact.ManualInstaller);
         Assert.Equal("dmg", artifact.ManualInstaller!.Format);
+        Assert.Contains("client-arm64.dmg", artifact.ManualInstaller.ArtifactUrl);
+    }
+
+    [Theory]
+    [InlineData("x64")]
+    [InlineData("x86_64")]
+    [InlineData("amd64")]
+    public void Constructor_RejectsIntelArchitectures(string architecture)
+    {
+        using var temp = new TempDirectory();
+        var exception = Assert.Throws<PlatformNotSupportedException>(() => new MacAppUpdateService(
+            Path.Combine(temp.Path, "updates"),
+            Path.Combine(temp.Path, "LeiKwan Bridge.app"),
+            architecture));
+        Assert.Equal("mac_architecture_unsupported", exception.Message);
+    }
+
+    [Fact]
+    public async Task CheckAsync_IgnoresLegacyIntelEntriesInThePanelManifest()
+    {
+        // The panel may keep advertising the retired Intel packages for a while;
+        // an Apple Silicon client must neither select nor be confused by them.
+        using var temp = new TempDirectory();
+        using var http = BuildHttp(_ => JsonResponse(ManifestJson(includeLegacyIntelEntries: true)));
+        using var service = CreateService(temp, "arm64", http);
+
+        var artifact = await service.CheckAsync("https://panel.example.test", "1.0.0");
+
+        Assert.NotNull(artifact);
+        Assert.Equal("arm64", artifact.Architecture);
+        Assert.DoesNotContain("x64", artifact.ArtifactUrl);
+        Assert.DoesNotContain("x64", artifact.ManualInstaller!.ArtifactUrl);
+    }
+
+    [Fact]
+    public async Task CheckAsync_FailsWhenOnlyLegacyIntelEntriesArePublished()
+    {
+        using var temp = new TempDirectory();
+        var sha = new string('A', 64);
+        var manifest = $$"""
+        {
+          "component": "desktop-client-app",
+          "manifest": {
+            "macos_client_update_x64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/update-x64.zip", "sha256": "{{sha}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
+            "macos_client_app_x64": { "version": "2.0.0", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+          }
+        }
+        """;
+        using var http = BuildHttp(_ => JsonResponse(manifest));
+        using var service = CreateService(temp, "arm64", http);
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.CheckAsync("https://panel.example.test", "1.0.0"));
+        Assert.Equal("update_manifest_architecture_missing", exception.Message);
     }
 
     [Fact]
@@ -321,9 +370,7 @@ public sealed class MacAppUpdateServiceTests
           "component": "desktop-client-app",
           "manifest": {
             "macos_client_update_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-arm64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 12, "architecture": "arm64", "format": "zip" },
-            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
-            "macos_client_update_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/update-x64.zip", "sha256": "{{new string('A', 64)}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
-            "macos_client_app_x64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-x64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }
+            "macos_client_app_arm64": { "version": "2.0.0", "artifact_url": "{{PanelEndpoints.CloudflareUrl}}/artifacts/macos/leikwan-bridge-arm64.dmg", "sha256": "{{new string('A', 64)}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" }
           }
         }
         """;
@@ -558,7 +605,7 @@ public sealed class MacAppUpdateServiceTests
         IMacUpdateLauncher? launcher = null,
         Func<string, bool>? writable = null)
     {
-        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", architecture == "x64" ? "x86_64" : "arm64", "LeiKwan Bridge.app");
+        var current = CreateBundle(temp.Path, "com.leikwan.bridge", "1.0.0", "arm64", "LeiKwan Bridge.app");
         return new MacAppUpdateService(
             Path.Combine(temp.Path, "updates"),
             current,
@@ -585,9 +632,14 @@ public sealed class MacAppUpdateServiceTests
     private static string ManifestJson(
         string version = "2.0.0",
         string? runtimeEntries = null,
-        string? packageRuntimeSha256 = null)
+        string? packageRuntimeSha256 = null,
+        bool includeLegacyIntelEntries = false)
     {
         var sha = new string('A', 64);
+        var legacyIntel = includeLegacyIntelEntries
+            ? $", \"macos_client_update_x64\": {{ \"version\": \"{version}\", \"artifact_url\": \"https://cdn.example.test/update-x64.zip\", \"sha256\": \"{sha}\", \"size_bytes\": 14, \"architecture\": \"x86_64\", \"format\": \"zip\" }}"
+              + $", \"macos_client_app_x64\": {{ \"version\": \"{version}\", \"artifact_url\": \"https://cdn.example.test/client-x64.dmg\", \"sha256\": \"{sha}\", \"size_bytes\": 15, \"architecture\": \"x86_64\", \"format\": \"dmg\" }}"
+            : string.Empty;
         var runtime = string.IsNullOrWhiteSpace(runtimeEntries) ? string.Empty : $", {runtimeEntries}";
         var packageRuntime = string.IsNullOrWhiteSpace(packageRuntimeSha256)
             ? string.Empty
@@ -597,9 +649,7 @@ public sealed class MacAppUpdateServiceTests
           "component": "desktop-client-app",
           "manifest": {
             "macos_client_update_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-arm64.zip", "sha256": "{{sha}}", "size_bytes": 12, "architecture": "arm64", "format": "zip"{{packageRuntime}} },
-            "macos_client_app_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{sha}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" },
-            "macos_client_update_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/update-x64.zip", "sha256": "{{sha}}", "size_bytes": 14, "architecture": "x86_64", "format": "zip" },
-            "macos_client_app_x64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-x64.dmg", "sha256": "{{sha}}", "size_bytes": 15, "architecture": "x86_64", "format": "dmg" }{{runtime}}
+            "macos_client_app_arm64": { "version": "{{version}}", "artifact_url": "https://cdn.example.test/client-arm64.dmg", "sha256": "{{sha}}", "size_bytes": 13, "architecture": "arm64", "format": "dmg" }{{legacyIntel}}{{runtime}}
           }
         }
         """;

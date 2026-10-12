@@ -507,13 +507,20 @@ public static class MacHeadlessAutoUpdate
             return;
         }
 
+        // The macOS client ships for Apple Silicon only; there is no Intel update to apply.
+        if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        {
+            Log.Warning("headless_update_loop_disabled reason=mac_architecture_unsupported");
+            return;
+        }
+
         try
         {
             var context = MacHeadlessUpdateContext.ForDaemon(paths);
             using var updater = new MacAppUpdateService(
                 context.UpdatesRoot,
                 context.BundleDirectory,
-                RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64",
+                "arm64",
                 waitForCallerExit: false);
             var coordinator = Create(context, panelUrl, updater, MacPosixDetachedSpawner.Instance, MacNativeBundleFileSystem.Instance);
             await coordinator.RunLoopAsync(new Random(), ct: ct).ConfigureAwait(false);

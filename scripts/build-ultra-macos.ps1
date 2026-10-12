@@ -3,8 +3,9 @@ param(
     [string]$Version = "2026.09.11.4",
     [string]$ShortSha = "",
     [string]$OutputRoot = "",
-    [ValidateSet("arm64", "amd64")]
-    [string]$Architectures = "arm64,amd64",
+    # The macOS client ships for Apple Silicon only; darwin/amd64 is no longer built.
+    [ValidateSet("arm64")]
+    [string]$Architectures = "arm64",
     [switch]$SkipReproducibilityCheck
 )
 
@@ -126,7 +127,7 @@ $results = @()
 foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) {
     $archConfig = switch ($architecture) {
         "arm64" { [pscustomobject]@{ GoArch = "arm64"; Cpu = 0x100000c; ArtifactName = "ultra-client_macos_arm64" } }
-        "amd64" { [pscustomobject]@{ GoArch = "amd64"; Cpu = 0x1000007; ArtifactName = "ultra-client_macos_amd64" } }
+        "amd64" { throw "darwin/amd64 is no longer built: the macOS client supports Apple Silicon (arm64) only" }
         default { throw "unsupported darwin architecture: $architecture" }
     }
     $outputPath = Join-Path $OutputRoot $archConfig.ArtifactName

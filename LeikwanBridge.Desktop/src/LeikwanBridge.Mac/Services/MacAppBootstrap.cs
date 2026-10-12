@@ -68,10 +68,10 @@ public static class MacAppBootstrap
         Log.Information("mac_bootstrap_connections_load_begin");
         await connections.InitializeAsync(ct).ConfigureAwait(false);
         Log.Information("mac_bootstrap_connections_load_complete");
+        // The macOS client ships for Apple Silicon only (Intel Macs are not supported).
         var architecture = RuntimeInformation.ProcessArchitecture switch
         {
             Architecture.Arm64 => "arm64",
-            Architecture.X64 => "x64",
             _ => throw new PlatformNotSupportedException("mac_architecture_unsupported"),
         };
         var updater = new MacAppUpdateService(

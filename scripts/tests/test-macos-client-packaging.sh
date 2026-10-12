@@ -86,6 +86,8 @@ build = (root / 'scripts/build-macos-client.sh').read_text()
 restore = build.split('\ndotnet restore \\\n', 1)[1].split('\ndotnet publish ', 1)[0]
 assert '-p:Version="$version"' in restore, 'restore and publish must use the same version'
 assert '--managed-load-receipt' in build, 'build must forward cross-architecture load receipt'
+rids=[node.text for node in project.iter('RuntimeIdentifiers')]
+assert rids==['osx-arm64'], 'the macOS client is Apple Silicon only: ' + repr(rids)
 PY
 bash -n "$build_script"
 bash -n "$package_script"
@@ -95,7 +97,7 @@ printf '%s\n' "$build_plan" | grep -Fqx \
   || fail "wstunnel commit pin is not the peeled v10.5.2 commit"
 printf '%s\n' "$build_plan" | grep -Fqx \
   'dotnet restore LeikwanBridge.Mac --locked-mode' \
-  || fail "locked restore must use the project dual-RID contract"
+  || fail "locked restore must use the project RID contract"
 printf '%s\n' "$build_plan" | grep -Fqx \
   'uot_binary=leikwan-uot-bond' \
   || fail "UOT helper must use the Cargo binary name"
@@ -116,9 +118,15 @@ good="$temp_root/good"
 make_fixture "$good" arm64
 run_dry "$good" >/dev/null
 
-good_x64="$temp_root/good-x64"
-make_fixture "$good_x64" x86_64
-run_dry "$good_x64" osx-x64 >/dev/null
+# Apple Silicon only: an Intel package request is refused at both entry points.
+intel="$temp_root/intel"
+make_fixture "$intel" x86_64
+expect_failure "osx-x64 package" run_dry "$intel" osx-x64
+expect_failure "osx-x64 build plan" bash "$build_script" --rid osx-x64 --dry-run
+intel_refusal="$("$package_script" --dry-run --rid osx-x64 --version 2.0.0 2>&1 || true)"
+grep -Fq 'Apple Silicon' <<<"$intel_refusal" || fail "osx-x64 refusal must name Apple Silicon"
+intel_refusal="$(bash "$build_script" --rid osx-x64 --dry-run 2>&1 || true)"
+grep -Fq 'Apple Silicon' <<<"$intel_refusal" || fail "osx-x64 build refusal must name Apple Silicon"
 
 missing_core="$temp_root/missing-core"
 make_fixture "$missing_core" arm64
