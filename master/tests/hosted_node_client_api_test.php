@@ -166,6 +166,25 @@ assertSame([['forward_id' => 101, 'node_id' => $nodeId, 'source' => 'explicit']]
 assertSame(422, $status, 'invalid node status');
 assertSame(['ok' => false, 'error' => 'hosted_node_invalid', 'field' => 'uuid'], $body, 'invalid node error names the field only');
 
+// --- batch upload ("sync all local nodes to cloud") ---------------------------
+[$status, $body] = $call('POST', 'clientBatchCreate', $seven, ['nodes' => [
+    ['ref' => 'local-1', 'uri' => 'socks5://alice:wonder@198.51.100.7:1080#Dup'],
+    ['ref' => 'local-2', 'uri' => 'ss://' . rtrim(base64_encode('aes-256-gcm:pw'), '=') . '@ss.example.com:8388#SS'],
+    ['ref' => 'local-3', 'uri' => 'vmess://e30='],
+    ['ref' => 'local-4'],
+]]);
+assertSame(200, $status, 'batch status');
+assertSame(['ref' => 'local-1', 'ok' => true, 'node_id' => $nodeId, 'created' => false], $body['results'][0], 'batch dedupes an already hosted node');
+assertSame([true, true], [$body['results'][1]['ok'], $body['results'][1]['created']], 'batch creates a new node');
+assertSame(['ref' => 'local-3', 'ok' => false, 'error' => 'hosted_node_invalid', 'field' => 'uri'], $body['results'][2], 'unsupported protocol is reported per entry');
+assertSame(['ref' => 'local-4', 'ok' => false, 'error' => 'hosted_node_invalid', 'field' => 'uri'], $body['results'][3], 'missing uri is reported per entry');
+assertSame(2, count($body['nodes']), 'batch returns the listing');
+$ssNodeId = (int) $body['results'][1]['node_id'];
+[$status, $body] = $call('POST', 'clientBatchCreate', $seven, ['nodes' => array_fill(0, 33, ['uri' => 'socks5://a.example.com:1'])]);
+assertSame([422, 'nodes'], [$status, $body['field'] ?? null], 'oversized batch refused');
+[$status, $body] = $call('DELETE', 'clientDelete', $seven, [], ['id' => (string) $ssNodeId]);
+assertSame(200, $status, 'cleanup batch node');
+
 // --- isolation ---------------------------------------------------------------
 $eight = $headers('token-eight', $deviceEight, 'session-eight');
 [$status, $body] = $call('GET', 'clientList', $eight);

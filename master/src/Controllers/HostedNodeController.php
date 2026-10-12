@@ -91,6 +91,54 @@ final class HostedNodeController extends BaseController
         });
     }
 
+    /**
+     * "Sync all local nodes to cloud": up to MAX_NODES_PER_CLIENT share links
+     * in one write. Each entry succeeds or fails on its own; uploads are
+     * idempotent, so a device can resend the whole batch after a failure.
+     */
+    public function clientBatchCreate(Request $request, array $params): Response
+    {
+        $client = $this->trustedClient($request);
+        return $this->clientResponse(function () use ($client, $request): array {
+            $this->limitWrites($client);
+            $entries = $request->input('nodes');
+            if (!is_array($entries) || !array_is_list($entries) || $entries === []
+                || count($entries) > HostedNodeService::MAX_NODES_PER_CLIENT) {
+                throw new ApiException('hosted_node_invalid', 422, ['field' => 'nodes']);
+            }
+            $results = [];
+            foreach ($entries as $entry) {
+                $entry = is_array($entry) ? $entry : [];
+                $ref = substr(trim((string) ($entry['ref'] ?? '')), 0, 64);
+                $input = [];
+                foreach (['uri', 'name'] as $field) {
+                    if (isset($entry[$field]) && is_scalar($entry[$field])) {
+                        $input[$field] = (string) $entry[$field];
+                    }
+                }
+                try {
+                    if (trim((string) ($input['uri'] ?? '')) === '') {
+                        throw new ApiException('hosted_node_invalid', 422, ['field' => 'uri']);
+                    }
+                    $created = $this->nodes->create((int) $client['id'], $input, HostedNodeService::SOURCE_DEVICE);
+                    $results[] = ['ref' => $ref, 'ok' => true, 'node_id' => (int) $created['node']['id'], 'created' => $created['created']];
+                } catch (ApiException $exception) {
+                    $code = $exception->getMessage();
+                    if (!array_key_exists($code, self::PUBLIC_ERRORS)) {
+                        throw $exception;
+                    }
+                    $result = ['ref' => $ref, 'ok' => false, 'error' => $code];
+                    $field = $exception->details()['field'] ?? null;
+                    if (is_string($field)) {
+                        $result['field'] = $field;
+                    }
+                    $results[] = $result;
+                }
+            }
+            return ['results' => $results] + $this->listingPayload($client);
+        });
+    }
+
     public function clientUpdate(Request $request, array $params): Response
     {
         $client = $this->trustedClient($request);

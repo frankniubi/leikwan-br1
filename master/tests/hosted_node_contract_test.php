@@ -21,6 +21,7 @@ if ($bootstrap === '' || $clientAgent === '' || $controller === '' || $migration
 foreach ([
     "\$this->router->add('GET', '/api/client/hosted-nodes', [\$hostedNodes, 'clientList']);",
     "\$this->router->add('POST', '/api/client/hosted-nodes', [\$hostedNodes, 'clientCreate']);",
+    "\$this->router->add('POST', '/api/client/hosted-nodes/batch', [\$hostedNodes, 'clientBatchCreate']);",
     "\$this->router->add('PUT', '/api/client/hosted-nodes/{id}', [\$hostedNodes, 'clientUpdate']);",
     "\$this->router->add('DELETE', '/api/client/hosted-nodes/{id}', [\$hostedNodes, 'clientDelete']);",
     "\$this->router->add('PUT', '/api/client/hosted-node-pairings/{forwardId}', [\$hostedNodes, 'clientPair']);",
@@ -39,7 +40,7 @@ if (!str_contains($base, "'href' => '/tenant/hosted-nodes', 'label' => 'My Nodes
 }
 
 // Every client endpoint goes through the trusted-device gate before acting.
-foreach (['clientList', 'clientCreate', 'clientUpdate', 'clientDelete', 'clientPair'] as $method) {
+foreach (['clientList', 'clientCreate', 'clientBatchCreate', 'clientUpdate', 'clientDelete', 'clientPair'] as $method) {
     $start = strpos($controller, 'public function ' . $method . '(');
     $end = strpos($controller, 'public function ', $start + 10);
     $bodyText = substr($controller, (int) $start, (int) ($end ?: strlen($controller)) - (int) $start);

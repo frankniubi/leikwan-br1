@@ -386,6 +386,7 @@ final class Bootstrap
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
         $this->router->add('GET', '/api/client/hosted-nodes', [$hostedNodes, 'clientList']);
         $this->router->add('POST', '/api/client/hosted-nodes', [$hostedNodes, 'clientCreate']);
+        $this->router->add('POST', '/api/client/hosted-nodes/batch', [$hostedNodes, 'clientBatchCreate']);
         $this->router->add('PUT', '/api/client/hosted-nodes/{id}', [$hostedNodes, 'clientUpdate']);
         $this->router->add('DELETE', '/api/client/hosted-nodes/{id}', [$hostedNodes, 'clientDelete']);
         $this->router->add('PUT', '/api/client/hosted-node-pairings/{forwardId}', [$hostedNodes, 'clientPair']);
