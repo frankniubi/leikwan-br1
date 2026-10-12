@@ -11,11 +11,11 @@ public sealed class WindowsProxyEditorViewModelTests
     {
         var editor = new WindowsProxyEditorViewModel();
 
-        Assert.Equal(["ss", "ss2022", "vless", "external"], editor.ProtocolOptions);
+        Assert.Equal(["ss", "ss2022", "vless", "socks5", "external"], editor.ProtocolOptions);
         Assert.Contains("none", editor.ShadowsocksMethodOptions);
         Assert.Contains("aes-128-ctr", editor.ShadowsocksMethodOptions);
         Assert.Contains("2022-blake3-aes-256-gcm", editor.ShadowsocksMethodOptions);
-        Assert.Equal(["tcp", "ws", "grpc"], editor.VlessTransportOptions);
+        Assert.Equal(["tcp", "ws", "grpc", "httpupgrade"], editor.VlessTransportOptions);
         Assert.Equal([WindowsProxyMode.Http, WindowsProxyMode.Tun, WindowsProxyMode.Process], editor.ModeOptions);
         Assert.Contains(2080, editor.LocalListenPortOptions);
         Assert.Contains(2081, editor.LocalListenPortOptions);

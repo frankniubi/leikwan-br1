@@ -13,10 +13,11 @@ public static class WindowsProxyProtocol
     public const string Shadowsocks = "ss";
     public const string Shadowsocks2022 = "ss2022";
     public const string Vless = "vless";
+    public const string Socks5 = "socks5";
     public const string External = "external";
 
     public static IReadOnlyList<string> Supported { get; } =
-        [Shadowsocks, Shadowsocks2022, Vless, External];
+        [Shadowsocks, Shadowsocks2022, Vless, Socks5, External];
 
     public static IReadOnlyList<string> ShadowsocksMethodOptions { get; } =
     [
@@ -43,14 +44,19 @@ public static class WindowsProxyProtocol
     ];
 
     public static IReadOnlyList<string> VlessTransportOptions { get; } =
-        ["tcp", "ws", "grpc"];
+        ["tcp", "ws", "grpc", "httpupgrade"];
+
+    /// <summary>Shadowsocks SIP003 plugins sing-box runs in-process.</summary>
+    public static IReadOnlyList<string> ShadowsocksPluginOptions { get; } =
+        ["", "obfs-local", "v2ray-plugin"];
 
     public static string Normalize(string? value)
     {
         var normalized = value?.Trim().ToLowerInvariant() ?? string.Empty;
         return normalized switch
         {
-            "shadowsocks" or "socks" => Shadowsocks,
+            "shadowsocks" => Shadowsocks,
+            "socks" => Socks5,
             "shadowsocks2022" or "shadowsocks-2022" => Shadowsocks2022,
             _ => normalized,
         };
@@ -198,8 +204,32 @@ public sealed class WindowsProxyProfile
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    /// <summary>Shadowsocks SIP003 plugin (obfs-local / v2ray-plugin), empty for none.</summary>
+    [JsonPropertyName("plugin")]
+    public string Plugin { get; set; } = "";
+
+    [JsonPropertyName("plugin_opts")]
+    public string PluginOpts { get; set; } = "";
+
+    /// <summary>SOCKS5 username (RFC 1929); empty means no authentication.</summary>
+    [JsonPropertyName("username")]
+    public string Username { get; set; } = "";
+
+    /// <summary>
+    /// Panel node id when this profile is a hosted ("上云") node; 0 for a node that
+    /// exists only on this device. See LeikwanBridge.Core.Nodes.HostedNodeSyncService.
+    /// </summary>
+    [JsonPropertyName("hosted_id")]
+    public long HostedId { get; set; }
+
+    [JsonIgnore]
+    public bool IsHosted => HostedId > 0;
+
     [JsonIgnore]
     public bool IsShadowsocks => WindowsProxyProtocol.IsShadowsocks(Protocol);
+
+    [JsonIgnore]
+    public bool IsSocks5 => WindowsProxyProtocol.Normalize(Protocol) == WindowsProxyProtocol.Socks5;
 
     [JsonIgnore]
     public bool IsExternal => WindowsProxyProtocol.Normalize(Protocol) == WindowsProxyProtocol.External;
@@ -221,6 +251,7 @@ public sealed class WindowsProxyProfile
     {
         WindowsProxyProtocol.Shadowsocks2022 => "SS2022",
         WindowsProxyProtocol.Vless => "VLESS",
+        WindowsProxyProtocol.Socks5 => "SOCKS5",
         WindowsProxyProtocol.External => "External",
         _ => "Shadowsocks",
     };

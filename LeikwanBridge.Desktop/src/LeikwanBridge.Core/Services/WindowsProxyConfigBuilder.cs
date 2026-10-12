@@ -382,8 +382,45 @@ public static class WindowsProxyConfigBuilder
         return new JsonArray(tun);
     }
 
+    /// <summary>
+    /// The sing-box outbound (tag "proxy") for one validated profile; shared with
+    /// LeikwanBridge.Core.Nodes.UserNodeOutbound so every desktop builds node outbounds alike.
+    /// </summary>
+    public static JsonObject BuildProxyOutbound(WindowsProxyProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (profile.IsExternal)
+            throw new InvalidOperationException("proxy_external_requires_forward");
+        var copy = profile.Clone();
+        copy.Protocol = WindowsProxyProtocol.Normalize(copy.Protocol);
+        copy.Transport = copy.Transport.Trim().ToLowerInvariant();
+        Validate(copy, DefaultProxyPort, DefaultTunMtu, "gvisor");
+        return BuildOutbound(copy);
+    }
+
     private static JsonObject BuildOutbound(WindowsProxyProfile profile)
-        => profile.IsShadowsocks ? BuildShadowsocks(profile) : BuildVless(profile);
+        => profile.IsShadowsocks ? BuildShadowsocks(profile)
+            : profile.IsSocks5 ? BuildSocks5(profile)
+            : BuildVless(profile);
+
+    private static JsonObject BuildSocks5(WindowsProxyProfile profile)
+    {
+        var outbound = new JsonObject
+        {
+            ["type"] = "socks",
+            ["tag"] = "proxy",
+            ["server"] = profile.Server,
+            ["server_port"] = profile.Port,
+            ["version"] = "5",
+            ["domain_resolver"] = "local",
+        };
+        if (!string.IsNullOrEmpty(profile.Username))
+        {
+            outbound["username"] = profile.Username;
+            outbound["password"] = profile.Password;
+        }
+        return outbound;
+    }
 
     private static JsonObject BuildShadowsocks(WindowsProxyProfile profile)
     {
@@ -397,6 +434,13 @@ public static class WindowsProxyConfigBuilder
             ["password"] = profile.Password,
             ["domain_resolver"] = "local",
         };
+        var plugin = NormalizePlugin(profile.Plugin);
+        if (plugin.Length > 0)
+        {
+            outbound["plugin"] = plugin;
+            if (!string.IsNullOrWhiteSpace(profile.PluginOpts))
+                outbound["plugin_opts"] = profile.PluginOpts.Trim();
+        }
         if (profile.IsShadowsocks2022)
         {
             // Pin the SS2022 UDP-over-TCP dialect even when native UDP is
@@ -433,11 +477,16 @@ public static class WindowsProxyConfigBuilder
         if (profile.Transport != "tcp")
         {
             var transport = new JsonObject { ["type"] = profile.Transport };
-            if (profile.Transport == "ws")
+            if (profile.Transport is "ws" or "httpupgrade")
             {
                 transport["path"] = string.IsNullOrWhiteSpace(profile.Path) ? "/" : profile.Path;
                 if (!string.IsNullOrWhiteSpace(profile.Host))
-                    transport["headers"] = new JsonObject { ["Host"] = profile.Host };
+                {
+                    if (profile.Transport == "ws")
+                        transport["headers"] = new JsonObject { ["Host"] = profile.Host };
+                    else
+                        transport["host"] = profile.Host;
+                }
             }
             else if (profile.Transport == "grpc" && !string.IsNullOrWhiteSpace(profile.ServiceName))
             {
@@ -451,8 +500,12 @@ public static class WindowsProxyConfigBuilder
             var tls = new JsonObject { ["enabled"] = true };
             if (!string.IsNullOrWhiteSpace(profile.ServerName))
                 tls["server_name"] = profile.ServerName;
-            if (!string.IsNullOrWhiteSpace(profile.Fingerprint))
-                tls["utls"] = new JsonObject { ["enabled"] = true, ["fingerprint"] = profile.Fingerprint };
+            // REALITY needs uTLS in sing-box; default to chrome like the panel does.
+            var fingerprint = !string.IsNullOrWhiteSpace(profile.Fingerprint)
+                ? profile.Fingerprint
+                : !string.IsNullOrWhiteSpace(profile.RealityPublicKey) ? "chrome" : string.Empty;
+            if (fingerprint.Length > 0)
+                tls["utls"] = new JsonObject { ["enabled"] = true, ["fingerprint"] = fingerprint };
             if (profile.AllowInsecure)
                 tls["insecure"] = true;
             if (!string.IsNullOrWhiteSpace(profile.Alpn))
@@ -715,6 +768,12 @@ public static class WindowsProxyConfigBuilder
             domains.Add(normalized.ToLowerInvariant());
     }
 
+    private static string NormalizePlugin(string? plugin)
+    {
+        var value = plugin?.Trim().ToLowerInvariant() ?? string.Empty;
+        return value == "simple-obfs" ? "obfs-local" : value;
+    }
+
     private static void Validate(WindowsProxyProfile profile, int proxyPort, int tunMtu, string tunStack)
     {
         if (!WindowsProxyProtocol.IsSupported(profile.Protocol))
@@ -738,6 +797,15 @@ public static class WindowsProxyConfigBuilder
             if (string.IsNullOrWhiteSpace(profile.Password)
                 && !string.Equals(profile.Method.Trim(), "none", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Shadowsocks password is required.", nameof(profile.Password));
+            var plugin = NormalizePlugin(profile.Plugin);
+            if (plugin.Length > 0 && !WindowsProxyProtocol.ShadowsocksPluginOptions.Contains(plugin, StringComparer.Ordinal))
+                throw new ArgumentException("Unsupported Shadowsocks plugin.", nameof(profile.Plugin));
+        }
+        else if (profile.IsSocks5)
+        {
+            if (string.IsNullOrEmpty(profile.Username) != string.IsNullOrEmpty(profile.Password)
+                || profile.Username.Length > 255 || profile.Password.Length > 255)
+                throw new ArgumentException("SOCKS5 needs both a username and a password, or neither.", nameof(profile.Username));
         }
         else
         {
