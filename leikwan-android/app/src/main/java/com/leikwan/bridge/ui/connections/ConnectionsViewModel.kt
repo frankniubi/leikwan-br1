@@ -117,6 +117,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val deviceLimitRetryMs: Long = DEVICE_LIMIT_RETRY_MS,
     private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
     private val routeSelectionState: StateFlow<Int?> = ConnectProgress.selectingRouteCandidates,
+    vpnRunning: Boolean = LeikwanVpnService.isRunning,
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
@@ -127,7 +128,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val _state = MutableStateFlow(
         ConnectionsUiState(
             selectedForwardId = prefs.selectedForwardId,
-            vpnStatus = if (LeikwanVpnService.isRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
+            vpnStatus = if (vpnRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             nativeSelected = prefs.nativeOutboundSelected,
             nativeForwardId = prefs.nativeOutboundForwardId,
             nativeRouteScope = prefs.nativeOutboundRouteScope,
@@ -249,7 +250,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 val nativeAuthorizationChanged = wasNativeActive && (
                     !nativeSelected
                         || nativeId != activeNativeForwardId
-                        || nativeDirection != activeNativeDirection
+                        // A view model created over a running tunnel has not seen its carrier yet;
+                        // an unknown direction is not a changed one.
+                        || (activeNativeDirection.isNotEmpty() && nativeDirection != activeNativeDirection)
                         || nativeScope != activeNativeRouteScope
                         || nativePolicy != activeNativeRoutePolicy
                 )
