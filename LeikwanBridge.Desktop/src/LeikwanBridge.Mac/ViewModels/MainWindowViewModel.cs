@@ -83,7 +83,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Func<string, CancellationToken, Task>? saveLogLevel = null,
         string? preferredEgressInterface = null,
         Func<string, CancellationToken, Task>? saveEgressInterface = null,
-        Func<string?, IReadOnlyList<EgressInterfaceOption>>? egressInterfaceCatalog = null)
+        Func<string?, IReadOnlyList<EgressInterfaceOption>>? egressInterfaceCatalog = null,
+        Func<IReadOnlyDictionary<string, TrafficCounter>>? trafficCounters = null,
+        INodeLibrary? nodeLibrary = null)
     {
         _controller = controller;
         _connections = connections;
@@ -104,6 +106,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
         LogLevel = DesktopLogLevel.Normalize(logLevel);
         PreferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
+        InitializeShell(trafficCounters, nodeLibrary);
         ReloadEgressInterfaces();
         PanelUrl = controller.Snapshot.PanelUrl;
         SelectedPanelEndpoint = PanelEndpoints.ForUrl(PanelUrl);
@@ -820,6 +823,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowConnections()
     {
+        IsNodesVisible = false;
         SelectedSection = "connections";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -831,6 +835,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowPairing()
     {
+        IsNodesVisible = false;
         SelectedSection = "pairing";
         IsDashboardVisible = false;
         IsLogsVisible = false;
@@ -1272,6 +1277,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowDashboard()
     {
+        IsNodesVisible = false;
         SelectedSection = "dashboard";
         IsPairingVisible = false;
         IsDashboardVisible = !IsLoginVisible && !IsClientPickerVisible;
@@ -1283,6 +1289,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowLogs()
     {
+        IsNodesVisible = false;
         SelectedSection = "logs";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -1294,6 +1301,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowSettings()
     {
+        IsNodesVisible = false;
         SelectedSection = "settings";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -1322,6 +1330,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
         if (SelectedSection == "pairing")
             IsPairingVisible = !IsLoginVisible && !IsClientPickerVisible;
+        if (SelectedSection == "nodes")
+            IsNodesVisible = !IsLoginVisible && !IsClientPickerVisible;
         ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
         if (!snapshot.IsBusy)
@@ -1375,6 +1385,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         SelectedConnectionProfile = ConnectionProfiles.FirstOrDefault(profile => profile.Id == preferredId)
             ?? null;
         RefreshNodeOptions();
+        RefreshNodesPage();
     }
 
     private void RefreshNodeOptions()
@@ -1502,6 +1513,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         RefreshNodeOptions();
         OnPropertyChanged(nameof(PairedConnectionRoutes));
         OnPropertyChanged(nameof(CanStartLocalConnection));
+        RefreshNodesPage();
         ScheduleNativeLeaseRefresh();
     }
 

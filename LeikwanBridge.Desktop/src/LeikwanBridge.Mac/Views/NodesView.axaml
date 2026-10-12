@@ -1,0 +1,118 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:LeikwanBridge.Mac.ViewModels"
+             xmlns:lucide="using:Lucide.Avalonia"
+             x:Class="LeikwanBridge.Mac.Views.NodesView"
+             x:DataType="vm:MainWindowViewModel">
+  <Grid DataContext="{Binding NodesPage}" x:DataType="vm:NodesViewModel" RowDefinitions="Auto,Auto,*" Margin="28,0,28,0">
+
+    <!-- Toolbar: import a share link, cloud actions. -->
+    <Border Grid.Row="0" Classes="card" Padding="14,12">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+        <TextBox Text="{Binding ImportLink, Mode=TwoWay}" Watermark="Paste a share link (ss://, wg://)"
+                 AutomationProperties.Name="Share link" />
+        <Button Grid.Column="1" Classes="primary" Command="{Binding ImportShareLinkCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <lucide:LucideIcon Kind="ClipboardPaste" Size="16" />
+            <TextBlock Text="Import" />
+          </StackPanel>
+        </Button>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+          <Button Classes="tonal" Command="{Binding SyncAllCommand}" ToolTip.Tip="Upload every local Shadowsocks / SOCKS5 / VLESS node">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <lucide:LucideIcon Kind="CloudUpload" Size="16" />
+              <TextBlock Text="Sync all" />
+            </StackPanel>
+          </Button>
+          <Button Classes="icon tonal" Command="{Binding RefreshFromCloudCommand}" ToolTip.Tip="Refresh from cloud">
+            <lucide:LucideIcon Kind="CloudDownload" Size="16" />
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <StackPanel Grid.Row="1" Spacing="4" Margin="4,12,4,10">
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+        <lucide:LucideIcon Kind="Cloud" Size="15" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding CloudHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
+      </Grid>
+      <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
+                 IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      <TextBlock Text="{Binding StatusMessage}" Foreground="{DynamicResource SuccessBrush}" TextWrapping="Wrap"
+                 IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="2">
+      <StackPanel Margin="0,0,0,96" Spacing="12">
+        <Border Classes="card" Padding="28" IsVisible="{Binding !HasNodes}">
+          <StackPanel HorizontalAlignment="Center" Spacing="8">
+            <lucide:LucideIcon Kind="Server" Size="28" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="No nodes yet" Classes="title" HorizontalAlignment="Center" />
+            <TextBlock Text="Paste a share link above, or add one under 线路配对." Classes="muted" HorizontalAlignment="Center" />
+          </StackPanel>
+        </Border>
+
+        <ItemsControl x:Name="NodeCards" ItemsSource="{Binding Nodes}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <WrapPanel ItemWidth="300" Orientation="Horizontal" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:NodeCardViewModel">
+              <Border Classes="card" Margin="0,0,12,12" Padding="16,14">
+                <StackPanel Spacing="10">
+                  <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Border Width="36" Height="36" CornerRadius="12" Background="{DynamicResource SecondaryContainerBrush}">
+                      <TextBlock Text="{Binding ProtocolInitial}" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSecondaryContainerBrush}" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Spacing="0" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding Protocol}" Classes="muted" FontSize="11" />
+                    </StackPanel>
+                    <Border Grid.Column="2" Classes="chip" Classes.cloud="{Binding IsHosted}" ToolTip.Tip="{Binding CloudTooltip}">
+                      <StackPanel Orientation="Horizontal" Spacing="4">
+                        <lucide:LucideIcon Kind="Cloud" Size="12" IsVisible="{Binding IsHosted}" />
+                        <lucide:LucideIcon Kind="Laptop" Size="12" IsVisible="{Binding IsLocalOnly}" />
+                        <lucide:LucideIcon Kind="CloudOff" Size="12" IsVisible="{Binding IsCloudUnsupported}" />
+                        <TextBlock Text="{Binding CloudLabel}" />
+                      </StackPanel>
+                    </Border>
+                  </Grid>
+                  <TextBlock Text="{Binding Endpoint}" Classes="mono muted" FontSize="12" TextTrimming="CharacterEllipsis" />
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="PAIRED SERVICE" Classes="label" FontSize="11" />
+                    <ComboBox ItemsSource="{Binding ServiceOptions}" SelectedItem="{Binding SelectedService, Mode=TwoWay}"
+                              HorizontalAlignment="Stretch" AutomationProperties.Name="Pair with service">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:NodeServiceOption">
+                          <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                    <Button Classes="tonal" MinHeight="32" Padding="12,4"
+                            Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).UploadCommand}"
+                            CommandParameter="{Binding}" IsVisible="{Binding IsLocalOnly}" ToolTip.Tip="Upload to cloud">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <lucide:LucideIcon Kind="CloudUpload" Size="14" />
+                        <TextBlock Text="Upload" FontSize="12" />
+                      </StackPanel>
+                    </Button>
+                    <Button Classes="icon ghost" Width="32" Height="32" MinHeight="32"
+                            Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).DeleteCommand}"
+                            CommandParameter="{Binding}" ToolTip.Tip="Delete node">
+                      <lucide:LucideIcon Kind="Trash2" Size="15" Foreground="{DynamicResource DangerBrush}" />
+                    </Button>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

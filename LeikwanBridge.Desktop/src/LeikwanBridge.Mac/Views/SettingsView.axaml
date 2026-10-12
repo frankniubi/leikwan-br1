@@ -1,0 +1,126 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:LeikwanBridge.Mac.ViewModels"
+             xmlns:lucide="using:Lucide.Avalonia"
+             x:Class="LeikwanBridge.Mac.Views.SettingsView"
+             x:DataType="vm:MainWindowViewModel">
+  <ScrollViewer>
+    <StackPanel Margin="28,22,28,96" MaxWidth="780" HorizontalAlignment="Left" Spacing="14">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="heading" Text="Settings" />
+        <TextBlock Classes="muted" Text="Client preferences and update controls" />
+      </StackPanel>
+
+      <!-- Updates first: the version and the check are always one glance away. -->
+      <Border Classes="card">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+          <Border Width="44" Height="44" CornerRadius="14" Background="{DynamicResource PrimaryContainerBrush}">
+            <lucide:LucideIcon Kind="Sparkles" Size="20" Foreground="{DynamicResource OnPrimaryContainerBrush}" />
+          </Border>
+          <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+            <TextBlock Text="{Binding VersionLabel}" Classes="title" />
+            <TextBlock Text="{Binding UpdateStatusText}" Classes="muted" FontSize="12" />
+            <TextBlock Classes="muted" Text="Check for a verified build for this Mac (Apple silicon)." FontSize="11" />
+          </StackPanel>
+          <Button Grid.Column="2" Classes="tonal" Command="{Binding CheckForUpdatesCommand}" VerticalAlignment="Center">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+              <TextBlock Text="Check now" />
+            </StackPanel>
+          </Button>
+        </Grid>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Panel" Classes="title" />
+          <TextBlock Classes="label" Text="CONNECTION SITE" />
+          <ComboBox ItemsSource="{Binding PanelEndpointOptions}" MinWidth="320" HorizontalAlignment="Left"
+                    SelectedItem="{Binding SelectedPanelEndpoint, Mode=TwoWay}"
+                    AutomationProperties.Name="Connection site">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Label}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
+          <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
+          <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="16">
+            <StackPanel Spacing="5">
+              <TextBlock Classes="label" Text="LANGUAGE" />
+              <ComboBox ItemsSource="{Binding Languages}" SelectedItem="{Binding Language, Mode=TwoWay}" Width="180" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="5">
+              <TextBlock Classes="label" Text="LOG LEVEL" />
+              <ComboBox ItemsSource="{Binding LogLevels}" SelectedItem="{Binding LogLevel, Mode=TwoWay}" Width="180" />
+            </StackPanel>
+          </Grid>
+          <TextBlock Classes="label" Text="OUTBOUND NETWORK INTERFACE" Margin="0,4,0,0" />
+          <ComboBox ItemsSource="{Binding EgressInterfaceOptions}"
+                    SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
+                    SelectedValueBinding="{Binding Id}"
+                    HorizontalAlignment="Left" MinWidth="320">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding DisplayName}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Classes="muted" Text="Select the physical adapter used by Ultra and direct control traffic. Automatic chooses the active adapter." FontSize="11" TextWrapping="Wrap" />
+          <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <lucide:LucideIcon Kind="Save" Size="16" />
+              <TextBlock Text="Save preferences" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Startup and window" Classes="title" />
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel>
+              <TextBlock Text="Open at login" FontWeight="SemiBold" />
+              <TextBlock Classes="muted" Text="Start this client for the current macOS user." FontSize="12" />
+            </StackPanel>
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoStartEnabled, Mode=TwoWay}" Command="{Binding ToggleAutostartCommand}"
+                          OnContent="" OffContent="" />
+          </Grid>
+          <Border Classes="divider" />
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel>
+              <TextBlock Text="Keep in menu bar" FontWeight="SemiBold" />
+              <TextBlock Classes="muted" Text="Closing the window keeps active forwards running." FontSize="12" />
+            </StackPanel>
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding CloseToTray, Mode=TwoWay}" OnContent="" OffContent="" />
+          </Grid>
+          <Border Classes="divider" />
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel>
+              <TextBlock Text="Appearance" FontWeight="SemiBold" />
+              <TextBlock Classes="muted" Text="Light and dark follow the macOS appearance setting." FontSize="12" />
+            </StackPanel>
+            <lucide:LucideIcon Grid.Column="1" Kind="SunMoon" Size="18" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Classes="secondary" Command="{Binding ShowLogsCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <lucide:LucideIcon Kind="ScrollText" Size="16" />
+            <TextBlock Text="Activity log" />
+          </StackPanel>
+        </Button>
+        <Button Classes="danger" Command="{Binding SignOutCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <lucide:LucideIcon Kind="LogOut" Size="16" />
+            <TextBlock Text="Sign out" />
+          </StackPanel>
+        </Button>
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

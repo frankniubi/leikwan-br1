@@ -48,13 +48,39 @@ public sealed partial class App : Application
     private static void InitializeUiFixture(IClassicDesktopStyleApplicationLifetime desktop)
     {
         desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        // Screenshot-only knobs, honoured only behind LEIKWAN_TEST_UI=1 (see Program).
+        var theme = Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_THEME");
+        if (string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase))
+            Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark;
+        else if (string.Equals(theme, "light", StringComparison.OrdinalIgnoreCase))
+            Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Light;
         var controller = new MacUiFixtureController(UiFixtureState);
+        var traffic = new MacUiFixtureTraffic();
         var viewModel = new MainWindowViewModel(
             controller,
             closeToTray: false,
-            dispatch: action => action());
-        if (string.Equals(UiFixtureState, "settings", StringComparison.Ordinal))
-            viewModel.ShowSettingsCommand.Execute(null);
+            dispatch: action => action(),
+            trafficCounters: string.Equals(UiFixtureState, "login", StringComparison.Ordinal) ? null : traffic.Next,
+            nodeLibrary: new MacUiFixtureNodeLibrary());
+        switch (UiFixtureState)
+        {
+            case "settings":
+                viewModel.ShowSettingsCommand.Execute(null);
+                break;
+            case "services":
+                viewModel.ShowConnectionsCommand.Execute(null);
+                break;
+            case "nodes":
+                viewModel.ShowNodesCommand.Execute(null);
+                break;
+            case "pairing":
+                viewModel.ShowPairingCommand.Execute(null);
+                break;
+        }
+        // Warm the speed chart and running timer so a capture shows live-looking data.
+        var start = DateTimeOffset.UtcNow.AddSeconds(-TrafficMonitor.HistoryLength - 1);
+        for (var second = 0; second <= TrafficMonitor.HistoryLength; second++)
+            viewModel.Tick(start.AddSeconds(second));
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -149,7 +175,10 @@ public sealed partial class App : Application
                 PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
                 services.Connections.SetPreferredEgressInterface(config.PreferredEgressInterface);
                 await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
-            });
+            },
+            trafficCounters: new MacTrafficCounterReader(
+                () => config.GetEffectiveStateDir(),
+                PlatformPaths.RuntimeDirectory).Read);
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;
