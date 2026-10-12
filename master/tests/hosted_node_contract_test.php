@@ -57,14 +57,16 @@ foreach (['Auth::requireClientAgent(', '->authorizeClientRequest(', '->requireAc
 // id format; an attested Android id never takes the desktop path.
 foreach ([
     '$this->deviceControls->isManagedDeviceId($headerDeviceId)',
-    "foreach (['windows', 'macos', 'linux'] as \$family)",
+    "foreach (['windows', 'macos'] as \$family)",
     "'/^windows-client-([1-9][0-9]*)-[a-f0-9]{16}$/'",
     "'/^macos-client-[a-f0-9]{32}$/'",
-    "'/^linux-[a-f0-9]{32}$/'",
 ] as $gate) {
     if (!str_contains($controller, $gate)) {
         fail('desktop gate is missing ' . $gate);
     }
+}
+if (str_contains($controller, "'linux'") || str_contains($controller, 'linux-[a-f0-9]')) {
+    fail('Linux headless must stay closed until the Linux agent has a nodes feature');
 }
 foreach (['public function tenantCreate(', 'public function tenantDelete(', 'public function tenantPair('] as $method) {
     $start = strpos($controller, $method);

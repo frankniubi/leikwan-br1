@@ -23,7 +23,7 @@ use Leikwan\Master\Support\TrustedClientIpResolver;
  *
  * Client API (/api/client/hosted-nodes*): only an official client of the
  * owning client may read or change them: a trusted, attested Android device,
- * or a Windows / macOS / Linux desktop presenting its per-install device id.
+ * or a Windows / macOS desktop presenting its per-install device id.
  * Every call goes through the same gates as that platform's config pull
  * (client token, access policy, device trust, online-device limit). Responses carry credentials, so they
  * are never cached and errors never echo input.
@@ -182,7 +182,7 @@ final class HostedNodeController extends BaseController
      *
      * - Android: only an enrolled, attested device with a live device session
      *   passes DeviceControlService::requireActive.
-     * - Desktop (Windows / macOS / Linux headless): the identity the desktop
+     * - Desktop (Windows / macOS): the identity the desktop
      *   pull itself relies on, i.e. the client agent token, the access policy
      *   (geo lock, blacklist), an explicit per-install device id of that
      *   platform's own format (never the server-derived legacy id, so the call
@@ -190,6 +190,10 @@ final class HostedNodeController extends BaseController
      *   A request that presents an attested Android device id is always held
      *   to the Android gate, whatever platform it claims, so a trusted phone's
      *   id cannot be laundered through the desktop path.
+     *
+     * Linux headless (platform "linux", ids linux-<32 hex>) is refused until the
+     * Linux agent has a nodes feature: no client there would use the node
+     * credentials, so the endpoints are not exposed to it.
      *
      * Hosted nodes never give the forward core a new capability (the panel
      * only stores the user's own nodes), so the desktop gate matches the
@@ -223,10 +227,10 @@ final class HostedNodeController extends BaseController
         return $client;
     }
 
-    /** Desktop platform family from X-Device-Platform ('windows-desktop', 'macos-desktop', 'linux'), or ''. */
+    /** Desktop platform family from X-Device-Platform ('windows-desktop', 'macos-desktop'), or ''. */
     private static function desktopFamily(string $platform): string
     {
-        foreach (['windows', 'macos', 'linux'] as $family) {
+        foreach (['windows', 'macos'] as $family) {
             if ($platform === $family || str_starts_with($platform, $family . '-')) {
                 return $family;
             }
@@ -237,7 +241,7 @@ final class HostedNodeController extends BaseController
     /**
      * The device id each official desktop build persists per install:
      * Windows windows-client-<client id>-<16 hex> (bound to this client),
-     * macOS macos-client-<32 hex>, Linux headless linux-<32 hex>.
+     * macOS macos-client-<32 hex>.
      */
     private static function isDesktopDeviceId(string $family, string $deviceId, int $clientId): bool
     {
@@ -245,7 +249,6 @@ final class HostedNodeController extends BaseController
             'windows' => preg_match('/^windows-client-([1-9][0-9]*)-[a-f0-9]{16}$/', $deviceId, $match) === 1
                 && (int) $match[1] === $clientId,
             'macos' => preg_match('/^macos-client-[a-f0-9]{32}$/', $deviceId) === 1,
-            'linux' => preg_match('/^linux-[a-f0-9]{32}$/', $deviceId) === 1,
             default => false,
         };
     }
