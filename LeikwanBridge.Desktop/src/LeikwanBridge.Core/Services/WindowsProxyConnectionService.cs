@@ -14,7 +14,7 @@ namespace LeikwanBridge.Core.Services;
 /// redirector.  A single gate makes mode changes transactional: the previous
 /// mode is stopped before a new config is exposed to the operating system.
 /// </summary>
-public sealed class WindowsProxyConnectionService : IAsyncDisposable
+public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBridge.Core.Nodes.IWindowsProxyProfileHost
 {
     private readonly WindowsProxyProfileStore _store;
     private readonly IWindowsProxyProcessHost _processHost;
@@ -528,12 +528,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             {
                 if (forwardListenPort.Value is < 1 or > 65535)
                     throw new InvalidOperationException("proxy_forward_listener_invalid");
-                profile = profile.Clone();
-                // Preserve implicit TLS identity before replacing only the dial endpoint.
-                if (profile.Tls && string.IsNullOrWhiteSpace(profile.ServerName))
-                    profile.ServerName = profile.Server;
-                profile.Server = "127.0.0.1";
-                profile.Port = forwardListenPort.Value;
+                profile = LeikwanBridge.Core.Nodes.UserNodeOutbound.RewriteForForward(profile, forwardListenPort.Value);
             }
             profileName = profile.Name;
             var normalizedProcessRules = (processRules ?? [])
