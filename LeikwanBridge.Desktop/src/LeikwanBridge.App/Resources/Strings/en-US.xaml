@@ -169,8 +169,8 @@
     <system:String x:Key="ProxyEdit">Edit</system:String>
     <system:String x:Key="ProxyAdvanced">Advanced settings</system:String>
     <system:String x:Key="ProxyNodeEditor">Add / edit node</system:String>
-    <system:String x:Key="ProxyMyNodes">My nodes</system:String>
-    <system:String x:Key="ProxyRowNode">Saved node</system:String>
+    <system:String x:Key="ProxyMyNodes">Your own nodes</system:String>
+    <system:String x:Key="ProxyRowNode">Your own node</system:String>
     <system:String x:Key="ProxyUnboundNode">No saved node selected</system:String>
     <system:String x:Key="ProxyCancel">Cancel</system:String>
     <system:String x:Key="ProxyForwardTcpRequired">This node requires TCP. Select a TCP or TCP+UDP forward.</system:String>
@@ -204,7 +204,7 @@
     <system:String x:Key="ProxyImportNetchModes">Import Netch modes</system:String>
         <system:String x:Key="ProxyImport">Import and save</system:String>
     <system:String x:Key="ProxyImportPrompt">Paste a share link</system:String>
-    <system:String x:Key="ProxyImportSupported">Shadowsocks, SOCKS5 and VLESS links</system:String>
+    <system:String x:Key="ProxyImportSupported">Supports Shadowsocks, SOCKS5, VLESS</system:String>
     <system:String x:Key="ProxyName">Profile name</system:String>
     <system:String x:Key="ProxyServer">Server</system:String>
     <system:String x:Key="ProxyPort">Port</system:String>
@@ -342,4 +342,5 @@
     <system:String x:Key="QualityGood">Good</system:String>
     <system:String x:Key="QualityDegraded">Degraded</system:String>
     <system:String x:Key="QualityUnavailable">Unavailable</system:String>
+    <system:String x:Key="OwnNodeLabel">Your own node</system:String>
 </ResourceDictionary>

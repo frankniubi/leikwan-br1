@@ -49,6 +49,14 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
     public bool IsSocks5 => WindowsProxyProtocol.Normalize(Protocol) == WindowsProxyProtocol.Socks5;
     public bool IsHosted => HostedId > 0;
 
+    /// <summary>
+    /// True while adding a node. The protocol is chosen only then: an existing node is
+    /// shown as "Your own node", never by its protocol name.
+    /// </summary>
+    public bool IsNew => Id <= 0;
+
+    partial void OnIdChanged(int value) => OnPropertyChanged(nameof(IsNew));
+
     partial void OnHostedIdChanged(long value) => OnPropertyChanged(nameof(IsHosted));
     [ObservableProperty] private WindowsProxyMode _selectedMode = WindowsProxyMode.Http;
 

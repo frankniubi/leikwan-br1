@@ -66,4 +66,16 @@ public sealed class WindowsProxyEditorViewModelTests
         Assert.Equal(WindowsProxyProtocol.Shadowsocks2022, profile.Protocol);
         Assert.Equal("2022-blake3-aes-256-gcm", profile.Method);
     }
+
+    [Fact]
+    public void ProtocolIsChosenOnlyWhileAddingANode()
+    {
+        var editor = new WindowsProxyEditorViewModel();
+        editor.Load(null);
+        Assert.True(editor.IsNew);
+        editor.Load(new WindowsProxyProfile { Id = 4, Protocol = WindowsProxyProtocol.Socks5, Server = "198.51.100.7", Port = 1080, HostedId = 11, Username = "alice", Password = "pw" });
+        Assert.False(editor.IsNew);
+        var saved = editor.ToProfile();
+        Assert.Equal((11L, "alice", WindowsProxyProtocol.Socks5), (saved.HostedId, saved.Username, saved.Protocol));
+    }
 }

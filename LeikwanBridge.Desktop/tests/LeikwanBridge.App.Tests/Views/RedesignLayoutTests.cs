@@ -114,6 +114,23 @@ public sealed class RedesignLayoutTests
         Assert.Null(hint.Attribute("Visibility"));
     }
 
+    [Fact]
+    public void OwnNodesAreLabelledWithoutTheirProtocolOutsideTheAddForm()
+    {
+        var xaml = File.ReadAllText(AppFile("Views", "MainWindow.xaml"));
+        Assert.DoesNotContain("{Binding DisplayProtocol}", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("{Binding Protocol}", xaml, StringComparison.Ordinal);
+        Assert.Contains("{DynamicResource OwnNodeLabel}", xaml, StringComparison.Ordinal);
+        Assert.Equal("Your own node", Strings("en-US.xaml")["OwnNodeLabel"]);
+        Assert.Equal("自带节点", Strings("zh-CN.xaml")["OwnNodeLabel"]);
+        // The protocol picker appears only while adding a node, never for an existing one.
+        Assert.Equal(2, Regex.Matches(xaml, @"Visibility=""\{Binding ProxyEditor.IsNew, Converter=\{StaticResource BoolToVis\}\}""").Count);
+        // The supported protocols are named only where nodes are added or imported.
+        Assert.Equal("Supports Shadowsocks, SOCKS5, VLESS", Strings("en-US.xaml")["ProxyImportSupported"]);
+        foreach (var key in new[] { "ProxyMyNodes", "ProxyRowNode", "NodesCloudBadge", "DashCloudNodes" })
+            Assert.DoesNotMatch("(?i)shadowsocks|socks|vless|wireguard", Strings("en-US.xaml")[key]);
+    }
+
     private static HashSet<string> Keys(XDocument document)
         => document.Root!.Elements().Select(element => (string?)element.Attribute(X + "Key")).Where(key => key is not null).Select(key => key!).ToHashSet();
 

@@ -197,8 +197,8 @@
     <system:String x:Key="ProxyEdit">编辑</system:String>
     <system:String x:Key="ProxyAdvanced">高级设置</system:String>
     <system:String x:Key="ProxyNodeEditor">添加 / 编辑节点</system:String>
-    <system:String x:Key="ProxyMyNodes">我的节点</system:String>
-    <system:String x:Key="ProxyRowNode">已保存节点</system:String>
+    <system:String x:Key="ProxyMyNodes">自带节点</system:String>
+    <system:String x:Key="ProxyRowNode">自带节点</system:String>
     <system:String x:Key="ProxyUnboundNode">未选择已保存节点</system:String>
     <system:String x:Key="ProxyCancel">取消</system:String>
     <system:String x:Key="ProxyForwardTcpRequired">此节点需要 TCP，请选择支持 TCP 或 TCP+UDP 的线路。</system:String>
@@ -224,7 +224,7 @@
     <system:String x:Key="ProxyImportNetchModes">导入 Netch 模式</system:String>
         <system:String x:Key="ProxyImport">导入并保存</system:String>
     <system:String x:Key="ProxyImportPrompt">粘贴分享链接</system:String>
-    <system:String x:Key="ProxyImportSupported">Shadowsocks、SOCKS5 和 VLESS 链接</system:String>
+    <system:String x:Key="ProxyImportSupported">支持 Shadowsocks、SOCKS5、VLESS</system:String>
     <system:String x:Key="ProxyName">节点名称</system:String>
     <system:String x:Key="ProxyServer">服务器</system:String>
     <system:String x:Key="ProxyPort">端口</system:String>
@@ -343,4 +343,5 @@
     <system:String x:Key="QualityDegraded">降级</system:String>
     <system:String x:Key="QualityUnavailable">不可用</system:String>
     <system:String x:Key="ProxyNativeOutboundUnrestricted">不限制完整路由（全部端口，不经 OpenGFW）</system:String>
+    <system:String x:Key="OwnNodeLabel">自带节点</system:String>
 </ResourceDictionary>
