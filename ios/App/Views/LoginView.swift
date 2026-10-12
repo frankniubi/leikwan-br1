@@ -21,11 +21,17 @@ struct LoginView: View {
         ScrollView {
             VStack(spacing: 20) {
                 VStack(spacing: 10) {
-                    Image(systemName: "bolt.horizontal.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(Palette.onPrimaryContainer)
-                        .frame(width: 76, height: 76)
-                        .background(Palette.primaryContainer, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    Image("BrandMark")
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 84, height: 84)
+                        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 19, style: .continuous)
+                                .strokeBorder(Palette.outlineVariant.opacity(0.6), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                        .accessibilityHidden(true)
                     Text("LeiKwan")
                         .font(.largeTitle.weight(.bold))
                         .foregroundStyle(Palette.onSurface)
