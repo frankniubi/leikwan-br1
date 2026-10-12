@@ -53,42 +53,6 @@ public sealed class BondRuntimeBuilderTests : IDisposable
             Assert.DoesNotContain(spec.Processes, process => process.Arguments.Contains("8.163.90.235:7001"));
     }
 
-    [Theory]
-    [InlineData(false, "127.0.0.1")]
-    [InlineData(true, "[::]")]
-    public void ForwardListenersBindLoopbackUnlessThePanelAllowsInboundProxy(bool allowInboundProxy, string wstunnelHost)
-    {
-        var builder = CreateBuilder();
-        var single = CreateSingleForward();
-        single.AllowInboundProxy = allowInboundProxy;
-        var singleArgs = builder.BuildSingle(single).Processes[0].Arguments;
-        Assert.Contains($"-L tcp://{wstunnelHost}:11001:", singleArgs);
-        if (!allowInboundProxy)
-            Assert.DoesNotContain("[::]", singleArgs);
-
-        var bond = CreatePlainTcpMuxBondForward();
-        bond.AllowInboundProxy = allowInboundProxy;
-        var bondHost = allowInboundProxy ? "0.0.0.0" : "127.0.0.1";
-        var listeners = builder.Build(bond).Processes
-            .Where(process => process.Role is "bond-runtime" or "bond-udp-runtime")
-            .Select(process => process.Arguments)
-            .ToList();
-        Assert.NotEmpty(listeners);
-        Assert.All(listeners, arguments => Assert.Contains($"--listen {bondHost}:", arguments));
-        if (!allowInboundProxy)
-            Assert.All(listeners, arguments => Assert.DoesNotContain("0.0.0.0", arguments));
-    }
-
-    [Fact]
-    public void InboundProxyChangesTheForwardSignatureOnlyWhenEnabled()
-    {
-        var forward = CreateSingleForward();
-        var loopback = LeikwanBridge.Core.Helpers.ForwardContractSignature.Compute(forward);
-        Assert.Equal(loopback, LeikwanBridge.Core.Helpers.ForwardContractSignature.Compute(CreateSingleForward()));
-        forward.AllowInboundProxy = true;
-        Assert.NotEqual(loopback, LeikwanBridge.Core.Helpers.ForwardContractSignature.Compute(forward));
-    }
-
     [Fact]
     public void BuildSingle_UsesDirectWstunnelRuntime()
     {

@@ -205,17 +205,11 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal(["pull-state", "apply:26", "forwards"], order);
     }
 
-    [Theory]
-    [InlineData(false, "127.0.0.1")]
-    [InlineData(true, "0.0.0.0")]
-    public async Task SyncOnceAsync_PullsUdpSidepathConfig_AndStartsUdpAuxRuntime(bool allowInboundProxy, string listenHost)
+    [Fact]
+    public async Task SyncOnceAsync_PullsUdpSidepathConfig_AndStartsUdpAuxRuntime()
     {
         using var tempDir = new TempStateDirectory();
-        // Forward listeners stay on loopback unless the panel allows inbound proxying for the client.
-        var pullJson = allowInboundProxy
-            ? BuildPullResponseJson().Replace("\"diag_status\": \"ok\",", "\"diag_status\": \"ok\", \"allow_inbound_proxy\": true,")
-            : BuildPullResponseJson();
-        using var server = new PullApiServer(pullJson);
+        using var server = new PullApiServer(BuildPullResponseJson());
         var config = new AgentConfig
         {
             MasterUrl = server.BaseUrl,
@@ -244,7 +238,7 @@ public sealed class ConfigPollingServiceTests
         var runtimeConfigPath = Path.Combine(tempDir.Path, "runtime", "uot-bond-forward-26.json");
         Assert.True(File.Exists(runtimeConfigPath));
         var payload = File.ReadAllText(runtimeConfigPath);
-        Assert.Contains($"\"listen_udp\": \"{listenHost}:11024\"", payload);
+        Assert.Contains("\"listen_udp\": \"0.0.0.0:11024\"", payload);
         Assert.Contains("\"route_key\": \"forward-26.uot\"", payload);
         Assert.Contains("\"session_token\": \"udp-session\"", payload);
     }

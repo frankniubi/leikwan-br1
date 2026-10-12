@@ -946,9 +946,6 @@ final class ClientAgentController extends BaseController
                 // Hosted user nodes change marker; devices fetch the nodes
                 // themselves from /api/client/hosted-nodes when it moves.
                 'hosted_nodes_revision' => (string) ($snapshot['hosted_nodes_revision'] ?? ''),
-                // Whether this client's forward listeners may accept connections
-                // from other machines (LAN). False = loopback only.
-                'allow_inbound_proxy' => (bool) ($snapshot['allow_inbound_proxy'] ?? false),
             ],
             'forwards' => $forwards,
             'linux_profile_runtime' => $linuxProfileRuntime,
@@ -1073,13 +1070,6 @@ final class ClientAgentController extends BaseController
             // Only clients that host nodes see a revision change from this.
             $revisionExtra['hosted_nodes'] = $hostedNodesRevision;
         }
-        // Desktop forward listeners bind 127.0.0.1 unless the admin allows
-        // inbound proxying for this client (clients.allow_inbound_proxy).
-        // Only enabled clients see a revision change from this.
-        $allowInboundProxy = !empty($client['allow_inbound_proxy']);
-        if ($allowInboundProxy) {
-            $revisionExtra['allow_inbound_proxy'] = true;
-        }
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             $clientAgentKey => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,
@@ -1113,7 +1103,6 @@ final class ClientAgentController extends BaseController
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
             'hosted_nodes_revision' => $hostedNodesRevision,
-            'allow_inbound_proxy' => $allowInboundProxy,
             'force_apply' => false,
             'next_poll_after_ms' => 30000,
         ];

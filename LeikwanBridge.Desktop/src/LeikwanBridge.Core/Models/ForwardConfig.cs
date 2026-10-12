@@ -95,23 +95,6 @@ public sealed class ForwardConfig
     public string NativeRouteScope { get; set; } = "";
 
     /// <summary>
-    /// Pull-scoped copy of client.allow_inbound_proxy. False (the default, and what an
-    /// older panel implies) keeps every forward listener on 127.0.0.1 so the forward
-    /// is never an open proxy on the LAN; true binds all interfaces as before.
-    /// Ultra listeners stay on loopback regardless.
-    /// </summary>
-    [JsonIgnore]
-    public bool AllowInboundProxy { get; set; }
-
-    /// <summary>IPv4 bind address for this forward's local listener.</summary>
-    [JsonIgnore]
-    public string ListenHost => AllowInboundProxy ? "0.0.0.0" : "127.0.0.1";
-
-    /// <summary>Bind host in wstunnel -L syntax (all IPv4/IPv6 interfaces or IPv4 loopback).</summary>
-    [JsonIgnore]
-    public string WstunnelListenHost => AllowInboundProxy ? "[::]" : "127.0.0.1";
-
-    /// <summary>
     /// True for a panel-declared native outbound rule: the panel ships only the
     /// rule, and the data plane belongs to a user-initiated native outbound
     /// relay connection. The agent never owns an ordinary Ultra runtime for it.

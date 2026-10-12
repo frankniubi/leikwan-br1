@@ -53,7 +53,6 @@ public static class MptcpFallbackService
             PathPrefix = forward.PathPrefix,
             Transport = forward.Transport,
             SpeedLimitMbps = forward.SpeedLimitMbps,
-            AllowInboundProxy = forward.AllowInboundProxy,
             Endpoints = forward.Endpoints,
             Bonding = new BondingConfig
             {

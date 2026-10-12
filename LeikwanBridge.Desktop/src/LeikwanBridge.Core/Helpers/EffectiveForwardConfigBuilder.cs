@@ -36,7 +36,6 @@ public static class EffectiveForwardConfigBuilder
             NativeDirection = forward.NativeDirection,
             NativeOutbound = forward.NativeOutbound,
             NativeRouteScope = forward.NativeRouteScope,
-            AllowInboundProxy = forward.AllowInboundProxy,
             Endpoints = forward.Endpoints
                 .Where(endpoint => string.Equals(endpoint.HealthStatus, "active", StringComparison.OrdinalIgnoreCase))
                 .Select(endpoint => endpoint.Clone())
