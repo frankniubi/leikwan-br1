@@ -55,6 +55,12 @@ public sealed class HeadlessUpdateState
 
     [JsonPropertyName("rejected_versions")]
     public List<string> RejectedVersions { get; set; } = [];
+
+    /// <summary>The console update request (<c>agent_update_request_token</c>)
+    /// that already reached a final outcome: installed, already up to date, or
+    /// refused. The same request is never acted on twice.</summary>
+    [JsonPropertyName("handled_request_token")]
+    public string HandledRequestToken { get; set; } = string.Empty;
 }
 
 public static class HeadlessUpdateResults
@@ -110,6 +116,7 @@ public static class HeadlessUpdateStateStore
 public enum HeadlessUpdateDecisionKind
 {
     Disabled,
+    NotRequested,
     ManifestUnavailable,
     ManifestIncomplete,
     UpToDate,
@@ -126,8 +133,9 @@ public sealed record HeadlessUpdateDecision(
     string Reason);
 
 /// <summary>
-/// Pure scheduling/decision rules for the service-mode auto-update loop, kept
-/// free of I/O so every branch is unit-testable.
+/// Pure scheduling/decision rules for the service-mode update loop, kept free
+/// of I/O so every branch is unit-testable. The loop only acts on an update
+/// requested from the console (<see cref="IsUpdateRequested"/>).
 /// </summary>
 public static class HeadlessUpdatePolicy
 {
@@ -153,6 +161,25 @@ public static class HeadlessUpdatePolicy
 
     public static bool IsAutoUpdateEnabled(AgentConfig config)
         => !config.DisableAutoUpdates;
+
+    /// <summary>True when the panel reports a console update request this
+    /// client has not handled yet. No request means no update, whatever the
+    /// manifest publishes.</summary>
+    public static bool IsUpdateRequested(string? requestToken, HeadlessUpdateState state)
+    {
+        var token = (requestToken ?? string.Empty).Trim();
+        return token.Length > 0 && !string.Equals(token, state.HandledRequestToken, StringComparison.Ordinal);
+    }
+
+    /// <summary>Outcomes after which a console request is done: the installed
+    /// build is the published one (including right after an applied update), or
+    /// the published build will never be installed. Everything else (manifest
+    /// gaps, backoff, an apply step still running or failed) keeps the request
+    /// pending so it retries under the backoff.</summary>
+    public static bool CompletesRequest(HeadlessUpdateDecisionKind kind)
+        => kind is HeadlessUpdateDecisionKind.UpToDate
+            or HeadlessUpdateDecisionKind.DowngradeRefused
+            or HeadlessUpdateDecisionKind.Rejected;
 
     public static TimeSpan InitialDelay(Random random)
         => Between(random, InitialDelayMin, InitialDelayMax);

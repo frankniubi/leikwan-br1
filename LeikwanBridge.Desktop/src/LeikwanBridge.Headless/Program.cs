@@ -137,7 +137,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// Detached swap step of `leikwan update` and of the service's auto-update:
+    /// Detached swap step of `leikwan update` and of the service's requested update:
     /// this process runs from the staged copy, so it can stop the service and
     /// replace the install directory the old build is still occupying. It
     /// backs the install up first, holds the new build to a health gate, and
@@ -218,8 +218,9 @@ internal static class Program
     }
 
     /// <summary>
-    /// Service mode: the client plus, next to it, the auto-update loop. The loop
-    /// is cancelled with the service and can never take the client down.
+    /// Service mode: the client plus, next to it, the update loop, which only
+    /// installs an update requested from the panel console. The loop is
+    /// cancelled with the service and can never take the client down.
     /// </summary>
     private static async Task<int> RunServiceAsync(HeadlessClientOptions options, string serviceName, CancellationToken ct)
     {

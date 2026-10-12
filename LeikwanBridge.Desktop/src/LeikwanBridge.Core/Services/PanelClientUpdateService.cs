@@ -33,7 +33,7 @@ public interface IClientUpdateSource
 /// `leikwan update` against the panel manifest: read the published entry for
 /// this payload, download it through the resumable/hash-checked downloader, and
 /// hand the verified file to the platform applier. Nothing is applied until the
-/// bytes match the manifest. The service-mode auto-update loop uses the same
+/// bytes match the manifest. The service-mode update loop (console-requested updates) uses the same
 /// manifest read and the same verified download through <see cref="IClientUpdateSource"/>.
 /// </summary>
 public sealed class PanelClientUpdateService : IClientUpdateService, IClientUpdateSource

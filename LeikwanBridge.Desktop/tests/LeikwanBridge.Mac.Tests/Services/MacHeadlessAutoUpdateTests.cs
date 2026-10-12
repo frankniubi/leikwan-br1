@@ -87,6 +87,48 @@ public sealed class MacHeadlessAutoUpdateTests
     }
 
     [Fact]
+    public async Task WithoutAConsoleRequestTheDaemonLeavesAPublishedBundleAlone()
+    {
+        using var world = new World(installed: "1.0.46", published: "1.0.47") { RequestToken = "" };
+
+        var result = await world.Coordinator().RunCycleAsync(CancellationToken.None);
+
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, result.Decision);
+        Assert.Equal(0, world.Downloads);
+        Assert.Empty(world.Spawner.Spawns);
+    }
+
+    [Fact]
+    public async Task AConsoleRequestIsInstalledOnceAndCompletedByTheRestartedBuild()
+    {
+        using var world = new World(installed: "1.0.46", published: "1.0.47") { RequestToken = "click-1" };
+
+        Assert.True((await world.Coordinator().RunCycleAsync(CancellationToken.None)).Launched);
+        Assert.Single(world.Spawner.Spawns);
+
+        // The helper swapped the bundle in and restarted the daemon on 1.0.47.
+        world.InstallVersion("1.0.47");
+        var restarted = world.Coordinator();
+        Assert.Equal(HeadlessUpdateDecisionKind.UpToDate, (await restarted.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal("click-1", HeadlessUpdateStateStore.Load(world.StatePath).HandledRequestToken);
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, (await restarted.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Single(world.Spawner.Spawns);
+    }
+
+    [Fact]
+    public async Task DisableAutoUpdatesBeatsAConsoleRequest()
+    {
+        using var world = new World(installed: "1.0.46", published: "1.0.47") { RequestToken = "click-1" };
+        File.WriteAllText(world.ConfigPath, """{ "disable_auto_updates": true }""");
+
+        var result = await world.Coordinator().RunCycleAsync(CancellationToken.None);
+
+        Assert.Equal(HeadlessUpdateDecisionKind.Disabled, result.Decision);
+        Assert.Equal(0, world.Downloads);
+        Assert.Equal(string.Empty, HeadlessUpdateStateStore.Load(world.StatePath).HandledRequestToken);
+    }
+
+    [Fact]
     public async Task BundleWhoseVersionDiffersFromTheManifestIsRefusedAndBackedOff()
     {
         // The zip is well-formed and its sha/size match the manifest, but the
@@ -270,6 +312,14 @@ public sealed class MacHeadlessAutoUpdateTests
         public FakeSpawner Spawner { get; } = new();
         public int Downloads { get; private set; }
 
+        /// <summary>The panel's pending console update request (pending by default).</summary>
+        public string RequestToken { get; set; } = "console-request-1";
+
+        /// <summary>Rewrites the installed bundle as another version, as the
+        /// detached helper's swap would.</summary>
+        public void InstallVersion(string version)
+            => MacUpdateFixtures.CreateBundle(_root.Sub("Applications"), version, "new");
+
         public HeadlessAutoUpdateCoordinator Coordinator()
             => MacHeadlessAutoUpdate.Create(
                 new MacHeadlessUpdateContext(Install, UpdatesRoot, StatePath, LockPath, _root.Sub("logs"), [ConfigPath]),
@@ -277,7 +327,8 @@ public sealed class MacHeadlessAutoUpdateTests
                 _updater,
                 Spawner,
                 new ManagedBundleFileSystem(),
-                () => Now);
+                () => Now,
+                () => RequestToken);
 
         public void Dispose()
         {
