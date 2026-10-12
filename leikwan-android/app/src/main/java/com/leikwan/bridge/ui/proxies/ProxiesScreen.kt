@@ -74,6 +74,8 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     var editingNode by remember { mutableStateOf<com.leikwan.bridge.data.ProxyNode?>(null) }
     val hiddenCloudNodes by viewModel.hiddenCloudNodes.collectAsState()
     var showHiddenCloudNodes by remember { mutableStateOf(false) }
+    // Deleting a cloud node removes it from every device, so it asks first.
+    var confirmDeleteNode by remember { mutableStateOf<com.leikwan.bridge.data.ProxyNode?>(null) }
 
     if (showQrScan) {
         QrScanScreen(
@@ -212,7 +214,10 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                             text = {
                                                 Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error)
                                             },
-                                            onClick = { menuOpen = false; viewModel.deleteNode(node) },
+                                            onClick = {
+                                                menuOpen = false
+                                                if (node.hostedId != null) confirmDeleteNode = node else viewModel.deleteNode(node)
+                                            },
                                         )
                                     }
                                 }
@@ -245,6 +250,22 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                 Icon(Icons.Default.Add, stringResource(R.string.proxies_add_proxy))
             }
         }
+    }
+
+    confirmDeleteNode?.let { node ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteNode = null },
+            title = { Text(node.name) },
+            text = { Text(stringResource(R.string.hosted_node_delete_everywhere_confirm)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.deleteNode(node); confirmDeleteNode = null }) {
+                    Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteNode = null }) { Text(stringResource(R.string.common_cancel)) }
+            },
+        )
     }
 
     if (showHiddenCloudNodes) {

@@ -389,4 +389,5 @@
     <string name="own_node_supported_protocols">Supports Shadowsocks, SOCKS5 and VLESS</string>
     <string name="edit_node_title">Edit node</string>
     <string name="proxies_more_actions">More</string>
+    <string name="hosted_node_delete_everywhere_confirm">Delete this node from all your devices?</string>
 </resources>

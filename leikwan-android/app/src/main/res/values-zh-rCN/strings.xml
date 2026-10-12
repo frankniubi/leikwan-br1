@@ -388,4 +388,5 @@
     <string name="own_node_supported_protocols">支持 Shadowsocks、SOCKS5、VLESS</string>
     <string name="edit_node_title">编辑节点</string>
     <string name="proxies_more_actions">更多</string>
+    <string name="hosted_node_delete_everywhere_confirm">从你的所有设备上删除这个节点？</string>
 </resources>
