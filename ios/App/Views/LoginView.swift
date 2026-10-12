@@ -18,73 +18,96 @@ struct LoginView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    VStack(spacing: 8) {
-                        Image(systemName: "bolt.horizontal.circle.fill")
-                            .font(.system(size: 52))
-                            .foregroundStyle(Color.accentColor)
-                        Text("LeiKwan")
-                            .font(.largeTitle.weight(.semibold))
-                        Text("使用面板里的客户端 ID 和 Agent Token 登录")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .listRowBackground(Color.clear)
+        ScrollView {
+            VStack(spacing: 20) {
+                VStack(spacing: 10) {
+                    Image(systemName: "bolt.horizontal.fill")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(Palette.onPrimaryContainer)
+                        .frame(width: 76, height: 76)
+                        .background(Palette.primaryContainer, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    Text("LeiKwan")
+                        .font(.largeTitle.weight(.bold))
+                        .foregroundStyle(Palette.onSurface)
+                    Text("使用面板里的客户端 ID 和 Agent Token 登录")
+                        .font(.subheadline)
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                        .multilineTextAlignment(.center)
                 }
+                .padding(.top, 48)
 
-                Section("账号") {
-                    TextField("客户端 ID", text: $clientID)
-                        .keyboardType(.numberPad)
-                        .focused($focused, equals: .clientID)
-                    SecureField("Agent Token", text: $token)
-                        .textContentType(.password)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .focused($focused, equals: .token)
+                VStack(spacing: 12) {
+                    InputField(title: "客户端 ID", systemImage: "person.text.rectangle") {
+                        TextField("例如 1024", text: $clientID)
+                            .keyboardType(.numberPad)
+                            .focused($focused, equals: .clientID)
+                    }
+                    InputField(title: "Agent Token", systemImage: "key.horizontal") {
+                        SecureField("面板 → 客户端 → Agent Token", text: $token)
+                            .textContentType(.password)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .focused($focused, equals: .token)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("面板线路")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Palette.onSurfaceVariant)
+                        Picker("面板线路", selection: $endpoint) {
+                            Text("Cloudflare").tag(PanelEndpoint.cloudflare)
+                            Text("阿里云 CDN").tag(PanelEndpoint.aliyunCDN)
+                        }
+                        .pickerStyle(.segmented)
+                        Text("一条线路连不上时会自动尝试另一条。")
+                            .font(.caption2)
+                            .foregroundStyle(Palette.onSurfaceVariant)
+                    }
+                    .padding(14)
+                    .card()
+
                     Toggle("保存信息", isOn: $remember)
-                }
-
-                Section {
-                    Picker("面板线路", selection: $endpoint) {
-                        Text("Cloudflare（默认）").tag(PanelEndpoint.cloudflare)
-                        Text("阿里云 CDN").tag(PanelEndpoint.aliyunCDN)
-                    }
-                } footer: {
-                    Text("Cloudflare 无法连接时可切换到阿里云 CDN；请求失败时也会自动尝试另一条线路。")
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .card()
                 }
 
                 if let error {
-                    Section {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                            .font(.subheadline)
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(error)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .font(.subheadline)
+                    .foregroundStyle(Palette.onErrorContainer)
+                    .padding(14)
+                    .card(fill: Palette.errorContainer)
                 }
 
-                Section {
-                    Button {
-                        Task { await signIn() }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if working {
-                                ProgressView()
-                            } else {
-                                Text("登录").fontWeight(.semibold)
-                            }
-                            Spacer()
+                Button {
+                    Task { await signIn() }
+                } label: {
+                    HStack {
+                        if working {
+                            ProgressView().tint(Palette.onPrimary)
+                        } else {
+                            Text("登录").font(.headline)
                         }
                     }
-                    .disabled(working || clientID.isEmpty || token.isEmpty)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .foregroundStyle(Palette.onPrimary)
+                    .background(Palette.primary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .disabled(working || clientID.isEmpty || token.isEmpty)
+                .opacity(clientID.isEmpty || token.isEmpty ? 0.5 : 1)
             }
-            .navigationBarTitleDisplayMode(.inline)
+            .padding(.horizontal, 20)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .pageBackground()
     }
 
     private func signIn() async {
@@ -101,5 +124,28 @@ struct LoginView: View {
         } catch {
             self.error = AppModel.describe(error)
         }
+    }
+}
+
+private struct InputField<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(Palette.onSurfaceVariant)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Palette.onSurfaceVariant)
+                content
+                    .font(.body)
+            }
+        }
+        .padding(14)
+        .card()
     }
 }

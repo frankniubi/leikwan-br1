@@ -9,8 +9,7 @@ struct RulesView: View {
     @State private var addingCountry = false
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
                 Section {
                     Picker("模式", selection: $model.routing.mode) {
                         Text("规则").tag(RoutingGlobalMode.rule)
@@ -98,7 +97,9 @@ struct RulesView: View {
                     .disabled(!model.tunnel.isConnected)
                 }
             }
-            .navigationTitle("分流")
+            .scrollContentBackground(.hidden)
+            .pageBackground()
+            .navigationTitle("分流规则")
             .toolbar { EditButton() }
             .sheet(isPresented: $addingRule) {
                 CustomRuleEditor { rule in
@@ -110,7 +111,6 @@ struct RulesView: View {
                     model.routing.countries[code.lowercased()] = .direct
                 }
             }
-        }
     }
 
     private func presetBinding(_ key: String) -> Binding<UserTrafficOutcome?> {

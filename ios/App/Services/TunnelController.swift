@@ -11,6 +11,11 @@ final class TunnelController: ObservableObject {
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var snapshot = TunnelStatusSnapshot()
     @Published private(set) var lastError: String?
+    /// Last 60 one-second traffic samples, oldest first, for the speed chart.
+    @Published private(set) var speedHistory: [SpeedSample] = []
+
+    /// When the current connection came up (for the run-time counter).
+    var connectedSince: Date? { manager?.connection.connectedDate }
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -108,6 +113,7 @@ final class TunnelController: ObservableObject {
             pollTask = nil
             if status == .disconnected {
                 snapshot = TunnelStatusSnapshot()
+                speedHistory = []
                 fetchDisconnectError()
             }
         }
@@ -140,6 +146,10 @@ final class TunnelController: ObservableObject {
             return
         }
         self.snapshot = snapshot
+        speedHistory.append(SpeedSample(date: Date(), uplink: snapshot.uplink, downlink: snapshot.downlink))
+        if speedHistory.count > 60 {
+            speedHistory.removeFirst(speedHistory.count - 60)
+        }
     }
 
     private func send(_ request: TunnelRequest) async -> Data? {
@@ -162,4 +172,12 @@ final class TunnelController: ObservableObject {
     private static func isOurs(_ manager: NETunnelProviderManager) -> Bool {
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == tunnelBundleIdentifier
     }
+}
+
+struct SpeedSample: Identifiable, Equatable {
+    let date: Date
+    let uplink: Int64
+    let downlink: Int64
+
+    var id: Date { date }
 }
