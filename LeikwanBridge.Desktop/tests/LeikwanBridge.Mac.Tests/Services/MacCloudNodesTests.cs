@@ -97,6 +97,11 @@ public sealed class MacCloudNodesTests
         Assert.Equal(NodeCloudState.Hosted, hosted.CloudState);
         Assert.True(library.IsHosted(hosted.Key));
 
+        var edited = library.GetEditableNode(hosted.Key)!;
+        edited.Name = "Tokyo renamed";
+        await library.SaveNodeAsync(edited);
+        Assert.Contains(panel.Calls, call => call.StartsWith("UPDATE ", StringComparison.Ordinal));
+
         await library.PairAsync(102, hosted.Key);
         Assert.Contains(panel.Calls, call => call.StartsWith("PAIR 102 ", StringComparison.Ordinal));
 

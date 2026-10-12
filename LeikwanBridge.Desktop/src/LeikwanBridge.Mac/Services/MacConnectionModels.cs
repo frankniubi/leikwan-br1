@@ -115,10 +115,10 @@ public sealed class MacConnectionProfile
     {
         "WIREGUARD" => "WireGuard",
         "SHADOWSOCKS" => "Shadowsocks",
-        "EXTERNAL" => "External IP + port",
+        "EXTERNAL" => Localization.L.T("ProtocolExternal", "External IP + port"),
         "SOCKS5" when HasShareLink => "SOCKS5",
         "VLESS" when HasShareLink => "VLESS",
-        _ => "Unsupported",
+        _ => Localization.L.T("ProtocolUnsupported", "Unsupported"),
     };
 
     public MacConnectionProfile Clone() => (MacConnectionProfile)MemberwiseClone();

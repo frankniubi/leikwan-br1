@@ -19,6 +19,7 @@
     <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
     <Setter Property="Background" Value="{DynamicResource InputBrush}" />
     <Setter Property="VerticalContentAlignment" Value="Center" />
+    <Setter Property="BorderThickness" Value="1" />
   </Style>
   <Style Selector="ComboBox">
     <Setter Property="MinHeight" Value="40" />
@@ -74,21 +75,18 @@
     <Setter Property="Foreground" Value="{DynamicResource OnPrimaryContainerBrush}" />
   </Style>
   <Style Selector="Button.secondary">
-    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Background" Value="{DynamicResource CardHighBrush}" />
     <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
-    <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
-    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="BorderThickness" Value="0" />
   </Style>
   <Style Selector="Button.secondary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-    <Setter Property="Background" Value="{DynamicResource CardHoverBrush}" />
+    <Setter Property="Background" Value="{DynamicResource OutlineVariantBrush}" />
     <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
-    <Setter Property="BorderBrush" Value="{DynamicResource OutlineBrush}" />
   </Style>
   <Style Selector="Button.danger">
     <Setter Property="Background" Value="{DynamicResource DangerSurfaceBrush}" />
     <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
-    <Setter Property="BorderBrush" Value="{DynamicResource DangerOutlineBrush}" />
-    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="BorderThickness" Value="0" />
   </Style>
   <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
     <Setter Property="Background" Value="{DynamicResource DangerSurfaceBrush}" />
@@ -213,7 +211,7 @@
   <Style Selector="Border.card">
     <Setter Property="Background" Value="{DynamicResource CardBrush}" />
     <Setter Property="CornerRadius" Value="{DynamicResource CardCornerRadius}" />
-    <Setter Property="Padding" Value="18,16" />
+    <Setter Property="Padding" Value="20,18" />
   </Style>
   <Style Selector="Border.surface">
     <Setter Property="Background" Value="{DynamicResource CardBrush}" />
@@ -266,8 +264,6 @@
   </Style>
   <Style Selector="Border.banner">
     <Setter Property="Background" Value="{DynamicResource WarningSurfaceBrush}" />
-    <Setter Property="BorderBrush" Value="{DynamicResource WarningOutlineBrush}" />
-    <Setter Property="BorderThickness" Value="1" />
     <Setter Property="CornerRadius" Value="14" />
     <Setter Property="Padding" Value="16,10" />
     <Setter Property="Margin" Value="24,12,24,0" />
@@ -277,19 +273,23 @@
   </Style>
 
   <!-- Typography (Material 3 type scale, trimmed). -->
+  <!-- Large, confident headlines with slightly tight tracking. -->
   <Style Selector="TextBlock.heading">
-    <Setter Property="FontSize" Value="24" />
-    <Setter Property="LineHeight" Value="32" />
-    <Setter Property="FontWeight" Value="Medium" />
+    <Setter Property="FontSize" Value="30" />
+    <Setter Property="LineHeight" Value="36" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="LetterSpacing" Value="-0.6" />
   </Style>
   <Style Selector="TextBlock.title">
     <Setter Property="FontSize" Value="15" />
     <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="LetterSpacing" Value="-0.2" />
   </Style>
   <Style Selector="TextBlock.metric">
     <Setter Property="FontSize" Value="22" />
     <Setter Property="LineHeight" Value="28" />
-    <Setter Property="FontWeight" Value="Medium" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="LetterSpacing" Value="-0.4" />
   </Style>
   <Style Selector="TextBlock.label">
     <Setter Property="FontSize" Value="12" />

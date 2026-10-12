@@ -1,3 +1,5 @@
+using LeikwanBridge.Core.Nodes;
+
 namespace LeikwanBridge.Mac.Services;
 
 /// <summary>Where a node lives relative to the panel's hosted-node store.</summary>
@@ -70,4 +72,14 @@ public interface INodeLibrary
     Task PairAsync(int forwardId, string? key, CancellationToken ct = default);
 
     Task DeleteAsync(string key, CancellationToken ct = default);
+
+    /// <summary>
+    /// A copy of the node behind <paramref name="key"/> for the in-place editor, or null when
+    /// it is not a Shadowsocks / SOCKS5 / VLESS node (WireGuard and external endpoints are
+    /// edited in the classic editor on this Mac).
+    /// </summary>
+    UserNode? GetEditableNode(string key);
+
+    /// <summary>Saves an edited node: hosted nodes write through to the panel, local ones stay here.</summary>
+    Task SaveNodeAsync(UserNode node, CancellationToken ct = default);
 }

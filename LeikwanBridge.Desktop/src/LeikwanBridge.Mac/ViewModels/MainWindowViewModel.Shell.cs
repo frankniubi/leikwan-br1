@@ -1,5 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LeikwanBridge.Core.Services;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 using Serilog;
 
@@ -11,8 +13,13 @@ namespace LeikwanBridge.Mac.ViewModels;
 /// The view drives <see cref="Tick"/> once a second; nothing here owns a timer, so
 /// the view model stays testable without a dispatcher.
 /// </summary>
+/// <summary>A settings choice: a stored value shown through the localization catalog.</summary>
+public sealed record ChoiceOption(string Value);
+
 public sealed partial class MainWindowViewModel
 {
+    private Func<string, CancellationToken, Task>? _saveThemeMode;
+    private bool _shellReady;
     private readonly TrafficMonitor _trafficMonitor = new();
     private Func<IReadOnlyDictionary<string, TrafficCounter>>? _trafficCounters;
     private INodeLibrary? _nodeLibrary;
@@ -45,43 +52,80 @@ public sealed partial class MainWindowViewModel
 
     /// <summary>Anything carrying traffic: an assigned forward or the local proxy / TUN connection.</summary>
     public bool IsAnyRunning => RunningForwardCount > 0 || IsLocalConnectionActive;
-    public string RunToggleTip => IsAnyRunning ? "Stop all forwards and the local connection" : "Start all forwards";
+    public string RunToggleTip => IsAnyRunning
+        ? L.T("RunToggleStop", "Stop all forwards and the local connection")
+        : L.T("RunToggleStart", "Start all forwards");
 
     public string VersionNumber => typeof(MainWindowViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
     public string UpdateStatusText => IsUpdateInProgress ? UpdatePhaseText
-        : IsUpdateVisible ? $"Version {UpdateVersion} available"
-        : ShowUpdateError ? "Update check failed"
-        : IsCheckingForUpdates ? "Checking for updates…"
-        : "Check for updates";
+        : IsUpdateVisible ? L.F("UpdateVersionAvailable", "Version {0} available", UpdateVersion)
+        : ShowUpdateError ? L.T("UpdateCheckFailed", "Update check failed")
+        : IsCheckingForUpdates ? L.T("CheckingForUpdates", "Checking for updates…")
+        : L.T("CheckForUpdates", "Check for updates");
+    public string UpdateReadyText => L.F("UpdateReadyFormat", "Version {0} is ready.", UpdateVersion);
+    public string BypassEntriesText => L.F("BypassEntriesFormat", "Direct bypass entries: {0}", BypassAddressCount);
     public bool HasUpdateAttention => IsUpdateVisible || ShowUpdateError;
 
     public bool IsProxyModeSelected => SelectedConnectionMode == MacConnectionMode.Proxy;
     public bool IsVpnModeSelected => SelectedConnectionMode == MacConnectionMode.Vpn;
-    public string OutboundModeSummary => IsLocalConnectionActive
-        ? $"{LocalConnectionModeLabel} · {LocalConnectionStatus}"
-        : SelectedConnectionMode is null ? "Choose how this Mac sends traffic" : $"{LocalConnectionModeLabel} · idle";
+    /// <summary>The local proxy / TUN connection state, for display (LocalConnectionStatus stays an internal code).</summary>
+    public string LocalConnectionStatusText => LocalConnectionStatus switch
+    {
+        "Connected" => L.T("LocalStatusRunning", "Running"),
+        "Starting" => L.T("LocalStatusStarting", "Starting"),
+        "Connection error" => L.T("LocalStatusError", "Error"),
+        _ => L.T("LocalStatusIdle", "Not running"),
+    };
 
-    public string ServiceHeadline => string.IsNullOrWhiteSpace(ActiveClientName) ? "No client selected" : ActiveClientName;
+    /// <summary>Dashboard "Node route" card: running shows the mode, otherwise the same state words as Services.</summary>
+    public string NodeRouteStateText => LocalConnectionStatus == "Connected" && SelectedConnectionMode is not null
+        ? L.F("NodeRouteRunningFormat", "Running · {0}", LocalConnectionModeLabel)
+        : LocalConnectionStatusText;
+
+    /// <summary>Dashboard "Current service" card: the panel link, never the local node connection.</summary>
+    public string ServiceStatusText => ConnectionStatus switch
+    {
+        "connected" or "refreshing" => L.T("ServiceOnline", "Panel online"),
+        DesktopClientController.DeviceLimitReachedCode => L.T("StatusDeviceLimit", "Device limit reached"),
+        "error" => L.T("ServicePanelError", "Panel connection error"),
+        _ => L.T("ServiceOffline", "Panel offline"),
+    };
+
+    public string ServiceHeadline => string.IsNullOrWhiteSpace(ActiveClientName) ? L.T("NoClientSelected", "No client selected") : ActiveClientName;
     public string ServiceForwardSummary => ForwardCount == 0
-        ? "No forwards assigned"
-        : $"{RunningForwardCount} of {ForwardCount} forward{(ForwardCount == 1 ? string.Empty : "s")} running";
+        ? L.T("NoForwardsAssigned", "No forwards assigned")
+        : L.F("ForwardsRunningFormat", "{0} of {1} forwards running", RunningForwardCount, ForwardCount);
     public string LocalRouteSummary => SelectedConnectionForward is { } route
         ? route.DisplayName
-        : PairedConnectionRoutes.Count == 0 ? "No route paired with a node" : "No route selected";
-    public string LocalNodeSummary => SelectedConnectionProfile?.Name is { Length: > 0 } name ? name : "No node selected";
+        : PairedConnectionRoutes.Count == 0 ? L.T("NoRoutePaired", "No route paired with a node") : L.T("NoRouteSelected", "No route selected");
+    public string LocalNodeSummary => SelectedConnectionProfile?.Name is { Length: > 0 } name ? name : L.T("NoNodeSelected", "No node selected");
+
+    public IReadOnlyList<ChoiceOption> LanguageOptions { get; } = [new(L.English), new(L.SimplifiedChinese)];
+
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsThemeSystem), nameof(IsThemeDay), nameof(IsThemeNight))]
+    private string _themeMode = MacAppearance.System;
+
+    public bool IsThemeSystem => ThemeMode == MacAppearance.System;
+    public bool IsThemeDay => ThemeMode == MacAppearance.Day;
+    public bool IsThemeNight => ThemeMode == MacAppearance.Night;
     public int PairedRouteCount => PairedConnectionRoutes.Count;
 
     private void InitializeShell(
         Func<IReadOnlyDictionary<string, TrafficCounter>>? trafficCounters,
-        INodeLibrary? nodeLibrary)
+        INodeLibrary? nodeLibrary,
+        string themeMode,
+        Func<string, CancellationToken, Task>? saveThemeMode)
     {
         _trafficCounters = trafficCounters;
+        _saveThemeMode = saveThemeMode;
+        ThemeMode = MacAppearance.Normalize(themeMode);
         _nodeLibrary = nodeLibrary ?? (_connections is not null ? new MacLocalNodeLibrary(_connections) : null);
         NodesPage = new NodesViewModel(
             () => _nodeLibrary,
             PairNodeFromNodesPageAsync,
             DeleteNodeFromNodesPageAsync,
-            _dispatch);
+            _dispatch,
+            EditNodeInClassicEditor);
         if (_nodeLibrary is not null)
         {
             _nodeLibrary.Changed += () => _dispatch(OnNodeLibraryChanged);
@@ -111,7 +155,7 @@ public sealed partial class MainWindowViewModel
                 case nameof(SelectedConnectionMode):
                     OnPropertyChanged(nameof(IsProxyModeSelected));
                     OnPropertyChanged(nameof(IsVpnModeSelected));
-                    OnPropertyChanged(nameof(OutboundModeSummary));
+                    OnPropertyChanged(nameof(NodeRouteStateText));
                     break;
                 case nameof(ActiveClientName):
                     OnPropertyChanged(nameof(ServiceHeadline));
@@ -126,20 +170,80 @@ public sealed partial class MainWindowViewModel
                 case nameof(SelectedConnectionProfile):
                     OnPropertyChanged(nameof(LocalNodeSummary));
                     break;
+                case nameof(ConnectionStatus):
+                    OnPropertyChanged(nameof(ServiceStatusText));
+                    break;
+                case nameof(BypassAddressCount):
+                    OnPropertyChanged(nameof(BypassEntriesText));
+                    break;
+                case nameof(Language):
+                    OnLanguageSelected();
+                    break;
                 case nameof(IsUpdateVisible) or nameof(ShowUpdateError) or nameof(IsUpdateInProgress)
                     or nameof(UpdatePhaseText) or nameof(UpdateVersion) or nameof(IsCheckingForUpdates):
                     OnPropertyChanged(nameof(UpdateStatusText));
+                    OnPropertyChanged(nameof(UpdateReadyText));
                     OnPropertyChanged(nameof(HasUpdateAttention));
                     break;
             }
         };
         RefreshNodesPage();
+        _shellReady = true;
+    }
+
+    /// <summary>Applies a newly picked language at once (DynamicResource views update live) and saves it.</summary>
+    private void OnLanguageSelected()
+    {
+        if (!_shellReady)
+            return;
+        L.Apply(Language);
+        RefreshLocalizedText();
+        _ = PersistSelectedEndpointAsync(PanelUrl);
+    }
+
+    /// <summary>Re-reads every computed, localized text (after a language switch).</summary>
+    public void RefreshLocalizedText()
+    {
+        ApplySavedNodeNames();
+        RefreshNodeOptions();
+        foreach (var row in Forwards)
+            row.RefreshLocalizedText();
+        NodesPage?.Refresh();
+        OnPropertyChanged(string.Empty);
+    }
+
+    [RelayCommand]
+    private async Task SelectThemeAsync(string? mode)
+    {
+        ThemeMode = MacAppearance.Normalize(mode);
+        MacAppearance.Apply(ThemeMode);
+        if (_saveThemeMode is null)
+            return;
+        try
+        {
+            await _saveThemeMode(ThemeMode, CancellationToken.None);
+        }
+        catch
+        {
+            AddLog("theme_save_failed");
+        }
+    }
+
+    /// <summary>WireGuard / external nodes keep the classic editor on the Route pairing tab.</summary>
+    private void EditNodeInClassicEditor(string key)
+    {
+        if (!MacLocalNodeLibrary.TryParseKey(key, out var id))
+            return;
+        ShowPairing();
+        SelectedConnectionProfile = ConnectionProfiles.FirstOrDefault(profile => profile.Id == id);
+        IsProxyEditorExpanded = true;
     }
 
     private void OnRunningStateChanged()
     {
         OnPropertyChanged(nameof(ServiceForwardSummary));
-        OnPropertyChanged(nameof(OutboundModeSummary));
+        OnPropertyChanged(nameof(LocalConnectionStatusText));
+        OnPropertyChanged(nameof(NodeRouteStateText));
         var running = IsAnyRunning;
         if (running && _runningSince is null)
             _runningSince = _lastTick == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow : _lastTick;
@@ -213,7 +317,7 @@ public sealed partial class MainWindowViewModel
     {
         if (IsLocalConnectionActive)
         {
-            ShowNotice("Stop the local connection before switching between system proxy and TUN.");
+            ShowNotice(L.T("OutboundModeSwitchBlocked", "Stop the local connection before switching between system proxy and TUN."));
             return;
         }
         SelectedConnectionMode = mode;
@@ -320,8 +424,8 @@ public sealed partial class MainWindowViewModel
         }
         catch (NodeLibraryException exception)
         {
-            _dispatch(() => ShowNotice("The pairing is saved on this Mac but could not be shared: "
-                + NodesViewModel.DescribeError(exception.Code)));
+            _dispatch(() => ShowNotice(L.F("PairingShareFailedFormat",
+                "The pairing is saved on this Mac but could not be shared: {0}", NodesViewModel.DescribeError(exception.Code))));
         }
     }
 

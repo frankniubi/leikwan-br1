@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 using LeikwanBridge.Mac.ViewModels;
 using LeikwanBridge.Mac.Views;
@@ -49,17 +50,18 @@ public sealed partial class App : Application
     {
         desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
         // Screenshot-only knobs, honoured only behind LEIKWAN_TEST_UI=1 (see Program).
-        var theme = Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_THEME");
-        if (string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase))
-            Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark;
-        else if (string.Equals(theme, "light", StringComparison.OrdinalIgnoreCase))
-            Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Light;
+        var theme = MacAppearance.Normalize(Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_THEME"));
+        MacAppearance.Apply(theme);
+        var language = L.Normalize(Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_LANG"));
+        L.Apply(language);
         var controller = new MacUiFixtureController(UiFixtureState);
         var traffic = new MacUiFixtureTraffic();
         var viewModel = new MainWindowViewModel(
             controller,
             closeToTray: false,
             dispatch: action => action(),
+            language: language,
+            themeMode: theme,
             trafficCounters: string.Equals(UiFixtureState, "login", StringComparison.Ordinal) ? null : traffic.Next,
             nodeLibrary: new MacUiFixtureNodeLibrary());
         switch (UiFixtureState)
@@ -138,6 +140,10 @@ public sealed partial class App : Application
         MacAppServices services)
     {
         _services = services;
+        L.Apply(services.Config.Language);
+        var uiPreferences = new MacUiPreferencesStore(PlatformPaths.Root.TrimEnd('/', '\\') + "/ui-preferences.json");
+        var themeMode = uiPreferences.LoadThemeMode();
+        MacAppearance.Apply(themeMode);
         var config = services.Config;
         var viewModel = new MainWindowViewModel(
             services.Controller,
@@ -179,7 +185,9 @@ public sealed partial class App : Application
             trafficCounters: new MacTrafficCounterReader(
                 () => config.GetEffectiveStateDir(),
                 PlatformPaths.RuntimeDirectory).Read,
-            nodeLibrary: services.NodeLibrary);
+            nodeLibrary: services.NodeLibrary,
+            themeMode: themeMode,
+            saveThemeMode: (mode, ct) => uiPreferences.SaveThemeModeAsync(mode, ct));
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;
@@ -205,11 +213,11 @@ public sealed partial class App : Application
         try
         {
             using var stream = AssetLoader.Open(new Uri("avares://LeikwanBridge.Mac/Assets/app-icon.png"));
-            var show = new NativeMenuItem("Show LeiKwan Bridge");
+            var show = new NativeMenuItem(L.T("TrayShow", "Show LeiKwan Bridge"));
             show.Click += (_, _) => RestoreWindow();
-            var startAll = new NativeMenuItem("Start All") { Command = viewModel.StartAllCommand };
-            var stopAll = new NativeMenuItem("Stop All") { Command = viewModel.StopAllCommand };
-            var quit = new NativeMenuItem("Quit");
+            var startAll = new NativeMenuItem(L.T("StartAllLabel", "Start all")) { Command = viewModel.StartAllCommand };
+            var stopAll = new NativeMenuItem(L.T("StopAllLabel", "Stop all")) { Command = viewModel.StopAllCommand };
+            var quit = new NativeMenuItem(L.T("TrayQuit", "Quit"));
             quit.Click += (_, _) => _ = QuitAsync(desktop);
             var menu = new NativeMenu();
             menu.Items.Add(show);
@@ -284,7 +292,7 @@ public sealed partial class App : Application
                 if (_availableUpdate is null)
                 {
                     if (notifyWhenCurrent)
-                        _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                        _services.Controller.PublishNotice(L.T("NoticeUpToDate", "LeiKwan Bridge is up to date."));
                     UpdateViewModel?.ReportUpdateFinished();
                     return;
                 }
@@ -298,7 +306,7 @@ public sealed partial class App : Application
             Log.Warning(exception, "update_check_failed");
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                _services.Controller.PublishNotice("The update check could not be completed.");
+                _services.Controller.PublishNotice(L.T("NoticeUpdateCheckFailed", "The update check could not be completed."));
                 UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
             });
         }
@@ -327,7 +335,7 @@ public sealed partial class App : Application
             {
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
+                    _services.Controller.PublishNotice(L.T("NoticeManualInstall", "A verified disk image was opened for manual replacement."));
                     UpdateViewModel?.ReportUpdateFinished();
                 });
                 return;
@@ -340,7 +348,7 @@ public sealed partial class App : Application
             Log.Warning(exception, "update_install_failed");
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                _services.Controller.PublishNotice("The update could not be installed.");
+                _services.Controller.PublishNotice(L.T("NoticeUpdateInstallFailed", "The update could not be installed."));
                 UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
             });
         }

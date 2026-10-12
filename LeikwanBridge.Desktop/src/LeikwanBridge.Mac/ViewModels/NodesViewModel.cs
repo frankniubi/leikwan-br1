@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 
 namespace LeikwanBridge.Mac.ViewModels;
@@ -8,14 +9,13 @@ namespace LeikwanBridge.Mac.ViewModels;
 /// <summary>A service (forward) a node can be paired with.</summary>
 public sealed record NodeServiceOption(int ForwardId, string Name)
 {
-    public static NodeServiceOption None { get; } = new(0, "Not paired");
+    public static NodeServiceOption None => new(0, L.T("NodesNotPaired", "Not paired"));
 }
 
 /// <summary>
-/// Nodes page: the user's own nodes with their cloud state, share-link import and
-/// the cloud actions (upload, sync all, refresh from cloud, pair with a service).
-/// It only talks to <see cref="INodeLibrary"/> plus two callbacks owned by the main
-/// view model, so the shared Core sync service can replace the library later.
+/// Nodes page: the user's own nodes with their cloud state, share-link import, in-place
+/// editing and the cloud actions (upload, sync all, refresh from cloud, pair with a service).
+/// It only talks to <see cref="INodeLibrary"/> plus callbacks owned by the main view model.
 /// </summary>
 public sealed partial class NodesViewModel : ObservableObject
 {
@@ -23,21 +23,26 @@ public sealed partial class NodesViewModel : ObservableObject
     private readonly Func<string, int, Task> _pair;
     private readonly Func<string, Task> _delete;
     private readonly Action<Action> _dispatch;
+    private readonly Action<string>? _editClassic;
     private IReadOnlyList<NodeServiceOption> _serviceOptions = [NodeServiceOption.None];
 
     public NodesViewModel(
         Func<INodeLibrary?> library,
         Func<string, int, Task> pair,
         Func<string, Task> delete,
-        Action<Action> dispatch)
+        Action<Action> dispatch,
+        Action<string>? editClassic = null)
     {
         _library = library;
         _pair = pair;
         _delete = delete;
         _dispatch = dispatch;
+        _editClassic = editClassic;
     }
 
     public ObservableCollection<NodeCardViewModel> Nodes { get; } = [];
+
+    public NodeEditorViewModel Editor { get; } = new();
 
     [ObservableProperty] private string _importLink = string.Empty;
     [ObservableProperty] private string _errorMessage = string.Empty;
@@ -47,12 +52,9 @@ public sealed partial class NodesViewModel : ObservableObject
     public bool HasNodes => Nodes.Count > 0;
     public bool IsCloudAvailable => _library()?.IsCloudAvailable == true;
     public string CloudHint => IsCloudAvailable
-        ? "Hosted nodes follow this client to every trusted device."
-        : "Sign in to sync hosted nodes. Nodes are stored in this Mac's Keychain.";
+        ? L.T("NodesCloudHintOn", "Hosted nodes follow this client to every trusted device.")
+        : L.T("NodesCloudHintOff", "Sign in to sync nodes.");
     public int HostedCount => Nodes.Count(node => node.IsHosted);
-    public string Summary => Nodes.Count == 0
-        ? "No nodes yet"
-        : $"{Nodes.Count} node{(Nodes.Count == 1 ? string.Empty : "s")} · {HostedCount} in cloud";
 
     /// <summary>Rebuilds the cards from the library and the current service list.</summary>
     public void Refresh(IReadOnlyList<NodeServiceOption> services)
@@ -62,11 +64,12 @@ public sealed partial class NodesViewModel : ObservableObject
         Nodes.Clear();
         foreach (var item in items)
             Nodes.Add(new NodeCardViewModel(item, _serviceOptions, OnCardPaired));
+        if (Editor.IsOpen && !items.Any(item => item.Key == Editor.Key))
+            Editor.Close();
         OnPropertyChanged(nameof(HasNodes));
         OnPropertyChanged(nameof(IsCloudAvailable));
         OnPropertyChanged(nameof(CloudHint));
         OnPropertyChanged(nameof(HostedCount));
-        OnPropertyChanged(nameof(Summary));
         UploadCommand.NotifyCanExecuteChanged();
         SyncAllCommand.NotifyCanExecuteChanged();
         RefreshFromCloudCommand.NotifyCanExecuteChanged();
@@ -91,7 +94,7 @@ public sealed partial class NodesViewModel : ObservableObject
         {
             var node = await library.ImportShareLinkAsync(ImportLink.Trim());
             ImportLink = string.Empty;
-            StatusMessage = $"Imported {node.Name}.";
+            StatusMessage = L.F("NodesImported", "Imported {0}.", node.Name);
         });
     }
 
@@ -103,7 +106,7 @@ public sealed partial class NodesViewModel : ObservableObject
         return RunAsync(async () =>
         {
             await library.UploadAsync(node.Key);
-            StatusMessage = $"{node.Name} is now hosted in the cloud.";
+            StatusMessage = L.F("NodesUploaded", "{0} is now hosted in the cloud.", node.Name);
         });
     }
 
@@ -117,8 +120,9 @@ public sealed partial class NodesViewModel : ObservableObject
         return RunAsync(async () =>
         {
             var summary = await library.SyncAllAsync();
-            StatusMessage = $"Uploaded {summary.Uploaded}, already in cloud {summary.AlreadyInCloud}, "
-                + $"not supported {summary.Unsupported}, failed {summary.Failed}.";
+            StatusMessage = L.F("NodesSyncSummary",
+                "Uploaded {0}, already in cloud {1}, not supported {2}, failed {3}.",
+                summary.Uploaded, summary.AlreadyInCloud, summary.Unsupported, summary.Failed);
         });
     }
 
@@ -130,7 +134,7 @@ public sealed partial class NodesViewModel : ObservableObject
         return RunAsync(async () =>
         {
             await library.RefreshFromCloudAsync();
-            StatusMessage = "Nodes refreshed from the cloud.";
+            StatusMessage = L.T("NodesRefreshed", "Nodes refreshed from the cloud.");
         });
     }
 
@@ -151,17 +155,65 @@ public sealed partial class NodesViewModel : ObservableObject
         {
             await _delete(node.Key);
             StatusMessage = node.IsHosted
-                ? $"{node.Name} was removed from every device of this client."
-                : $"{node.Name} was removed.";
+                ? L.F("NodesDeletedEverywhere", "{0} was removed from every device of this client.", node.Name)
+                : L.F("NodesDeleted", "{0} was removed.", node.Name);
         });
     }
+
+    /// <summary>Opens the in-place editor (SS / SOCKS5 / VLESS) or the classic editor for WireGuard / external.</summary>
+    [RelayCommand]
+    private void Edit(NodeCardViewModel? node)
+    {
+        ErrorMessage = string.Empty;
+        StatusMessage = string.Empty;
+        if (node is null || _library() is not { } library)
+            return;
+        var editable = library.GetEditableNode(node.Key);
+        if (editable is null)
+        {
+            Editor.Close();
+            _editClassic?.Invoke(node.Key);
+            return;
+        }
+        Editor.Open(node.Key, editable, node.IsHosted);
+    }
+
+    [RelayCommand]
+    private Task SaveEditAsync()
+    {
+        if (!Editor.IsOpen || _library() is not { } library)
+            return Task.CompletedTask;
+        Editor.Error = string.Empty;
+        return RunAsync(async () =>
+        {
+            var hosted = Editor.IsHosted;
+            try
+            {
+                var node = Editor.Build();
+                await library.SaveNodeAsync(node);
+                StatusMessage = hosted
+                    ? L.F("NodesSavedEverywhere", "{0} was saved and synced to every device.", node.Name)
+                    : L.F("NodesSaved", "{0} was saved.", node.Name);
+                Editor.Close();
+            }
+            catch (NodeLibraryException exception)
+            {
+                Editor.Error = DescribeError(exception.Code);
+                throw;
+            }
+        });
+    }
+
+    [RelayCommand]
+    private void CancelEdit() => Editor.Close();
 
     private void OnCardPaired(NodeCardViewModel node, int forwardId)
         => _ = RunAsync(async () =>
         {
             await _pair(node.Key, forwardId);
             StatusMessage = forwardId > 0
-                ? $"{node.Name} is paired with {_serviceOptions.FirstOrDefault(option => option.ForwardId == forwardId)?.Name}."
+                ? L.F("NodesPaired", "{0} is paired with {1}.", node.Name,
+                    _serviceOptions.FirstOrDefault(option => option.ForwardId == forwardId)?.Name)
                 : string.Empty;
         });
 
@@ -179,7 +231,7 @@ public sealed partial class NodesViewModel : ObservableObject
         }
         catch (Exception)
         {
-            ErrorMessage = "The node operation could not be completed.";
+            ErrorMessage = L.T("NodesOperationFailed", "The node operation could not be completed.");
         }
         finally
         {
@@ -190,26 +242,26 @@ public sealed partial class NodesViewModel : ObservableObject
 
     public static string DescribeError(string code) => code switch
     {
-        "proxy_uri_required" => "Paste a share link first.",
-        "proxy_protocol_unsupported" => "This share link protocol is not supported on macOS yet.",
-        "proxy_plugin_unsupported" => "Shadowsocks plugin links are not supported.",
-        "proxy_wg_config_invalid" => "The WireGuard configuration is incomplete.",
-        "proxy_credentials_invalid" => "The Shadowsocks credentials are invalid.",
-        "proxy_endpoint_invalid" or "proxy_port_invalid" => "The node server or port is invalid.",
-        MacLocalNodeLibrary.CloudUnavailableCode => "Cloud sync is not available in this build yet.",
-        "hosted_node_limit_reached" => "This client already hosts the maximum number of nodes.",
-        "hosted_node_duplicate" => "That node is already in the cloud.",
-        "hosted_nodes_unavailable" => "The panel cannot store nodes right now. Try again later.",
-        "rate_limited" => "Too many changes in a short time. Wait a minute and try again.",
-        "node_not_found" or "hosted_node_not_found" => "The node no longer exists. The list was refreshed.",
-        "node_duplicate" => "That node is already in the list.",
-        "hosted_nodes_offline" => "Sign in to use cloud nodes.",
-        "hosted_nodes_unsupported" => "This panel does not support cloud nodes yet.",
-        "hosted_nodes_network" => "The panel could not be reached. Check the connection and try again.",
-        "device_limit_reached" => "Device limit reached. Disconnect another device first.",
-        "hosted_node_invalid" => "The panel rejected this node. Check its protocol settings.",
-        _ when code.StartsWith("node_", StringComparison.Ordinal) => "The share link is invalid or uses settings that are not supported.",
-        _ => "The share link could not be imported.",
+        "proxy_uri_required" => L.T("NodeErrUriRequired", "Paste a share link first."),
+        "proxy_protocol_unsupported" => L.T("NodeErrProtocol", "This share link protocol is not supported on macOS yet."),
+        "proxy_plugin_unsupported" => L.T("NodeErrPlugin", "Shadowsocks plugin links are not supported."),
+        "proxy_wg_config_invalid" => L.T("NodeErrWireGuard", "The WireGuard configuration is incomplete."),
+        "proxy_credentials_invalid" => L.T("NodeErrCredentials", "The Shadowsocks credentials are invalid."),
+        "proxy_endpoint_invalid" or "proxy_port_invalid" => L.T("NodeErrEndpoint", "The node server or port is invalid."),
+        MacLocalNodeLibrary.CloudUnavailableCode => L.T("NodeErrCloudUnavailable", "Cloud sync is not available in this build yet."),
+        "hosted_node_limit_reached" => L.T("NodeErrLimit", "This client already hosts the maximum number of nodes."),
+        "hosted_node_duplicate" => L.T("NodeErrHostedDuplicate", "That node is already in the cloud."),
+        "hosted_nodes_unavailable" => L.T("NodeErrPanelUnavailable", "The panel cannot store nodes right now. Try again later."),
+        "rate_limited" => L.T("NodeErrRateLimited", "Too many changes in a short time. Wait a minute and try again."),
+        "node_not_found" or "hosted_node_not_found" => L.T("NodeErrNotFound", "The node no longer exists. The list was refreshed."),
+        "node_duplicate" => L.T("NodeErrDuplicate", "That node is already in the list."),
+        "hosted_nodes_offline" => L.T("NodeErrOffline", "Sign in to use cloud nodes."),
+        "hosted_nodes_unsupported" => L.T("NodeErrPanelOld", "This panel does not support cloud nodes yet."),
+        "hosted_nodes_network" => L.T("NodeErrNetwork", "The panel could not be reached. Check the connection and try again."),
+        "device_limit_reached" => L.T("NodeErrDeviceLimit", "Device limit reached. Disconnect another device first."),
+        "hosted_node_invalid" => L.T("NodeErrInvalid", "The node settings are invalid. Check the protocol fields."),
+        _ when code.StartsWith("node_", StringComparison.Ordinal) => L.T("NodeErrLinkInvalid", "The share link is invalid or uses settings that are not supported."),
+        _ => L.T("NodeErrImport", "The share link could not be imported."),
     };
 }
 
@@ -231,12 +283,8 @@ public sealed partial class NodeCardViewModel : ObservableObject
         Endpoint = item.Endpoint;
         CloudState = item.CloudState;
         ServiceOptions = serviceOptions;
-        PairedServicesText = item.PairedForwardIds.Count == 0
-            ? "Not paired with a service"
-            : "Paired: " + string.Join(", ", item.PairedForwardIds.Select(id =>
-                serviceOptions.FirstOrDefault(option => option.ForwardId == id)?.Name ?? $"Forward #{id}"));
         var first = item.PairedForwardIds.Count > 0 ? item.PairedForwardIds[0] : 0;
-        SelectedService = serviceOptions.FirstOrDefault(option => option.ForwardId == first) ?? NodeServiceOption.None;
+        SelectedService = serviceOptions.FirstOrDefault(option => option.ForwardId == first) ?? serviceOptions[0];
         _loading = false;
     }
 
@@ -246,21 +294,20 @@ public sealed partial class NodeCardViewModel : ObservableObject
     public string Endpoint { get; }
     public NodeCloudState CloudState { get; }
     public IReadOnlyList<NodeServiceOption> ServiceOptions { get; }
-    public string PairedServicesText { get; }
     public bool IsHosted => CloudState == NodeCloudState.Hosted;
     public bool IsLocalOnly => CloudState == NodeCloudState.LocalOnly;
     public bool IsCloudUnsupported => CloudState == NodeCloudState.Unsupported;
     public string CloudLabel => CloudState switch
     {
-        NodeCloudState.Hosted => "Cloud",
-        NodeCloudState.LocalOnly => "This Mac",
-        _ => "Local only",
+        NodeCloudState.Hosted => L.T("NodeBadgeCloud", "Cloud"),
+        NodeCloudState.LocalOnly => L.T("NodeBadgeThisMac", "This Mac"),
+        _ => L.T("NodeBadgeLocalOnly", "Local only"),
     };
     public string CloudTooltip => CloudState switch
     {
-        NodeCloudState.Hosted => "Hosted by the panel and synced to every trusted device of this client.",
-        NodeCloudState.LocalOnly => "Stored on this Mac. Upload it to use it on your other devices.",
-        _ => "The panel only hosts Shadowsocks, SOCKS5 and VLESS nodes; this one stays on this Mac.",
+        NodeCloudState.Hosted => L.T("NodeBadgeCloudTip", "Hosted by the panel and synced to every trusted device of this client."),
+        NodeCloudState.LocalOnly => L.T("NodeBadgeThisMacTip", "Stored on this Mac. Upload it to use it on your other devices."),
+        _ => L.T("NodeBadgeLocalOnlyTip", "The panel only hosts Shadowsocks, SOCKS5 and VLESS nodes; this one stays on this Mac."),
     };
     public string ProtocolInitial => string.IsNullOrEmpty(Protocol) ? "?" : Protocol[..1].ToUpperInvariant();
 

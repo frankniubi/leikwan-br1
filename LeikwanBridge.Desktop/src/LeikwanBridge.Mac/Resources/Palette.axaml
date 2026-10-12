@@ -1,111 +1,111 @@
 <!--
-  Material You style tonal palette generated from the LeiKwan teal seed (#087F72).
-  Every page binds these keys through DynamicResource, so the window follows the
-  macOS appearance (Light / Dark) live. The legacy key names (AppBackgroundBrush,
-  SurfaceBrush, AccentBrush, ...) are kept so older markup keeps resolving.
+  LeiKwan brand palette: ONE Material 3 fidelity scheme (HCT tonal palettes) from the seed #2563EB,
+  identical to the Android app (materialyoucolor SchemeFidelity, spec 2021). Day and night share every
+  hue and differ only in the light / dark tone pairing. Nothing is derived from the wallpaper or the
+  system accent. The theme setting (Follow system / Day / Night) only picks which pairing is shown.
 -->
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <ResourceDictionary.ThemeDictionaries>
     <ResourceDictionary x:Key="Light">
-      <Color x:Key="PrimaryColor">#006A62</Color>
-      <SolidColorBrush x:Key="PrimaryBrush" Color="#006A62" />
+      <Color x:Key="PrimaryColor">#004AC6</Color>
+      <SolidColorBrush x:Key="PrimaryBrush" Color="#004AC6" />
       <SolidColorBrush x:Key="OnPrimaryBrush" Color="#FFFFFF" />
-      <SolidColorBrush x:Key="PrimaryContainerBrush" Color="#9EF2E5" />
-      <SolidColorBrush x:Key="OnPrimaryContainerBrush" Color="#00201D" />
-      <SolidColorBrush x:Key="SecondaryContainerBrush" Color="#CCE8E3" />
-      <SolidColorBrush x:Key="OnSecondaryContainerBrush" Color="#051F1C" />
-      <SolidColorBrush x:Key="TertiaryBrush" Color="#45617A" />
-      <SolidColorBrush x:Key="SurfaceDimBrush" Color="#D5DBD9" />
-      <SolidColorBrush x:Key="WindowSurfaceBrush" Color="#F4FBF8" />
-      <SolidColorBrush x:Key="SidebarBrush" Color="#EEF5F2" />
-      <SolidColorBrush x:Key="CardBrush" Color="#E8F0ED" />
-      <SolidColorBrush x:Key="CardHoverBrush" Color="#E1EAE7" />
-      <SolidColorBrush x:Key="CardHighBrush" Color="#DCE5E2" />
-      <SolidColorBrush x:Key="InputBrush" Color="#FBFDFC" />
-      <SolidColorBrush x:Key="OnSurfaceBrush" Color="#161D1C" />
-      <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="#3F4947" />
-      <SolidColorBrush x:Key="OutlineBrush" Color="#6F7977" />
-      <SolidColorBrush x:Key="OutlineVariantBrush" Color="#BEC9C6" />
-      <SolidColorBrush x:Key="NavSelectedBrush" Color="#CCE8E3" />
-      <SolidColorBrush x:Key="NavHoverBrush" Color="#E2ECE9" />
-      <SolidColorBrush x:Key="ChartStrokeBrush" Color="#006A62" />
-      <SolidColorBrush x:Key="ChartFillBrush" Color="#33006A62" />
-      <SolidColorBrush x:Key="ChartSecondaryStrokeBrush" Color="#7A45617A" />
-      <SolidColorBrush x:Key="ScrimBrush" Color="#B3F4FBF8" />
-      <SolidColorBrush x:Key="FabRunningBrush" Color="#9EF2E5" />
-      <SolidColorBrush x:Key="OnFabRunningBrush" Color="#00201D" />
-      <SolidColorBrush x:Key="FabIdleBrush" Color="#006A62" />
+      <SolidColorBrush x:Key="PrimaryContainerBrush" Color="#2563EB" />
+      <SolidColorBrush x:Key="OnPrimaryContainerBrush" Color="#EEEFFF" />
+      <SolidColorBrush x:Key="SecondaryBrush" Color="#495C95" />
+      <SolidColorBrush x:Key="SecondaryContainerBrush" Color="#DBE1FF" />
+      <SolidColorBrush x:Key="OnSecondaryContainerBrush" Color="#394C84" />
+      <SolidColorBrush x:Key="TertiaryBrush" Color="#943700" />
+      <SolidColorBrush x:Key="WindowSurfaceBrush" Color="#FAF8FF" />
+      <SolidColorBrush x:Key="SidebarBrush" Color="#F3F3FE" />
+      <SolidColorBrush x:Key="CardBrush" Color="#EDEDF9" />
+      <SolidColorBrush x:Key="CardHoverBrush" Color="#E7E7F3" />
+      <SolidColorBrush x:Key="CardHighBrush" Color="#E1E2ED" />
+      <SolidColorBrush x:Key="InputBrush" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="OnSurfaceBrush" Color="#191B23" />
+      <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="#434655" />
+      <SolidColorBrush x:Key="OutlineBrush" Color="#737686" />
+      <SolidColorBrush x:Key="OutlineVariantBrush" Color="#C3C6D7" />
+      <SolidColorBrush x:Key="NavSelectedBrush" Color="#DBE1FF" />
+      <SolidColorBrush x:Key="NavHoverBrush" Color="#E7E7F3" />
+      <SolidColorBrush x:Key="ChartStrokeBrush" Color="#004AC6" />
+      <SolidColorBrush x:Key="ChartFillBrush" Color="#33004AC6" />
+      <SolidColorBrush x:Key="ChartSecondaryStrokeBrush" Color="#AA943700" />
+      <SolidColorBrush x:Key="ScrimBrush" Color="#B3FAF8FF" />
+      <SolidColorBrush x:Key="FabRunningBrush" Color="#DBE1FF" />
+      <SolidColorBrush x:Key="OnFabRunningBrush" Color="#394C84" />
+      <SolidColorBrush x:Key="FabIdleBrush" Color="#004AC6" />
       <SolidColorBrush x:Key="OnFabIdleBrush" Color="#FFFFFF" />
-
-      <SolidColorBrush x:Key="SuccessBrush" Color="#1B7F4A" />
-      <SolidColorBrush x:Key="SuccessContainerBrush" Color="#D4F5DF" />
-      <SolidColorBrush x:Key="WarningBrush" Color="#8A5A00" />
-      <SolidColorBrush x:Key="OnWarningContainerBrush" Color="#4D3200" />
-      <SolidColorBrush x:Key="WarningSurfaceBrush" Color="#FFEDCC" />
-      <SolidColorBrush x:Key="WarningOutlineBrush" Color="#E9C77D" />
+      <SolidColorBrush x:Key="SuccessBrush" Color="#16A34A" />
+      <SolidColorBrush x:Key="SuccessContainerBrush" Color="#DCFCE7" />
+      <SolidColorBrush x:Key="ConnectingBrush" Color="#D97706" />
+      <SolidColorBrush x:Key="WarningBrush" Color="#D97706" />
+      <SolidColorBrush x:Key="OnWarningContainerBrush" Color="#5C3400" />
+      <SolidColorBrush x:Key="WarningSurfaceBrush" Color="#FFEDD5" />
+      <SolidColorBrush x:Key="WarningOutlineBrush" Color="#F5C58A" />
       <SolidColorBrush x:Key="DangerBrush" Color="#BA1A1A" />
       <SolidColorBrush x:Key="DangerSurfaceBrush" Color="#FFDAD6" />
       <SolidColorBrush x:Key="DangerOutlineBrush" Color="#F2B8B5" />
+      <SolidColorBrush x:Key="StatusIdleBrush" Color="#737686" />
       <!-- Legacy names kept for older markup. -->
-      <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F4FBF8" />
-      <SolidColorBrush x:Key="SurfaceBrush" Color="#E8F0ED" />
-      <SolidColorBrush x:Key="BorderBrush" Color="#BEC9C6" />
-      <SolidColorBrush x:Key="TextBrush" Color="#161D1C" />
-      <SolidColorBrush x:Key="MutedTextBrush" Color="#3F4947" />
-      <SolidColorBrush x:Key="AccentBrush" Color="#006A62" />
-      <SolidColorBrush x:Key="QuietBrush" Color="#CCE8E3" />
-      <SolidColorBrush x:Key="StatusIdleBrush" Color="#9AA5A2" />
+      <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FAF8FF" />
+      <SolidColorBrush x:Key="SurfaceBrush" Color="#EDEDF9" />
+      <SolidColorBrush x:Key="BorderBrush" Color="#C3C6D7" />
+      <SolidColorBrush x:Key="TextBrush" Color="#191B23" />
+      <SolidColorBrush x:Key="MutedTextBrush" Color="#434655" />
+      <SolidColorBrush x:Key="AccentBrush" Color="#004AC6" />
+      <SolidColorBrush x:Key="QuietBrush" Color="#DBE1FF" />
     </ResourceDictionary>
     <ResourceDictionary x:Key="Dark">
-      <Color x:Key="PrimaryColor">#82D5C9</Color>
-      <SolidColorBrush x:Key="PrimaryBrush" Color="#82D5C9" />
-      <SolidColorBrush x:Key="OnPrimaryBrush" Color="#003732" />
-      <SolidColorBrush x:Key="PrimaryContainerBrush" Color="#005049" />
-      <SolidColorBrush x:Key="OnPrimaryContainerBrush" Color="#9EF2E5" />
-      <SolidColorBrush x:Key="SecondaryContainerBrush" Color="#334B47" />
-      <SolidColorBrush x:Key="OnSecondaryContainerBrush" Color="#CCE8E3" />
-      <SolidColorBrush x:Key="TertiaryBrush" Color="#ADCAE6" />
-      <SolidColorBrush x:Key="SurfaceDimBrush" Color="#0E1513" />
-      <SolidColorBrush x:Key="WindowSurfaceBrush" Color="#0E1513" />
-      <SolidColorBrush x:Key="SidebarBrush" Color="#141B1A" />
-      <SolidColorBrush x:Key="CardBrush" Color="#1A2120" />
-      <SolidColorBrush x:Key="CardHoverBrush" Color="#212928" />
-      <SolidColorBrush x:Key="CardHighBrush" Color="#252B2A" />
-      <SolidColorBrush x:Key="InputBrush" Color="#141B1A" />
-      <SolidColorBrush x:Key="OnSurfaceBrush" Color="#DDE4E1" />
-      <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="#BEC9C6" />
-      <SolidColorBrush x:Key="OutlineBrush" Color="#899390" />
-      <SolidColorBrush x:Key="OutlineVariantBrush" Color="#3F4947" />
-      <SolidColorBrush x:Key="NavSelectedBrush" Color="#334B47" />
-      <SolidColorBrush x:Key="NavHoverBrush" Color="#1F2726" />
-      <SolidColorBrush x:Key="ChartStrokeBrush" Color="#82D5C9" />
-      <SolidColorBrush x:Key="ChartFillBrush" Color="#3382D5C9" />
-      <SolidColorBrush x:Key="ChartSecondaryStrokeBrush" Color="#88ADCAE6" />
-      <SolidColorBrush x:Key="ScrimBrush" Color="#B30E1513" />
-      <SolidColorBrush x:Key="FabRunningBrush" Color="#005049" />
-      <SolidColorBrush x:Key="OnFabRunningBrush" Color="#9EF2E5" />
-      <SolidColorBrush x:Key="FabIdleBrush" Color="#82D5C9" />
-      <SolidColorBrush x:Key="OnFabIdleBrush" Color="#003732" />
-
-      <SolidColorBrush x:Key="SuccessBrush" Color="#7EDB9F" />
-      <SolidColorBrush x:Key="SuccessContainerBrush" Color="#0F3D24" />
-      <SolidColorBrush x:Key="WarningBrush" Color="#F5BD5C" />
-      <SolidColorBrush x:Key="OnWarningContainerBrush" Color="#FFDDAE" />
-      <SolidColorBrush x:Key="WarningSurfaceBrush" Color="#3A2A0A" />
-      <SolidColorBrush x:Key="WarningOutlineBrush" Color="#6B5114" />
+      <Color x:Key="PrimaryColor">#B4C5FF</Color>
+      <SolidColorBrush x:Key="PrimaryBrush" Color="#B4C5FF" />
+      <SolidColorBrush x:Key="OnPrimaryBrush" Color="#002A78" />
+      <SolidColorBrush x:Key="PrimaryContainerBrush" Color="#2563EB" />
+      <SolidColorBrush x:Key="OnPrimaryContainerBrush" Color="#EEEFFF" />
+      <SolidColorBrush x:Key="SecondaryBrush" Color="#B4C5FF" />
+      <SolidColorBrush x:Key="SecondaryContainerBrush" Color="#33467E" />
+      <SolidColorBrush x:Key="OnSecondaryContainerBrush" Color="#DBE1FF" />
+      <SolidColorBrush x:Key="TertiaryBrush" Color="#FFB596" />
+      <SolidColorBrush x:Key="WindowSurfaceBrush" Color="#11131B" />
+      <SolidColorBrush x:Key="SidebarBrush" Color="#191B23" />
+      <SolidColorBrush x:Key="CardBrush" Color="#1D1F27" />
+      <SolidColorBrush x:Key="CardHoverBrush" Color="#282A32" />
+      <SolidColorBrush x:Key="CardHighBrush" Color="#32343D" />
+      <SolidColorBrush x:Key="InputBrush" Color="#0C0E16" />
+      <SolidColorBrush x:Key="OnSurfaceBrush" Color="#E1E2ED" />
+      <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="#C3C6D7" />
+      <SolidColorBrush x:Key="OutlineBrush" Color="#8D90A0" />
+      <SolidColorBrush x:Key="OutlineVariantBrush" Color="#434655" />
+      <SolidColorBrush x:Key="NavSelectedBrush" Color="#33467E" />
+      <SolidColorBrush x:Key="NavHoverBrush" Color="#282A32" />
+      <SolidColorBrush x:Key="ChartStrokeBrush" Color="#B4C5FF" />
+      <SolidColorBrush x:Key="ChartFillBrush" Color="#33B4C5FF" />
+      <SolidColorBrush x:Key="ChartSecondaryStrokeBrush" Color="#AAFFB596" />
+      <SolidColorBrush x:Key="ScrimBrush" Color="#B311131B" />
+      <SolidColorBrush x:Key="FabRunningBrush" Color="#33467E" />
+      <SolidColorBrush x:Key="OnFabRunningBrush" Color="#DBE1FF" />
+      <SolidColorBrush x:Key="FabIdleBrush" Color="#B4C5FF" />
+      <SolidColorBrush x:Key="OnFabIdleBrush" Color="#002A78" />
+      <SolidColorBrush x:Key="SuccessBrush" Color="#4ADE80" />
+      <SolidColorBrush x:Key="SuccessContainerBrush" Color="#14532D" />
+      <SolidColorBrush x:Key="ConnectingBrush" Color="#FBBF24" />
+      <SolidColorBrush x:Key="WarningBrush" Color="#FBBF24" />
+      <SolidColorBrush x:Key="OnWarningContainerBrush" Color="#FFE7B3" />
+      <SolidColorBrush x:Key="WarningSurfaceBrush" Color="#3D2A05" />
+      <SolidColorBrush x:Key="WarningOutlineBrush" Color="#7A5A12" />
       <SolidColorBrush x:Key="DangerBrush" Color="#FFB4AB" />
-      <SolidColorBrush x:Key="DangerSurfaceBrush" Color="#4A1512" />
-      <SolidColorBrush x:Key="DangerOutlineBrush" Color="#7A2A24" />
+      <SolidColorBrush x:Key="DangerSurfaceBrush" Color="#93000A" />
+      <SolidColorBrush x:Key="DangerOutlineBrush" Color="#B3261E" />
+      <SolidColorBrush x:Key="StatusIdleBrush" Color="#8D90A0" />
       <!-- Legacy names kept for older markup. -->
-      <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0E1513" />
-      <SolidColorBrush x:Key="SurfaceBrush" Color="#1A2120" />
-      <SolidColorBrush x:Key="BorderBrush" Color="#3F4947" />
-      <SolidColorBrush x:Key="TextBrush" Color="#DDE4E1" />
-      <SolidColorBrush x:Key="MutedTextBrush" Color="#BEC9C6" />
-      <SolidColorBrush x:Key="AccentBrush" Color="#82D5C9" />
-      <SolidColorBrush x:Key="QuietBrush" Color="#334B47" />
-      <SolidColorBrush x:Key="StatusIdleBrush" Color="#5F6A67" />
+      <SolidColorBrush x:Key="AppBackgroundBrush" Color="#11131B" />
+      <SolidColorBrush x:Key="SurfaceBrush" Color="#1D1F27" />
+      <SolidColorBrush x:Key="BorderBrush" Color="#434655" />
+      <SolidColorBrush x:Key="TextBrush" Color="#E1E2ED" />
+      <SolidColorBrush x:Key="MutedTextBrush" Color="#C3C6D7" />
+      <SolidColorBrush x:Key="AccentBrush" Color="#B4C5FF" />
+      <SolidColorBrush x:Key="QuietBrush" Color="#33467E" />
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 

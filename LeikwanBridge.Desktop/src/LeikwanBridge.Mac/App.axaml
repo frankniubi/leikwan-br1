@@ -1,5 +1,6 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:LeikwanBridge.Mac.Localization"
              x:Class="LeikwanBridge.Mac.App"
              RequestedThemeVariant="Default">
   <Application.Resources>
@@ -8,14 +9,15 @@
         <ResourceInclude Source="avares://LeikwanBridge.Mac/Resources/Strings.axaml" />
         <ResourceInclude Source="avares://LeikwanBridge.Mac/Resources/Palette.axaml" />
       </ResourceDictionary.MergedDictionaries>
+      <loc:LocalizeConverter x:Key="Localize" />
     </ResourceDictionary>
   </Application.Resources>
   <Application.Styles>
     <FluentTheme DensityStyle="Compact">
-      <!-- Material You accent from the LeiKwan teal seed, per appearance. -->
+      <!-- Brand primary (seed #2563EB) for the day and night pairings. -->
       <FluentTheme.Palettes>
-        <ColorPaletteResources x:Key="Light" Accent="#006A62" RegionColor="#F4FBF8" />
-        <ColorPaletteResources x:Key="Dark" Accent="#82D5C9" RegionColor="#0E1513" />
+        <ColorPaletteResources x:Key="Light" Accent="#004AC6" RegionColor="#FAF8FF" />
+        <ColorPaletteResources x:Key="Dark" Accent="#B4C5FF" RegionColor="#11131B" />
       </FluentTheme.Palettes>
     </FluentTheme>
     <StyleInclude Source="avares://LeikwanBridge.Mac/Resources/Theme.axaml" />

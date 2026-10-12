@@ -6,7 +6,7 @@
         xmlns:lucide="using:Lucide.Avalonia"
         x:Class="LeikwanBridge.Mac.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Title="LeiKwan Bridge"
+        Title="{DynamicResource AppName}"
         Icon="avares://LeikwanBridge.Mac/Assets/app-icon.png"
         Width="1180"
         Height="780"
@@ -23,8 +23,7 @@
             <Image Source="avares://LeikwanBridge.Mac/Assets/app-icon.png" Stretch="Uniform" />
           </Border>
           <StackPanel VerticalAlignment="Center" Spacing="0">
-            <TextBlock Text="LeiKwan Bridge" FontSize="15" FontWeight="SemiBold" />
-            <TextBlock Text="macOS · Apple silicon" Classes="muted" FontSize="11" />
+            <TextBlock Text="{DynamicResource AppName}" FontSize="15" FontWeight="SemiBold" />
           </StackPanel>
         </StackPanel>
 
@@ -32,25 +31,25 @@
           <Button Classes="nav" Classes.selected="{Binding IsDashboardSelected}" Command="{Binding ShowDashboardCommand}">
             <StackPanel Orientation="Horizontal" Spacing="12">
               <lucide:LucideIcon Kind="LayoutDashboard" Size="18" />
-              <TextBlock Text="Dashboard" VerticalAlignment="Center" />
+              <TextBlock Text="{DynamicResource DashboardLabel}" VerticalAlignment="Center" />
             </StackPanel>
           </Button>
           <Button Classes="nav" Classes.selected="{Binding IsServicesSelected}" Command="{Binding ShowConnectionsCommand}">
             <StackPanel Orientation="Horizontal" Spacing="12">
               <lucide:LucideIcon Kind="Layers" Size="18" />
-              <TextBlock Text="Services" VerticalAlignment="Center" />
+              <TextBlock Text="{DynamicResource NavServices}" VerticalAlignment="Center" />
             </StackPanel>
           </Button>
           <Button Classes="nav" Classes.selected="{Binding IsNodesSelected}" Command="{Binding ShowNodesCommand}">
             <StackPanel Orientation="Horizontal" Spacing="12">
               <lucide:LucideIcon Kind="Server" Size="18" />
-              <TextBlock Text="Nodes" VerticalAlignment="Center" />
+              <TextBlock Text="{DynamicResource NavNodes}" VerticalAlignment="Center" />
             </StackPanel>
           </Button>
           <Button Classes="nav" Classes.selected="{Binding IsSettingsSelected}" Command="{Binding ShowSettingsCommand}">
             <StackPanel Orientation="Horizontal" Spacing="12">
               <lucide:LucideIcon Kind="Settings" Size="18" />
-              <TextBlock Text="Settings" VerticalAlignment="Center" />
+              <TextBlock Text="{DynamicResource SettingsLabel}" VerticalAlignment="Center" />
             </StackPanel>
           </Button>
         </StackPanel>
@@ -60,7 +59,7 @@
                   IsVisible="{Binding IsShellVisible}">
             <StackPanel Orientation="Horizontal" Spacing="12">
               <lucide:LucideIcon Kind="ScrollText" Size="18" />
-              <TextBlock Text="Activity" VerticalAlignment="Center" />
+              <TextBlock Text="{DynamicResource LogsLabel}" VerticalAlignment="Center" />
             </StackPanel>
           </Button>
           <Border Classes="card" Padding="12,10" IsVisible="{Binding IsSignedIn}">
@@ -72,7 +71,7 @@
           <!-- Version and update check, always visible. -->
           <Button Classes="ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6"
                   CornerRadius="12" Command="{Binding CheckForUpdatesFromSidebarCommand}"
-                  AutomationProperties.Name="Check for updates">
+                  AutomationProperties.Name="{DynamicResource CheckForUpdates}">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
               <StackPanel Spacing="0">
                 <TextBlock Text="{Binding VersionLabel}" FontSize="12" FontWeight="SemiBold" />
@@ -100,7 +99,7 @@
           <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
             <lucide:LucideIcon Kind="Info" Size="19" Foreground="{DynamicResource WarningBrush}" VerticalAlignment="Center" />
             <TextBlock Grid.Column="1" Text="{Binding NoticeText}" TextWrapping="Wrap" VerticalAlignment="Center" />
-            <Button Grid.Column="2" Classes="icon ghost" Command="{Binding DismissNoticeCommand}" ToolTip.Tip="Dismiss notice">
+            <Button Grid.Column="2" Classes="icon ghost" Command="{Binding DismissNoticeCommand}" ToolTip.Tip="{DynamicResource DismissNotice}">
               <lucide:LucideIcon Kind="X" Size="17" />
             </Button>
           </Grid>
@@ -111,9 +110,9 @@
           <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
             <lucide:LucideIcon Kind="Download" Size="20" Foreground="{DynamicResource OnPrimaryContainerBrush}" VerticalAlignment="Center" />
             <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-              <TextBlock Text="Update available" FontWeight="SemiBold" Foreground="{DynamicResource OnPrimaryContainerBrush}" IsVisible="{Binding IsUpdateVisible}" />
-              <TextBlock Text="{Binding UpdateVersion, StringFormat='Version {0} is ready.'}" Foreground="{DynamicResource OnPrimaryContainerBrush}" IsVisible="{Binding IsUpdateVisible}" />
-              <TextBlock Text="Update failed" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding ShowUpdateError}" />
+              <TextBlock Text="{DynamicResource UpdateAvailable}" FontWeight="SemiBold" Foreground="{DynamicResource OnPrimaryContainerBrush}" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Text="{Binding UpdateReadyText}" Foreground="{DynamicResource OnPrimaryContainerBrush}" IsVisible="{Binding IsUpdateVisible}" />
+              <TextBlock Text="{DynamicResource UpdateFailed}" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding ShowUpdateError}" />
               <TextBlock Text="{Binding UpdateErrorMessage}" TextWrapping="Wrap" Foreground="{DynamicResource OnPrimaryContainerBrush}" IsVisible="{Binding ShowUpdateError}" />
               <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsUpdateInProgress}">
                 <ProgressBar Minimum="0" Maximum="100" Value="{Binding UpdatePercent}" Width="160" />
@@ -124,16 +123,16 @@
             <Button Grid.Column="2" Classes="primary" Command="{Binding InstallUpdateCommand}" IsVisible="{Binding IsUpdateVisible}">
               <StackPanel Orientation="Horizontal" Spacing="7">
                 <lucide:LucideIcon Kind="Download" Size="16" />
-                <TextBlock Text="Install and restart" />
+                <TextBlock Text="{DynamicResource InstallAndRestart}" />
               </StackPanel>
             </Button>
             <Button Grid.Column="2" Classes="primary" Command="{Binding RetryUpdateCommand}" IsVisible="{Binding ShowUpdateError}">
               <StackPanel Orientation="Horizontal" Spacing="7">
                 <lucide:LucideIcon Kind="RefreshCw" Size="16" />
-                <TextBlock Text="Retry" />
+                <TextBlock Text="{DynamicResource Retry}" />
               </StackPanel>
             </Button>
-            <Button Grid.Column="3" Classes="icon ghost" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="Dismiss update">
+            <Button Grid.Column="3" Classes="icon ghost" Command="{Binding DismissUpdateCommand}" ToolTip.Tip="{DynamicResource DismissUpdate}">
               <lucide:LucideIcon Kind="X" Size="17" />
             </Button>
           </Grid>
@@ -150,16 +149,15 @@
                         Padding="8" HorizontalAlignment="Left">
                   <Image Source="avares://LeikwanBridge.Mac/Assets/app-icon.png" Stretch="Uniform" />
                 </Border>
-                <TextBlock Classes="heading" Text="Sign in to LeiKwan Bridge" Margin="0,5,0,0" />
-                <TextBlock Classes="muted" Text="Use your client ID and token to continue." TextWrapping="Wrap" />
+                <TextBlock Classes="heading" Text="{DynamicResource SignInTitle}" Margin="0,5,0,0" />
 
-                <TextBlock Classes="label" Text="CONNECTION SITE" Margin="0,12,0,0" />
+                <TextBlock Classes="label" Text="{DynamicResource ConnectionSiteLabel}" Margin="0,12,0,0" />
                 <ComboBox ItemsSource="{Binding PanelEndpointOptions}" HorizontalAlignment="Stretch"
                           SelectedItem="{Binding SelectedPanelEndpoint, Mode=TwoWay}"
-                          AutomationProperties.Name="Connection site">
+                          AutomationProperties.Name="{DynamicResource ConnectionSiteName}">
                   <ComboBox.ItemTemplate>
                     <DataTemplate>
-                      <TextBlock Text="{Binding Label}" />
+                      <TextBlock Text="{Binding Key, Converter={StaticResource Localize}, ConverterParameter=Endpoint}" />
                     </DataTemplate>
                   </ComboBox.ItemTemplate>
                 </ComboBox>
@@ -173,7 +171,7 @@
                             SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
                             SelectedValueBinding="{Binding Id}"
                             HorizontalAlignment="Stretch"
-                            AutomationProperties.Name="Ethernet binding">
+                            AutomationProperties.Name="{DynamicResource EthernetBindingName}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate>
                         <TextBlock Text="{Binding CompactLabel}" ToolTip.Tip="{Binding DisplayName}" />
@@ -182,7 +180,7 @@
                   </ComboBox>
                   <Button Grid.Column="1" Classes="icon secondary" Command="{Binding RefreshEgressInterfacesCommand}"
                           ToolTip.Tip="{DynamicResource EgressBindingRefresh}"
-                          AutomationProperties.Name="Refresh adapter list">
+                          AutomationProperties.Name="{DynamicResource EgressBindingRefresh}">
                     <lucide:LucideIcon Kind="RefreshCw" Size="16" />
                   </Button>
                 </Grid>
@@ -191,13 +189,13 @@
                            Foreground="{DynamicResource WarningBrush}" FontSize="11" TextWrapping="Wrap" />
 
                 <StackPanel Spacing="8">
-                  <TextBlock Classes="label" Text="CLIENT ID" />
+                  <TextBlock Classes="label" Text="{DynamicResource ClientIdLabel}" />
                   <TextBox Text="{Binding ClientIdText, Mode=TwoWay}" Watermark="27" />
-                  <TextBlock Classes="label" Text="CLIENT TOKEN" />
-                  <TextBox Text="{Binding AgentToken, Mode=TwoWay}" PasswordChar="*" Watermark="Paste the client token" />
+                  <TextBlock Classes="label" Text="{DynamicResource ClientTokenLabel}" />
+                  <TextBox Text="{Binding AgentToken, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource ClientTokenWatermark}" />
                 </StackPanel>
 
-                <CheckBox Content="保存信息" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
+                <CheckBox Content="{DynamicResource RememberLogin}" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
 
                 <TextBlock Text="{Binding ValidationMessage}" Foreground="{DynamicResource DangerBrush}"
                            TextWrapping="Wrap" MinHeight="22" Margin="0,4,0,0" />
@@ -205,7 +203,7 @@
                         HorizontalContentAlignment="Center" MinHeight="44" Margin="0,4,0,0">
                   <StackPanel Orientation="Horizontal" Spacing="8">
                     <lucide:LucideIcon Kind="LogIn" Size="18" />
-                    <TextBlock Text="Sign in" />
+                    <TextBlock Text="{DynamicResource SignIn}" />
                   </StackPanel>
                 </Button>
                 <TextBlock Text="{Binding VersionLabel}" Classes="muted" FontSize="11" HorizontalAlignment="Center" />
@@ -218,8 +216,7 @@
         <ScrollViewer Grid.Row="0" Grid.RowSpan="2" IsVisible="{Binding IsClientPickerVisible}">
           <StackPanel Margin="48" MaxWidth="720" HorizontalAlignment="Center" Spacing="18">
             <StackPanel Spacing="5">
-              <TextBlock Classes="heading" Text="Choose a client" />
-              <TextBlock Classes="muted" Text="Select the client configuration to use on this Mac." />
+              <TextBlock Classes="heading" Text="{DynamicResource ChooseClientTitle}" />
             </StackPanel>
             <ItemsControl ItemsSource="{Binding Clients}">
               <ItemsControl.ItemTemplate>
@@ -239,23 +236,22 @@
         </ScrollViewer>
 
         <!-- ============ Nodes section header: node library / route pairing tabs ============ -->
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="28,22,28,14" IsVisible="{Binding IsNodesSectionVisible}">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="32,28,32,18" IsVisible="{Binding IsNodesSectionVisible}">
           <StackPanel Spacing="2">
-            <TextBlock Classes="heading" Text="Nodes" />
-            <TextBlock Classes="muted" Text="Your own nodes, and which service each one rides on." />
+            <TextBlock Classes="heading" Text="{DynamicResource NavNodes}" />
           </StackPanel>
           <Border Grid.Column="1" Classes="surface" Padding="4" CornerRadius="21" VerticalAlignment="Center">
             <StackPanel Orientation="Horizontal" Spacing="2">
               <Button Classes="tab" Classes.selected="{Binding IsNodesVisible}" Command="{Binding ShowNodesCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="7">
                   <lucide:LucideIcon Kind="Server" Size="15" />
-                  <TextBlock Text="节点" />
+                  <TextBlock Text="{DynamicResource NavNodes}" />
                 </StackPanel>
               </Button>
               <Button Classes="tab" Classes.selected="{Binding IsPairingVisible}" Command="{Binding ShowPairingCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="7">
                   <lucide:LucideIcon Kind="GitBranch" Size="15" />
-                  <TextBlock Text="线路配对" />
+                  <TextBlock Text="{DynamicResource NodesTabPairing}" />
                 </StackPanel>
               </Button>
             </StackPanel>
@@ -269,18 +265,15 @@
         <views:NodesView Grid.Row="1" IsVisible="{Binding IsNodesVisible}" />
 
         <!-- ============ Services (代理) and 线路配对 share one workspace ============ -->
-        <Grid Grid.Row="1" IsVisible="{Binding IsConnectionWorkspaceVisible}" RowDefinitions="Auto,*" Margin="28,0,28,0">
-          <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,22,0,16" IsVisible="{Binding IsConnectionsVisible}">
+        <Grid Grid.Row="1" IsVisible="{Binding IsConnectionWorkspaceVisible}" RowDefinitions="Auto,*" Margin="32,0,32,0">
+          <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,28,0,18" IsVisible="{Binding IsConnectionsVisible}">
             <StackPanel Spacing="2">
-              <TextBlock Classes="heading" Text="Services" />
+              <TextBlock Classes="heading" Text="{DynamicResource NavServices}" />
               <TextBlock Classes="muted" Text="{Binding ServiceForwardSummary}" />
             </StackPanel>
-            <Button Grid.Column="1" Classes="tonal" Command="{Binding RefreshCommand}" VerticalAlignment="Center"
-                    ToolTip.Tip="Refresh connection">
-              <StackPanel Orientation="Horizontal" Spacing="7">
-                <lucide:LucideIcon Kind="RefreshCw" Size="16" />
-                <TextBlock Text="Refresh" />
-              </StackPanel>
+            <Button Grid.Column="1" Classes="icon ghost" Command="{Binding RefreshCommand}" VerticalAlignment="Center"
+                    ToolTip.Tip="{DynamicResource RefreshConnection}">
+              <lucide:LucideIcon Kind="RefreshCw" Size="18" />
             </Button>
           </Grid>
 
@@ -289,8 +282,8 @@
                     IsVisible="{Binding IsPairingVisible}">
               <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
                 <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-                  <TextBlock Text="Saved nodes" Classes="title" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" Classes="icon tonal" Command="{Binding NewConnectionProfileCommand}" ToolTip.Tip="New node">
+                  <TextBlock Text="{DynamicResource SavedNodes}" Classes="title" VerticalAlignment="Center" />
+                  <Button Grid.Column="1" Classes="icon tonal" Command="{Binding NewConnectionProfileCommand}" ToolTip.Tip="{DynamicResource NewNode}">
                     <lucide:LucideIcon Kind="Plus" Size="17" />
                   </Button>
                 </Grid>
@@ -305,21 +298,20 @@
                     </DataTemplate>
                   </ListBox.ItemTemplate>
                 </ListBox>
-                <TextBlock Grid.Row="2" Classes="muted" Text="Credentials stay in Keychain." FontSize="11" TextWrapping="Wrap" />
               </Grid>
             </Border>
 
             <ScrollViewer Grid.Column="0">
-              <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="14" Margin="0,0,0,96">
+              <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="16" Margin="0,0,0,96">
 
                 <!-- Services: assigned forwards with per-forward start / stop. -->
                 <Border Grid.Row="0" Classes="card" IsVisible="{Binding IsConnectionsVisible}">
                   <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                       <lucide:LucideIcon Kind="Layers" Size="18" Foreground="{DynamicResource PrimaryBrush}" />
-                      <TextBlock Text="Assigned forwards" Classes="title" />
+                      <TextBlock Text="{DynamicResource AssignedForwards}" Classes="title" />
                     </StackPanel>
-                    <TextBlock Classes="muted" Text="No supported forwards are assigned." IsVisible="{Binding !HasForwards}" />
+                    <TextBlock Classes="muted" Text="{DynamicResource NoSupportedForwards}" IsVisible="{Binding !HasForwards}" />
                     <ItemsControl ItemsSource="{Binding Forwards}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:ForwardRowViewModel">
@@ -339,13 +331,13 @@
                               <TextBlock Grid.Column="2" Text="{Binding PortText}" Classes="mono muted" FontSize="12" VerticalAlignment="Center" />
                               <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                                 <Border Width="8" Height="8" CornerRadius="4" Classes="status-dot" Classes.running="{Binding IsRunning}" />
-                                <TextBlock Text="{Binding Status}" FontSize="12" />
+                                <TextBlock Text="{Binding StatusText}" FontSize="12" />
                               </StackPanel>
                               <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
-                                <Button Classes="icon primary" Command="{Binding StartCommand}" IsVisible="{Binding CanStart}" ToolTip.Tip="Start forward">
+                                <Button Classes="icon primary" Command="{Binding StartCommand}" IsVisible="{Binding CanStart}" ToolTip.Tip="{DynamicResource StartForward}">
                                   <lucide:LucideIcon Kind="Play" Size="16" />
                                 </Button>
-                                <Button Classes="icon danger" Command="{Binding StopCommand}" IsVisible="{Binding CanStop}" ToolTip.Tip="Stop forward">
+                                <Button Classes="icon danger" Command="{Binding StopCommand}" IsVisible="{Binding CanStop}" ToolTip.Tip="{DynamicResource StopForward}">
                                   <lucide:LucideIcon Kind="Square" Size="15" />
                                 </Button>
                               </StackPanel>
@@ -363,12 +355,12 @@
                     <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                       <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                         <lucide:LucideIcon Kind="Waypoints" Size="18" Foreground="{DynamicResource PrimaryBrush}" />
-                        <TextBlock Text="Local connection" Classes="title" />
+                        <TextBlock Text="{DynamicResource LocalConnection}" Classes="title" />
                       </StackPanel>
                       <Border Grid.Column="1" Classes="status-pill" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                           <Border Width="8" Height="8" CornerRadius="4" Classes="status-dot" Classes.running="{Binding IsLocalConnectionActive}" />
-                          <TextBlock Text="{Binding LocalConnectionStatus}" FontSize="12" />
+                          <TextBlock Text="{Binding LocalConnectionStatusText}" FontSize="12" />
                         </StackPanel>
                       </Border>
                       <StackPanel Grid.Column="2" Orientation="Horizontal">
@@ -376,23 +368,23 @@
                                 IsEnabled="{Binding CanStartLocalConnection}">
                           <StackPanel Orientation="Horizontal" Spacing="7">
                             <lucide:LucideIcon Kind="Play" Size="16" />
-                            <TextBlock Text="Start" />
+                            <TextBlock Text="{DynamicResource Start}" />
                           </StackPanel>
                         </Button>
                         <Button Classes="danger" Command="{Binding StopConnectionCommand}" IsVisible="{Binding IsLocalConnectionActive}">
                           <StackPanel Orientation="Horizontal" Spacing="7">
                             <lucide:LucideIcon Kind="Square" Size="16" />
-                            <TextBlock Text="Stop" />
+                            <TextBlock Text="{DynamicResource Stop}" />
                           </StackPanel>
                         </Button>
                       </StackPanel>
                     </Grid>
                     <Grid ColumnDefinitions="*,220" ColumnSpacing="12" Margin="0,4,0,0">
                       <StackPanel Spacing="5">
-                        <TextBlock Classes="label" Text="线路" />
+                        <TextBlock Classes="label" Text="{DynamicResource RouteFieldLabel}" />
                         <ComboBox ItemsSource="{Binding PairedConnectionRoutes}" HorizontalAlignment="Stretch"
                                   SelectedItem="{Binding SelectedConnectionForward, Mode=TwoWay}"
-                                  PlaceholderText="未选择已配对转发" MinHeight="40">
+                                  PlaceholderText="{DynamicResource RoutePlaceholder}" MinHeight="40">
                           <ComboBox.ItemTemplate>
                             <DataTemplate x:DataType="vm:ForwardRowViewModel">
                               <StackPanel Spacing="2">
@@ -404,16 +396,22 @@
                         </ComboBox>
                       </StackPanel>
                       <StackPanel Grid.Column="1" Spacing="5">
-                        <TextBlock Classes="label" Text="连接模式" />
+                        <TextBlock Classes="label" Text="{DynamicResource ConnectionModeLabel}" />
                         <ComboBox ItemsSource="{Binding ConnectionModes}" HorizontalAlignment="Stretch"
                                   SelectedItem="{Binding SelectedConnectionMode, Mode=TwoWay}"
-                                  PlaceholderText="请选择连接模式" MinHeight="40" />
+                                  PlaceholderText="{DynamicResource ConnectionModePlaceholder}" MinHeight="40">
+                                  <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                      <TextBlock Text="{Binding Converter={StaticResource Localize}, ConverterParameter=Mode}" />
+                                    </DataTemplate>
+                                  </ComboBox.ItemTemplate>
+                                </ComboBox>
                       </StackPanel>
                     </Grid>
                     <TextBlock Text="{Binding SelectedConnectionEndpoint}" Classes="muted mono" FontSize="11" />
-                    <TextBlock Text="{Binding BypassAddressCount, StringFormat='Direct bypass entries: {0}'}" Classes="muted" FontSize="11" />
+                    <TextBlock Text="{Binding BypassEntriesText}" Classes="muted" FontSize="11" />
                     <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
-                               Text="您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。" />
+                               Text="{DynamicResource ExternalToolHint}" />
                     <TextBlock Text="{Binding LocalConnectionError}" Foreground="{DynamicResource DangerBrush}"
                                TextWrapping="Wrap" MinHeight="20" />
                   </StackPanel>
@@ -424,38 +422,37 @@
                 <Border Classes="surface" IsVisible="{Binding IsNativeOutboundVisible}">
                   <Expander IsExpanded="{Binding IsNativeOutboundExpanded, Mode=TwoWay}"
                             IsVisible="{Binding IsNativeOutboundVisible}"
-                            AutomationProperties.Name="Optional native outbound">
+                            AutomationProperties.Name="{DynamicResource NativeOutboundName}">
                     <Expander.Header>
                       <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="4,10">
                         <lucide:LucideIcon Kind="Globe" Size="18" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="1" Spacing="1">
-                          <TextBlock Text="Native outbound" Classes="title" />
-                          <TextBlock Classes="muted" Text="Optional SOCKS5 egress from your active plan" FontSize="11" TextWrapping="Wrap" />
+                          <TextBlock Text="{DynamicResource NativeOutbound}" Classes="title" />
                         </StackPanel>
-                        <Border Grid.Column="2" Classes="status-pill" VerticalAlignment="Center">
-                          <TextBlock Text="Optional" FontSize="11" />
-                        </Border>
                       </Grid>
                     </Expander.Header>
                     <Border Padding="4,0,4,8">
                       <StackPanel Spacing="12">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                           <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="CARRIER FORWARD" />
+                            <TextBlock Classes="label" Text="{DynamicResource CarrierForwardLabel}" />
                             <ComboBox ItemsSource="{Binding NativeOutboundForwards}" HorizontalAlignment="Stretch"
                                       SelectedItem="{Binding SelectedNativeForward, Mode=TwoWay}">
                               <ComboBox.ItemTemplate>
                                 <DataTemplate>
                                   <StackPanel Spacing="1">
                                     <TextBlock Text="{Binding Direction}" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding ForwardId, StringFormat='Forward #{0}'}" Classes="muted" FontSize="11" />
+                                    <StackPanel Orientation="Horizontal">
+                                      <TextBlock Text="{DynamicResource ForwardNumberPrefix}" Classes="muted" FontSize="11" />
+                                      <TextBlock Text="{Binding ForwardId}" Classes="muted" FontSize="11" />
+                                    </StackPanel>
                                   </StackPanel>
                                 </DataTemplate>
                               </ComboBox.ItemTemplate>
                             </ComboBox>
                           </StackPanel>
                           <StackPanel Grid.Column="1" Spacing="5" IsVisible="{Binding IsNativeRouteScopeSelectable}">
-                            <TextBlock Classes="label" Text="TRAFFIC SCOPE" />
+                            <TextBlock Classes="label" Text="{DynamicResource TrafficScopeLabel}" />
                             <ComboBox ItemsSource="{Binding NativeRouteScopeOptions}"
                                       SelectedItem="{Binding SelectedNativeRouteScopeOption, Mode=TwoWay}">
                               <ComboBox.ItemTemplate>
@@ -468,17 +465,23 @@
                         </Grid>
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                           <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="LOCAL MODE" />
+                            <TextBlock Classes="label" Text="{DynamicResource LocalModeLabel}" />
                             <ComboBox ItemsSource="{Binding NativeConnectionModes}" HorizontalAlignment="Stretch"
-                                      SelectedItem="{Binding SelectedNativeConnectionMode, Mode=TwoWay}" />
+                                      SelectedItem="{Binding SelectedNativeConnectionMode, Mode=TwoWay}">
+                                  <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                      <TextBlock Text="{Binding Converter={StaticResource Localize}, ConverterParameter=Mode}" />
+                                    </DataTemplate>
+                                  </ComboBox.ItemTemplate>
+                                </ComboBox>
                           </StackPanel>
-                          <ToggleSwitch Grid.Column="1" Content="绕过中国大陆 IP（直连）"
+                          <ToggleSwitch Grid.Column="1" Content="{DynamicResource BypassChinaMainland}"
                                         IsChecked="{Binding NativeBypassChinaMainland, Mode=TwoWay}"
                                         IsEnabled="{Binding IsNativeBypassChinaEnabled}"
                                         IsVisible="{Binding IsNativeRouteGlobal}"
                                         VerticalAlignment="Bottom" />
                         </Grid>
-                        <ToggleSwitch Content="Unrestricted full route (OpenGFW off)"
+                        <ToggleSwitch Content="{DynamicResource UnrestrictedRoute}"
                                       IsChecked="{Binding NativeUnrestrictedRoute, Mode=TwoWay}"
                                       IsEnabled="{Binding IsNativeUnrestrictedRouteEnabled}"
                                       IsVisible="{Binding IsNativeUnrestrictedRouteVisible}" />
@@ -486,7 +489,7 @@
                                 IsVisible="{Binding !IsLocalConnectionActive}" HorizontalAlignment="Left">
                           <StackPanel Orientation="Horizontal" Spacing="7">
                             <lucide:LucideIcon Kind="Globe" Size="16" />
-                            <TextBlock Text="启动原生出口" />
+                            <TextBlock Text="{DynamicResource StartNativeOutbound}" />
                           </StackPanel>
                         </Button>
                       </StackPanel>
@@ -500,10 +503,8 @@
                   <StackPanel Spacing="6">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                       <lucide:LucideIcon Kind="GitBranch" Size="18" Foreground="{DynamicResource PrimaryBrush}" />
-                      <TextBlock Text="线路配对" Classes="title" />
+                      <TextBlock Text="{DynamicResource PairingTitle}" Classes="title" />
                     </StackPanel>
-                    <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
-                               Text="该功能非必须, 您可于其他代理软件将服务器地址改为 127.0.0.1 后使用" />
                     <ItemsControl ItemsSource="{Binding ConnectionRoutes}" IsVisible="{Binding IsPairingVisible}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:ForwardRowViewModel">
@@ -514,7 +515,7 @@
                                 <TextBlock Text="{Binding PortText}" Classes="muted mono" FontSize="11" />
                               </StackPanel>
                               <ComboBox Grid.Column="1" ItemsSource="{Binding NodeOptions}" SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
-                                        PlaceholderText="未选择已保存节点" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                        PlaceholderText="{DynamicResource NoSavedNodeSelected}" HorizontalAlignment="Stretch" VerticalAlignment="Center">
                                 <ComboBox.ItemTemplate>
                                   <DataTemplate>
                                     <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
@@ -532,13 +533,13 @@
                 <!-- 线路配对: standard node editor. -->
                 <Border Grid.Row="4" Classes="surface" IsVisible="{Binding IsPairingVisible}">
                   <Expander IsExpanded="{Binding IsProxyEditorExpanded, Mode=TwoWay}"
-                            AutomationProperties.Name="Standard connection node editor">
+                            AutomationProperties.Name="{DynamicResource StandardConnectionName}">
                     <Expander.Header>
                       <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="4,10">
                         <lucide:LucideIcon Kind="Server" Size="18" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Text="标准连接" Classes="title" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{DynamicResource StandardConnection}" Classes="title" VerticalAlignment="Center" />
                         <Border Grid.Column="2" Classes="status-pill" VerticalAlignment="Center">
-                          <TextBlock Text="添加节点" FontSize="11" />
+                          <TextBlock Text="{DynamicResource AddNode}" FontSize="11" />
                         </Border>
                       </Grid>
                     </Expander.Header>
@@ -549,73 +550,79 @@
                           <Button Grid.Column="1" Classes="tonal" Command="{Binding ImportProxyUriCommand}">
                             <StackPanel Orientation="Horizontal" Spacing="7">
                               <lucide:LucideIcon Kind="Download" Size="16" />
-                              <TextBlock Text="导入并保存" />
+                              <TextBlock Text="{DynamicResource ImportAndSave}" />
                             </StackPanel>
                           </Button>
                         </Grid>
                         <TextBlock Text="{Binding ProxyImportError}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="*,220" ColumnSpacing="18">
-                          <TextBlock Text="Node details" Classes="title" VerticalAlignment="Bottom" />
+                          <TextBlock Text="{DynamicResource NodeDetails}" Classes="title" VerticalAlignment="Bottom" />
                           <StackPanel Grid.Column="1" Spacing="5">
-                            <TextBlock Classes="label" Text="PROTOCOL" />
+                            <TextBlock Classes="label" Text="{DynamicResource ProtocolLabel}" />
                             <ComboBox ItemsSource="{Binding NodeEditor.ProtocolOptions}" HorizontalAlignment="Stretch"
-                                      SelectedItem="{Binding NodeEditor.Protocol, Mode=TwoWay}" />
+                                      SelectedItem="{Binding NodeEditor.Protocol, Mode=TwoWay}">
+                              <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                  <TextBlock Text="{Binding Converter={StaticResource Localize}, ConverterParameter=ProtocolOption}" />
+                                </DataTemplate>
+                              </ComboBox.ItemTemplate>
+                            </ComboBox>
                           </StackPanel>
                         </Grid>
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                           <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="NAME" />
-                            <TextBox Text="{Binding NodeEditor.Name, Mode=TwoWay}" Watermark="Tokyo node" />
+                            <TextBlock Classes="label" Text="{DynamicResource NameLabel}" />
+                            <TextBox Text="{Binding NodeEditor.Name, Mode=TwoWay}" Watermark="{DynamicResource NameWatermark}" />
                           </StackPanel>
                           <StackPanel Grid.Column="1" Spacing="5">
-                            <TextBlock Classes="label" Text="SERVER" />
+                            <TextBlock Classes="label" Text="{DynamicResource ServerLabel}" />
                             <TextBox Text="{Binding NodeEditor.Server, Mode=TwoWay}" Watermark="node.example.com" />
                           </StackPanel>
                         </Grid>
                         <Grid ColumnDefinitions="180,*" ColumnSpacing="12">
                           <StackPanel Spacing="5">
-                            <TextBlock Classes="label" Text="PORT" />
+                            <TextBlock Classes="label" Text="{DynamicResource PortLabel}" />
                             <TextBox Text="{Binding NodeEditor.PortText, Mode=TwoWay}" Watermark="443" />
                           </StackPanel>
                           <StackPanel Grid.Column="1" Spacing="5" IsVisible="{Binding NodeEditor.IsShadowsocks}">
-                            <TextBlock Classes="label" Text="METHOD" />
+                            <TextBlock Classes="label" Text="{DynamicResource MethodLabel}" />
                             <ComboBox ItemsSource="{Binding NodeEditor.ShadowsocksMethodOptions}" HorizontalAlignment="Stretch"
                                       SelectedItem="{Binding NodeEditor.Method, Mode=TwoWay}" />
                           </StackPanel>
                         </Grid>
                         <StackPanel IsVisible="{Binding NodeEditor.IsShadowsocks}" Spacing="5">
-                          <TextBlock Classes="label" Text="PASSWORD" />
-                          <TextBox Text="{Binding NodeEditor.Password, Mode=TwoWay}" PasswordChar="*" Watermark="Shadowsocks password" />
+                          <TextBlock Classes="label" Text="{DynamicResource PasswordLabel}" />
+                          <TextBox Text="{Binding NodeEditor.Password, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource ShadowsocksPasswordWatermark}" />
                         </StackPanel>
                         <StackPanel IsVisible="{Binding NodeEditor.IsWireGuard}" Spacing="10">
                           <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                             <StackPanel Spacing="5">
-                              <TextBlock Classes="label" Text="PRIVATE KEY" />
-                              <TextBox Text="{Binding NodeEditor.PrivateKey, Mode=TwoWay}" PasswordChar="*" Watermark="Private key" />
+                              <TextBlock Classes="label" Text="{DynamicResource PrivateKeyLabel}" />
+                              <TextBox Text="{Binding NodeEditor.PrivateKey, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource PrivateKeyWatermark}" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="5">
-                              <TextBlock Classes="label" Text="PEER PUBLIC KEY" />
-                              <TextBox Text="{Binding NodeEditor.PeerPublicKey, Mode=TwoWay}" Watermark="Peer public key" />
+                              <TextBlock Classes="label" Text="{DynamicResource PeerPublicKeyLabel}" />
+                              <TextBox Text="{Binding NodeEditor.PeerPublicKey, Mode=TwoWay}" Watermark="{DynamicResource PeerPublicKeyWatermark}" />
                             </StackPanel>
                           </Grid>
                           <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                             <StackPanel Spacing="5">
-                              <TextBlock Classes="label" Text="LOCAL ADDRESS" />
+                              <TextBlock Classes="label" Text="{DynamicResource LocalAddressLabel}" />
                               <TextBox Text="{Binding NodeEditor.LocalAddress, Mode=TwoWay}" Watermark="10.8.0.2/32" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="5">
-                              <TextBlock Classes="label" Text="ALLOWED IPS" />
+                              <TextBlock Classes="label" Text="{DynamicResource AllowedIpsLabel}" />
                               <TextBox Text="{Binding NodeEditor.AllowedIps, Mode=TwoWay}" Watermark="0.0.0.0/0, ::/0" />
                             </StackPanel>
                           </Grid>
-                          <Expander Header="WireGuard tuning" IsExpanded="False">
+                          <Expander Header="{DynamicResource WireGuardTuning}" IsExpanded="False">
                             <Grid ColumnDefinitions="*,*" ColumnSpacing="12" Margin="0,10,0,0">
                               <StackPanel Spacing="5">
                                 <TextBlock Classes="label" Text="MTU" />
                                 <TextBox Text="{Binding NodeEditor.MtuText, Mode=TwoWay}" Watermark="1420" />
                               </StackPanel>
                               <StackPanel Grid.Column="1" Spacing="5">
-                                <TextBlock Classes="label" Text="KEEPALIVE (SECONDS)" />
+                                <TextBlock Classes="label" Text="{DynamicResource KeepaliveLabel}" />
                                 <TextBox Text="{Binding NodeEditor.KeepaliveText, Mode=TwoWay}" Watermark="25" />
                               </StackPanel>
                             </Grid>
@@ -625,14 +632,14 @@
                           <Button Classes="primary" Command="{Binding SaveConnectionProfileCommand}">
                             <StackPanel Orientation="Horizontal" Spacing="7">
                               <lucide:LucideIcon Kind="Save" Size="16" />
-                              <TextBlock Text="Save node" />
+                              <TextBlock Text="{DynamicResource SaveNode}" />
                             </StackPanel>
                           </Button>
                           <Button Classes="danger" Command="{Binding DeleteConnectionProfileCommand}"
                                   IsVisible="{Binding HasSelectedConnectionProfile}">
                             <StackPanel Orientation="Horizontal" Spacing="7">
                               <lucide:LucideIcon Kind="Trash2" Size="16" />
-                              <TextBlock Text="Delete" />
+                              <TextBlock Text="{DynamicResource Delete}" />
                             </StackPanel>
                           </Button>
                         </StackPanel>
@@ -646,10 +653,9 @@
         </Grid>
 
         <!-- ============ Activity ============ -->
-        <Grid Grid.Row="0" Grid.RowSpan="2" IsVisible="{Binding IsLogsVisible}" RowDefinitions="Auto,*" Margin="28,22,28,96">
+        <Grid Grid.Row="0" Grid.RowSpan="2" IsVisible="{Binding IsLogsVisible}" RowDefinitions="Auto,*" Margin="32,28,32,96">
           <StackPanel Grid.Row="0" Margin="0,0,0,16" Spacing="2">
-            <TextBlock Classes="heading" Text="Activity" />
-            <TextBlock Classes="muted" Text="Recent client lifecycle events" />
+            <TextBlock Classes="heading" Text="{DynamicResource LogsLabel}" />
           </StackPanel>
           <Border Grid.Row="1" Classes="card">
             <ScrollViewer>
@@ -671,13 +677,13 @@
         <Button Grid.Row="1" Classes="fab" Classes.running="{Binding IsAnyRunning}"
                 HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,28,24"
                 Command="{Binding ToggleRunningCommand}" IsVisible="{Binding IsShellVisible}"
-                ToolTip.Tip="{Binding RunToggleTip}" AutomationProperties.Name="Start or stop">
+                ToolTip.Tip="{Binding RunToggleTip}" AutomationProperties.Name="{DynamicResource RunToggleName}">
           <StackPanel Orientation="Horizontal" Spacing="12">
             <lucide:LucideIcon Kind="Pause" Size="20" IsVisible="{Binding IsAnyRunning}" />
             <lucide:LucideIcon Kind="Play" Size="20" IsVisible="{Binding !IsAnyRunning}" />
             <TextBlock Text="{Binding RunningTimeText}" Classes="mono" FontWeight="SemiBold" FontSize="16"
                        VerticalAlignment="Center" IsVisible="{Binding IsAnyRunning}" />
-            <TextBlock Text="Start" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center"
+            <TextBlock Text="{DynamicResource Start}" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center"
                        IsVisible="{Binding !IsAnyRunning}" />
           </StackPanel>
         </Button>

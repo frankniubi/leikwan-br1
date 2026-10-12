@@ -103,6 +103,27 @@ public sealed class MacCloudNodeLibrary : INodeLibrary
         Changed?.Invoke();
     }
 
+    public UserNode? GetEditableNode(string key)
+        => MacLocalNodeLibrary.TryParseKey(key, out var id) && _connections.Profiles.FirstOrDefault(profile => profile.Id == id) is { } profile
+            ? MacProfileNodeRepository.ToNode(profile)
+            : null;
+
+    public async Task SaveNodeAsync(UserNode node, CancellationToken ct = default)
+    {
+        await Run(async () =>
+        {
+            try
+            {
+                await _sync.SaveAsync(node, ct).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ArgumentException or FormatException)
+            {
+                throw new NodeLibraryException("hosted_node_invalid");
+            }
+        }).ConfigureAwait(false);
+        Changed?.Invoke();
+    }
+
     /// <summary>Whether the node behind <paramref name="key"/> is hosted (pairing it is shared with every device).</summary>
     public bool IsHosted(string key)
         => MacLocalNodeLibrary.TryParseKey(key, out var id)

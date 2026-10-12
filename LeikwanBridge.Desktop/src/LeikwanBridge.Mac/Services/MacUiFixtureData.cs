@@ -1,3 +1,5 @@
+using LeikwanBridge.Core.Nodes;
+
 namespace LeikwanBridge.Mac.Services;
 
 /// <summary>
@@ -7,13 +9,23 @@ namespace LeikwanBridge.Mac.Services;
 /// </summary>
 public sealed class MacUiFixtureNodeLibrary : INodeLibrary
 {
-    private readonly List<NodeListItem> _nodes =
+    private sealed record Entry(string Key, UserNode? Node, string Name, string Protocol, string Endpoint, NodeCloudState State, int[] Paired);
+
+    private readonly List<Entry> _nodes =
     [
-        new("1", "Tokyo SS", "Shadowsocks", "203.0.113.10:8388", NodeCloudState.Hosted, [101]),
-        new("2", "Osaka backup", "Shadowsocks", "203.0.113.24:443", NodeCloudState.LocalOnly, []),
-        new("3", "Home WireGuard", "WireGuard", "198.51.100.7:51820", NodeCloudState.Unsupported, [103]),
-        new("4", "Singapore VLESS", "VLESS", "edge.example.net:443", NodeCloudState.Hosted, []),
+        Create("1", "ss://YWVzLTI1Ni1nY206Zml4dHVyZQ@203.0.113.10:8388#Tokyo%20SS", NodeCloudState.Hosted, [101]),
+        Create("2", "ss://YWVzLTI1Ni1nY206Zml4dHVyZQ@203.0.113.24:443#Osaka%20backup", NodeCloudState.LocalOnly, []),
+        new("3", null, "Home WireGuard", "WireGuard", "198.51.100.7:51820", NodeCloudState.Unsupported, [103]),
+        Create("4", "vless://11111111-2222-3333-4444-555555555555@edge.example.net:443?encryption=none&security=tls&sni=edge.example.net&type=ws&path=%2Fray#Singapore%20VLESS", NodeCloudState.Hosted, []),
     ];
+
+    private static Entry Create(string key, string link, NodeCloudState state, int[] paired)
+    {
+        var node = UserNodeShareLink.Parse(link);
+        node.LocalId = int.Parse(key, System.Globalization.CultureInfo.InvariantCulture);
+        node.HostedId = state == NodeCloudState.Hosted ? 900 + node.LocalId : null;
+        return new Entry(key, node, node.Name, node.DisplayProtocol, node.DisplayEndpoint, state, paired);
+    }
 
     public event Action? Changed;
 
@@ -21,7 +33,8 @@ public sealed class MacUiFixtureNodeLibrary : INodeLibrary
 
     public bool IsCloudAvailable => true;
 
-    public IReadOnlyList<NodeListItem> Nodes => _nodes;
+    public IReadOnlyList<NodeListItem> Nodes
+        => _nodes.Select(entry => new NodeListItem(entry.Key, entry.Name, entry.Protocol, entry.Endpoint, entry.State, entry.Paired)).ToList();
 
     public Task ReloadAsync(CancellationToken ct = default) => Task.CompletedTask;
 
@@ -32,7 +45,7 @@ public sealed class MacUiFixtureNodeLibrary : INodeLibrary
     {
         var index = _nodes.FindIndex(node => node.Key == key);
         if (index >= 0)
-            _nodes[index] = _nodes[index] with { CloudState = NodeCloudState.Hosted };
+            _nodes[index] = _nodes[index] with { State = NodeCloudState.Hosted };
         Changed?.Invoke();
         return Task.CompletedTask;
     }
@@ -47,6 +60,17 @@ public sealed class MacUiFixtureNodeLibrary : INodeLibrary
     public Task DeleteAsync(string key, CancellationToken ct = default)
     {
         _nodes.RemoveAll(node => node.Key == key);
+        Changed?.Invoke();
+        return Task.CompletedTask;
+    }
+
+    public UserNode? GetEditableNode(string key) => _nodes.FirstOrDefault(node => node.Key == key)?.Node?.Clone();
+
+    public Task SaveNodeAsync(UserNode node, CancellationToken ct = default)
+    {
+        var index = _nodes.FindIndex(entry => entry.Node?.LocalId == node.LocalId);
+        if (index >= 0)
+            _nodes[index] = _nodes[index] with { Node = node.Clone(), Name = node.Name, Endpoint = node.DisplayEndpoint };
         Changed?.Invoke();
         return Task.CompletedTask;
     }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using LeikwanBridge.Core.Nodes;
 
 namespace LeikwanBridge.Mac.Services;
 
@@ -70,6 +71,26 @@ public sealed class MacLocalNodeLibrary : INodeLibrary
         if (!TryParseKey(key, out var id))
             throw new NodeLibraryException("node_not_found");
         await _connections.DeleteProfileAsync(id, ct).ConfigureAwait(false);
+        Changed?.Invoke();
+    }
+
+    public UserNode? GetEditableNode(string key)
+        => TryParseKey(key, out var id) && _connections.Profiles.FirstOrDefault(profile => profile.Id == id) is { } profile
+            ? MacProfileNodeRepository.ToNode(profile)
+            : null;
+
+    public async Task SaveNodeAsync(UserNode node, CancellationToken ct = default)
+    {
+        if (node.IsHosted)
+            throw new NodeLibraryException(CloudUnavailableCode);
+        try
+        {
+            await new MacProfileNodeRepository(_connections).SaveAsync(node, ct).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException or InvalidOperationException)
+        {
+            throw new NodeLibraryException("hosted_node_invalid");
+        }
         Changed?.Invoke();
     }
 

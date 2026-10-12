@@ -4,27 +4,27 @@
              xmlns:lucide="using:Lucide.Avalonia"
              x:Class="LeikwanBridge.Mac.Views.NodesView"
              x:DataType="vm:MainWindowViewModel">
-  <Grid DataContext="{Binding NodesPage}" x:DataType="vm:NodesViewModel" RowDefinitions="Auto,Auto,*" Margin="28,0,28,0">
+  <Grid DataContext="{Binding NodesPage}" x:DataType="vm:NodesViewModel" RowDefinitions="Auto,Auto,Auto,*" Margin="32,0,32,0">
 
     <!-- Toolbar: import a share link, cloud actions. -->
     <Border Grid.Row="0" Classes="card" Padding="14,12">
       <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
-        <TextBox Text="{Binding ImportLink, Mode=TwoWay}" Watermark="Paste share links (ss://, socks5://, vless://, wg://)"
-                 AutomationProperties.Name="Share link" />
+        <TextBox Text="{Binding ImportLink, Mode=TwoWay}" Watermark="{DynamicResource ShareLinkWatermark}"
+                 AutomationProperties.Name="{DynamicResource ShareLinkName}" />
         <Button Grid.Column="1" Classes="primary" Command="{Binding ImportShareLinkCommand}">
           <StackPanel Orientation="Horizontal" Spacing="7">
             <lucide:LucideIcon Kind="ClipboardPaste" Size="16" />
-            <TextBlock Text="Import" />
+            <TextBlock Text="{DynamicResource Import}" />
           </StackPanel>
         </Button>
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
-          <Button Classes="tonal" Command="{Binding SyncAllCommand}" ToolTip.Tip="Upload every local Shadowsocks / SOCKS5 / VLESS node">
+          <Button Classes="ghost" Command="{Binding SyncAllCommand}" ToolTip.Tip="{DynamicResource SyncAllTip}">
             <StackPanel Orientation="Horizontal" Spacing="7">
               <lucide:LucideIcon Kind="CloudUpload" Size="16" />
-              <TextBlock Text="Sync all" />
+              <TextBlock Text="{DynamicResource SyncAll}" />
             </StackPanel>
           </Button>
-          <Button Classes="icon tonal" Command="{Binding RefreshFromCloudCommand}" ToolTip.Tip="Refresh from cloud">
+          <Button Classes="icon ghost" Command="{Binding RefreshFromCloudCommand}" ToolTip.Tip="{DynamicResource RefreshFromCloud}">
             <lucide:LucideIcon Kind="CloudDownload" Size="16" />
           </Button>
         </StackPanel>
@@ -32,8 +32,8 @@
     </Border>
 
     <StackPanel Grid.Row="1" Spacing="4" Margin="4,12,4,10">
-      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-        <lucide:LucideIcon Kind="Cloud" Size="15" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsVisible="{Binding !IsCloudAvailable}">
+        <lucide:LucideIcon Kind="CloudOff" Size="15" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
         <TextBlock Grid.Column="1" Text="{Binding CloudHint}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
       </Grid>
       <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
@@ -42,13 +42,152 @@
                  IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
     </StackPanel>
 
-    <ScrollViewer Grid.Row="2">
+    <!-- In-place editor (Shadowsocks / SOCKS5 / VLESS). Secrets are re-entered or left blank to keep. -->
+    <Border Grid.Row="2" Classes="card" Margin="0,0,0,12" IsVisible="{Binding Editor.IsOpen}">
+      <StackPanel Spacing="10" Margin="0,0,0,48" DataContext="{Binding Editor}" x:DataType="vm:NodeEditorViewModel">
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+          <lucide:LucideIcon Kind="Pencil" Size="18" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
+          <StackPanel Grid.Column="1" Spacing="0">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="{DynamicResource EditNode}" Classes="title" />
+              <Border Classes="chip"><TextBlock Text="{Binding ProtocolLabel}" /></Border>
+            </StackPanel>
+            <TextBlock Text="{DynamicResource EditorHostedHint}" Classes="muted" FontSize="11"
+                       TextWrapping="Wrap" IsVisible="{Binding IsHosted}" />
+          </StackPanel>
+        </Grid>
+        <Grid ColumnDefinitions="*,*,120" ColumnSpacing="12">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource NameLabel}" />
+            <TextBox Text="{Binding Name, Mode=TwoWay}" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource ServerLabel}" />
+            <TextBox Text="{Binding Server, Mode=TwoWay}" />
+          </StackPanel>
+          <StackPanel Grid.Column="2" Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource PortLabel}" />
+            <TextBox Text="{Binding PortText, Mode=TwoWay}" />
+          </StackPanel>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="12" IsVisible="{Binding IsShadowsocks}">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource MethodLabel}" />
+            <ComboBox ItemsSource="{Binding MethodOptions}" SelectedItem="{Binding Method, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource PasswordLabel}" />
+            <TextBox Text="{Binding Password, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource SecretKeepWatermark}" />
+          </StackPanel>
+        </Grid>
+        <Grid ColumnDefinitions="200,*" ColumnSpacing="12" IsVisible="{Binding IsShadowsocks}">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource PluginLabel}" />
+            <ComboBox ItemsSource="{Binding PluginOptions}" SelectedItem="{Binding Plugin, Mode=TwoWay}" HorizontalAlignment="Stretch">
+              <ComboBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Converter={StaticResource Localize}, ConverterParameter=PluginOption}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource PluginOptionsLabel}" />
+            <TextBox Text="{Binding PluginOpts, Mode=TwoWay}" />
+          </StackPanel>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="12" IsVisible="{Binding IsSocks5}">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource UsernameLabel}" />
+            <TextBox Text="{Binding Username, Mode=TwoWay}" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4">
+            <TextBlock Classes="label" Text="{DynamicResource PasswordLabel}" />
+            <TextBox Text="{Binding Password, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource SecretKeepWatermark}" />
+          </StackPanel>
+        </Grid>
+
+        <StackPanel Spacing="10" IsVisible="{Binding IsVless}">
+          <Grid ColumnDefinitions="*,160,160" ColumnSpacing="12">
+            <StackPanel Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource UuidLabel}" />
+              <TextBox Text="{Binding Uuid, Mode=TwoWay}" PasswordChar="*" Watermark="{DynamicResource SecretKeepWatermark}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource SecurityLabel}" />
+              <ComboBox ItemsSource="{Binding SecurityOptions}" SelectedItem="{Binding Security, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource TransportLabel}" />
+              <ComboBox ItemsSource="{Binding TransportOptions}" SelectedItem="{Binding Transport, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+            </StackPanel>
+          </Grid>
+          <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+            <StackPanel Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource SniLabel}" />
+              <TextBox Text="{Binding Sni, Mode=TwoWay}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource FingerprintLabel}" />
+              <TextBox Text="{Binding Fingerprint, Mode=TwoWay}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource FlowLabel}" />
+              <TextBox Text="{Binding Flow, Mode=TwoWay}" />
+            </StackPanel>
+          </Grid>
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+            <StackPanel Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource RealityPublicKeyLabel}" />
+              <TextBox Text="{Binding PublicKey, Mode=TwoWay}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource ShortIdLabel}" />
+              <TextBox Text="{Binding ShortId, Mode=TwoWay}" />
+            </StackPanel>
+          </Grid>
+          <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+            <StackPanel Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource PathLabel}" />
+              <TextBox Text="{Binding Path, Mode=TwoWay}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource HostLabel}" />
+              <TextBox Text="{Binding Host, Mode=TwoWay}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="4">
+              <TextBlock Classes="label" Text="{DynamicResource ServiceNameLabel}" />
+              <TextBox Text="{Binding ServiceName, Mode=TwoWay}" />
+            </StackPanel>
+          </Grid>
+        </StackPanel>
+
+        <TextBlock Text="{Binding Error}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
+                   IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      </StackPanel>
+    </Border>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="18,0,0,26" VerticalAlignment="Bottom"
+                HorizontalAlignment="Left" IsVisible="{Binding Editor.IsOpen}">
+      <Button Classes="primary" Command="{Binding SaveEditCommand}">
+        <StackPanel Orientation="Horizontal" Spacing="7">
+          <lucide:LucideIcon Kind="Save" Size="16" />
+          <TextBlock Text="{DynamicResource Save}" />
+        </StackPanel>
+      </Button>
+      <Button Classes="secondary" Command="{Binding CancelEditCommand}">
+        <TextBlock Text="{DynamicResource Cancel}" />
+      </Button>
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="3">
       <StackPanel Margin="0,0,0,96" Spacing="12">
         <Border Classes="card" Padding="28" IsVisible="{Binding !HasNodes}">
           <StackPanel HorizontalAlignment="Center" Spacing="8">
             <lucide:LucideIcon Kind="Server" Size="28" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            <TextBlock Text="No nodes yet" Classes="title" HorizontalAlignment="Center" />
-            <TextBlock Text="Paste a share link above, or add one under 线路配对." Classes="muted" HorizontalAlignment="Center" />
+            <TextBlock Text="{DynamicResource NoNodesYet}" Classes="title" HorizontalAlignment="Center" />
+            <TextBlock Text="{DynamicResource NoNodesHint}" Classes="muted" HorizontalAlignment="Center" />
           </StackPanel>
         </Border>
 
@@ -82,9 +221,9 @@
                   </Grid>
                   <TextBlock Text="{Binding Endpoint}" Classes="mono muted" FontSize="12" TextTrimming="CharacterEllipsis" />
                   <StackPanel Spacing="4">
-                    <TextBlock Text="PAIRED SERVICE" Classes="label" FontSize="11" />
+                    <TextBlock Text="{DynamicResource PairedServiceLabel}" Classes="label" FontSize="11" />
                     <ComboBox ItemsSource="{Binding ServiceOptions}" SelectedItem="{Binding SelectedService, Mode=TwoWay}"
-                              HorizontalAlignment="Stretch" AutomationProperties.Name="Pair with service">
+                              HorizontalAlignment="Stretch" AutomationProperties.Name="{DynamicResource PairWithService}">
                       <ComboBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:NodeServiceOption">
                           <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
@@ -92,20 +231,25 @@
                       </ComboBox.ItemTemplate>
                     </ComboBox>
                   </StackPanel>
-                  <TextBlock Text="Delete again to remove it from every device of this client." TextWrapping="Wrap"
+                  <TextBlock Text="{DynamicResource DeleteAgainHint}" TextWrapping="Wrap"
                              FontSize="11" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding IsDeleteArmed}" />
                   <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
-                    <Button Classes="tonal" MinHeight="32" Padding="12,4"
+                    <Button Classes="ghost" MinHeight="32" Padding="10,4"
                             Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).UploadCommand}"
-                            CommandParameter="{Binding}" IsVisible="{Binding IsLocalOnly}" ToolTip.Tip="Upload to cloud">
+                            CommandParameter="{Binding}" IsVisible="{Binding IsLocalOnly}" ToolTip.Tip="{DynamicResource UploadToCloud}">
                       <StackPanel Orientation="Horizontal" Spacing="6">
                         <lucide:LucideIcon Kind="CloudUpload" Size="14" />
-                        <TextBlock Text="Upload" FontSize="12" />
+                        <TextBlock Text="{DynamicResource Upload}" FontSize="12" />
                       </StackPanel>
                     </Button>
                     <Button Classes="icon ghost" Width="32" Height="32" MinHeight="32"
+                            Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).EditCommand}"
+                            CommandParameter="{Binding}" ToolTip.Tip="{DynamicResource EditNode}">
+                      <lucide:LucideIcon Kind="Pencil" Size="15" />
+                    </Button>
+                    <Button Classes="icon ghost" Width="32" Height="32" MinHeight="32"
                             Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).DeleteCommand}"
-                            CommandParameter="{Binding}" ToolTip.Tip="Delete node">
+                            CommandParameter="{Binding}" ToolTip.Tip="{DynamicResource DeleteNode}">
                       <lucide:LucideIcon Kind="Trash2" Size="15" Foreground="{DynamicResource DangerBrush}" />
                     </Button>
                   </StackPanel>

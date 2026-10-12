@@ -121,7 +121,8 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(2, vm.ConnectionRoutes.Count);
         Assert.Empty(vm.PairedConnectionRoutes);
         Assert.Equal(0, vm.ConnectionRoutes[0].NodeOptions[0].Id);
-        Assert.Equal("未选择已保存节点", vm.ConnectionRoutes[0].NodeOptions[0].Name);
+        // Localized placeholder (未选择已保存节点 in Chinese); English fallback without a running app.
+        Assert.Equal("No saved node selected", vm.ConnectionRoutes[0].NodeOptions[0].Name);
         Assert.Null(vm.SelectedConnectionForward?.SelectedNode);
     }
 
