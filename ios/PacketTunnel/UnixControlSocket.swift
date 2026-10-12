@@ -141,7 +141,8 @@ enum UltraControlDelivery {
         )
     }
 
-    private static func send(
+    /// Shared by ordinary and native deliveries (NativeOutboundLeaseManager).
+    static func send(
         socketPath: String,
         frame: Data,
         forwardId: Int64,

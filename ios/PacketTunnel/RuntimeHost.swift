@@ -62,6 +62,23 @@ final class RuntimeHost {
         }
     }
 
+    /// Stops the runtime with this name (if running); used to restart one runtime in place.
+    func stop(named name: String) {
+        lock.lock()
+        let matching = running.filter { $0.launch.name == name }
+        running.removeAll { $0.launch.name == name }
+        lock.unlock()
+        for item in matching {
+            switch item.handle {
+            case let .native(handle):
+                _ = lk_runtime_stop(handle)
+            case let .ultra(runtime):
+                runtime.stop()
+            }
+            TunnelLog.shared.write("runtime \(item.launch.name) stopped")
+        }
+    }
+
     func statuses() -> [RuntimeStatus] {
         lock.lock()
         let items = running

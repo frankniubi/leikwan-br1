@@ -13,6 +13,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var launch: TunnelLaunchOptions?
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
+    private var nativeLeases: NativeOutboundLeaseManager?
     /// Ultra usage counters -> heartbeat rows; shared by the control loop and the lease manager.
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
@@ -41,6 +42,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         TunnelLog.shared.write("tunnel starting: \(launch.runtimes.count) runtime(s), libbox \(LibboxVersion())")
 
         UltraLeaseManager.settleRuntimeFiles(launch.ultra, ledger: usageLedger)
+        NativeOutboundLeaseManager.settleRuntimeFiles(launch.nativeOutbound, ledger: usageLedger)
         try runtimes.start(launch.runtimes)
 
         var serverError: NSError?
@@ -71,6 +73,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         // Started once the start can no longer fail, so a failed start leaks no lease loop.
         startUltraLeases(launch)
+        startNativeLeases(launch)
         statusMonitor.start()
         if let panel = launch.panel {
             let loop = TunnelControlLoop(session: panel, usageLedger: usageLedger) { [weak self] alert in
@@ -87,6 +90,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         controlLoop?.stop()
         controlLoop = nil
         stopUltraLeases()
+        stopNativeLeases()
         statusMonitor.stop()
         stopService()
         if let server = commandServer {
@@ -96,6 +100,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         runtimes.stopAll()
         UltraLeaseManager.settleRuntimeFiles(launch?.ultra ?? [], ledger: usageLedger)
+        NativeOutboundLeaseManager.settleRuntimeFiles(launch?.nativeOutbound, ledger: usageLedger)
     }
 
     override func handleAppMessage(_ messageData: Data) async -> Data? {
@@ -115,7 +120,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.connectionsOut = libbox.connectionsOut
             snapshot.memory = libbox.memory
             snapshot.runtimes = runtimes.statuses()
-            snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert
+            snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
             return try? encoder.encode(snapshot)
         case .logs:
             return try? encoder.encode(TunnelLogsSnapshot(lines: TunnelLog.shared.snapshot()))
@@ -162,6 +167,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     func stopServiceFromCommand() {
         stopUltraLeases()
+        stopNativeLeases()
         stopService()
         runtimes.stopAll()
         cancelTunnelWithError(nil)
@@ -185,13 +191,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if runtimesChanged || previous?.ultra != next.ultra || previous?.panel != next.panel {
             stopUltraLeases()
         }
+        if runtimesChanged || previous?.nativeOutbound != next.nativeOutbound || previous?.panel != next.panel {
+            stopNativeLeases()
+        }
         if runtimesChanged {
             runtimes.stopAll()
             UltraLeaseManager.settleRuntimeFiles((previous?.ultra ?? []) + next.ultra, ledger: usageLedger)
+            NativeOutboundLeaseManager.settleRuntimeFiles(previous?.nativeOutbound, ledger: usageLedger)
+            NativeOutboundLeaseManager.settleRuntimeFiles(next.nativeOutbound, ledger: usageLedger)
             try runtimes.start(next.runtimes)
         }
         try startService()
         startUltraLeases(next)
+        startNativeLeases(next)
         if previous?.panel != next.panel {
             controlLoop?.stop()
             controlLoop = nil
@@ -218,6 +230,46 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ultraLeases = nil
     }
 
+    /// Starts native lease delivery for the plan's native outbound runtime (no-op when running).
+    private func startNativeLeases(_ plan: TunnelLaunchOptions) {
+        guard nativeLeases == nil, let native = plan.nativeOutbound, let panel = plan.panel,
+              let baseRuntime = plan.runtimes.first(where: { $0.name == native.runtimeName })
+        else { return }
+        let manager = NativeOutboundLeaseManager(
+            session: panel,
+            launch: native,
+            restartRuntime: { [weak self] configJSON in
+                guard let self = self else { return }
+                var restarted = baseRuntime
+                restarted.configJSON = configJSON
+                self.runtimes.stop(named: native.runtimeName)
+                NativeOutboundLeaseManager.settleRuntimeFiles(native, ledger: self.usageLedger)
+                try self.runtimes.start([restarted])
+            },
+            onFatal: { [weak self] message in
+                self?.handleNativeFatal(message)
+            }
+        )
+        nativeLeases = manager
+        manager.start()
+    }
+
+    private func stopNativeLeases() {
+        nativeLeases?.stop()
+        nativeLeases = nil
+    }
+
+    /// Native outbound lost its authorization or its lease expired unrenewed: stop forwarding,
+    /// like Android stopping the VPN. The launch snapshot is kept (the session is not revoked).
+    private func handleNativeFatal(_ message: String) {
+        TunnelLog.shared.write("native outbound stopping the tunnel: \(message)", level: 1)
+        stopUltraLeases()
+        stopNativeLeases()
+        stopService()
+        runtimes.stopAll()
+        cancelTunnelWithError(RuntimeHostError(message))
+    }
+
     private func resolveLaunch(_ options: [String: NSObject]?) throws -> TunnelLaunchOptions {
         if let data = options?[TunnelLaunchOptions.optionKey] as? Data {
             let launch = try TunnelLaunchOptions.decode(data)
@@ -238,6 +290,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         TunnelLog.shared.write("panel revoked this device: \(alert)", level: 1)
         try? FileManager.default.removeItem(at: AppGroup.launchSnapshotURL)
         stopUltraLeases()
+        stopNativeLeases()
         stopService()
         runtimes.stopAll()
         cancelTunnelWithError(RuntimeHostError(alert))

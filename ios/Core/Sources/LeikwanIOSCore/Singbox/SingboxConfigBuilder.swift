@@ -2,7 +2,8 @@ import Foundation
 
 /// Port of `singbox/SingboxConfigBuilder.kt` for sing-box 1.13.x on iOS.
 ///
-/// iOS differences: shadowsocks + socks nodes only; SERVICES / DIRECT modes only (no native outbound,
+/// iOS differences: shadowsocks + socks nodes only; SERVICES / DIRECT modes only (native outbound is
+/// `buildNative` in SingboxNativeConfig.swift;
 /// no client route-direction rules); TUN stack/MTU configurable (default mixed / 9000); `log.level`
 /// configurable; `experimental.cache_file`; every panel host protected; custom rules and app presets;
 /// rule-set `download_detour` = proxy when a proxy exists, else direct; `route.default_domain_resolver`

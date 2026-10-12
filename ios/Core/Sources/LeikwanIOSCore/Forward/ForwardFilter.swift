@@ -88,6 +88,8 @@ public struct IOSForwardCatalog {
     public let supported: [IOSSupportedForward]
     public let hidden: [IOSHiddenForward]
     public let selectedForwardId: Int64?
+    /// The pull's `native_outbound` entitlement (nil when the plan has none or it is unusable).
+    public var nativeOutbound: NativeOutboundAvailability? = nil
 
     /// Count for "N forwards hidden (unsupported on iOS)".
     public var unsupportedHiddenCount: Int {

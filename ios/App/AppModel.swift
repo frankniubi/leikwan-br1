@@ -246,6 +246,10 @@ final class AppModel: ObservableObject {
     }
 
     func buildLaunch() throws -> TunnelLaunchOptions {
+        // Native outbound needs no node and has its own plan (see "MARK: Native outbound").
+        if nativeOutboundPreferences.enabled {
+            return try buildNativeOutboundLaunch()
+        }
         guard let node = selectedNode else {
             throw AppError("请先添加并选择一个节点")
         }
@@ -369,6 +373,101 @@ final class AppModel: ObservableObject {
             deviceName: Self.deviceName,
             appVersion: appVersion
         )
+    }
+
+    // MARK: Native outbound
+    //
+    // Native outbound ("原生出口") uses a plan-approved Ultra carrier forward as a SOCKS5 exit for
+    // all traffic, with no user node (Android ConnectionsViewModel / TunnelOrchestrator native path).
+    // The UI binds to `nativeOutboundPreferences` and to the read-only members and setters in
+    // AppModel+NativeOutbound.swift. While `nativeOutboundPreferences.enabled` is true,
+    // buildLaunch() returns the native plan below instead of the node/forward plan.
+
+    /// The user's native outbound choices, persisted across launches. Write it through the
+    /// `setNativeOutbound…` methods so the values stay consistent with the entitlement.
+    @Published var nativeOutboundPreferences: NativeOutboundPreferences = NativeOutboundPreferences.load() {
+        didSet { nativeOutboundPreferences.save() }
+    }
+
+    /// One native-mode ultra runtime (SOCKS5 facade on 127.0.0.1) + sing-box `proxy-native`.
+    /// The tunnel requests, delivers and renews the native leases (NativeOutboundLeaseManager).
+    private func buildNativeOutboundLaunch() throws -> TunnelLaunchOptions {
+        guard let panel = panelSession() else {
+            throw AppError("原生出口需要先登录")
+        }
+        guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
+            throw AppError("当前转发不可用原生出口")
+        }
+        guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {
+            throw AppError("原生出口转发不可用，请刷新后重试")
+        }
+        let settings = SingboxSettings(
+            dnsServer: routing.dnsServer,
+            bypassChina: routing.bypassChina,
+            customBypassRules: routing.customBypass,
+            enableIPv6: routing.enableIPv6,
+            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path
+        )
+        let builder = SingboxConfigBuilder(settings: settings)
+        let snapshot = builder.routingEngine.compile(
+            globalMode: routing.mode,
+            customRules: routing.customRules,
+            appPresetRules: routing.appPresets.sorted { $0.key < $1.key }.map { key, outcome in
+                RoutingRule(id: "app-\(key)", kind: .appPreset, matchValue: key, outcome: outcome)
+            },
+            countryRules: routing.countries.sorted { $0.key < $1.key }.map { code, outcome in
+                RoutingRule(id: "country-\(code)", kind: .country, matchValue: code, outcome: outcome)
+            }
+        )
+        let paths = UltraRuntimePaths.compact(directory: AppGroup.runtimeDirectory.path, forwardId: forward.forwardId)
+        let socksPort = try nativeOutboundSocksPort(forwardID: forward.forwardId)
+        let plan: NativeOutboundPlan
+        do {
+            plan = try NativeOutboundPlanner.plan(
+                availability: availability,
+                forward: forward.contract,
+                selection: selection,
+                paths: paths,
+                socksPort: socksPort,
+                builder: builder,
+                routing: snapshot
+            )
+        } catch let error as UltraLeaseError {
+            throw AppError(NativeOutboundErrors.userMessage(error.message))
+        }
+        let runtimeName = "fwd-\(forward.forwardId)-native"
+        let runtime = RuntimeLaunch(
+            name: runtimeName,
+            kind: .ultra,
+            arguments: [],
+            configJSON: plan.runtime.configJSON,
+            files: [],
+            forwardID: forward.forwardId
+        )
+        let native = NativeOutboundLaunch(
+            forwardID: forward.forwardId,
+            runtimeName: runtimeName,
+            target: forward.contract.target,
+            backendMode: forward.contract.backendMode,
+            serviceStatus: forward.contract.serviceStatus,
+            direction: forward.contract.direction,
+            forwardListenPort: forward.contract.listenPort,
+            ultraAccessJSON: try CanonicalJSON.string(forward.contract.ultraAccess ?? [:]),
+            socksPort: socksPort,
+            carrierDirection: plan.carrier.direction,
+            carrierScopeDigest: plan.carrier.scopeDigest,
+            carrierTransport: plan.carrier.transport,
+            carrierRouteScopes: plan.carrier.routeScopes.map { $0.rawValue },
+            carrierDefaultRouteScope: plan.carrier.defaultRouteScope.rawValue,
+            carrierUnrestrictedAllowed: plan.carrier.unrestrictedAllowed,
+            routeScope: plan.selection.routeScope.rawValue,
+            routePolicy: plan.selection.routePolicy.rawValue,
+            policyGeneration: plan.policy.policyGeneration,
+            controlSocketPath: paths.controlSocketPath,
+            statusPath: paths.statusPath,
+            maxCandidates: NativeOutboundConstants.maxLeaseCandidates
+        )
+        return TunnelLaunchOptions(configContent: plan.singbox.configJSON, runtimes: [runtime], panel: panel, nativeOutbound: native)
     }
 
     // MARK: Helpers

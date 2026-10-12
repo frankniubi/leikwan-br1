@@ -4,6 +4,9 @@ import SwiftUI
 /// Presentation helpers derived from AppModel state (no stored state here).
 extension AppModel {
     var routeTitle: String {
+        if isNativeOutboundActive, let carrier = selectedNativeOutboundCarrier {
+            return nativeOutboundTitle(for: carrier)
+        }
         if let forward = selectedForward {
             return forward.serviceName.isEmpty ? "转发 #\(forward.forwardId)" : forward.serviceName
         }
@@ -14,6 +17,9 @@ extension AppModel {
     }
 
     var routeDetail: String? {
+        if isNativeOutboundActive, let selection = nativeOutboundSelection {
+            return "原生出口 · " + selection.routeScope.displayName
+        }
         let node = selectedNode?.displayName
         if let forward = selectedForward {
             return [forward.kindLabel, node].compactMap { $0 }.joined(separator: " · ")

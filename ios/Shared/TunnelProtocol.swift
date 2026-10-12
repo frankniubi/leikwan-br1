@@ -17,12 +17,16 @@ struct TunnelLaunchOptions: Codable, Equatable {
     var panel: TunnelPanelSession?
     /// Ultra forwards whose runtimes need leases; the tunnel's UltraLeaseManager owns them.
     var ultra: [UltraForwardLaunch] = []
+    /// Native outbound plan (the single ultra runtime in `runtimes` runs in native SOCKS5 mode);
+    /// the tunnel's NativeOutboundLeaseManager keeps it supplied with native leases.
+    var nativeOutbound: NativeOutboundLaunch? = nil
 
     enum CodingKeys: String, CodingKey {
         case configContent
         case runtimes
         case panel
         case ultra
+        case nativeOutbound
     }
 
     func encoded() throws -> Data {
@@ -46,7 +50,44 @@ extension TunnelLaunchOptions {
         runtimes = try container.decode([RuntimeLaunch].self, forKey: .runtimes)
         panel = try container.decodeIfPresent(TunnelPanelSession.self, forKey: .panel)
         ultra = try container.decodeIfPresent([UltraForwardLaunch].self, forKey: .ultra) ?? []
+        nativeOutbound = try container.decodeIfPresent(NativeOutboundLaunch.self, forKey: .nativeOutbound)
     }
+}
+
+/// What the tunnel needs to keep the native outbound runtime supplied with leases
+/// (Android `ActiveNativeRuntime` plus the plan-time inputs of `startNativeForForward`).
+/// Plain strings so the shared file stays free of LeikwanIOSCore types.
+struct NativeOutboundLaunch: Codable, Equatable {
+    var forwardID: Int64
+    /// RuntimeLaunch.name of the native-mode ultra runtime.
+    var runtimeName: String
+    /// Forward fields `UltraPolicy.from` validates the plan-time `ultra_access` against.
+    var target: String
+    var backendMode: String
+    var serviceStatus: String
+    /// The forward's own direction label (`forward_combination_direction`).
+    var direction: String
+    var forwardListenPort: Int
+    /// Canonical JSON of the forward's `ultra_access` at plan time (first lease while valid).
+    var ultraAccessJSON: String
+    /// Port of the runtime's SOCKS5 facade on 127.0.0.1 (`listen_port`; sing-box `proxy-native`).
+    var socksPort: Int
+    /// The plan-time carrier entry of `native_outbound.forwards[]`.
+    var carrierDirection: String
+    var carrierScopeDigest: String
+    var carrierTransport: String
+    var carrierRouteScopes: [String]
+    var carrierDefaultRouteScope: String
+    var carrierUnrestrictedAllowed: Bool
+    /// The user's effective choice: "cn_only" / "intl_only" / "global", "restricted" / "unrestricted".
+    var routeScope: String
+    var routePolicy: String
+    /// Baked into the runtime config; a newer generation restarts the runtime (Android rotation).
+    var policyGeneration: String
+    var controlSocketPath: String
+    var statusPath: String
+    /// Native lease candidates to request (Android: 4, the runtime probes the batch).
+    var maxCandidates: Int
 }
 
 /// What the tunnel needs to keep one Ultra runtime supplied with leases.

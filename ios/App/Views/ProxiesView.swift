@@ -13,6 +13,9 @@ struct ProxiesView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Metrics.gutter) {
+                    if model.isNativeOutboundAvailable {
+                        NativeOutboundSection()
+                    }
                     SectionTitle("转发", trailing: hiddenBadge)
                     LazyVGrid(columns: columns, spacing: Metrics.gutter) {
                         ForwardCard(
