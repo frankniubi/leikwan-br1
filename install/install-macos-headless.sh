@@ -25,14 +25,15 @@
 # Soft/HardResourceLimits raise the open-file limit (NumberOfFiles) from
 # launchd's default 256, which a busy forward set exhausts with sockets.
 #
-# Self-update: the daemon checks the panel manifest on its own (first check
-# 1-10 min after start, then every ~6 h, backoff on failure) and applies the
-# verified update zip through a detached helper that boots the daemon out,
-# swaps the bundle (root-only backups in $STATE_DIR/backups, newest 3 kept),
-# restarts it and rolls back if it does not come up connected. Set
-# "disable_auto_updates": true in the daemon config to turn it off.
+# Updates are never forced: the daemon only updates after "request client
+# update" is clicked in the panel console (checked 1-10 min after start, then
+# every ~6 h, backoff on failure). It applies the verified update zip through a
+# detached helper that boots the daemon out, swaps the bundle (root-only
+# backups in $STATE_DIR/backups, newest 3 kept), restarts it and rolls back if
+# it does not come up connected. "disable_auto_updates": true in the daemon
+# config refuses even requested updates.
 set -eu
-INSTALLER_VERSION="1.0.57"
+INSTALLER_VERSION="1.0.58"
 
 LABEL="com.leikwan.bridge.headless"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
