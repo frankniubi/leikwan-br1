@@ -41,7 +41,6 @@ try {
                 'windows' => $this->windowsClientAppUrl(),
                 'android' => $this->androidClientApkUrl(),
                 'mac_arm64' => $this->macosClientArm64AppUrl(),
-                'mac_x64' => $this->macosClientX64AppUrl(),
             ];
         }
 
@@ -55,8 +54,11 @@ try {
         'windows' => 'windows_client_app',
         'android' => 'android_client_apk',
         'mac_arm64' => 'macos_client_app_arm64',
-        'mac_x64' => 'macos_client_app_x64',
     ];
+    // Intel macOS is retired: no download helper may link the x64 DMG.
+    if (method_exists($controller, 'macosClientX64AppUrl')) {
+        failDownloadCacheBust('the retired Intel macOS download link is still offered');
+    }
     foreach ($controller->links() as $name => $url) {
         $entry = $manifest[$keys[$name]] ?? null;
         if (!is_array($entry)) {

@@ -1,0 +1,148 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:LeikwanBridge.Mac.ViewModels"
+             xmlns:lucide="using:Lucide.Avalonia"
+             x:Class="LeikwanBridge.Mac.Views.SettingsView"
+             x:DataType="vm:MainWindowViewModel">
+  <ScrollViewer>
+    <StackPanel Margin="32,28,32,96" MaxWidth="780" HorizontalAlignment="Left" Spacing="16">
+      <TextBlock Classes="heading" Text="{DynamicResource SettingsLabel}" />
+
+      <!-- Updates first: the version and the check are always one glance away. -->
+      <Border Classes="card">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+          <Border Width="44" Height="44" CornerRadius="14" Background="{DynamicResource PrimaryContainerBrush}">
+            <lucide:LucideIcon Kind="Sparkles" Size="20" Foreground="{DynamicResource OnPrimaryContainerBrush}" />
+          </Border>
+          <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+            <TextBlock Text="{Binding VersionLabel}" Classes="title" />
+            <TextBlock Text="{Binding UpdateStatusText}" Classes="muted" FontSize="12" />
+          </StackPanel>
+          <Button Grid.Column="2" Classes="secondary" Command="{Binding CheckForUpdatesCommand}" VerticalAlignment="Center">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <lucide:LucideIcon Kind="RefreshCw" Size="16" />
+              <TextBlock Text="{DynamicResource CheckNow}" />
+            </StackPanel>
+          </Button>
+        </Grid>
+      </Border>
+
+      <!-- General: language and appearance apply immediately and are saved right away. -->
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="{DynamicResource GeneralSection}" Classes="title" />
+          <TextBlock Classes="label" Text="{DynamicResource LanguageLabel}" />
+          <ComboBox ItemsSource="{Binding LanguageOptions}" SelectedValue="{Binding Language, Mode=TwoWay}"
+                    SelectedValueBinding="{Binding Value}" Width="220" HorizontalAlignment="Left"
+                    AutomationProperties.Name="{DynamicResource LanguageLabel}">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ChoiceOption">
+                <TextBlock Text="{Binding Value, Converter={StaticResource Localize}, ConverterParameter=LanguageName}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Classes="label" Text="{DynamicResource ThemeLabel}" Margin="0,4,0,0" />
+          <Border Classes="surface" Background="{DynamicResource WindowSurfaceBrush}" Padding="4" CornerRadius="21" HorizontalAlignment="Left">
+            <StackPanel Orientation="Horizontal" Spacing="2">
+              <Button Classes="tab" Classes.selected="{Binding IsThemeSystem}" Command="{Binding SelectThemeCommand}" CommandParameter="system">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                  <lucide:LucideIcon Kind="SunMoon" Size="15" />
+                  <TextBlock Text="{DynamicResource ThemeSystem}" />
+                </StackPanel>
+              </Button>
+              <Button Classes="tab" Classes.selected="{Binding IsThemeDay}" Command="{Binding SelectThemeCommand}" CommandParameter="day">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                  <lucide:LucideIcon Kind="Sun" Size="15" />
+                  <TextBlock Text="{DynamicResource ThemeDay}" />
+                </StackPanel>
+              </Button>
+              <Button Classes="tab" Classes.selected="{Binding IsThemeNight}" Command="{Binding SelectThemeCommand}" CommandParameter="night">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                  <lucide:LucideIcon Kind="Moon" Size="15" />
+                  <TextBlock Text="{DynamicResource ThemeNight}" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="{DynamicResource PanelSection}" Classes="title" />
+          <TextBlock Classes="label" Text="{DynamicResource ConnectionSiteLabel}" />
+          <ComboBox ItemsSource="{Binding PanelEndpointOptions}" MinWidth="320" HorizontalAlignment="Left"
+                    SelectedItem="{Binding SelectedPanelEndpoint, Mode=TwoWay}"
+                    AutomationProperties.Name="{DynamicResource ConnectionSiteName}">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Key, Converter={StaticResource Localize}, ConverterParameter=Endpoint}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Classes="muted" Text="{Binding PanelEndpointPrompt}" FontSize="11" TextWrapping="Wrap" />
+          <CheckBox Content="{DynamicResource RememberLogin}" IsChecked="{Binding RememberLoginInfo, Mode=TwoWay}" />
+          <TextBlock Classes="label" Text="{DynamicResource LogLevelLabel}" Margin="0,4,0,0" />
+          <ComboBox ItemsSource="{Binding LogLevels}" SelectedItem="{Binding LogLevel, Mode=TwoWay}" Width="220" HorizontalAlignment="Left">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Converter={StaticResource Localize}, ConverterParameter=LogLevel}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <TextBlock Classes="label" Text="{DynamicResource OutboundInterfaceLabel}" Margin="0,4,0,0" />
+          <ComboBox ItemsSource="{Binding EgressInterfaceOptions}"
+                    SelectedValue="{Binding PreferredEgressInterface, Mode=TwoWay}"
+                    SelectedValueBinding="{Binding Id}"
+                    HorizontalAlignment="Left" MinWidth="320">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding DisplayName}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <Button Classes="primary" Command="{Binding SavePreferencesCommand}" HorizontalAlignment="Left">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <lucide:LucideIcon Kind="Save" Size="16" />
+              <TextBlock Text="{DynamicResource SavePreferences}" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="{DynamicResource StartupSection}" Classes="title" />
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel>
+              <TextBlock Text="{DynamicResource OpenAtLogin}" FontWeight="SemiBold" />
+            </StackPanel>
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoStartEnabled, Mode=TwoWay}" Command="{Binding ToggleAutostartCommand}"
+                          OnContent="" OffContent="" />
+          </Grid>
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel>
+              <TextBlock Text="{DynamicResource KeepInMenuBar}" FontWeight="SemiBold" />
+            </StackPanel>
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding CloseToTray, Mode=TwoWay}" OnContent="" OffContent="" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Classes="secondary" Command="{Binding ShowLogsCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <lucide:LucideIcon Kind="ScrollText" Size="16" />
+            <TextBlock Text="{DynamicResource ActivityLog}" />
+          </StackPanel>
+        </Button>
+        <Button Classes="danger" Command="{Binding SignOutCommand}">
+          <StackPanel Orientation="Horizontal" Spacing="7">
+            <lucide:LucideIcon Kind="LogOut" Size="16" />
+            <TextBlock Text="{DynamicResource SignOut}" />
+          </StackPanel>
+        </Button>
+      </StackPanel>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

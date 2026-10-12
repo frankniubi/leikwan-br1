@@ -39,17 +39,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The macOS client ships for Apple Silicon only; there is no Intel leg.
         include:
           - runner: macos-15
             rid: osx-arm64
             rust_target: aarch64-apple-darwin
             architecture: arm64
             suffix: arm64
-          - runner: macos-15-intel
-            rid: osx-x64
-            rust_target: x86_64-apple-darwin
-            architecture: x86_64
-            suffix: x64
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
@@ -326,7 +322,7 @@ jobs:
           for dimensions in 1440x900 1024x768; do
             width="${dimensions%x*}"
             height="${dimensions#*x}"
-            for state in login dashboard forwards settings; do
+            for state in login dashboard forwards services nodes pairing settings; do
               LEIKWAN_TEST_UI=1 "$executable" \
                 --ui-fixture "$state" \
                 --window-width "$width" \
@@ -337,7 +333,7 @@ jobs:
             done
           done
           trap - EXIT
-          test "$(find "$screenshots" -type f -name '*.png' | wc -l | tr -d ' ')" = "8"
+          test "$(find "$screenshots" -type f -name '*.png' | wc -l | tr -d ' ')" = "14"
 
       - name: Run native Ultra canary leak gate
         id: leak_gate
@@ -401,7 +397,7 @@ jobs:
           exit "$failed"
 
   verify-artifacts:
-    name: Cross-architecture artifact gate
+    name: Apple Silicon artifact gate
     runs-on: ubuntu-latest
     needs: build-and-test
     if: ${{ !cancelled() }}
@@ -412,13 +408,13 @@ jobs:
       - name: Check out source for authenticated artifact export
         uses: actions/checkout@v4
 
-      - name: Download both architecture outputs
+      - name: Download the arm64 outputs
         uses: actions/download-artifact@v4
         with:
           pattern: macos-client-*
           path: ${{ runner.temp }}/macos-downloads
 
-      - name: Verify metadata, bytes, architecture separation, and screenshots
+      - name: Verify metadata, bytes, architecture, and screenshots
         shell: bash
         run: |
           set -euo pipefail
@@ -432,7 +428,6 @@ jobs:
           output = pathlib.Path(sys.argv[2])
           expected = {
               "arm64": ("arm64", "macos_client_app_arm64", "macos_client_update_arm64"),
-              "x64": ("x86_64", "macos_client_app_x64", "macos_client_update_x64"),
           }
           combined = {"artifacts": {}, "architectures": {}}
           package_hashes = {"dmg": [], "zip": []}
@@ -481,7 +476,7 @@ jobs:
               screenshots = sorted((directory / "screenshots").glob("*.png"))
               expected_shots = {
                   f"{state}-{size}.png"
-                  for state in ("login", "dashboard", "forwards", "settings")
+                  for state in ("login", "dashboard", "forwards", "services", "nodes", "pairing", "settings")
                   for size in ("1440x900", "1024x768")
               }
               if {shot.name for shot in screenshots} != expected_shots:
@@ -503,13 +498,13 @@ jobs:
 
           if len(source_commits) != 1 or None in source_commits:
               raise SystemExit("source commit mismatch")
-          if any(len(values) != 2 or len(set(values)) != 2 for values in package_hashes.values()):
-              raise SystemExit("cross-architecture package hashes are not distinct")
-          if set(helper_hashes["arm64"]) != set(helper_hashes["x64"]):
-              raise SystemExit("cross-architecture helper sets differ")
-          for helper in helper_hashes["arm64"]:
-              if helper_hashes["arm64"][helper] == helper_hashes["x64"][helper]:
-                  raise SystemExit(f"cross-architecture helper hash duplicated: {helper}")
+          if any(len(values) != 1 for values in package_hashes.values()):
+              raise SystemExit("expected exactly one DMG and one update ZIP")
+          if len(set(package_hashes["dmg"] + package_hashes["zip"])) != 2:
+              raise SystemExit("DMG and update ZIP hashes are not distinct")
+          downloaded = {path.name for path in root.iterdir() if path.is_dir()}
+          if downloaded != {"macos-client-arm64"}:
+              raise SystemExit(f"unexpected macOS architecture outputs: {sorted(downloaded)}")
           combined["source_commit"] = source_commits.pop()
           output.write_text(json.dumps(combined, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
@@ -527,7 +522,7 @@ jobs:
           branch="artifacts/macos-test-${GITHUB_SHA:0:12}"
           rm -rf "$export_root"
           mkdir -p "$package_root" "$parts_root"
-          for suffix in arm64 x64; do
+          for suffix in arm64; do
             cp "$downloads/macos-client-$suffix/leikwan-bridge-$suffix.dmg" "$package_root/"
             cp "$downloads/macos-client-$suffix/leikwan-bridge-update-$suffix.zip" "$package_root/"
             cp "$downloads/macos-client-$suffix/leikwan-bridge-$suffix-metadata.json" "$package_root/"

@@ -38,7 +38,8 @@ internal static class Program
                 new Services.MacAppUpdateService(
                     cliUpdatesRoot,
                     cliPaths.BundleDirectory,
-                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64",
+                    // Apple silicon only: the bundle carries no x64 build.
+                    "arm64",
                     // This process is the one being replaced, but it outlives the helper
                     // so it can verify the installed version. The helper must therefore
                     // not wait for it to exit (current_process_id = 0).
@@ -162,7 +163,7 @@ internal static class Program
             || args[4] != "--window-height"
             || width is < 900 or > 1600
             || height is < 620 or > 1000
-            || args[1] is not ("login" or "dashboard" or "forwards" or "settings"))
+            || args[1] is not ("login" or "dashboard" or "forwards" or "services" or "nodes" or "pairing" or "settings"))
             throw new InvalidOperationException("ui_fixture_invalid");
         App.UiFixtureState = args[1];
         App.UiFixtureWidth = width;

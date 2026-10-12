@@ -65,11 +65,8 @@ final class LeigodOnlyArtifactSourceBuildMap
                 'route_path' => '/artifacts/ultra/ultra-client_windows_amd64.exe',
                 'platform_family' => 'windows-bond',
             ],
-            'ultra_client_runtime_macos_x64' => [
-                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_macos_amd64'],
-                'route_path' => '/artifacts/ultra/ultra-client_macos_amd64',
-                'platform_family' => 'macos-bond',
-            ],
+            // ultra_client_runtime_macos_x64 is retired (Intel macOS dropped): its
+            // artifact is frozen at runtime 2026.10.12.1 and is never rebuilt from source.
             'ultra_client_runtime_macos_arm64' => [
                 'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_macos_arm64'],
                 'route_path' => '/artifacts/ultra/ultra-client_macos_arm64',

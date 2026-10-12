@@ -1,5 +1,14 @@
 # Unified PUBLISH-PLAN (integration/desktop-ha-release-20260911)
 
+> **2026-10-12: Intel macOS is retired.** This historical plan still lists the x64 items
+> (`macos_client_app_x64`, `macos_client_update_x64`, `ultra_client_runtime_macos_x64`,
+> `leikwan-bridge-*-x64.*`, `ultra-client_macos_amd64`). Do **not** rebuild, re-upload or
+> change them. In `artifacts/versions.json` they stay pinned at the final x64 build
+> (client 1.0.56, runtime 2026.10.12.1, marked `"retired"`) and the files stay on the
+> panel: a shipped Intel 1.0.56 client fails its update check with
+> `update_manifest_architecture_missing` (an "update failed" banner on every launch) if the
+> entries disappear, while the pinned entries make it report "up to date". Never delete them.
+
 This file merges the two parallel release plans below. The parent agent executes both
 as ONE coordinated production release (binaries first, versions.json last).
 

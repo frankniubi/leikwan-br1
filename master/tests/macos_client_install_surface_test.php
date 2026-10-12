@@ -36,10 +36,13 @@ foreach ([
     }
 }
 
-foreach (['macosClientArm64AppUrl', 'macosClientX64AppUrl'] as $snippet) {
-    if (!str_contains($base, $snippet)) {
-        failMacInstallSurface('missing BaseController URL helper ' . $snippet);
-    }
+if (!str_contains($base, 'macosClientArm64AppUrl')) {
+    failMacInstallSurface('missing BaseController URL helper macosClientArm64AppUrl');
+}
+// Intel macOS is retired: the x64 routes stay only so pinned 1.0.56 Intel
+// installs see "up to date"; no surface links the Intel DMG.
+if (str_contains($base, 'macosClientX64AppUrl')) {
+    failMacInstallSurface('BaseController still offers the retired Intel macOS download');
 }
 
 $clientsStart = strpos($tenant, 'public function clientsPage(Request $request, array $params): Response');
@@ -49,8 +52,7 @@ if (!is_int($clientsStart) || !is_int($clientsEnd) || $clientsEnd <= $clientsSta
 }
 $clients = substr($tenant, $clientsStart, $clientsEnd - $clientsStart);
 // The tenant page delegates the GUI download card to the shared helper. Intel
-// (x64) downloads stay routable but are deliberately not offered until that
-// build is verified (pinned by macos_client_download_page_regression_test).
+// (x64) is retired: its routes serve only the pinned final 1.0.56 build.
 if (!str_contains($clients, '$this->renderMacClientInstallSection()') || !str_contains($clients, 'macOS')) {
     failMacInstallSurface('tenant client surface does not render the macOS install section');
 }

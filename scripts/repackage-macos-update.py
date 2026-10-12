@@ -22,7 +22,8 @@ import zipfile
 from pathlib import Path
 
 APP_NAME = "LeiKwan Bridge.app"
-CPU = {"arm64": 0x0100000C, "x64": 0x01000007}
+# The macOS client ships for Apple Silicon only.
+CPU = {"arm64": 0x0100000C}
 
 
 def sha256(path: Path) -> str:
@@ -38,7 +39,8 @@ def main() -> int:
     parser.add_argument("--input-zip", required=True, type=Path)
     parser.add_argument("--runtime", required=True, type=Path)
     parser.add_argument("--rcodesign", required=True, type=Path)
-    parser.add_argument("--arch", required=True, choices=("arm64", "x64"))
+    parser.add_argument("--arch", required=True, choices=("arm64",),
+                        help="arm64 only: the macOS client supports Apple Silicon only")
     parser.add_argument("--output-zip", required=True, type=Path)
     parser.add_argument("--stage", required=True, type=Path)
     parser.add_argument("--expected-version", required=True)
@@ -85,7 +87,7 @@ def main() -> int:
 
     manifest_path = contents / "Resources" / "helper-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("architecture") != ("arm64" if args.arch == "arm64" else "x86_64"):
+    if manifest.get("architecture") != "arm64":
         raise SystemExit("helper manifest architecture mismatch")
     for helper in manifest["helpers"]:
         if helper.get("name") == "ultra-client":

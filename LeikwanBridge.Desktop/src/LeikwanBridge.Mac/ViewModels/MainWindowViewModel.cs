@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 using Serilog;
 
@@ -83,7 +84,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Func<string, CancellationToken, Task>? saveLogLevel = null,
         string? preferredEgressInterface = null,
         Func<string, CancellationToken, Task>? saveEgressInterface = null,
-        Func<string?, IReadOnlyList<EgressInterfaceOption>>? egressInterfaceCatalog = null)
+        Func<string?, IReadOnlyList<EgressInterfaceOption>>? egressInterfaceCatalog = null,
+        Func<IReadOnlyDictionary<string, TrafficCounter>>? trafficCounters = null,
+        INodeLibrary? nodeLibrary = null,
+        string themeMode = MacAppearance.System,
+        Func<string, CancellationToken, Task>? saveThemeMode = null)
     {
         _controller = controller;
         _connections = connections;
@@ -101,9 +106,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _dispatch = dispatch ?? Dispatch;
         _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
         CloseToTray = closeToTray;
-        Language = string.Equals(language, "zh-CN", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US";
+        Language = L.Normalize(language);
         LogLevel = DesktopLogLevel.Normalize(logLevel);
         PreferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
+        InitializeShell(trafficCounters, nodeLibrary, themeMode, saveThemeMode);
         ReloadEgressInterfaces();
         PanelUrl = controller.Snapshot.PanelUrl;
         SelectedPanelEndpoint = PanelEndpoints.ForUrl(PanelUrl);
@@ -154,7 +160,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<ForwardRowViewModel> Forwards { get; } = [];
     public ObservableCollection<MacConnectionProfile> ConnectionProfiles { get; } = [];
     public ObservableCollection<string> Logs { get; } = [];
-    public IReadOnlyList<string> Languages { get; } = ["en-US", "zh-CN"];
+    public IReadOnlyList<string> Languages { get; } = [L.English, L.SimplifiedChinese];
     public IReadOnlyList<string> LogLevels { get; } = DesktopLogLevel.Options;
     public IReadOnlyList<string> AuthenticationModes { get; } =
         [ClientIdTokenAuthentication];
@@ -230,7 +236,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public bool HasForwards => Forwards.Count > 0;
     public bool IsUpdateBannerVisible => IsUpdateVisible || ShowUpdateError;
     public bool IsConnectionWorkspaceVisible => IsConnectionsVisible || IsPairingVisible;
-    public string ConnectionWorkspaceTitle => IsPairingVisible ? "线路配对" : "代理";
+    public string ConnectionWorkspaceTitle => IsPairingVisible
+        ? L.T("PairingTitle", "Route pairing")
+        : L.T("ServicesTitle", "Services");
     public IReadOnlyList<ForwardRowViewModel> ConnectionRoutes => Forwards;
     public IReadOnlyList<ForwardRowViewModel> PairedConnectionRoutes
         => Forwards.Where(route => route.IsPaired).ToList();
@@ -241,12 +249,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public int RunningForwardCount => Forwards.Count(forward => forward.IsRunning);
     public string ConnectionLabel => ConnectionStatus switch
     {
-        "connected" => "Connected",
-        DesktopClientController.DeviceLimitReachedCode => "Device limit reached",
-        "error" => "Connection error",
-        _ => "Disconnected",
+        "connected" => L.T("StatusConnected", "Connected"),
+        DesktopClientController.DeviceLimitReachedCode => L.T("StatusDeviceLimit", "Device limit reached"),
+        "error" => L.T("StatusConnectionError", "Connection error"),
+        _ => L.T("StatusDisconnected", "Disconnected"),
     };
-    public string VersionLabel => $"Version {typeof(MainWindowViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0"}";
+    public string VersionLabel => L.F("VersionLabelFormat", "Version {0}", typeof(MainWindowViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0");
     public bool IsDebugVisible => string.Equals(
         Environment.GetEnvironmentVariable("LEIKWAN_DEBUG"),
         "1",
@@ -257,10 +265,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         string.Equals(SelectedAuthenticationMode, ClientIdTokenAuthentication, StringComparison.Ordinal);
     public bool HasConnectionProfiles => ConnectionProfiles.Count > 0;
     public bool HasSelectedConnectionProfile => SelectedConnectionProfile is not null;
-    public string PanelEndpointPrompt => "请根据您所在地区选择";
+    public string PanelEndpointPrompt => L.T("PanelEndpointPrompt", "Choose the site for your region.");
     public string LocalConnectionModeLabel => SelectedConnectionMode == MacConnectionMode.Vpn
-        ? "VPN (TUN)"
-        : SelectedConnectionMode == MacConnectionMode.Proxy ? "System proxy" : "Not selected";
+        ? L.T("ModeVpn", "TUN (VPN)")
+        : SelectedConnectionMode == MacConnectionMode.Proxy ? L.T("ModeProxy", "System proxy") : L.T("ModeNotSelected", "Not selected");
     public bool IsConnectionModeSelected => SelectedConnectionMode is not null;
     public bool IsLocalConnectionActive =>
         IsConnectionStarting || LocalConnectionStatus is "Connected" or "Starting";
@@ -280,10 +288,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
             .Select(scope => new NativeRouteScopeOption(
                 scope,
                 string.Equals(scope, "cn_only", StringComparison.OrdinalIgnoreCase)
-                    ? "仅中国大陆"
+                    ? L.T("ScopeCnOnly", "Mainland China only")
                     : string.Equals(scope, "intl_only", StringComparison.OrdinalIgnoreCase)
-                        ? "仅国际"
-                        : "全局"))
+                        ? L.T("ScopeIntlOnly", "International only")
+                        : L.T("ScopeGlobal", "Global")))
             .ToList();
     public bool IsNativeRouteScopeSelectable => NativeRouteScopeOptions.Count > 1;
     public IReadOnlyList<MacConnectionMode> NativeConnectionModes { get; } =
@@ -419,13 +427,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private static string ResourceString(string key, string fallback)
-    {
-        object? value = null;
-        return Avalonia.Application.Current?.TryGetResource(key, null, out value) == true && value is string text
-            ? text
-            : fallback;
-    }
+    private static string ResourceString(string key, string fallback) => L.T(key, fallback);
 
     partial void OnSelectedConnectionModeChanged(MacConnectionMode? value)
     {
@@ -485,7 +487,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
-            _dispatch(() => LocalConnectionError = "The selected route and node could not be saved.");
+            _dispatch(() => LocalConnectionError = L.T("SelectionSaveFailed", "The selected route and node could not be saved."));
         }
     }
 
@@ -604,7 +606,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (!Uri.TryCreate(PanelUrl, UriKind.Absolute, out var panel)
             || panel.Scheme is not ("https" or "http"))
         {
-            ValidationMessage = "Enter a valid panel URL, client ID, and token.";
+            ValidationMessage = L.T("SignInInvalid", "Enter a valid panel URL, client ID, and token.");
             return;
         }
 
@@ -613,7 +615,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             || clientId <= 0
             || string.IsNullOrWhiteSpace(AgentToken))
         {
-            ValidationMessage = "Enter a valid panel URL, client ID, and token.";
+            ValidationMessage = L.T("SignInInvalid", "Enter a valid panel URL, client ID, and token.");
             return;
         }
 
@@ -632,7 +634,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             }
             catch (MasterApiException exception) when (exception.StatusCode == 401)
             {
-                ValidationMessage = "Client ID or token was rejected by the panel.";
+                ValidationMessage = L.T("SignInRejected", "Client ID or token was rejected by the panel.");
                 return;
             }
             catch (DeviceLimitReachedException exception)
@@ -642,7 +644,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             }
             catch
             {
-                ValidationMessage = "Sign-in failed. Check the panel address, client ID, and token.";
+                ValidationMessage = L.T("SignInFailed", "Sign-in failed. Check the panel address, client ID, and token.");
                 return;
             }
 
@@ -656,7 +658,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 }
                 catch
                 {
-                    ValidationMessage = "Signed in, but the client could not connect.";
+                    ValidationMessage = L.T("SignInConnectFailed", "Signed in, but the client could not connect.");
                     ShowNotice(ValidationMessage);
                 }
             }
@@ -679,7 +681,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         ProxyImportError = string.Empty;
         if (string.IsNullOrWhiteSpace(ProxyImportUri))
         {
-            ProxyImportError = "Paste an ss:// or wg:// URI first.";
+            ProxyImportError = L.T("ProxyErrUriRequired", "Paste an ss:// or wg:// URI first.");
             return;
         }
 
@@ -687,13 +689,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             ProxyImportError = error switch
             {
-                "proxy_uri_required" => "Paste an ss:// or wg:// URI first.",
-                "proxy_protocol_unsupported" => "This proxy URI protocol is not supported.",
-                "proxy_plugin_unsupported" => "Shadowsocks plugin URIs are not supported.",
-                "proxy_wg_config_invalid" => "The WireGuard configuration is incomplete.",
-                "proxy_credentials_invalid" => "The Shadowsocks credentials are invalid.",
-                "proxy_endpoint_invalid" or "proxy_port_invalid" => "The proxy server or port is invalid.",
-                _ => "The proxy URI could not be imported.",
+                "proxy_uri_required" => L.T("ProxyErrUriRequired", "Paste an ss:// or wg:// URI first."),
+                "proxy_protocol_unsupported" => L.T("ProxyErrProtocol", "This proxy URI protocol is not supported."),
+                "proxy_plugin_unsupported" => L.T("ProxyErrPlugin", "Shadowsocks plugin URIs are not supported."),
+                "proxy_wg_config_invalid" => L.T("NodeErrWireGuard", "The WireGuard configuration is incomplete."),
+                "proxy_credentials_invalid" => L.T("NodeErrCredentials", "The Shadowsocks credentials are invalid."),
+                "proxy_endpoint_invalid" or "proxy_port_invalid" => L.T("ProxyErrEndpoint", "The proxy server or port is invalid."),
+                _ => L.T("ProxyErrImport", "The proxy URI could not be imported."),
             };
             return;
         }
@@ -716,7 +718,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
-            ValidationMessage = "The selected client could not be opened.";
+            ValidationMessage = L.T("ClientOpenFailed", "The selected client could not be opened.");
         }
         finally
         {
@@ -733,7 +735,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch (Exception exception)
         {
-            ValidationMessage = "Connection failed.";
+            ValidationMessage = L.T("ConnectFailed", "Connection failed.");
             Log.Warning("mac manual connect failed type={ErrorType} code={ErrorCode}",
                 exception.GetType().Name,
                 BoundErrorCode(exception));
@@ -754,7 +756,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
-            ValidationMessage = "Refresh failed. The current connection is still running.";
+            ValidationMessage = L.T("RefreshFailed", "Refresh failed. The current connection is still running.");
             ShowNotice(ValidationMessage);
         }
     }
@@ -791,17 +793,17 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (failure is null)
         {
             ValidationMessage = string.Empty;
-            ShowNotice("All forwards stopped.");
+            ShowNotice(L.T("AllForwardsStopped", "All forwards stopped."));
         }
         else if (failure is InvalidOperationException
                  && string.Equals(failure.Message, "client_not_connected", StringComparison.Ordinal))
         {
             ValidationMessage = string.Empty;
-            ShowNotice("All forwards are already stopped.");
+            ShowNotice(L.T("AllForwardsAlreadyStopped", "All forwards are already stopped."));
         }
         else
         {
-            ValidationMessage = "Could not stop all forwards. Please try again.";
+            ValidationMessage = L.T("StopAllFailed", "Could not stop all forwards. Please try again.");
             ShowNotice(ValidationMessage);
         }
     }
@@ -820,6 +822,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowConnections()
     {
+        IsNodesVisible = false;
         SelectedSection = "connections";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -831,6 +834,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowPairing()
     {
+        IsNodesVisible = false;
         SelectedSection = "pairing";
         IsDashboardVisible = false;
         IsLogsVisible = false;
@@ -845,7 +849,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         SelectedConnectionProfile = null;
         NodeEditor.Load(new MacConnectionProfile
         {
-            Name = "New node",
+            Name = L.T("NewNodeName", "New node"),
             Protocol = MacConnectionProtocol.Shadowsocks,
             Port = 443,
         });
@@ -859,6 +863,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (_connections is null)
             return;
         LocalConnectionError = string.Empty;
+        if (NodeEditor.IsShareLinkNode && NodeEditor.Id > 0)
+        {
+            // Hosted / share-link nodes are cloud copies or carry settings the field
+            // editor cannot show; saving here would fork them from the panel.
+            LocalConnectionError = L.T("EditorManagedOnNodesPage", "Cloud and share-link nodes are edited on the Nodes page.");
+            return;
+        }
         try
         {
             var profile = NodeEditor.ToProfile();
@@ -870,8 +881,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         catch (Exception exception)
         {
             LocalConnectionError = exception.Message.Contains("protocol", StringComparison.OrdinalIgnoreCase)
-                ? "Choose a supported protocol and complete its required fields."
-                : "The node could not be saved. Check the required fields.";
+                ? L.T("ProfileSaveProtocol", "Choose a supported protocol and complete its required fields.")
+                : L.T("ProfileSaveFailed", "The node could not be saved. Check the required fields.");
         }
     }
 
@@ -894,24 +905,24 @@ public sealed partial class MainWindowViewModel : ObservableObject
         var profile = SelectedConnectionProfile;
         if (profile is null)
         {
-            LocalConnectionError = "Select or save a node first.";
+            LocalConnectionError = L.T("SelectNodeFirst", "Select or save a node first.");
             return;
         }
         var forward = SelectedConnectionForward;
         if (forward is null)
         {
-            LocalConnectionError = "Select an available route first.";
+            LocalConnectionError = L.T("SelectRouteFirst", "Select an available route first.");
             return;
         }
         if (SelectedConnectionMode is not { } mode)
         {
-            LocalConnectionError = "Select a connection mode first.";
+            LocalConnectionError = L.T("SelectModeFirst", "Select a connection mode first.");
             return;
         }
         var configuredForward = _forwardsProvider().FirstOrDefault(item => item.ForwardId == forward.ForwardId);
         if (configuredForward is null)
         {
-            LocalConnectionError = "The selected route is no longer available. Refresh the routes and try again.";
+            LocalConnectionError = L.T("RouteUnavailable", "The selected route is no longer available. Refresh the routes and try again.");
             return;
         }
         if (!IsConnectionTransportCompatible(profile, configuredForward))
@@ -957,9 +968,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
             if (errorCode is "proxy_forward_transport_mismatch" or "proxy_forward_unavailable")
                 AddLog(errorCode);
             LocalConnectionError = errorCode == "proxy_forward_transport_mismatch" ? ConnectionTransportError(profile)
-                : errorCode == "proxy_forward_unavailable" ? "The selected route was stopped or removed. No direct connection was made."
+                : errorCode == "proxy_forward_unavailable" ? L.T("RouteStopped", "The selected route was stopped or removed. No direct connection was made.")
                 : cancellation.IsCancellationRequested
-                ? string.Empty : "The selected route or node could not be started. No direct connection was made.";
+                ? string.Empty : L.T("RouteStartFailed", "The selected route or node could not be started. No direct connection was made.");
         }
         finally
         {
@@ -998,6 +1009,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             MacConnectionProtocol.WireGuard => transport is "udp" or "tcp+udp",
             MacConnectionProtocol.Shadowsocks => transport is "tcp" or "tcp+udp",
+            MacConnectionProtocol.Socks5 or MacConnectionProtocol.Vless => transport is "tcp" or "tcp+udp",
             MacConnectionProtocol.External => transport is "tcp" or "udp" or "tcp+udp",
             _ => false,
         };
@@ -1005,8 +1017,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     private static string ConnectionTransportError(MacConnectionProfile profile)
         => profile.Protocol.Equals(MacConnectionProtocol.WireGuard, StringComparison.OrdinalIgnoreCase)
-            ? "The selected route does not support WireGuard. Choose UDP or TCP + UDP transport."
-            : "The selected route does not support Shadowsocks. Choose TCP or TCP + UDP transport.";
+            ? L.T("TransportWireGuard", "The selected route can't carry this node. Choose a route with UDP or TCP + UDP transport.")
+            : profile.Protocol.Equals(MacConnectionProtocol.Shadowsocks, StringComparison.OrdinalIgnoreCase)
+                ? L.T("TransportShadowsocks", "The selected route can't carry this node. Choose a route with TCP or TCP + UDP transport.")
+                : L.T("TransportShadowsocks", "The selected route can't carry this node. Choose a route with TCP or TCP + UDP transport.");
 
     private void ValidateConnectionForward(MacConnectionProfile profile, ProxyForwardLease lease)
     {
@@ -1027,14 +1041,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
             return;
         if (!IsNativeOutboundVisible || SelectedNativeForwardId <= 0)
         {
-            LocalConnectionError = "Native outbound is not included in the active plan.";
+            LocalConnectionError = L.T("NativeNotInPlan", "Native outbound is not included in the active plan.");
             return;
         }
         var carrier = NativeOutboundCapability?.FindForward(SelectedNativeForwardId);
         if (carrier is null
             || !carrier.RouteScopes.Contains(SelectedNativeRouteScope, StringComparer.OrdinalIgnoreCase))
         {
-            LocalConnectionError = "Choose a valid native traffic scope.";
+            LocalConnectionError = L.T("NativeScopeInvalid", "Choose a valid native traffic scope.");
             return;
         }
         LocalConnectionError = string.Empty;
@@ -1052,7 +1066,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 CancellationToken.None);
             if (lease is null)
             {
-                LocalConnectionError = "The native outbound lease is unavailable.";
+                LocalConnectionError = L.T("NativeLeaseUnavailable", "The native outbound lease is unavailable.");
                 return;
             }
             _nativeActiveMode = SelectedNativeConnectionMode;
@@ -1081,7 +1095,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
                 : apiCode is not null ? apiCode.Replace('_', ' ')
                 : exception.Message.Contains("native", StringComparison.OrdinalIgnoreCase)
                 ? exception.Message.Replace('_', ' ')
-                : "The native outbound connection could not be started.";
+                : L.T("NativeStartFailed", "The native outbound connection could not be started.");
         }
     }
 
@@ -1231,11 +1245,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     private static string PhaseLabel(UpdatePhase phase) => phase switch
     {
-        UpdatePhase.Check => "Checking for updates",
-        UpdatePhase.Download => "Downloading update",
-        UpdatePhase.Verify => "Verifying download",
-        UpdatePhase.Stage => "Preparing update",
-        UpdatePhase.Apply => "Applying update",
+        UpdatePhase.Check => L.T("UpdatePhaseCheck", "Checking for updates"),
+        UpdatePhase.Download => L.T("UpdatePhaseDownload", "Downloading update"),
+        UpdatePhase.Verify => L.T("UpdatePhaseVerify", "Verifying download"),
+        UpdatePhase.Stage => L.T("UpdatePhaseStage", "Preparing update"),
+        UpdatePhase.Apply => L.T("UpdatePhaseApply", "Applying update"),
         _ => string.Empty,
     };
 
@@ -1272,6 +1286,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowDashboard()
     {
+        IsNodesVisible = false;
         SelectedSection = "dashboard";
         IsPairingVisible = false;
         IsDashboardVisible = !IsLoginVisible && !IsClientPickerVisible;
@@ -1283,6 +1298,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowLogs()
     {
+        IsNodesVisible = false;
         SelectedSection = "logs";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -1294,6 +1310,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void ShowSettings()
     {
+        IsNodesVisible = false;
         SelectedSection = "settings";
         IsPairingVisible = false;
         IsDashboardVisible = false;
@@ -1322,6 +1339,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
             IsConnectionsVisible = !IsLoginVisible && !IsClientPickerVisible;
         if (SelectedSection == "pairing")
             IsPairingVisible = !IsLoginVisible && !IsClientPickerVisible;
+        if (SelectedSection == "nodes")
+            IsNodesVisible = !IsLoginVisible && !IsClientPickerVisible;
         ApplyNativeOutbound(snapshot.NativeOutbound);
         ApplyForwards(snapshot.Forwards);
         if (!snapshot.IsBusy)
@@ -1329,9 +1348,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(BusyMessage));
     }
 
-    public string BusyMessage => IsLoginVisible ? "Signing in"
-        : ConnectionStatus == "refreshing" ? "Refreshing routes"
-        : "Starting routes" + (_preparationProgress.Length == 0 ? string.Empty : " " + _preparationProgress);
+    public string BusyMessage => IsLoginVisible ? L.T("BusySigningIn", "Signing in")
+        : ConnectionStatus == "refreshing" ? L.T("BusyRefreshing", "Refreshing routes")
+        : L.T("BusyStarting", "Starting routes") + (_preparationProgress.Length == 0 ? string.Empty : " " + _preparationProgress);
 
     private async Task LoadConnectionsAsync()
     {
@@ -1360,7 +1379,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
-            _dispatch(() => LocalConnectionError = "Saved nodes could not be loaded.");
+            _dispatch(() => LocalConnectionError = L.T("SavedNodesLoadFailed", "Saved nodes could not be loaded."));
         }
     }
 
@@ -1375,13 +1394,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
         SelectedConnectionProfile = ConnectionProfiles.FirstOrDefault(profile => profile.Id == preferredId)
             ?? null;
         RefreshNodeOptions();
+        RefreshNodesPage();
     }
 
     private void RefreshNodeOptions()
     {
         var options = new[]
         {
-            new MacConnectionProfile { Id = 0, Name = "未选择已保存节点" },
+            new MacConnectionProfile { Id = 0, Name = L.T("NoSavedNodeSelected", "No saved node selected") },
         }.Concat(ConnectionProfiles).ToList();
         foreach (var row in Forwards)
             row.NodeOptions = options;
@@ -1400,6 +1420,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (!string.IsNullOrWhiteSpace(snapshot.ErrorCode))
             LocalConnectionError = snapshot.ErrorCode.Replace('_', ' ');
         OnPropertyChanged(nameof(LocalConnectionStatus));
+        OnPropertyChanged(nameof(LocalConnectionStatusText));
         OnPropertyChanged(nameof(IsLocalConnectionActive));
         if (snapshot.State is MacConnectionState.Error or MacConnectionState.Disconnected)
             _ = ReleaseConnectionForwardAsync();
@@ -1502,6 +1523,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         RefreshNodeOptions();
         OnPropertyChanged(nameof(PairedConnectionRoutes));
         OnPropertyChanged(nameof(CanStartLocalConnection));
+        RefreshNodesPage();
         ScheduleNativeLeaseRefresh();
     }
 
@@ -1516,12 +1538,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private async Task PairRouteNodeAsync(ForwardRowViewModel row, int profileId)
+    private async Task PairRouteNodeAsync(ForwardRowViewModel row, int profileId, bool pushToCloud = true)
     {
         if (_connections is null || _loadingConnectionSelection)
             return;
         if (profileId > 0 && !ConnectionProfiles.Any(profile => profile.Id == profileId))
             return;
+        var previousProfileId = _connectionSelection.ForwardProfiles.TryGetValue(row.ForwardId, out var previous) ? previous : 0;
         _connectionSelection = _connectionSelection with
         {
             ForwardId = row.ForwardId,
@@ -1541,8 +1564,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
-            _dispatch(() => LocalConnectionError = "The selected route and node could not be saved.");
+            _dispatch(() => LocalConnectionError = L.T("SelectionSaveFailed", "The selected route and node could not be saved."));
         }
+        if (pushToCloud)
+            await PushPairingToCloudAsync(row.ForwardId, profileId, previousProfileId).ConfigureAwait(false);
     }
 
     private void ScheduleNativeLeaseRefresh()

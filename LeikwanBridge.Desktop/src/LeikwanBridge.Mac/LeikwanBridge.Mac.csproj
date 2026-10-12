@@ -7,7 +7,8 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <!-- The macOS client ships for Apple Silicon only. -->
+    <RuntimeIdentifiers>osx-arm64</RuntimeIdentifiers>
     <!-- Native apphost/runtime select the architecture; keep managed IL portable
          so cross-architecture packaging can execute a real managed-load probe. -->
     <PlatformTarget>AnyCPU</PlatformTarget>
