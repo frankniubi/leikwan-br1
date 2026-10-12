@@ -59,6 +59,23 @@ public sealed class HeadlessStackParityTests
         }
     }
 
+    [Fact]
+    public void ServiceUpdateLoopOnlyActsOnAConsoleRequest()
+    {
+        // The service's update loop reads the request token that the stack's own
+        // ConfigPollingService publishes (HeadlessUpdateRequestSignal.Shared), so
+        // a published release is never installed unless the console asked for it.
+        var repoRoot = FindRepositoryRoot();
+        var update = File.ReadAllText(Path.Combine(
+            repoRoot, "LeikwanBridge.Desktop", "src", "LeikwanBridge.Headless", "WindowsUpdateSupport.cs"));
+        var stack = File.ReadAllText(Path.Combine(
+            repoRoot, "LeikwanBridge.Desktop", "src", "LeikwanBridge.Headless", "WindowsClientStack.cs"));
+
+        Assert.Contains("() => HeadlessUpdateRequestSignal.Shared.Current", update, StringComparison.Ordinal);
+        Assert.Contains("new ConfigPollingService(api, runtime, stateManager)", stack, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateRequests =", stack, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(Directory.GetCurrentDirectory());

@@ -15,6 +15,38 @@ INNO_SCRIPT = REPO_ROOT / "scripts" / "windows-client-setup.iss"
 INSTALL_HELPER = REPO_ROOT / "scripts" / "windows-client-install-helper.ps1"
 INSTALLER_SOURCES = [INNO_SCRIPT, INSTALL_HELPER]
 INSTALLED_HELPER_RELATIVE = pathlib.Path(".installer") / "windows-client-install-helper.ps1"
+SETUP_BUILDER = REPO_ROOT / "scripts" / "build-windows-client-setup.ps1"
+MAC_RULE_SET_DIR = (
+    REPO_ROOT / "LeikwanBridge.Desktop" / "src" / "LeikwanBridge.Mac" / "Resources" / "RuleSets"
+)
+CHINA_RULE_SETS = ("geoip-cn.srs", "geosite-cn.srs")
+
+
+class WindowsClientChinaRuleSetPackagingTests(unittest.TestCase):
+    """The native "bypass China" rule-sets ship next to CN.conf."""
+
+    def test_repo_root_rule_sets_are_sing_box_binary_and_match_mac_bundle(self) -> None:
+        for name in CHINA_RULE_SETS:
+            root_copy = REPO_ROOT / name
+            self.assertTrue(root_copy.is_file(), f"missing bundled rule-set: {root_copy}")
+            payload = root_copy.read_bytes()
+            self.assertEqual(payload[:3], b"SRS", f"{name} is not a sing-box binary rule-set")
+            self.assertEqual(
+                payload,
+                (MAC_RULE_SET_DIR / name).read_bytes(),
+                f"{name}: Windows (repo root) and macOS snapshots diverged",
+            )
+
+    def test_setup_builder_stages_rule_sets_into_bin_next_to_cn_conf(self) -> None:
+        source = SETUP_BUILDER.read_text(encoding="utf-8")
+        self.assertIn('Join-Path $appBinStageDir "CN.conf"', source)
+        for name in CHINA_RULE_SETS:
+            self.assertIn(f'Join-Path $appBinStageDir "{name}"', source)
+
+    def test_helper_fallback_uninstall_list_covers_rule_sets(self) -> None:
+        source = INSTALL_HELPER.read_text(encoding="utf-8")
+        for name in CHINA_RULE_SETS:
+            self.assertIn('"bin\\' + name + '"', source)
 
 
 class WindowsClientSetupInstallerScriptTests(unittest.TestCase):
@@ -221,6 +253,8 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             "netfilter2.sys",
             "nfapi.dll",
             "CN.conf",
+            "geoip-cn.srs",
+            "geosite-cn.srs",
         ):
             (bin_dir / name).write_bytes(name.encode("utf-8"))
 
@@ -561,6 +595,8 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
                 + install.stderr,
             )
             self.assertTrue((desktop_dir / "LeiKwan Bridge.lnk").is_file())
+            for name in CHINA_RULE_SETS:
+                self.assertTrue((install_dir / "bin" / name).is_file())
 
             updates_dir = install_dir / "updates"
             updates_dir.mkdir(parents=True)
@@ -605,6 +641,8 @@ class WindowsClientInstallHelperTests(unittest.TestCase):
             self.assertFalse((install_dir / "LeikwanBridge.App.dll").exists())
             self.assertFalse((install_dir / "appsettings.json").exists())
             self.assertFalse((install_dir / "bin" / "wstunnel.exe").exists())
+            for name in CHINA_RULE_SETS:
+                self.assertFalse((install_dir / "bin" / name).exists())
             self.assertFalse((install_dir / "install-manifest.json").exists())
             self.assertFalse((install_dir / "install-state.json").exists())
             self.assertFalse((desktop_dir / "LeiKwan Bridge.lnk").exists())

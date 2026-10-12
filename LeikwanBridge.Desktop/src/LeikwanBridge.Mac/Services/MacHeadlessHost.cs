@@ -41,8 +41,9 @@ public static class MacHeadlessHost
 
         Log.Information("headless_start version={Version} once={Once}", RuntimeVersion(), options.Once);
         IMacHeadlessClient? client = null;
-        // Self-update runs next to the client and is cancelled with it; it can
-        // never take the tunnel down (see MacHeadlessAutoUpdate).
+        // The update loop runs next to the client and is cancelled with it; it
+        // only acts on a console update request and can never take the tunnel
+        // down (see MacHeadlessAutoUpdate).
         using var updateStop = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         Task? updateLoop = null;
         try
@@ -570,7 +571,8 @@ public sealed record MacHeadlessDependencies(
     TextWriter Error,
     Func<TimeSpan, CancellationToken, Task> Delay)
 {
-    /// <summary>Service-mode self-update loop, started after sign-in. Null (the
+    /// <summary>Service-mode update loop, started after sign-in; it installs an
+    /// update only when one was requested from the panel console. Null (the
     /// default for test-built dependencies) runs none; the production default
     /// only runs it for the root LaunchDaemon.</summary>
     public Func<MacPlatformPaths, HeadlessClientOptions, Func<string>, CancellationToken, Task>? AutoUpdate { get; init; }

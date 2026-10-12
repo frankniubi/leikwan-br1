@@ -275,6 +275,13 @@ public sealed class AgentConfig
         return Path.Combine(AppContext.BaseDirectory, "bin", "CN.conf");
     }
 
+    /// <summary>
+    /// Directory holding the bundled geoip-cn.srs / geosite-cn.srs sing-box
+    /// rule-sets, installed next to CN.conf.
+    /// </summary>
+    public string GetEffectiveProxyRuleSetDirectory()
+        => Path.Combine(AppContext.BaseDirectory, "bin");
+
     public string GetEffectiveProxyNetchModePath()
     {
         if (!string.IsNullOrWhiteSpace(ProxyNetchModePath))

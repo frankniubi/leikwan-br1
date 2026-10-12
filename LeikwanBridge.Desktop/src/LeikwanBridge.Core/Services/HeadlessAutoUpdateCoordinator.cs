@@ -15,10 +15,13 @@ public sealed record HeadlessUpdateCycleResult(
     string Detail);
 
 /// <summary>
-/// One cycle of the service-mode auto-update loop: reconcile the state file,
-/// read the published manifest, decide, download + verify, record the attempt,
-/// then launch the detached apply step. Every exit path leaves the state file
-/// describing what happened, and a failed attempt always leaves a backoff.
+/// One cycle of the service-mode update loop: reconcile the state file, check
+/// that an update was requested from the console, read the published manifest,
+/// decide, download + verify, record the attempt, then launch the detached
+/// apply step. Publishing a release never updates a client on its own: without
+/// a pending, not yet handled console request the cycle stops before the
+/// manifest is read. Every exit path leaves the state file describing what
+/// happened, and a failed attempt always leaves a backoff.
 /// </summary>
 public sealed class HeadlessAutoUpdateCoordinator
 {
@@ -26,6 +29,7 @@ public sealed class HeadlessAutoUpdateCoordinator
     private readonly string _statePath;
     private readonly string _lockPath;
     private readonly Func<bool> _autoUpdatesEnabled;
+    private readonly Func<string?> _requestToken;
     private readonly IClientUpdateSource _source;
     private readonly IHeadlessUpdateLauncher _launcher;
     private readonly Func<DateTimeOffset> _clock;
@@ -35,6 +39,7 @@ public sealed class HeadlessAutoUpdateCoordinator
         string statePath,
         string lockPath,
         Func<bool> autoUpdatesEnabled,
+        Func<string?> requestToken,
         IClientUpdateSource source,
         IHeadlessUpdateLauncher launcher,
         Func<DateTimeOffset>? clock = null)
@@ -43,6 +48,7 @@ public sealed class HeadlessAutoUpdateCoordinator
         _statePath = statePath;
         _lockPath = lockPath;
         _autoUpdatesEnabled = autoUpdatesEnabled;
+        _requestToken = requestToken;
         _source = source;
         _launcher = launcher;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
@@ -77,6 +83,24 @@ public sealed class HeadlessAutoUpdateCoordinator
             return new(HeadlessUpdateDecisionKind.Disabled, null, false, "disable_auto_updates is set");
         }
 
+        string requestToken;
+        try
+        {
+            requestToken = (_requestToken() ?? string.Empty).Trim();
+        }
+        catch (Exception exception)
+        {
+            Log.Warning("headless_update_request_unreadable type={ErrorType}", exception.GetType().Name);
+            requestToken = string.Empty;
+        }
+
+        if (!HeadlessUpdatePolicy.IsUpdateRequested(requestToken, state))
+        {
+            Log.Information("headless_update_skipped reason=not_requested installed={Installed}", _installedVersion);
+            return new(HeadlessUpdateDecisionKind.NotRequested, null, false, "no update requested from the console");
+        }
+
+        Log.Information("headless_update_requested installed={Installed}", _installedVersion);
         PublishedClientUpdate? published;
         try
         {
@@ -100,6 +124,11 @@ public sealed class HeadlessAutoUpdateCoordinator
         var decision = HeadlessUpdatePolicy.Decide(true, _installedVersion, published, state, now);
         if (decision.Kind != HeadlessUpdateDecisionKind.Apply)
         {
+            // A launched apply is not marked handled: the restarted build sees
+            // itself up to date on its next cycle and completes the request
+            // there, so an apply step that fails still retries under the backoff.
+            if (HeadlessUpdatePolicy.CompletesRequest(decision.Kind))
+                state.HandledRequestToken = requestToken;
             TrySave(state);
             // Expected steady states log at Information; anything that means
             // "the published build will not be installed" logs at Warning.
@@ -217,7 +246,8 @@ public sealed class HeadlessAutoUpdateCoordinator
 
     /// <summary>
     /// The service-mode loop: first cycle after 1..10 minutes, then every
-    /// 6 h ± 30 min, or sooner when a backed-off retry falls due. Never throws
+    /// 6 h ± 30 min, or sooner when a backed-off retry falls due. A cycle
+    /// without a pending console request does nothing. Never throws
     /// except on cancellation; the tunnel it runs next to must not be affected.
     /// </summary>
     public async Task RunLoopAsync(Random random, Func<TimeSpan, CancellationToken, Task>? delay = null, CancellationToken ct = default)

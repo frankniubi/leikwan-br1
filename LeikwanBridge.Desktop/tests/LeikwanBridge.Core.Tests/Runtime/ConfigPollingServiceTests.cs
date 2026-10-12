@@ -206,6 +206,34 @@ public sealed class ConfigPollingServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_PublishesTheConsoleUpdateRequestTokenForTheHeadlessUpdateLoop()
+    {
+        using var tempDir = new TempStateDirectory();
+        var payload = JsonNode.Parse(BuildPullResponseJson())!.AsObject();
+        payload["config_revision"] = "rev-requested";
+        payload["client"]!["agent_update_request_token"] = " click-1 ";
+        using var server = new PullApiServer(payload.ToJsonString());
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var stateManager = new StateManager(tempDir.Path);
+        var runtimeManager = new RecordingForwardRuntimeManager(config, stateManager, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        // Production hosts keep the default: the process-wide signal the headless update loop reads.
+        Assert.Same(HeadlessUpdateRequestSignal.Shared, new ConfigPollingService(api, runtimeManager, stateManager).UpdateRequests);
+        var signal = new HeadlessUpdateRequestSignal();
+        var service = new ConfigPollingService(api, runtimeManager, stateManager) { UpdateRequests = signal };
+
+        await service.SyncOnceAsync();
+        Assert.Equal("click-1", signal.Current);
+
+        // The panel stops sending the token once the request is no longer pending.
+        payload["config_revision"] = "rev-cleared";
+        payload["client"]!["agent_update_request_token"] = "";
+        server.SetPayload(payload.ToJsonString());
+        await service.SyncOnceAsync();
+        Assert.Equal(string.Empty, signal.Current);
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_PullsUdpSidepathConfig_AndStartsUdpAuxRuntime()
     {
         using var tempDir = new TempStateDirectory();

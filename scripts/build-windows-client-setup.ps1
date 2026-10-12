@@ -11,6 +11,8 @@ param(
     [string]$NetfilterDriver = "artifacts/windows/proxy-runtime/netfilter2.sys",
     [string]$NetfilterApi = "artifacts/windows/proxy-runtime/nfapi.dll",
     [string]$ChinaIpList = "CN.conf",
+    [string]$GeoIpRuleSet = "geoip-cn.srs",
+    [string]$GeoSiteRuleSet = "geosite-cn.srs",
     [string]$OutputSetup = "artifacts/windows/leikwan-bridge-setup.exe",
     [string]$StageDir = "artifacts/windows/_setup_stage"
 )
@@ -206,6 +208,17 @@ $ChinaIpList = Resolve-InputFile -ConfiguredPath $ChinaIpList -WasExplicitlyProv
     "artifacts/windows/proxy-runtime/CN.conf",
     "artifacts/windows/rebuild_payload/CN.conf"
 )
+# sing-box binary rule-sets for native "bypass China" / restricted scopes.
+# They ship next to CN.conf so sing-box never has to download them from
+# GitHub before it opens its inbounds.
+$GeoIpRuleSet = Resolve-InputFile -ConfiguredPath $GeoIpRuleSet -WasExplicitlyProvided $PSBoundParameters.ContainsKey('GeoIpRuleSet') -Fallbacks @(
+    "geoip-cn.srs",
+    "artifacts/windows/proxy-runtime/geoip-cn.srs"
+)
+$GeoSiteRuleSet = Resolve-InputFile -ConfiguredPath $GeoSiteRuleSet -WasExplicitlyProvided $PSBoundParameters.ContainsKey('GeoSiteRuleSet') -Fallbacks @(
+    "geosite-cn.srs",
+    "artifacts/windows/proxy-runtime/geosite-cn.srs"
+)
 
 $versionsPath = "artifacts/versions.json"
 Require-File $versionsPath
@@ -294,6 +307,8 @@ if ($NetfilterApi) {
     Copy-Item -LiteralPath $NetfilterApi -Destination (Join-Path $appBinStageDir "nfapi.dll") -Force
 }
 Copy-Item -LiteralPath $ChinaIpList -Destination (Join-Path $appBinStageDir "CN.conf") -Force
+Copy-Item -LiteralPath $GeoIpRuleSet -Destination (Join-Path $appBinStageDir "geoip-cn.srs") -Force
+Copy-Item -LiteralPath $GeoSiteRuleSet -Destination (Join-Path $appBinStageDir "geosite-cn.srs") -Force
 
 $innoScript = Join-Path "scripts" "windows-client-setup.iss"
 if (-not (Test-Path -LiteralPath $innoScript)) {

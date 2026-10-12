@@ -11,6 +11,49 @@ public sealed class HeadlessUpdatePolicyTests
     private static PublishedClientUpdate Published(string version)
         => new(version, "https://panel.example/artifacts/windows/x.zip", new string('a', 64), 1234, "x.zip");
 
+    [Theory]
+    [InlineData(null, "", false)]
+    [InlineData("", "", false)]
+    [InlineData("   ", "", false)]
+    [InlineData("click-1", "click-1", false)]
+    [InlineData(" click-1 ", "click-1", false)]
+    [InlineData("click-1", "", true)]
+    [InlineData("click-2", "click-1", true)]
+    public void OnlyAnUnhandledConsoleRequestAllowsAnUpdate(string? token, string handled, bool expected)
+    {
+        var state = new HeadlessUpdateState { HandledRequestToken = handled };
+
+        Assert.Equal(expected, HeadlessUpdatePolicy.IsUpdateRequested(token, state));
+    }
+
+    [Theory]
+    [InlineData(HeadlessUpdateDecisionKind.UpToDate, true)]
+    [InlineData(HeadlessUpdateDecisionKind.DowngradeRefused, true)]
+    [InlineData(HeadlessUpdateDecisionKind.Rejected, true)]
+    [InlineData(HeadlessUpdateDecisionKind.ManifestUnavailable, false)]
+    [InlineData(HeadlessUpdateDecisionKind.ManifestIncomplete, false)]
+    [InlineData(HeadlessUpdateDecisionKind.BackingOff, false)]
+    [InlineData(HeadlessUpdateDecisionKind.ApplyInProgress, false)]
+    [InlineData(HeadlessUpdateDecisionKind.Apply, false)]
+    public void OnlyFinalOutcomesCompleteARequest(HeadlessUpdateDecisionKind kind, bool expected)
+        => Assert.Equal(expected, HeadlessUpdatePolicy.CompletesRequest(kind));
+
+    [Fact]
+    public void HandledRequestTokenSurvivesTheStateFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "lkb-upd-state-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            HeadlessUpdateStateStore.Save(path, new HeadlessUpdateState { HandledRequestToken = "click-1" });
+            Assert.Equal("click-1", HeadlessUpdateStateStore.Load(path).HandledRequestToken);
+            Assert.Contains("\"handled_request_token\"", File.ReadAllText(path), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void InitialDelayStaysWithinOneToTenMinutes()
     {

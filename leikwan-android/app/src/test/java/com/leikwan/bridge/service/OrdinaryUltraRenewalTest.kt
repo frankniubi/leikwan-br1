@@ -641,6 +641,168 @@ class OrdinaryUltraRenewalTest {
         orchestrator.stop()
     }
 
+    @Test
+    fun `an app group on another line runs its own Ultra runtime and renews with the selected one`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val prefs = Prefs(context.getSharedPreferences("orchestrator-ultra-app-group-prefs", Context.MODE_PRIVATE))
+        val deviceId = "android-client-ultra-app-group-test"
+        prefs.clientId = 7L
+        prefs.agentToken = "test-agent-token"
+        prefs.enrolledDeviceId = deviceId
+        prefs.deviceSessionToken = "test-device-session"
+        prefs.deviceSessionExpiresAtMs = System.currentTimeMillis() + 300_000L
+
+        val now = java.time.Instant.now()
+        fun ultraForward(forwardId: Long, listenPort: Int, target: String) = JsonParser.parseString(
+            """
+            {
+              "forward_id":$forwardId,
+              "service_name":"Ultra $forwardId",
+              "target":"$target",
+              "listen_port":$listenPort,
+              "mode":"ultra",
+              "backend_mode":"ultra",
+              "client_mode":"ultra",
+              "transport":"tcp",
+              "service_status":"active",
+              "endpoint_mode":"managed",
+              "endpoints":[],
+              "ultra_access":{
+                "protocol":"leikwan-ultra-policy-v2",
+                "forward_id":$forwardId,
+                "session_ticket":"ticket-$forwardId",
+                "policy_generation":"${"a".repeat(64)}",
+                "issued_at":"${now.minusSeconds(20)}",
+                "renew_after":"${now.minusSeconds(10)}",
+                "expires_at":"${now.plusSeconds(180)}",
+                "service_state":"active",
+                "transport":"tcp",
+                "rate_limit_mbps":20,
+                "quota_remaining_bytes":1048576,
+                "target_digest":"${com.leikwan.bridge.runtime.UltraPolicy.targetDigest(target)}"
+              }
+            }
+            """.trimIndent(),
+        )
+        fun ultraLease(forwardId: Long, target: String, relayIp: String) = Response.success(
+            com.leikwan.bridge.api.UltraLeaseResponse(
+                ok = true,
+                leases = listOf(
+                    JsonParser.parseString(
+                        """
+                        {
+                          "protocol":"leikwan-ultra-policy-v2",
+                          "forward_id":$forwardId,
+                          "session_ticket":"ticket-$forwardId",
+                          "policy_generation":"${"a".repeat(64)}",
+                          "lease_id":"ul2_test_lease_${forwardId}_1234567890",
+                          "expires_at":"${now.plusSeconds(180)}",
+                          "transport":"tcp",
+                          "rate_limit_mbps":20,
+                          "quota_remaining_bytes":1048576,
+                          "selection_ref":"selection_ref_1234567890",
+                          "target_digest":"${com.leikwan.bridge.runtime.UltraPolicy.targetDigest(target)}",
+                          "nonce_hash":"${"b".repeat(64)}",
+                          "endpoint":{"ip":"$relayIp","port":5438},
+                          "credential":{"user":"line-user","password":"line-password"},
+                          "direct_ip_cidrs":["$relayIp/32"]
+                        }
+                        """.trimIndent(),
+                    ).asJsonObject,
+                ),
+            ),
+        )
+        val hongKongTarget = "hk.example.com:443"
+        val tokyoTarget = "tokyo.example.com:443"
+        val hongKongLease = ultraLease(90L, hongKongTarget, "203.0.113.90")
+        val tokyoLease = ultraLease(91L, tokyoTarget, "203.0.113.91")
+        // The selected line leases first, then the group's line; a renewal repeats that order.
+        val panelApi = FakePanelApi(
+            forwards = listOf(ultraForward(90L, 11090, hongKongTarget), ultraForward(91L, 11091, tokyoTarget)),
+            ultraLeaseResponses = listOf(hongKongLease, tokyoLease, hongKongLease, tokyoLease),
+        )
+        val panelRepo = PanelRepository(
+            context = context,
+            prefsOverride = prefs,
+            apiOverride = panelApi,
+            deviceIdProvider = { deviceId },
+            deviceSecurityCheck = { DeviceSecurityResult.Allowed },
+        )
+        val hongKongNode = db.proxyNodeDao().insert(ssNode("hk"))
+        val tokyoNode = db.proxyNodeDao().insert(ssNode("tokyo"))
+        prefs.selectedProxyId = hongKongNode
+        val netflix = "com.netflix.mediaclient"
+        prefs.appRouting = com.leikwan.bridge.routing.AppRoutingConfig().withGroup(
+            com.leikwan.bridge.routing.AppGroup(
+                id = "tokyo",
+                name = "Tokyo",
+                forwardId = 91L,
+                nodeId = tokyoNode,
+                packages = listOf(netflix),
+            ),
+        )
+        val processRunner = RecordingProcessRunner()
+        val leasesSent = mutableListOf<Long>()
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = UserRoutingRuleStore(db),
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+            panelRepoFactory = { panelRepo },
+            binaryInstallerFactory = {
+                RecordingBinaryInstaller(
+                    context,
+                    RuntimeBinaryPaths(
+                        wstunnelBinary = "/runtime/wstunnel",
+                        ingressBinary = "/runtime/leikwan-ingress",
+                        bondBinary = "/runtime/leikwan-bond",
+                        ultraBinary = "/runtime/ultra-client",
+                    ),
+                )
+            },
+            processRunnerFactory = { processRunner },
+            ultraLeaseSender = { socketPath, policy, runtimeLease ->
+                assertTrue(socketPath.contains("forward-${policy.forwardId}-"))
+                assertEquals("203.0.113.${policy.forwardId}/32", runtimeLease.directConnectivity.ipCidrs.single())
+                leasesSent += policy.forwardId
+                true
+            },
+            vpnServiceStarter = { _ -> },
+            vpnStartupAwaiter = { VpnStartupAwaitResult.Running },
+        )
+
+        orchestrator.startForForward(90L)
+
+        assertEquals(listOf(90L, 91L), processRunner.started.map { it.forwardId })
+        assertFalse("the group's runtime must not reap the selected one", processRunner.started[1].cleanupStale)
+        assertEquals(listOf(11090, 11091), processRunner.awaitedPorts)
+        assertEquals(listOf(90L, 91L), leasesSent)
+        val config = JsonParser.parseString(LeikwanVpnService.configJson).asJsonObject
+        val outbounds = config.getAsJsonArray("outbounds").map { it.asJsonObject }.associateBy { it.get("tag").asString }
+        assertEquals(11090, outbounds.getValue("proxy-$hongKongNode").get("server_port").asInt)
+        assertEquals(11091, outbounds.getValue("proxy-$tokyoNode").get("server_port").asInt)
+        assertEquals("proxy-$hongKongNode", outbounds.getValue("proxy").get("default").asString)
+        val packageRule = config.getAsJsonObject("route").getAsJsonArray("rules")
+            .map { it.asJsonObject }
+            .first { it.has("package_name") }
+        assertEquals(listOf(netflix), packageRule.getAsJsonArray("package_name").map { it.asString })
+        assertEquals("proxy-$tokyoNode", packageRule.get("outbound").asString)
+
+        // Both lines are past renew_after: each renews in place, nothing restarts.
+        orchestrator.refreshUltraForTest()
+        assertEquals(listOf(90L, 91L, 90L, 91L), leasesSent)
+        assertEquals(2, processRunner.started.size)
+
+        orchestrator.stop()
+    }
+
     private class RecordingProcessRunner(
         private val failForProcessKeys: Set<Long> = emptySet(),
     ) : ProcessRunner() {

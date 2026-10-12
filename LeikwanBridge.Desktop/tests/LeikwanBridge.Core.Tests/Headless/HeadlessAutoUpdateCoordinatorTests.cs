@@ -62,7 +62,9 @@ public sealed class HeadlessAutoUpdateCoordinatorTests
         Assert.Equal(HeadlessUpdateDecisionKind.Rejected, skipped.Decision);
         Assert.Equal(0, workspace.Source.Downloads);
 
+        // The skip completed that console request; a newer build needs a new one.
         workspace.Source.Published = Published("0.1.20.55");
+        workspace.RequestToken = "console-request-2";
         var taken = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
         Assert.True(taken.Launched);
         Assert.Equal("0.1.20.55", workspace.Launcher.Last.Version);
@@ -205,7 +207,141 @@ public sealed class HeadlessAutoUpdateCoordinatorTests
 
         Assert.InRange(delays[0], TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10));
         Assert.InRange(delays[1], TimeSpan.FromHours(5.5), TimeSpan.FromHours(6.5));
-        Assert.Equal(2, workspace.Source.Reads);
+        // The first cycle finds the build up to date and completes the console
+        // request; the second has nothing requested and leaves the panel alone.
+        Assert.Equal(1, workspace.Source.Reads);
+    }
+
+    [Fact]
+    public async Task WithoutAConsoleRequestAPublishedNewerBuildIsNeverTouched()
+    {
+        using var workspace = new Workspace("0.1.20.53") { RequestToken = "" };
+        workspace.Source.Published = Published("0.1.20.54");
+
+        var result = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, result.Decision);
+        Assert.False(result.Launched);
+        Assert.Equal(0, workspace.Source.Reads);
+        Assert.Equal(0, workspace.Source.Downloads);
+        Assert.Equal(0, workspace.Launcher.Launches);
+        Assert.Equal(0, workspace.State().Attempts);
+    }
+
+    [Fact]
+    public async Task UnreadableRequestTokenCountsAsNoRequest()
+    {
+        using var workspace = new Workspace("0.1.20.53") { RequestTokenError = new InvalidOperationException("boom") };
+        workspace.Source.Published = Published("0.1.20.54");
+
+        var result = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, result.Decision);
+        Assert.Equal(0, workspace.Source.Reads);
+    }
+
+    [Fact]
+    public async Task ARequestIsActedOnOnceAndANewClickIsNeededForTheNextRelease()
+    {
+        using var workspace = new Workspace("0.1.20.53") { RequestToken = "click-1" };
+        workspace.Source.Published = Published("0.1.20.54");
+
+        var applied = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+        Assert.True(applied.Launched);
+        // Not completed by the launch: a failed apply step must still retry.
+        Assert.Equal(string.Empty, workspace.State().HandledRequestToken);
+
+        // The service restarts on the new build, which finds itself up to date.
+        workspace.Now += TimeSpan.FromMinutes(5);
+        var restarted = workspace.CoordinatorFor("0.1.20.54");
+        var settled = await restarted.RunCycleAsync(CancellationToken.None);
+        Assert.Equal(HeadlessUpdateDecisionKind.UpToDate, settled.Decision);
+        Assert.Equal("click-1", workspace.State().HandledRequestToken);
+
+        // A later release under the same (still pending on the panel) click is not installed.
+        workspace.Source.Published = Published("0.1.20.55");
+        var unchanged = await restarted.RunCycleAsync(CancellationToken.None);
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, unchanged.Decision);
+        Assert.Equal(1, workspace.Source.Downloads);
+
+        // A new console click installs it.
+        workspace.RequestToken = "click-2";
+        var next = await restarted.RunCycleAsync(CancellationToken.None);
+        Assert.True(next.Launched);
+        Assert.Equal("0.1.20.55", workspace.Launcher.Last.Version);
+    }
+
+    [Fact]
+    public async Task AlreadyUpToDateCompletesTheRequest()
+    {
+        using var workspace = new Workspace("0.1.20.54") { RequestToken = "click-1" };
+        workspace.Source.Published = Published("0.1.20.54");
+
+        Assert.Equal(HeadlessUpdateDecisionKind.UpToDate, (await workspace.Coordinator.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal("click-1", workspace.State().HandledRequestToken);
+
+        workspace.Source.Published = Published("0.1.20.55");
+        Assert.Equal(HeadlessUpdateDecisionKind.NotRequested, (await workspace.Coordinator.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal(0, workspace.Source.Downloads);
+    }
+
+    [Fact]
+    public async Task DowngradeAndRejectedBuildsCompleteTheRequest()
+    {
+        using var workspace = new Workspace("0.1.20.53") { RequestToken = "click-1" };
+        workspace.Source.Published = Published("0.1.20.49");
+        Assert.Equal(HeadlessUpdateDecisionKind.DowngradeRefused, (await workspace.Coordinator.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal("click-1", workspace.State().HandledRequestToken);
+
+        var state = workspace.State();
+        HeadlessUpdatePolicy.RecordRejected(state, "0.1.20.54", "health gate: not_connected", workspace.Now);
+        workspace.SaveState(state);
+        workspace.RequestToken = "click-2";
+        workspace.Source.Published = Published("0.1.20.54");
+        Assert.Equal(HeadlessUpdateDecisionKind.Rejected, (await workspace.Coordinator.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal("click-2", workspace.State().HandledRequestToken);
+        Assert.Equal(0, workspace.Source.Downloads);
+    }
+
+    [Fact]
+    public async Task TransientFailuresKeepTheRequestPendingUnderTheBackoff()
+    {
+        using var workspace = new Workspace("0.1.20.53") { RequestToken = "click-1" };
+        workspace.Source.ReadError = new HttpRequestException("dns");
+        Assert.Equal(HeadlessUpdateDecisionKind.ManifestUnavailable, (await workspace.Coordinator.RunCycleAsync(CancellationToken.None)).Decision);
+        Assert.Equal(string.Empty, workspace.State().HandledRequestToken);
+
+        workspace.Source.ReadError = null;
+        workspace.Source.Published = Published("0.1.20.54");
+        workspace.Source.DownloadError = new HttpRequestException("reset");
+        await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+        Assert.Equal(HeadlessUpdateResults.DownloadFailed, workspace.State().LastResult);
+        Assert.Equal(string.Empty, workspace.State().HandledRequestToken);
+
+        var backingOff = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+        Assert.Equal(HeadlessUpdateDecisionKind.BackingOff, backingOff.Decision);
+        Assert.Equal(string.Empty, workspace.State().HandledRequestToken);
+
+        // Once the backoff elapses the same request is retried and succeeds.
+        workspace.Source.DownloadError = null;
+        workspace.Now += TimeSpan.FromMinutes(16);
+        var retried = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+        Assert.True(retried.Launched);
+        Assert.Equal(2, workspace.Source.Downloads);
+    }
+
+    [Fact]
+    public async Task DisableAutoUpdatesBeatsAConsoleRequest()
+    {
+        using var workspace = new Workspace("0.1.20.53") { Enabled = false, RequestToken = "click-1" };
+        workspace.Source.Published = Published("0.1.20.54");
+
+        var result = await workspace.Coordinator.RunCycleAsync(CancellationToken.None);
+
+        Assert.Equal(HeadlessUpdateDecisionKind.Disabled, result.Decision);
+        Assert.Equal(0, workspace.Source.Reads);
+        Assert.Equal(0, workspace.Launcher.Launches);
+        Assert.Equal(string.Empty, workspace.State().HandledRequestToken);
     }
 
     private static PublishedClientUpdate Published(string version)
@@ -218,19 +354,31 @@ public sealed class HeadlessAutoUpdateCoordinatorTests
         public Workspace(string installed)
         {
             Directory.CreateDirectory(_root);
-            Coordinator = new HeadlessAutoUpdateCoordinator(
+            Coordinator = CoordinatorFor(installed);
+        }
+
+        /// <summary>A coordinator for another installed build on the same state
+        /// file, as after the service restarted on an applied update.</summary>
+        public HeadlessAutoUpdateCoordinator CoordinatorFor(string installed)
+            => new(
                 installed,
                 StatePath,
                 LockPath,
                 () => Enabled,
+                () => RequestTokenError is null ? RequestToken : throw RequestTokenError,
                 Source,
                 Launcher,
                 () => Now);
-        }
 
         public DateTimeOffset Now { get; set; } = new(2026, 9, 24, 8, 0, 0, TimeSpan.Zero);
 
         public bool Enabled { get; set; } = true;
+
+        /// <summary>The panel's pending console update request; most tests
+        /// exercise the update path, so one is pending by default.</summary>
+        public string RequestToken { get; set; } = "console-request-1";
+
+        public Exception? RequestTokenError { get; set; }
 
         public FakeSource Source { get; } = new();
 

@@ -9,7 +9,7 @@ using Serilog;
 namespace LeikwanBridge.Mac.Services;
 
 /// <summary>
-/// The shared auto-update source contract on top of the macOS app updater: the
+/// The shared headless update source contract on top of the macOS app updater: the
 /// entry is the published update zip for the running architecture, the
 /// download is checked against the manifest size and sha256, and the extracted
 /// bundle must be a valid LeiKwan bundle whose CFBundleShortVersionString is
@@ -239,7 +239,7 @@ public sealed record MacHeadlessApplyResult
 
 /// <summary>
 /// The detached apply step (`LeikwanBridge.Mac --apply-headless-update ...`),
-/// shared by the daemon's auto-update and `leikwan update`: wait for the apply
+/// shared by the daemon's requested update and `leikwan update`: wait for the apply
 /// lock, boot the daemon out, clone the installed bundle into a root-only
 /// backup, swap the new bundle in, start the daemon and hold it to the same
 /// health gate as Windows (<see cref="UpdateHealthGate"/>, 180 s + stability
@@ -464,7 +464,7 @@ public static class MacHeadlessUpdateApply
     }
 }
 
-/// <summary>Everything the daemon's auto-update needs to know about where it runs.</summary>
+/// <summary>Everything the daemon's update loop needs to know about where it runs.</summary>
 public sealed record MacHeadlessUpdateContext(
     string BundleDirectory,
     string UpdatesRoot,
@@ -483,11 +483,13 @@ public sealed record MacHeadlessUpdateContext(
 }
 
 /// <summary>
-/// Service-mode auto-update for the LaunchDaemon, on the same scheduling rules
-/// as the Windows service (<see cref="HeadlessAutoUpdateCoordinator"/>: first
+/// Service-mode update for the LaunchDaemon, on the same scheduling rules as
+/// the Windows service (<see cref="HeadlessAutoUpdateCoordinator"/>: first
 /// check after 1-10 min, then 6 h ± 30 min, backoff 15 min doubling to 24 h,
 /// never a downgrade, rejected versions remembered, disable_auto_updates
-/// re-read every cycle, apply lock). The windowed app never runs it.
+/// re-read every cycle, apply lock). It only installs an update requested from
+/// the panel console, whose token the daemon's own config pulls deliver
+/// (<see cref="HeadlessUpdateRequestSignal"/>). The windowed app never runs it.
 /// </summary>
 public static class MacHeadlessAutoUpdate
 {
@@ -541,12 +543,14 @@ public static class MacHeadlessAutoUpdate
         MacAppUpdateService updater,
         IMacDetachedSpawner spawner,
         IMacBundleFileSystem fileSystem,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        Func<string?>? requestToken = null)
         => new(
             InstalledVersion(context.BundleDirectory),
             context.StatePath,
             context.LockPath,
             () => IsEnabled(context.ConfigPaths),
+            requestToken ?? (() => HeadlessUpdateRequestSignal.Shared.Current),
             new MacHeadlessUpdateSource(updater, panelUrl),
             new MacHeadlessUpdateLauncher(context.BundleDirectory, context.UpdatesRoot, context.LogDirectory, spawner, fileSystem),
             clock);
@@ -557,7 +561,8 @@ public static class MacHeadlessAutoUpdate
             ?? "0.0.0";
 
     /// <summary>Re-read on every cycle so "disable_auto_updates": true in either
-    /// config takes effect without a restart. An unreadable config throws, which
+    /// config takes effect without a restart; it also refuses updates requested
+    /// from the console. An unreadable config throws, which
     /// the coordinator treats as "skip this cycle".</summary>
     public static bool IsEnabled(IReadOnlyList<string> configPaths)
     {

@@ -6,8 +6,8 @@ public sealed record MacNativeRuleSetPaths(string GeoIpPath, string GeoSitePath)
 
 public static class MacNativeRuleSetStore
 {
-    public const string GeoIpSha256 = "0acf5dad38fba9db2dade29ce5e4edc6902220944f30628ae46ed16cb0ec5edd";
-    public const string GeoSiteSha256 = "f657669be37bf136f97e6c0cacede9bf735523427abd21d58ac34ca5ec5d92db";
+    public const string GeoIpSha256 = "ebee603fdf402314b44b9f653cdcf6d9cc9c41e84e2b3515e3123c5c920a93bc";
+    public const string GeoSiteSha256 = "7e5edaa3156918ebb732629f7b4ab3f03040b9940456438f976c2046033fc15c";
 
     public static async Task<MacNativeRuleSetPaths> EnsureAsync(string directory, CancellationToken ct = default)
     {

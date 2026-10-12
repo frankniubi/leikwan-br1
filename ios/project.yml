@@ -1,0 +1,109 @@
+# XcodeGen spec. Generate the project on macOS with `xcodegen generate` in
+# this directory after building ios/Frameworks (see ios/README.md).
+name: LeiKwan
+options:
+  bundleIdPrefix: com.leikwan
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  developmentLanguage: zh-Hans
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # The Rust runtime is built for arm64 simulators only.
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    ENABLE_BITCODE: NO
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    LEIKWAN_APP_GROUP: group.com.leikwan.bridge.ios
+packages:
+  LeikwanIOSCore:
+    path: Core
+targets:
+  LeiKwan:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Shared
+    dependencies:
+      - package: LeikwanIOSCore
+      - target: PacketTunnel
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: LeiKwan
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: 扫描二维码以导入节点
+        ITSAppUsesNonExemptEncryption: false
+        LeikwanAppGroup: $(LEIKWAN_APP_GROUP)
+    entitlements:
+      path: App/LeiKwan.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - $(LEIKWAN_APP_GROUP)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.leikwan.bridge.ios
+        PRODUCT_NAME: LeiKwan
+  PacketTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: PacketTunnel
+      - path: Shared
+    dependencies:
+      - package: LeikwanIOSCore
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - framework: Frameworks/LeikwanRuntime.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+      - sdk: NetworkExtension.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+    info:
+      path: PacketTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: LeiKwan Tunnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LeikwanAppGroup: $(LEIKWAN_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: PacketTunnel/PacketTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - $(LEIKWAN_APP_GROUP)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.leikwan.bridge.ios.tunnel
+        PRODUCT_NAME: PacketTunnel
+        OTHER_LDFLAGS:
+          - -lc++
+schemes:
+  LeiKwan:
+    build:
+      targets:
+        LeiKwan: all
+        PacketTunnel: all

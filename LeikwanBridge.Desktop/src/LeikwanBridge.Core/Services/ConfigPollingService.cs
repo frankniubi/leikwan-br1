@@ -90,6 +90,10 @@ public sealed class ConfigPollingService
 
     public List<ForwardConfig> LatestForwards => _latestForwards;
     public ClientMeta? LatestClient => _latestClient;
+
+    /// <summary>Where each full pull's console update request token is
+    /// published for the windowless client's update loop.</summary>
+    public HeadlessUpdateRequestSignal UpdateRequests { get; init; } = HeadlessUpdateRequestSignal.Shared;
     public NativeOutboundCapability? LatestNativeOutbound => _latestNativeOutbound;
 
     public ConfigPollingService(
@@ -518,6 +522,7 @@ public sealed class ConfigPollingService
         if (pull.Client is not null)
         {
             _latestClient = pull.Client;
+            UpdateRequests.Observe(pull.Client);
         }
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 

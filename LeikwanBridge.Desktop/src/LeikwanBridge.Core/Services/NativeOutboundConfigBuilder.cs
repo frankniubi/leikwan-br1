@@ -12,7 +12,8 @@ public static class NativeOutboundConfigBuilder
         bool bypassChina,
         int localPort,
         string? localProxyHost = null,
-        int? localProxyPort = null)
+        int? localProxyPort = null,
+        string? ruleSetDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (localPort is < 1 or > 65535)
@@ -78,29 +79,14 @@ public static class NativeOutboundConfigBuilder
             ["rules"] = rules,
             ["final"] = lease.RouteScope == "cn_only" ? "direct" : "proxy",
         };
-        // Bootstrap follows the usable international path for the selected
-        // direction. An intl_only relay exists specifically for this traffic;
-        // direct raw.githubusercontent.com access can stall from the mainland.
+        // Prefer the rule-sets bundled next to sing-box. The remote fallback
+        // follows the usable international path for the selected direction:
+        // an intl_only relay exists specifically for this traffic, and direct
+        // raw.githubusercontent.com access can stall from the mainland.
         var ruleSetDownloadDetour = lease.RouteScope == "cn_only" ? "direct" : "proxy";
-        route["rule_set"] = new JsonArray
-        {
-            new JsonObject
-            {
-                ["tag"] = "geoip-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                ["download_detour"] = ruleSetDownloadDetour,
-            },
-            new JsonObject
-            {
-                ["tag"] = "geosite-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                ["download_detour"] = ruleSetDownloadDetour,
-            },
-        };
+        route["rule_set"] = NativeChinaRuleSets.BuildDefinitions(
+            NativeChinaRuleSets.TryResolve(ruleSetDirectory),
+            ruleSetDownloadDetour);
         var root = new JsonObject
         {
             ["outbound"] = outbound,

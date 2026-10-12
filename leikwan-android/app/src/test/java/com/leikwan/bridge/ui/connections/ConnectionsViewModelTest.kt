@@ -762,4 +762,109 @@ class ConnectionsViewModelTest {
         assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
         assertFalse(viewModel.state.value.nativeSelected)
     }
+
+    private fun nativeCapability(forwardId: Long, direction: String): NativeOutboundCapability =
+        NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(forwardId),
+            defaultForwardId = forwardId,
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = forwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(forwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+
+    @Test
+    fun `native outbound rules are not node-carrying services`() {
+        val flagged = forward(12, target = "127.0.0.9:1080").copy(nativeOutbound = true)
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(10), forward(11, direction = "CAN -> HKG"), flagged),
+                    selectedForwardId = 10,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.state.value
+        // 11 is a carrier of the native capability, 12 carries the panel's native flag.
+        assertEquals(listOf(10L), state.serviceForwards.map { it.forwardId })
+        assertTrue(state.appGroupLines().none { it.forwardId == 11L || it.forwardId == 12L })
+    }
+
+    @Test
+    fun `services and native outbound share one selection`() {
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(10), forward(11, direction = "CAN -> HKG")),
+                    selectedForwardId = 10,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        assertFalse(viewModel.state.value.nativeSelected)
+
+        viewModel.selectNativeForward(11)
+        assertTrue(viewModel.state.value.nativeSelected)
+        assertEquals(11L, viewModel.state.value.nativeForwardId)
+        assertTrue(prefs.nativeOutboundSelected)
+
+        viewModel.selectForward(10)
+        assertFalse(viewModel.state.value.nativeSelected)
+        assertEquals(10L, viewModel.state.value.selectedForwardId)
+        assertFalse(prefs.nativeOutboundSelected)
+
+        // Picking a native rule through the services path still goes native, never node pairing.
+        viewModel.selectForward(11)
+        assertTrue(viewModel.state.value.nativeSelected)
+    }
+
+    @Test
+    fun `an ordinary connect never selects a native rule`() {
+        // A stale selection left on the native rule after native outbound was turned off.
+        prefs.selectedForwardId = 11
+        prefs.nativeOutboundSelected = false
+        var started: Long? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(11, direction = "CAN -> HKG"), forward(10)),
+                    selectedForwardId = 11,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            startConnect = { started = it },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(10L, viewModel.state.value.selectedForwardId)
+        assertEquals(10L, prefs.selectedForwardId)
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(10L, started)
+    }
 }

@@ -1,0 +1,175 @@
+name: iOS client
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ios-client.yml"
+      - "ios/**"
+      - "tools/ultra-client/**"
+      - "opengfw/analyzer/**"
+      - "wstunnel-main/leikwan-bond/**"
+      - "wstunnel-main/leikwan-ingress/**"
+  push:
+    branches:
+      - master
+      - main
+      - "ci/ios-*"
+      - "feat/ios-*"
+    paths:
+      - ".github/workflows/ios-client.yml"
+      - "ios/**"
+      - "tools/ultra-client/**"
+      - "opengfw/analyzer/**"
+      - "wstunnel-main/leikwan-bond/**"
+      - "wstunnel-main/leikwan-ingress/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-client-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SING_BOX_VERSION: v1.13.12
+  GOMOBILE_VERSION: v0.1.12
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  core-tests:
+    name: Core package tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test LeikwanIOSCore
+        working-directory: ios/Core
+        run: swift test --parallel
+
+  runtime-tests:
+    name: Runtime host tests (Rust + Go)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: tools/ultra-client/go.sum
+      - name: Rust runtime host tests
+        run: cargo test --manifest-path ios/runtime/rust/Cargo.toml --locked
+      - name: leikwan-bond tests
+        run: cargo test --manifest-path wstunnel-main/leikwan-bond/Cargo.toml
+      - name: Ultra runtime tests
+        working-directory: tools/ultra-client
+        run: |
+          go vet .
+          GOOS=darwin go vet -tags ios .
+          go test -count=1 -run 'Config|Normalize|Control|Policy|Lease|Attest' .
+
+  frameworks:
+    name: Build iOS runtime frameworks
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+      - name: Restore Libbox.xcframework
+        id: libbox-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ios/Frameworks/Libbox.xcframework
+          key: libbox-${{ env.SING_BOX_VERSION }}-${{ hashFiles('ios/scripts/build-go-mobile.sh', 'ios/runtime/go/**', 'tools/ultra-client/*.go', 'opengfw/analyzer/**') }}
+      - name: Build Libbox.xcframework (sing-box + ultra)
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: bash ios/scripts/build-go-mobile.sh
+        env:
+          ULTRA_VERSION: ios-${{ github.sha }}
+      - name: Save Libbox.xcframework
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ios/Frameworks/Libbox.xcframework
+          key: ${{ steps.libbox-cache.outputs.cache-primary-key }}
+      - name: Restore LeikwanRuntime.xcframework
+        id: runtime-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ios/Frameworks/LeikwanRuntime.xcframework
+          key: lkruntime-${{ hashFiles('ios/scripts/build-rust-runtime.sh', 'ios/runtime/rust/**', 'wstunnel-main/leikwan-bond/**', 'wstunnel-main/leikwan-ingress/**') }}
+      - name: Build LeikwanRuntime.xcframework (ingress + bond)
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        run: bash ios/scripts/build-rust-runtime.sh
+      - name: Save LeikwanRuntime.xcframework
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ios/Frameworks/LeikwanRuntime.xcframework
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+      - name: Framework sizes
+        run: du -sh ios/Frameworks/*.xcframework
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+          retention-days: 7
+
+  app:
+    name: Build app (simulator + unsigned device ipa)
+    runs-on: macos-15
+    needs: [frameworks]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild build \
+            -project LeiKwan.xcodeproj -scheme LeiKwan \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim \
+            CODE_SIGNING_ALLOWED=NO > build/sim.log 2>&1 || { grep -E ' error: |error: ' build/sim.log | head -80; tail -60 build/sim.log; exit 1; }
+      - name: Build for iOS device (unsigned)
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild build \
+            -project LeiKwan.xcodeproj -scheme LeiKwan \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" > build/device.log 2>&1 || { grep -E ' error: |error: ' build/device.log | head -80; tail -60 build/device.log; exit 1; }
+      - name: Package unsigned ipa
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          app="build/device/Build/Products/Release-iphoneos/LeiKwan.app"
+          test -d "$app/PlugIns/PacketTunnel.appex"
+          mkdir -p build/ipa/Payload
+          cp -R "$app" build/ipa/Payload/
+          (cd build/ipa && zip -qry ../LeiKwan-unsigned.ipa Payload)
+          ls -lh build/LeiKwan-unsigned.ipa
+          echo "### Unsigned build" >> "$GITHUB_STEP_SUMMARY"
+          du -sh "$app" "$app/PlugIns/PacketTunnel.appex" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LeiKwan-unsigned-ipa
+          path: ios/build/LeiKwan-unsigned.ipa
+          retention-days: 14

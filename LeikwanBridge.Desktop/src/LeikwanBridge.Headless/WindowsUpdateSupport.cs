@@ -336,8 +336,10 @@ internal sealed class SerilogLineWriter(string prefix) : TextWriter
 }
 
 /// <summary>
-/// Service-mode auto-update wiring: the coordinator reads the same panel
-/// manifest the CLI uses, and launches the same detached apply step.
+/// Service-mode update wiring: the coordinator reads the same panel manifest
+/// the CLI uses, and launches the same detached apply step, but only for an
+/// update requested from the panel console. The request token arrives with the
+/// client's own config pulls in this process (<see cref="HeadlessUpdateRequestSignal"/>).
 /// </summary>
 internal static class HeadlessAutoUpdateHost
 {
@@ -369,12 +371,14 @@ internal static class HeadlessAutoUpdateHost
             HeadlessUpdatePaths.StatePath,
             HeadlessUpdatePaths.LockPath,
             IsEnabled,
+            () => HeadlessUpdateRequestSignal.Shared.Current,
             source,
             new Launcher(applier, serviceName));
     }
 
     /// <summary>Re-read on every cycle so an operator can set
-    /// "disable_auto_updates": true in config.json without a restart.</summary>
+    /// "disable_auto_updates": true in config.json without a restart; it also
+    /// refuses updates requested from the console.</summary>
     private static bool IsEnabled()
     {
         var directory = HeadlessUpdatePaths.StateDirectory;

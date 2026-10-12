@@ -36,7 +36,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$InstallerVersion = "0.1.20.64"
+$InstallerVersion = "0.1.20.66"
 $KeepBackups = 3
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -367,7 +367,7 @@ Write-Host "log:          $logDir\headless-*.log (updates: $logDir\update-*.log)
 if ($null -ne $backup) {
     Write-Host "backup:       $backup"
 }
-Write-Host "updates:      checked by the service every ~6 h; set ""disable_auto_updates"": true in $stateDir\config.json to opt out"
+Write-Host "updates:      only after ""request client update"" in the panel console; ""disable_auto_updates"": true in $stateDir\config.json refuses them"
 Write-Host "cli:          leikwan status | start | stop | restart | logs | doctor | update"
 Write-Host "check with:   sc query $ServiceName; Get-Content '$statusPath'"
 Write-Host "remove with:  .\uninstall-windows-headless.ps1 -ServiceName $ServiceName"

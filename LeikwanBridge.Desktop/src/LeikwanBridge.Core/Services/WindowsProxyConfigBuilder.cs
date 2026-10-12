@@ -15,7 +15,6 @@ public static class WindowsProxyConfigBuilder
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
-    private const string NativeRuleSetDownloadHost = "raw.githubusercontent.com";
 
     public static string NormalizeTunStack(string? value)
     {
@@ -90,7 +89,8 @@ public static class WindowsProxyConfigBuilder
         string? nativeProxyHost = null,
         int? nativeProxyPort = null,
         string? nativeRoutePolicy = null,
-        int measuredPayloadCeiling = 0)
+        int measuredPayloadCeiling = 0,
+        string? ruleSetDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -106,6 +106,13 @@ public static class WindowsProxyConfigBuilder
         var chinaIpCidrs = lease.RouteScope == "global" && bypassChinaMainland
             ? LoadChinaIpCidrs(chinaIpListPath)
             : [];
+        var includeChinaRuleSets = IsNativeRestrictedScope(lease.RouteScope) || chinaIpCidrs.Count > 0;
+        // Bundled rule-sets (bin\geoip-cn.srs, bin\geosite-cn.srs) keep
+        // startup off GitHub: sing-box does not open its inbounds until a
+        // remote rule-set's first download finishes.
+        var localRuleSets = includeChinaRuleSets
+            ? NativeChinaRuleSets.TryResolve(ruleSetDirectory)
+            : null;
         var bypassIps = new List<string>();
         var bypassDomains = new List<string>();
         // The app-private relay still opens the provider connection outside
@@ -114,8 +121,10 @@ public static class WindowsProxyConfigBuilder
         AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
-        if (IsNativeRestrictedScope(lease.RouteScope))
-            AddHost(NativeRuleSetDownloadHost, bypassIps, bypassDomains);
+        // Only the remote fallback downloads rule-sets; restricted scopes
+        // fetch them directly instead of through the relay.
+        if (IsNativeRestrictedScope(lease.RouteScope) && localRuleSets is null)
+            AddHost(NativeChinaRuleSets.RemoteDownloadHost, bypassIps, bypassDomains);
 
         using var fragment = JsonDocument.Parse(
             NativeOutboundConfigBuilder.Build(
@@ -132,18 +141,19 @@ public static class WindowsProxyConfigBuilder
             Server = lease.EndpointHost,
             Port = lease.EndpointPort,
         };
+        // Restricted native scopes must not carry bootstrap DNS through the
+        // relay. Keep metadata and rule-set bootstrap on the normal path.
+        var dns = BuildDns(
+            bootstrapProfile,
+            bypassDomains,
+            dnsMode,
+            customDnsServers,
+            lease.RouteScope == "cn_only" ? "direct" : "proxy",
+            lease.RouteScope);
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error" },
-            // Restricted native scopes must not carry bootstrap DNS through the
-            // relay. Keep metadata and rule-set bootstrap on the normal path.
-            ["dns"] = BuildDns(
-                bootstrapProfile,
-                bypassDomains,
-                dnsMode,
-                customDnsServers,
-                lease.RouteScope == "cn_only" ? "direct" : "proxy",
-                lease.RouteScope),
+            ["dns"] = dns,
             ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
@@ -158,15 +168,15 @@ public static class WindowsProxyConfigBuilder
                 chinaIpCidrs,
                 lease.RouteScope,
                 nativeRoutePolicy,
-                dnsMode == WindowsProxyDnsMode.Custom && lease.RouteScope == "intl_only"
-                    ? "custom-0"
-                    : null),
+                // Resolve with the protected server this config actually declares.
+                dns["final"]?.GetValue<string>()),
         };
-        AddNativeChinaRuleSets(
-            root["route"]!.AsObject(),
-            lease.RouteScope,
-            chinaIpCidrs.Count > 0,
-            lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        if (includeChinaRuleSets)
+        {
+            root["route"]!.AsObject()["rule_set"] = NativeChinaRuleSets.BuildDefinitions(
+                localRuleSets,
+                lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        }
 
         return new WindowsProxyConfigResult(
             root.ToJsonString(),
@@ -594,11 +604,15 @@ public static class WindowsProxyConfigBuilder
             });
         }
 
-        if (IsNativeRestrictedScope(nativeRouteScope))
+        // Resolve before handing the destination to SOCKS. Otherwise its
+        // upstream performs a second lookup and replaces the protected answer
+        // with a polluted or region-wrong one (Google, YouTube and GitHub fail
+        // TLS on an unrestricted global route). Same rule as the macOS client.
+        var resolveNativeDomains = nativeRouteScope is not null
+            && (!IsNativeRestrictedPolicy(nativeRoutePolicy)
+                || !string.Equals(nativeRouteScope, "global", StringComparison.OrdinalIgnoreCase));
+        if (resolveNativeDomains)
         {
-            // Resolve before handing the destination to SOCKS. Otherwise its
-            // upstream can perform a second lookup and replace the protected
-            // split-DNS result with a polluted or region-wrong answer.
             rules.Add(new JsonObject
             {
                 ["action"] = "resolve",
@@ -638,43 +652,11 @@ public static class WindowsProxyConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope)
+            ["default_domain_resolver"] = resolveNativeDomains
                 ? defaultDomainResolver ?? "remote"
                 : "local",
             ["rules"] = rules,
             ["final"] = nativeRouteScope == "cn_only" ? "direct" : "proxy",
-        };
-    }
-
-    private static void AddNativeChinaRuleSets(
-        JsonObject route,
-        string routeScope,
-        bool includeChinaBypass,
-        string downloadDetour = "proxy")
-    {
-        if (!IsNativeRestrictedScope(routeScope) && !includeChinaBypass)
-            return;
-        downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
-            ? "direct"
-            : "proxy";
-        route["rule_set"] = new JsonArray
-        {
-            new JsonObject
-            {
-                ["tag"] = "geoip-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
-            new JsonObject
-            {
-                ["tag"] = "geosite-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
         };
     }
 
