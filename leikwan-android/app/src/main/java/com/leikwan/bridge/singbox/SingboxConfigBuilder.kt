@@ -1,5 +1,6 @@
 package com.leikwan.bridge.singbox
 
+import com.leikwan.bridge.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -11,6 +12,7 @@ import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.routing.RulePackManifest
 import com.leikwan.bridge.routing.CompiledConfigResult
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
+import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.routing.RoutingPolicyEngine
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.SafePathRegistry
@@ -57,6 +59,8 @@ data class SingboxSettings(
     val bypassLan: Boolean,
     val bypassChina: Boolean,
     val customBypassRules: String,
+    /** Per-app VPN scope; its in-VPN rules reach the route through the routing snapshot. */
+    val appRouting: AppRoutingConfig = AppRoutingConfig(),
 ) {
     companion object {
         fun fromPrefs(prefs: Prefs): SingboxSettings {
@@ -68,6 +72,7 @@ data class SingboxSettings(
                 bypassLan = prefs.bypassLan,
                 bypassChina = prefs.bypassChina,
                 customBypassRules = prefs.customBypassRules,
+                appRouting = prefs.appRouting,
             )
         }
     }
@@ -354,6 +359,15 @@ class SingboxConfigBuilder(
                     add("route_exclude_address", JsonArray().apply {
                         effectiveRouteExcludes.forEach { add(it) }
                     })
+                }
+                // Per-app scope, applied by VpnService.Builder in openTun. This app is always
+                // outside its own VPN, so neither list may name it.
+                val include = settings.appRouting.includePackages(BuildConfig.APPLICATION_ID)
+                val exclude = settings.appRouting.excludePackages(BuildConfig.APPLICATION_ID)
+                if (include.isNotEmpty()) {
+                    add("include_package", JsonArray().apply { include.forEach { add(it) } })
+                } else if (exclude.isNotEmpty()) {
+                    add("exclude_package", JsonArray().apply { exclude.forEach { add(it) } })
                 }
             })
         }
@@ -757,7 +771,11 @@ class SingboxConfigBuilder(
                     else -> compiled.outbound
                 }
                 rules.add(JsonObject().apply {
-                    add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                    if (compiled.packageNames.isNotEmpty()) {
+                        add("package_name", JsonArray().apply { compiled.packageNames.forEach { add(it) } })
+                    } else {
+                        add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                    }
                     addProperty("outbound", outbound)
                 })
             }

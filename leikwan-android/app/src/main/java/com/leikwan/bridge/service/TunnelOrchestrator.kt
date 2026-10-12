@@ -286,6 +286,11 @@ class TunnelOrchestrator internal constructor(
         val effectiveRoutingEngine = RulePackManifest.fromSnapshot(rulePackManager.current())
             ?.let { manifest -> routingEngine.withCategoryCatalog(RoutingCategoryCatalog.fromManifest(manifest)) }
             ?: routingEngine
+        // Per-app rules apply in every mode (their own setting, not the routing selector). A node
+        // pin only applies where proxy nodes do; elsewhere the app just takes the tunnel.
+        val appRules = prefs.appRouting.routingRules().map { rule ->
+            rule.copy(targetNodeId = rule.targetNodeId?.takeIf { it in availableNodeIds })
+        }
         if (ignoreProxyNodeTargets) {
             return effectiveRoutingEngine.compile(
                 globalDefault = UserTrafficOutcome.TUNNEL,
@@ -294,6 +299,7 @@ class TunnelOrchestrator internal constructor(
                 categoryRules = emptyList(),
                 rulePackVersions = rulePackManager.activeVersions(),
                 compiledAtMs = nowMs,
+                appRules = appRules,
             )
         }
         if (!prefs.routingSelectorEnabled) {
@@ -304,6 +310,7 @@ class TunnelOrchestrator internal constructor(
                 categoryRules = emptyList(),
                 rulePackVersions = rulePackManager.activeVersions(),
                 compiledAtMs = nowMs,
+                appRules = appRules,
             )
         }
         val warnings = mutableListOf<String>()
@@ -314,6 +321,7 @@ class TunnelOrchestrator internal constructor(
             categoryRules = userRuleStore.categoryRules().sanitizeNodeTargets(availableNodeIds, warnings),
             rulePackVersions = rulePackManager.activeVersions(),
             compiledAtMs = nowMs,
+            appRules = appRules,
         )
         return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }

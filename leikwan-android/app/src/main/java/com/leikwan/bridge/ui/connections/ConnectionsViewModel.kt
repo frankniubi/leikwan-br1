@@ -19,6 +19,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.service.ConnectProgress
+import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
 import com.leikwan.bridge.service.TunnelOrchestrator
@@ -73,6 +74,9 @@ data class ConnectionsUiState(
     val deviceLimit: DeviceLimitNotice? = null,
     /** Candidate routes the runtime is probing while connecting, or null outside route selection. */
     val selectingRouteCandidates: Int? = null,
+    /** Outbound mode: true = rules (routing selector), false = global (everything tunnelled). */
+    val ruleMode: Boolean = false,
+    val appRouting: AppRoutingConfig = AppRoutingConfig(),
 ) {
     val hasNode: Boolean get() = nodes.isNotEmpty()
     val nativeVisible: Boolean get() = nativeOutbound?.isUsable() == true
@@ -134,9 +138,22 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             nativeRouteScope = prefs.nativeOutboundRouteScope,
             nativeBypassChina = prefs.nativeOutboundBypassChina,
             nativeRoutePolicy = normalizeNativeRoutePolicy(prefs.nativeOutboundRoutePolicy),
+            ruleMode = prefs.routingSelectorEnabled,
+            appRouting = prefs.appRouting,
         )
     )
     val state = _state.asStateFlow()
+
+    /** Re-reads settings edited on other pages (outbound mode, per-app routing). */
+    fun refreshLocalSettings() {
+        _state.update { it.copy(ruleMode = prefs.routingSelectorEnabled, appRouting = prefs.appRouting) }
+    }
+
+    /** Rule mode applies user routing rules; global sends everything through the tunnel. */
+    fun setRuleMode(enabled: Boolean) {
+        prefs.routingSelectorEnabled = enabled
+        _state.update { it.copy(ruleMode = enabled) }
+    }
 
     init {
         viewModelScope.launch {

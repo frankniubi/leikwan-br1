@@ -18,14 +18,7 @@ class ConnectionsRouteSelectionUiTest {
     private fun render(state: ConnectionsUiState) {
         composeRule.setContent {
             LeikwanTheme {
-                ConnectionsScreenContent(
-                    state = state,
-                    onToggle = {},
-                    onSelectForward = {},
-                    onOpenNodePicker = {},
-                    onRefresh = {},
-                    onImportNode = {},
-                )
+                ConnectionsScreenContent(state = state)
             }
         }
     }

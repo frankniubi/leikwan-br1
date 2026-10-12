@@ -56,6 +56,7 @@ import com.leikwan.bridge.routing.CountryCatalog
 
 @Composable
 fun RoutingScreen(
+    showTitle: Boolean = true,
     viewModel: RoutingViewModel = viewModel(
         factory = viewModelFactory {
             initializer { RoutingViewModel(this[APPLICATION_KEY] as Application) }
@@ -75,6 +76,7 @@ fun RoutingScreen(
         onToggle = viewModel::toggleRule,
         onSetTargetNode = viewModel::setRuleTargetNode,
         onDelete = viewModel::deleteRule,
+        showTitle = showTitle,
     )
 }
 
@@ -92,6 +94,7 @@ internal fun RoutingScreenContent(
     onToggle: (String) -> Unit,
     onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
+    showTitle: Boolean = true,
 ) {
     val zh = isZhLocale()
     Column(
@@ -100,8 +103,10 @@ internal fun RoutingScreenContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text(stringResource(R.string.routing_title), style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(16.dp))
+        if (showTitle) {
+            Text(stringResource(R.string.routing_title), style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(16.dp))
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),

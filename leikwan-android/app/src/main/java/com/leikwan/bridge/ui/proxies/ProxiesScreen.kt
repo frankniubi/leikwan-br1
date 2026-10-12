@@ -67,7 +67,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.proxies_title), style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(8.dp))
 
             state.error?.let { err ->
@@ -93,7 +93,10 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                     publicKeyFormat = stringResource(R.string.proxy_summary_public_key_format),
                     addressFormat = stringResource(R.string.proxy_summary_address_format),
                 )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 160.dp),
+                ) {
                     sections.forEach { section ->
                         item(key = "section-${section.title}") {
                             val sectionTitle = if (section.title == "Other") {
@@ -187,7 +190,7 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
         }
 
         Column(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 96.dp),
             horizontalAlignment = Alignment.End,
         ) {
             if (showFabMenu) {
