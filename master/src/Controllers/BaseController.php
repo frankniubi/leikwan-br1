@@ -1689,6 +1689,7 @@ abstract class BaseController
             ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'My Services', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
             ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Buy Packages', 'active' => $active === 'plans'],
             ['group' => 'Services', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => 'Services', 'href' => '/tenant/hosted-nodes', 'label' => 'My Nodes', 'active' => $active === 'hosted-nodes'],
             ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Balance & Billing', 'active' => $active === 'account'],
             ['group' => 'Account', 'href' => '/tenant/security', 'label' => 'Account Security', 'active' => $active === 'security'],
             ['group' => 'More', 'href' => '/knowledgebase', 'label' => 'Help Center', 'active' => $active === 'knowledgebase'],
