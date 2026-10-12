@@ -885,6 +885,7 @@ final class ClientAgentController extends BaseController
         $desiredUltraRuntimeVersion = (string) $snapshot['desired_ultra_runtime_version'];
         $desiredUltraRuntimeSha256 = (string) $snapshot['desired_ultra_runtime_sha256'];
         $updateRequestToken = (string) $snapshot['update_request_token'];
+        $updateRequested = (bool) $snapshot['update_requested'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
@@ -924,22 +925,26 @@ final class ClientAgentController extends BaseController
                 'agent_config_json' => $agentConfig,
                 'agent_update_request_token' => $updateRequestToken,
                 'agent_update_requested_at' => (string) ($client['agent_update_requested_at'] ?? ''),
-                'desired_agent_version' => (string) ($clientAgent['version'] ?? ''),
-                'desired_agent_sha256' => (string) ($clientAgent['sha256'] ?? ''),
-                'desired_installer_version' => (string) ($clientAgentInstaller['version'] ?? ''),
-                'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
-                'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
-                'desired_install_forward_runtime_sha256' => (string) ($installForwardRuntime['sha256'] ?? ''),
-                'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
-                'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
-                'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
-                'desired_bond_sha256' => $desiredBondSha256,
-                'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
-                'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
-                'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
-                'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
-                'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
-                'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
+                // The agent upgrades itself whenever these differ from what it runs, so they are
+                // only sent while an update requested from the console is pending.
+                ...self::desiredClientArtifacts($updateRequested, [
+                    'desired_agent_version' => (string) ($clientAgent['version'] ?? ''),
+                    'desired_agent_sha256' => (string) ($clientAgent['sha256'] ?? ''),
+                    'desired_installer_version' => (string) ($clientAgentInstaller['version'] ?? ''),
+                    'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
+                    'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
+                    'desired_install_forward_runtime_sha256' => (string) ($installForwardRuntime['sha256'] ?? ''),
+                    'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
+                    'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
+                    'desired_bond_version' => (string) ($bondBinary['version'] ?? ''),
+                    'desired_bond_sha256' => $desiredBondSha256,
+                    'desired_mptcp_runtime_version' => (string) ($mptcpRuntime['version'] ?? ''),
+                    'desired_mptcp_runtime_sha256' => (string) ($mptcpRuntime['sha256'] ?? ''),
+                    'desired_cfwg_watchdog_version' => (string) ($cfwgLatencyWatchdog['version'] ?? ''),
+                    'desired_cfwg_watchdog_sha256' => (string) ($cfwgLatencyWatchdog['sha256'] ?? ''),
+                    'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
+                    'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
+                ]),
                 'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
@@ -1032,9 +1037,15 @@ final class ClientAgentController extends BaseController
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
         $desiredUltraRuntimeVersion = (string) ($ultraClientRuntime['version'] ?? '');
         $desiredUltraRuntimeSha256 = (string) ($ultraClientRuntime['binary_sha256'] ?? $ultraClientRuntime['sha256'] ?? '');
+        // Updates are never forced: a client agent only upgrades after someone asks for it from the console.
         $updateRequestToken = trim((string) ($client['agent_update_request_token'] ?? ''));
-        if ($updateRequestToken === '') {
-            $updateRequestToken = $this->autoUpdateTokenForVersion((string) ($client['agent_version'] ?? ''), $clientAgentKey, 'auto-client-agent');
+        $updateRequested = self::clientUpdateRequestIsPending(
+            $updateRequestToken,
+            (string) ($client['agent_update_requested_at'] ?? ''),
+            time()
+        );
+        if (!$updateRequested) {
+            $updateRequestToken = '';
         }
 
         $agentConfig = $this->authoritativeAgentConfig($client);
@@ -1100,6 +1111,7 @@ final class ClientAgentController extends BaseController
             'desired_ultra_runtime_version' => $desiredUltraRuntimeVersion,
             'desired_ultra_runtime_sha256' => $desiredUltraRuntimeSha256,
             'update_request_token' => $updateRequestToken,
+            'update_requested' => $updateRequested,
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
             'hosted_nodes_revision' => $hostedNodesRevision,
@@ -1410,6 +1422,31 @@ final class ClientAgentController extends BaseController
             }
         }
         return array_values($hashes);
+    }
+
+    /** How long a console update request keeps the target versions on offer to an offline agent. */
+    private const CLIENT_UPDATE_REQUEST_WINDOW_SECONDS = 72 * 3600;
+
+    public static function clientUpdateRequestIsPending(string $requestToken, string $requestedAt, int $now): bool
+    {
+        if (trim($requestToken) === '' || trim($requestedAt) === '') {
+            return false;
+        }
+        $requested = strtotime(trim($requestedAt) . ' UTC');
+        if ($requested === false) {
+            return false;
+        }
+
+        return $now - $requested <= self::CLIENT_UPDATE_REQUEST_WINDOW_SECONDS;
+    }
+
+    /**
+     * @param array<string, string> $desired
+     * @return array<string, string>
+     */
+    public static function desiredClientArtifacts(bool $updateRequested, array $desired): array
+    {
+        return $updateRequested ? $desired : array_fill_keys(array_keys($desired), '');
     }
 
     private static function usesUltraPolicyV2(string $platform): bool
