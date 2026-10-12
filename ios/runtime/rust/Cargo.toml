@@ -1,0 +1,31 @@
+[package]
+name = "leikwan-ios-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "In-process host for the leikwan ingress and bond runtimes inside the iOS packet tunnel"
+
+# Standalone root: the iOS runtime is not part of the wstunnel-main workspace,
+# it only consumes two of its crates by path.
+[workspace]
+
+[lib]
+name = "leikwan_ios_runtime"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+leikwan-ingress = { path = "../../../wstunnel-main/leikwan-ingress" }
+leikwan-bond = { path = "../../../wstunnel-main/leikwan-bond" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+log = { version = "0.4", features = ["std"] }
+# "log" makes the ingress crate's tracing events reach the log facade, which
+# is forwarded to the packet tunnel's logger.
+tracing = { version = "0.1", features = ["log"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "net", "macros"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
