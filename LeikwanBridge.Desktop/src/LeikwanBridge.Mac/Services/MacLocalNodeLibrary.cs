@@ -20,6 +20,8 @@ public sealed class MacLocalNodeLibrary : INodeLibrary
 
     public event Action? Changed;
 
+    public event Action<IReadOnlyList<NodePairing>>? PanelPairingsChanged { add { } remove { } }
+
     public bool IsCloudAvailable => false;
 
     public IReadOnlyList<NodeListItem> Nodes => Project(_connections.Profiles, _connections.Selection);

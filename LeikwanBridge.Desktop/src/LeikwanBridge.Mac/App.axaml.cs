@@ -178,7 +178,8 @@ public sealed partial class App : Application
             },
             trafficCounters: new MacTrafficCounterReader(
                 () => config.GetEffectiveStateDir(),
-                PlatformPaths.RuntimeDirectory).Read);
+                PlatformPaths.RuntimeDirectory).Read,
+            nodeLibrary: services.NodeLibrary);
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;

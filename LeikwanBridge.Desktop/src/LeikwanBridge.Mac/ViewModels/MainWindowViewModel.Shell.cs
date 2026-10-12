@@ -83,7 +83,10 @@ public sealed partial class MainWindowViewModel
             DeleteNodeFromNodesPageAsync,
             _dispatch);
         if (_nodeLibrary is not null)
+        {
             _nodeLibrary.Changed += () => _dispatch(OnNodeLibraryChanged);
+            _nodeLibrary.PanelPairingsChanged += pairings => _dispatch(() => _ = ApplyPanelPairingsAsync(pairings));
+        }
         PropertyChanged += (_, args) =>
         {
             switch (args.PropertyName)
@@ -256,13 +259,28 @@ public sealed partial class MainWindowViewModel
         {
             var preferred = SelectedConnectionProfile?.Id ?? 0;
             _connectionSelection = _connections.Selection;
-            ReplaceConnectionProfiles(_connections.Profiles, preferred);
+            // Only rebuild when the list really changed: replacing the selected
+            // profile reloads the node editor and would drop unsaved edits.
+            if (!SameProfiles(ConnectionProfiles, _connections.Profiles))
+                ReplaceConnectionProfiles(_connections.Profiles, preferred);
             ApplySavedNodeNames();
             OnPropertyChanged(nameof(PairedConnectionRoutes));
             OnPropertyChanged(nameof(CanStartLocalConnection));
         }
         RefreshNodesPage();
     }
+
+    private static bool SameProfiles(IReadOnlyList<MacConnectionProfile> current, IReadOnlyList<MacConnectionProfile> next)
+        => current.Count == next.Count
+            && current.Zip(next).All(pair => pair.First.Id == pair.Second.Id
+                && pair.First.Name == pair.Second.Name
+                && pair.First.Protocol == pair.Second.Protocol
+                && pair.First.Server == pair.Second.Server
+                && pair.First.Port == pair.Second.Port
+                && pair.First.HostedId == pair.Second.HostedId
+                && pair.First.ShareLink == pair.Second.ShareLink
+                && pair.First.Method == pair.Second.Method
+                && pair.First.Password == pair.Second.Password);
 
     private async Task PairNodeFromNodesPageAsync(string key, int forwardId)
     {
@@ -272,18 +290,54 @@ public sealed partial class MainWindowViewModel
         {
             var row = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
                 ?? throw new NodeLibraryException("hosted_node_forward_not_found");
+            // Saves the pick on this Mac and, for a hosted node, on the panel.
             await PairRouteNodeAsync(row, profileId);
             _dispatch(() => row.SetSavedNode(ConnectionProfiles.FirstOrDefault(profile => profile.Id == profileId)));
-            if (_nodeLibrary is { IsCloudAvailable: true } library)
-                await library.PairAsync(forwardId, key);
             return;
         }
         foreach (var row in Forwards.Where(item => item.SelectedNode?.Id == profileId).ToList())
         {
             await PairRouteNodeAsync(row, 0);
             _dispatch(() => row.SetSavedNode(null));
-            if (_nodeLibrary is { IsCloudAvailable: true } library)
-                await library.PairAsync(row.ForwardId, null);
+        }
+    }
+
+    /// <summary>
+    /// Shares a pairing with the client's other devices when it involves a hosted node.
+    /// A local-only pick stays on this Mac (the panel cannot reference it).
+    /// </summary>
+    private async Task PushPairingToCloudAsync(int forwardId, int profileId, int previousProfileId)
+    {
+        if (_nodeLibrary is not { IsCloudAvailable: true } library || forwardId <= 0)
+            return;
+        bool IsHosted(int id) => id > 0 && ConnectionProfiles.FirstOrDefault(profile => profile.Id == id)?.IsHosted == true;
+        try
+        {
+            if (IsHosted(profileId))
+                await library.PairAsync(forwardId, profileId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            else if (IsHosted(previousProfileId))
+                await library.PairAsync(forwardId, null);
+        }
+        catch (NodeLibraryException exception)
+        {
+            _dispatch(() => ShowNotice("The pairing is saved on this Mac but could not be shared: "
+                + NodesViewModel.DescribeError(exception.Code)));
+        }
+    }
+
+    /// <summary>Applies pairings changed on the panel (console or another device) as each forward's node.</summary>
+    private async Task ApplyPanelPairingsAsync(IReadOnlyList<NodePairing> pairings)
+    {
+        foreach (var pairing in pairings)
+        {
+            var row = Forwards.FirstOrDefault(item => item.ForwardId == pairing.ForwardId);
+            if (row is null || !MacLocalNodeLibrary.TryParseKey(pairing.Key, out var profileId))
+                continue;
+            var profile = ConnectionProfiles.FirstOrDefault(item => item.Id == profileId);
+            if (profile is null)
+                continue;
+            await PairRouteNodeAsync(row, profileId, pushToCloud: false);
+            _dispatch(() => row.SetSavedNode(profile));
         }
     }
 

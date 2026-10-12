@@ -22,6 +22,9 @@ public sealed record NodeListItem(
     NodeCloudState CloudState,
     IReadOnlyList<int> PairedForwardIds);
 
+/// <summary>A forward → node pairing (node by library key).</summary>
+public sealed record NodePairing(int ForwardId, string Key);
+
 /// <summary>Outcome of "sync all to cloud" (mirrors the panel batch endpoint counts).</summary>
 public sealed record NodeSyncSummary(int Uploaded, int AlreadyInCloud, int Unsupported, int Failed);
 
@@ -41,6 +44,12 @@ public sealed class NodeLibraryException(string code) : Exception(code)
 public interface INodeLibrary
 {
     event Action? Changed;
+
+    /// <summary>
+    /// Pairings set or changed on the panel (console or another device) since the last sync;
+    /// the main view model applies them as each forward's selected node.
+    /// </summary>
+    event Action<IReadOnlyList<NodePairing>>? PanelPairingsChanged;
 
     bool IsCloudAvailable { get; }
 

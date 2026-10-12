@@ -9,7 +9,7 @@
     <!-- Toolbar: import a share link, cloud actions. -->
     <Border Grid.Row="0" Classes="card" Padding="14,12">
       <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
-        <TextBox Text="{Binding ImportLink, Mode=TwoWay}" Watermark="Paste a share link (ss://, wg://)"
+        <TextBox Text="{Binding ImportLink, Mode=TwoWay}" Watermark="Paste share links (ss://, socks5://, vless://, wg://)"
                  AutomationProperties.Name="Share link" />
         <Button Grid.Column="1" Classes="primary" Command="{Binding ImportShareLinkCommand}">
           <StackPanel Orientation="Horizontal" Spacing="7">
@@ -92,6 +92,8 @@
                       </ComboBox.ItemTemplate>
                     </ComboBox>
                   </StackPanel>
+                  <TextBlock Text="Delete again to remove it from every device of this client." TextWrapping="Wrap"
+                             FontSize="11" Foreground="{DynamicResource DangerBrush}" IsVisible="{Binding IsDeleteArmed}" />
                   <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
                     <Button Classes="tonal" MinHeight="32" Padding="12,4"
                             Command="{Binding #NodeCards.((vm:NodesViewModel)DataContext).UploadCommand}"

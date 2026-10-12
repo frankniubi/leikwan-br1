@@ -9,11 +9,27 @@ public static class MacConnectionProtocol
     public const string WireGuard = "wireguard";
     public const string External = "external";
 
-    // Legacy protocol values are intentionally absent from this allowlist.
+    /// <summary>SOCKS5 / VLESS nodes come from share links or the panel's hosted nodes (Core UserNode).</summary>
+    public const string Socks5 = "socks5";
+    public const string Vless = "vless";
+
+    // Legacy protocol values are intentionally absent from this allowlist: a SOCKS5 / VLESS
+    // profile is only valid with a share link (see IsStorable); legacy field-based VLESS
+    // records stay unsupported and are purged.
     public static IReadOnlyList<string> Supported { get; } = [Shadowsocks, WireGuard, External];
+
+    /// <summary>Protocols the field editor can create; SOCKS5 / VLESS are imported as share links.</summary>
+    public static IReadOnlyList<string> Editable { get; } = [Shadowsocks, WireGuard, External];
 
     public static bool IsSupported(string? protocol)
         => Supported.Contains(protocol?.Trim().ToLowerInvariant() ?? string.Empty, StringComparer.Ordinal);
+
+    /// <summary>Whether a saved profile can be kept: a supported protocol, or a share-link node.</summary>
+    public static bool IsStorable(MacConnectionProfile? profile)
+        => profile is not null
+            && (IsSupported(profile.Protocol)
+                || (profile.HasShareLink
+                    && profile.Protocol?.Trim().ToLowerInvariant() is Socks5 or Vless));
 }
 
 public enum MacConnectionMode
@@ -77,12 +93,31 @@ public sealed class MacConnectionProfile
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    /// <summary>Panel node id once the node is hosted ("上云"); null = only on this Mac.</summary>
+    [JsonPropertyName("hosted_id")]
+    public long? HostedId { get; set; }
+
+    /// <summary>
+    /// Canonical share link (Core UserNodeShareLink) for nodes the field editor cannot express:
+    /// SOCKS5, VLESS, and Shadowsocks with a SIP003 plugin. The sing-box outbound is built from it.
+    /// </summary>
+    [JsonPropertyName("share_link")]
+    public string ShareLink { get; set; } = "";
+
+    [JsonIgnore]
+    public bool IsHosted => HostedId is > 0;
+
+    [JsonIgnore]
+    public bool HasShareLink => !string.IsNullOrWhiteSpace(ShareLink);
+
     [JsonIgnore]
     public string DisplayProtocol => Protocol.Trim().ToUpperInvariant() switch
     {
         "WIREGUARD" => "WireGuard",
         "SHADOWSOCKS" => "Shadowsocks",
         "EXTERNAL" => "External IP + port",
+        "SOCKS5" when HasShareLink => "SOCKS5",
+        "VLESS" when HasShareLink => "VLESS",
         _ => "Unsupported",
     };
 

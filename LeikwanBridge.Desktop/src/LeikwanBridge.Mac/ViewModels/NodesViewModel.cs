@@ -48,7 +48,7 @@ public sealed partial class NodesViewModel : ObservableObject
     public bool IsCloudAvailable => _library()?.IsCloudAvailable == true;
     public string CloudHint => IsCloudAvailable
         ? "Hosted nodes follow this client to every trusted device."
-        : "Cloud sync is not available in this build yet. Nodes are stored in this Mac's Keychain.";
+        : "Sign in to sync hosted nodes. Nodes are stored in this Mac's Keychain.";
     public int HostedCount => Nodes.Count(node => node.IsHosted);
     public string Summary => Nodes.Count == 0
         ? "No nodes yet"
@@ -141,6 +141,12 @@ public sealed partial class NodesViewModel : ObservableObject
     {
         if (node is null)
             return Task.CompletedTask;
+        if (node.IsHosted && !node.IsDeleteArmed)
+        {
+            // A hosted node is deleted on every device of this client: ask once more.
+            node.IsDeleteArmed = true;
+            return Task.CompletedTask;
+        }
         return RunAsync(async () =>
         {
             await _delete(node.Key);
@@ -196,6 +202,13 @@ public sealed partial class NodesViewModel : ObservableObject
         "hosted_nodes_unavailable" => "The panel cannot store nodes right now. Try again later.",
         "rate_limited" => "Too many changes in a short time. Wait a minute and try again.",
         "node_not_found" or "hosted_node_not_found" => "The node no longer exists. The list was refreshed.",
+        "node_duplicate" => "That node is already in the list.",
+        "hosted_nodes_offline" => "Sign in to use cloud nodes.",
+        "hosted_nodes_unsupported" => "This panel does not support cloud nodes yet.",
+        "hosted_nodes_network" => "The panel could not be reached. Check the connection and try again.",
+        "device_limit_reached" => "Device limit reached. Disconnect another device first.",
+        "hosted_node_invalid" => "The panel rejected this node. Check its protocol settings.",
+        _ when code.StartsWith("node_", StringComparison.Ordinal) => "The share link is invalid or uses settings that are not supported.",
         _ => "The share link could not be imported.",
     };
 }
@@ -252,6 +265,9 @@ public sealed partial class NodeCardViewModel : ObservableObject
     public string ProtocolInitial => string.IsNullOrEmpty(Protocol) ? "?" : Protocol[..1].ToUpperInvariant();
 
     [ObservableProperty] private NodeServiceOption? _selectedService;
+
+    /// <summary>First delete click on a hosted node arms the confirmation.</summary>
+    [ObservableProperty] private bool _isDeleteArmed;
 
     partial void OnSelectedServiceChanged(NodeServiceOption? value)
     {

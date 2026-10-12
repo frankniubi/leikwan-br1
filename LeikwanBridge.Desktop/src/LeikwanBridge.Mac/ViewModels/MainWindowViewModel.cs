@@ -864,6 +864,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         if (_connections is null)
             return;
         LocalConnectionError = string.Empty;
+        if (NodeEditor.IsShareLinkNode && NodeEditor.Id > 0)
+        {
+            // Hosted / share-link nodes are cloud copies or carry settings the field
+            // editor cannot show; saving here would fork them from the panel.
+            LocalConnectionError = "Cloud and share-link nodes are managed on the Nodes page. Delete and re-import to change them.";
+            return;
+        }
         try
         {
             var profile = NodeEditor.ToProfile();
@@ -1003,6 +1010,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             MacConnectionProtocol.WireGuard => transport is "udp" or "tcp+udp",
             MacConnectionProtocol.Shadowsocks => transport is "tcp" or "tcp+udp",
+            MacConnectionProtocol.Socks5 or MacConnectionProtocol.Vless => transport is "tcp" or "tcp+udp",
             MacConnectionProtocol.External => transport is "tcp" or "udp" or "tcp+udp",
             _ => false,
         };
@@ -1011,7 +1019,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private static string ConnectionTransportError(MacConnectionProfile profile)
         => profile.Protocol.Equals(MacConnectionProtocol.WireGuard, StringComparison.OrdinalIgnoreCase)
             ? "The selected route does not support WireGuard. Choose UDP or TCP + UDP transport."
-            : "The selected route does not support Shadowsocks. Choose TCP or TCP + UDP transport.";
+            : profile.Protocol.Equals(MacConnectionProtocol.Shadowsocks, StringComparison.OrdinalIgnoreCase)
+                ? "The selected route does not support Shadowsocks. Choose TCP or TCP + UDP transport."
+                : $"The selected route does not support {profile.DisplayProtocol}. Choose TCP or TCP + UDP transport.";
 
     private void ValidateConnectionForward(MacConnectionProfile profile, ProxyForwardLease lease)
     {
@@ -1528,12 +1538,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private async Task PairRouteNodeAsync(ForwardRowViewModel row, int profileId)
+    private async Task PairRouteNodeAsync(ForwardRowViewModel row, int profileId, bool pushToCloud = true)
     {
         if (_connections is null || _loadingConnectionSelection)
             return;
         if (profileId > 0 && !ConnectionProfiles.Any(profile => profile.Id == profileId))
             return;
+        var previousProfileId = _connectionSelection.ForwardProfiles.TryGetValue(row.ForwardId, out var previous) ? previous : 0;
         _connectionSelection = _connectionSelection with
         {
             ForwardId = row.ForwardId,
@@ -1555,6 +1566,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             _dispatch(() => LocalConnectionError = "The selected route and node could not be saved.");
         }
+        if (pushToCloud)
+            await PushPairingToCloudAsync(row.ForwardId, profileId, previousProfileId).ConfigureAwait(false);
     }
 
     private void ScheduleNativeLeaseRefresh()

@@ -17,6 +17,8 @@ public sealed class MacUiFixtureNodeLibrary : INodeLibrary
 
     public event Action? Changed;
 
+    public event Action<IReadOnlyList<NodePairing>>? PanelPairingsChanged { add { } remove { } }
+
     public bool IsCloudAvailable => true;
 
     public IReadOnlyList<NodeListItem> Nodes => _nodes;
