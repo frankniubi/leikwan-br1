@@ -27,7 +27,11 @@ final class NetworkProbe: ObservableObject {
         detecting = true
         failed = false
         defer { detecting = false }
-        if let info = await Self.cloudflareTrace() ?? Self.ipSB() {
+        var info = await Self.cloudflareTrace()
+        if info == nil {
+            info = await Self.ipSB()
+        }
+        if let info {
             exitIP = info
         } else {
             exitIP = nil
