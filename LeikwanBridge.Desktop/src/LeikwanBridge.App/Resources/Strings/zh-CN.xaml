@@ -24,7 +24,6 @@
     <system:String x:Key="ProxyGameCancel">取消</system:String>
     <system:String x:Key="ProxyGameConfirm">添加档案</system:String>
     <system:String x:Key="ProxyActiveGame">当前加速：</system:String>
-    <system:String x:Key="ProxyImportNetchModes">导入 Netch 模式</system:String>
     <system:String x:Key="ProxyGameAdded">已添加游戏档案：{0}</system:String>
     <system:String x:Key="ProxyNetchImported">已导入 {0} 个 Netch 游戏模式。</system:String>
     <system:String x:Key="ProxyNetchFolderRequired">请选择 Netch 的 mode 文件夹。</system:String>
@@ -213,9 +212,6 @@
     <system:String x:Key="ProxyForwardReadinessTimeout">线路监听未能及时就绪，请稍后重试。</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>
-    <system:String x:Key="ProxyImport">导入并保存</system:String>
-    <system:String x:Key="ProxyImportPrompt">粘贴分享链接</system:String>
-    <system:String x:Key="ProxyImportSupported">支持 Shadowsocks、SOCKS5、VLESS 链接</system:String>
     <system:String x:Key="ProxyManualTitle">手动填写节点</system:String>
     <system:String x:Key="ProxyConnectionTitle">连接设置</system:String>
     <system:String x:Key="ProxyRouteListenPort">线路监听端口</system:String>
@@ -225,6 +221,10 @@
     <system:String x:Key="ProxyModeHttp">HTTP</system:String>
     <system:String x:Key="ProxyModeTun">TUN（全设备）</system:String>
     <system:String x:Key="ProxyModeProcess">游戏加速</system:String>
+    <system:String x:Key="ProxyImportNetchModes">导入 Netch 模式</system:String>
+        <system:String x:Key="ProxyImport">导入并保存</system:String>
+    <system:String x:Key="ProxyImportPrompt">粘贴分享链接</system:String>
+    <system:String x:Key="ProxyImportSupported">Shadowsocks、SOCKS5 和 VLESS 链接</system:String>
     <system:String x:Key="ProxyName">节点名称</system:String>
     <system:String x:Key="ProxyServer">服务器</system:String>
     <system:String x:Key="ProxyPort">端口</system:String>
