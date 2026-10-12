@@ -87,6 +87,13 @@ data class ConnectionsUiState(
         get() = nativeCarrier?.routeScopes ?: nativeOutbound?.routeScopes.orEmpty()
     val hasUsablePath: Boolean get() = hasNode || (nativeSelected && nativeVisible && nativeCarrier != null)
 
+    /** Native outbound rules leave through the panel's own exit; they never pair with a node. */
+    fun isNativeForward(forward: ForwardListItem): Boolean =
+        forward.nativeOutbound || nativeOutbound?.carrier(forward.forwardId) != null
+
+    /** Forwards that ride one of the user's nodes; native outbound rules are listed on their own. */
+    val serviceForwards: List<ForwardListItem> get() = forwards.filterNot(::isNativeForward)
+
     val selectedForwardServiceName: String
         get() = forwards.firstOrNull { it.forwardId == selectedForwardId }?.serviceName.orEmpty()
 
@@ -255,12 +262,16 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                     NATIVE_ROUTE_POLICY_RESTRICTED
                 }
                 val nativeSelected = prefs.nativeOutboundSelected && capability != null && nativeCarrier != null
-                val displayedSelected = if (nativeSelected && forwards.any { it.forwardId == nativeId }) {
-                    nativeId
-                } else {
-                    selected
+                val serviceIds = forwards
+                    .filterNot { it.nativeOutbound || capability?.carrier(it.forwardId) != null }
+                    .map { it.forwardId }
+                val displayedSelected = when {
+                    nativeSelected && forwards.any { it.forwardId == nativeId } -> nativeId
+                    // A native rule cannot carry a node, so an ordinary connect never selects one.
+                    selected in serviceIds -> selected
+                    else -> serviceIds.firstOrNull() ?: selected
                 }
-                if (nativeSelected) prefs.selectedForwardId = displayedSelected
+                prefs.selectedForwardId = displayedSelected
                 prefs.nativeOutboundForwardId = nativeId
                 prefs.nativeOutboundRouteScope = nativeScope
                 prefs.nativeOutboundBypassChina = if (nativeScope == "global") prefs.nativeOutboundBypassChina else false
@@ -311,13 +322,30 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         }
     }
 
+    /** Picks an ordinary service; services and native outbound rules share one selection. */
     fun selectForward(forwardId: Long) {
-        val nodeId = _state.value.nodeByForward[forwardId]
-            ?: _state.value.nodes.firstOrNull()?.id
+        val current = _state.value
+        if (current.vpnStatus != VpnStatus.DISCONNECTED) return
+        if (current.forwards.firstOrNull { it.forwardId == forwardId }?.let(current::isNativeForward) == true) {
+            selectNativeForward(forwardId)
+            return
+        }
+        val nodeId = current.nodeByForward[forwardId]
+            ?: current.nodes.firstOrNull()?.id
             ?: 0L
         prefs.selectedForwardId = forwardId
+        prefs.nativeOutboundSelected = false
         if (nodeId > 0L) prefs.selectedProxyId = nodeId
-        _state.update { it.copy(selectedForwardId = forwardId) }
+        _state.update { it.copy(selectedForwardId = forwardId, nativeSelected = false) }
+    }
+
+    /** Picks a native outbound rule; the ordinary service selection gives way to it. */
+    fun selectNativeForward(forwardId: Long) {
+        val current = _state.value
+        if (current.vpnStatus != VpnStatus.DISCONNECTED) return
+        if (!current.nativeVisible || current.nativeOutbound?.carrier(forwardId) == null) return
+        setNativeForward(forwardId)
+        setNativeSelected(true)
     }
 
     fun setNativeSelected(selected: Boolean) {

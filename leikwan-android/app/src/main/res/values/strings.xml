@@ -308,7 +308,6 @@
     <string name="connections_error_select_node">Bring in a node first</string>
     <string name="connections_native_title">Native outbound</string>
     <string name="connections_native_enabled">Use native outbound</string>
-    <string name="connections_native_forward">Carrier forward</string>
     <string name="connections_native_scope">Traffic scope</string>
     <string name="connections_native_scope_cn_only">Mainland China only</string>
     <string name="connections_native_scope_intl_only">International only</string>
@@ -316,7 +315,6 @@
     <string name="connections_native_unrestricted">Unrestricted native route</string>
     <string name="connections_native_bypass_china">Bypass mainland China</string>
     <string name="connections_native_no_node">No personal node is required</string>
-    <string name="connections_native_unknown">Native carrier</string>
     <string name="connections_error_native_unavailable">Native outbound is unavailable for this forward</string>
     <string name="device_limit_title">Device limit reached</string>
     <string name="device_limit_message_counts">Device limit reached (%1$d of %2$d devices online). Disconnect another device or ask your provider to raise the device limit. This device reconnects automatically about 3 minutes after another device disconnects.</string>

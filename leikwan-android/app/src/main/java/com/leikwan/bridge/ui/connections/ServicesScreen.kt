@@ -21,16 +21,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.AddLink
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -70,8 +65,7 @@ fun ServicesScreen(
         onOpenNodePicker = { forwardId -> nodePickerForward = forwardId },
         onRefresh = viewModel::refreshForwards,
         onImportNode = onImportNode,
-        onNativeSelected = viewModel::setNativeSelected,
-        onNativeForward = viewModel::setNativeForward,
+        onNativeForward = viewModel::selectNativeForward,
         onNativeRouteScope = viewModel::setNativeRouteScope,
         onNativeBypassChina = viewModel::setNativeBypassChina,
         onNativeRoutePolicy = viewModel::setNativeRoutePolicy,
@@ -95,7 +89,6 @@ internal fun ServicesScreenContent(
     onOpenNodePicker: (Long) -> Unit,
     onRefresh: () -> Unit,
     onImportNode: () -> Unit,
-    onNativeSelected: (Boolean) -> Unit = {},
     onNativeForward: (Long) -> Unit = {},
     onNativeRouteScope: (String) -> Unit = {},
     onNativeBypassChina: (Boolean) -> Unit = {},
@@ -131,7 +124,6 @@ internal fun ServicesScreenContent(
         if (state.nativeVisible) {
             NativeOutboundCard(
                 state = state,
-                onSelected = onNativeSelected,
                 onForward = onNativeForward,
                 onRouteScope = onNativeRouteScope,
                 onBypassChina = onNativeBypassChina,
@@ -161,7 +153,7 @@ internal fun ForwardListItem.endpointLabel(): String {
  * Lines an app group can ride: Ultra services with a real target (a native-only carrier's
  * loopback target cannot reach a node), labelled like the Services list.
  */
-internal fun ConnectionsUiState.appGroupLines(): List<AppGroupLine> = forwards
+internal fun ConnectionsUiState.appGroupLines(): List<AppGroupLine> = serviceForwards
     .filter { it.mode == ForwardMode.ULTRA && !it.target.trim().startsWith("127.") && !it.target.trim().startsWith("localhost") }
     .map { forward ->
         AppGroupLine(
@@ -209,16 +201,20 @@ private fun ServicesSection(
     onRefresh: () -> Unit,
     onImportNode: () -> Unit,
 ) {
+    // Native outbound rules have their own card while it is shown; without it they stay listed,
+    // marked, but cannot be picked (they never carry a node).
+    val rows = if (state.nativeVisible) state.serviceForwards else state.forwards
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (state.isLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
+        if (rows.isEmpty() && state.nativeVisible) return@Column
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
-            if (state.forwards.isEmpty()) {
+            if (rows.isEmpty()) {
                 Text(
                     stringResource(R.string.connections_empty_forwards),
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
@@ -227,7 +223,7 @@ private fun ServicesSection(
                 )
             } else {
                 Column {
-                    state.forwards.forEachIndexed { index, forward ->
+                    rows.forEachIndexed { index, forward ->
                         if (index > 0) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(start = 56.dp),
@@ -238,9 +234,9 @@ private fun ServicesSection(
                             forward = forward,
                             node = state.nodeFor(forward.forwardId),
                             hasNodes = state.hasNode,
-                            selected = forward.forwardId == state.selectedForwardId,
+                            selected = !state.nativeSelected && forward.forwardId == state.selectedForwardId,
                             locked = state.vpnStatus != VpnStatus.DISCONNECTED,
-                            nativeMode = state.nativeSelected && forward.forwardId == state.nativeForwardId,
+                            nativeRule = state.isNativeForward(forward),
                             onSelect = { onSelectForward(forward.forwardId) },
                             onOpenNodePicker = { onOpenNodePicker(forward.forwardId) },
                             onImportNode = onImportNode,
@@ -259,7 +255,7 @@ private fun ServiceRow(
     hasNodes: Boolean,
     selected: Boolean,
     locked: Boolean,
-    nativeMode: Boolean,
+    nativeRule: Boolean,
     onSelect: () -> Unit,
     onOpenNodePicker: () -> Unit,
     onImportNode: () -> Unit,
@@ -267,11 +263,11 @@ private fun ServiceRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !locked, role = Role.RadioButton, onClick = onSelect)
+            .clickable(enabled = !locked && !nativeRule, role = Role.RadioButton, onClick = onSelect)
             .padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = selected, onClick = onSelect, enabled = !locked)
+        RadioButton(selected = selected, onClick = onSelect, enabled = !locked && !nativeRule)
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
             Text(
                 stringResource(R.string.connections_forward_title_format, forward.forwardId, forward.routeLabel()),
@@ -292,7 +288,7 @@ private fun ServiceRow(
         }
         Spacer(Modifier.width(8.dp))
         when {
-            nativeMode -> Text(
+            nativeRule -> Text(
                 stringResource(R.string.connections_native_title),
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
@@ -325,19 +321,23 @@ private fun ServiceRow(
 /** Keeps long node names from squeezing the route label. */
 private val IntrinsicNodeWidth = 96.dp
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Native outbound rules, listed directly: each one is picked like a service but never pairs with a
+ * node, because traffic leaves through the panel's own exit. The settings drawer holds the scope
+ * and policy for the picked rule.
+ */
 @Composable
 private fun NativeOutboundCard(
     state: ConnectionsUiState,
-    onSelected: (Boolean) -> Unit,
     onForward: (Long) -> Unit,
     onRouteScope: (String) -> Unit,
     onBypassChina: (Boolean) -> Unit,
     onRoutePolicy: (String) -> Unit,
 ) {
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
-    var carrierExpanded by rememberSaveable { mutableStateOf(false) }
     val carrier = state.nativeCarrier
+    val locked = state.vpnStatus != VpnStatus.DISCONNECTED
+    val carriers = state.nativeOutbound?.forwards.orEmpty()
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -345,27 +345,18 @@ private fun NativeOutboundCard(
     ) {
         Column {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(stringResource(R.string.connections_native_title), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        carrier?.takeIf { it.direction.isNotBlank() }?.let {
-                            stringResource(R.string.connections_forward_title_format, it.forwardId, prettyRoute(it.direction))
-                        } ?: stringResource(R.string.connections_native_unknown),
+                        stringResource(R.string.connections_native_no_node),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Switch(checked = state.nativeSelected, onCheckedChange = onSelected)
-                IconButton(
-                    onClick = {
-                        val nextExpanded = !drawerExpanded
-                        drawerExpanded = nextExpanded
-                        if (!nextExpanded) carrierExpanded = false
-                    },
-                ) {
+                IconButton(onClick = { drawerExpanded = !drawerExpanded }) {
                     Icon(
                         imageVector = if (drawerExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                         contentDescription = stringResource(
@@ -375,9 +366,51 @@ private fun NativeOutboundCard(
                     )
                 }
             }
+            carriers.forEach { option ->
+                val selected = state.nativeSelected && option.forwardId == state.nativeForwardId
+                val forward = state.forwards.firstOrNull { it.forwardId == option.forwardId }
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 56.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !locked, role = Role.RadioButton) { onForward(option.forwardId) }
+                        .padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = selected, onClick = { onForward(option.forwardId) }, enabled = !locked)
+                    Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                        Text(
+                            stringResource(
+                                R.string.connections_forward_title_format,
+                                option.forwardId,
+                                prettyRoute(option.direction.ifBlank { forward?.routeLabel().orEmpty() }),
+                            ),
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        forward?.listenPort?.takeIf { it > 0 }?.let { port ->
+                            Text(
+                                stringResource(R.string.connections_forward_listen_format, port),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             if (drawerExpanded) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    carrier?.let {
+                        Text(
+                            stringResource(R.string.connections_forward_title_format, it.forwardId, prettyRoute(it.direction)),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                     if (carrier?.unrestrictedAllowed == true) {
                         SwitchRow(
                             label = stringResource(R.string.connections_native_unrestricted),
@@ -385,47 +418,8 @@ private fun NativeOutboundCard(
                             onCheckedChange = { enabled ->
                                 onRoutePolicy(if (enabled) "unrestricted" else "restricted")
                             },
-                            enabled = state.vpnStatus == VpnStatus.DISCONNECTED,
+                            enabled = !locked,
                         )
-                    }
-                    if (state.nativeOutbound?.forwards.orEmpty().size > 1) {
-                        ExposedDropdownMenuBox(
-                            expanded = carrierExpanded,
-                            onExpandedChange = { carrierExpanded = it },
-                        ) {
-                            OutlinedTextField(
-                                value = carrier?.direction?.let(::prettyRoute).orEmpty(),
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text(stringResource(R.string.connections_native_forward)) },
-                                modifier = Modifier.fillMaxWidth().menuAnchor(),
-                                trailingIcon = {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = carrierExpanded)
-                                },
-                            )
-                            ExposedDropdownMenu(
-                                expanded = carrierExpanded,
-                                onDismissRequest = { carrierExpanded = false },
-                            ) {
-                                state.nativeOutbound?.forwards.orEmpty().forEach { option ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                stringResource(
-                                                    R.string.connections_forward_title_format,
-                                                    option.forwardId,
-                                                    prettyRoute(option.direction),
-                                                ),
-                                            )
-                                        },
-                                        onClick = {
-                                            carrierExpanded = false
-                                            onForward(option.forwardId)
-                                        },
-                                    )
-                                }
-                            }
-                        }
                     }
                     val hasRestrictedScope = state.nativeScopes.any {
                         it.equals("cn_only", ignoreCase = true) || it.equals("intl_only", ignoreCase = true)
@@ -461,11 +455,6 @@ private fun NativeOutboundCard(
                         checked = state.nativeBypassChina,
                         onCheckedChange = onBypassChina,
                         enabled = state.nativeRouteScope == "global",
-                    )
-                    Text(
-                        stringResource(R.string.connections_native_no_node),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
