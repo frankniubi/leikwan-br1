@@ -136,7 +136,7 @@ class UltraOfflineSurvivalTest {
 
         harness.orchestrator.refreshUltraForTest(now.plusSeconds(215))
         assertEquals("due 30 s before renew_after", pullsAfterStart + 1, harness.api.pullCalls)
-        assertEquals(2, harness.leaseSends)
+        assertEquals("the panel served the running grant: nothing to re-lease yet", 1, harness.leaseSends)
         harness.orchestrator.stop()
     }
 

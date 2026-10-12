@@ -105,6 +105,8 @@ private data class ActiveUltraRuntime(
     val statusPath: String = "",
     /** When the current lease batch was accepted by the runtime. */
     val leaseSentAt: Instant = Instant.EPOCH,
+    /** A runtime-only restart failed; the next renewal must start the runtime again. */
+    val runtimeRestartPending: Boolean = false,
 )
 
 private data class ActiveNativeRuntime(
@@ -887,7 +889,8 @@ class TunnelOrchestrator internal constructor(
         if (pending != 0L && pending != active.forwardId) ultraFailureRenewalForward.compareAndSet(pending, 0L)
         val failureDriven = ultraFailureRenewalForward.compareAndSet(active.forwardId, 0L)
         val renewalDue = !now.isBefore(active.policy.renewAfter.minusSeconds(ULTRA_RENEW_MARGIN_SECONDS))
-        if (!renewalDue && !failureDriven && !runtimeLostPolicy(active)) return
+        val lostPolicy = runtimeLostPolicy(active)
+        if (!renewalDue && !failureDriven && !active.runtimeRestartPending && !lostPolicy) return
 
         try {
             panelRepo.pullCatalog(active.forwardId)
@@ -902,27 +905,47 @@ class TunnelOrchestrator internal constructor(
                 startForForward(active.forwardId, preserveControlLoop = true)
                 return
             }
-
-            val leases = panelRepo.resolveUltraLeases(nextPolicy, maxCandidates = 4)
-            val nextProtectedConnectivity = leases
-                .map(UltraLease::directConnectivity)
-                .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
-            if (nextProtectedConnectivity != active.protectedConnectivity) {
-                leases.forEach(UltraLease::wipe)
-                startForForward(active.forwardId, preserveControlLoop = true)
+            // The panel hands back the running grant until its renew_after has passed, so a
+            // renewal inside the early margin only fetched the same leases again. The runtime's
+            // lease lives as long as that grant; the next tick, past renew_after, rotates it.
+            if (!failureDriven && !lostPolicy && !active.runtimeRestartPending
+                && nextPolicy.sessionTicket == active.policy.sessionTicket
+                && nextPolicy.renewAfter == active.policy.renewAfter
+                && now.isBefore(active.policy.renewAfter)) {
                 return
             }
-            val accepted = try {
-                if (leases.size == 1) {
+
+            val leases = panelRepo.resolveUltraLeases(nextPolicy, maxCandidates = 4)
+            try {
+                val nextProtectedConnectivity = leases
+                    .map(UltraLease::directConnectivity)
+                    .fold(ProtectedConnectivitySet.empty(), ProtectedConnectivitySet::merge)
+                // A changed relay set never needs a new VpnService: this app's UID is excluded
+                // from its own VPN, so the runtime reaches any relay directly. Tearing the VPN
+                // down here dropped every Android tunnel each few renewals, and for good when a
+                // step of the rebuild failed.
+                val accepted = !active.runtimeRestartPending && if (leases.size == 1) {
                     ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
                 } else {
                     ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
                 }
+                if (accepted) {
+                    activeUltra = active.copy(
+                        policy = nextPolicy,
+                        protectedConnectivity = nextProtectedConnectivity,
+                        leaseSentAt = Instant.now(),
+                    )
+                    return
+                }
+                if (!active.runtimeRestartPending && nextProtectedConnectivity == active.protectedConnectivity) {
+                    throw IllegalStateException("ultra_lease_refresh_rejected")
+                }
+                // The runtime will not move one policy generation to a relay set that lacks its
+                // selected path. Restart only the runtime, on the port sing-box already uses.
+                restartUltraRuntime(active, forward, nextPolicy, leases, nextProtectedConnectivity)
             } finally {
                 leases.forEach(UltraLease::wipe)
             }
-            if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
-            activeUltra = active.copy(policy = nextPolicy, leaseSentAt = Instant.now())
         } catch (error: Exception) {
             if (error is CancellationException || error is PanelControlException) throw error
             // Keep a failure-driven renewal pending: the loop's retry (after its backoff) renews.
@@ -936,6 +959,56 @@ class TunnelOrchestrator internal constructor(
             )
             throw error
         }
+    }
+
+    /**
+     * Replaces the Ultra runtime process in place while the VpnService, TUN and sing-box keep
+     * running; only flows through the runtime reset. On failure the next renewal retries the
+     * restart, since the old process is already gone.
+     */
+    private fun restartUltraRuntime(
+        active: ActiveUltraRuntime,
+        forward: ForwardContract,
+        policy: UltraPolicy,
+        leases: List<UltraLease>,
+        protectedConnectivity: ProtectedConnectivitySet,
+    ) {
+        val listenPort = activeRuntime?.localListenPort ?: forward.listenPort
+        Log.i(TAG, "Restarting the Ultra runtime for forward ${active.forwardId} on a new relay set")
+        // Stop first: a same-generation plan reuses the running runtime's file names.
+        processRunner.stopForward(active.forwardId)
+        activeUltra = active.copy(runtimeRestartPending = true)
+        val planned = UltraForwardRunner.buildPlan(
+            forward = forward,
+            policy = policy,
+            binaries = binaryInstaller.prepareBinaryPaths(),
+            runtimeDir = context.filesDir,
+            autoSelect = leases.size > 1,
+            listenPortOverride = listenPort,
+        )
+        // Route-rule runtimes keep running; do not let the stale-process janitor kill them.
+        processRunner.start(active.forwardId, planned.runtimeContext, cleanupStale = false)
+        try {
+            val accepted = if (leases.size == 1) {
+                ultraLeaseSender(planned.controlSocketFile.absolutePath, policy, leases.first())
+            } else {
+                ultraLeaseBatchSender(planned.controlSocketFile.absolutePath, policy, leases)
+            }
+            if (!accepted) throw IllegalStateException("ultra_lease_refresh_rejected")
+            if (policy.transport != "udp") processRunner.awaitLocalPort(listenPort)
+        } catch (error: Exception) {
+            processRunner.stopForward(active.forwardId)
+            throw error
+        }
+        activeRuntime = planned.runtimeContext.copy(protectedConnectivity = protectedConnectivity)
+        activeUltra = active.copy(
+            policy = policy,
+            controlSocketPath = planned.controlSocketFile.absolutePath,
+            protectedConnectivity = protectedConnectivity,
+            statusPath = planned.statusFile.absolutePath,
+            leaseSentAt = Instant.now(),
+            runtimeRestartPending = false,
+        )
     }
 
     /**
