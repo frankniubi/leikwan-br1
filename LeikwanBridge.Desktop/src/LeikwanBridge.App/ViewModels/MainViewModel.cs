@@ -71,7 +71,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _connectionStatus = "Disconnected";
     [ObservableProperty] private bool _isDeviceLimitReached;
     [ObservableProperty] private string _deviceLimitMessage = string.Empty;
-    [ObservableProperty] private string _lastSyncTime = "Never";
+    [ObservableProperty] private string _lastSyncTime = GetString("DashNever");
     [ObservableProperty] private int _activeForwardCount;
     [ObservableProperty] private bool _isLoadingForwards = true;
     [ObservableProperty] private string _totalBytesIn = "0 B";
@@ -174,6 +174,7 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedProxyPairedForwardNode));
         OnPropertyChanged(nameof(IsProxyReadyForSelectedPairedForward));
         OnPropertyChanged(nameof(IsProxyConnectedForSelectedPairedForward));
+        NotifyDashboardServiceChanged();
     }
 
     public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
@@ -210,6 +211,12 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _config = new AgentConfig();
+        Forwards.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ForwardCount));
+        ProxyProfiles.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HostedNodeCount));
+            OnPropertyChanged(nameof(LocalNodeCount));
+        };
     }
 
     partial void OnSelectedProxyGameIdChanged(string value)
@@ -326,6 +333,7 @@ public partial class MainViewModel : ObservableObject
                 chinaIpListPath: _config.GetEffectiveProxyChinaIpList(),
                 preferredEgressInterface: _config.PreferredEgressInterface);
             _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
+            CreateNodeSync(stateDir);
         }
 
         if (_proxyServiceInitialized)
@@ -348,6 +356,8 @@ public partial class MainViewModel : ObservableObject
         _proxyServiceInitialized = true;
         RefreshProxyProfiles();
         RefreshProxyGameOptions();
+        if (_nodeSync is not null)
+            await _nodeSync.InitializeAsync(ct);
     }
 
     public void SetProxyPort(int proxyPort)
@@ -399,6 +409,7 @@ public partial class MainViewModel : ObservableObject
 
         if (SelectedProxyForwardId == forwardId)
             SelectedProxyProfileId = profileId;
+        PushPairingInBackground(forwardId, profileId);
         OnPropertyChanged(nameof(PairedProxyForwardRows));
         OnPropertyChanged(nameof(PairedProxyForwardOptions));
         NotifySelectedProxyPairingStateChanged();
@@ -681,7 +692,19 @@ public partial class MainViewModel : ObservableObject
         var profile = ProxyEditor.ToProfile();
         if (string.IsNullOrWhiteSpace(profile.Name))
             profile.Name = $"{profile.Server}:{profile.Port}";
-        await _proxyService!.SaveProfileAsync(profile, ct);
+        if (profile.IsHosted && _nodeSync is not null)
+        {
+            // A hosted node is the panel's copy: the edit goes to the panel first and this
+            // device applies the listing it returns (every device of the client converges).
+            var node = Core.Nodes.WindowsProxyProfileNodeRepository.ToNode(profile)
+                ?? throw new InvalidOperationException("node_protocol_unsupported");
+            Core.Services.WindowsProxyConfigBuilder.BuildProxyOutbound(profile);
+            await _nodeSync.SaveAsync(node, ct);
+        }
+        else
+        {
+            await _proxyService!.SaveProfileAsync(profile, ct);
+        }
         _config.ProxyActiveProfileId = profile.Id;
         if (SelectedProxyForwardId > 0)
             _config.ProxyProfileIdsByForwardId[SelectedProxyForwardId] = profile.Id;
@@ -697,7 +720,10 @@ public partial class MainViewModel : ObservableObject
         await EnsureProxyServiceAsync(ct);
         if (_proxyForwardProfileId == profileId)
             await StopProxyAsync(ct);
-        await _proxyService!.DeleteProfileAsync(profileId, ct);
+        if (_nodeSync is not null && _proxyService!.Profiles.Any(profile => profile.Id == profileId && profile.IsHosted))
+            await _nodeSync.DeleteAsync(profileId, ct); // deletes it on the panel, i.e. for every device
+        else
+            await _proxyService!.DeleteProfileAsync(profileId, ct);
         foreach (var forwardId in _config.ProxyProfileIdsByForwardId
             .Where(pair => pair.Value == profileId).Select(pair => pair.Key).ToList())
             _config.ProxyProfileIdsByForwardId.Remove(forwardId);
@@ -1311,6 +1337,7 @@ public partial class MainViewModel : ObservableObject
         _availableUpdateArtifact = artifact;
         AvailableUpdateVersion = artifact.Version;
         ShowUpdatePrompt = true;
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusAvailable"), artifact.Version);
         ReportUpdateFinished();
     }
 
@@ -1322,6 +1349,7 @@ public partial class MainViewModel : ObservableObject
         _config.PendingUpdateDownloadedAt = DateTimeOffset.UtcNow.ToString("O");
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusDeferred"), version);
         ReportUpdateFinished();
     }
 
@@ -1330,6 +1358,7 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Already up to date ({version}).";
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusLatest"), version);
         ReportUpdateFinished();
     }
 
@@ -1338,6 +1367,7 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Update check failed: {message}";
+        UpdateCheckStatus = GetString("UpdateStatusFailed");
         ReportUpdateFailed(message);
     }
 
@@ -1466,6 +1496,7 @@ public partial class MainViewModel : ObservableObject
             if (IsShuttingDown || _diagnostics is null || _api is null)
                 return;
             _diagnostics.QueueDebugLogUpload(client, _api, _lifecycleCts.Token);
+            _ = SyncHostedNodesIfChangedAsync(client.HostedNodesRevision, _lifecycleCts.Token);
         };
         _pollingService.ClientUpdated += _clientUpdatedHandler;
         _healthCheckService.HealthIssue += OnHealthIssue;
@@ -1681,7 +1712,7 @@ public partial class MainViewModel : ObservableObject
         var direction = string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
             ? "-"
             : forward.ForwardCombinationDirection.Trim();
-        return $"Forward #{forward.ForwardId} · {direction}";
+        return $"{GetStringOr("ForwardNumberPrefix", "Forward #")}{forward.ForwardId} · {direction}";
     }
 
     private void SetLifecycle(int forwardId, ForwardLifecycleState lifecycle)
@@ -2250,6 +2281,7 @@ public partial class MainViewModel : ObservableObject
     {
         TotalBytesIn = FormatBytes(snapshot.BytesIn);
         TotalBytesOut = FormatBytes(snapshot.BytesOut);
+        SampleUsage(snapshot);
     }
 
     private void StartUsageRefresh()
@@ -2321,7 +2353,7 @@ public partial class MainViewModel : ObservableObject
         {
             LastSyncTime = state.LastSuccessAt > 0
                 ? DateTimeOffset.FromUnixTimeSeconds((long)state.LastSuccessAt).LocalDateTime.ToString("HH:mm:ss")
-                : "Never";
+                : GetString("DashNever");
 
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
             {
@@ -2404,6 +2436,9 @@ public partial class MainViewModel : ObservableObject
         while (LogEntries.Count > 5000)
             LogEntries.RemoveAt(0);
     }
+
+    private static string GetStringOr(string key, string fallback)
+        => System.Windows.Application.Current?.TryFindResource(key) as string ?? fallback;
 
     private static string GetString(string key)
     {

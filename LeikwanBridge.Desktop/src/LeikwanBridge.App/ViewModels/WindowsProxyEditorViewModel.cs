@@ -36,6 +36,20 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
     [ObservableProperty] private string _realityShortId = "";
     [ObservableProperty] private string _alpn = "";
     [ObservableProperty] private bool _allowInsecure;
+    [ObservableProperty] private string _username = "";
+    [ObservableProperty] private string _plugin = "";
+    [ObservableProperty] private string _pluginOpts = "";
+
+    /// <summary>Panel node id of the loaded profile (0 = local only); kept so an edit stays the same hosted node.</summary>
+    [ObservableProperty] private long _hostedId;
+
+    private bool _enabled = true;
+
+    public IReadOnlyList<string> ShadowsocksPluginOptions { get; } = WindowsProxyProtocol.ShadowsocksPluginOptions;
+    public bool IsSocks5 => WindowsProxyProtocol.Normalize(Protocol) == WindowsProxyProtocol.Socks5;
+    public bool IsHosted => HostedId > 0;
+
+    partial void OnHostedIdChanged(long value) => OnPropertyChanged(nameof(IsHosted));
     [ObservableProperty] private WindowsProxyMode _selectedMode = WindowsProxyMode.Http;
 
     public bool IsShadowsocks => WindowsProxyProtocol.IsShadowsocks(Protocol);
@@ -47,7 +61,7 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
         WindowsProxyProtocol.Normalize(Protocol),
         WindowsProxyProtocol.Vless,
         StringComparison.Ordinal);
-    public bool IsVlessWebSocket => IsVless && string.Equals(Transport, "ws", StringComparison.Ordinal);
+    public bool IsVlessWebSocket => IsVless && Transport is "ws" or "httpupgrade";
     public bool IsVlessGrpc => IsVless && string.Equals(Transport, "grpc", StringComparison.Ordinal);
 
     partial void OnProtocolChanged(string value)
@@ -107,6 +121,11 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
         RealityShortId = source.RealityShortId;
         Alpn = source.Alpn;
         AllowInsecure = source.AllowInsecure;
+        Username = source.Username;
+        Plugin = source.Plugin;
+        PluginOpts = source.PluginOpts;
+        HostedId = source.HostedId;
+        _enabled = source.Enabled;
         PublishProtocolState();
     }
 
@@ -148,6 +167,11 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
             RealityShortId = RealityShortId.Trim(),
             Alpn = Alpn.Trim(),
             AllowInsecure = AllowInsecure,
+            Username = IsSocks5 ? Username.Trim() : string.Empty,
+            Plugin = IsShadowsocks ? Plugin.Trim().ToLowerInvariant() : string.Empty,
+            PluginOpts = IsShadowsocks && !string.IsNullOrWhiteSpace(Plugin) ? PluginOpts.Trim() : string.Empty,
+            HostedId = HostedId,
+            Enabled = _enabled,
         };
     }
 
@@ -166,6 +190,7 @@ public sealed partial class WindowsProxyEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(IsShadowsocks));
         OnPropertyChanged(nameof(IsShadowsocks2022));
         OnPropertyChanged(nameof(IsVless));
+        OnPropertyChanged(nameof(IsSocks5));
         OnPropertyChanged(nameof(IsVlessWebSocket));
         OnPropertyChanged(nameof(IsVlessGrpc));
     }

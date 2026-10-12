@@ -72,6 +72,14 @@ public partial class MainWindow : Window
             new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _vm.RetryUpdateHandler = RetryFailedUpdateAsync;
+        _vm.SpeedHistoryChanged += () => DashSpeedChart.SetSamples(_vm.SpeedInHistory, _vm.SpeedOutHistory);
+        _vm.CloudPairingsApplied += () =>
+        {
+            SaveCurrentConfig();
+            ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+        };
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
+        ThemeManager.ThemeChanged += OnThemeChanged;
 
         // Auto-scroll log
         _vm.LogEntries.CollectionChanged += (_, _) =>
@@ -94,6 +102,7 @@ public partial class MainWindow : Window
         PopulateSetupEgressInterfaces();
         _suppressEndpointChangeHandling = false;
 
+        UpdateCoreToggle();
         Loaded += (_, _) =>
         {
             _startupTask = InitializeWindowAsync(_lifecycleCts.Token);
@@ -578,15 +587,18 @@ public partial class MainWindow : Window
     {
         try
         {
-            await _vm.ImportProxyProfileAsync(PairingImportUri.Text);
+            var result = await _vm.ImportNodesAsync(PairingImportUri.Text);
             SaveCurrentConfig();
             PopulateProxyUi();
             PairingImportUri.Clear();
             ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+            PairingProxyPassword.Password = _vm.ProxyEditor.Password;
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+            SetNodesStatus(DescribeImport(result), error: false);
         }
         catch (Exception exception)
         {
+            SetNodesStatus(DescribeNodeError(exception), error: true);
             SetProxyStatusError(exception.Message);
         }
     }
@@ -601,11 +613,13 @@ public partial class MainWindow : Window
             PopulateProxyUi();
             ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+            SetNodesStatus(FindResource("ForwardPairingSaved") as string ?? "Node saved", error: false);
         }
         catch (Exception ex)
         {
+            SetNodesStatus(DescribeNodeError(ex), error: true);
             SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to save pairing node");
+            Log.Warning("failed to save pairing node: {Code}", LeikwanBridge.Core.Nodes.HostedNodeSyncService.ErrorCode(ex));
         }
     }
 
@@ -613,17 +627,26 @@ public partial class MainWindow : Window
     {
         if (ForwardPairingProfileList.SelectedItem is not WindowsProxyProfile profile)
             return;
+        if (profile.IsHosted && System.Windows.MessageBox.Show(
+                this,
+                string.Format(FindResource("NodesDeleteHostedConfirm") as string ?? "Delete {0} from the cloud and all devices?", profile.Name),
+                FindResource("AppTitle") as string ?? "Leikwan Bridge",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
         try
         {
             await _vm.DeleteProxyProfileAsync(profile.Id);
             SaveCurrentConfig();
             PopulateProxyUi();
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node list updated";
+            SetNodesStatus(FindResource("NodesDeleted") as string ?? "Node deleted", error: false);
         }
         catch (Exception ex)
         {
+            SetNodesStatus(DescribeNodeError(ex), error: true);
             SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to delete pairing node");
+            Log.Warning("failed to delete pairing node: {Code}", LeikwanBridge.Core.Nodes.HostedNodeSyncService.ErrorCode(ex));
         }
     }
 
@@ -1153,6 +1176,7 @@ public partial class MainWindow : Window
         App.Config.ProxyActiveMode = selectedMode.ToString();
         App.Config.ProxyModeChosen = true;
         UpdateProxyModeVisibility();
+        SyncDashboardModeButtons();
     }
 
     private void UpdateProxyModeVisibility()
@@ -1168,6 +1192,7 @@ public partial class MainWindow : Window
         ProxyGameCard.Visibility = TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Process
             ? Visibility.Visible
             : Visibility.Collapsed;
+        SyncDashboardModeButtons();
     }
 
     private bool TryGetSelectedProxyMode(out WindowsProxyMode mode)
@@ -1272,7 +1297,12 @@ public partial class MainWindow : Window
             UpdateUpdatePromptText();
         }
         if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
+        {
             ApplyProxyVisualState();
+            UpdateCoreToggle();
+        }
+        if (e.PropertyName == nameof(MainViewModel.RunningTimeText))
+            UpdateCoreToggle();
         if (e.PropertyName == nameof(MainViewModel.SelectedProxyProfileId))
         {
             ProxyProfileList.SelectedValue = _vm.SelectedProxyProfileId;
@@ -1349,17 +1379,16 @@ public partial class MainWindow : Window
             WindowsProxyConnectionState.Error => "DangerBrush",
             _ => "PrimaryBrush",
         };
-        ProxyStatusTitle.Foreground = FindResource(titleBrushKey) as Brush ?? Brushes.Black;
-        ProxyStatusText.Foreground = snapshot.State == WindowsProxyConnectionState.Error
-            ? (FindResource("DangerBrush") as Brush ?? Brushes.DarkRed)
-            : (FindResource("MutedTextBrush") as Brush ?? Brushes.Gray);
-        ProxyStatusBanner.BorderBrush = FindResource(borderBrushKey) as Brush ?? Brushes.Gray;
-        ProxyStatusBanner.Background = new SolidColorBrush(snapshot.State switch
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, titleBrushKey);
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty,
+            snapshot.State == WindowsProxyConnectionState.Error ? "DangerBrush" : "MutedTextBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, borderBrushKey);
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, snapshot.State switch
         {
-            WindowsProxyConnectionState.Connected => Color.FromRgb(236, 253, 245),
-            WindowsProxyConnectionState.Starting => Color.FromRgb(255, 251, 235),
-            WindowsProxyConnectionState.Error => Color.FromRgb(254, 242, 242),
-            _ => Color.FromRgb(239, 246, 255),
+            WindowsProxyConnectionState.Connected => "SuccessContainerBrush",
+            WindowsProxyConnectionState.Starting => "WarningContainerBrush",
+            WindowsProxyConnectionState.Error => "DangerContainerBrush",
+            _ => "InfoContainerBrush",
         });
 
         ProxyLocalListenPortCombo.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
@@ -1376,10 +1405,10 @@ public partial class MainWindow : Window
     {
         ProxyStatusTitle.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
         ProxyStatusText.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
-        ProxyStatusTitle.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusText.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusBanner.BorderBrush = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(255, 251, 235));
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, "WarningBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, "WarningContainerBrush");
         ProxyLocalListenPortCombo.IsEnabled = false;
         ProxyForwardCombo.IsEnabled = false;
         ProxyPairedForwardCombo.IsEnabled = false;
@@ -1412,10 +1441,10 @@ public partial class MainWindow : Window
         };
         ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
         ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;
-        ProxyStatusTitle.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusText.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusBanner.BorderBrush = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(254, 242, 242));
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, "DangerBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, "DangerContainerBrush");
         ProxyLocalListenPortCombo.IsEnabled = true;
         ProxyForwardCombo.IsEnabled = true;
         ProxyPairedForwardCombo.IsEnabled = true;
@@ -1454,13 +1483,25 @@ public partial class MainWindow : Window
         var pairing = _vm.CurrentView == "Forwards";
         DashboardPanel.Visibility = _vm.CurrentView == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ForwardPairingPanel.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
+        NodesPanel.Visibility = _vm.CurrentView == "Nodes" ? Visibility.Visible : Visibility.Collapsed;
+        PageTitleText.SetResourceReference(TextBlock.TextProperty, _vm.CurrentView switch
+        {
+            "Forwards" => "NavForwards",
+            "Nodes" => "NavNodes",
+            "Proxy" => "ProxyTitle",
+            "Log" => "NavLog",
+            "Settings" => "NavSettings",
+            _ => "NavDashboard",
+        });
+        // The start / stop button belongs to the overview pages; the proxy page has its own controls.
+        CoreToggleButton.Visibility = _vm.CurrentView is "Dashboard" or "Forwards" or "Nodes"
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         ProxyPanel.Visibility = _vm.CurrentView == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
         LogPanel.Visibility = _vm.CurrentView == "Log" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = _vm.CurrentView == "Settings" ? Visibility.Visible : Visibility.Collapsed;
         SidebarStartAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
         SidebarStopAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        ProxyPageTitle.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        ForwardPairingPageTitle.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
         ProxySavedNodesSidebar.Visibility = Visibility.Collapsed;
         if (ProxySidebarColumn is not null)
             ProxySidebarColumn.Width = new GridLength(0);
@@ -1469,6 +1510,7 @@ public partial class MainWindow : Window
 
     private void PopulateSettings()
     {
+        PopulateThemeSelection();
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(App.Config.MasterUrl);
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(normalizedMasterUrl)
             ? AppDefaults.DefaultMasterUrl

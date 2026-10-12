@@ -89,6 +89,9 @@ public partial class App : System.Windows.Application
         // Apply language
         SwitchLanguage(Config.Language);
 
+        // Light / dark palette: follows the Windows app theme unless pinned in Settings.
+        LeikwanBridge.App.Services.ThemeManager.Initialize();
+
         base.OnStartup(e);
     }
 
