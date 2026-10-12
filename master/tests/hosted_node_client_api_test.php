@@ -130,7 +130,9 @@ $expectGate = static function (callable $action, string $code, string $label): v
 
 // --- gates -------------------------------------------------------------------
 $expectGate(fn() => $call('GET', 'clientList', ['X-Device-Platform' => 'android']), 'client_agent_auth_failed', 'token required');
-$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceSeven, 'session-seven', 'windows')), 'device_untrusted', 'non-Android platforms are refused');
+$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', 'ios-client-' . str_repeat('a', 32), 'session-seven', 'ios')), 'device_untrusted', 'platforms without an official client are refused');
+$expectGate(fn() => $call('GET', 'clientList', ['Authorization' => 'Bearer token-seven', 'X-Device-Id' => 'windows-client-7-' . str_repeat('d', 16)]), 'device_untrusted', 'a missing platform is refused');
+$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceSeven, 'wrong-session', 'windows-desktop')), 'device_untrusted', 'an attested Android id is held to the Android gate whatever platform it claims');
 $expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceSeven, 'wrong-session')), 'device_untrusted', 'device session required');
 $expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceEight, 'session-eight')), 'device_untrusted', 'another client\'s device is not trusted for this client');
 $pdo->exec("UPDATE client_device_controls SET trust_state = 'pending' WHERE client_id = 7");
@@ -205,6 +207,55 @@ assertSame('target_match', $body['pairings'][0]['source'], 'clearing an explicit
 assertSame([200, [], []], [$status, $body['nodes'], $body['pairings']], 'delete via API');
 [$status, $body] = $call('DELETE', 'clientDelete', $seven, [], ['id' => (string) $nodeId]);
 assertSame(404, $status, 'delete twice');
+
+// --- desktop clients (Windows / macOS / Linux headless) -------------------------
+// Same identity as the desktop config pull: agent token, access policy, the
+// platform's own per-install device id, online device limit.
+$desktop = static fn(string $token, string $platform, ?string $deviceId): array => array_filter([
+    'Authorization' => 'Bearer ' . $token,
+    'X-Device-Platform' => $platform,
+    'X-Device-Id' => $deviceId,
+], static fn($value): bool => $value !== null);
+$windowsSeven = 'windows-client-7-' . str_repeat('e', 16);
+$macSeven = 'macos-client-' . str_repeat('f', 32);
+$linuxSeven = 'linux-' . str_repeat('1', 32);
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', null)), 'device_untrusted', 'desktop needs an explicit device id, not a server-derived one');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', 'windows-client-8-' . str_repeat('e', 16))), 'device_untrusted', 'a Windows device id is bound to its client');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', $macSeven)), 'device_untrusted', 'device id must match the claimed platform');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'macos-desktop', 'legacy-' . str_repeat('a', 40))), 'device_untrusted', 'reserved legacy ids are refused');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'macos-desktop', 'macos-client-XYZ')), 'device_untrusted', 'malformed mac id refused');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('wrong-token', 'windows-desktop', $windowsSeven)), 'client_agent_auth_failed', 'desktop needs the agent token');
+
+$callsBefore = $policy->calls;
+[$status, $body] = $call('POST', 'clientCreate', $desktop('token-seven', 'windows-desktop', $windowsSeven), ['uri' => 'socks5://198.51.100.9:1080#Desk']);
+assertSame([200, true], [$status, $body['created']], 'Windows desktop uploads a node');
+$deskNodeId = (int) $body['node_id'];
+[$status, $body] = $call('GET', 'clientList', $desktop('token-seven', 'macos-desktop', $macSeven));
+assertSame([200, 'Desk'], [$status, $body['nodes'][0]['name'] ?? null], 'macOS desktop of the same client receives it');
+[$status, $body] = $call('GET', 'clientList', $desktop('token-seven', 'linux', $linuxSeven));
+assertSame(200, $status, 'Linux headless passes the desktop gate');
+[$status, $body] = $call('GET', 'clientList', $seven);
+assertSame('Desk', $body['nodes'][0]['name'] ?? null, 'Android device of the client sees the desktop upload');
+if ($policy->calls < $callsBefore + 3) {
+    fail('the access policy must run for desktop hosted-node calls');
+}
+foreach ([$windowsSeven, $macSeven, $linuxSeven] as $deskId) {
+    $seen = (int) $pdo->query("SELECT COUNT(*) FROM client_device_sessions WHERE client_id = 7 AND device_id = '" . $deskId . "'")->fetchColumn();
+    assertSame(1, $seen, 'desktop call is a visible device session: ' . $deskId);
+}
+[$status, $body] = $call('GET', 'clientList', $desktop('token-eight', 'windows-desktop', 'windows-client-8-' . str_repeat('e', 16)));
+assertSame([200, []], [$status, $body['nodes']], 'another client\'s desktop sees none of these nodes');
+
+// The online device limit applies exactly as in the desktop pull.
+$pdo->exec('UPDATE clients SET online_device_limit = 1 WHERE id = 7');
+$expectGate(
+    fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', 'windows-client-7-' . str_repeat('9', 16))),
+    'client_online_limit_reached',
+    'a new desktop beyond the online device limit is refused'
+);
+$pdo->exec('UPDATE clients SET online_device_limit = 5 WHERE id = 7');
+[$status] = $call('DELETE', 'clientDelete', $desktop('token-seven', 'windows-desktop', $windowsSeven), [], ['id' => (string) $deskNodeId]);
+assertSame(200, $status, 'desktop deletes its node');
 
 $source = (string) file_get_contents(__DIR__ . '/../src/Controllers/HostedNodeController.php');
 if (preg_match('/\bmb_[a-z_]+\s*\(|error_log\s*\(|getMessage\(\)\s*\)\s*;?\s*\/\/\s*echo/', $source) === 1) {
