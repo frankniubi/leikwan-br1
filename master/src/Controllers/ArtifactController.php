@@ -647,6 +647,12 @@ final class ArtifactController extends BaseController
             'leikwan_ingress_windows_amd64',
             'leikwan_mptcp_relay_linux_amd64'
         );
+        // Intel macOS is retired. The *_x64 entries stay pinned at the last
+        // x64 build (1.0.56) in versions.json and are never updated: a shipped
+        // Intel client throws update_manifest_architecture_missing (and shows an
+        // "update failed" banner on every launch) when its key is absent, while
+        // the pinned entry makes it report "up to date". Older Intel clients can
+        // still reach that final build. The download page offers Apple Silicon only.
         $macKeys = [
             'macos_client_app_arm64',
             'macos_client_app_x64',

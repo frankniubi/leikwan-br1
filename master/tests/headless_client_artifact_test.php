@@ -89,7 +89,7 @@ foreach (['--headless', 'com.leikwan.bridge.headless', '/Library/LaunchDaemons',
 foreach ([
     'client-manifest.json',
     'macos_client_app_arm64',
-    'macos_client_app_x64',
+    'Apple Silicon (arm64) required',
     'plutil -extract',
     'hdiutil attach',
     'shasum -a 256',

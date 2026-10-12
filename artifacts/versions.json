@@ -332,7 +332,8 @@
     "sha256": "15e6f51cd35708a14ee2047608efbab1ae49b2ebec71bb6078465be6149b8f8a",
     "size_bytes": 83073525,
     "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba",
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "macos_client_update_arm64": {
     "architecture": "arm64",
@@ -378,7 +379,8 @@
     "sha256": "2cd9cea1390b4963a8fb9a4e3e899d2aa5434fc02ddd1f548687ac29a9ad3c50",
     "size_bytes": 74182035,
     "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba",
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
@@ -706,7 +708,8 @@
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
       "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
-    }
+    },
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",

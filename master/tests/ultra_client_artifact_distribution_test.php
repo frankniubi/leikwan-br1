@@ -63,12 +63,17 @@ $macosSourcePaths = [
     'ultra_client_runtime_macos_arm64' => $root . '/artifacts/ultra/ultra-client_macos_arm64',
 ];
 foreach ($macosSourcePaths as $key => $sourcePath) {
-    $route = $key === 'ultra_client_runtime_macos_x64'
+    $retired = $key === 'ultra_client_runtime_macos_x64';
+    $route = $retired
         ? '/artifacts/ultra/ultra-client_macos_amd64'
         : '/artifacts/ultra/ultra-client_macos_arm64';
-    $method = $key === 'ultra_client_runtime_macos_x64' ? 'ultraClientMacosX64' : 'ultraClientMacosArm64';
-    if (!str_contains($map, "'{$key}'")
-        || !str_contains($map, "'{$route}'")
+    $method = $retired ? 'ultraClientMacosX64' : 'ultraClientMacosArm64';
+    // Intel macOS is retired: the x64 runtime is frozen (never rebuilt from
+    // source, so it is not in the source build map) but stays routable and in
+    // versions.json so 1.0.56 Intel installs keep a recognised runtime.
+    $inMap = str_contains($map, "'{$key}'");
+    if ($inMap === $retired
+        || ($retired ? false : !str_contains($map, "'{$route}'"))
         || !str_contains($controller, "public function {$method}")
         || !is_file($sourcePath)) {
         fwrite(STDERR, "macOS Ultra runtime packaging is incomplete for {$key}\n");

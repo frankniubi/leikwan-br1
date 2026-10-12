@@ -538,11 +538,6 @@ abstract class BaseController
         return $this->clientAppArtifactUrl('macos_client_app_arm64', '/artifacts/macos/leikwan-bridge-arm64.dmg');
     }
 
-    protected function macosClientX64AppUrl(): string
-    {
-        return $this->clientAppArtifactUrl('macos_client_app_x64', '/artifacts/macos/leikwan-bridge-x64.dmg');
-    }
-
     // No-GUI surface. The Windows payload is its own artifact; macOS reuses the
     // shipped app bundle in its --headless lifecycle, so it only needs the
     // installers. Every URL carries the manifest version/hash like the GUI
