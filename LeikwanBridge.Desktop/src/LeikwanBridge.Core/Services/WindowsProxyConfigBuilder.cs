@@ -141,18 +141,19 @@ public static class WindowsProxyConfigBuilder
             Server = lease.EndpointHost,
             Port = lease.EndpointPort,
         };
+        // Restricted native scopes must not carry bootstrap DNS through the
+        // relay. Keep metadata and rule-set bootstrap on the normal path.
+        var dns = BuildDns(
+            bootstrapProfile,
+            bypassDomains,
+            dnsMode,
+            customDnsServers,
+            lease.RouteScope == "cn_only" ? "direct" : "proxy",
+            lease.RouteScope);
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error" },
-            // Restricted native scopes must not carry bootstrap DNS through the
-            // relay. Keep metadata and rule-set bootstrap on the normal path.
-            ["dns"] = BuildDns(
-                bootstrapProfile,
-                bypassDomains,
-                dnsMode,
-                customDnsServers,
-                lease.RouteScope == "cn_only" ? "direct" : "proxy",
-                lease.RouteScope),
+            ["dns"] = dns,
             ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
@@ -167,9 +168,8 @@ public static class WindowsProxyConfigBuilder
                 chinaIpCidrs,
                 lease.RouteScope,
                 nativeRoutePolicy,
-                dnsMode == WindowsProxyDnsMode.Custom && lease.RouteScope == "intl_only"
-                    ? "custom-0"
-                    : null),
+                // Resolve with the protected server this config actually declares.
+                dns["final"]?.GetValue<string>()),
         };
         if (includeChinaRuleSets)
         {
@@ -604,11 +604,15 @@ public static class WindowsProxyConfigBuilder
             });
         }
 
-        if (IsNativeRestrictedScope(nativeRouteScope))
+        // Resolve before handing the destination to SOCKS. Otherwise its
+        // upstream performs a second lookup and replaces the protected answer
+        // with a polluted or region-wrong one (Google, YouTube and GitHub fail
+        // TLS on an unrestricted global route). Same rule as the macOS client.
+        var resolveNativeDomains = nativeRouteScope is not null
+            && (!IsNativeRestrictedPolicy(nativeRoutePolicy)
+                || !string.Equals(nativeRouteScope, "global", StringComparison.OrdinalIgnoreCase));
+        if (resolveNativeDomains)
         {
-            // Resolve before handing the destination to SOCKS. Otherwise its
-            // upstream can perform a second lookup and replace the protected
-            // split-DNS result with a polluted or region-wrong answer.
             rules.Add(new JsonObject
             {
                 ["action"] = "resolve",
@@ -648,7 +652,7 @@ public static class WindowsProxyConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope)
+            ["default_domain_resolver"] = resolveNativeDomains
                 ? defaultDomainResolver ?? "remote"
                 : "local",
             ["rules"] = rules,
