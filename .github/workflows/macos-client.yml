@@ -470,7 +470,8 @@ jobs:
               if helpers.get("architecture") != architecture:
                   raise SystemExit(f"helper architecture mismatch: {suffix}")
               helper_items = helpers.get("helpers")
-              if not isinstance(helper_items, list) or len(helper_items) != 5:
+              expected_helpers = {"sing-box", "wstunnel", "leikwan-bond", "leikwan-ingress", "leikwan-uot-bond", "ultra-client"}
+              if not isinstance(helper_items, list) or {item.get("name") for item in helper_items} != expected_helpers:
                   raise SystemExit(f"helper set incomplete: {suffix}")
               helper_hashes[suffix] = {item.get("name"): item.get("sha256") for item in helper_items}
               screenshots = sorted((directory / "screenshots").glob("*.png"))
