@@ -69,7 +69,9 @@ public sealed class HeadlessEgressTests
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, ".git", "HEAD")))
+        // A git worktree has a .git file instead of a .git directory.
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, ".git", "HEAD"))
+            && !File.Exists(Path.Combine(directory.FullName, ".git")))
             directory = directory.Parent;
         return directory?.FullName ?? throw new DirectoryNotFoundException("repository root not found");
     }
