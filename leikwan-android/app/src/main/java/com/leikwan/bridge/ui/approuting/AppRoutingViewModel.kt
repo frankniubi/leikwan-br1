@@ -13,6 +13,7 @@ import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.routing.AppGroup
 import com.leikwan.bridge.routing.AppPolicy
 import com.leikwan.bridge.routing.AppPresetCatalog
 import com.leikwan.bridge.routing.AppRoutingConfig
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 data class InstalledApp(
     val packageName: String,
@@ -35,6 +37,13 @@ data class AppGroupUi(
     val labelEn: String,
     val labelZh: String,
     val apps: List<InstalledApp>,
+)
+
+/** A line (forward) an app group can ride, with the node paired to it on the Services page. */
+data class AppGroupLine(
+    val forwardId: Long,
+    val label: String,
+    val pairedNodeId: Long?,
 )
 
 data class AppRoutingUiState(
@@ -76,6 +85,24 @@ class AppRoutingViewModel(app: Application) : AndroidViewModel(app) {
         val group = mutable.value.groups.firstOrNull { it.key == groupKey } ?: return@save config
         group.apps.fold(config) { next, app -> next.with(app.packageName, policy) }
     }
+
+    /** Moves one app into the user's app group [groupId]. */
+    fun setAppGroup(packageName: String, groupId: String) = save { config ->
+        config.withGroupMember(packageName, groupId)
+    }
+
+    /** Moves every installed app of a preset ([presetKey]) into the user's app group [groupId]. */
+    fun setPresetAppGroup(presetKey: String, groupId: String) = save { config ->
+        val preset = mutable.value.groups.firstOrNull { it.key == presetKey } ?: return@save config
+        preset.apps.fold(config) { next, app -> next.withGroupMember(app.packageName, groupId) }
+    }
+
+    /** Creates ([group] id blank) or replaces a user app group. */
+    fun saveAppGroup(group: AppGroup) = save { config ->
+        config.withGroup(if (group.id.isBlank()) group.copy(id = UUID.randomUUID().toString()) else group)
+    }
+
+    fun deleteAppGroup(groupId: String) = save { config -> config.withoutGroup(groupId) }
 
     private fun save(change: (AppRoutingConfig) -> AppRoutingConfig) {
         val next = change(mutable.value.config)

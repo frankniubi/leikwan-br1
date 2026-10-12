@@ -71,6 +71,7 @@ import com.leikwan.bridge.ui.connections.ConnectionsScreen
 import com.leikwan.bridge.ui.connections.ConnectionsViewModel
 import com.leikwan.bridge.ui.connections.ServicesScreen
 import com.leikwan.bridge.ui.connections.VpnStatus
+import com.leikwan.bridge.ui.connections.appGroupLines
 import com.leikwan.bridge.ui.connections.connectToggle
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
@@ -191,8 +192,10 @@ fun MainScreen(onLogout: () -> Unit = {}) {
                     }
                 }
                 composable(SubPage.AppRouting.route) {
+                    val connections by connectionsViewModel.state.collectAsState()
+                    val lines = remember(connections.forwards, connections.nodeByForward) { connections.appGroupLines() }
                     SubPageScaffold(SubPage.AppRouting, onBack = { navController.popBackStack() }) {
-                        AppRoutingScreen()
+                        AppRoutingScreen(lines = lines)
                     }
                 }
             }

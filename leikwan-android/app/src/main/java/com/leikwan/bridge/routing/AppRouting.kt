@@ -35,29 +35,72 @@ data class AppPolicyEntry(
     @SerializedName("node_id") val targetNodeId: Long? = null,
 )
 
+/**
+ * A user-defined app group: its apps ride one line (forward) and one of the user's nodes, so
+ * group A can leave through one node while group B leaves through another.
+ */
+data class AppGroup(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("forward_id") val forwardId: Long,
+    @SerializedName("node_id") val nodeId: Long,
+    @SerializedName("packages") val packages: List<String> = emptyList(),
+)
+
 /** Persisted per-app routing configuration. */
 data class AppRoutingConfig(
     val scope: AppVpnScope = AppVpnScope.ALL_APPS,
     val entries: List<AppPolicyEntry> = emptyList(),
+    /** An app is in at most one group, and a grouped app has no [entries] row. */
+    val groups: List<AppGroup> = emptyList(),
 ) {
     /** The effective policy for [packageName], including the scope default. */
     fun policyFor(packageName: String): AppPolicy =
         entries.firstOrNull { it.packageName == packageName }?.policy
+            ?: groupFor(packageName)?.let { AppPolicy.TUNNEL }
             ?: if (scope == AppVpnScope.ALL_APPS) AppPolicy.FOLLOW else AppPolicy.BYPASS
 
     fun entryFor(packageName: String): AppPolicyEntry? = entries.firstOrNull { it.packageName == packageName }
 
-    /** Sets (or, when equal to the scope default, removes) the policy of one app. */
+    fun groupFor(packageName: String): AppGroup? = groups.firstOrNull { packageName in it.packages }
+
+    /** Sets (or, when equal to the scope default, removes) the policy of one app; it leaves any group. */
     fun with(packageName: String, policy: AppPolicy, targetNodeId: Long? = null): AppRoutingConfig {
         val defaultPolicy = if (scope == AppVpnScope.ALL_APPS) AppPolicy.FOLLOW else AppPolicy.BYPASS
         val rest = entries.filterNot { it.packageName == packageName }
         val next = if (policy == defaultPolicy) rest else rest + AppPolicyEntry(packageName, policy, targetNodeId.takeIf { policy == AppPolicy.TUNNEL })
-        return copy(entries = next)
+        return copy(entries = next, groups = groups.map { it.copy(packages = it.packages - packageName) })
     }
+
+    /** Moves one app into [groupId], out of any other group and its own policy row. */
+    fun withGroupMember(packageName: String, groupId: String): AppRoutingConfig {
+        if (groups.none { it.id == groupId }) return this
+        return copy(
+            entries = entries.filterNot { it.packageName == packageName },
+            groups = groups.map { group ->
+                val others = group.packages - packageName
+                group.copy(packages = if (group.id == groupId) others + packageName else others)
+            },
+        )
+    }
+
+    /** Adds or replaces [group]; its apps leave other groups and their own policy rows. */
+    fun withGroup(group: AppGroup): AppRoutingConfig {
+        val packages = group.packages.distinct()
+        val cleaned = group.copy(name = group.name.trim(), packages = packages)
+        val others = groups.filterNot { it.id == group.id }.map { it.copy(packages = it.packages - packages.toSet()) }
+        val index = groups.indexOfFirst { it.id == group.id }
+        val next = if (index < 0) others + cleaned else others.toMutableList().apply { add(index, cleaned) }
+        return copy(entries = entries.filterNot { it.packageName in packages }, groups = next)
+    }
+
+    fun withoutGroup(groupId: String): AppRoutingConfig = copy(groups = groups.filterNot { it.id == groupId })
 
     /** Packages Android must route into the VPN; empty means "all apps". */
     fun includePackages(ownerPackage: String): List<String> = if (scope == AppVpnScope.SELECTED_APPS) {
-        entries.filter { it.policy != AppPolicy.BYPASS && it.packageName != ownerPackage }.map { it.packageName }.distinct()
+        (entries.filter { it.policy != AppPolicy.BYPASS }.map { it.packageName } + groups.flatMap { it.packages })
+            .filter { it != ownerPackage }
+            .distinct()
     } else {
         emptyList()
     }
@@ -78,13 +121,18 @@ data class AppRoutingConfig(
                 outcome = if (entry.policy == AppPolicy.DIRECT) UserTrafficOutcome.DIRECT else UserTrafficOutcome.TUNNEL,
                 targetNodeId = entry.targetNodeId.takeIf { entry.policy == AppPolicy.TUNNEL },
             )
+        } + groups.flatMap { group ->
+            group.packages
+                .filter { packageName -> entries.none { it.packageName == packageName } }
+                .map { AppRoutingRule(packageName = it, outcome = UserTrafficOutcome.TUNNEL, targetNodeId = group.nodeId) }
         }
 
-    fun toJson(): String = gson.toJson(Stored(scope.name, entries))
+    fun toJson(): String = gson.toJson(Stored(scope.name, entries, groups))
 
     private data class Stored(
         @SerializedName("scope") val scope: String,
         @SerializedName("entries") val entries: List<AppPolicyEntry>,
+        @SerializedName("groups") val groups: List<AppGroup>? = null,
     )
 
     companion object {
@@ -101,7 +149,16 @@ data class AppRoutingConfig(
                 entry != null && entry.packageName != null && entry.policy != null &&
                     PACKAGE_NAME.matches(entry.packageName)
             }.distinctBy { it.packageName }
-            return AppRoutingConfig(scope, entries)
+            val claimed = entries.mapTo(hashSetOf()) { it.packageName }
+            @Suppress("SENSELESS_COMPARISON", "USELESS_ELVIS")
+            val groups = stored.groups.orEmpty().filter { group ->
+                group != null && group.id != null && group.name != null && group.forwardId > 0L && group.nodeId > 0L
+            }.distinctBy { it.id }.map { group ->
+                // An app belongs to one place only: its own policy row, or the first group listing it.
+                val packages = (group.packages ?: emptyList()).filter { it != null && PACKAGE_NAME.matches(it) && claimed.add(it) }
+                group.copy(packages = packages)
+            }
+            return AppRoutingConfig(scope, entries, groups)
         }
     }
 }

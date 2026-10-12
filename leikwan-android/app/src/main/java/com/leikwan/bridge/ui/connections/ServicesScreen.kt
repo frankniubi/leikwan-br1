@@ -53,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import com.leikwan.bridge.R
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.runtime.ForwardListItem
+import com.leikwan.bridge.runtime.ForwardMode
+import com.leikwan.bridge.ui.approuting.AppGroupLine
 
 /** Services tab: service forwards with their node pairing, plus native outbound. */
 @Composable
@@ -146,6 +148,28 @@ internal fun prettyRoute(value: String): String = value.replace("->", "→").rep
 
 internal fun ForwardListItem.routeLabel(): String =
     prettyRoute(direction.takeIf { it.isNotBlank() } ?: serviceName)
+
+/** Local listen port and target, as the panel's forward table shows them. */
+@Composable
+internal fun ForwardListItem.endpointLabel(): String {
+    val port = listenPort.takeIf { it > 0 }?.let { stringResource(R.string.connections_forward_listen_format, it) }
+    val endpoint = target.trim().takeIf { it.isNotEmpty() }
+    return listOfNotNull(port, endpoint).joinToString(" → ")
+}
+
+/**
+ * Lines an app group can ride: Ultra services with a real target (a native-only carrier's
+ * loopback target cannot reach a node), labelled like the Services list.
+ */
+internal fun ConnectionsUiState.appGroupLines(): List<AppGroupLine> = forwards
+    .filter { it.mode == ForwardMode.ULTRA && !it.target.trim().startsWith("127.") && !it.target.trim().startsWith("localhost") }
+    .map { forward ->
+        AppGroupLine(
+            forwardId = forward.forwardId,
+            label = "#${forward.forwardId} · ${forward.routeLabel()}",
+            pairedNodeId = nodeByForward[forward.forwardId],
+        )
+    }
 
 internal fun ConnectionsUiState.selectedRouteLabel(): String {
     if (nativeSelected) {
@@ -250,16 +274,12 @@ private fun ServiceRow(
         RadioButton(selected = selected, onClick = onSelect, enabled = !locked)
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
             Text(
-                forward.routeLabel(),
+                stringResource(R.string.connections_forward_title_format, forward.forwardId, forward.routeLabel()),
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val meta = listOfNotNull(
-                forward.serviceName.takeIf { it.isNotBlank() && forward.direction.isNotBlank() },
-                forward.methodDisplay.takeIf { it.isNotBlank() },
-                forward.speedLimitMbps?.let { stringResource(R.string.connections_speed_mbps_format, it) },
-            ).joinToString(" · ")
+            val meta = forward.endpointLabel()
             if (meta.isNotBlank()) {
                 Text(
                     meta,
@@ -331,8 +351,9 @@ private fun NativeOutboundCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(stringResource(R.string.connections_native_title), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        carrier?.direction?.takeIf { it.isNotBlank() }?.let(::prettyRoute)
-                            ?: stringResource(R.string.connections_native_unknown),
+                        carrier?.takeIf { it.direction.isNotBlank() }?.let {
+                            stringResource(R.string.connections_forward_title_format, it.forwardId, prettyRoute(it.direction))
+                        } ?: stringResource(R.string.connections_native_unknown),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -388,7 +409,15 @@ private fun NativeOutboundCard(
                             ) {
                                 state.nativeOutbound?.forwards.orEmpty().forEach { option ->
                                     DropdownMenuItem(
-                                        text = { Text(prettyRoute(option.direction)) },
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    R.string.connections_forward_title_format,
+                                                    option.forwardId,
+                                                    prettyRoute(option.direction),
+                                                ),
+                                            )
+                                        },
                                         onClick = {
                                             carrierExpanded = false
                                             onForward(option.forwardId)
