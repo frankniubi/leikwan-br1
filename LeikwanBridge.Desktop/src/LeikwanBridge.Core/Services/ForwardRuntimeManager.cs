@@ -819,6 +819,7 @@ public class ForwardRuntimeManager : IDisposable
             Endpoints = selectedEndpoints,
             Bonding = forward.Bonding,
             Mptcp = forward.Mptcp,
+            AllowInboundProxy = forward.AllowInboundProxy,
         };
     }
 

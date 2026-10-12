@@ -56,6 +56,13 @@ public sealed class ClientMeta
     /// </summary>
     [JsonPropertyName("hosted_nodes_revision")]
     public string? HostedNodesRevision { get; set; }
+
+    /// <summary>
+    /// clients.allow_inbound_proxy: whether forward listeners may accept connections
+    /// from other machines. Absent (older panel) means no: listeners stay on loopback.
+    /// </summary>
+    [JsonPropertyName("allow_inbound_proxy")]
+    public bool AllowInboundProxy { get; set; }
 }
 
 public sealed class DebugCollectionMeta

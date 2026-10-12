@@ -115,7 +115,7 @@ public sealed class MptcpRuntimeBuilder
         return new Dictionary<string, object?>
         {
             ["forward_id"] = forward.ForwardId,
-            ["listen_host"] = "0.0.0.0",
+            ["listen_host"] = forward.ListenHost,
             ["listen_port"] = forward.ListenPort,
             ["transport"] = transport,
             ["remote_host"] = remoteHost,

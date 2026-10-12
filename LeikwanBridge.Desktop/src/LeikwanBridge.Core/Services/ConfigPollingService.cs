@@ -530,6 +530,8 @@ public sealed class ConfigPollingService
             // available to an explicit native-mode UI action without serializing
             // it as part of the forward or applying it automatically.
             forward.NativeOutbound = _latestNativeOutbound;
+            // Loopback-only listeners unless the panel allows inbound proxying for this client.
+            forward.AllowInboundProxy = pull.Client?.AllowInboundProxy == true;
             if (forward.NativeOutbound?.FindForward(forward.ForwardId) is { } carrier)
                 forward.NativeRouteScope = carrier.DefaultRouteScope;
             var acceptance = _forwardPolicy.Evaluate(forward);

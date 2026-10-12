@@ -637,8 +637,10 @@ public sealed class ForwardRuntimeManagerTests
         Assert.Equal(0, root.GetProperty("slave_relay_port").GetInt32());
     }
 
-    [Fact]
-    public void ApplyForward_MptcpTcpUdp_EmitsPublicListenHostAndKeepsUdpTransport()
+    [Theory]
+    [InlineData(false, "127.0.0.1")]
+    [InlineData(true, "0.0.0.0")]
+    public void ApplyForward_MptcpTcpUdp_BindsLoopbackUnlessInboundProxyAllowedAndKeepsUdpTransport(bool allowInboundProxy, string listenHost)
     {
         using var tempDir = new TempStateDirectory();
         var supervisor = new TestProcessSupervisor();
@@ -655,13 +657,14 @@ public sealed class ForwardRuntimeManagerTests
 
         var forward = CreateMptcpForward();
         forward.Transport = "tcp+udp";
+        forward.AllowInboundProxy = allowInboundProxy;
 
         manager.ApplyForward(forward);
 
         var runtimeConfigPath = Path.Combine(tempDir.Path, "runtime", "mptcp-forward-24.json");
         using var document = JsonDocument.Parse(File.ReadAllText(runtimeConfigPath));
         var root = document.RootElement;
-        Assert.Equal("0.0.0.0", root.GetProperty("listen_host").GetString());
+        Assert.Equal(listenHost, root.GetProperty("listen_host").GetString());
         Assert.Equal("tcp+udp", root.GetProperty("transport").GetString());
         Assert.Equal("udp-session", root.GetProperty("udp_session_token").GetString());
         Assert.False(root.GetProperty("manage_mptcp_endpoints").GetBoolean());

@@ -143,7 +143,7 @@ public sealed class BondRuntimeBuilder
                     tcpLegTargets.Add(RenderTcpLeg($"127.0.0.1:{tcpBack}", endpointPriority, ep));
             }
 
-            var bondArgs = $"client --protocol tcp --listen 0.0.0.0:{listenPort} " +
+            var bondArgs = $"client --protocol tcp --listen {forward.ListenHost}:{listenPort} " +
                 $"--legs \"{string.Join(",", tcpLegTargets)}\" --session-token \"{tcpToken}\" " +
                 $"{strategyArgument}--default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
@@ -182,6 +182,7 @@ public sealed class BondRuntimeBuilder
             var statsPath = Path.Combine(_config.GetEffectiveStateDir(), "runtime", $"uot-bond-forward-{forwardId}.stats.json");
             var runtimePayload = BuildUdpUotRuntimePayload(
                 forwardId,
+                forward.ListenHost,
                 listenPort,
                 routeKey,
                 udpToken,
@@ -230,7 +231,7 @@ public sealed class BondRuntimeBuilder
                     udpLegTargets.Add(RenderTcpLeg($"127.0.0.1:{udpBack}", endpointPriority, ep));
             }
 
-            var bondArgs = $"client --protocol udp --listen 0.0.0.0:{listenPort} " +
+            var bondArgs = $"client --protocol udp --listen {forward.ListenHost}:{listenPort} " +
                 $"--legs \"{string.Join(",", udpLegTargets)}\" --session-token \"{udpToken}\" " +
                 $"{strategyArgument}--default-strategy latency_best " +
                 $"--chunk-size {bond.ChunkSize} " +
@@ -281,9 +282,9 @@ public sealed class BondRuntimeBuilder
         var ep = endpoints[0];
         var listenFlags = new List<string>();
         if (transport is "tcp" or "tcp+udp")
-            listenFlags.Add($"-L tcp://[::]:{listenPort}:{target}");
+            listenFlags.Add($"-L tcp://{forward.WstunnelListenHost}:{listenPort}:{target}");
         if (transport is "udp" or "tcp+udp")
-            listenFlags.Add($"-L udp://[::]:{listenPort}:{target}?timeout_sec=0");
+            listenFlags.Add($"-L udp://{forward.WstunnelListenHost}:{listenPort}:{target}?timeout_sec=0");
 
         var args = $"client {string.Join(" ", listenFlags)} " +
             $"--tls-sni-override {sni} --http-headers \"Host: {sni}\" " +
@@ -315,9 +316,9 @@ public sealed class BondRuntimeBuilder
 
         var listenFlags = new List<string>();
         if (transport is "tcp" or "tcp+udp")
-            listenFlags.Add($"-L tcp://[::]:{listenPort}:{target}");
+            listenFlags.Add($"-L tcp://{forward.WstunnelListenHost}:{listenPort}:{target}");
         if (transport is "udp" or "tcp+udp")
-            listenFlags.Add($"-L udp://[::]:{listenPort}:{target}?timeout_sec=0");
+            listenFlags.Add($"-L udp://{forward.WstunnelListenHost}:{listenPort}:{target}?timeout_sec=0");
 
         var args = $"client {string.Join(" ", listenFlags)} " +
             $"--tls-sni-override {sni} --http-headers \"Host: {sni}\" " +
@@ -360,6 +361,7 @@ public sealed class BondRuntimeBuilder
 
     private static Dictionary<string, object?> BuildUdpUotRuntimePayload(
         int forwardId,
+        string listenHost,
         int listenPort,
         string routeKey,
         string sessionToken,
@@ -371,7 +373,7 @@ public sealed class BondRuntimeBuilder
         return new Dictionary<string, object?>
         {
             ["forward_id"] = forwardId,
-            ["listen_udp"] = $"0.0.0.0:{listenPort}",
+            ["listen_udp"] = $"{listenHost}:{listenPort}",
             ["route_key"] = routeKey + (string.IsNullOrWhiteSpace(settings.ShadowRouteSuffix) ? ".uot" : settings.ShadowRouteSuffix),
             ["session_token"] = sessionToken,
             ["reorder_window_packets"] = settings.ReorderWindowPackets,
