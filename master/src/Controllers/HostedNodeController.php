@@ -21,10 +21,11 @@ use Leikwan\Master\Support\TrustedClientIpResolver;
  * Hosted user nodes ("上云"): the user's own Shadowsocks / SOCKS5 / VLESS
  * nodes stored by the panel per client, plus their forward pairing.
  *
- * Client API (/api/client/hosted-nodes*): only a trusted, attested Android
- * device of the owning client may read or change them. Every call goes
- * through the same gates as the config pull (client token, access policy,
- * device trust, online-device limit). Responses carry credentials, so they
+ * Client API (/api/client/hosted-nodes*): only an official client of the
+ * owning client may read or change them: a trusted, attested Android device,
+ * or a Windows / macOS desktop presenting its per-install device id.
+ * Every call goes through the same gates as that platform's config pull
+ * (client token, access policy, device trust, online-device limit). Responses carry credentials, so they
  * are never cached and errors never echo input.
  *
  * Tenant console (/tenant/hosted-nodes): the signed-in tenant manages the
@@ -177,26 +178,79 @@ final class HostedNodeController extends BaseController
     }
 
     /**
-     * Same gates as /api/client/configs/pull, restricted to Android: only an
-     * enrolled, attested device with a live device session passes
-     * DeviceControlService::requireActive.
+     * Same gates as /api/client/configs/pull for the official clients:
+     *
+     * - Android: only an enrolled, attested device with a live device session
+     *   passes DeviceControlService::requireActive.
+     * - Desktop (Windows / macOS): the identity the desktop
+     *   pull itself relies on, i.e. the client agent token, the access policy
+     *   (geo lock, blacklist), an explicit per-install device id of that
+     *   platform's own format (never the server-derived legacy id, so the call
+     *   is a visible, kickable device session) and the online-device limit.
+     *   A request that presents an attested Android device id is always held
+     *   to the Android gate, whatever platform it claims, so a trusted phone's
+     *   id cannot be laundered through the desktop path.
+     *
+     * Linux headless (platform "linux", ids linux-<32 hex>) is refused until the
+     * Linux agent has a nodes feature: no client there would use the node
+     * credentials, so the endpoints are not exposed to it.
+     *
+     * Hosted nodes never give the forward core a new capability (the panel
+     * only stores the user's own nodes), so the desktop gate matches the
+     * desktop config pull rather than inventing a stronger one it cannot meet.
      *
      * @return array<string, mixed>
      */
     private function trustedClient(Request $request): array
     {
         $client = Auth::requireClientAgent($request, $this->db);
-        if (!str_starts_with(strtolower(trim((string) ($request->header('x-device-platform') ?? ''))), 'android')) {
+        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
+        $headerDeviceId = trim((string) ($request->header('x-device-id') ?? ''));
+        $android = str_starts_with($platform, 'android') || $this->deviceControls->isManagedDeviceId($headerDeviceId);
+        $desktopFamily = $android ? '' : self::desktopFamily($platform);
+        if (!$android && $desktopFamily === '') {
             throw new ApiException('device_untrusted', 403);
         }
         $sessions = new ClientOnlineSessionService(
             $this->db,
             new TrustedClientIpResolver((string) ($this->config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
         );
-        $this->accessPolicy->authorizeClientRequest($client, $request, 'request', $sessions->deviceIdFromRequest($request));
-        $this->deviceControls->requireActive($client, $request);
+        $deviceId = $sessions->deviceIdFromRequest($request);
+        if (!$android && !self::isDesktopDeviceId($desktopFamily, $deviceId, (int) ($client['id'] ?? 0))) {
+            throw new ApiException('device_untrusted', 403);
+        }
+        $this->accessPolicy->authorizeClientRequest($client, $request, 'request', $deviceId);
+        if ($android) {
+            $this->deviceControls->requireActive($client, $request);
+        }
         $sessions->enforceFromRequest($client, $request, 'request');
         return $client;
+    }
+
+    /** Desktop platform family from X-Device-Platform ('windows-desktop', 'macos-desktop'), or ''. */
+    private static function desktopFamily(string $platform): string
+    {
+        foreach (['windows', 'macos'] as $family) {
+            if ($platform === $family || str_starts_with($platform, $family . '-')) {
+                return $family;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * The device id each official desktop build persists per install:
+     * Windows windows-client-<client id>-<16 hex> (bound to this client),
+     * macOS macos-client-<32 hex>.
+     */
+    private static function isDesktopDeviceId(string $family, string $deviceId, int $clientId): bool
+    {
+        return match ($family) {
+            'windows' => preg_match('/^windows-client-([1-9][0-9]*)-[a-f0-9]{16}$/', $deviceId, $match) === 1
+                && (int) $match[1] === $clientId,
+            'macos' => preg_match('/^macos-client-[a-f0-9]{32}$/', $deviceId) === 1,
+            default => false,
+        };
     }
 
     /**

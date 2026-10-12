@@ -6,6 +6,8 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- Index 0 is swapped by Services/ThemeManager (light / dark). -->
+                <ResourceDictionary Source="Resources/Themes/Colors.Light.xaml"/>
                 <ResourceDictionary Source="Resources/Styles/Theme.xaml"/>
                 <ResourceDictionary Source="Resources/Strings/en-US.xaml"/>
             </ResourceDictionary.MergedDictionaries>

@@ -31,6 +31,7 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
         ?? _owner.UnboundProxyProfileText;
 
     public bool IsUnbound => SelectedProfile is null;
+    public bool IsCloudNode => SelectedProfile?.IsHosted == true;
     public bool IsActive => _owner.IsProxySessionForForward(ForwardId);
     public bool IsStarting => IsActive && _owner.IsProxyStarting;
     public bool CanConnect => !IsUnbound && !IsActive && !_owner.IsProxyStarting && !_owner.IsProxyConnected;
@@ -52,6 +53,7 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedProfile));
         OnPropertyChanged(nameof(SelectedProfileName));
         OnPropertyChanged(nameof(IsUnbound));
+        OnPropertyChanged(nameof(IsCloudNode));
         OnPropertyChanged(nameof(CanConnect));
     }
 
@@ -70,7 +72,7 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
         {
             new(0, _owner.UnboundProxyProfileText),
         };
-        choices.AddRange(_owner.ProxyProfiles.Select(profile => new ProxySavedNodeChoice(profile.Id, profile.Name)));
+        choices.AddRange(_owner.ProxyProfiles.Select(profile => new ProxySavedNodeChoice(profile.Id, profile.Name, profile.IsHosted)));
         for (var index = Profiles.Count - 1; index >= 0; index--)
             if (!choices.Any(choice => choice.Id == Profiles[index].Id))
                 Profiles.RemoveAt(index);
@@ -85,7 +87,7 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
                 var oldIndex = Profiles.IndexOf(existing);
                 if (oldIndex != index)
                     Profiles.Move(oldIndex, index);
-                if (existing.Name != choice.Name)
+                if (existing != choice)
                     Profiles[index] = choice;
             }
         }
@@ -97,6 +99,7 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedProfile));
         OnPropertyChanged(nameof(SelectedProfileName));
         OnPropertyChanged(nameof(IsUnbound));
+        OnPropertyChanged(nameof(IsCloudNode));
         OnPropertyChanged(nameof(IsActive));
         OnPropertyChanged(nameof(IsStarting));
         OnPropertyChanged(nameof(CanConnect));
@@ -113,4 +116,4 @@ public sealed partial class ProxyForwardRowViewModel : ObservableObject
     }
 }
 
-public sealed record ProxySavedNodeChoice(int Id, string Name);
+public sealed record ProxySavedNodeChoice(int Id, string Name, bool IsHosted = false);
