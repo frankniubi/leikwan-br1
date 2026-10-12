@@ -34,7 +34,6 @@ if ($expectedVersion === '') {
 
 foreach ([
     'macosClientArm64AppUrl(): string',
-    'macosClientX64AppUrl(): string',
     'macosClientArtifactsAvailable(): bool',
     'macosClientReleaseVersion(): string',
     'macosClientReleaseNotice(): string',
@@ -46,6 +45,11 @@ foreach ([
     if (!str_contains($base, $required)) {
         failMacDownloadPage('BaseController missing ' . $required);
     }
+}
+
+// Intel macOS is retired: no Intel download helper exists any more.
+if (str_contains($base, 'macosClientX64AppUrl')) {
+    failMacDownloadPage('BaseController still offers the retired Intel macOS download');
 }
 
 $start = strpos($tenant, 'public function clientsPage(Request $request, array $params): Response');

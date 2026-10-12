@@ -11,11 +11,11 @@ public sealed class WindowsProxyEditorViewModelTests
     {
         var editor = new WindowsProxyEditorViewModel();
 
-        Assert.Equal(["ss", "ss2022", "vless", "external"], editor.ProtocolOptions);
+        Assert.Equal(["ss", "ss2022", "vless", "socks5", "external"], editor.ProtocolOptions);
         Assert.Contains("none", editor.ShadowsocksMethodOptions);
         Assert.Contains("aes-128-ctr", editor.ShadowsocksMethodOptions);
         Assert.Contains("2022-blake3-aes-256-gcm", editor.ShadowsocksMethodOptions);
-        Assert.Equal(["tcp", "ws", "grpc"], editor.VlessTransportOptions);
+        Assert.Equal(["tcp", "ws", "grpc", "httpupgrade"], editor.VlessTransportOptions);
         Assert.Equal([WindowsProxyMode.Http, WindowsProxyMode.Tun, WindowsProxyMode.Process], editor.ModeOptions);
         Assert.Contains(2080, editor.LocalListenPortOptions);
         Assert.Contains(2081, editor.LocalListenPortOptions);
@@ -65,5 +65,17 @@ public sealed class WindowsProxyEditorViewModelTests
 
         Assert.Equal(WindowsProxyProtocol.Shadowsocks2022, profile.Protocol);
         Assert.Equal("2022-blake3-aes-256-gcm", profile.Method);
+    }
+
+    [Fact]
+    public void ProtocolIsChosenOnlyWhileAddingANode()
+    {
+        var editor = new WindowsProxyEditorViewModel();
+        editor.Load(null);
+        Assert.True(editor.IsNew);
+        editor.Load(new WindowsProxyProfile { Id = 4, Protocol = WindowsProxyProtocol.Socks5, Server = "198.51.100.7", Port = 1080, HostedId = 11, Username = "alice", Password = "pw" });
+        Assert.False(editor.IsNew);
+        var saved = editor.ToProfile();
+        Assert.Equal((11L, "alice", WindowsProxyProtocol.Socks5), (saved.HostedId, saved.Username, saved.Protocol));
     }
 }

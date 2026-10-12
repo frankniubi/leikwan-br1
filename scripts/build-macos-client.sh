@@ -42,13 +42,13 @@ assert_ultra_obfuscated() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
+Usage: scripts/build-macos-client.sh --rid osx-arm64 [options]
   --version <version>       App version (default: 1.0.0)
   --output-root <path>      Intermediate output directory
   --wstunnel-src <path>     Upstream wstunnel checkout/cache
   --sing-box-src <path>     Upstream sing-box checkout/cache
   --managed-load-receipt <path>
-                            Hash-bound probe receipt for cross-architecture packaging
+                            Hash-bound probe receipt when packaging arm64 on a non-arm64 host
   GARBLE_PATH=<path>        Pinned garble binary (default: PATH or temporary go install)
   --no-package              Build publish/helpers only
   --dry-run                 Print the pinned build plan without compiling
@@ -76,12 +76,8 @@ case "$rid" in
     go_arch="arm64"
     architecture="arm64"
     ;;
-  osx-x64)
-    rust_target="x86_64-apple-darwin"
-    go_arch="amd64"
-    architecture="x86_64"
-    ;;
-  *) fail "--rid must be osx-arm64 or osx-x64" ;;
+  osx-x64) fail "osx-x64 is no longer built: the macOS client supports Apple Silicon (osx-arm64) only" ;;
+  *) fail "--rid must be osx-arm64 (the macOS client supports Apple Silicon only)" ;;
 esac
 
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"

@@ -117,6 +117,11 @@ public sealed class WindowsProxyProfileStore
             profile.RealityPublicKey = Bound(profile.RealityPublicKey, 256);
             profile.RealityShortId = Bound(profile.RealityShortId, 128);
             profile.Alpn = Bound(profile.Alpn, 256);
+            profile.Plugin = Bound(profile.Plugin, 32).ToLowerInvariant();
+            profile.PluginOpts = Bound(profile.PluginOpts, 512);
+            profile.Username = Bound(profile.Username, 255);
+            if (profile.HostedId < 0)
+                profile.HostedId = 0;
             if (profile.Id <= 0 || !ids.Add(profile.Id))
                 profile.Id = NextId(ids);
             if (profile.Port is < 1 or > 65535)

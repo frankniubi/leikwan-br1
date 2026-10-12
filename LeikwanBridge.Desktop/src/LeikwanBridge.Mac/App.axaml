@@ -1,16 +1,25 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:LeikwanBridge.Mac.Localization"
              x:Class="LeikwanBridge.Mac.App"
-             RequestedThemeVariant="Light">
+             RequestedThemeVariant="Default">
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <ResourceInclude Source="avares://LeikwanBridge.Mac/Resources/Strings.axaml" />
+        <ResourceInclude Source="avares://LeikwanBridge.Mac/Resources/Palette.axaml" />
       </ResourceDictionary.MergedDictionaries>
+      <loc:LocalizeConverter x:Key="Localize" />
     </ResourceDictionary>
   </Application.Resources>
   <Application.Styles>
-    <FluentTheme DensityStyle="Compact" />
+    <FluentTheme DensityStyle="Compact">
+      <!-- Brand primary (seed #2563EB) for the day and night pairings. -->
+      <FluentTheme.Palettes>
+        <ColorPaletteResources x:Key="Light" Accent="#004AC6" RegionColor="#FAF8FF" />
+        <ColorPaletteResources x:Key="Dark" Accent="#B4C5FF" RegionColor="#11131B" />
+      </FluentTheme.Palettes>
+    </FluentTheme>
     <StyleInclude Source="avares://LeikwanBridge.Mac/Resources/Theme.axaml" />
   </Application.Styles>
 </Application>

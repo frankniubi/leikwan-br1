@@ -41,6 +41,10 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         _updatesRoot = Path.GetFullPath(updatesRoot);
         _currentBundlePath = Path.GetFullPath(currentBundlePath);
         _architecture = MacBundleValidator.NormalizeArchitecture(architecture);
+        // The macOS client ships for Apple Silicon only; the panel's legacy
+        // macos_client_*_x64 entries are never selected.
+        if (!string.Equals(_architecture, "arm64", StringComparison.Ordinal))
+            throw new PlatformNotSupportedException("mac_architecture_unsupported");
         _httpClientFactory = httpClientFactory ?? LeikwanHttpClientFactory.Create;
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
@@ -100,9 +104,8 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             CryptographicOperations.ZeroMemory(json);
         }
 
-        var suffix = _architecture == "arm64" ? "arm64" : "x64";
-        if (!manifest.Manifest.TryGetValue($"macos_client_update_{suffix}", out var update)
-            || !manifest.Manifest.TryGetValue($"macos_client_app_{suffix}", out var installer))
+        if (!manifest.Manifest.TryGetValue("macos_client_update_arm64", out var update)
+            || !manifest.Manifest.TryGetValue("macos_client_app_arm64", out var installer))
             throw new InvalidDataException("update_manifest_architecture_missing");
         update = ValidateArtifact(update, "zip", panel);
         installer = ValidateArtifact(installer, "dmg", panel);
@@ -115,7 +118,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         if (!VersionsEquivalent(update.Version, installer.Version))
             throw new InvalidDataException("update_manifest_version_mismatch");
         if (!IsRemoteVersionNewer(update.Version, currentVersion)
-            && !HasRuntimeDrift(update, _currentBundlePath, _architecture))
+            && !HasRuntimeDrift(update, _currentBundlePath))
         {
             Report(progress, UpdateProgress.Checking("Update check finished."));
             return null;
@@ -124,13 +127,13 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         return update with { ManualInstaller = installer };
     }
 
-    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath, string architecture)
+    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath)
     {
         if (artifact.RuntimeSha256.Count == 0)
             return false;
         foreach (var (key, expected) in artifact.RuntimeSha256)
         {
-            if (!TryResolveRuntimePath(key, bundlePath, architecture, out var path))
+            if (!TryResolveRuntimePath(key, bundlePath, out var path))
                 continue;
             if (!Regex.IsMatch(expected ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
                 || !File.Exists(path)
@@ -143,15 +146,11 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     private static bool TryResolveRuntimePath(
         string key,
         string bundlePath,
-        string architecture,
         out string path)
     {
         path = string.Empty;
         var normalized = key.Trim();
-        var activeUltraKey = architecture == "arm64"
-            ? "ultra_client_runtime_macos_arm64"
-            : "ultra_client_runtime_macos_x64";
-        if (string.Equals(normalized, activeUltraKey, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(normalized, "ultra_client_runtime_macos_arm64", StringComparison.OrdinalIgnoreCase))
         {
             path = Path.Combine(bundlePath, "Contents", "Resources", "bin", "ultra-client");
             return true;
@@ -442,9 +441,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             || artifact.SizeBytes is <= 0 or > MaximumPackageBytes
             || !Regex.IsMatch(artifact.Sha256 ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
             || !string.Equals(artifact.Format, format, StringComparison.OrdinalIgnoreCase)
-            // NormalizeArchitecture() maps x64 -> "x86_64" while _architecture keeps
-            // the process name ("x64"), so comparing a normalized manifest value with a
-            // raw runtime value made every Intel/Rosetta Mac fail this check outright.
+            // Both sides are normalized: an x86_64-labelled artifact never matches arm64.
             || !string.Equals(
                 MacBundleValidator.NormalizeArchitecture(artifact.Architecture),
                 MacBundleValidator.NormalizeArchitecture(_architecture),

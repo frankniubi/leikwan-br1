@@ -35,6 +35,7 @@
 # its own rules for Response / Continuation; this keeps our annotations intact).
 # ---------------------------------------------------------------------------
 -keep,allowoptimization interface com.leikwan.bridge.api.PanelApi { *; }
+-keep,allowoptimization interface com.leikwan.bridge.api.HostedNodeApi { *; }
 
 # R8 8.5 can rewrite Kotlin suspend state machines that cross a private
 # helper into a void method. Keep the enrollment repository and its generated

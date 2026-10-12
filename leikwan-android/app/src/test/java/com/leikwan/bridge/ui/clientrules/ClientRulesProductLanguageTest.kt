@@ -44,7 +44,9 @@ class ClientRulesProductLanguageTest {
 
     @Test
     fun `navigation keeps Routing destination while adding Client Rules`() {
-        val routes = com.leikwan.bridge.ui.nav.Screen.entries.map { it.route }
+        // Routing and Client Rules are Settings sub-pages since the three-tab navigation.
+        val routes = com.leikwan.bridge.ui.nav.Screen.entries.map { it.route } +
+            com.leikwan.bridge.ui.nav.SubPage.entries.map { it.route }
 
         assertTrue("Existing Routing destination must remain available", "routing" in routes)
         assertTrue("Client Rules destination must be available", "client-rules" in routes)

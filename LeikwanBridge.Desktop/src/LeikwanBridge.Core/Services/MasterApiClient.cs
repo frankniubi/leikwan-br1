@@ -7,7 +7,7 @@ using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
-public sealed class MasterApiClient : IDisposable
+public sealed partial class MasterApiClient : IDisposable
 {
     public const string AgentVersion = "2026.04.09.1";
     public const string NativeOutboundLeaseProtocol = "leikwan-ultra-native-socks5-v1";

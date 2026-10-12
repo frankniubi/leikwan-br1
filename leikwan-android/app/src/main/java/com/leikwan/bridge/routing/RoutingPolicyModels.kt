@@ -75,4 +75,6 @@ data class CompiledRouteRule(
     /** "direct" | "<PROXY>" (default node) | "<NODE:{id}>" (pinned node). */
     val outbound: String,
     val sourceRuleId: String?,
+    /** Android package names; when set the rule matches the owning app instead of a rule-set. */
+    val packageNames: List<String> = emptyList(),
 )

@@ -116,7 +116,7 @@ public sealed class MacConnectionProfileStore
         var ids = new HashSet<int>();
         foreach (var source in profiles)
         {
-            if (source is null || !MacConnectionProtocol.IsSupported(source.Protocol))
+            if (source is null || !MacConnectionProtocol.IsStorable(source))
                 continue;
             var profile = source.Clone();
             profile.Protocol = profile.Protocol.Trim().ToLowerInvariant();

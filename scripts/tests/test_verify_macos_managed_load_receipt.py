@@ -28,7 +28,7 @@ class ManagedLoadReceiptTests(unittest.TestCase):
         receipt = root / "receipt.json"
         receipt.write_text(json.dumps({
             "schema": 1,
-            "rid": "osx-x64",
+            "rid": "osx-arm64",
             "version": "1.0.19",
             "probe_exit_code": 2,
             "files": hashes,
@@ -41,7 +41,7 @@ class ManagedLoadReceiptTests(unittest.TestCase):
             str(SCRIPT),
             str(root / "publish"),
             str(receipt),
-            "--rid", "osx-x64",
+            "--rid", "osx-arm64",
             "--version", "1.0.19",
             *extra,
         ], capture_output=True, text=True)

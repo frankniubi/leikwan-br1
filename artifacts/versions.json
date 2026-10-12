@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "7e153621b784d87c9a5a619a5cb7ca8f48f3ba70fa7d344d8e9229cf454eb369",
-    "size_bytes": 74469663,
-    "version": "0.2.41",
-    "version_code": 43
+    "sha256": "260fc557c51ede2197aa6828696f6c8420d2091277fe4bda040279d09884bf98",
+    "size_bytes": 74633617,
+    "version": "0.2.42",
+    "version_code": 44
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -306,10 +306,10 @@
       "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
       "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
     },
-    "sha256": "3e0992590c1a2214a0c65cbea1b8593a8e9f7b96e30e626cc14eba8e9f1aed9e",
-    "size_bytes": 78539759,
-    "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "sha256": "daacaecb05f334302eb07293f24d0fff811f0e502444bdf5465723a66bfd82c5",
+    "size_bytes": 78550610,
+    "version": "1.0.57",
+    "source_commit": "1be261cf68bbecf600d549b211ccb4fed23cecd8"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -332,7 +332,8 @@
     "sha256": "15e6f51cd35708a14ee2047608efbab1ae49b2ebec71bb6078465be6149b8f8a",
     "size_bytes": 83073525,
     "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba",
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "macos_client_update_arm64": {
     "architecture": "arm64",
@@ -352,10 +353,10 @@
       "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
       "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
     },
-    "sha256": "8a45c3a1459dd201c4cfc7249e50af44808bcf8572d35f8972237f4cf2d91959",
-    "size_bytes": 69935770,
-    "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "sha256": "ca89fcb28d13810318849575f62b731b8f05a3112e3cd1bc8a1e3263f2504ee6",
+    "size_bytes": 70041749,
+    "version": "1.0.57",
+    "source_commit": "1be261cf68bbecf600d549b211ccb4fed23cecd8"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -378,14 +379,15 @@
     "sha256": "2cd9cea1390b4963a8fb9a4e3e899d2aa5434fc02ddd1f548687ac29a9ad3c50",
     "size_bytes": 74182035,
     "version": "1.0.56",
-    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba"
+    "source_commit": "064713108f856724ceec4386ef6fdad99a5118ba",
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "macos_headless_installer": {
     "install_url": "/artifacts/install-macos-headless.sh",
     "path": "install/install-macos-headless.sh",
-    "sha256": "e16715e1bd62c567c06e6d3989e3fd79eb1a0a424f2b94e57ce8f73b9eeeba4e",
-    "size_bytes": 20601,
-    "version": "1.0.56",
+    "sha256": "5489c1b5f08499e6ed06915cd84a1cdd189209b23b4324cd602d4753ac87fc83",
+    "size_bytes": 20727,
+    "version": "1.0.57",
     "artifact_url": "/artifacts/install-macos-headless.sh"
   },
   "macos_headless_uninstaller": {
@@ -706,7 +708,8 @@
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
       "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
-    }
+    },
+    "retired": "Intel macOS is retired. Pinned at the last x64 build (client 1.0.56, runtime 2026.10.12.1) so Intel 1.0.56 clients see 'up to date' and their runtime stays attested; never update or delete."
   },
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
@@ -780,9 +783,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
     },
-    "sha256": "57556ab593f619672c315a7cf9c163f7c33ce80784e84681c9bbd87140a9102b",
-    "size_bytes": 69791894,
-    "version": "0.1.20.63"
+    "sha256": "1956f31db2559fa298214a39ee13d37f9f673a5a46c9af88050eee84e33abf18",
+    "size_bytes": 69835530,
+    "version": "0.1.20.64"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -790,9 +793,9 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "a197da4a8d3fa066deed15b73e7805396386058646b2c90bfa2924a68e3ba45f",
-    "size_bytes": 63752241,
-    "version": "0.1.20.63",
+    "sha256": "ad25907921d52c346e84fa8e71aba7d3cc12b9343404a4f8d2c7d831bb6e056e",
+    "size_bytes": 63787671,
+    "version": "0.1.20.64",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -805,9 +808,9 @@
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "e3d7b9a9969debdfb4fe16b28c5e692422d5ce898f6b91092953add406618e80",
+    "sha256": "52628049e3f2b30f44500276908c4d6abd1db888c79f8840aa85a8157f9bd997",
     "size_bytes": 16815,
-    "version": "0.1.20.63",
+    "version": "0.1.20.64",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {

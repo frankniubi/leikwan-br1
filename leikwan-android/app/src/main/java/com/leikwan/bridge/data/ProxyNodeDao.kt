@@ -21,6 +21,9 @@ interface ProxyNodeDao {
     @Query("SELECT * FROM proxy_nodes WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): ProxyNode?
 
+    @Query("SELECT * FROM proxy_nodes WHERE hostedId IS NOT NULL")
+    suspend fun getHosted(): List<ProxyNode>
+
     @Query("SELECT * FROM proxy_nodes WHERE subscriptionId = :subId")
     suspend fun getBySubscription(subId: Long): List<ProxyNode>
 

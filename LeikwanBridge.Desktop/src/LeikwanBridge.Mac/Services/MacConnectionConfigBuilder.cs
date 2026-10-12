@@ -1,3 +1,4 @@
+using LeikwanBridge.Core.Nodes;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -313,6 +314,11 @@ public static class MacConnectionConfigBuilder
 
     private static JsonObject BuildOutbound(MacConnectionProfile profile)
     {
+        // SOCKS5 / VLESS / SS-with-plugin nodes carry a canonical share link: build the same
+        // outbound as Windows. A routed start has already replaced Server/Port with the
+        // forward listener; the node keeps its real host for TLS SNI and ws/httpupgrade Host.
+        if (profile.HasShareLink)
+            return UserNodeOutbound.ForForward(UserNodeShareLink.Parse(profile.ShareLink), profile.Port);
         return profile.Protocol switch
         {
             MacConnectionProtocol.Shadowsocks => BuildShadowsocks(profile),
@@ -544,7 +550,7 @@ public static class MacConnectionConfigBuilder
 
     private static void Validate(MacConnectionProfile profile, int proxyPort)
     {
-        if (!MacConnectionProtocol.IsSupported(profile.Protocol))
+        if (!MacConnectionProtocol.IsStorable(profile))
             throw new ArgumentException("Unsupported connection protocol.", nameof(profile));
         if (string.IsNullOrWhiteSpace(profile.Server))
             throw new ArgumentException("Connection server is required.", nameof(profile));
@@ -552,6 +558,14 @@ public static class MacConnectionConfigBuilder
             throw new ArgumentOutOfRangeException(nameof(profile.Port));
         if (proxyPort is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(proxyPort));
+        if (profile.HasShareLink)
+        {
+            if (!UserNodeShareLink.TryParse(profile.ShareLink, out _, out _))
+                throw new ArgumentException("The node share link is invalid.", nameof(profile));
+            return;
+        }
+        if (profile.Protocol is MacConnectionProtocol.Socks5 or MacConnectionProtocol.Vless)
+            throw new ArgumentException("SOCKS5 and VLESS nodes need a share link.", nameof(profile));
         switch (profile.Protocol)
         {
             case MacConnectionProtocol.Shadowsocks when string.IsNullOrWhiteSpace(profile.Method)

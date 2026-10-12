@@ -1,0 +1,230 @@
+name: macOS release smoke
+
+# Runs the macOS packages that are published right now (not a fresh build) on a
+# real Apple Silicon runner: the build Mac is Intel, so this is the only place
+# the shipped arm64 binaries actually execute before customers run them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panel:
+        description: "Panel origin that serves versions.json and the packages"
+        required: false
+        default: "https://v3.leikwanhost.com"
+  push:
+    branches:
+      - codex/macos-client
+    paths:
+      - ".github/workflows/macos-release-smoke.yml"
+      - "artifacts/versions.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Published arm64 package on Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      PANEL: ${{ inputs.panel || 'https://v3.leikwanhost.com' }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify runner is Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test "$(sysctl -n hw.optional.arm64)" = "1"
+          sw_vers
+          # Rosetta must not be what runs our binaries.
+          if /usr/bin/pgrep -q oahd; then echo "note: Rosetta daemon present"; fi
+
+      - name: Download the published packages and check them against versions.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/published"
+          mkdir -p "$work"
+          curl -fsSL --retry 3 "$PANEL/artifacts/versions.json?ci=$GITHUB_RUN_ID" -o "$work/versions.json"
+          python3 - "$work/versions.json" "$work" <<'PY'
+          import json, pathlib, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          out = pathlib.Path(sys.argv[2])
+          app, update = manifest["macos_client_app_arm64"], manifest["macos_client_update_arm64"]
+          if app["version"] != update["version"]:
+              raise SystemExit("arm64 DMG and update zip versions differ")
+          if app["runtime_sha256"] != update["runtime_sha256"]:
+              raise SystemExit("arm64 DMG and update zip runtime pins differ")
+          lines = [
+              f"VERSION={app['version']}",
+              f"DMG_URL={app['artifact_url']}", f"DMG_SHA={app['sha256']}", f"DMG_SIZE={app['size_bytes']}",
+              f"ZIP_URL={update['artifact_url']}", f"ZIP_SHA={update['sha256']}", f"ZIP_SIZE={update['size_bytes']}",
+          ]
+          (out / "expected.env").write_text("\n".join(lines) + "\n")
+          (out / "runtime_sha256.json").write_text(json.dumps(app["runtime_sha256"], indent=2))
+          print("\n".join(lines))
+          PY
+          # shellcheck disable=SC1091
+          . "$work/expected.env"
+          curl -fsSL --retry 3 "$PANEL$DMG_URL" -o "$work/leikwan-bridge-arm64.dmg"
+          curl -fsSL --retry 3 "$PANEL$ZIP_URL" -o "$work/leikwan-bridge-update-arm64.zip"
+          check() {
+            local file="$1" sha="$2" size="$3"
+            test "$(stat -f %z "$file")" = "$size" || { echo "size mismatch: $file"; exit 1; }
+            test "$(shasum -a 256 "$file" | cut -d' ' -f1)" = "$sha" || { echo "sha256 mismatch: $file"; exit 1; }
+          }
+          check "$work/leikwan-bridge-arm64.dmg" "$DMG_SHA" "$DMG_SIZE"
+          check "$work/leikwan-bridge-update-arm64.zip" "$ZIP_SHA" "$ZIP_SIZE"
+          cat "$work/expected.env" >>"$GITHUB_ENV"
+          printf '### Published macOS arm64 %s\n\n- DMG `%s`\n- update zip `%s`\n' "$VERSION" "$DMG_SHA" "$ZIP_SHA" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Install from the DMG like a user and from the update zip like the updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/published"
+          plist="$RUNNER_TEMP/attach.plist"
+          hdiutil verify "$work/leikwan-bridge-arm64.dmg"
+          hdiutil attach -readonly -nobrowse -plist "$work/leikwan-bridge-arm64.dmg" >"$plist"
+          mount_point="$(python3 -c 'import plistlib,sys; p=plistlib.load(open(sys.argv[1],"rb")); print([e["mount-point"] for e in p["system-entities"] if e.get("mount-point")][0])' "$plist")"
+          python3 scripts/verify-macos-dmg-layout.py "$mount_point" --version "$VERSION" --architecture arm64
+          rm -rf "/Applications/LeiKwan Bridge.app"
+          ditto "$mount_point/LeiKwan Bridge.app" "/Applications/LeiKwan Bridge.app"
+          hdiutil detach "$mount_point" -force
+          rm -rf "$RUNNER_TEMP/update"
+          mkdir -p "$RUNNER_TEMP/update"
+          ditto -x -k "$work/leikwan-bridge-update-arm64.zip" "$RUNNER_TEMP/update"
+          for app in "/Applications/LeiKwan Bridge.app" "$RUNNER_TEMP/update/LeiKwan Bridge.app"; do
+            test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION"
+            test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = "com.leikwan.bridge"
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+
+      - name: Helpers match the pins and execute natively
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="/Applications/LeiKwan Bridge.app"
+          python3 - "$app" "$RUNNER_TEMP/published/runtime_sha256.json" <<'PY'
+          import hashlib, json, pathlib, sys
+          app = pathlib.Path(sys.argv[1])
+          pins = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          for rel, sha in pins.items():
+              got = hashlib.sha256((app / "Contents/Resources" / rel).read_bytes()).hexdigest()
+              if got != sha:
+                  raise SystemExit(f"{rel}: {got} != pinned {sha}")
+              print(f"pinned ok  {rel}")
+          PY
+          main="$app/Contents/MacOS/LeikwanBridge.Mac"
+          test "$(lipo -archs "$main")" = "arm64"
+          failed=0
+          printf '\n| helper | arch | signature | runs natively |\n|---|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+          for helper in sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client; do
+            bin="$app/Contents/Resources/bin/$helper"
+            arch="$(lipo -archs "$bin")"
+            sig=ok; codesign --verify --strict "$bin" || sig=FAIL
+            # Exit codes >= 126 mean the kernel refused it (bad CPU type, killed by
+            # code signing) rather than the program rejecting its arguments.
+            ran=FAIL
+            for args in "version" "--version" "-version" "--help" "-h"; do
+              set +e
+              # shellcheck disable=SC2086
+              out="$(perl -e 'alarm 10; exec @ARGV' "$bin" $args 2>&1 </dev/null)"
+              code=$?
+              set -e
+              if [ "$code" -lt 126 ]; then ran="ok (\`$args\` exit $code)"; break; fi
+            done
+            echo "$helper arch=$arch sig=$sig ran=$ran"
+            echo "$out" | head -3
+            printf '| %s | %s | %s | %s |\n' "$helper" "$arch" "$sig" "$ran" >>"$GITHUB_STEP_SUMMARY"
+            [ "$arch" = "arm64" ] && [ "$sig" = "ok" ] && [ "$ran" != "FAIL" ] || failed=1
+          done
+          exit "$failed"
+
+      - name: Launch the installed app the way a user opens it
+        shell: bash
+        run: |
+          set -euo pipefail
+          shots="$RUNNER_TEMP/screenshots"
+          mkdir -p "$shots"
+          open -n "/Applications/LeiKwan Bridge.app"
+          alive=0
+          for _ in $(seq 1 60); do
+            if pgrep -x LeikwanBridge.Mac >/dev/null; then alive=1; break; fi
+            sleep 1
+          done
+          test "$alive" = 1 || { echo "app never started"; exit 1; }
+          sleep 25
+          pid="$(pgrep -x LeikwanBridge.Mac | head -1)"
+          test -n "$pid" || { echo "app exited within 25s of launch"; ls -la ~/Library/Logs/DiagnosticReports || true; exit 1; }
+          ps -o pid,stat,rss,command -p "$pid"
+          # The process must be arm64, not translated by Rosetta.
+          test "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "0"
+          screencapture -x "$shots/first-launch.png" || true
+          osascript -e 'tell application id "com.leikwan.bridge" to quit' || kill -TERM "$pid"
+          for _ in $(seq 1 20); do pgrep -x LeikwanBridge.Mac >/dev/null || break; sleep 0.5; done
+          pkill -x LeikwanBridge.Mac || true
+          if ls ~/Library/Logs/DiagnosticReports/LeikwanBridge* >/dev/null 2>&1; then
+            echo "crash report written:"; ls -la ~/Library/Logs/DiagnosticReports/LeikwanBridge*; exit 1
+          fi
+
+      - name: Render every screen in both themes
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable="/Applications/LeiKwan Bridge.app/Contents/MacOS/LeikwanBridge.Mac"
+          shots="$RUNNER_TEMP/screenshots"
+          capture="$RUNNER_TEMP/capture-macos-window"
+          swiftc scripts/capture-macos-window.swift -o "$capture"
+          pid=""
+          stop() {
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+              kill -TERM "$pid" 2>/dev/null || true
+              for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+              kill -KILL "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+            pid=""
+          }
+          trap stop EXIT
+          for theme in light dark; do
+            for lang in en zh-Hans; do
+              for state in login dashboard services nodes pairing settings; do
+                LEIKWAN_TEST_UI=1 LEIKWAN_TEST_UI_THEME="$theme" LEIKWAN_TEST_UI_LANG="$lang" \
+                  "$executable" --ui-fixture "$state" --window-width 1280 --window-height 820 &
+                pid=$!
+                "$capture" "$pid" 1280 820 "$shots/$theme-$lang-$state.png"
+                stop
+              done
+            done
+          done
+          trap - EXIT
+          test "$(find "$shots" -name '*-*-*.png' | wc -l | tr -d ' ')" = "24"
+
+      - name: Native Ultra canary leak gate on the published bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-macos-ultra-leaks.sh \
+            --app-bundle "/Applications/LeiKwan Bridge.app" \
+            --dmg "$RUNNER_TEMP/published/leikwan-bridge-arm64.dmg" \
+            --update-zip "$RUNNER_TEMP/published/leikwan-bridge-update-arm64.zip"
+
+      - name: Upload screenshots
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-smoke-screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: warn
+          retention-days: 14

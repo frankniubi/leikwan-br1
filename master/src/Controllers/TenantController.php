@@ -447,7 +447,7 @@ final class TenantController extends BaseController
                 $syncError = 'WHMCS connection is not configured on this panel right now.';
             }
         } catch (\Throwable $throwable) {
-            $syncError = $throwable->getMessage();
+            $syncError = $this->billingSyncErrorMessage($throwable);
         }
 
         $user = is_array($snapshot['user'] ?? null) ? $snapshot['user'] : $user;
@@ -896,7 +896,7 @@ final class TenantController extends BaseController
             );
             SessionAuth::flash('success', 'Balance transfer completed successfully.');
         } catch (\Throwable $throwable) {
-            SessionAuth::flash('error', 'Balance transfer failed: ' . $throwable->getMessage());
+            SessionAuth::flash('error', 'Balance transfer failed: ' . $this->billingSyncErrorMessage($throwable));
         }
 
         return Response::redirect('/tenant/account');
@@ -3724,6 +3724,16 @@ final class TenantController extends BaseController
             }
         }
         throw new ApiException('device_not_owned', 403);
+    }
+
+    private function billingSyncErrorMessage(\Throwable $throwable): string
+    {
+        $message = $throwable->getMessage();
+        if (in_array($message, ['whmcs_response_error', 'whmcs_request_failed', 'whmcs_response_invalid', 'whmcs_config_missing'], true)) {
+            return 'The billing site cannot be reached right now. Please try again later.';
+        }
+
+        return $message;
     }
 
     private function whmcsIdentityService(): WhmcsIdentityService

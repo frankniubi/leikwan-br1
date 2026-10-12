@@ -664,6 +664,54 @@ class ConnectionsViewModelTest {
     }
 
     @Test
+    fun `reopening the app over a running native tunnel keeps it up`() {
+        val direction = "Hong Kong -> China Mainland"
+        val nativeForwardId = 10L
+        val carrier = NativeOutboundCarrier(
+            forwardId = nativeForwardId,
+            direction = direction,
+            scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+            transport = "tcp+udp",
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+        )
+        val catalog = ForwardCatalog(
+            visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+            selectedForwardId = nativeForwardId,
+            nativeOutbound = NativeOutboundCapability(
+                enabled = true,
+                protocol = "socks5",
+                leaseProtocol = "leikwan-ultra-native-socks5-v1",
+                transport = "tcp+udp",
+                forwardIds = listOf(nativeForwardId),
+                defaultForwardId = nativeForwardId,
+                routeScopes = listOf("cn_only", "global"),
+                defaultRouteScope = "global",
+                forwards = listOf(carrier),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        prefs.nativeOutboundRouteScope = "global"
+        var stopCalls = 0
+        // A fresh view model (activity recreated, app reopened) while the VPN service still runs.
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog },
+            nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stopCalls++ },
+            vpnRunning = true,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0, stopCalls)
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+        assertTrue(viewModel.state.value.nativeSelected)
+        assertTrue(prefs.nativeOutboundSelected)
+    }
+
+    @Test
     fun `turning native selection off stops the active native tunnel`() {
         val direction = "Hong Kong -> China Mainland"
         val nativeForwardId = 10L

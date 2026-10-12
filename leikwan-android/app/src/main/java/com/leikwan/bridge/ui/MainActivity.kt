@@ -11,7 +11,6 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.view.WindowCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +26,7 @@ import com.leikwan.bridge.ui.login.EnrollmentScreen
 import com.leikwan.bridge.ui.nav.MainScreen
 import com.leikwan.bridge.ui.security.BlockedDeviceScreen
 import com.leikwan.bridge.ui.theme.LeikwanTheme
+import com.leikwan.bridge.ui.theme.ThemeController
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.security.MessageDigest
@@ -71,15 +71,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Transparent bars whose icons follow the light/dark theme.
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(Color.WHITE, Color.WHITE),
-            navigationBarStyle = SystemBarStyle.light(Color.WHITE, Color.WHITE),
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
         )
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
         handleIncomingIntent(intent)
+        ThemeController.load(Prefs.get(this))
         setContent {
             LeikwanTheme {
                 val security = androidx.compose.runtime.remember {
