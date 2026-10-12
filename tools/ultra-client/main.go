@@ -2545,11 +2545,27 @@ func main() {
 	if err != nil {
 		log.Fatal("runtime configuration unavailable")
 	}
+	config, err = normalizeRuntimeConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer cancelRoot()
+	go watchParentProcess(rootContext, cancelRoot, config.ParentPID)
+	if err := serveRuntime(rootContext, cancelRoot, config); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// normalizeRuntimeConfig applies defaults and validates a loaded runtime
+// configuration. It is shared by the standalone binary and the in-process
+// (iOS packet tunnel) entry point, which must not exit the host process.
+func normalizeRuntimeConfig(config Config) (Config, error) {
 	if config.ListenHost == "" {
 		config.ListenHost = "127.0.0.1"
 	}
 	if config.ForwardID <= 0 || config.ListenPort < 1 || config.ListenPort > 65535 || strings.TrimSpace(config.Target) == "" {
-		log.Fatal("runtime configuration invalid")
+		return config, errors.New("runtime configuration invalid")
 	}
 	if config.ControlSocket == "" {
 		config.ControlSocket = fmt.Sprintf("/run/ultra/forward-%d.control.sock", config.ForwardID)
@@ -2560,17 +2576,17 @@ func main() {
 	if config.ExternalUoT.Enabled {
 		normalizedExternalUoT, externalErr := config.ExternalUoT.normalized()
 		if externalErr != nil {
-			log.Fatal("external UoT configuration invalid")
+			return config, errors.New("external UoT configuration invalid")
 		}
 		config.ExternalUoT = normalizedExternalUoT
 		if config.NativeSocks5 {
-			log.Fatal("external UoT is not supported by native SOCKS5 mode")
+			return config, errors.New("external UoT is not supported by native SOCKS5 mode")
 		}
 	}
 	if config.NativeSocks5 {
 		routePolicy, policyErr := ParseNativeRoutePolicy(config.NativeRoutePolicy)
 		if policyErr != nil {
-			log.Fatal("native route policy invalid")
+			return config, errors.New("native route policy invalid")
 		}
 		config.NativeRoutePolicy = string(routePolicy)
 		if config.NativePortMin < nativeDefaultPortMin || config.NativePortMin > 65535 {
@@ -2608,8 +2624,15 @@ func main() {
 		config.ProbeIntervalMillis = 1000
 	}
 	if _, _, err := parseTarget(config.Target); err != nil {
-		log.Fatal(err)
+		return config, err
 	}
+	return config, nil
+}
+
+// serveRuntime runs the control socket and the data plane for a normalized
+// configuration until rootContext ends. cancelRoot is called when the control
+// socket fails so the whole runtime stops.
+func serveRuntime(rootContext context.Context, cancelRoot context.CancelFunc, config Config) error {
 	installFallbackResolverIfNeeded(config)
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
@@ -2619,11 +2642,8 @@ func main() {
 	if err := control.Listen(); err != nil {
 		status.UpdateError("control_socket_failed")
 		status.Close()
-		log.Fatal(err)
+		return err
 	}
-	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	defer cancelRoot()
-	go watchParentProcess(rootContext, cancelRoot, config.ParentPID)
 	go func() {
 		if err := control.Serve(); err != nil && rootContext.Err() == nil {
 			log.Printf("control socket stopped: %v", err)
@@ -2638,6 +2658,7 @@ func main() {
 	}()
 
 	runRuntimeLoop(rootContext, config, store, status)
+	return nil
 }
 
 // runRuntimeLoop starts the data plane once a valid policy is held and keeps it
