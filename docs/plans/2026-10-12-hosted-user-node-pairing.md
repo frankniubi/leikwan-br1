@@ -25,6 +25,13 @@
 1. 数据按 `clients.id` 存，而不是按用户/租户。归属判断 = "请求方客户端拥有这一行"。控制台按客户端管理。
 2. 同步必须双向：本地 → 云（单个上传 + 全部同步），云 → 本地（新设备自动落地）；定义身份/去重、冲突规则、本地独有节点的处理。
 
+第二轮答复（已落实，见 §5.3、§6、§7.5）：
+
+3. 每客户端 32 个节点的上限保留。
+4. 控制台可**原地编辑**托管节点（名称、地址、端口、协议参数、凭据）；凭据不回显，需要改就重新输入，留空即保留原值；编辑会推进 revision，所有设备同步。
+5. 自动配对（目标一致）与手动配对**都保留**，手动优先。
+6. Android 增加"仅从本设备移除"：按服务端节点 ID 记入本机屏蔽列表，后续云 → 本地同步不再带回；节点页可查看并恢复；任何一端"全部删除"同时清掉屏蔽项。
+
 ## 2. 数据模型
 
 迁移：`master/migrations/20261012_add_client_hosted_nodes.sql`（同时追加到 `schema.sql`）。只建两张新表，**无外键、无 ALTER**（生产库旧表类型不确定，外键失败会让自动迁移把全站打成 500，见 panel-auto-migrations）。
@@ -54,7 +61,7 @@
 - 算法：XChaCha20-Poly1305（sodium），无 sodium 时 AES-256-GCM（openssl）。生产 PHP 两者都有。
 - AAD = `client_id`：把密文复制到别的客户端行上解不开。
 - 无密钥或无 AEAD → 写入直接失败（`hosted_nodes_unavailable` 503），绝不明文落库。
-- 不写日志；错误只返回字段名（`field`），不回显输入。控制台里密码/UUID/密钥**只写不读**。
+- 不写日志；错误只返回字段名（`field`），不回显输入。控制台里密码和 VLESS UUID **只写不读**（编辑时留空 = 保留原值）。
 
 ## 4. 协议校验（`HostedNodeSpec`）
 
@@ -96,13 +103,22 @@ Android 侧配套修正（VLESS 能真正跑起来所必需）：
 侧栏 Services 下新增"我的节点"（`/tenant/hosted-nodes`），默认客户端，拥有多个客户端时可切换（只能选自己的）。
 
 - 添加：粘贴分享链接，或按协议填写字段。
-- 列表：名称、协议、地址、参数摘要、来源（控制台/设备）、删除。凭据不再显示（要改就删掉重加；设备端可直接编辑）。
+- 列表：名称、协议、地址、参数摘要、来源（控制台/设备）、编辑、删除。
+- **原地编辑**（`GET/POST /tenant/hosted-nodes/{id}/edit`，`HostedNodeService::updateKeepingSecrets`）：
+  - 表单与添加表单相同，预填所有非机密字段（名称、协议、地址、端口、加密方式、插件、用户名、TLS/REALITY/传输参数、UoT/allowInsecure 复选框）。
+  - 机密字段（SS/SOCKS5 密码、VLESS UUID）**从不回显**；留空 = 保留原值，填写 = 替换。
+  - 非机密字段清空即清除（例如插件选"无"同时清掉插件参数；SOCKS5 用户名清空 = 关闭认证）。
+  - 切换协议不继承任何旧设置，必须填新协议的机密字段。
+  - 也可贴分享链接整体替换（含机密）。
+  - 节点 ID 不变、`version + 1` → 客户端 revision 变化 → 所有设备下次拉取时同步；与其他节点重复则拒绝（409 文案）；校验失败回到编辑页并只提示字段名。
 - 配对：每条转发一个下拉框（"自动（与目标一致）"/具体节点）；若配对节点地址 ≠ 转发目标，给出提示。
 - CSRF 校验；错误提示固定文案，只说明哪个字段不对，不回显输入。中文（简/繁）文案已加入 i18n。
 
 ## 6. 配对规则
 
-- **显式配对**：控制台或设备设定，存在 `client_hosted_node_pairings`。
+产品决定：自动与手动两种配对都保留，手动优先。
+
+- **显式（手动）配对**：控制台或设备设定，存在 `client_hosted_node_pairings`。
 - **目标匹配（自动）**：没有显式配对、且恰好一个托管节点的 `server:port` 等于转发目标时，自动配对。理由：转发本来就把流量送到这个地址，只有这个节点能通过它工作。新设备因此即使没人手动配对也能直接用。
 - 显式优先于自动；清除显式配对后回落到自动。
 - 设备上：`ConnectionsViewModel` 给每条转发选节点时，顺序是"本次会话的手动选择 → 面板配对 → 第一个节点"；面板配对变化（控制台或另一台设备改了）时会重新覆盖；用户在设备上选了**托管节点**会写回面板（所有设备生效），选了**本地独有节点**只在本机生效（面板无法引用本地节点）。
@@ -138,6 +154,17 @@ Android 侧配套修正（VLESS 能真正跑起来所必需）：
 - 删除优先级：任何一端删除即对所有设备删除（设备端删除托管节点 = 调面板 DELETE）。若另一台设备随后对已删除的节点做修改，面板返回 `hosted_node_not_found`，该设备重新同步后节点消失。
 - 选择这个方案的理由：节点数量小、改动频率低、编辑必须在线校验（面板做协议校验和加密），离线编辑的价值远小于合并冲突带来的复杂度和"节点被悄悄改坏"的风险。
 
+### 7.5 仅从本设备移除（屏蔽列表）
+
+- Android 节点卡片上，云端节点有两个动作："仅从本设备移除"（新）和原有的删除（= 从所有设备删除，走面板 DELETE）。
+- 仅从本设备移除：服务端节点 ID（连同名称，用于恢复列表）写入 `HostedNodePairingStore` 的屏蔽列表（SharedPreferences 持久化，按客户端 ID 归属）；删除本地行和解析到它的面板配对；**不写面板**，其他设备不受影响。
+- 云 → 本地同步跳过屏蔽的 ID：不落地、也不收编与之相同的本地节点；即使节点在面板上被改名/修改也不会回来（恢复列表里的名称跟随云端更新）。
+- 屏蔽项何时消失：
+  - 用户在节点页"已隐藏的云端节点（N）"里恢复单个或全部。先删屏蔽项并作废本机 revision，再拉列表；离线时恢复也能在下一次拉配置时完成。
+  - 任何一端"全部删除"（控制台、其他设备、本机）：面板不再列出该 ID，同步时自动清掉屏蔽项；本机删除也会显式清除。
+  - 用户在本机再次上传同一节点（明确表示要在本机用它）。
+- 换成另一个客户端登录时，旧客户端的屏蔽列表被忽略并清空。
+
 ## 8. Android 实现位置
 
 | 文件 | 作用 |
@@ -146,11 +173,11 @@ Android 侧配套修正（VLESS 能真正跑起来所必需）：
 | `api/HostedNodeApi.kt` | 独立 Retrofit 接口与 DTO（不改 `PanelApi`，测试里的 fake 不受影响） |
 | `data/hosted/HostedNodeSync.kt` | 双向同步、写穿透、批量上传、配对推送 |
 | `data/hosted/HostedNodeIdentity.kt` | 设备端身份键与导入去重 |
-| `data/hosted/HostedNodePairingStore.kt` | 客户端 ID、revision、已解析的 forward → 本地节点配对（无凭据） |
+| `data/hosted/HostedNodePairingStore.kt` | 客户端 ID、revision、已解析的 forward → 本地节点配对、本机屏蔽列表（均无凭据） |
 | `proxy/ProxyShareUri.kt` | 本地节点 → 分享链接（上传用） |
 | `api/PanelRepository.kt` | 拉配置后按 revision 触发同步；`hostedNodes` 访问器 |
 | `ui/connections/ConnectionsViewModel.kt` | 面板配对作为默认值、变化时覆盖、选择托管节点时写回（只加了两个构造参数和少量逻辑） |
-| `ui/proxies/ProxiesViewModel.kt`、`ProxiesScreen.kt` | 上传/全部同步/刷新、托管节点编辑删除走面板；UI 只有最小钩子 |
+| `ui/proxies/ProxiesViewModel.kt`、`ProxiesScreen.kt` | 上传/全部同步/刷新、托管节点编辑删除走面板、仅从本设备移除与恢复；UI 只有最小钩子 |
 | `res/values*/strings_hosted_nodes.xml` | 独立字符串文件，不碰 `strings.xml` |
 
 托管节点在设备上**可编辑**（经面板写穿透），理由：用户在手机上修改密码等是常见操作，写穿透保证所有设备一致，而不必回控制台。
@@ -161,6 +188,7 @@ Android 侧配套修正（VLESS 能真正跑起来所必需）：
 - 删除托管节点前二次确认，并说明"会从该客户端所有设备删除"。
 - 连接页的"转发 ↔ 节点"选择器里标出哪些配对来自面板（显式/自动）。
 - 全部同步完成后展示失败条目及原因（`HostedNodeBatchResult.error/field` 已有数据）。
+- "仅从本设备移除"与"从所有设备删除"放进同一个菜单并写清区别；"已隐藏的云端节点"移入同步菜单。
 
 ## 9. 测试
 
@@ -170,10 +198,12 @@ Android 侧配套修正（VLESS 能真正跑起来所必需）：
 - `hosted_node_service_test.php`（sqlite）：加密落库不含明文、AAD 防挪用、错误密钥/无密钥、幂等上传、客户端隔离、显式/自动配对、分组转发、revision 变化、更新/删除/上限。
 - `hosted_node_client_api_test.php`（sqlite + 真实 `DeviceControlService`）：令牌/平台/设备会话/信任状态门禁、列表/上传/批量/修改/配对/删除、跨客户端隔离、错误不回显。
 - `hosted_node_tenant_console_test.php`（`Bootstrap` 端到端）：登录、CSRF、只能操作自己的客户端、表单与分享链接两种添加、密码只写不读、配对与目标不一致提示、删除连带配对。
+- `hosted_node_console_edit_test.php`（`Bootstrap` 端到端）：编辑页预填但不含密码/UUID、留空保留、重填替换、清空清除、复选框、SOCKS5 关认证、切换协议需新机密、分享链接整体替换、重复拒绝、校验失败回编辑页、他人客户端/CSRF 不生效、编辑推进 version 与 revision。
 - `hosted_node_contract_test.php`：路由、门禁、拉取只带 revision、迁移无外键/无 ALTER/无明文凭据列、导航与中文文案。
 
 Android（`./gradlew.bat --offline -q :app:testDebugUnitTest`）：
 
+- `HostedNodeSuppressionTest`：移除后多次同步（含云端修改）不回来、不收编相同本地节点、恢复（含离线后下次拉取完成）、任一端全部删除清除屏蔽项、本机重新上传解除屏蔽、按客户端隔离、持久化。
 - `HostedNodeSyncTest`：落地与配对解析、云端修改/删除、本地节点不受影响、收编本地行、revision 门控与切换客户端、上传与重复上传、全部同步计数、写穿透失败不改本地、配对推送。
 - `ProxyShareUriTest`：三种协议导出/导入往返、ws path 只解码一次、IPv6、身份键去重。
 - `AppDatabaseHostedNodeMigrationTest`、`HostedVlessOutboundTest`（REALITY uTLS、SNI 回落、httpupgrade）、`ConnectionsViewModelHostedPairingTest`、`PanelRepositoryRouteRuleSyncTest`（拉取触发同步、旧面板无字段、失败不影响拉取）。
@@ -190,6 +220,5 @@ Android（`./gradlew.bat --offline -q :app:testDebugUnitTest`）：
 - 桌面客户端（Windows/macOS/Linux）：需要各自的受信设备方案后才能放开读取接口（目前接口只认 Android 已证明设备）。
 - iOS（`feat/ios-client`）：可直接复用同一接口与同步模型。
 - 专线 API（用户 `api_token`）下的节点管理接口。
-- 控制台内直接编辑节点（目前删了重加；设备端可编辑）。
 - VMess / WireGuard / Trojan / Hysteria2 等更多协议；VLESS 的 xudp packet encoding、mux。
 - 密钥轮换工具（重新加密所有 `sealed_config`）。
