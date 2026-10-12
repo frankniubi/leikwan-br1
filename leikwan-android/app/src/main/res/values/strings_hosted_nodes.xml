@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hosted user nodes ("上云"). Kept in their own file so the main strings.xml stays untouched. -->
+<resources>
+    <string name="hosted_node_badge">Cloud</string>
+    <string name="hosted_node_upload">Upload to cloud</string>
+    <string name="hosted_node_sync_all">Sync all to cloud</string>
+    <string name="hosted_node_refresh">Refresh from cloud</string>
+    <string name="hosted_node_uploaded">Uploaded to cloud</string>
+    <string name="hosted_node_refreshed">Cloud nodes updated</string>
+    <string name="hosted_node_deleted">Deleted from cloud</string>
+    <string name="hosted_node_sync_all_result">Uploaded %1$d, already in cloud %2$d, unsupported %3$d, failed %4$d</string>
+    <string name="hosted_node_error_format">Cloud sync failed: %1$s</string>
+</resources>

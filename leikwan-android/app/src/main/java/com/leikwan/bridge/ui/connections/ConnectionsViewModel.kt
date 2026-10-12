@@ -10,6 +10,7 @@ import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.data.hosted.HostedNodePairingStore
 import com.leikwan.bridge.net.PanelNetwork
 import com.leikwan.bridge.runtime.ForwardCatalog
 import com.leikwan.bridge.runtime.ForwardListItem
@@ -113,6 +114,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val startNativeConnect: suspend (Long, String, Boolean, String) -> Unit = { id, scope, bypass, policy ->
         TunnelOrchestrator.forApplication(app).startNativeForForward(id, scope, bypass, policy)
     },
+    /** forwardId -> node id paired on the panel for hosted nodes; shared by every device of the client. */
+    private val hostedPairings: StateFlow<Map<Long, Long>> = HostedNodePairingStore.from(app).pairings,
+    private val pushHostedPairing: suspend (Long, Long) -> Unit = { forwardId, nodeId ->
+        PanelRepository(app).hostedNodes.pushPairing(forwardId, nodeId)
+    },
     private val deviceLimitState: StateFlow<DeviceLimitNotice?> = DeviceLimitGate.state,
     private val deviceLimitRetryMs: Long = DEVICE_LIMIT_RETRY_MS,
     private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
@@ -145,6 +151,18 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             routeSelectionState.collect { count -> _state.update { it.copy(selectingRouteCandidates = count) } }
         }
         viewModelScope.launch {
+            // A pairing changed on the panel (console or another device) re-asserts here; a local
+            // pick made afterwards wins on this device until the panel pairing changes again.
+            hostedPairings.collect { pairings ->
+                _state.update { current ->
+                    val applied = pairings.filter { (_, nodeId) -> current.nodes.any { it.id == nodeId } }
+                    val next = current.copy(nodeByForward = current.nodeByForward + applied)
+                    applied[next.selectedForwardId]?.let { prefs.selectedProxyId = it }
+                    next
+                }
+            }
+        }
+        viewModelScope.launch {
             nodeFlows().collect { all ->
                 val enabled = all.filter { it.enabled }
                 _state.update { current ->
@@ -165,9 +183,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         prior: Map<Long, Long>,
     ): Map<Long, Long> {
         if (enabled.isEmpty()) return emptyMap()
+        val hosted = hostedPairings.value
         return forwards.associate { forward ->
             val nodeId = prior[forward.forwardId]
                 ?.takeIf { id -> enabled.any { it.id == id } }
+                ?: hosted[forward.forwardId]?.takeIf { id -> enabled.any { it.id == id } }
                 ?: enabled.first().id
             forward.forwardId to nodeId
         }
@@ -349,6 +369,12 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         prefs.selectedProxyId = nodeId
         _state.update {
             it.copy(nodeByForward = it.nodeByForward + (forwardId to nodeId))
+        }
+        // A hosted node becomes this forward's pairing on every device of the client; a local-only
+        // node stays a pick on this device. Best effort: offline, the local pick still applies.
+        viewModelScope.launch {
+            runCatching { pushHostedPairing(forwardId, nodeId) }
+                .onFailure { Log.w(TAG, "Hosted pairing not synced", it) }
         }
     }
 

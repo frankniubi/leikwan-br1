@@ -576,7 +576,7 @@ class SingboxConfigBuilder(
                 addProperty("uuid", config.get("uuid")?.asString ?: "")
                 config.get("flow")?.asString?.let { addProperty("flow", it) }
                 val tType = config.get("type")?.asString ?: "tcp"
-                if (tType != "tcp" && tType != "none") {
+                if (tType != "tcp" && tType != "none" && tType != "raw") {
                     add("transport", JsonObject().apply {
                         addProperty("type", tType)
                         if (tType == "ws") {
@@ -584,6 +584,10 @@ class SingboxConfigBuilder(
                             add("headers", JsonObject().apply {
                                 config.get("host")?.asString?.let { addProperty("Host", it) }
                             })
+                        }
+                        if (tType == "httpupgrade") {
+                            addProperty("path", config.stringOrNull("path") ?: "/")
+                            config.stringOrNull("host")?.let { addProperty("host", it) }
                         }
                         if (tType == "grpc") {
                             addProperty("service_name", config.get("serviceName")?.asString ?: "")
@@ -594,7 +598,27 @@ class SingboxConfigBuilder(
                 if (security == "tls" || security == "reality") {
                     add("tls", JsonObject().apply {
                         addProperty("enabled", true)
-                        config.get("sni")?.asString?.let { addProperty("server_name", it) }
+                        // The outbound dials 127.0.0.1 through the forward, so without an explicit
+                        // SNI the handshake would name the loopback address; use the node's own
+                        // host name instead.
+                        val serverName = config.stringOrNull("sni")
+                            ?: config.stringOrNull("peer")
+                            ?: node.originalServer.trim().takeUnless { it.isEmpty() || isIpLike(it) }
+                        serverName?.let { addProperty("server_name", it) }
+                        if (security == "tls" && config.stringOrNull("allowInsecure")?.lowercase() in setOf("1", "true")) {
+                            addProperty("insecure", true)
+                        }
+                        config.stringOrNull("alpn")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { values -> add("alpn", JsonArray().apply { values.forEach { add(it) } }) }
+                        // sing-box requires uTLS for REALITY; chrome is the common default.
+                        val fingerprint = config.stringOrNull("fp") ?: if (security == "reality") "chrome" else null
+                        fingerprint?.let { fp ->
+                            add("utls", JsonObject().apply {
+                                addProperty("enabled", true)
+                                addProperty("fingerprint", fp)
+                            })
+                        }
                         if (security == "reality") {
                             add("reality", JsonObject().apply {
                                 addProperty("enabled", true)

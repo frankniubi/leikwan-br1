@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hosted_node_badge">云端</string>
+    <string name="hosted_node_upload">上传到云端</string>
+    <string name="hosted_node_sync_all">全部同步到云端</string>
+    <string name="hosted_node_refresh">从云端刷新</string>
+    <string name="hosted_node_uploaded">已上传到云端</string>
+    <string name="hosted_node_refreshed">云端节点已更新</string>
+    <string name="hosted_node_deleted">已从云端删除</string>
+    <string name="hosted_node_sync_all_result">已上传 %1$d，云端已有 %2$d，不支持 %3$d，失败 %4$d</string>
+    <string name="hosted_node_error_format">云端同步失败：%1$s</string>
+</resources>

@@ -9,6 +9,12 @@ import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.Subscription
+import com.leikwan.bridge.api.PanelRepository
+import com.leikwan.bridge.data.hosted.HostedBulkUploadResult
+import com.leikwan.bridge.data.hosted.HostedNodeException
+import com.leikwan.bridge.data.hosted.HostedNodeIdentity
+import com.leikwan.bridge.data.hosted.HostedNodeSync
+import kotlinx.coroutines.CancellationException
 import com.leikwan.bridge.proxy.ImportRouter
 import com.leikwan.bridge.proxy.ProxyUriParser
 import com.leikwan.bridge.proxy.SubscriptionFetcher
@@ -36,6 +42,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     private val nodeDao = db.proxyNodeDao()
     private val subDao = db.subscriptionDao()
     private val orchestrator = TunnelOrchestrator.forApplication(app)
+    /** Hosted-node sync for this client; created on first use so plain node edits never build it. */
+    private val hosted: HostedNodeSync by lazy { PanelRepository(app).hostedNodes }
     private val _state = MutableStateFlow(
         ProxiesUiState(
             selectedProxyId = prefs.selectedProxyId,
@@ -81,7 +89,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val subId = subDao.insert(Subscription(name = name, url = url))
                 val nodes = SubscriptionFetcher.fetch(url).map { it.copy(subscriptionId = subId) }
-                nodeDao.insertAll(nodes)
+                insertLocal(nodes)
                 subDao.update(subDao.getById(subId)!!.copy(lastUpdated = System.currentTimeMillis()))
                 _state.value = _state.value.copy(isLoading = false)
             } catch (e: Exception) {
@@ -96,7 +104,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 nodeDao.deleteBySubscription(sub.id)
                 val nodes = SubscriptionFetcher.fetch(sub.url).map { it.copy(subscriptionId = sub.id) }
-                nodeDao.insertAll(nodes)
+                insertLocal(nodes)
                 subDao.update(sub.copy(lastUpdated = System.currentTimeMillis()))
                 _state.value = _state.value.copy(isLoading = false)
             } catch (e: Exception) {
@@ -135,7 +143,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteNode(node: ProxyNode) {
         viewModelScope.launch {
-            nodeDao.delete(node)
+            if (node.hostedId != null) {
+                // A hosted node is deleted for every device of the client, panel first.
+                if (!runHosted { hosted.delete(node) }) return@launch
+                _snackbar.value = s(R.string.hosted_node_deleted)
+            } else {
+                nodeDao.delete(node)
+            }
             if (prefs.selectedProxyId == node.id) {
                 prefs.selectedProxyId = 0L
                 _state.value = _state.value.copy(selectedProxyId = 0L)
@@ -147,6 +161,14 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val result = ProxyNodeEditor.applyDraft(node, draft)) {
                 is ProxyNodeEditResult.Success -> {
+                    if (node.hostedId != null) {
+                        // Write-through: the panel accepts the edit first, then every device syncs it.
+                        if (runHosted { hosted.update(result.node) }) {
+                            _state.value = _state.value.copy(error = null)
+                            _snackbar.value = s(R.string.proxy_updated)
+                        }
+                        return@launch
+                    }
                     nodeDao.update(result.node)
                     _state.value = _state.value.copy(error = null)
                     _snackbar.value = s(R.string.proxy_updated)
@@ -156,6 +178,56 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /** Local -> cloud for one node: it becomes hosted and reaches every device of the client. */
+    fun uploadToCloud(node: ProxyNode) {
+        viewModelScope.launch {
+            if (runHosted { hosted.upload(node) }) _snackbar.value = s(R.string.hosted_node_uploaded)
+        }
+    }
+
+    /** Local -> cloud for every local Shadowsocks / SOCKS5 / VLESS node. */
+    fun syncAllToCloud() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null)
+            var result: HostedBulkUploadResult? = null
+            runHosted { result = hosted.uploadAllLocal() }
+            _state.value = _state.value.copy(isLoading = false)
+            result?.let {
+                _snackbar.value = s(R.string.hosted_node_sync_all_result, it.uploaded, it.alreadyHosted, it.unsupported, it.failed)
+            }
+        }
+    }
+
+    /** Cloud -> local on demand (the config pull also does this whenever the panel revision moves). */
+    fun refreshFromCloud() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null)
+            val ok = runHosted { hosted.refresh() }
+            _state.value = _state.value.copy(isLoading = false)
+            if (ok) _snackbar.value = s(R.string.hosted_node_refreshed)
+        }
+    }
+
+    private suspend fun runHosted(block: suspend () -> Unit): Boolean = try {
+        block()
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: HostedNodeException) {
+        _state.value = _state.value.copy(error = s(R.string.hosted_node_error_format, listOfNotNull(e.code, e.field).joinToString(": ")))
+        false
+    } catch (e: Exception) {
+        _state.value = _state.value.copy(error = s(R.string.hosted_node_error_format, e.message.orEmpty()))
+        false
+    }
+
+    /** Imports never duplicate a node the client already hosts. */
+    private suspend fun insertLocal(nodes: List<ProxyNode>): List<ProxyNode> {
+        val fresh = HostedNodeIdentity.withoutHostedDuplicates(nodes, nodeDao.getHosted())
+        nodeDao.insertAll(fresh)
+        return fresh
     }
 
     fun duplicateNode(node: ProxyNode) {
@@ -201,7 +273,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val result = ImportRouter.process(text)) {
                 is ImportRouter.ImportResult.ProxyNodes -> {
-                    nodeDao.insertAll(result.nodes)
+                    insertLocal(result.nodes)
                     _snackbar.value = s(R.string.added_proxy_nodes_format, result.nodes.size)
                 }
                 is ImportRouter.ImportResult.SubscriptionUrl -> {
@@ -212,7 +284,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                         val subId = subDao.insert(Subscription(name = name, url = url))
                         val nodes = SubscriptionFetcher.fetch(url)
                             .map { it.copy(subscriptionId = subId) }
-                        nodeDao.insertAll(nodes)
+                        insertLocal(nodes)
                         subDao.update(subDao.getById(subId)!!.copy(
                             lastUpdated = System.currentTimeMillis()
                         ))
@@ -224,14 +296,14 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 is ImportRouter.ImportResult.Mixed -> {
-                    nodeDao.insertAll(result.nodes)
+                    insertLocal(result.nodes)
                     for (url in result.subscriptionUrls) {
                         try {
                             val name = url.substringAfterLast("/").take(16).ifEmpty { s(R.string.default_subscription_name) }
                             val subId = subDao.insert(Subscription(name = name, url = url))
                             val nodes = SubscriptionFetcher.fetch(url)
                                 .map { it.copy(subscriptionId = subId) }
-                            nodeDao.insertAll(nodes)
+                            insertLocal(nodes)
                             subDao.update(subDao.getById(subId)!!.copy(
                                 lastUpdated = System.currentTimeMillis()
                             ))

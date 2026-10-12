@@ -15,6 +15,12 @@ data class ProxyNode(
     val forwardId: Long? = null,
     val enabled: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * Panel id of a node hosted by the platform for this client ("上云"); null for a node that
+     * lives only on this device. Hosted rows are written by HostedNodeSync and are read-only here:
+     * every trusted device of the client receives the same node and pairing.
+     */
+    val hostedId: Long? = null,
 )
 
 @Entity(tableName = "subscriptions")

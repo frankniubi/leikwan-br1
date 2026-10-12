@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -28,6 +29,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.leikwan.bridge.data.hosted.HostedNodeIdentity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,6 +76,16 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
             state.error?.let { err ->
                 Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
+            }
+
+            // Hosted nodes ("上云"): minimal hooks; the redesigned screen can restyle these.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { viewModel.syncAllToCloud() }, enabled = !state.isLoading) {
+                    Text(stringResource(R.string.hosted_node_sync_all))
+                }
+                TextButton(onClick = { viewModel.refreshFromCloud() }, enabled = !state.isLoading) {
+                    Text(stringResource(R.string.hosted_node_refresh))
+                }
             }
 
             if (state.isLoading) {
@@ -138,6 +151,13 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                             ProxyProtocolDraftParser.summaryLines(node, proxySummaryText)
                                         }
                                         Text(node.name, style = MaterialTheme.typography.titleMedium)
+                                        if (node.hostedId != null) {
+                                            Text(
+                                                stringResource(R.string.hosted_node_badge),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.tertiary,
+                                            )
+                                        }
                                         if (state.selectedProxyId == node.id) {
                                             Text(
                                                 stringResource(R.string.proxies_selected_proxy),
@@ -154,6 +174,11 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                         }
                                     }
                                     Row {
+                                        if (node.hostedId == null && HostedNodeIdentity.isUploadable(node)) {
+                                            IconButton(onClick = { viewModel.uploadToCloud(node) }) {
+                                                Icon(Icons.Default.CloudUpload, stringResource(R.string.hosted_node_upload))
+                                            }
+                                        }
                                         IconButton(onClick = { viewModel.duplicateNode(node) }) {
                                             Icon(Icons.Default.ContentCopy, stringResource(R.string.proxies_duplicate_proxy))
                                         }

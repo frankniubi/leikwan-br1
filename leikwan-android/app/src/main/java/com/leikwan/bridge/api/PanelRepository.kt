@@ -9,6 +9,7 @@ import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import com.leikwan.bridge.data.hosted.HostedNodeSync
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -82,10 +83,29 @@ class PanelRepository(
     private val panelEndpointOverride: PanelEndpoint? = null,
     private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
     private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
+    private val hostedNodeApiOverride: HostedNodeApi? = null,
+    hostedNodeSyncOverride: HostedNodeSync? = null,
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
     private val api: PanelApi = apiOverride ?: buildApi(panelEndpointOverride?.url ?: prefs.panelUrl)
+
+    private val hostedNodeApi: HostedNodeApi by lazy {
+        hostedNodeApiOverride ?: buildRetrofit(panelEndpointOverride?.url ?: prefs.panelUrl).create(HostedNodeApi::class.java)
+    }
+
+    /**
+     * Hosted user nodes ("上云"): two-way sync of the client's own nodes and their forward pairings.
+     * Built lazily so callers that never touch hosted nodes never open the node database.
+     */
+    val hostedNodes: HostedNodeSync by lazy {
+        hostedNodeSyncOverride ?: HostedNodeSync.from(
+            context = context,
+            api = { hostedNodeApi },
+            authHeader = ::authHeader,
+            clientIdProvider = { prefs.clientId },
+        )
+    }
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
@@ -96,7 +116,9 @@ class PanelRepository(
         val authorization: String,
     )
 
-    private fun buildApi(baseUrl: String): PanelApi {
+    private fun buildApi(baseUrl: String): PanelApi = buildRetrofit(baseUrl).create(PanelApi::class.java)
+
+    private fun buildRetrofit(baseUrl: String): Retrofit {
         val url = baseUrl.trimEnd('/') + "/"
         val host = runCatching { URI(url).host }.getOrNull()
         val clientBuilder = httpClientOverride?.newBuilder() ?: OkHttpClient.Builder()
@@ -136,7 +158,6 @@ class PanelRepository(
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
-            .create(PanelApi::class.java)
     }
 
     private fun authHeader(): String {
@@ -423,6 +444,7 @@ class PanelRepository(
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
+        syncHostedNodesAfterPull(resp.client)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -440,6 +462,25 @@ class PanelRepository(
             contracts = contracts,
             selectedForwardId = selectedForwardId.takeIf { it > 0L },
         ).copy(nativeOutbound = cachedNativeOutbound)
+    }
+
+    /**
+     * Cloud -> local half of hosted-node sync: the pull carries only a change marker
+     * (client.hosted_nodes_revision); the nodes are fetched when it moves. Best effort: a failure
+     * keeps the last synced nodes and never fails the pull.
+     */
+    private suspend fun syncHostedNodesAfterPull(client: JsonElement?) {
+        val revision = runCatching {
+            client?.takeIf { it.isJsonObject }?.asJsonObject?.get("hosted_nodes_revision")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull() ?: return
+        try {
+            hostedNodes.syncIfRevisionChanged(revision)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Retried on the next pull: the stored revision only advances after a successful apply.
+        }
     }
 
     fun getCachedConfig(forwardId: Long): JsonElement? = cachedForwardConfigs[forwardId]
