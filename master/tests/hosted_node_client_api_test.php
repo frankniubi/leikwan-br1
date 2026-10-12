@@ -208,7 +208,7 @@ assertSame([200, [], []], [$status, $body['nodes'], $body['pairings']], 'delete 
 [$status, $body] = $call('DELETE', 'clientDelete', $seven, [], ['id' => (string) $nodeId]);
 assertSame(404, $status, 'delete twice');
 
-// --- desktop clients (Windows / macOS / Linux headless) -------------------------
+// --- desktop clients (Windows / macOS) -------------------------------------------
 // Same identity as the desktop config pull: agent token, access policy, the
 // platform's own per-install device id, online device limit.
 $desktop = static fn(string $token, string $platform, ?string $deviceId): array => array_filter([
@@ -232,17 +232,20 @@ assertSame([200, true], [$status, $body['created']], 'Windows desktop uploads a 
 $deskNodeId = (int) $body['node_id'];
 [$status, $body] = $call('GET', 'clientList', $desktop('token-seven', 'macos-desktop', $macSeven));
 assertSame([200, 'Desk'], [$status, $body['nodes'][0]['name'] ?? null], 'macOS desktop of the same client receives it');
-[$status, $body] = $call('GET', 'clientList', $desktop('token-seven', 'linux', $linuxSeven));
-assertSame(200, $status, 'Linux headless passes the desktop gate');
+// Linux headless has no nodes feature yet: node credentials are not exposed to it.
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'linux', $linuxSeven)), 'device_untrusted', 'Linux headless is refused');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', $linuxSeven)), 'device_untrusted', 'a linux id cannot pose as Windows');
 [$status, $body] = $call('GET', 'clientList', $seven);
 assertSame('Desk', $body['nodes'][0]['name'] ?? null, 'Android device of the client sees the desktop upload');
-if ($policy->calls < $callsBefore + 3) {
+if ($policy->calls < $callsBefore + 2) {
     fail('the access policy must run for desktop hosted-node calls');
 }
-foreach ([$windowsSeven, $macSeven, $linuxSeven] as $deskId) {
+foreach ([$windowsSeven, $macSeven] as $deskId) {
     $seen = (int) $pdo->query("SELECT COUNT(*) FROM client_device_sessions WHERE client_id = 7 AND device_id = '" . $deskId . "'")->fetchColumn();
     assertSame(1, $seen, 'desktop call is a visible device session: ' . $deskId);
 }
+$linuxSessions = (int) $pdo->query("SELECT COUNT(*) FROM client_device_sessions WHERE device_id = '" . $linuxSeven . "'")->fetchColumn();
+assertSame(0, $linuxSessions, 'a refused Linux call does not register a device session');
 [$status, $body] = $call('GET', 'clientList', $desktop('token-eight', 'windows-desktop', 'windows-client-8-' . str_repeat('e', 16)));
 assertSame([200, []], [$status, $body['nodes']], 'another client\'s desktop sees none of these nodes');
 

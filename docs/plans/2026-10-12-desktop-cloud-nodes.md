@@ -7,19 +7,20 @@ The product owner answered its open question #2: desktop clients get cloud nodes
 
 ## 1. Panel: who may call `/api/client/hosted-nodes*`
 
-`HostedNodeController::trustedClient` now admits the official desktop clients next to attested Android
-devices. A desktop request passes exactly the identity its config pull relies on:
+`HostedNodeController::trustedClient` now admits the official Windows and macOS clients next to attested
+Android devices. Linux headless is refused until the Linux agent has a nodes feature (no client there would
+use the node credentials). A desktop request passes exactly the identity its config pull relies on:
 
-| Check | Android | Windows / macOS / Linux headless |
+| Check | Android | Windows / macOS |
 |---|---|---|
 | Client agent token (`Authorization: Bearer`) | yes | yes |
 | Access policy (geo lock, blacklist) | yes | yes |
 | Device trust (`DeviceControlService::requireActive`: enrolled, attested, live `X-Device-Session`) | yes | n/a (desktop has no attestation) |
-| Explicit per-install `X-Device-Id` of the platform's own format | `android-client-<id>-<32hex>` | `windows-client-<client id>-<16hex>` (must match the client), `macos-client-<32hex>`, `linux-<32hex>` |
+| Explicit per-install `X-Device-Id` of the platform's own format | `android-client-<id>-<32hex>` | `windows-client-<client id>-<16hex>` (must match the client), `macos-client-<32hex>` |
 | Online device limit (`client_device_sessions`, kickable in `/tenant/clients`) | yes | yes |
 
-- `X-Device-Platform` must start with `android`, `windows`, `macos` or `linux` (the desktop apps send
-  `windows-desktop` / `macos-desktop`; the Linux agent sends `linux`). Anything else: `403 device_untrusted`.
+- `X-Device-Platform` must start with `android`, `windows` or `macos` (the desktop apps send
+  `windows-desktop` / `macos-desktop`). Anything else, including the Linux agent's `linux`: `403 device_untrusted`.
 - A request that presents an attested Android device id is always held to the Android gate, whatever
   platform it claims.
 - The server-derived `legacy-*` id is never accepted for desktop, so every call is a visible device session.
