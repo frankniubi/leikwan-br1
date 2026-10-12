@@ -1173,43 +1173,12 @@
                                 <TextBlock x:Name="ProxyStatusText" Text="{DynamicResource ProxyReady}" FontSize="12"
                                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,8"/>
                                 <TextBlock Text="{DynamicResource ProxyExternalConnectionHint}" FontSize="11"
+                                   Visibility="{Binding AllowInboundProxy, Converter={StaticResource BoolToVis}}"
                                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
 
                                 <Expander x:Name="ProxyNodeEditorExpander" IsExpanded="False" Header="{DynamicResource ProxyConnectionTitle}"
                                           Margin="0,8,0,16" Visibility="Visible" AutomationProperties.Name="Proxy connection settings">
                                     <StackPanel Margin="0,8,0,0">
-                                        <Border x:Name="ProxyImportSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                                BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12" Visibility="Collapsed">
-                                            <StackPanel>
-                                                <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource ProxyImportPrompt}" Margin="0,0,0,4"/>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <Grid Margin="0,0,8,0">
-                                                <TextBox x:Name="ProxyImportUri" Style="{StaticResource InputTextBox}"
-                                                         AutomationProperties.Name="{DynamicResource ProxyImportPrompt}"
-                                                         AutomationProperties.HelpText="{DynamicResource ProxyImportSupported}"/>
-                                                <TextBlock x:Name="ProxyImportPlaceholder" Text="ss://" Margin="11,0,11,0"
-                                                           VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
-                                                           FontSize="13" IsHitTestVisible="False">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding Text, ElementName=ProxyImportUri}" Value="">
-                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                            </Grid>
-                                            <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxyImport}"
-                                                    Click="OnProxyImport_Click" AutomationProperties.Name="Import proxy URI"/>
-                                        </Grid>
-                                        <TextBlock Text="{DynamicResource ProxyImportSupported}" FontSize="12" TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,12"/>
-                                            </StackPanel>
-                                        </Border>
 
                                         <Border x:Name="ProxyManualSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
                                                 BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12" Visibility="Collapsed">

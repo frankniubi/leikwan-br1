@@ -106,6 +106,16 @@ public sealed class RedesignLayoutTests
             Assert.Matches("[一-鿿]", zh[key]);
     }
 
+    [Fact]
+    public void LanConnectionHintIsShownOnlyWhenThePanelAllowsInboundProxy()
+    {
+        var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
+        var hint = Assert.Single(document.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource ProxyExternalConnectionHint}");
+        Assert.Equal("{Binding AllowInboundProxy, Converter={StaticResource BoolToVis}}", (string?)hint.Attribute("Visibility"));
+        var code = File.ReadAllText(AppFile("ViewModels", "MainViewModel.cs"));
+        Assert.Contains("ApplyClientMeta(client);", code, StringComparison.Ordinal);
+    }
+
     private static HashSet<string> Keys(XDocument document)
         => document.Root!.Elements().Select(element => (string?)element.Attribute(X + "Key")).Where(key => key is not null).Select(key => key!).ToHashSet();
 

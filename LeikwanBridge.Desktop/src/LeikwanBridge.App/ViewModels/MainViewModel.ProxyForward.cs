@@ -87,15 +87,6 @@ public partial class MainViewModel
             throw new InvalidOperationException("proxy_forward_required");
     }
 
-    public async Task ImportProxyProfileAsync(string uri, CancellationToken ct = default)
-    {
-        if (!string.IsNullOrWhiteSpace(uri) && !uri.Trim().StartsWith("ss://", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("proxy_import_shadowsocks_only");
-        if (!ProxyEditor.TryImport(uri, out var error))
-            throw new InvalidOperationException(error);
-        await SaveProxyProfileAsync(ct);
-    }
-
     private async Task RunProxyThroughForwardAsync(
         WindowsProxyMode mode,
         WindowsProxyProfile profile,

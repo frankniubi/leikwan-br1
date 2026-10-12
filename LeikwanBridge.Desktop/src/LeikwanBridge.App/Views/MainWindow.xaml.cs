@@ -743,24 +743,6 @@ public partial class MainWindow : Window
         ProxyNodeEditorExpander.BringIntoView();
     }
 
-    private async void OnProxyImport_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await _vm.ImportProxyProfileAsync(ProxyImportUri.Text);
-            SaveCurrentConfig();
-            PopulateProxyUi();
-            ProxyImportUri.Clear();
-            ProxyNodeEditorExpander.IsExpanded = false;
-            ProxyPairedForwardCombo.BringIntoView();
-            SetProxyReady();
-        }
-        catch (Exception exception)
-        {
-            SetProxyStatusError(exception.Message);
-        }
-    }
-
     private async void OnProxySave_Click(object sender, RoutedEventArgs e)
     {
         _vm.ProxyEditor.Password = ProxyPassword.Password;
@@ -1426,7 +1408,6 @@ public partial class MainWindow : Window
     {
         message = message switch
         {
-            "proxy_import_shadowsocks_only" => FindResource("ProxyImportSupported") as string ?? message,
             "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
             "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
             "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? message,

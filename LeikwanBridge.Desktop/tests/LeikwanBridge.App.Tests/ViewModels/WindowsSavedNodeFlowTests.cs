@@ -241,7 +241,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         await _vm.InitializeProxyAsync();
         _vm.ApplyForwardSnapshot([Forward(59)], _ => false);
 
-        await _vm.ImportProxyProfileAsync("ss://aes-256-gcm:import-secret@198.51.100.10:30526#imported");
+        // The Nodes page import (shared Core parser) is the only import path.
+        await _vm.ImportNodesAsync("ss://aes-256-gcm:import-secret@198.51.100.10:30526#imported");
 
         var saved = Assert.Single(_vm.ProxyProfiles);
         Assert.Equal(saved.Id, _vm.SelectedProxyProfileId);
@@ -269,17 +270,18 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
     }
 
     [Theory]
-    [InlineData("vless://11111111-1111-1111-1111-111111111111@198.51.100.10:443#not-ss")]
-    [InlineData("https://example.test/subscription")]
-    public async Task UriImportRejectsNonShadowsocksWithoutChangingDraftOrSavedNodes(string uri)
+    [InlineData("vmess://e30=", "node_protocol_unsupported")]
+    [InlineData("https://example.test/subscription", "node_protocol_unsupported")]
+    [InlineData("vless://not-a-uuid@198.51.100.10:443#bad", "node_uuid_invalid")]
+    public async Task UriImportRejectsUnsupportedLinksWithoutChangingDraftOrSavedNodes(string uri, string code)
     {
         await _vm.InitializeProxyAsync();
         _vm.ProxyEditor.Name = "unsaved-draft";
         _vm.ProxyEditor.Server = "192.0.2.10";
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => _vm.ImportProxyProfileAsync(uri));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => _vm.ImportNodesAsync(uri));
 
-        Assert.Equal("proxy_import_shadowsocks_only", error.Message);
+        Assert.Equal(code, error.Message);
         Assert.Equal("unsaved-draft", _vm.ProxyEditor.Name);
         Assert.Equal("192.0.2.10", _vm.ProxyEditor.Server);
         Assert.Empty(_vm.ProxyProfiles);
