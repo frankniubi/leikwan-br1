@@ -186,6 +186,57 @@ final class HostedNodeService
         return $this->findNode($clientId, $nodeId) ?? throw new ApiException('hosted_node_not_found', 404);
     }
 
+    /**
+     * Console edit in place. Fields that are present replace the stored ones
+     * (an empty non-secret field clears it); secrets that were left out keep
+     * their stored value, so the console never has to reveal them. Switching
+     * protocol carries no settings over: the new protocol's secrets must be
+     * entered. A share link ('uri') replaces the node completely. Like every
+     * update it bumps the version, which moves the client's revision.
+     *
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    public function updateKeepingSecrets(int $clientId, int $nodeId, array $fields): array
+    {
+        $current = $this->findNode($clientId, $nodeId);
+        if ($current === null) {
+            throw new ApiException('hosted_node_not_found', 404);
+        }
+        if (trim((string) ($fields['uri'] ?? '')) !== '') {
+            $replace = ['uri' => (string) $fields['uri']];
+            if (trim((string) ($fields['name'] ?? '')) !== '') {
+                $replace['name'] = (string) $fields['name'];
+            }
+            return $this->update($clientId, $nodeId, $replace);
+        }
+        unset($fields['uri']);
+        $stored = $current['node'];
+        $protocol = HostedNodeSpec::protocolAlias((string) ($fields['protocol'] ?? ''));
+        if ($protocol === '') {
+            $protocol = (string) $stored['protocol'];
+        }
+        $merged = [
+            'name' => (string) $current['name'],
+            'server' => (string) $stored['server'],
+            'port' => (int) $stored['port'],
+        ];
+        if ($protocol === $stored['protocol']) {
+            // Stored settings use the same keys as the structured input.
+            $merged += $stored['settings'];
+        }
+        foreach ($fields as $key => $value) {
+            $merged[$key] = $value;
+        }
+        $merged['protocol'] = $protocol;
+        if ($protocol === HostedNodeSpec::PROTOCOL_SOCKS5 && array_key_exists('username', $fields)
+            && trim((string) $fields['username']) === '' && !array_key_exists('password', $fields)) {
+            // Clearing the username turns authentication off.
+            $merged['password'] = '';
+        }
+        return $this->update($clientId, $nodeId, $merged);
+    }
+
     public function delete(int $clientId, int $nodeId): bool
     {
         if ($clientId <= 0 || $nodeId <= 0) {

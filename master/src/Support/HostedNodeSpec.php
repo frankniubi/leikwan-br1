@@ -712,7 +712,7 @@ final class HostedNodeSpec
         return str_contains($server, ':') ? '[' . $server . ']' : $server;
     }
 
-    private static function protocolAlias(string $protocol): string
+    public static function protocolAlias(string $protocol): string
     {
         $protocol = strtolower(trim($protocol));
         return match ($protocol) {

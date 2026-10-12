@@ -304,6 +304,8 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/hosted-nodes', [$hostedNodes, 'tenantCreate']);
         $this->router->add('POST', '/tenant/hosted-nodes/pairings', [$hostedNodes, 'tenantPair']);
         $this->router->add('POST', '/tenant/hosted-nodes/{id}/delete', [$hostedNodes, 'tenantDelete']);
+        $this->router->add('GET', '/tenant/hosted-nodes/{id}/edit', [$hostedNodes, 'tenantEditPage']);
+        $this->router->add('POST', '/tenant/hosted-nodes/{id}/edit', [$hostedNodes, 'tenantUpdate']);
         $this->router->add('GET', '/tenant-transport-endpoints', [$tenant, 'sidecarsPage']);
         $this->router->add('POST', '/tenant-transport-endpoints', [$tenant, 'saveSidecarPoint']);
         $this->router->add('POST', '/tenant-transport-endpoints/{id}/delete', [$tenant, 'deleteSidecarPoint']);

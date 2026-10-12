@@ -29,6 +29,8 @@ foreach ([
     "\$this->router->add('POST', '/tenant/hosted-nodes', [\$hostedNodes, 'tenantCreate']);",
     "\$this->router->add('POST', '/tenant/hosted-nodes/pairings', [\$hostedNodes, 'tenantPair']);",
     "\$this->router->add('POST', '/tenant/hosted-nodes/{id}/delete', [\$hostedNodes, 'tenantDelete']);",
+    "\$this->router->add('GET', '/tenant/hosted-nodes/{id}/edit', [\$hostedNodes, 'tenantEditPage']);",
+    "\$this->router->add('POST', '/tenant/hosted-nodes/{id}/edit', [\$hostedNodes, 'tenantUpdate']);",
 ] as $route) {
     if (!str_contains($bootstrap, $route)) {
         fail('missing route: ' . $route);
@@ -53,7 +55,7 @@ foreach (['Auth::requireClientAgent(', '->authorizeClientRequest(', '->requireAc
         fail('trusted-device gate is missing ' . $gate);
     }
 }
-foreach (['public function tenantCreate(', 'public function tenantDelete(', 'public function tenantPair('] as $method) {
+foreach (['public function tenantCreate(', 'public function tenantUpdate(', 'public function tenantDelete(', 'public function tenantPair('] as $method) {
     $start = strpos($controller, $method);
     $bodyText = substr($controller, (int) $start, 600);
     if ($start === false || !str_contains($bodyText, 'SessionAuth::validateCsrf($request);')) {
@@ -99,7 +101,7 @@ foreach (['password', 'uuid', 'server_host', 'secret'] as $clearColumn) {
 
 foreach (['zh-Hans', 'zh-TW'] as $locale) {
     $dictionary = json_decode((string) file_get_contents($root . '/public/i18n/' . $locale . '.json'), true);
-    foreach (['My Nodes', 'Add a node', 'Pairing', 'No hosted nodes yet.'] as $key) {
+    foreach (['My Nodes', 'Add a node', 'Pairing', 'No hosted nodes yet.', 'Edit node', 'Node updated.'] as $key) {
         if (trim((string) ($dictionary['text'][$key] ?? '')) === '') {
             fail('missing ' . $locale . ' translation: ' . $key);
         }

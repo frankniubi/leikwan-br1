@@ -336,7 +336,8 @@ final class HostedNodeController extends BaseController
                 . '<td><code>' . $this->escape($endpoint) . '</code></td>'
                 . '<td>' . $this->escape($detail) . '</td>'
                 . '<td>' . $this->escape((string) $node['source'] === HostedNodeService::SOURCE_DEVICE ? 'Device' : 'Console') . '</td>'
-                . '<td class="actions"><form class="inline" method="post" action="/tenant/hosted-nodes/' . (int) $node['id'] . '/delete" data-confirm="Delete this node from every device of the client?" onsubmit="return confirm(this.dataset.confirm);">'
+                . '<td class="actions"><a class="button ghost" href="/tenant/hosted-nodes/' . (int) $node['id'] . '/edit?client_id=' . $clientId . '">Edit</a>'
+                . '<form class="inline" method="post" action="/tenant/hosted-nodes/' . (int) $node['id'] . '/delete" data-confirm="Delete this node from every device of the client?" onsubmit="return confirm(this.dataset.confirm);">'
                 . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
                 . '<input type="hidden" name="client_id" value="' . $clientId . '">'
                 . '<button class="button ghost" type="submit">Delete</button></form></td>'
@@ -348,7 +349,7 @@ final class HostedNodeController extends BaseController
         $nodesCard = '<section class="card"><h3>Nodes</h3>'
             . '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Protocol</th><th>Server</th><th>Settings</th><th>Added from</th><th></th></tr></thead><tbody>'
             . $rows . '</tbody></table></div>'
-            . '<p class="muted">Passwords, UUIDs and keys are never shown again after saving. To change one, delete the node and add it again.</p></section>';
+            . '<p class="muted">Passwords and UUIDs are never shown again after saving. Edit a node to change it; leave those fields blank to keep the stored values.</p></section>';
 
         $pairRows = '';
         $serviceNames = $this->serviceNames($forwards);
@@ -391,41 +392,8 @@ final class HostedNodeController extends BaseController
             . $pairRows . '</tbody></table></div></section>';
 
         $addCard = '<section class="card"><h3>Add a node</h3>'
-            . '<form method="post" action="/tenant/hosted-nodes">'
-            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
-            . '<input type="hidden" name="client_id" value="' . $clientId . '">'
-            . '<div class="form-grid">'
-            . '<div class="field"><label for="hn-uri">Share link</label><input id="hn-uri" type="text" name="uri" autocomplete="off" placeholder="ss://… socks5://… vless://…"><p class="muted">Paste a share link, or leave it empty and fill in the fields below.</p></div>'
-            . '<div class="field"><label for="hn-name">Name</label><input id="hn-name" type="text" name="name" maxlength="64" placeholder="Optional"></div>'
-            . '<div class="field"><label for="hn-protocol">Protocol</label><select id="hn-protocol" name="protocol"><option value="">From share link</option><option value="shadowsocks">Shadowsocks</option><option value="socks5">SOCKS5</option><option value="vless">VLESS</option></select></div>'
-            . '<div class="field"><label for="hn-server">Server</label><input id="hn-server" type="text" name="server" autocomplete="off" placeholder="node.example.com"></div>'
-            . '<div class="field"><label for="hn-port">Port</label><input id="hn-port" type="number" min="1" max="65535" name="port"></div>'
-            . '</div>'
-            . '<details><summary>Shadowsocks</summary><div class="form-grid">'
-            . '<div class="field"><label for="hn-method">Method</label><select id="hn-method" name="method">' . $this->optionList(HostedNodeSpec::SS_METHODS, '2022-blake3-aes-128-gcm') . '</select></div>'
-            . '<div class="field"><label for="hn-ss-password">Password</label><input id="hn-ss-password" type="password" name="ss_password" autocomplete="new-password"></div>'
-            . '<div class="field"><label for="hn-plugin">Plugin</label><select id="hn-plugin" name="plugin"><option value="">None</option><option value="obfs-local">obfs-local</option><option value="v2ray-plugin">v2ray-plugin</option></select></div>'
-            . '<div class="field"><label for="hn-plugin-opts">Plugin options</label><input id="hn-plugin-opts" type="text" name="plugin_opts" placeholder="obfs=http;obfs-host=example.com"></div>'
-            . '</div></details>'
-            . '<details><summary>SOCKS5</summary><div class="form-grid">'
-            . '<div class="field"><label for="hn-username">Username</label><input id="hn-username" type="text" name="username" autocomplete="off" placeholder="Optional"></div>'
-            . '<div class="field"><label for="hn-socks-password">Password</label><input id="hn-socks-password" type="password" name="socks_password" autocomplete="new-password" placeholder="Optional"></div>'
-            . '</div></details>'
-            . '<details><summary>VLESS</summary><div class="form-grid">'
-            . '<div class="field"><label for="hn-uuid">UUID</label><input id="hn-uuid" type="text" name="uuid" autocomplete="off"></div>'
-            . '<div class="field"><label for="hn-security">Security</label><select id="hn-security" name="security"><option value="none">None</option><option value="tls">TLS</option><option value="reality">REALITY</option></select></div>'
-            . '<div class="field"><label for="hn-sni">Server name (SNI)</label><input id="hn-sni" type="text" name="sni"></div>'
-            . '<div class="field"><label for="hn-fp">uTLS fingerprint</label><select id="hn-fp" name="fingerprint"><option value="">Default</option>' . $this->optionList(HostedNodeSpec::UTLS_FINGERPRINTS, '') . '</select></div>'
-            . '<div class="field"><label for="hn-pbk">REALITY public key</label><input id="hn-pbk" type="text" name="public_key" autocomplete="off"></div>'
-            . '<div class="field"><label for="hn-sid">REALITY short ID</label><input id="hn-sid" type="text" name="short_id" autocomplete="off"></div>'
-            . '<div class="field"><label for="hn-flow">Flow</label><select id="hn-flow" name="flow"><option value="">None</option><option value="xtls-rprx-vision">xtls-rprx-vision</option></select></div>'
-            . '<div class="field"><label for="hn-transport">Transport</label><select id="hn-transport" name="transport">' . $this->optionList(HostedNodeSpec::VLESS_TRANSPORTS, 'tcp') . '</select></div>'
-            . '<div class="field"><label for="hn-path">Path</label><input id="hn-path" type="text" name="path" placeholder="/"></div>'
-            . '<div class="field"><label for="hn-host">Host header</label><input id="hn-host" type="text" name="host"></div>'
-            . '<div class="field"><label for="hn-service-name">gRPC service name</label><input id="hn-service-name" type="text" name="service_name"></div>'
-            . '</div></details>'
-            . '<div class="actions"><button class="button" type="submit">Save node</button></div>'
-            . '</form></section>';
+            . $this->renderNodeForm('/tenant/hosted-nodes', $csrf, $clientId, null)
+            . '</section>';
 
         $body = $intro . $nodesCard . $pairCard . $addCard;
         return $this->page('My Nodes', $body, $user, $this->tenantNavigationItems('hosted-nodes'));
@@ -449,6 +417,57 @@ final class HostedNodeController extends BaseController
             SessionAuth::flash('success', $result['created'] ? 'Node saved.' : 'This node is already saved.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', $this->tenantErrorMessage($throwable));
+        }
+        return Response::redirect($this->tenantPageUrl($clientId));
+    }
+
+    public function tenantEditPage(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+        $client = $this->tenantClient($user, (int) $request->input('client_id', 0));
+        $node = $client === null ? null : $this->nodes->findNode((int) $client['id'], $this->idParam($params));
+        if ($client === null || $node === null) {
+            SessionAuth::flash('error', 'Node not found.');
+            return Response::redirect($this->tenantPageUrl($client === null ? 0 : (int) $client['id']));
+        }
+        $clientId = (int) $client['id'];
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $body = '<div class="hero"><div><p class="muted">Client #' . $clientId . ' · ' . $this->escape((string) ($client['name'] ?? '')) . '</p>'
+            . '<p class="muted">Every device of the client receives the change on its next sync.</p></div></div>'
+            . '<section class="card"><h3>Edit node</h3>'
+            . $this->renderNodeForm('/tenant/hosted-nodes/' . (int) $node['id'] . '/edit', $csrf, $clientId, $node)
+            . '<p><a href="' . $this->escape($this->tenantPageUrl($clientId)) . '">Back to My Nodes</a></p>'
+            . '</section>';
+        return $this->page('My Nodes', $body, $user, $this->tenantNavigationItems('hosted-nodes'));
+    }
+
+    public function tenantUpdate(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::redirect('/login');
+        }
+        $clientId = (int) $request->input('client_id', 0);
+        $nodeId = $this->idParam($params);
+        try {
+            SessionAuth::validateCsrf($request);
+            $client = $this->tenantClient($user, $clientId);
+            if ($client === null) {
+                throw new ApiException('hosted_node_client_invalid', 422);
+            }
+            $clientId = (int) $client['id'];
+            $this->nodes->updateKeepingSecrets($clientId, $nodeId, $this->tenantEditInput($request));
+            SessionAuth::flash('success', 'Node updated.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', $this->tenantErrorMessage($throwable));
+            $notFound = $throwable instanceof ApiException
+                && in_array($throwable->getMessage(), ['hosted_node_not_found', 'hosted_node_client_invalid'], true);
+            if ($clientId > 0 && $nodeId > 0 && !$notFound) {
+                return Response::redirect('/tenant/hosted-nodes/' . $nodeId . '/edit?client_id=' . $clientId);
+            }
         }
         return Response::redirect($this->tenantPageUrl($clientId));
     }
@@ -555,15 +574,46 @@ final class HostedNodeController extends BaseController
         ));
     }
 
+    /** Form fields that are not secrets; an edit submits them prefilled, so an empty value clears them. */
+    private const FORM_FIELDS = [
+        'uri', 'name', 'protocol', 'server', 'port', 'method', 'plugin', 'plugin_opts', 'udp_over_tcp', 'username',
+        'flow', 'security', 'sni', 'alpn', 'fingerprint', 'insecure', 'public_key', 'short_id', 'transport',
+        'path', 'host', 'service_name',
+    ];
+
+    /**
+     * Edit form input. Secrets (passwords, UUID) are never rendered back, so
+     * a blank secret field means "keep the stored value" and is left out.
+     *
+     * @return array<string, mixed>
+     */
+    private function tenantEditInput(Request $request): array
+    {
+        $input = [];
+        foreach (self::FORM_FIELDS as $field) {
+            $value = $request->input($field);
+            if (is_scalar($value)) {
+                $input[$field] = trim((string) $value);
+            }
+        }
+        $uuid = $request->input('uuid');
+        if (is_scalar($uuid) && trim((string) $uuid) !== '') {
+            $input['uuid'] = trim((string) $uuid);
+        }
+        $protocol = HostedNodeSpec::protocolAlias((string) ($input['protocol'] ?? ''));
+        $passwordField = $protocol === HostedNodeSpec::PROTOCOL_SOCKS5 ? 'socks_password' : 'ss_password';
+        $password = $request->input($passwordField);
+        if (is_scalar($password) && (string) $password !== '') {
+            $input['password'] = (string) $password;
+        }
+        return $input;
+    }
+
     /** @return array<string, mixed> */
     private function tenantNodeInput(Request $request): array
     {
         $input = [];
-        foreach ([
-            'uri', 'name', 'protocol', 'server', 'port', 'method', 'plugin', 'plugin_opts', 'username',
-            'uuid', 'flow', 'security', 'sni', 'fingerprint', 'public_key', 'short_id', 'transport',
-            'path', 'host', 'service_name',
-        ] as $field) {
+        foreach ([...self::FORM_FIELDS, 'uuid'] as $field) {
             $value = $request->input($field);
             if (is_scalar($value) && trim((string) $value) !== '') {
                 $input[$field] = (string) $value;
@@ -577,6 +627,78 @@ final class HostedNodeController extends BaseController
             $input['password'] = (string) $password;
         }
         return $input;
+    }
+
+    /**
+     * Add/edit form. With $current (an edit), non-secret fields are prefilled
+     * and secret fields stay empty: leaving them blank keeps the stored value.
+     *
+     * @param array<string, mixed>|null $current a HostedNodeService::findNode() row
+     */
+    private function renderNodeForm(string $action, string $csrf, int $clientId, ?array $current): string
+    {
+        $node = is_array($current) ? $current['node'] : null;
+        $editing = $current !== null;
+        $protocol = (string) ($node['protocol'] ?? '');
+        $settings = is_array($node['settings'] ?? null) ? $node['settings'] : [];
+        $value = static fn(string $field): string => is_scalar($settings[$field] ?? null) ? (string) $settings[$field] : '';
+        $attr = fn(string $field): string => ' value="' . $this->escape($value($field)) . '"';
+        $keep = ' placeholder="Leave blank to keep the current value"';
+        $check = static fn(string $field): string => !empty($settings[$field]) ? ' checked' : '';
+        $off = static fn(string $field): string => $editing ? '<input type="hidden" name="' . $field . '" value="0">' : '';
+        $options = function (array $choices, string $selected): string {
+            $html = '';
+            foreach ($choices as $key => $label) {
+                $html .= '<option value="' . $this->escape((string) $key) . '"' . ((string) $key === $selected ? ' selected' : '') . '>' . $this->escape($label) . '</option>';
+            }
+            return $html;
+        };
+        $protocols = [HostedNodeSpec::PROTOCOL_SHADOWSOCKS => 'Shadowsocks', HostedNodeSpec::PROTOCOL_SOCKS5 => 'SOCKS5', HostedNodeSpec::PROTOCOL_VLESS => 'VLESS'];
+        $protocolOptions = ($editing ? '' : '<option value="">From share link</option>') . $options($protocols, $protocol);
+        $alpn = implode(',', array_map('strval', is_array($settings['alpn'] ?? null) ? $settings['alpn'] : []));
+        $isSs = $protocol === HostedNodeSpec::PROTOCOL_SHADOWSOCKS;
+        $isSocks = $protocol === HostedNodeSpec::PROTOCOL_SOCKS5;
+        $isVless = $protocol === HostedNodeSpec::PROTOCOL_VLESS;
+
+        return '<form method="post" action="' . $this->escape($action) . '">'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<input type="hidden" name="client_id" value="' . $clientId . '">'
+            . '<div class="form-grid">'
+            . '<div class="field"><label for="hn-uri">Share link</label><input id="hn-uri" type="text" name="uri" autocomplete="off" placeholder="ss:// socks5:// vless://">'
+            . '<p class="muted">' . ($editing ? 'Optional: replace everything, secrets included, from a share link.' : 'Paste a share link, or leave it empty and fill in the fields below.') . '</p></div>'
+            . '<div class="field"><label for="hn-name">Name</label><input id="hn-name" type="text" name="name" maxlength="64" placeholder="Optional" value="' . $this->escape((string) ($current['name'] ?? '')) . '"></div>'
+            . '<div class="field"><label for="hn-protocol">Protocol</label><select id="hn-protocol" name="protocol">' . $protocolOptions . '</select></div>'
+            . '<div class="field"><label for="hn-server">Server</label><input id="hn-server" type="text" name="server" autocomplete="off" placeholder="node.example.com" value="' . $this->escape((string) ($node['server'] ?? '')) . '"></div>'
+            . '<div class="field"><label for="hn-port">Port</label><input id="hn-port" type="number" min="1" max="65535" name="port" value="' . ($node !== null ? (int) $node['port'] : '') . '"></div>'
+            . '</div>'
+            . '<details' . ($isSs ? ' open' : '') . '><summary>Shadowsocks</summary><div class="form-grid">'
+            . '<div class="field"><label for="hn-method">Method</label><select id="hn-method" name="method">' . $this->optionList(HostedNodeSpec::SS_METHODS, $value('method') !== '' ? $value('method') : '2022-blake3-aes-128-gcm') . '</select></div>'
+            . '<div class="field"><label for="hn-ss-password">Password</label><input id="hn-ss-password" type="password" name="ss_password" autocomplete="new-password"' . ($editing && $isSs ? $keep : '') . '></div>'
+            . '<div class="field"><label for="hn-plugin">Plugin</label><select id="hn-plugin" name="plugin">' . $options(['' => 'None', 'obfs-local' => 'obfs-local', 'v2ray-plugin' => 'v2ray-plugin'], $value('plugin')) . '</select></div>'
+            . '<div class="field"><label for="hn-plugin-opts">Plugin options</label><input id="hn-plugin-opts" type="text" name="plugin_opts" placeholder="obfs=http;obfs-host=example.com"' . $attr('plugin_opts') . '></div>'
+            . '<div class="field"><label>' . $off('udp_over_tcp') . '<input type="checkbox" name="udp_over_tcp" value="1"' . $check('udp_over_tcp') . '> UDP over TCP</label></div>'
+            . '</div></details>'
+            . '<details' . ($isSocks ? ' open' : '') . '><summary>SOCKS5</summary><div class="form-grid">'
+            . '<div class="field"><label for="hn-username">Username</label><input id="hn-username" type="text" name="username" autocomplete="off" placeholder="Optional"' . $attr('username') . '></div>'
+            . '<div class="field"><label for="hn-socks-password">Password</label><input id="hn-socks-password" type="password" name="socks_password" autocomplete="new-password"' . ($editing && $isSocks ? $keep : ' placeholder="Optional"') . '></div>'
+            . '</div></details>'
+            . '<details' . ($isVless ? ' open' : '') . '><summary>VLESS</summary><div class="form-grid">'
+            . '<div class="field"><label for="hn-uuid">UUID</label><input id="hn-uuid" type="text" name="uuid" autocomplete="off"' . ($editing && $isVless ? $keep : '') . '></div>'
+            . '<div class="field"><label for="hn-security">Security</label><select id="hn-security" name="security">' . $options(['none' => 'None', 'tls' => 'TLS', 'reality' => 'REALITY'], $value('security') !== '' ? $value('security') : 'none') . '</select></div>'
+            . '<div class="field"><label for="hn-sni">Server name (SNI)</label><input id="hn-sni" type="text" name="sni"' . $attr('sni') . '></div>'
+            . '<div class="field"><label for="hn-alpn">ALPN</label><input id="hn-alpn" type="text" name="alpn" placeholder="h2,http/1.1" value="' . $this->escape($alpn) . '"></div>'
+            . '<div class="field"><label for="hn-fp">uTLS fingerprint</label><select id="hn-fp" name="fingerprint"><option value="">Default</option>' . $this->optionList(HostedNodeSpec::UTLS_FINGERPRINTS, $value('fingerprint')) . '</select></div>'
+            . '<div class="field"><label>' . $off('insecure') . '<input type="checkbox" name="insecure" value="1"' . $check('insecure') . '> Allow insecure TLS</label></div>'
+            . '<div class="field"><label for="hn-pbk">REALITY public key</label><input id="hn-pbk" type="text" name="public_key" autocomplete="off"' . $attr('public_key') . '></div>'
+            . '<div class="field"><label for="hn-sid">REALITY short ID</label><input id="hn-sid" type="text" name="short_id" autocomplete="off"' . $attr('short_id') . '></div>'
+            . '<div class="field"><label for="hn-flow">Flow</label><select id="hn-flow" name="flow">' . $options(['' => 'None', 'xtls-rprx-vision' => 'xtls-rprx-vision'], $value('flow')) . '</select></div>'
+            . '<div class="field"><label for="hn-transport">Transport</label><select id="hn-transport" name="transport">' . $this->optionList(HostedNodeSpec::VLESS_TRANSPORTS, $value('transport') !== '' ? $value('transport') : 'tcp') . '</select></div>'
+            . '<div class="field"><label for="hn-path">Path</label><input id="hn-path" type="text" name="path" placeholder="/"' . $attr('path') . '></div>'
+            . '<div class="field"><label for="hn-host">Host header</label><input id="hn-host" type="text" name="host"' . $attr('host') . '></div>'
+            . '<div class="field"><label for="hn-service-name">gRPC service name</label><input id="hn-service-name" type="text" name="service_name"' . $attr('service_name') . '></div>'
+            . '</div></details>'
+            . '<div class="actions"><button class="button" type="submit">' . ($editing ? 'Save changes' : 'Save node') . '</button></div>'
+            . '</form>';
     }
 
     private function tenantErrorMessage(\Throwable $throwable): string

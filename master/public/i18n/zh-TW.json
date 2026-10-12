@@ -1,6 +1,16 @@
 {
   "locale": "zh-TW",
   "text": {
+    "Edit node": "編輯節點",
+    "Save changes": "儲存修改",
+    "Node updated.": "節點已更新。",
+    "Back to My Nodes": "返回我的節點",
+    "Every device of the client receives the change on its next sync.": "該用戶端的每台裝置會在下次同步時收到修改。",
+    "Optional: replace everything, secrets included, from a share link.": "選填：用分享連結整體替換（包括金鑰）。",
+    "Passwords and UUIDs are never shown again after saving. Edit a node to change it; leave those fields blank to keep the stored values.": "密碼與 UUID 儲存後不會再顯示。可以編輯節點進行修改；這些欄位留空即保留原值。",
+    "UDP over TCP": "UDP over TCP",
+    "Allow insecure TLS": "允許不安全的 TLS",
+    "ALPN": "ALPN",
     "My Nodes": "我的節點",
     "Pairing": "配對",
     "Add a node": "新增節點",
