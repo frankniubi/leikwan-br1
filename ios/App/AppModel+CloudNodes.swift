@@ -215,7 +215,7 @@ extension AppModel {
     var resolvedBindings: ResolvedBindings {
         return BindingResolver.resolve(
             preferences: bindingPreferences,
-            forwards: catalog?.supported ?? [],
+            forwards: catalog?.bindableForwards ?? [],
             nodes: nodes,
             cloud: effectiveCloudState,
             legacyForwardId: selectedForwardID,
@@ -231,7 +231,7 @@ extension AppModel {
         let legacy = bindingPreferences.enabled.isEmpty
         let defaultID = resolved.defaultBinding?.id
         var rows: [BindingRow] = []
-        for forward in catalog?.supported ?? [] {
+        for forward in catalog?.bindableForwards ?? [] {
             let id = BindingID.forward(forward.forwardId)
             let fallback = legacy && forward.forwardId == selectedForwardID ? selectedNodeID : nil
             let choice = BindingResolver.effectiveNode(forwardId: forward.forwardId, preferences: bindingPreferences,
@@ -251,6 +251,22 @@ extension AppModel {
                                 enabledIDs: enabledIDs, defaultID: defaultID, resolved: resolved))
         }
         return rows
+    }
+
+    /// Forgets bindings and node choices on forwards the panel now marks as native outbound
+    /// rules; those only carry the native outbound relay (「原生出口」 above the bindings).
+    func dropNativeOutboundBindings(_ catalog: IOSForwardCatalog) {
+        let native = Set(catalog.supported.filter { $0.isNativeOutboundRule }.map { $0.forwardId })
+        guard !native.isEmpty else { return }
+        var preferences = bindingPreferences
+        preferences.enabled.removeAll { $0.forwardId.map(native.contains) ?? false }
+        preferences.nodeByForward.removeAll { native.contains($0.forwardId) }
+        if let id = preferences.defaultBinding?.forwardId, native.contains(id) {
+            preferences.defaultBinding = preferences.enabled.first
+        }
+        if preferences != bindingPreferences {
+            bindingPreferences = preferences
+        }
     }
 
     /// Enabled bindings that have a node: the choices for a rule's target picker.
@@ -490,7 +506,7 @@ extension AppModel {
     }
 
     var legacyBindingIDs: [BindingID] {
-        if let forwardID = selectedForwardID, catalog?.supportedForward(id: forwardID) != nil {
+        if let forwardID = selectedForwardID, catalog?.bindableForward(id: forwardID) != nil {
             return [.forward(forwardID)]
         }
         if let nodeID = selectedNodeID { return [.direct(nodeId: nodeID)] }

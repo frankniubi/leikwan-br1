@@ -31,6 +31,8 @@ final class NativeOutboundLeaseManager {
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var currentAlert: String?
+    /// Distinct relay entries ("ip:port") of the last delivered batch, in candidate order.
+    private var candidateEndpoints: [String] = []
 
     init(
         session: TunnelPanelSession,
@@ -166,6 +168,7 @@ final class NativeOutboundLeaseManager {
                     runtimeDirection = context.carrier.direction
                     active = nil
                 }
+                recordEndpoints(leases)
                 let accepted = await deliver(leases)
                 if Task.isCancelled { return }
                 if !accepted {
@@ -285,6 +288,31 @@ final class NativeOutboundLeaseManager {
                 continuation.resume(returning: accepted)
             }
         }
+    }
+
+    // MARK: Endpoints
+
+    private func recordEndpoints(_ leases: [NativeOutboundLease]) {
+        var endpoints: [String] = []
+        for lease in leases where !lease.endpointIp.isEmpty {
+            let host = lease.endpointIp.contains(":") ? "[\(lease.endpointIp)]" : lease.endpointIp
+            let endpoint = "\(host):\(lease.endpointPort)"
+            if !endpoints.contains(endpoint) { endpoints.append(endpoint) }
+        }
+        lock.lock()
+        candidateEndpoints = endpoints
+        lock.unlock()
+    }
+
+    /// Carrier forward id and its relay entry for the app: the single candidate, or the first
+    /// one with the number of other candidates the runtime may pick from.
+    func activeEndpoint() -> (forwardID: Int64, endpoint: String)? {
+        lock.lock()
+        let endpoints = candidateEndpoints
+        lock.unlock()
+        guard let first = endpoints.first else { return nil }
+        let more = endpoints.count > 1 ? "  +\(endpoints.count - 1)" : ""
+        return (launch.forwardID, first + more)
     }
 
     // MARK: Helpers

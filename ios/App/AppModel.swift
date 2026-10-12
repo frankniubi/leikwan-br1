@@ -55,7 +55,7 @@ final class AppModel: ObservableObject {
 
     var selectedForward: IOSSupportedForward? {
         guard let id = selectedForwardID else { return nil }
-        return catalog?.supportedForward(id: id)
+        return catalog?.bindableForward(id: id)
     }
 
     var selectedNode: ProxyNode? {
@@ -131,12 +131,13 @@ final class AppModel: ObservableObject {
 
     private func apply(_ catalog: IOSForwardCatalog) {
         self.catalog = catalog
-        if let id = selectedForwardID, catalog.supportedForward(id: id) == nil {
+        if let id = selectedForwardID, catalog.bindableForward(id: id) == nil {
             selectedForwardID = nil
         }
         if selectedForwardID == nil {
-            selectedForwardID = catalog.supported.first?.forwardId
+            selectedForwardID = catalog.bindableForwards.first?.forwardId
         }
+        dropNativeOutboundBindings(catalog)
     }
 
     private func makeClient(clientID: Int64, token: String, endpoint: PanelEndpoint) -> PanelClient {

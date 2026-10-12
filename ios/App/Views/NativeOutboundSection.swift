@@ -1,45 +1,28 @@
 import LeikwanIOSCore
 import SwiftUI
 
-/// 原生出口: the panel's own exit through an Ultra forward, no user node.
+/// 原生出口: the panel's own exit through an Ultra forward, no user node. Each carrier forward
+/// is listed as its own card and switched on directly; these forwards never take a node, so
+/// they are not in the bindings list below (Windows treats them as native outbound rules too).
 struct NativeOutboundSection: View {
     @EnvironmentObject private var model: AppModel
 
-    private let columns = [GridItem(.adaptive(minimum: 160), spacing: Metrics.gutter)]
+    private let columns = [GridItem(.adaptive(minimum: 300), spacing: Metrics.gutter)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.gutter) {
             SectionTitle("原生出口")
-            VStack(alignment: .leading, spacing: 14) {
-                Toggle(isOn: enabledBinding) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("使用原生出口")
-                            .font(.headline)
-                            .foregroundStyle(Palette.onSurface)
-                        Text("由面板提供出口，无需自带节点")
-                            .font(.caption)
-                            .foregroundStyle(Palette.onSurfaceVariant)
-                    }
+            Text("由面板提供出口，无需自带节点，直接打开要用的出口即可。原生出口开启时只走原生出口，下方的绑定不生效。")
+                .font(.caption)
+                .foregroundStyle(Palette.onSurfaceVariant)
+            LazyVGrid(columns: columns, spacing: Metrics.gutter) {
+                ForEach(model.nativeOutboundCarriers, id: \.forwardId) { carrier in
+                    NativeCarrierCard(carrier: carrier, onChange: apply)
                 }
+            }
 
-                if model.isNativeOutboundActive {
-                    if model.nativeOutboundCarriers.count > 1 {
-                        VStack(alignment: .leading, spacing: 8) {
-                            FieldLabel("出口转发")
-                            LazyVGrid(columns: columns, spacing: 8) {
-                                ForEach(model.nativeOutboundCarriers, id: \.forwardId) { carrier in
-                                    CarrierChip(
-                                        title: model.nativeOutboundTitle(for: carrier),
-                                        selected: model.nativeOutboundSelection?.forwardId == carrier.forwardId
-                                    ) {
-                                        model.selectNativeOutboundForward(carrier.forwardId)
-                                        apply()
-                                    }
-                                }
-                            }
-                        }
-                    }
-
+            if model.isNativeOutboundActive && hasOptions {
+                VStack(alignment: .leading, spacing: 14) {
                     if model.nativeOutboundRouteScopes.count > 1 {
                         VStack(alignment: .leading, spacing: 8) {
                             FieldLabel("流量范围")
@@ -71,18 +54,19 @@ struct NativeOutboundSection: View {
                             }
                         }
                     }
-
-                    Label("原生出口开启时，下方的转发和节点选择不生效。", systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(Palette.onPrimaryContainer)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Palette.primaryContainer.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .card()
             }
-            .padding(14)
-            .card(selected: model.isNativeOutboundActive)
         }
+    }
+
+    /// The selected carrier has settings beyond on/off.
+    private var hasOptions: Bool {
+        return model.nativeOutboundRouteScopes.count > 1
+            || model.nativeOutboundSelection?.routeScope == .global
+            || model.nativeOutboundUnrestrictedAllowed
     }
 
     private var scopeExplanation: String {
@@ -96,16 +80,6 @@ struct NativeOutboundSection: View {
 
     private func apply() {
         Task { await model.applyToRunningTunnel() }
-    }
-
-    private var enabledBinding: Binding<Bool> {
-        Binding(
-            get: { model.isNativeOutboundActive },
-            set: { value in
-                model.setNativeOutboundEnabled(value)
-                if value { apply() }
-            }
-        )
     }
 
     private var scopeBinding: Binding<NativeRouteScope> {
@@ -153,32 +127,87 @@ private struct FieldLabel: View {
     }
 }
 
-private struct CarrierChip: View {
-    let title: String
-    let selected: Bool
-    let action: () -> Void
+/// One carrier forward: forward id, direction and relay entry like a binding card, switched on
+/// directly. There is no node to pick; switching on another card moves native outbound to it.
+private struct NativeCarrierCard: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var tunnel: TunnelController
+    let carrier: NativeOutboundCarrier
+    let onChange: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        let forward = model.nativeOutboundForward(for: carrier)
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.bold))
-                }
-                Text(title)
-                    .font(.subheadline)
+                Pill(
+                    text: "#\(carrier.forwardId) · 原生出口",
+                    fill: isActive ? Palette.primary : Palette.secondaryContainer,
+                    foreground: isActive ? Palette.onPrimary : Palette.onSecondaryContainer
+                )
+                Spacer()
+                Toggle("使用此原生出口", isOn: activeBinding)
+                    .labelsHidden()
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(forward?.directionTitle ?? model.nativeOutboundTitle(for: carrier))
+                    .font(.headline)
+                    .foregroundStyle(Palette.onSurface)
+                    .lineLimit(1)
+                Text(forward.map { model.endpointText(for: $0) } ?? "—")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Palette.onSurfaceVariant)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                    .textSelection(.enabled)
             }
-            .foregroundStyle(selected ? Palette.onPrimary : Palette.onSurface)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? Palette.primary : Palette.surfaceContainerHigh)
-            )
+
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Palette.onSurfaceVariant)
+                Text(scopeSummary)
+                    .font(.subheadline)
+                    .foregroundStyle(Palette.onSurfaceVariant)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(Palette.surfaceContainerHigh, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .padding(14)
+        .card(selected: isActive)
+        .opacity(isActive ? 1 : 0.85)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !isActive { activeBinding.wrappedValue = true }
+        }
+    }
+
+    private var isActive: Bool {
+        model.isNativeOutboundActive && model.nativeOutboundSelection?.forwardId == carrier.forwardId
+    }
+
+    /// Panel exit, no node: the current scope when active, else what the carrier offers.
+    private var scopeSummary: String {
+        if isActive, let selection = model.nativeOutboundSelection {
+            return "面板出口 · " + selection.routeScope.displayName
+        }
+        return "面板出口 · " + carrier.routeScopes.map(\.displayName).joined(separator: " / ")
+    }
+
+    private var activeBinding: Binding<Bool> {
+        Binding(
+            get: { isActive },
+            set: { value in
+                if value {
+                    model.selectNativeOutboundForward(carrier.forwardId)
+                    model.setNativeOutboundEnabled(true)
+                    onChange()
+                } else if isActive {
+                    model.setNativeOutboundEnabled(false)
+                }
+            }
+        )
     }
 }
