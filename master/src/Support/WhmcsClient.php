@@ -80,6 +80,8 @@ final class WhmcsClient
         }
 
         if (($decoded['result'] ?? '') !== 'success') {
+            // WHMCS explains the refusal here (for example "Invalid IP" when the panel is missing from the API allowlist).
+            error_log('WHMCS API ' . $action . ' refused: ' . substr((string) ($decoded['message'] ?? ''), 0, 200));
             throw new ApiException('whmcs_response_error', 502, $decoded);
         }
 

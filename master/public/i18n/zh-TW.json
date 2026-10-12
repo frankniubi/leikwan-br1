@@ -1,6 +1,7 @@
 {
   "locale": "zh-TW",
   "text": {
+    "The billing site cannot be reached right now. Please try again later.": "暫時無法連線帳單站，請稍後再試。",
     "No nodes yet.": "還沒有節點。",
     "Supports Shadowsocks, SOCKS5 and VLESS.": "支援 Shadowsocks、SOCKS5、VLESS。",
     "Edit node": "編輯節點",
