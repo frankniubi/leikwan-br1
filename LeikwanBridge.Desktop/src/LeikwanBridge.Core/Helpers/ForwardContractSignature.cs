@@ -201,6 +201,10 @@ public static class ForwardContractSignature
         };
 
         var json = JsonSerializer.Serialize(payload);
+        // Toggling inbound proxying rebinds the listener, so it must change the
+        // signature; folded in only when enabled so existing signatures stay stable.
+        if (forward.AllowInboundProxy)
+            json += "|allow_inbound_proxy";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
