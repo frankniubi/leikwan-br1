@@ -54,17 +54,17 @@
     <string name="proxies_routing_rules_off">服务分流：由服务管理</string>
     <string name="proxies_routing_rules_on_detail">流量规则会自动应用到当前服务。</string>
     <string name="proxies_routing_rules_off_detail">流量跟随当前服务。</string>
-    <string name="proxies_empty">暂无代理节点，点击 + 添加。</string>
+    <string name="proxies_empty">还没有节点</string>
     <string name="proxies_selected_proxy">已选代理</string>
-    <string name="proxies_duplicate_proxy">复制代理</string>
-    <string name="proxies_modify_proxy">修改代理</string>
+    <string name="proxies_duplicate_proxy">复制</string>
+    <string name="proxies_modify_proxy">编辑</string>
     <string name="proxies_scan_qr">扫描二维码</string>
-    <string name="proxies_add_proxy">添加代理</string>
+    <string name="proxies_add_proxy">添加节点</string>
     <string name="proxies_fab_subscription">订阅</string>
     <string name="proxies_fab_uri">链接</string>
     <string name="proxies_section_other">其他</string>
-    <string name="add_proxy_title">添加代理</string>
-    <string name="add_proxy_uri_label">ss://、vmess://、vless://、wg:// 或 WireGuard 配置</string>
+    <string name="add_proxy_title">添加节点</string>
+    <string name="add_proxy_uri_label">分享链接</string>
     <string name="add_subscription_title">添加订阅</string>
     <string name="field_name">名称</string>
     <string name="field_subscription_url">订阅地址</string>
@@ -384,4 +384,8 @@
     <string name="theme_system">跟随系统</string>
     <string name="theme_day">日间</string>
     <string name="theme_night">夜间</string>
+    <string name="own_node_label">自带节点</string>
+    <string name="own_node_supported_protocols">支持 Shadowsocks、SOCKS5、VLESS</string>
+    <string name="edit_node_title">编辑节点</string>
+    <string name="proxies_more_actions">更多</string>
 </resources>

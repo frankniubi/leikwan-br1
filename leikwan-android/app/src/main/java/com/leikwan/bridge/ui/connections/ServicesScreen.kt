@@ -488,11 +488,8 @@ private fun NodePickerDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(node.name, style = MaterialTheme.typography.bodyLarge)
                                 Text(
-                                    // The node's real server host:port is intentionally NOT shown: the
-                                    // local outbound dials only 127.0.0.1:<forward listen port> (the
-                                    // bridge), and the real server address is used by the forward
-                                    // process on the far side. Expose just the protocol, not the server.
-                                    node.type,
+                                    // Nodes are shown as the user's own: no server and no protocol.
+                                    stringResource(R.string.own_node_label),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

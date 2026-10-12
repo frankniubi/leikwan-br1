@@ -54,17 +54,17 @@
     <string name="proxies_routing_rules_off">Service routing: managed by service</string>
     <string name="proxies_routing_rules_on_detail">Traffic rules are applied automatically for the selected service.</string>
     <string name="proxies_routing_rules_off_detail">Traffic follows the selected service.</string>
-    <string name="proxies_empty">No proxy nodes. Tap + to add.</string>
+    <string name="proxies_empty">No nodes yet</string>
     <string name="proxies_selected_proxy">Selected proxy</string>
-    <string name="proxies_duplicate_proxy">Duplicate proxy</string>
-    <string name="proxies_modify_proxy">Modify proxy</string>
+    <string name="proxies_duplicate_proxy">Duplicate</string>
+    <string name="proxies_modify_proxy">Edit</string>
     <string name="proxies_scan_qr">Scan QR</string>
-    <string name="proxies_add_proxy">Add proxy</string>
-    <string name="proxies_fab_subscription">SUB</string>
-    <string name="proxies_fab_uri">URI</string>
+    <string name="proxies_add_proxy">Add node</string>
+    <string name="proxies_fab_subscription">Subscription</string>
+    <string name="proxies_fab_uri">Link</string>
     <string name="proxies_section_other">Other</string>
-    <string name="add_proxy_title">Add Proxy</string>
-    <string name="add_proxy_uri_label">ss://, vmess://, vless://, wg://, or WireGuard config</string>
+    <string name="add_proxy_title">Add node</string>
+    <string name="add_proxy_uri_label">Share link</string>
     <string name="add_subscription_title">Add Subscription</string>
     <string name="field_name">Name</string>
     <string name="field_subscription_url">Subscription URL</string>
@@ -385,4 +385,8 @@
     <string name="theme_system">System</string>
     <string name="theme_day">Day</string>
     <string name="theme_night">Night</string>
+    <string name="own_node_label">Your own node</string>
+    <string name="own_node_supported_protocols">Supports Shadowsocks, SOCKS5 and VLESS</string>
+    <string name="edit_node_title">Edit node</string>
+    <string name="proxies_more_actions">More</string>
 </resources>

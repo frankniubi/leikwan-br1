@@ -480,7 +480,7 @@ private fun NodePicker(
             nodes.forEach { node ->
                 DropdownMenuItem(
                     text = {
-                        Text(stringResource(R.string.routing_node_option_format, node.name, node.type.uppercase()))
+                        Text(node.name)
                     },
                     onClick = {
                         onSelect(node.id)
