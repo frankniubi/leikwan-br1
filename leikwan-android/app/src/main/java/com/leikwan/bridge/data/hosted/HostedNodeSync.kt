@@ -40,6 +40,9 @@ data class HostedBulkUploadResult(
  *    ([HostedNodeIdentity]) adopts that row; hosted rows missing from the listing are deleted.
  *  - Local-only nodes are never uploaded or changed by sync; the user uploads them explicitly
  *    (one node or all of them). Device-local fields (enabled, createdAt, forwardId) are kept.
+ *  - "Remove from this device" hides a cloud node here only: its server id goes on a per-device
+ *    suppression list and sync skips it until it is restored, uploaded again from this device, or
+ *    deleted everywhere (which prunes the entry because the panel no longer lists the id).
  */
 class HostedNodeSync(
     private val api: () -> HostedNodeApi,
@@ -125,6 +128,31 @@ class HostedNodeSync(
     suspend fun delete(node: ProxyNode) {
         val hostedId = node.hostedId ?: throw HostedNodeException("hosted_node_not_found")
         apply(call { api().delete(authHeader(), hostedId) })
+        store.unsuppress(listOf(hostedId))
+    }
+
+    /**
+     * Removes a cloud node from this device only. The panel and the client's other devices keep it;
+     * the next cloud -> local sync does not bring it back here. No network call.
+     */
+    suspend fun removeFromThisDevice(node: ProxyNode) {
+        val hostedId = node.hostedId ?: throw HostedNodeException("hosted_node_not_found")
+        store.suppress(hostedId, node.name)
+        transaction {
+            dao.getHosted().filter { it.hostedId == hostedId }.forEach { dao.delete(it) }
+        }
+        store.dropPairingsTo(node.id)
+    }
+
+    /**
+     * Brings hidden cloud nodes back on this device. The suppression entries go first and the revision
+     * is invalidated, so if the fetch below fails (offline) the next pull still restores them.
+     */
+    suspend fun restoreHidden(hostedIds: Collection<Long> = store.suppressed.value.keys) {
+        if (hostedIds.isEmpty()) return
+        store.unsuppress(hostedIds)
+        store.invalidateRevision()
+        refresh()
     }
 
     /**
@@ -144,6 +172,9 @@ class HostedNodeSync(
     /** Materializes a listing from the panel into Room and the pairing store. */
     suspend fun apply(listing: HostedNodesResponse) {
         val serverToLocal = mutableMapOf<Long, Long>()
+        val clientId = clientIdProvider()
+        // The suppression list belongs to the client it was made for.
+        val suppressed = if (store.clientId == clientId) store.suppressed.value else emptyMap()
         transaction {
             val all = dao.getAllList()
             val hostedGroups = all.filter { it.hostedId != null }.groupBy { it.hostedId!! }
@@ -157,6 +188,8 @@ class HostedNodeSync(
                     ?.takeIf { HostedNodeIdentity.isUploadable(it) }
                     ?: continue
                 val incoming = parsed.copy(name = dto.name?.takeIf { it.isNotBlank() } ?: parsed.name)
+                // Hidden on this device: never materialized, never adopts a local row.
+                if (dto.id in suppressed) continue
                 seen += dto.id
                 val existing = hostedRows[dto.id]
                 val localId = if (existing != null) {
@@ -181,10 +214,18 @@ class HostedNodeSync(
         val pairings = listing.pairings.orEmpty()
             .mapNotNull { pairing -> serverToLocal[pairing.nodeId]?.let { pairing.forwardId to it } }
             .toMap()
-        store.save(clientIdProvider(), listing.revision.orEmpty(), pairings)
+        store.save(clientId, listing.revision.orEmpty(), pairings)
+        // A node deleted everywhere drops out of the listing, and with it its suppression entry.
+        val listedNames = listing.nodes.orEmpty().associate { it.id to (it.name ?: "") }
+        store.replaceSuppressed(
+            suppressed.filterKeys { it in listedNames }
+                .mapValues { (id, name) -> listedNames[id]?.takeIf { it.isNotBlank() } ?: name },
+        )
     }
 
     private suspend fun linkLocalRow(node: ProxyNode, hostedId: Long) {
+        // Uploading from this device is an explicit choice to have the node here.
+        store.unsuppress(listOf(hostedId))
         val current = dao.getById(node.id) ?: return
         if (current.hostedId == hostedId) return
         if (dao.getHosted().any { it.hostedId == hostedId && it.id != current.id }) {

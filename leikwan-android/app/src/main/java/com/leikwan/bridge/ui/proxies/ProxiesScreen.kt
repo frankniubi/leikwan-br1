@@ -15,6 +15,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.PhonelinkErase
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -59,6 +61,8 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
     var showQrScan by remember { mutableStateOf(false) }
     var showFabMenu by remember { mutableStateOf(false) }
     var editingNode by remember { mutableStateOf<com.leikwan.bridge.data.ProxyNode?>(null) }
+    val hiddenCloudNodes by viewModel.hiddenCloudNodes.collectAsState()
+    var showHiddenCloudNodes by remember { mutableStateOf(false) }
 
     if (showQrScan) {
         QrScanScreen(
@@ -85,6 +89,11 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                 }
                 TextButton(onClick = { viewModel.refreshFromCloud() }, enabled = !state.isLoading) {
                     Text(stringResource(R.string.hosted_node_refresh))
+                }
+                if (hiddenCloudNodes.isNotEmpty()) {
+                    TextButton(onClick = { showHiddenCloudNodes = true }, enabled = !state.isLoading) {
+                        Text(stringResource(R.string.hosted_node_hidden_format, hiddenCloudNodes.size))
+                    }
                 }
             }
 
@@ -179,6 +188,11 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                                                 Icon(Icons.Default.CloudUpload, stringResource(R.string.hosted_node_upload))
                                             }
                                         }
+                                        if (node.hostedId != null) {
+                                            IconButton(onClick = { viewModel.removeFromThisDevice(node) }) {
+                                                Icon(Icons.Default.PhonelinkErase, stringResource(R.string.hosted_node_remove_local))
+                                            }
+                                        }
                                         IconButton(onClick = { viewModel.duplicateNode(node) }) {
                                             Icon(Icons.Default.ContentCopy, stringResource(R.string.proxies_duplicate_proxy))
                                         }
@@ -233,6 +247,39 @@ fun ProxiesScreen(viewModel: ProxiesViewModel = viewModel()) {
                 Icon(Icons.Default.Add, stringResource(R.string.proxies_add_proxy))
             }
         }
+    }
+
+    if (showHiddenCloudNodes) {
+        AlertDialog(
+            onDismissRequest = { showHiddenCloudNodes = false },
+            title = { Text(stringResource(R.string.hosted_node_hidden_title)) },
+            text = {
+                Column {
+                    hiddenCloudNodes.forEach { (hostedId, name) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(name, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { viewModel.restoreHiddenCloudNodes(listOf(hostedId)) }) {
+                                Text(stringResource(R.string.hosted_node_restore))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.restoreHiddenCloudNodes(); showHiddenCloudNodes = false }) {
+                    Text(stringResource(R.string.hosted_node_restore_all))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHiddenCloudNodes = false }) {
+                    Text(stringResource(R.string.hosted_node_close))
+                }
+            },
+        )
     }
 
     if (showAddUri) {

@@ -13,7 +13,9 @@ import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.hosted.HostedBulkUploadResult
 import com.leikwan.bridge.data.hosted.HostedNodeException
 import com.leikwan.bridge.data.hosted.HostedNodeIdentity
+import com.leikwan.bridge.data.hosted.HostedNodePairingStore
 import com.leikwan.bridge.data.hosted.HostedNodeSync
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.CancellationException
 import com.leikwan.bridge.proxy.ImportRouter
 import com.leikwan.bridge.proxy.ProxyUriParser
@@ -177,6 +179,33 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     _state.value = _state.value.copy(error = s(result.messageRes))
                 }
             }
+        }
+    }
+
+    /** Cloud nodes hidden on this device only (server id -> name), for the restore list. */
+    val hiddenCloudNodes: StateFlow<Map<Long, String>> = HostedNodePairingStore.from(app).suppressed
+
+    /** Hides a cloud node on this device only; the client's other devices keep it. */
+    fun removeFromThisDevice(node: ProxyNode) {
+        viewModelScope.launch {
+            if (!runHosted { hosted.removeFromThisDevice(node) }) return@launch
+            if (prefs.selectedProxyId == node.id) {
+                prefs.selectedProxyId = 0L
+                _state.value = _state.value.copy(selectedProxyId = 0L)
+            }
+            _snackbar.value = s(R.string.hosted_node_removed_local)
+        }
+    }
+
+    /** Restores hidden cloud nodes on this device (all of them when [hostedIds] is null). */
+    fun restoreHiddenCloudNodes(hostedIds: Collection<Long>? = null) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null)
+            val ok = runHosted {
+                if (hostedIds == null) hosted.restoreHidden() else hosted.restoreHidden(hostedIds)
+            }
+            _state.value = _state.value.copy(isLoading = false)
+            if (ok) _snackbar.value = s(R.string.hosted_node_restored)
         }
     }
 
