@@ -1081,6 +1081,10 @@ final class ClientAgentController extends BaseController
             // Only clients that host nodes see a revision change from this.
             $revisionExtra['hosted_nodes'] = $hostedNodesRevision;
         }
+        if ($updateRequestToken !== '') {
+            // A console update click must end the long poll, or the agent only sees it on its next full pull.
+            $revisionExtra['update_request'] = $updateRequestToken;
+        }
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             $clientAgentKey => $clientAgent,
             'client_agent_installer' => $clientAgentInstaller,

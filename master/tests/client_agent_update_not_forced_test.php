@@ -65,6 +65,9 @@ if (str_contains($source, 'auto-client-agent')) {
 if (!str_contains($source, '...self::desiredClientArtifacts($updateRequested, [')) {
     fail('the pull payload must gate the desired_* fields on a pending console request');
 }
+if (!str_contains($source, "\$revisionExtra['update_request'] = \$updateRequestToken;")) {
+    fail('a pending update request must change config_revision so long-polling agents see the click');
+}
 if (preg_match("/^\\s{16}'desired_[a-z_]+' =>/m", $source) === 1) {
     fail('a desired_* field is emitted outside the request gate');
 }
