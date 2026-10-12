@@ -20,6 +20,7 @@ struct DashboardView: View {
                     NetworkSpeedCard()
                     LazyVGrid(columns: columns, spacing: Metrics.gutter) {
                         OutboundModeCard()
+                        RulesSummaryCard()
                         TrafficUsageCard()
                         CurrentRouteCard()
                         NetworkDetectionCard()
@@ -192,7 +193,7 @@ private struct OutboundModeCard: View {
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
         .card()
     }
 }
@@ -208,8 +209,17 @@ private struct ModeRow: View {
                 Image(systemName: icon)
                     .font(.footnote.weight(.semibold))
                     .frame(width: 18)
-                Text(title)
-                    .font(.subheadline.weight(selected ? .semibold : .regular))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(.subheadline.weight(selected ? .semibold : .regular))
+                    if selected {
+                        Text(caption)
+                            .font(.caption2)
+                            .opacity(0.8)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
                 Spacer(minLength: 0)
             }
             .foregroundStyle(selected ? colors.foreground : Palette.onSurfaceVariant)
@@ -233,6 +243,14 @@ private struct ModeRow: View {
         }
     }
 
+    private var caption: String {
+        switch mode {
+        case .rule: return "按分流规则，未命中走代理"
+        case .global: return "全部走代理"
+        case .direct: return "全部直连"
+        }
+    }
+
     private var icon: String {
         switch mode {
         case .rule: return "list.bullet.rectangle"
@@ -246,6 +264,62 @@ private struct ModeRow: View {
         case .rule: return (Palette.primaryContainer, Palette.onPrimaryContainer)
         case .global: return (Palette.warningContainer, Palette.onWarningContainer)
         case .direct: return (Palette.successContainer, Palette.onSuccessContainer)
+        }
+    }
+}
+
+/// What the rule mode currently does, at a glance; opens the rules tab.
+private struct RulesSummaryCard: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var navigator: Navigator
+
+    var body: some View {
+        Button {
+            navigator.section = .rules
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                CardHeader("分流规则", systemImage: "list.bullet.rectangle.portrait", trailing: AnyView(
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                ))
+                if model.routing.mode == .rule {
+                    SummaryLine(title: "大陆直连", value: model.routing.bypassChina ? "开" : "关")
+                    SummaryLine(title: "应用分流", value: "\(model.routing.appPresets.count) 项")
+                    SummaryLine(title: "国家 / 地区", value: "\(model.routing.countries.count) 项")
+                    SummaryLine(title: "自定义", value: "\(model.routing.customRules.count) 条")
+                    Text("其余走代理")
+                        .font(.caption2)
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                } else {
+                    Spacer(minLength: 0)
+                    Text(model.routing.mode == .global ? "全局模式下规则不生效" : "直连模式下规则不生效")
+                        .font(.subheadline)
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
+            .card()
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SummaryLine: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(Palette.onSurfaceVariant)
+            Spacer()
+            Text(value)
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .foregroundStyle(Palette.onSurface)
         }
     }
 }

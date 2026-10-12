@@ -11,11 +11,6 @@ struct ToolsView: View {
             List {
                 Section {
                     NavigationLink {
-                        RulesView()
-                    } label: {
-                        ToolRow(title: "分流规则", detail: "应用分流、国家、自定义规则", systemImage: "arrow.triangle.branch")
-                    }
-                    NavigationLink {
                         LogsView()
                     } label: {
                         ToolRow(title: "隧道日志", detail: "运行时与 sing-box 日志", systemImage: "doc.text.magnifyingglass")

@@ -11,6 +11,12 @@ struct RulesView: View {
     var body: some View {
         Form {
                 Section {
+                    MatchOrderCard(mode: model.routing.mode, bypassChina: model.routing.bypassChina)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+
+                Section {
                     Picker("模式", selection: $model.routing.mode) {
                         Text("规则").tag(RoutingGlobalMode.rule)
                         Text("全局").tag(RoutingGlobalMode.global)
@@ -19,7 +25,7 @@ struct RulesView: View {
                     .pickerStyle(.segmented)
                     Toggle("中国大陆网站和 IP 直连", isOn: $model.routing.bypassChina)
                 } footer: {
-                    Text("规则模式按下方规则分流，未命中的走代理；全局模式全部走代理；直连模式全部直连。面板和转发线路本身始终直连。")
+                    Text("规则：按上面的顺序逐条匹配，都没命中就走代理。全局：除面板和线路本身外全部走代理。直连：全部直连，代理只在被选中时可用。")
                 }
 
                 Section {
@@ -85,9 +91,9 @@ struct RulesView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 } header: {
-                    Text("始终直连")
+                    Text("直连列表")
                 } footer: {
-                    Text("每行一个 IP、CIDR 或域名。")
+                    Text("每行一个 IP、CIDR 或域名，在规则模式最后一步之前匹配为直连。要强制某个域名走代理，请用自定义规则。")
                 }
 
                 Section {
@@ -242,6 +248,55 @@ private struct CountryPicker: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
+            }
+        }
+    }
+}
+
+/// Explains, in the order sing-box applies them, what the rule mode does.
+private struct MatchOrderCard: View {
+    let mode: RoutingGlobalMode
+    let bypassChina: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            CardHeader("规则模式的匹配顺序", systemImage: "list.number")
+            VStack(alignment: .leading, spacing: 6) {
+                step(1, "面板和转发线路本身", "直连（不可修改）")
+                step(2, "自定义规则", "按列表顺序，代理 / 直连 / 拒绝")
+                step(3, "应用分流", "按每个 App 的域名和 IP 段")
+                step(4, "国家 / 地区", "按目标 IP 所在国家")
+                step(5, "中国大陆网站和 IP", bypassChina ? "直连（已开启）" : "未开启，跳过")
+                step(6, "直连列表", "直连")
+                step(7, "其余所有流量", "走代理")
+            }
+            if mode != .rule {
+                Label(mode == .global ? "当前是全局模式：以上第 2–6 步不生效，全部走代理。" : "当前是直连模式：以上规则不生效，全部直连。", systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(Palette.onWarningContainer)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.warningContainer, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+        .padding(14)
+        .card()
+    }
+
+    private func step(_ index: Int, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(index)")
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(Palette.onPrimaryContainer)
+                .frame(width: 20, height: 20)
+                .background(Palette.primaryContainer, in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Palette.onSurface)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(Palette.onSurfaceVariant)
             }
         }
     }
