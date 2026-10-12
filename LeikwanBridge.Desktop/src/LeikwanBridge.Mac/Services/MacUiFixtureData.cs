@@ -13,10 +13,10 @@ public sealed class MacUiFixtureNodeLibrary : INodeLibrary
 
     private readonly List<Entry> _nodes =
     [
-        Create("1", "ss://YWVzLTI1Ni1nY206Zml4dHVyZQ@203.0.113.10:8388#Tokyo%20SS", NodeCloudState.Hosted, [101]),
+        Create("1", "ss://YWVzLTI1Ni1nY206Zml4dHVyZQ@203.0.113.10:8388#Tokyo", NodeCloudState.Hosted, [101]),
         Create("2", "ss://YWVzLTI1Ni1nY206Zml4dHVyZQ@203.0.113.24:443#Osaka%20backup", NodeCloudState.LocalOnly, []),
-        new("3", null, "Home WireGuard", "WireGuard", "198.51.100.7:51820", NodeCloudState.Unsupported, [103]),
-        Create("4", "vless://11111111-2222-3333-4444-555555555555@edge.example.net:443?encryption=none&security=tls&sni=edge.example.net&type=ws&path=%2Fray#Singapore%20VLESS", NodeCloudState.Hosted, []),
+        new("3", null, "Home", "WireGuard", "198.51.100.7:51820", NodeCloudState.Unsupported, [103]),
+        Create("4", "vless://11111111-2222-3333-4444-555555555555@edge.example.net:443?encryption=none&security=tls&sni=edge.example.net&type=ws&path=%2Fray#Singapore", NodeCloudState.Hosted, []),
     ];
 
     private static Entry Create(string key, string link, NodeCloudState state, int[] paired)

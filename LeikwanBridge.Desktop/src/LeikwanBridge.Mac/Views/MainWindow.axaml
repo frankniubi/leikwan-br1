@@ -293,7 +293,7 @@
                     <DataTemplate x:DataType="services:MacConnectionProfile">
                       <StackPanel Spacing="2" Margin="4,6">
                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{Binding DisplayProtocol}" Classes="muted" FontSize="11" />
+                        <TextBlock Text="{DynamicResource OwnNode}" Classes="muted" FontSize="11" />
                       </StackPanel>
                     </DataTemplate>
                   </ListBox.ItemTemplate>

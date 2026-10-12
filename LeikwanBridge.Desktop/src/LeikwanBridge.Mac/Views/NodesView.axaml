@@ -50,7 +50,6 @@
           <StackPanel Grid.Column="1" Spacing="0">
             <StackPanel Orientation="Horizontal" Spacing="8">
               <TextBlock Text="{DynamicResource EditNode}" Classes="title" />
-              <Border Classes="chip"><TextBlock Text="{Binding ProtocolLabel}" /></Border>
             </StackPanel>
             <TextBlock Text="{DynamicResource EditorHostedHint}" Classes="muted" FontSize="11"
                        TextWrapping="Wrap" IsVisible="{Binding IsHosted}" />
@@ -203,12 +202,11 @@
                 <StackPanel Spacing="10">
                   <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
                     <Border Width="36" Height="36" CornerRadius="12" Background="{DynamicResource SecondaryContainerBrush}">
-                      <TextBlock Text="{Binding ProtocolInitial}" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                 Foreground="{DynamicResource OnSecondaryContainerBrush}" />
+                      <lucide:LucideIcon Kind="Server" Size="17" Foreground="{DynamicResource OnSecondaryContainerBrush}" />
                     </Border>
                     <StackPanel Grid.Column="1" Spacing="0" VerticalAlignment="Center">
                       <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Text="{Binding Protocol}" Classes="muted" FontSize="11" />
+                      <TextBlock Text="{DynamicResource OwnNode}" Classes="muted" FontSize="11" />
                     </StackPanel>
                     <Border Grid.Column="2" Classes="chip" Classes.cloud="{Binding IsHosted}" ToolTip.Tip="{Binding CloudTooltip}">
                       <StackPanel Orientation="Horizontal" Spacing="4">

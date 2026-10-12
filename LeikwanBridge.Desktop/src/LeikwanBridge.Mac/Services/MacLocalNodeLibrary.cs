@@ -107,7 +107,8 @@ public sealed class MacLocalNodeLibrary : INodeLibrary
             .Where(profile => profile.Id > 0)
             .Select(profile => new NodeListItem(
                 KeyFor(profile),
-                string.IsNullOrWhiteSpace(profile.Name) ? profile.DisplayProtocol : profile.Name,
+                // A user's own node is never labelled by its protocol.
+                string.IsNullOrWhiteSpace(profile.Name) ? Localization.L.T("OwnNode", "Your own node") : profile.Name,
                 profile.DisplayProtocol,
                 FormatEndpoint(profile.Server, profile.Port),
                 CloudStateFor(profile.Protocol),

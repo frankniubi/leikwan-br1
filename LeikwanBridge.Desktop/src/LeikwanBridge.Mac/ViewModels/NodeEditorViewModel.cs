@@ -17,7 +17,7 @@ public sealed partial class NodeEditorViewModel : ObservableObject
 
     public string Key { get; private set; } = string.Empty;
 
-    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsShadowsocks), nameof(IsSocks5), nameof(IsVless), nameof(ProtocolLabel))]
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(IsShadowsocks), nameof(IsSocks5), nameof(IsVless))]
     private string _protocol = UserNodeProtocol.Shadowsocks;
 
     [ObservableProperty] private bool _isOpen;
@@ -46,12 +46,6 @@ public sealed partial class NodeEditorViewModel : ObservableObject
     public bool IsShadowsocks => Protocol == UserNodeProtocol.Shadowsocks;
     public bool IsSocks5 => Protocol == UserNodeProtocol.Socks5;
     public bool IsVless => Protocol == UserNodeProtocol.Vless;
-    public string ProtocolLabel => Protocol switch
-    {
-        UserNodeProtocol.Socks5 => "SOCKS5",
-        UserNodeProtocol.Vless => "VLESS",
-        _ => "Shadowsocks",
-    };
 
     public IReadOnlyList<string> MethodOptions => UserNodeProtocol.CloudShadowsocksMethods;
     public IReadOnlyList<string> PluginOptions { get; } = ["", .. UserNodeProtocol.ShadowsocksPlugins];

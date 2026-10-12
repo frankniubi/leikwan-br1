@@ -174,10 +174,10 @@
   <x:String x:Key="ProtocolWireGuard">WireGuard</x:String>
   <x:String x:Key="ProtocolExternal">External IP + port</x:String>
   <x:String x:Key="ProtocolUnsupported">Unsupported</x:String>
-  <x:String x:Key="ShareLinkWatermark">Paste share links (ss://, socks5://, vless://, wg://)</x:String>
+  <x:String x:Key="ShareLinkWatermark">Paste a share link: Shadowsocks, SOCKS5, VLESS or WireGuard</x:String>
   <x:String x:Key="ShareLinkName">Share link</x:String>
   <x:String x:Key="Import">Import</x:String>
-  <x:String x:Key="SyncAllTip">Upload every local Shadowsocks / SOCKS5 / VLESS node</x:String>
+  <x:String x:Key="SyncAllTip">Upload every local node that can be synced</x:String>
   <x:String x:Key="SyncAll">Sync all</x:String>
   <x:String x:Key="RefreshFromCloud">Refresh from cloud</x:String>
   <x:String x:Key="NoNodesYet">No nodes yet</x:String>
@@ -207,7 +207,7 @@
   <x:String x:Key="NodeBadgeLocalOnly">Local only</x:String>
   <x:String x:Key="NodeBadgeCloudTip">Hosted by the panel and synced to every trusted device of this client.</x:String>
   <x:String x:Key="NodeBadgeThisMacTip">Stored on this Mac. Upload it to use it on your other devices.</x:String>
-  <x:String x:Key="NodeBadgeLocalOnlyTip">The panel only hosts Shadowsocks, SOCKS5 and VLESS nodes; this one stays on this Mac.</x:String>
+  <x:String x:Key="NodeBadgeLocalOnlyTip">This node can't be synced; it stays on this Mac.</x:String>
   <x:String x:Key="NodeErrUriRequired">Paste a share link first.</x:String>
   <x:String x:Key="NodeErrProtocol">This share link protocol is not supported on macOS yet.</x:String>
   <x:String x:Key="NodeErrPlugin">Shadowsocks plugin links are not supported.</x:String>
@@ -264,9 +264,8 @@
   <x:String x:Key="RouteUnavailable">The selected route is no longer available. Refresh the routes and try again.</x:String>
   <x:String x:Key="RouteStopped">The selected route was stopped or removed. No direct connection was made.</x:String>
   <x:String x:Key="RouteStartFailed">The selected route or node could not be started. No direct connection was made.</x:String>
-  <x:String x:Key="TransportWireGuard">The selected route does not support WireGuard. Choose UDP or TCP + UDP transport.</x:String>
-  <x:String x:Key="TransportShadowsocks">The selected route does not support Shadowsocks. Choose TCP or TCP + UDP transport.</x:String>
-  <x:String x:Key="TransportOtherFormat">The selected route does not support {0}. Choose TCP or TCP + UDP transport.</x:String>
+  <x:String x:Key="TransportWireGuard">The selected route can't carry this node. Choose a route with UDP or TCP + UDP transport.</x:String>
+  <x:String x:Key="TransportShadowsocks">The selected route can't carry this node. Choose a route with TCP or TCP + UDP transport.</x:String>
   <x:String x:Key="NativeNotInPlan">Native outbound is not included in the active plan.</x:String>
   <x:String x:Key="NativeScopeInvalid">Choose a valid native traffic scope.</x:String>
   <x:String x:Key="NativeLeaseUnavailable">The native outbound lease is unavailable.</x:String>
@@ -316,4 +315,5 @@
   <x:String x:Key="PluginOption">None</x:String>
   <x:String x:Key="PluginOptionobfs-local">obfs-local</x:String>
   <x:String x:Key="PluginOptionv2ray-plugin">v2ray-plugin</x:String>
+  <x:String x:Key="OwnNode">Your own node</x:String>
 </ResourceDictionary>

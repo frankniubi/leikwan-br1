@@ -165,6 +165,28 @@ public sealed class LocalizationTests
         Assert.Empty(keys.Where(key => !english.ContainsKey(key) || !chinese.ContainsKey(key)));
     }
 
+    [Fact]
+    public void OwnNodesAreNeverLabelledByProtocol()
+    {
+        var root = LocalizedStrings.DesktopRoot();
+        var protocolBindings = new[] { "{Binding Protocol}", "{Binding DisplayProtocol}", "{Binding ProtocolLabel}", "{Binding ProtocolInitial}" };
+        foreach (var view in Views)
+        {
+            var text = File.ReadAllText(ViewPath(view));
+            Assert.DoesNotContain(protocolBindings, binding => text.Contains(binding, StringComparison.Ordinal));
+        }
+        var english = LocalizedStrings.English(root);
+        var chinese = LocalizedStrings.ZhCn(root);
+        Assert.Equal("Your own node", english["OwnNode"]);
+        Assert.Equal("自带节点", chinese["OwnNode"]);
+        // Protocol names only where a node is added or imported.
+        var protocols = new Regex("Shadowsocks|SOCKS5|VLESS|WireGuard", RegexOptions.IgnoreCase);
+        string[] listKeys = ["NodeBadgeCloud", "NodeBadgeThisMac", "NodeBadgeLocalOnly", "NodeBadgeCloudTip", "NodeBadgeThisMacTip",
+            "NodeBadgeLocalOnlyTip", "SyncAllTip", "NodeRoute", "PairedServiceLabel", "NoSavedNodeSelected"];
+        Assert.Empty(listKeys.Where(key => protocols.IsMatch(english[key]) || protocols.IsMatch(chinese[key])));
+        Assert.Matches(protocols, english["ShareLinkWatermark"]);
+    }
+
     public static IEnumerable<object[]> ViewFiles() => Views.Select(view => new object[] { view });
 
     private static string ViewPath(string view)

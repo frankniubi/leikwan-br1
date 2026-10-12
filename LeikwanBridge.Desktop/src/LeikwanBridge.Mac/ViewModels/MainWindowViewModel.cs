@@ -1017,10 +1017,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     private static string ConnectionTransportError(MacConnectionProfile profile)
         => profile.Protocol.Equals(MacConnectionProtocol.WireGuard, StringComparison.OrdinalIgnoreCase)
-            ? L.T("TransportWireGuard", "The selected route does not support WireGuard. Choose UDP or TCP + UDP transport.")
+            ? L.T("TransportWireGuard", "The selected route can't carry this node. Choose a route with UDP or TCP + UDP transport.")
             : profile.Protocol.Equals(MacConnectionProtocol.Shadowsocks, StringComparison.OrdinalIgnoreCase)
-                ? L.T("TransportShadowsocks", "The selected route does not support Shadowsocks. Choose TCP or TCP + UDP transport.")
-                : L.F("TransportOtherFormat", "The selected route does not support {0}. Choose TCP or TCP + UDP transport.", profile.DisplayProtocol);
+                ? L.T("TransportShadowsocks", "The selected route can't carry this node. Choose a route with TCP or TCP + UDP transport.")
+                : L.T("TransportShadowsocks", "The selected route can't carry this node. Choose a route with TCP or TCP + UDP transport.");
 
     private void ValidateConnectionForward(MacConnectionProfile profile, ProxyForwardLease lease)
     {

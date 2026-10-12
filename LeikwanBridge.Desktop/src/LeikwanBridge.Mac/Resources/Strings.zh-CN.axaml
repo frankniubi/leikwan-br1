@@ -174,10 +174,10 @@
   <x:String x:Key="ProtocolWireGuard">WireGuard</x:String>
   <x:String x:Key="ProtocolExternal">外部 IP + 端口</x:String>
   <x:String x:Key="ProtocolUnsupported">不支持</x:String>
-  <x:String x:Key="ShareLinkWatermark">粘贴分享链接（ss://、socks5://、vless://、wg://）</x:String>
+  <x:String x:Key="ShareLinkWatermark">粘贴分享链接：Shadowsocks、SOCKS5、VLESS 或 WireGuard</x:String>
   <x:String x:Key="ShareLinkName">分享链接</x:String>
   <x:String x:Key="Import">导入</x:String>
-  <x:String x:Key="SyncAllTip">上传所有本地 Shadowsocks / SOCKS5 / VLESS 节点</x:String>
+  <x:String x:Key="SyncAllTip">上传所有可同步的本地节点</x:String>
   <x:String x:Key="SyncAll">全部同步</x:String>
   <x:String x:Key="RefreshFromCloud">从云端刷新</x:String>
   <x:String x:Key="NoNodesYet">暂无节点</x:String>
@@ -207,7 +207,7 @@
   <x:String x:Key="NodeBadgeLocalOnly">仅本机</x:String>
   <x:String x:Key="NodeBadgeCloudTip">由面板托管，并同步到该客户端的所有受信设备。</x:String>
   <x:String x:Key="NodeBadgeThisMacTip">保存在本机。上传后可在其他设备上使用。</x:String>
-  <x:String x:Key="NodeBadgeLocalOnlyTip">面板只托管 Shadowsocks、SOCKS5 和 VLESS 节点，此节点仅保存在本机。</x:String>
+  <x:String x:Key="NodeBadgeLocalOnlyTip">此节点无法同步，仅保存在本机。</x:String>
   <x:String x:Key="NodeErrUriRequired">请先粘贴分享链接。</x:String>
   <x:String x:Key="NodeErrProtocol">macOS 暂不支持此分享链接协议。</x:String>
   <x:String x:Key="NodeErrPlugin">不支持 Shadowsocks 插件链接。</x:String>
@@ -264,9 +264,8 @@
   <x:String x:Key="RouteUnavailable">所选线路已不可用，请刷新线路后重试。</x:String>
   <x:String x:Key="RouteStopped">所选线路已停止或被删除，未建立直连。</x:String>
   <x:String x:Key="RouteStartFailed">无法启动所选线路或节点，未建立直连。</x:String>
-  <x:String x:Key="TransportWireGuard">所选线路不支持 WireGuard，请选择 UDP 或 TCP + UDP 传输。</x:String>
-  <x:String x:Key="TransportShadowsocks">所选线路不支持 Shadowsocks，请选择 TCP 或 TCP + UDP 传输。</x:String>
-  <x:String x:Key="TransportOtherFormat">所选线路不支持 {0}，请选择 TCP 或 TCP + UDP 传输。</x:String>
+  <x:String x:Key="TransportWireGuard">所选线路无法承载该节点，请选择 UDP 或 TCP + UDP 传输的线路。</x:String>
+  <x:String x:Key="TransportShadowsocks">所选线路无法承载该节点，请选择 TCP 或 TCP + UDP 传输的线路。</x:String>
   <x:String x:Key="NativeNotInPlan">当前套餐不包含原生出口。</x:String>
   <x:String x:Key="NativeScopeInvalid">请选择有效的原生流量范围。</x:String>
   <x:String x:Key="NativeLeaseUnavailable">原生出口租约不可用。</x:String>
@@ -316,4 +315,5 @@
   <x:String x:Key="PluginOption">无</x:String>
   <x:String x:Key="PluginOptionobfs-local">obfs-local</x:String>
   <x:String x:Key="PluginOptionv2ray-plugin">v2ray-plugin</x:String>
+  <x:String x:Key="OwnNode">自带节点</x:String>
 </ResourceDictionary>

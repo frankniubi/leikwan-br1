@@ -307,9 +307,8 @@ public sealed partial class NodeCardViewModel : ObservableObject
     {
         NodeCloudState.Hosted => L.T("NodeBadgeCloudTip", "Hosted by the panel and synced to every trusted device of this client."),
         NodeCloudState.LocalOnly => L.T("NodeBadgeThisMacTip", "Stored on this Mac. Upload it to use it on your other devices."),
-        _ => L.T("NodeBadgeLocalOnlyTip", "The panel only hosts Shadowsocks, SOCKS5 and VLESS nodes; this one stays on this Mac."),
+        _ => L.T("NodeBadgeLocalOnlyTip", "This node can't be synced; it stays on this Mac."),
     };
-    public string ProtocolInitial => string.IsNullOrEmpty(Protocol) ? "?" : Protocol[..1].ToUpperInvariant();
 
     [ObservableProperty] private NodeServiceOption? _selectedService;
 
