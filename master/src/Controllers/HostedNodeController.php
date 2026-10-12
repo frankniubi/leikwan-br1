@@ -312,7 +312,6 @@ final class HostedNodeController extends BaseController
         }
 
         $intro = '<div class="hero"><div>'
-            . '<p class="muted">Your own nodes, stored by the panel for this client. Every signed-in device of the client receives them, together with which service forward each node rides on. The panel only stores and syncs them; traffic still goes from your device through the forward to your node.</p>'
             . '<p class="muted">Client #' . $clientId . ' · ' . $this->escape((string) ($client['name'] ?? '')) . '</p>'
             . $clientPicker . '</div></div>';
 
@@ -323,18 +322,11 @@ final class HostedNodeController extends BaseController
 
         $rows = '';
         foreach ($nodes as $node) {
-            $detail = match ((string) $node['protocol']) {
-                HostedNodeSpec::PROTOCOL_SHADOWSOCKS => (string) $node['method'] . ((string) $node['plugin'] !== '' ? ' + ' . (string) $node['plugin'] : ''),
-                HostedNodeSpec::PROTOCOL_SOCKS5 => !empty($node['auth']) ? 'Password' : 'No auth',
-                default => (string) $node['security'] . ' / ' . (string) $node['transport'],
-            };
             $server = (string) $node['server'];
             $endpoint = (str_contains($server, ':') ? '[' . $server . ']' : $server) . ':' . (int) $node['port'];
             $rows .= '<tr>'
                 . '<td>' . $this->escape((string) $node['name']) . '</td>'
-                . '<td>' . $this->escape($this->protocolLabel((string) $node['protocol'])) . '</td>'
                 . '<td><code>' . $this->escape($endpoint) . '</code></td>'
-                . '<td>' . $this->escape($detail) . '</td>'
                 . '<td>' . $this->escape((string) $node['source'] === HostedNodeService::SOURCE_DEVICE ? 'Device' : 'Console') . '</td>'
                 . '<td class="actions"><a class="button ghost" href="/tenant/hosted-nodes/' . (int) $node['id'] . '/edit?client_id=' . $clientId . '">Edit</a>'
                 . '<form class="inline" method="post" action="/tenant/hosted-nodes/' . (int) $node['id'] . '/delete" data-confirm="Delete this node from every device of the client?" onsubmit="return confirm(this.dataset.confirm);">'
@@ -344,12 +336,11 @@ final class HostedNodeController extends BaseController
                 . '</tr>';
         }
         if ($rows === '') {
-            $rows = '<tr><td colspan="6" class="muted">No hosted nodes yet.</td></tr>';
+            $rows = '<tr><td colspan="4" class="muted">No nodes yet.</td></tr>';
         }
         $nodesCard = '<section class="card"><h3>Nodes</h3>'
-            . '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Protocol</th><th>Server</th><th>Settings</th><th>Added from</th><th></th></tr></thead><tbody>'
-            . $rows . '</tbody></table></div>'
-            . '<p class="muted">Passwords and UUIDs are never shown again after saving. Edit a node to change it; leave those fields blank to keep the stored values.</p></section>';
+            . '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Server</th><th>Added from</th><th></th></tr></thead><tbody>'
+            . $rows . '</tbody></table></div></section>';
 
         $pairRows = '';
         $serviceNames = $this->serviceNames($forwards);
@@ -387,11 +378,10 @@ final class HostedNodeController extends BaseController
             $pairRows = '<tr><td colspan="4" class="muted">This client has no forwards yet.</td></tr>';
         }
         $pairCard = '<section class="card"><h3>Pairing</h3>'
-            . '<p class="muted">Choose which of your nodes each forward carries. Without a choice, a forward pairs automatically with the one node whose server and port equal its target.</p>'
             . '<div class="table-wrap"><table><thead><tr><th>Forward</th><th>Target</th><th>Node</th><th></th></tr></thead><tbody>'
             . $pairRows . '</tbody></table></div></section>';
 
-        $addCard = '<section class="card"><h3>Add a node</h3>'
+        $addCard = '<section class="card"><h3>Add a node</h3><p class="muted">Supports Shadowsocks, SOCKS5 and VLESS.</p>'
             . $this->renderNodeForm('/tenant/hosted-nodes', $csrf, $clientId, null)
             . '</section>';
 

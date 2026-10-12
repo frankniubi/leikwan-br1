@@ -1,6 +1,8 @@
 {
   "locale": "zh-TW",
   "text": {
+    "No nodes yet.": "還沒有節點。",
+    "Supports Shadowsocks, SOCKS5 and VLESS.": "支援 Shadowsocks、SOCKS5、VLESS。",
     "Edit node": "編輯節點",
     "Save changes": "儲存修改",
     "Node updated.": "節點已更新。",

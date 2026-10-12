@@ -100,7 +100,10 @@ try {
     assertSame(200, $empty->status(), 'page renders');
     $html = $empty->body();
     assertContains('My Nodes', $html, 'page title / nav entry');
-    assertContains('No hosted nodes yet.', $html, 'empty state');
+    assertContains('No nodes yet.', $html, 'empty state');
+    // Protocols are named only in the add form, never as a node-list column.
+    assertContains('Supports Shadowsocks, SOCKS5 and VLESS.', $html, 'add form names the supported protocols');
+    assertSame(false, str_contains($html, '<th>Protocol</th>'), 'node list has no protocol column');
     assertContains('action="/tenant/hosted-nodes"', $html, 'add form');
     assertContains('CAN -&gt; HKG', $html, 'forward listed with escaped service name');
 
