@@ -113,7 +113,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case dashboard
     case proxies
     case rules
-    case profiles
     case tools
 
     var id: String { rawValue }
@@ -123,7 +122,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .dashboard: return "仪表盘"
         case .proxies: return "线路"
         case .rules: return "规则"
-        case .profiles: return "订阅"
         case .tools: return "工具"
         }
     }
@@ -133,7 +131,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .dashboard: return "square.grid.2x2"
         case .proxies: return "point.3.connected.trianglepath.dotted"
         case .rules: return "list.bullet.rectangle.portrait"
-        case .profiles: return "tray.full"
         case .tools: return "wrench.and.screwdriver"
         }
     }

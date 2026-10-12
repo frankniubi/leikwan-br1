@@ -22,13 +22,18 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
     public var value: String
     public var outcome: CustomRuleOutcome
     public var enabled: Bool
+    /// `.proxy` only: run this rule's traffic through the binding of this node (its sing-box
+    /// outbound `proxy-<id>`); nil = the default binding. Optional, so rules saved before
+    /// multi-binding still decode.
+    public var targetNodeId: Int64?
 
-    public init(id: String, type: CustomRuleType, value: String, outcome: CustomRuleOutcome, enabled: Bool = true) {
+    public init(id: String, type: CustomRuleType, value: String, outcome: CustomRuleOutcome, enabled: Bool = true, targetNodeId: Int64? = nil) {
         self.id = id
         self.type = type
         self.value = value
         self.outcome = outcome
         self.enabled = enabled
+        self.targetNodeId = targetNodeId
     }
 
     /// Parses `TYPE,value,OUTCOME` (Shadowrocket line syntax; `IP-CIDR6` is accepted as `IP-CIDR`,

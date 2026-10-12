@@ -14,6 +14,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
     private var nativeLeases: NativeOutboundLeaseManager?
+    /// Non-default bindings whose runtimes failed to start (binding id -> error).
+    private var failedBindings: [String: String] = [:]
     /// Ultra usage counters -> heartbeat rows; shared by the control loop and the lease manager.
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
@@ -43,7 +45,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         UltraLeaseManager.settleRuntimeFiles(launch.ultra, ledger: usageLedger)
         NativeOutboundLeaseManager.settleRuntimeFiles(launch.nativeOutbound, ledger: usageLedger)
-        try runtimes.start(launch.runtimes)
+        failedBindings = try runtimes.start(launch.runtimes, optionalGroups: launch.optionalRuntimeGroups)
 
         var serverError: NSError?
         let server = LibboxNewCommandServer(platform, platform, &serverError)
@@ -121,6 +123,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.memory = libbox.memory
             snapshot.runtimes = runtimes.statuses()
             snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
+            if !failedBindings.isEmpty {
+                let failures = failedBindings
+                snapshot.bindingErrors = failures.keys.sorted().map { key in "\(key): \(failures[key] ?? "")" }
+            }
             return try? encoder.encode(snapshot)
         case .logs:
             return try? encoder.encode(TunnelLogsSnapshot(lines: TunnelLog.shared.snapshot()))
@@ -199,7 +205,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             UltraLeaseManager.settleRuntimeFiles((previous?.ultra ?? []) + next.ultra, ledger: usageLedger)
             NativeOutboundLeaseManager.settleRuntimeFiles(previous?.nativeOutbound, ledger: usageLedger)
             NativeOutboundLeaseManager.settleRuntimeFiles(next.nativeOutbound, ledger: usageLedger)
-            try runtimes.start(next.runtimes)
+            failedBindings = try runtimes.start(next.runtimes, optionalGroups: next.optionalRuntimeGroups)
         }
         try startService()
         startUltraLeases(next)
@@ -219,8 +225,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Starts lease delivery for the plan's Ultra forwards (no-op when one is already running).
     private func startUltraLeases(_ plan: TunnelLaunchOptions) {
-        guard ultraLeases == nil, !plan.ultra.isEmpty, let panel = plan.panel else { return }
-        let manager = UltraLeaseManager(session: panel, forwards: plan.ultra)
+        guard ultraLeases == nil, let panel = plan.panel else { return }
+        // Bindings whose runtime did not start get no lease loop (it would only raise alerts).
+        let groups = plan.optionalRuntimeGroups
+        let forwards = plan.ultra.filter { forward in
+            guard let group = groups[forward.runtimeName] else { return true }
+            return failedBindings[group] == nil
+        }
+        guard !forwards.isEmpty else { return }
+        let manager = UltraLeaseManager(session: panel, forwards: forwards)
         ultraLeases = manager
         manager.start()
     }

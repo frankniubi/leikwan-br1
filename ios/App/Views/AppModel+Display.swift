@@ -29,6 +29,24 @@ extension AppModel {
 }
 
 extension IOSSupportedForward {
+    /// Forward direction from the panel (e.g. "SHA -> TYO"), else its name.
+    var directionTitle: String {
+        let direction = contract.direction.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !direction.isEmpty { return direction }
+        return serviceName.isEmpty ? "转发 #\(forwardId)" : serviceName
+    }
+
+    /// Entry endpoint(s) as ip:port; Ultra entries come from leases at connect time.
+    var endpointSummary: String {
+        let endpoints = contract.endpoints
+        guard let first = endpoints.first else {
+            return kind == .ultra ? "入口由 Ultra 租约分配" : "无可用入口"
+        }
+        let host = first.host.contains(":") ? "[\(first.host)]" : first.host
+        let more = endpoints.count > 1 ? "  +\(endpoints.count - 1)" : ""
+        return "\(host):\(first.port)\(more)"
+    }
+
     var kindLabel: String {
         switch kind {
         case .ultra: return "Ultra"

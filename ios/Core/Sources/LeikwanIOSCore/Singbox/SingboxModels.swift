@@ -62,20 +62,26 @@ public struct SingboxRuntimeContext: Equatable {
     public var bypassHosts: [String]
     public var protectedConnectivity: ProtectedConnectivitySet
     /// Optional per-node relay ports (Android `nodeLegs`); empty = every node uses `localListenPort`.
+    /// Multi-binding: each bound node -> the loopback port of its own forward runtime.
     public var nodeListenPorts: [Int64: Int]
+    /// Multi-binding: nodes bound without a forward; dialled at their own server:port even in
+    /// SERVICES mode.
+    public var directNodeIds: Set<Int64>
 
     public init(
         forwardId: Int64,
         localListenPort: Int,
         bypassHosts: [String] = [],
         protectedConnectivity: ProtectedConnectivitySet = .empty,
-        nodeListenPorts: [Int64: Int] = [:]
+        nodeListenPorts: [Int64: Int] = [:],
+        directNodeIds: Set<Int64> = []
     ) {
         self.forwardId = forwardId
         self.localListenPort = localListenPort
         self.bypassHosts = bypassHosts
         self.protectedConnectivity = protectedConnectivity
         self.nodeListenPorts = nodeListenPorts
+        self.directNodeIds = directNodeIds
     }
 
     public static func bond(_ plan: BondRuntimePlan) -> SingboxRuntimeContext {
@@ -99,6 +105,24 @@ public struct SingboxRuntimeContext: Equatable {
             bypassHosts: [],
             protectedConnectivity: combined
         )
+    }
+
+    /// Several runtimes behind one sing-box: `primary` supplies forwardId / localListenPort; the
+    /// protected connectivity and bypass hosts of every runtime are merged (each runtime's
+    /// endpoints must stay out of the tunnel).
+    public static func merged(primary: SingboxRuntimeContext, others: [SingboxRuntimeContext]) -> SingboxRuntimeContext {
+        var result = primary
+        for other in others {
+            result.protectedConnectivity = result.protectedConnectivity.merge(other.protectedConnectivity)
+            for host in other.bypassHosts where !result.bypassHosts.contains(host) {
+                result.bypassHosts.append(host)
+            }
+            for (node, port) in other.nodeListenPorts where result.nodeListenPorts[node] == nil {
+                result.nodeListenPorts[node] = port
+            }
+            result.directNodeIds.formUnion(other.directNodeIds)
+        }
+        return result
     }
 
     /// Android `relayListenPortForNode`.

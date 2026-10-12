@@ -46,6 +46,46 @@ final class RuntimeHost {
         }
     }
 
+    /// Multi-binding start: runtimes named in `optionalGroups` (runtime name -> binding id)
+    /// belong to non-default bindings. When one of them fails, the runtimes already started for
+    /// that binding are stopped, its remaining runtimes are skipped, and the start goes on;
+    /// any other failure stops everything and throws, like `start(_:)`.
+    /// Returns binding id -> error message for the bindings that did not start.
+    func start(_ launches: [RuntimeLaunch], optionalGroups: [String: String]) throws -> [String: String] {
+        if optionalGroups.isEmpty {
+            try start(launches)
+            return [:]
+        }
+        var failed: [String: String] = [:]
+        var startedByGroup: [String: [String]] = [:]
+        for launch in launches {
+            let group = optionalGroups[launch.name]
+            if let group = group, failed[group] != nil { continue }
+            do {
+                let handle = try Self.start(launch)
+                lock.lock()
+                running.append(Running(launch: launch, handle: handle))
+                lock.unlock()
+                if let group = group {
+                    startedByGroup[group, default: []].append(launch.name)
+                }
+                TunnelLog.shared.write("runtime \(launch.name) started")
+            } catch {
+                guard let group = group else {
+                    stopAll()
+                    throw error
+                }
+                let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                failed[group] = message
+                TunnelLog.shared.write("binding \(group) skipped: \(message)", level: 2)
+                for name in startedByGroup[group] ?? [] {
+                    stop(named: name)
+                }
+            }
+        }
+        return failed
+    }
+
     func stopAll() {
         lock.lock()
         let stopping = running.reversed()

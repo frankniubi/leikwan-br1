@@ -66,6 +66,9 @@ public struct ProxyNode: Codable, Equatable, Identifiable {
     /// When set (SERVICES mode), the node relays through this forward's runtime.
     public var forwardId: Int64?
     public var enabled: Bool
+    /// Panel id when this node is a hosted ("cloud") node; nil = local-only. Optional, so node
+    /// files written before cloud sync still decode (synthesized Codable uses decodeIfPresent).
+    public var hostedId: Int64?
 
     public init(
         id: Int64 = 0,
@@ -75,7 +78,8 @@ public struct ProxyNode: Codable, Equatable, Identifiable {
         settings: ProxyNodeSettings,
         subscriptionId: Int64? = nil,
         forwardId: Int64? = nil,
-        enabled: Bool = true
+        enabled: Bool = true,
+        hostedId: Int64? = nil
     ) {
         self.id = id
         self.name = name
@@ -85,7 +89,11 @@ public struct ProxyNode: Codable, Equatable, Identifiable {
         self.subscriptionId = subscriptionId
         self.forwardId = forwardId
         self.enabled = enabled
+        self.hostedId = hostedId
     }
+
+    /// True when this node is the device copy of a panel-hosted node.
+    public var isHosted: Bool { return (hostedId ?? 0) > 0 }
 
     public var type: ProxyNodeType {
         switch settings {

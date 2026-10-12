@@ -109,8 +109,8 @@ public struct SingboxConfigBuilder {
         return nodes.filter { node in
             guard node.enabled else { return false }
             guard connectionMode == .services, let runtime = runtime else { return true }
-            if !runtime.nodeListenPorts.isEmpty {
-                return runtime.nodeListenPorts[node.id] != nil
+            if !runtime.nodeListenPorts.isEmpty || !runtime.directNodeIds.isEmpty {
+                return runtime.nodeListenPorts[node.id] != nil || runtime.directNodeIds.contains(node.id)
             }
             return node.forwardId == nil || node.forwardId == runtime.forwardId
         }
@@ -122,7 +122,11 @@ public struct SingboxConfigBuilder {
         for node in nodes {
             let server: String
             let port: Int
-            if connectionMode == .services {
+            if connectionMode == .services, let runtime = runtime, runtime.directNodeIds.contains(node.id) {
+                // Multi-binding: a node bound without a forward is dialled directly.
+                server = node.server
+                port = node.port
+            } else if connectionMode == .services {
                 guard let runtime = runtime else { continue }
                 server = "127.0.0.1"
                 port = runtime.relayListenPort(forNode: node.id)
@@ -264,7 +268,17 @@ public struct SingboxConfigBuilder {
             for rule in snapshot.customRules where rule.enabled {
                 guard var match = rule.singboxMatch() else { continue }
                 switch rule.outcome {
-                case .proxy: match["outbound"] = finalProxyTag
+                case .proxy:
+                    var outbound = finalProxyTag
+                    if let target = rule.targetNodeId {
+                        let tag = "proxy-\(target)"
+                        if nodeTags.contains(tag) {
+                            outbound = tag
+                        } else {
+                            warnings.append("Rule '\(rule.id)': target node \(target) unavailable; using default.")
+                        }
+                    }
+                    match["outbound"] = outbound
                 case .direct: match["outbound"] = "direct"
                 case .reject: match["action"] = "reject"
                 }

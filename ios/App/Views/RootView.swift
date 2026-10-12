@@ -69,7 +69,6 @@ private struct SectionScreen: View {
         case .dashboard: DashboardView()
         case .proxies: ProxiesView()
         case .rules: NavigationStack { RulesView() }
-        case .profiles: ProfilesView()
         case .tools: ToolsView()
         }
     }

@@ -20,6 +20,10 @@ struct TunnelLaunchOptions: Codable, Equatable {
     /// Native outbound plan (the single ultra runtime in `runtimes` runs in native SOCKS5 mode);
     /// the tunnel's NativeOutboundLeaseManager keeps it supplied with native leases.
     var nativeOutbound: NativeOutboundLaunch? = nil
+    /// Multi-binding: which runtimes belong to which (forward, node) binding. Runtimes of a
+    /// non-default binding are optional: if they fail to start, the tunnel starts without that
+    /// binding instead of failing. Empty in older snapshots (every runtime required).
+    var bindings: [TunnelBindingInfo] = []
 
     enum CodingKeys: String, CodingKey {
         case configContent
@@ -27,6 +31,18 @@ struct TunnelLaunchOptions: Codable, Equatable {
         case panel
         case ultra
         case nativeOutbound
+        case bindings
+    }
+
+    /// runtime name -> binding id, for the runtimes the tunnel may skip on failure.
+    var optionalRuntimeGroups: [String: String] {
+        var groups: [String: String] = [:]
+        for binding in bindings where !binding.isDefault {
+            for name in binding.runtimeNames {
+                groups[name] = binding.id
+            }
+        }
+        return groups
     }
 
     func encoded() throws -> Data {
@@ -51,7 +67,20 @@ extension TunnelLaunchOptions {
         panel = try container.decodeIfPresent(TunnelPanelSession.self, forKey: .panel)
         ultra = try container.decodeIfPresent([UltraForwardLaunch].self, forKey: .ultra) ?? []
         nativeOutbound = try container.decodeIfPresent(NativeOutboundLaunch.self, forKey: .nativeOutbound)
+        bindings = try container.decodeIfPresent([TunnelBindingInfo].self, forKey: .bindings) ?? []
     }
+}
+
+/// One running (forward, node) binding (diagnostics + optional-runtime grouping).
+struct TunnelBindingInfo: Codable, Equatable {
+    /// BindingID raw value ("f:12" / "n:3").
+    var id: String
+    var forwardID: Int64?
+    var nodeID: Int64?
+    /// sing-box outbound tag of the node, if any.
+    var outboundTag: String?
+    var runtimeNames: [String]
+    var isDefault: Bool
 }
 
 /// What the tunnel needs to keep the native outbound runtime supplied with leases
@@ -169,6 +198,8 @@ struct TunnelStatusSnapshot: Codable, Equatable {
     /// Terminal panel/runtime problem the app should surface (kicked,
     /// device limit, runtime failed).
     var alert: String?
+    /// Non-default bindings whose runtimes failed to start ("f:12: <error>"); nil when none.
+    var bindingErrors: [String]? = nil
 }
 
 struct RuntimeStatus: Codable, Equatable {

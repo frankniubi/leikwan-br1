@@ -34,6 +34,12 @@ struct RulesView: View {
                             title: preset.labelZh,
                             selection: presetBinding(preset.key)
                         )
+                        if model.routing.appPresets[preset.key] == .tunnel && model.routingTargetBindings.count > 1 {
+                            TargetPicker(selection: Binding(
+                                get: { model.appPresetTarget(preset.key) },
+                                set: { model.setAppPresetTarget(preset.key, nodeID: $0) }
+                            ))
+                        }
                     }
                 } header: {
                     Text("应用分流")
@@ -43,10 +49,18 @@ struct RulesView: View {
 
                 Section("国家 / 地区（按 IP）") {
                     ForEach(model.routing.countries.keys.sorted(), id: \.self) { code in
-                        OutcomePicker(
-                            title: "\(CountryCatalog.name(for: code, zh: true)) (\(code.uppercased()))",
-                            selection: countryBinding(code)
-                        )
+                        VStack(spacing: 6) {
+                            OutcomePicker(
+                                title: "\(CountryCatalog.name(for: code, zh: true)) (\(code.uppercased()))",
+                                selection: countryBinding(code)
+                            )
+                            if model.routing.countries[code] == .tunnel && model.routingTargetBindings.count > 1 {
+                                TargetPicker(selection: Binding(
+                                    get: { model.countryTarget(code) },
+                                    set: { model.setCountryTarget(code, nodeID: $0) }
+                                ))
+                            }
+                        }
                     }
                     .onDelete { offsets in
                         let keys = model.routing.countries.keys.sorted()
@@ -66,9 +80,15 @@ struct RulesView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rule.value)
                                 .font(.body.monospaced())
-                            Text("\(rule.type.rawValue) → \(Self.outcomeLabel(rule.outcome))")
+                            Text("\(rule.type.rawValue) → \(Self.outcomeLabel(rule.outcome))" + (rule.outcome == .proxy ? " · " + model.routingTargetTitle(nodeID: rule.targetNodeId) : ""))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if rule.outcome == .proxy && model.routingTargetBindings.count > 1 {
+                                TargetPicker(selection: Binding(
+                                    get: { rule.targetNodeId },
+                                    set: { model.setCustomRuleTarget(ruleID: rule.id, nodeID: $0) }
+                                ))
+                            }
                         }
                     }
                     .onDelete { model.routing.customRules.remove(atOffsets: $0) }
@@ -263,12 +283,12 @@ private struct MatchOrderCard: View {
             CardHeader("规则模式的匹配顺序", systemImage: "list.number")
             VStack(alignment: .leading, spacing: 6) {
                 step(1, "面板和转发线路本身", "直连（不可修改）")
-                step(2, "自定义规则", "按列表顺序，代理 / 直连 / 拒绝")
-                step(3, "应用分流", "按每个 App 的域名和 IP 段")
+                step(2, "自定义规则", "按列表顺序，代理 / 直连 / 拒绝；代理可指定绑定")
+                step(3, "应用分流", "按每个 App 的域名和 IP 段；可指定绑定")
                 step(4, "国家 / 地区", "按目标 IP 所在国家")
                 step(5, "中国大陆网站和 IP", bypassChina ? "直连（已开启）" : "未开启，跳过")
                 step(6, "直连列表", "直连")
-                step(7, "其余所有流量", "走代理")
+                step(7, "其余所有流量", "走默认绑定")
             }
             if mode != .rule {
                 Label(mode == .global ? "当前是全局模式：以上第 2–6 步不生效，全部走代理。" : "当前是直连模式：以上规则不生效，全部直连。", systemImage: "exclamationmark.circle")
@@ -299,5 +319,27 @@ private struct MatchOrderCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
         }
+    }
+}
+
+/// "走哪个绑定" for a proxy rule: the default binding or a specific one.
+private struct TargetPicker: View {
+    @EnvironmentObject private var model: AppModel
+    @Binding var selection: Int64?
+
+    var body: some View {
+        Picker(selection: $selection) {
+            Text("默认绑定").tag(Int64?.none)
+            ForEach(model.routingTargetBindings) { row in
+                if let node = row.node {
+                    Text(row.title).tag(Int64?.some(node.id))
+                }
+            }
+        } label: {
+            Label("走", systemImage: "arrow.turn.down.right")
+                .font(.subheadline)
+                .foregroundStyle(Palette.onSurfaceVariant)
+        }
+        .pickerStyle(.menu)
     }
 }
