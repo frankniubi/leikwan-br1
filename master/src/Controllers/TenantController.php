@@ -1372,46 +1372,49 @@ final class TenantController extends BaseController
         $dockerCommand = $this->dockerClientInstallCommand($client);
         $dockerComposeSnippet = $this->dockerClientComposeInline($client);
 
+        // No-GUI (CLI) clients lead each desktop card; the GUI app is collapsed below.
         $macosGuiSectionRaw = $this->renderMacClientInstallSection();
-        $macosSection = '';
+        $macosGuiBlock = '';
         if ($macosGuiSectionRaw !== '') {
-            $macosNoGuiBlock = '<details style="margin-top:12px;"><summary>无界面版 · macOS（launchd 守护进程）</summary>'
-                . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-                . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
-                . '<div class="actions">'
-                . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
-                . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
-                . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-                . '</div></details>';
-            $macosSection = str_replace('</section>', $macosNoGuiBlock . '</section>', $macosGuiSectionRaw);
-        } else {
-            $macosSection = '<section class="tenant-client-install__platform"><strong>'
-                . $this->platformIcon('macos')
-                . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版', 'windows_headless_client')) . '</strong>'
-                . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-                . '<details open><summary>安装命令</summary><pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
-                . '<div class="actions">' . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败') . '</div></details>'
-                . '</section>';
+            $macosGuiVersion = $this->macosClientReleaseVersion();
+            $macosGuiBlock = '<details style="margin-top:12px;"><summary>' . $this->platformIcon('macos')
+                . $this->escape('macOS' . ($macosGuiVersion !== '' ? ' ' . $macosGuiVersion : '') . ' · 图形界面版')
+                . '</summary>'
+                . $this->renderMacClientInstallBody()
+                . '</details>';
         }
+        $macosSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('macos')
+            . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 (CLI)', 'macos_headless_installer')) . '</strong>'
+            . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+            . '</div>'
+            . $macosGuiBlock
+            . '</section>';
 
         $windowsSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</strong>'
-            . '<div class="actions">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . ' · 复制命令</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
-            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
-            . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . '无界面版 · Windows 系统服务</summary>'
-            . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . $this->escape($this->clientAppReleaseLabel('Windows · 无界面版 (CLI)', 'windows_headless_client')) . '</strong>'
+            . '<div class="muted">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
             . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+            . '</div>'
+            . '<details style="margin-top:12px;"><summary>' . $this->platformIcon('windows')
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app') . ' · 图形界面版') . '</summary>'
+            . '<div class="actions" style="margin-top:8px;">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '<div class="muted" style="margin:10px 0 6px;">' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
             . '</div></details>'
             . '</section>';
 

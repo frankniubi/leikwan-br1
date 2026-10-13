@@ -1154,19 +1154,30 @@ abstract class BaseController
             return '';
         }
 
-        $releaseNotice = $this->macosClientReleaseNotice();
-
         $version = $this->macosClientReleaseVersion();
 
         return '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('macos')
             . 'macOS' . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
-            . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
+            . $this->renderMacClientInstallBody()
+            . '</section>';
+    }
+
+    /**
+     * The macOS GUI download without its card header, so a page can nest it
+     * (e.g. collapsed under the no-GUI client).
+     */
+    protected function renderMacClientInstallBody(): string
+    {
+        if (!$this->macosClientArtifactsAvailable()) {
+            return '';
+        }
+
+        return '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($this->macosClientReleaseNotice()) . '</div>'
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
             . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
-            . '</div>'
-            . '</section>';
+            . '</div>';
     }
 
     /**

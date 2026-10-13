@@ -56,8 +56,10 @@ $clients = substr($tenant, $clientsStart, $clientsEnd - $clientsStart);
 if (!str_contains($clients, '$this->renderMacClientInstallSection()') || !str_contains($clients, 'macOS')) {
     failMacInstallSurface('tenant client surface does not render the macOS install section');
 }
+// The section helper and the header-less body it shares with the tenant page.
 $helperStart = strpos($base, 'protected function renderMacClientInstallSection(): string');
-$helperEnd = $helperStart === false ? false : strpos($base, 'protected function ', $helperStart + 20);
+$bodyStart = strpos($base, 'protected function renderMacClientInstallBody(): string');
+$helperEnd = $helperStart === false || $bodyStart === false ? false : strpos($base, 'protected function ', $bodyStart + 20);
 if ($helperStart === false || $helperEnd === false) {
     failMacInstallSurface('could not isolate renderMacClientInstallSection');
 }
