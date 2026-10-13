@@ -783,9 +783,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
     },
-    "sha256": "68364949169c5ba57bad53ef03304ab4be8809fa99c3bdb3dc5805f90bec2ce7",
-    "size_bytes": 69920776,
-    "version": "0.1.20.67"
+    "sha256": "fc3b41975a6f411523eb0975815977d06c9477d3bc45638727c89c85dabd4634",
+    "size_bytes": 69929219,
+    "version": "0.1.20.68"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
