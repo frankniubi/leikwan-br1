@@ -102,6 +102,11 @@ final class OidcController extends BaseController
             if ($context !== []) {
                 error_log('OIDC provider context: ' . (json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}'));
             }
+            if ($throwable->getMessage() === 'oidc_email_unverified') {
+                // The provider authenticated the user but has not verified their email; retrying cannot help.
+                SessionAuth::flash('error', 'Your Buy station email address is not verified yet. Sign in at buy.leikwanhost.com, verify your email address, then sign in here again.');
+                return Response::redirect('/login');
+            }
             SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.');
             return Response::redirect('/login');
         }

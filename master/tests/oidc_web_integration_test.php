@@ -74,6 +74,8 @@ assertContains('catch (Throwable $throwable)', $oidc, 'callback failures must re
 assertContains("error_log(sprintf('OIDC callback failed: %s (%s)'", $oidc, 'callback failures must write a redacted server-side diagnostic');
 assertContains("SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.')", $oidc, 'failure must use a safe friendly message');
 assertContains("Response::redirect('/login')", $oidc, 'failure must return to login');
+assertContains("\$throwable->getMessage() === 'oidc_email_unverified'", $oidc, 'unverified provider email must get its own message');
+assertContains('verify your email address', $oidc, 'unverified provider email message must tell the user what to do');
 if (str_contains($oidc, 'super-secret') || preg_match('/(?:token|code|body)\\s*=>\\s*\\$?(?:token|code|body)/i', $oidc) === 1) {
     fail('OIDC controller must not expose provider tokens, codes, or response bodies');
 }
