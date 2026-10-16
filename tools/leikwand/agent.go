@@ -59,14 +59,17 @@ type Agent struct {
 	deviceNm string
 	log      *Logger
 
-	mu          sync.Mutex
-	runtimes    map[int]*runtimeState
-	forwards    map[int]ForwardConfig
-	nativeCap   *NativeOutboundCapability
-	lastPullAt  time.Time
-	lastPullErr string
-	clientMeta  ClientMeta
-	diagToken   string
+	mu        sync.Mutex
+	runtimes  map[int]*runtimeState
+	forwards  map[int]ForwardConfig
+	nativeCap *NativeOutboundCapability
+	// nativeForwards are the Panel's native outbound carriers. They never
+	// run on the ordinary forward path; the gateway relay serves them.
+	nativeForwards map[int]ForwardConfig
+	lastPullAt     time.Time
+	lastPullErr    string
+	clientMeta     ClientMeta
+	diagToken      string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -84,6 +87,9 @@ type Agent struct {
 	wan           *wanManager
 	gateway       *gatewayManager
 	gatewaySignal chan struct{}
+
+	// bypass keeps every relay address out of the gateway TUN.
+	bypass *bypassRoutes
 
 	// secretStamp tracks the credential file so an operator (or a restored
 	// backup, or an out-of-band pairing) can enrol a running agent without
@@ -108,6 +114,8 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		log:              log,
 		runtimes:         map[int]*runtimeState{},
 		forwards:         map[int]ForwardConfig{},
+		nativeForwards:   map[int]ForwardConfig{},
+		bypass:           newBypassRoutes(),
 		reconcile:        make(chan string, 16),
 		forceStatusFlush: make(chan struct{}, 1),
 		gatewaySignal:    make(chan struct{}, 1),
@@ -150,9 +158,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.UplinkEnabled {
 		start(a.uplinkLoop)
 	}
-	if a.cfg.gatewayActive() {
-		start(a.gatewayLoop)
-	}
+	// Always running: it idles while gateway mode is off, so enabling it from
+	// LuCI applies on reload.
+	start(a.gatewayLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding (mode=%s)", a.cfg.Mode)
@@ -254,12 +262,53 @@ func (a *Agent) clearPullFailureLocked() {
 func (a *Agent) pullOnce(ctx context.Context) error {
 	pullState := a.store.Pull()
 	since := ""
-	if !pullState.LastPullAt.IsZero() {
+	if !pullState.LastPullAt.IsZero() && !a.grantRefreshDue(time.Now()) {
 		since = pullState.ConfigRevision
 	}
+	return a.pullWith(ctx, since, 20)
+}
+
+// freshPull fetches the current grants without the long-poll revision. The
+// native relay calls it before every lease, like the desktop's
+// ResolveFreshNativeOutboundLeasesAsync.
+func (a *Agent) freshPull(ctx context.Context) error {
+	pullCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return a.pullWith(pullCtx, "", 0)
+}
+
+// grantRefreshDue mirrors the desktop's NeedsUltraPolicyRefresh. Ultra grants
+// live about five minutes but are not part of the stable config revision, so
+// a long poll keeps answering 304 while they expire. Once any ordinary
+// forward's grant is past renew_after (or close to expiry) the next pull is a
+// full one. Native carriers are excluded; the gateway refreshes those itself.
+func (a *Agent) grantRefreshDue(now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, forward := range a.forwards {
+		policy := forward.UltraAccess
+		if policy == nil {
+			return true
+		}
+		expiresAt, err := parseRFC3339(policy.ExpiresAt)
+		if err != nil || !expiresAt.After(now) {
+			return true
+		}
+		if renewAfter, err := parseRFC3339(policy.RenewAfter); err == nil {
+			if !renewAfter.After(now) {
+				return true
+			}
+		} else if !expiresAt.After(now.Add(2 * time.Minute)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {
 	// The Panel caps the long poll at 25s; ask for a little less so the
 	// client-side timeout always fires first.
-	response, err := a.panel.Pull(ctx, since, 20)
+	response, err := a.panel.Pull(ctx, since, waitSeconds)
 	if errors.Is(err, errNotModified) {
 		a.store.UpdatePull(func(state *PullState) {
 			state.LastPullAt = time.Now()
@@ -311,7 +360,12 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 // runtime directly; reconcile decides what that means.
 func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	incoming := map[int]ForwardConfig{}
+	native := map[int]ForwardConfig{}
 	for _, forward := range forwards {
+		if acceptNativeForward(forward) {
+			native[forward.ForwardID] = forward
+			continue
+		}
 		if !acceptForward(forward) {
 			a.log.Debug("policy", "forward %d rejected locally (backend=%s client_mode=%s sidecar=%v aggregation=%v)",
 				forward.ForwardID, forward.BackendMode, forward.ClientMode, forward.SidecarRequired, forward.Aggregation)
@@ -321,14 +375,36 @@ func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	}
 	a.mu.Lock()
 	a.forwards = incoming
+	a.nativeForwards = native
 	a.mu.Unlock()
+}
+
+// acceptNativeForward selects native outbound carriers. The runtime contract
+// (docs/api/native-outbound.md section 6) keeps them off the ordinary path
+// entirely: no listener on listen_port, no ordinary lease, no readiness probe.
+func acceptNativeForward(forward ForwardConfig) bool {
+	if forward.ForwardID <= 0 || !forward.NativeOutboundEnabled {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(forward.ServiceStatus))
+	return status == "" || status == "active"
+}
+
+// config returns a copy of the live configuration; reloadConfig swaps it.
+func (a *Agent) config() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
 }
 
 // acceptForward mirrors the desktop client's UltraForwardPolicy: this runtime
 // speaks the Ultra protocol only, so forwards that need the bond/MPTCP/sidecar
 // data path are declined here rather than silently mis-served.
 func acceptForward(forward ForwardConfig) bool {
-	if forward.ForwardID <= 0 {
+	if forward.ForwardID <= 0 || forward.NativeOutboundEnabled {
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
@@ -441,7 +517,7 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 		a.stopRuntime(state.proc, "replace")
 	}
 
-	proc, err := a.startRuntime(ctx, forward, false, forward.UltraAccess, "", "")
+	proc, err := a.startRuntime(ctx, forward, forward.UltraAccess)
 	if err != nil {
 		a.log.Error("runtime", "forward %d start failed: %v", forward.ForwardID, err)
 		a.markForwardError(forward.ForwardID, "start_failed")
@@ -810,7 +886,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 	if a.cfg.UplinkEnabled {
 		snapshot.Uplinks = a.uplinkViews()
 	}
-	if a.cfg.gatewayActive() {
+	if cfg := a.config(); cfg.GatewayEnabled || cfg.gatewayActive() {
 		snapshot.Gateway = a.gatewayView()
 	}
 	a.mu.Lock()

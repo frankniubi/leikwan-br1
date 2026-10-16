@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,14 +11,14 @@ import (
 func renderConfig(t *testing.T, scope, policy string, bypassCN bool) map[string]any {
 	t.Helper()
 	cfg := defaultConfig()
-	cfg.GatewayRouteScope = scope
-	cfg.GatewayRoutePolicy = policy
 	cfg.GatewayBypassCN = bypassCN
-	agent := &Agent{cfg: cfg, log: newLogger("error")}
-	rendered, err := agent.renderSingBoxConfig(scope, policy)
-	if err != nil {
-		t.Fatalf("render(%s/%s): %v", scope, policy, err)
-	}
+	cfg.GatewayRuleSetDir = t.TempDir()
+	return renderConfigWith(t, cfg, scope, policy)
+}
+
+func renderConfigWith(t *testing.T, cfg Config, scope, policy string) map[string]any {
+	t.Helper()
+	rendered, _ := renderGatewayConfig(cfg, scope, policy)
 	// The config must survive a JSON round trip: it is written to disk and read
 	// by sing-box, so a value that only exists as a Go type is not enough.
 	raw, err := json.Marshal(rendered)
@@ -30,268 +32,322 @@ func renderConfig(t *testing.T, scope, policy string, bypassCN bool) map[string]
 	return decoded
 }
 
-func routeOf(t *testing.T, config map[string]any) map[string]any {
+func section(t *testing.T, config map[string]any, name string) map[string]any {
 	t.Helper()
-	route, ok := config["route"].(map[string]any)
+	value, ok := config[name].(map[string]any)
 	if !ok {
-		t.Fatal("config has no route section")
+		t.Fatalf("config has no %s section", name)
 	}
-	return route
+	return value
 }
 
-// sing-box 1.12 (the version OpenWrt 24.10 ships) removed the per-rule "geoip"
-// field. A config that still uses it fails to load with a FATAL, which would
-// make gateway mode silently unusable on a fresh router.
+func objects(value any) []map[string]any {
+	list, _ := value.([]any)
+	out := []map[string]any{}
+	for _, entry := range list {
+		if object, ok := entry.(map[string]any); ok {
+			out = append(out, object)
+		}
+	}
+	return out
+}
+
+func dnsServer(t *testing.T, config map[string]any, tag string) map[string]any {
+	t.Helper()
+	for _, server := range objects(section(t, config, "dns")["servers"]) {
+		if server["tag"] == tag {
+			return server
+		}
+	}
+	return nil
+}
+
+func ruleIndex(rules []map[string]any, match func(map[string]any) bool) int {
+	for i, rule := range rules {
+		if match(rule) {
+			return i
+		}
+	}
+	return -1
+}
+
+func usesCNRuleSet(rule map[string]any) bool {
+	sets, _ := rule["rule_set"].([]any)
+	for _, tag := range sets {
+		if tag == gatewayCNRuleSet {
+			return true
+		}
+	}
+	return false
+}
+
+var allScopes = []string{"global", "cn_only", "intl_only"}
+var allPolicies = []string{"restricted", "unrestricted"}
+
+// sing-box 1.12 (OpenWrt 24.10) removed the per-rule "geoip" field; a config
+// that still uses it fails to load with a FATAL.
 func TestGatewayConfigAvoidsRemovedGeoIPField(t *testing.T) {
-	for _, scope := range []string{"global", "cn_only", "intl_only"} {
-		config := renderConfig(t, scope, "restricted", true)
-		raw, _ := json.Marshal(config)
+	for _, scope := range allScopes {
+		raw, _ := json.Marshal(renderConfig(t, scope, "restricted", true))
 		if strings.Contains(string(raw), "\"geoip\"") {
 			t.Fatalf("%s: config still uses the removed per-rule geoip field", scope)
-		}
-		ruleSets, ok := routeOf(t, config)["rule_set"].([]any)
-		if !ok || len(ruleSets) == 0 {
-			t.Fatalf("%s: mainland matching must be expressed with rule_set", scope)
-		}
-		tags := map[string]bool{}
-		for _, entry := range ruleSets {
-			if object, ok := entry.(map[string]any); ok {
-				if tag, _ := object["tag"].(string); tag != "" {
-					tags[tag] = true
-				}
-			}
-		}
-		for _, want := range []string{gatewayCNRuleSet, gatewayCNIPRuleSet} {
-			if !tags[want] {
-				t.Fatalf("%s: rule_set %q is missing (tags: %v)", scope, want, tags)
-			}
 		}
 	}
 }
 
 // The scope decides where mainland traffic goes. Getting this backwards would
-// send a cn_only router's domestic traffic through the relay, or an intl_only
-// router's foreign traffic direct — both silent, expensive mistakes.
+// send a cn_only router's foreign traffic through a mainland exit, or an
+// intl_only router's domestic traffic abroad.
 func TestGatewayScopeSemantics(t *testing.T) {
-	cases := []struct {
-		scope     string
-		final     string
-		cnOutbond string
-	}{
+	cases := []struct{ scope, final, mainland string }{
 		{"global", "proxy", "direct"},
 		{"cn_only", "direct", "proxy"},
 		{"intl_only", "proxy", "direct"},
 	}
-	for _, tc := range cases {
-		config := renderConfig(t, tc.scope, "restricted", true)
-		route := routeOf(t, config)
-		if got, _ := route["final"].(string); got != tc.final {
-			t.Fatalf("%s: final outbound = %q, want %q", tc.scope, got, tc.final)
-		}
-		rules, _ := route["rules"].([]any)
-		cnOutbound := ""
-		for _, entry := range rules {
-			object, ok := entry.(map[string]any)
-			if !ok {
-				continue
+	for _, policy := range allPolicies {
+		for _, tc := range cases {
+			route := section(t, renderConfig(t, tc.scope, policy, true), "route")
+			if route["final"] != tc.final {
+				t.Fatalf("%s/%s: final = %v, want %s", tc.scope, policy, route["final"], tc.final)
 			}
-			sets, _ := object["rule_set"].([]any)
-			for _, tag := range sets {
-				if tag == gatewayCNRuleSet {
-					cnOutbound, _ = object["outbound"].(string)
-				}
+			rules := objects(route["rules"])
+			i := ruleIndex(rules, usesCNRuleSet)
+			if i < 0 || rules[i]["outbound"] != tc.mainland {
+				t.Fatalf("%s/%s: mainland rule = %v, want %s", tc.scope, policy, rules, tc.mainland)
 			}
-		}
-		if cnOutbound != tc.cnOutbond {
-			t.Fatalf("%s: mainland rule outbound = %q, want %q", tc.scope, cnOutbound, tc.cnOutbond)
 		}
 	}
 }
 
-// bypass_cn only refines the global scope; it must not change what cn_only and
-// intl_only mean.
 func TestGatewayBypassOnlyAffectsGlobalScope(t *testing.T) {
-	withBypass := routeOf(t, renderConfig(t, "global", "restricted", true))
-	without := routeOf(t, renderConfig(t, "global", "restricted", false))
-	if withBypass["final"] != without["final"] {
-		t.Fatal("bypass_cn must not change the catch-all outbound")
+	without := objects(section(t, renderConfig(t, "global", "unrestricted", false), "route")["rules"])
+	if ruleIndex(without, usesCNRuleSet) >= 0 {
+		t.Fatal("bypass_cn disabled but a mainland rule was still emitted")
 	}
-	countCN := func(route map[string]any) int {
-		rules, _ := route["rules"].([]any)
-		found := 0
-		for _, entry := range rules {
-			object, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			if sets, ok := object["rule_set"].([]any); ok && len(sets) > 0 {
-				found++
-			}
-		}
-		return found
-	}
-	if countCN(withBypass) == 0 {
-		t.Fatal("bypass_cn enabled but no mainland bypass rule was emitted")
-	}
-	if countCN(without) != 0 {
-		t.Fatal("bypass_cn disabled but a mainland bypass rule was still emitted")
-	}
-
-	// Private destinations are never tunnelled, in any scope.
-	for _, scope := range []string{"global", "cn_only", "intl_only"} {
-		rules, _ := routeOf(t, renderConfig(t, scope, "restricted", true))["rules"].([]any)
-		found := false
-		for _, entry := range rules {
-			if object, ok := entry.(map[string]any); ok && object["ip_is_private"] == true {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("%s: private destinations must bypass the relay", scope)
+	for _, scope := range []string{"cn_only", "intl_only"} {
+		rules := objects(section(t, renderConfig(t, scope, "unrestricted", false), "route")["rules"])
+		if ruleIndex(rules, usesCNRuleSet) < 0 {
+			t.Fatalf("%s: bypass_cn=0 must not remove the scope's own mainland rule", scope)
 		}
 	}
 }
 
-// The DNS block must use the modern server form; the legacy string "address"
-// field parses in 1.12 but is removed in 1.14.
-func TestGatewayDNSUsesModernServerForm(t *testing.T) {
-	config := renderConfig(t, "global", "restricted", true)
-	dns, ok := config["dns"].(map[string]any)
-	if !ok {
-		t.Fatal("config has no dns section")
-	}
-	servers, _ := dns["servers"].([]any)
-	if len(servers) < 2 {
-		t.Fatalf("expected a remote and a local resolver, got %d", len(servers))
-	}
-	detours := map[string]bool{}
-	for _, entry := range servers {
-		object, ok := entry.(map[string]any)
-		if !ok {
-			continue
+// Restricted leases reject every port below 1000 at the relay, DoH's 443
+// included. No resolver may detour through the relay, and low ports are
+// routed direct. (MacNativeRuleSetStoreTests.RestrictedDnsDoesNotRequestBlockedLowPortsFromNativeRelay)
+func TestRestrictedDNSNeverUsesTheRelay(t *testing.T) {
+	for _, scope := range allScopes {
+		config := renderConfig(t, scope, "restricted", true)
+		for _, server := range objects(section(t, config, "dns")["servers"]) {
+			if _, detour := server["detour"]; detour {
+				t.Fatalf("%s: restricted resolver %v detours through the relay", scope, server["tag"])
+			}
 		}
-		if _, legacy := object["address"]; legacy {
-			t.Fatal("dns server still uses the legacy \"address\" field")
+		rules := objects(section(t, config, "route")["rules"])
+		low := ruleIndex(rules, func(rule map[string]any) bool {
+			ports, _ := rule["port_range"].([]any)
+			return len(ports) == 1 && ports[0] == gatewayLowPortRange && rule["outbound"] == "direct"
+		})
+		if low < 0 {
+			t.Fatalf("%s: restricted route must keep ports 1-999 direct", scope)
 		}
-		if object["type"] != "udp" || object["server"] == nil {
-			t.Fatalf("dns server is not in the modern form: %v", object)
+		if i := ruleIndex(rules, usesCNRuleSet); i >= 0 && i < low {
+			t.Fatalf("%s: the low-port rule must precede the scope rule", scope)
 		}
-		if detour, _ := object["detour"].(string); detour != "" {
-			detours[detour] = true
-		}
-	}
-	if !detours["proxy"] || !detours["direct"] {
-		t.Fatalf("both a proxied and a direct resolver are required, got %v", detours)
 	}
 }
 
-// The DNS policy has to follow the routing policy. Resolving a mainland name
-// through the relay while routing mainland traffic direct hands the client an
-// address that then takes the other path.
+// The unrestricted route carries protected DoH through the relay; cn_only
+// resolves mainland names through the relay's mainland exit instead.
+func TestUnrestrictedDNSIsProtectedOverTheRelay(t *testing.T) {
+	for _, scope := range []string{"global", "intl_only"} {
+		remote := dnsServer(t, renderConfig(t, scope, "unrestricted", true), "remote")
+		if remote == nil || remote["type"] != "https" || remote["server"] != cloudflareDoHAddress || remote["detour"] != "proxy" {
+			t.Fatalf("%s: remote resolver = %v", scope, remote)
+		}
+	}
+	config := renderConfig(t, "cn_only", "unrestricted", true)
+	if remote := dnsServer(t, config, "remote"); remote == nil || remote["detour"] != nil || remote["server"] != cloudflareDoHAddress {
+		t.Fatalf("cn_only: international names resolve directly abroad, got %v", remote)
+	}
+	china := dnsServer(t, config, "china")
+	if china == nil || china["server"] != aliDoHAddress || china["detour"] != "proxy" {
+		t.Fatalf("cn_only: mainland names must resolve via AliDNS through the relay, got %v", china)
+	}
+	rules := objects(section(t, config, "dns")["rules"])
+	if ruleIndex(rules, func(r map[string]any) bool { return usesCNRuleSet(r) && r["server"] == "china" }) < 0 {
+		t.Fatalf("cn_only: geosite-cn must use the china resolver: %v", rules)
+	}
+}
+
+// Mainland names resolve locally exactly when mainland traffic is direct.
 func TestGatewayDNSPolicyFollowsRoutingPolicy(t *testing.T) {
-	dnsRoutesMainlandLocally := func(config map[string]any) bool {
-		dns, _ := config["dns"].(map[string]any)
-		rules, _ := dns["rules"].([]any)
-		for _, entry := range rules {
-			object, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			if object["server"] == "local" && object["rule_set"] != nil {
-				return true
-			}
-		}
-		return false
-	}
-
 	cases := []struct {
 		scope     string
 		bypassCN  bool
 		wantLocal bool
 	}{
-		{"global", true, true},    // mainland routed direct -> resolve locally
-		{"global", false, false},  // everything proxied -> resolve remotely
-		{"intl_only", true, true}, // mainland routed direct
-		{"cn_only", true, false},  // mainland routed via the relay
+		{"global", true, true},
+		{"global", false, false},
+		{"intl_only", false, true},
+		{"cn_only", true, false},
 	}
 	for _, tc := range cases {
-		config := renderConfig(t, tc.scope, "restricted", tc.bypassCN)
-		if got := dnsRoutesMainlandLocally(config); got != tc.wantLocal {
-			t.Fatalf("%s (bypass_cn=%v): mainland resolved locally = %v, want %v",
-				tc.scope, tc.bypassCN, got, tc.wantLocal)
+		rules := objects(section(t, renderConfig(t, tc.scope, "unrestricted", tc.bypassCN), "dns")["rules"])
+		got := ruleIndex(rules, func(r map[string]any) bool { return usesCNRuleSet(r) && r["server"] == "local" }) >= 0
+		if got != tc.wantLocal {
+			t.Fatalf("%s (bypass_cn=%v): mainland resolved locally = %v, want %v", tc.scope, tc.bypassCN, got, tc.wantLocal)
 		}
 	}
 }
 
-// The deprecated "outbound" DNS matcher is removed in sing-box 1.14.
-func TestGatewayDNSAvoidsDeprecatedOutboundMatcher(t *testing.T) {
-	config := renderConfig(t, "global", "restricted", true)
-	dns, _ := config["dns"].(map[string]any)
-	rules, _ := dns["rules"].([]any)
-	for _, entry := range rules {
-		if object, ok := entry.(map[string]any); ok {
-			if _, deprecated := object["outbound"]; deprecated {
-				t.Fatalf("dns rule still uses the deprecated outbound matcher: %v", object)
+// On the router the system resolver is dnsmasq, whose upstream query is
+// hijacked back into sing-box: a "local"-type resolver would loop.
+func TestGatewayResolversAreExplicitAndModern(t *testing.T) {
+	for _, scope := range allScopes {
+		for _, policy := range allPolicies {
+			config := renderConfig(t, scope, policy, true)
+			dns := section(t, config, "dns")
+			if dns["strategy"] != "ipv4_only" {
+				t.Fatalf("%s/%s: strategy = %v", scope, policy, dns["strategy"])
+			}
+			for _, server := range objects(dns["servers"]) {
+				if _, legacy := server["address"]; legacy {
+					t.Fatal("dns server still uses the legacy \"address\" field")
+				}
+				if server["type"] == "local" {
+					t.Fatalf("%s/%s: a system resolver would recurse through dnsmasq", scope, policy)
+				}
+			}
+			for _, rule := range objects(dns["rules"]) {
+				if _, deprecated := rule["outbound"]; deprecated {
+					t.Fatalf("dns rule uses the deprecated outbound matcher: %v", rule)
+				}
+			}
+			route := section(t, config, "route")
+			if resolver, _ := route["default_domain_resolver"].(string); dnsServer(t, config, resolver) == nil {
+				t.Fatalf("%s/%s: default_domain_resolver %q is not a dns server", scope, policy, resolver)
 			}
 		}
 	}
 }
 
-// sing-box 1.12 requires route.default_domain_resolver; omitting it is
-// deprecated and is removed in 1.14.
-func TestGatewayConfigDeclaresDefaultDomainResolver(t *testing.T) {
-	config := renderConfig(t, "global", "restricted", true)
-	route := routeOf(t, config)
-	resolver, ok := route["default_domain_resolver"]
-	if !ok || resolver == nil || resolver == "" {
-		t.Fatalf("route.default_domain_resolver is not set: %v", route["default_domain_resolver"])
+// DNS from the LAN (and dnsmasq's upstream) must be hijacked before the
+// private-address rule: the upstream is often a LAN-side modem.
+func TestGatewayHijacksDNSBeforePrivateBypass(t *testing.T) {
+	rules := objects(section(t, renderConfig(t, "intl_only", "unrestricted", true), "route")["rules"])
+	hijack := ruleIndex(rules, func(r map[string]any) bool { return r["action"] == "hijack-dns" })
+	private := ruleIndex(rules, func(r map[string]any) bool { return r["ip_is_private"] == true })
+	sniff := ruleIndex(rules, func(r map[string]any) bool { return r["action"] == "sniff" })
+	if sniff != 0 || hijack < 0 || private < 0 || hijack > private {
+		t.Fatalf("rule order sniff=%d hijack=%d private=%d", sniff, hijack, private)
 	}
-	// It must point at a resolver the dns section actually defines, or
-	// sing-box would have nothing to fall back to.
-	dns, _ := config["dns"].(map[string]any)
-	servers, _ := dns["servers"].([]any)
-	known := false
-	for _, entry := range servers {
-		if object, ok := entry.(map[string]any); ok && object["tag"] == resolver {
-			known = true
+}
+
+// Resolve before the SOCKS handoff on unrestricted or split routes, like the
+// desktop; a restricted global route hands the domain to the relay.
+func TestGatewayResolvesBeforeHandoff(t *testing.T) {
+	for _, scope := range allScopes {
+		for _, policy := range allPolicies {
+			rules := objects(section(t, renderConfig(t, scope, policy, true), "route")["rules"])
+			got := ruleIndex(rules, func(r map[string]any) bool { return r["action"] == "resolve" }) >= 0
+			want := policy == "unrestricted" || scope != "global"
+			if got != want {
+				t.Fatalf("%s/%s: resolve action present = %v, want %v", scope, policy, got, want)
+			}
 		}
 	}
-	if !known {
-		t.Fatalf("default_domain_resolver %q does not match any dns server tag", resolver)
+}
+
+// The Panel and the runtime's ingress-zone probe must leave directly: the
+// probe would otherwise report the exit's zone and skew line selection.
+func TestGatewayKeepsControlPlaneAndZoneProbeDirect(t *testing.T) {
+	config := renderConfig(t, "global", "unrestricted", true)
+	want := []string{"v3.leikwanhost.com", "api-leikwanbridge.nbwly.com", "api.bilibili.com"}
+	rules := objects(section(t, config, "route")["rules"])
+	i := ruleIndex(rules, func(r map[string]any) bool { return r["domain"] != nil && r["outbound"] == "direct" })
+	if i < 0 {
+		t.Fatal("no direct rule for the control plane")
+	}
+	raw, _ := json.Marshal(rules[i]["domain"])
+	for _, host := range want {
+		if !strings.Contains(string(raw), "\""+host+"\"") {
+			t.Fatalf("direct hosts %s miss %s", raw, host)
+		}
+	}
+	if resolve := ruleIndex(rules, func(r map[string]any) bool { return r["action"] == "resolve" }); resolve < i {
+		t.Fatal("control-plane bypass must precede the resolve action")
+	}
+	dnsRules := objects(section(t, config, "dns")["rules"])
+	if ruleIndex(dnsRules, func(r map[string]any) bool { return r["domain"] != nil && r["server"] == "local" }) < 0 {
+		t.Fatal("control-plane names must resolve locally")
+	}
+}
+
+func TestGatewayCustomDNSUsesUDPOnTheAllowedPath(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.GatewayRuleSetDir = t.TempDir()
+	cfg.GatewayDNSMode = "custom"
+	cfg.GatewayDNSServers = "8.8.8.8, 9.9.9.9:5353"
+	config := renderConfigWith(t, cfg, "intl_only", "unrestricted")
+	first := dnsServer(t, config, "custom-0")
+	second := dnsServer(t, config, "custom-1")
+	if first == nil || first["type"] != "udp" || first["detour"] != "proxy" || second == nil || second["server_port"] != float64(5353) {
+		t.Fatalf("custom servers = %v %v", first, second)
+	}
+	if section(t, config, "dns")["final"] != "custom-0" {
+		t.Fatal("custom mode must make the first custom server final")
+	}
+	if restricted := dnsServer(t, renderConfigWith(t, cfg, "intl_only", "restricted"), "custom-0"); restricted["detour"] != nil {
+		t.Fatal("restricted custom DNS must not use the relay")
+	}
+	// cn_only keeps its two-resolver design, as on Windows.
+	if dnsServer(t, renderConfigWith(t, cfg, "cn_only", "unrestricted"), "custom-0") != nil {
+		t.Fatal("cn_only must ignore custom servers")
+	}
+}
+
+func TestGatewayPrefersBundledRuleSets(t *testing.T) {
+	cfg := defaultConfig()
+	dir := t.TempDir()
+	cfg.GatewayRuleSetDir = dir
+	if _, source := renderGatewayConfig(cfg, "intl_only", "unrestricted"); source != "remote" {
+		t.Fatalf("empty directory must fall back to remote, got %s", source)
+	}
+	for _, name := range []string{"geoip-cn.srs", "geosite-cn.srs"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("SRS\x01payload"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := renderConfigWith(t, cfg, "intl_only", "unrestricted")
+	for _, set := range objects(section(t, config, "route")["rule_set"]) {
+		if set["type"] != "local" || set["url"] != nil || set["download_detour"] != nil {
+			t.Fatalf("bundled rule-set must be local and never downloaded: %v", set)
+		}
 	}
 }
 
 func TestGatewayConfigBindsTheLocalFacade(t *testing.T) {
-	config := renderConfig(t, "global", "restricted", true)
-	outbounds, _ := config["outbounds"].([]any)
-	socksFound := false
-	for _, entry := range outbounds {
-		object, ok := entry.(map[string]any)
-		if !ok || object["type"] != "socks" {
-			continue
-		}
-		socksFound = true
-		if object["server"] != "127.0.0.1" {
-			t.Fatalf("the SOCKS outbound must stay on loopback, got %v", object["server"])
-		}
-		if int(object["server_port"].(float64)) != gatewaySocksPort {
-			t.Fatalf("SOCKS port = %v, want %d", object["server_port"], gatewaySocksPort)
-		}
+	config := renderConfig(t, "global", "unrestricted", true)
+	outbounds := objects(config["outbounds"])
+	socks := outbounds[ruleIndex(outbounds, func(o map[string]any) bool { return o["type"] == "socks" })]
+	if socks["server"] != "127.0.0.1" || socks["server_port"] != float64(gatewaySocksPort) {
+		t.Fatalf("SOCKS outbound = %v", socks)
 	}
-	if !socksFound {
-		t.Fatal("no SOCKS outbound: LAN traffic would have nowhere to go")
+	if uot, _ := socks["udp_over_tcp"].(map[string]any); uot["enabled"] != false {
+		t.Fatal("native UDP must stay real UDP")
 	}
-
-	inbounds, _ := config["inbounds"].([]any)
+	inbounds := objects(config["inbounds"])
 	if len(inbounds) != 1 {
 		t.Fatalf("expected exactly one inbound, got %d", len(inbounds))
 	}
-	tun, _ := inbounds[0].(map[string]any)
-	if tun["type"] != "tun" || tun["auto_route"] != true {
-		t.Fatalf("the inbound must be an auto-routing tun: %v", tun)
+	tun := inbounds[0]
+	if tun["type"] != "tun" || tun["auto_route"] != true || tun["strict_route"] == true {
+		t.Fatalf("the inbound must be a non-strict auto-routing tun: %v", tun)
 	}
-	if tun["strict_route"] == true {
-		t.Fatal("strict_route would break clients that pin their own routes")
+	// The relay bypass rules only work if they sit in front of sing-box's.
+	if index, _ := tun["iproute2_rule_index"].(float64); int(index) <= gatewayBypassRulePref {
+		t.Fatalf("iproute2_rule_index %v must exceed the bypass preference %d", tun["iproute2_rule_index"], gatewayBypassRulePref)
 	}
 }
 

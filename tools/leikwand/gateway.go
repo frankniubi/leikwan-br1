@@ -10,51 +10,93 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 // Gateway mode turns the router into a transparent egress for the whole LAN.
 //
 // Data path: LAN client -> router (default gateway) -> sing-box TUN inbound
-// -> SOCKS5 facade exposed by a native ultra-client -> Panel-selected relay.
+// -> SOCKS5 facade of a native ultra-client (the relay) -> Panel-selected
+// Ultra line -> the line's exit.
 //
-// sing-box owns auto_route (its own nftables/route installation), so this
-// package never writes firewall rules by hand. That keeps one authority for
-// routing and avoids the classic double-redirect mistakes.
-const (
-	gatewayTunName     = "lkwtun0"
-	gatewaySocksPort   = 2080
-	gatewayInterface   = "lkwgw0"
-	gatewayConfigName  = "sing-box.json"
-	gatewayCNRuleSet   = "geosite-cn"
-	gatewayCNIPRuleSet = "geoip-cn"
-)
+// Two supervised processes, two independent lifecycles:
+//   - the relay holds the native lease batch. A renewal is delivered to the
+//     running relay over its control socket; the relay is only restarted when
+//     it or its control channel is gone, or the plan changes.
+//   - sing-box owns auto_route (its own ip rules and routes) and is only
+//     restarted when its generated configuration changes, never on a lease
+//     rotation, so LAN sessions survive renewals.
+//
+// The relay's own connections are kept out of the TUN by bypassRoutes.
 
 type GatewayView struct {
-	Enabled     bool   `json:"enabled"`
-	Running     bool   `json:"running"`
-	CarrierID   int    `json:"carrier_forward_id"`
-	RouteScope  string `json:"route_scope"`
-	RoutePolicy string `json:"route_policy"`
-	TunAddress  string `json:"tun_address,omitempty"`
-	SocksPort   int    `json:"socks_port"`
-	BypassCN    bool   `json:"bypass_cn"`
-	LastError   string `json:"last_error,omitempty"`
-	SingBoxVer  string `json:"sing_box_version,omitempty"`
+	Enabled       bool                 `json:"enabled"`
+	Active        bool                 `json:"active"`
+	Running       bool                 `json:"running"`
+	RelayRunning  bool                 `json:"relay_running"`
+	SingBoxRun    bool                 `json:"singbox_running"`
+	CarrierID     int                  `json:"carrier_forward_id"`
+	Direction     string               `json:"direction,omitempty"`
+	RouteScope    string               `json:"route_scope"`
+	RoutePolicy   string               `json:"route_policy"`
+	WantScope     string               `json:"configured_route_scope"`
+	WantPolicy    string               `json:"configured_route_policy"`
+	Unrestricted  bool                 `json:"unrestricted_allowed"`
+	TunAddress    string               `json:"tun_address,omitempty"`
+	SocksPort     int                  `json:"socks_port"`
+	BypassCN      bool                 `json:"bypass_cn"`
+	DNSMode       string               `json:"dns_mode"`
+	RuleSets      string               `json:"rule_sets,omitempty"`
+	Candidates    int                  `json:"candidates"`
+	LeaseExpiry   string               `json:"lease_expires_at,omitempty"`
+	LeaseError    string               `json:"lease_error,omitempty"`
+	BypassRules   int                  `json:"bypass_rules"`
+	BypassError   string               `json:"bypass_error,omitempty"`
+	Notes         []string             `json:"notes,omitempty"`
+	LastError     string               `json:"last_error,omitempty"`
+	Carriers      []GatewayCarrierView `json:"carriers"`
+	NativeGranted bool                 `json:"native_granted"`
+}
+
+type GatewayCarrierView struct {
+	ForwardID         int      `json:"forward_id"`
+	Direction         string   `json:"direction"`
+	RouteScopes       []string `json:"route_scopes"`
+	DefaultRouteScope string   `json:"default_route_scope"`
+	UnrestrictedOK    bool     `json:"unrestricted_allowed"`
+	Default           bool     `json:"default"`
 }
 
 type gatewayManager struct {
 	agent *Agent
 
-	mu        sync.Mutex
-	proc      *runtimeProcess
-	carrier   ForwardConfig
-	leaseOK   bool
-	lastErr   string
-	configGen string
-	startedAt time.Time
-	status    string
+	mu   sync.Mutex
+	plan gatewayPlan
+
+	relay          *runtimeProcess
+	relayKey       string
+	relayStoppedAt time.Time
+	leaseExpiry    time.Time
+	lastLeaseAt    time.Time
+	leaseFailures  int
+	leaseErr       string
+	candidates     int
+
+	singbox          *runtimeProcess
+	singboxGen       string
+	singboxStoppedAt time.Time
+	ruleSetSource    string
+
+	// usageMu serialises relay accounting between the heartbeat and a stop.
+	usageMu       sync.Mutex
+	relayCounters counterPair
+
+	lastErr string
 }
+
+// gatewayRelayOwner is the bypassRoutes owner key of the native relay.
+const gatewayRelayOwner = "gateway"
 
 func (a *Agent) triggerGatewayReconcile() {
 	select {
@@ -63,463 +105,527 @@ func (a *Agent) triggerGatewayReconcile() {
 	}
 }
 
+// gatewayLoop always runs so that enabling the gateway from LuCI takes effect
+// on "reload" without a service restart; it idles while the mode is off.
 func (a *Agent) gatewayLoop(ctx context.Context) {
 	manager := &gatewayManager{agent: a}
+	a.mu.Lock()
 	a.gateway = manager
-	if !fileExists(a.cfg.GatewaySingBoxBin) {
-		a.log.Warn("gateway", "sing-box is not installed at %s; gateway mode stays idle", a.cfg.GatewaySingBoxBin)
-	}
+	a.mu.Unlock()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	defer manager.stop("shutdown")
+	defer manager.stopAll("shutdown")
 	for {
+		manager.reconcile(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-a.gatewaySignal:
 		case <-ticker.C:
 		}
-		if err := manager.reconcile(ctx); err != nil {
-			a.log.Warn("gateway", "reconcile failed: %v", err)
-		}
 	}
 }
 
-// carrierForward picks the forward that carries LAN egress. An explicit
-// gateway_forward_id wins; otherwise the Panel's own default is used, and only
-// then the first carrier offered by the capability.
-func (m *gatewayManager) carrierForward() (ForwardConfig, string, string, error) {
+func (m *gatewayManager) setErr(format string, args ...any) {
+	message := ""
+	if format != "" {
+		message = redactSecrets(fmt.Sprintf(format, args...))
+	}
+	m.mu.Lock()
+	changed := m.lastErr != message
+	m.lastErr = message
+	m.mu.Unlock()
+	if changed && message != "" {
+		m.agent.log.Warn("gateway", "%s", message)
+	}
+}
+
+func (m *gatewayManager) reconcile(ctx context.Context) {
 	a := m.agent
-	a.mu.Lock()
-	capability := a.nativeCap
-	forwards := make(map[int]ForwardConfig, len(a.forwards))
-	for id, forward := range a.forwards {
-		forwards[id] = forward
+	cfg := a.config()
+	if ctx.Err() != nil {
+		return
 	}
-	a.mu.Unlock()
-
-	if capability == nil || !capability.Enabled {
-		return ForwardConfig{}, "", "", errors.New("panel has not granted native outbound for this device")
+	if !cfg.gatewayActive() {
+		m.stopAll("disabled")
+		m.setErr("")
+		return
 	}
-	wantedID := a.cfg.GatewayForwardID
-	if wantedID <= 0 && capability.DefaultForwardID != nil {
-		wantedID = *capability.DefaultForwardID
-	}
-	carrier, ok := forwards[wantedID]
-	if !ok {
-		if len(capability.ForwardIDs) == 0 {
-			return ForwardConfig{}, "", "", errors.New("no native outbound carrier assigned")
-		}
-		wantedID = capability.ForwardIDs[0]
-		carrier, ok = forwards[wantedID]
-		if !ok {
-			return ForwardConfig{}, "", "", errors.New("assigned native carrier is not in the forward list")
-		}
-	}
-	scope := a.cfg.GatewayRouteScope
-	policy := a.cfg.GatewayRoutePolicy
-	for _, candidate := range capability.Forwards {
-		if candidate.ForwardID != wantedID {
-			continue
-		}
-		if !containsString(candidate.RouteScopes, scope) && len(candidate.RouteScopes) > 0 {
-			scope = candidate.DefaultRouteScope
-		}
-		if policy == "unrestricted" && !candidate.UnrestrictedOK {
-			policy = "restricted"
-		}
-	}
-	return carrier, scope, policy, nil
-}
-
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-// scopeDigestFor builds the digest the Panel validates for a native lease.
-// Restricted scopes accept both digest versions for backwards compatibility;
-// unrestricted only accepts v2.
-func scopeDigestFor(carrier ForwardConfig, transport, scope, policy string) string {
-	direction := strings.ToLower(strings.TrimSpace(carrier.NativeDirection))
-	// The Panel accepts the v1 digest only for restricted scopes; v2 is valid
-	// for both, so it is always the safe choice for a new client.
-	return nativeScopeDigestV2(carrier.ForwardID, direction, transport, scope, normalizeRoutePolicy(policy))
-}
-
-func (m *gatewayManager) reconcile(ctx context.Context) error {
-	a := m.agent
 	if !a.enrolled() {
-		return nil
+		m.stopAll("not_enrolled")
+		m.setErr("")
+		return
 	}
-	carrier, scope, policy, err := m.carrierForward()
+	if !fileExists(cfg.GatewaySingBoxBin) {
+		m.setErr("sing-box is not installed at %s (opkg install sing-box kmod-tun)", cfg.GatewaySingBoxBin)
+		m.stopAll("singbox_missing")
+		return
+	}
+	a.mu.Lock()
+	pulled := !a.lastPullAt.IsZero()
+	a.mu.Unlock()
+	if !pulled {
+		// Not a fault: the capability arrives with the first config pull.
+		m.mu.Lock()
+		m.lastErr = "waiting for the first panel config pull"
+		m.mu.Unlock()
+		return
+	}
+	plan, err := a.gatewayPlan()
 	if err != nil {
+		// A carrier the Panel no longer grants is a revocation: stop and let
+		// the LAN fall back to ordinary routing rather than black-holing it.
+		// The reason is recorded first so status never shows a silent stop.
+		m.setErr("%v", err)
+		m.stopAll("no_carrier")
+		return
+	}
+	m.mu.Lock()
+	planChanged := m.relayKey != "" && m.relayKey != plan.key()
+	m.plan = plan
+	m.mu.Unlock()
+	if planChanged {
+		a.log.Info("gateway", "plan changed to carrier=%d scope=%s policy=%s; restarting", plan.Carrier.ForwardID, plan.Scope, plan.Policy)
+		m.stopAll("plan_changed")
+		// An operator-driven change is not a crash; no restart cooldown.
 		m.mu.Lock()
-		m.lastErr = err.Error()
-		m.carrier = ForwardConfig{}
+		m.relayStoppedAt = time.Time{}
+		m.singboxStoppedAt = time.Time{}
 		m.mu.Unlock()
-		if m.running() {
-			m.stop("no_carrier")
+	}
+
+	if m.relayDead() {
+		m.stopRelay("relay_exited")
+	}
+	if m.leaseDue(time.Now(), cfg) {
+		if err := m.renewLease(ctx, plan); err != nil {
+			m.mu.Lock()
+			m.leaseFailures++
+			m.leaseErr = redactSecrets(err.Error())
+			m.mu.Unlock()
+			m.setErr("%v", err)
 		}
-		return nil
 	}
-	if !fileExists(a.cfg.GatewaySingBoxBin) {
-		return errors.New("sing-box is not installed")
+	if !m.leaseValid(time.Now()) {
+		// No usable lease: the relay cannot carry anything. Taking sing-box
+		// down lets the LAN keep ordinary connectivity while the reason is
+		// shown in LuCI.
+		if m.singboxRunning() {
+			a.log.Warn("gateway", "native lease is not valid; stopping LAN capture until it recovers")
+		}
+		m.stopSingBox("lease_invalid")
+		a.bypass.deactivate()
+		return
 	}
-
-	// 1. Ensure the native runtime is up and holds a lease.
-	if err := m.ensureNativeRuntime(ctx, carrier, scope, policy); err != nil {
-		m.mu.Lock()
-		m.lastErr = err.Error()
-		m.mu.Unlock()
-		return err
+	if err := m.ensureSingBox(ctx, cfg, plan); err != nil {
+		m.setErr("%v", err)
+		return
 	}
-
-	// 2. Ensure sing-box is up with a config matching the current scope.
-	return m.ensureSingBox(ctx, carrier, scope, policy)
+	m.setErr("")
 }
 
-func (m *gatewayManager) running() bool {
+func (m *gatewayManager) relayDead() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.proc != nil && m.proc.alive()
+	return m.relay != nil && !m.relay.alive()
 }
 
-func (m *gatewayManager) ensureNativeRuntime(ctx context.Context, carrier ForwardConfig, scope, policy string) error {
+func (m *gatewayManager) singboxRunning() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.singbox != nil && m.singbox.alive()
+}
+
+func (m *gatewayManager) leaseValid(now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.relay != nil && m.relay.alive() && !m.leaseExpiry.IsZero() && now.Before(m.leaseExpiry)
+}
+
+func (m *gatewayManager) leaseDue(now time.Time, cfg Config) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.relay == nil || m.leaseExpiry.IsZero() {
+		if m.leaseFailures > 0 {
+			return now.Sub(m.lastLeaseAt) >= time.Duration(clampInt(m.leaseFailures*5, 5, 60))*time.Second
+		}
+		// A relay that just died gets the normal restart cooldown.
+		return m.relayStoppedAt.IsZero() || now.Sub(m.relayStoppedAt) >= time.Duration(clampInt(cfg.RestartCooldownSecs, 5, 60))*time.Second
+	}
+	if m.leaseFailures > 0 && now.Sub(m.lastLeaseAt) < time.Duration(clampInt(m.leaseFailures*5, 5, 60))*time.Second {
+		return false
+	}
+	return now.Add(time.Duration(cfg.LeaseRenewLeadSecs) * time.Second).After(m.leaseExpiry)
+}
+
+// renewLease mints a native batch from a freshly pulled grant (the session
+// ticket rotates independently of the stable config revision, so the desktop
+// does the same), installs the bypass set, then delivers it to the relay,
+// starting the relay first when needed.
+func (m *gatewayManager) renewLease(ctx context.Context, plan gatewayPlan) error {
 	a := m.agent
 	m.mu.Lock()
-	sameCarrier := m.carrier.ForwardID == carrier.ForwardID
-	m.carrier = carrier
-	proc := m.proc
-	leaseOK := m.leaseOK
+	m.lastLeaseAt = time.Now()
 	m.mu.Unlock()
 
-	if sameCarrier && proc != nil && proc.alive() && leaseOK {
-		return nil
+	if err := a.freshPull(ctx); err != nil {
+		return fmt.Errorf("refresh native grant: %w", err)
 	}
-	if proc != nil && (!sameCarrier || !proc.alive()) {
-		m.stop("carrier_changed")
-	}
-
-	// The native facade listens on a loopback port, so it needs a synthetic
-	// forward descriptor rather than a LAN listen port.
-	forward := ForwardConfig{
-		ForwardID:   carrier.ForwardID,
-		ListenPort:  gatewaySocksPort,
-		Target:      "",
-		Transport:   "tcp+udp",
-		BackendMode: "ultra",
-	}
-	paths := pathsForForward(a.cfg.RunDir, carrier.ForwardID)
-	cleanupRuntimeDir(paths)
-	runtimeCfg := buildNativeRuntimeConfig(a.cfg, forward, paths, &UltraPolicy{}, scope, policy)
-	if err := writeRuntimeConfig(paths, runtimeCfg); err != nil {
-		return err
-	}
-	proc, err := m.spawn(paths)
+	fresh, err := a.gatewayPlan()
 	if err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.proc = proc
-	m.leaseOK = false
-	m.startedAt = time.Now()
-	m.lastErr = ""
-	m.mu.Unlock()
-	a.log.Info("gateway", "native egress runtime started (forward=%d socks=127.0.0.1:%d scope=%s policy=%s)",
-		carrier.ForwardID, gatewaySocksPort, scope, policy)
-
-	// Order matters: the runtime blocks in WaitValid() until a lease exists,
-	// and only then does it expose the SOCKS5 facade. Waiting for the port
-	// first would deadlock.
-	if err := waitForControlSocket(ctx, paths.controlSocket, 20*time.Second); err != nil {
-		m.stop("readiness_failed")
-		return err
+	if fresh.key() != plan.key() {
+		// The next reconcile restarts with the new plan.
+		return errors.New("native plan changed during renewal")
+	}
+	plan = fresh
+	if failure := validatePolicy(plan.Carrier.UltraAccess, plan.Carrier, time.Now()); failure != "" {
+		switch failure {
+		case "service_state", "quota", "target_digest_mismatch", "forward_id", "protocol":
+			m.stopAll("policy_" + failure)
+		}
+		return fmt.Errorf("native carrier #%d grant unusable: %s", plan.Carrier.ForwardID, failure)
 	}
 
-	if err := m.acquireNativeLease(ctx, carrier, scope, policy, paths); err != nil {
+	frames, bypass, err := a.requestNativeLeases(ctx, plan)
+	if err != nil {
 		return err
 	}
-	if err := waitForListenPort(ctx, gatewaySocksPort, 20*time.Second); err != nil {
-		m.stop("socks_not_ready")
-		return err
+	a.bypass.set(gatewayRelayOwner, bypass)
+	if err := a.bypass.sync(); err != nil {
+		a.log.Warn("gateway", "relay bypass rules incomplete: %v", err)
 	}
+
 	m.mu.Lock()
-	m.leaseOK = true
+	relay := m.relay
 	m.mu.Unlock()
+	startedHere := relay == nil || !relay.alive()
+	if startedHere {
+		relay, err = m.startRelay(ctx, plan, frames[0])
+		if err != nil {
+			return err
+		}
+	}
+	control := ultraControl{socketPath: relay.paths.controlSocket}
+	batchCtx, cancel := context.WithTimeout(ctx, leaseBatchTimeout)
+	_, err = control.sendLeaseBatch(batchCtx, frames)
+	cancel()
+	if err != nil {
+		if startedHere {
+			m.stopRelay("lease_rejected")
+		}
+		return fmt.Errorf("native relay rejected the lease batch: %v", err)
+	}
+	if startedHere {
+		// The relay blocks in WaitValid() until a lease exists and only then
+		// opens the SOCKS5 facade, so the port is checked after delivery.
+		if err := waitForListenPort(ctx, gatewaySocksPort, 20*time.Second); err != nil {
+			m.stopRelay("socks_not_ready")
+			return err
+		}
+	}
+	expiry := earliestLeaseExpiry(frames)
+	m.mu.Lock()
+	m.leaseExpiry = expiry
+	m.leaseFailures = 0
+	m.leaseErr = ""
+	m.candidates = len(frames)
+	m.mu.Unlock()
+	a.log.Info("gateway", "native lease installed (carrier=%d candidates=%d scope=%s policy=%s expires=%s)",
+		plan.Carrier.ForwardID, len(frames), plan.Scope, plan.Policy, formatRFC3339(expiry))
 	return nil
 }
 
-func (m *gatewayManager) spawn(paths runtimePaths) (*runtimeProcess, error) {
+func gatewayRelayPaths(runDir string) runtimePaths {
+	dir := filepath.Join(runDir, "gateway", "relay")
+	return runtimePaths{
+		dir:           dir,
+		configPath:    filepath.Join(dir, "runtime.json"),
+		controlSocket: filepath.Join(dir, "control.sock"),
+		statusPath:    filepath.Join(dir, "status.json"),
+	}
+}
+
+func (m *gatewayManager) startRelay(ctx context.Context, plan gatewayPlan, first LeaseFrame) (*runtimeProcess, error) {
 	a := m.agent
-	cmd := exec.Command(a.cfg.RuntimeBin, "--config", paths.configPath)
+	cfg := a.config()
+	if !fileExists(cfg.RuntimeBin) {
+		return nil, fmt.Errorf("ultra runtime %s is not installed", cfg.RuntimeBin)
+	}
+	if err := ensurePrivateDir(filepath.Join(cfg.RunDir, "gateway")); err != nil {
+		return nil, err
+	}
+	paths := gatewayRelayPaths(cfg.RunDir)
+	cleanupRuntimeDir(paths)
+	runtime := buildNativeRuntimeConfig(cfg, plan.Carrier.ForwardID, paths, first.PolicyGeneration, first.TargetDigest, plan.Policy)
+	if err := writeRuntimeConfig(paths, runtime); err != nil {
+		return nil, err
+	}
+	if kind := portOwnerKind(gatewaySocksPort); kind == "foreign" {
+		return nil, fmt.Errorf("127.0.0.1:%d is held by another program; the native relay cannot start", gatewaySocksPort)
+	} else if kind == "managed" {
+		_ = reclaimManagedPort(gatewaySocksPort)
+		time.Sleep(500 * time.Millisecond)
+	}
+	cmd := exec.Command(cfg.RuntimeBin, "--config", paths.configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stdout
+	cmd.Env = append(os.Environ(), "LEIKWAN_OPENWRT_FORWARD_ID="+itoa(plan.Carrier.ForwardID))
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start native runtime: %w", err)
+		return nil, fmt.Errorf("start native relay: %w", err)
 	}
-	proc := &runtimeProcess{forwardID: a.cfg.GatewayForwardID, native: true, paths: paths, cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
-	go func() { _ = cmd.Wait() }()
+	proc := &runtimeProcess{forwardID: plan.Carrier.ForwardID, native: true, paths: paths, cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
+	go watchGatewayProcess(a, proc, "native relay")
+	m.mu.Lock()
+	m.relay = proc
+	m.relayKey = plan.key()
+	m.mu.Unlock()
+	a.log.Info("gateway", "native relay started pid=%d (carrier=%d socks=127.0.0.1:%d)", proc.pid, plan.Carrier.ForwardID, gatewaySocksPort)
+	if err := waitForControlSocket(ctx, paths.controlSocket, 20*time.Second); err != nil {
+		m.stopRelay("readiness_failed")
+		return nil, err
+	}
 	return proc, nil
 }
 
-func (m *gatewayManager) acquireNativeLease(ctx context.Context, carrier ForwardConfig, scope, policy string, paths runtimePaths) error {
-	a := m.agent
-	digest := scopeDigestFor(carrier, "tcp+udp", scope, policy)
-	request := LeaseRequest{
-		DeviceID: a.deviceID,
-		Forwards: []LeaseRequestForward{{
-			Purpose:       "native_outbound",
-			ForwardID:     carrier.ForwardID,
-			TargetDigest:  digest,
-			Transport:     "tcp+udp",
-			RouteScope:    scope,
-			RoutePolicy:   normalizeRoutePolicy(policy),
-			SelectionMode: "auto",
-			MaxCandidates: a.cfg.MaxCandidates,
-		}},
+func watchGatewayProcess(a *Agent, proc *runtimeProcess, label string) {
+	err := proc.cmd.Wait()
+	proc.mu.Lock()
+	proc.exitSeen = true
+	intentional := proc.stopping
+	proc.stoppedAt = time.Now()
+	if err != nil && !intentional {
+		proc.failures++
+		proc.lastErr = err.Error()
 	}
-	leaseCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	response, err := a.panel.Lease(leaseCtx, request)
-	cancel()
-	if err != nil {
-		return err
-	}
-	a.noteUnsealFailures("gateway", carrier.ForwardID, response)
-	if !response.OK || len(response.Leases) == 0 {
-		return fmt.Errorf("native lease rejected: %s", firstNonEmpty(response.Error, "no_leases"))
-	}
-	control := ultraControl{socketPath: paths.controlSocket}
-	if err := waitForControlSocket(ctx, paths.controlSocket, 15*time.Second); err != nil {
-		return err
-	}
-	batchCtx, batchCancel := context.WithTimeout(ctx, leaseBatchTimeout)
-	defer batchCancel()
-	if _, err := control.sendLeaseBatch(batchCtx, response.Leases); err != nil {
-		return fmt.Errorf("native lease delivery: %w", err)
-	}
-	a.log.Info("gateway", "native lease installed (%d candidates)", len(response.Leases))
-	return nil
-}
-
-func (m *gatewayManager) stop(reason string) {
-	m.mu.Lock()
-	proc := m.proc
-	m.proc = nil
-	m.leaseOK = false
-	m.mu.Unlock()
-	if proc != nil {
-		m.agent.stopRuntime(proc, "gateway_"+reason)
+	proc.mu.Unlock()
+	if !intentional {
+		a.log.Warn("gateway", "%s exited unexpectedly: %v", label, err)
+		a.triggerGatewayReconcile()
 	}
 }
 
-// ensureSingBox renders and (re)starts the LAN-facing proxy when its generated
-// configuration changes. The config file lives in a 0700 directory because it
-// carries the loopback SOCKS port and the DNS policy, not because it holds a
-// credential: the credential stays inside ultra-client.
-func (m *gatewayManager) ensureSingBox(ctx context.Context, carrier ForwardConfig, scope, policy string) error {
+// ensureSingBox renders the configuration and (re)starts sing-box only when
+// it changed or the process is gone. The relay bypass rules are activated
+// before sing-box installs its routes.
+func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan) error {
 	a := m.agent
-	configPath := filepath.Join(a.cfg.RunDir, "gateway", gatewayConfigName)
-	rendered, err := a.renderSingBoxConfig(scope, policy)
-	if err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(rendered)
+	rendered, source := renderGatewayConfig(cfg, plan.Scope, plan.Policy)
+	encoded, err := json.MarshalIndent(rendered, "", "  ")
 	if err != nil {
 		return err
 	}
 	generation := sha256Hex(string(encoded))
 
 	m.mu.Lock()
-	unchanged := m.configGen == generation && m.status == "running"
+	running := m.singbox != nil && m.singbox.alive()
+	unchanged := running && m.singboxGen == generation
+	stoppedAt := m.singboxStoppedAt
+	if m.singbox != nil && !running {
+		// It died on its own: honour the cooldown instead of a crash loop.
+		m.singbox.mu.Lock()
+		if m.singbox.stoppedAt.After(stoppedAt) {
+			stoppedAt = m.singbox.stoppedAt
+		}
+		m.singbox.mu.Unlock()
+	}
+	m.ruleSetSource = source
 	m.mu.Unlock()
 	if unchanged {
+		return a.bypass.sync()
+	}
+	if !running && !stoppedAt.IsZero() && time.Since(stoppedAt) < time.Duration(clampInt(cfg.RestartCooldownSecs, 5, 60))*time.Second {
 		return nil
 	}
+
+	configPath := filepath.Join(cfg.RunDir, "gateway", gatewayConfigName)
 	if err := ensurePrivateDir(filepath.Dir(configPath)); err != nil {
 		return err
 	}
 	if err := writeFileAtomic(configPath, encoded, 0o600); err != nil {
 		return err
 	}
-
-	if out, err := runCommand(5*time.Second, a.cfg.GatewaySingBoxBin, "check", "-c", configPath); err != nil {
-		return fmt.Errorf("sing-box config rejected: %v %s", err, strings.TrimSpace(out))
+	if out, err := runCommand(10*time.Second, cfg.GatewaySingBoxBin, "check", "-c", configPath); err != nil {
+		return fmt.Errorf("sing-box rejected the gateway configuration: %v %s", err, strings.TrimSpace(out))
 	}
 
-	m.stop("config_changed")
-	cmd := exec.Command(a.cfg.GatewaySingBoxBin, "run", "-c", configPath)
+	m.stopSingBox("config_changed")
+	if err := a.bypass.activate(); err != nil {
+		a.log.Warn("gateway", "relay bypass rules incomplete: %v", err)
+	}
+	cmd := exec.Command(cfg.GatewaySingBoxBin, "run", "-c", configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stdout
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("start sing-box: %w", err)
 	}
-	go func() { _ = cmd.Wait() }()
+	proc := &runtimeProcess{paths: runtimePaths{dir: filepath.Dir(configPath)}, cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
+	go watchGatewayProcess(a, proc, "sing-box")
 	m.mu.Lock()
-	m.proc = &runtimeProcess{native: true, paths: runtimePaths{dir: filepath.Dir(configPath)}, cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
-	m.configGen = generation
-	m.status = "running"
-	m.startedAt = time.Now()
-	m.lastErr = ""
+	m.singbox = proc
+	m.singboxGen = generation
 	m.mu.Unlock()
-	a.log.Info("gateway", "sing-box started (scope=%s policy=%s)", scope, policy)
+	a.log.Info("gateway", "sing-box started pid=%d (scope=%s policy=%s dns=%s rule_sets=%s)",
+		proc.pid, plan.Scope, plan.Policy, firstNonEmpty(cfg.GatewayDNSMode, "auto"), source)
 	return nil
 }
 
-// renderSingBoxConfig builds the LAN-facing proxy configuration. Route rules
-// implement the Panel's scope: cn_only sends only mainland destinations to the
-// relay, intl_only sends everything except mainland, global sends everything.
-func (a *Agent) renderSingBoxConfig(scope, policy string) (map[string]any, error) {
-	dnsServers := splitList(a.cfg.GatewayDNSServers)
-	if len(dnsServers) == 0 {
-		dnsServers = []string{"1.1.1.1"}
+func stopGatewayProcess(proc *runtimeProcess, label string, log *Logger) {
+	if proc == nil {
+		return
 	}
-	remoteDNS := []map[string]any{}
-	for _, server := range dnsServers {
-		address := server
-		if !strings.Contains(address, ":") {
-			address = address + ":53"
+	proc.mu.Lock()
+	if proc.cmd == nil || proc.cmd.Process == nil || proc.exitSeen {
+		proc.stopping = true
+		proc.mu.Unlock()
+		return
+	}
+	proc.stopping = true
+	cmd := proc.cmd
+	proc.mu.Unlock()
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		proc.mu.Lock()
+		exited := proc.exitSeen
+		proc.mu.Unlock()
+		if exited {
+			return
 		}
-		// Modern DNS server form. The legacy string "address" field still
-		// parses in 1.12 but is already scheduled for removal in 1.14.
-		host, port := splitHostPortDefault(address, 53)
-		remoteDNS = append(remoteDNS,
-			map[string]any{"type": "udp", "tag": "remote", "server": host, "server_port": port, "detour": "proxy"},
-			map[string]any{"type": "udp", "tag": "local", "server": host, "server_port": port, "detour": "direct"},
-		)
-		break
+		time.Sleep(100 * time.Millisecond)
 	}
+	log.Warn("gateway", "%s ignored SIGTERM, sending SIGKILL", label)
+	_ = cmd.Process.Kill()
+}
 
-	// The mainland bypass has to be expressed with rule_set only. The
-	// per-rule "geoip" field this used to rely on was removed in sing-box
-	// 1.12, which OpenWrt 24.10 ships, and a config that uses it makes the
-	// gateway fail to start with a FATAL at load time.
-	routeRuleSets := []map[string]any{
-		{
-			"type": "remote", "tag": gatewayCNRuleSet, "format": "binary",
-			"url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-		},
-		{
-			"type": "remote", "tag": gatewayCNIPRuleSet, "format": "binary",
-			"url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-		},
+func (m *gatewayManager) stopSingBox(reason string) {
+	m.mu.Lock()
+	proc := m.singbox
+	m.singbox = nil
+	m.singboxGen = ""
+	if proc != nil {
+		m.singboxStoppedAt = time.Now()
 	}
-	cnMatch := map[string]any{"rule_set": []string{gatewayCNRuleSet, gatewayCNIPRuleSet}}
+	m.mu.Unlock()
+	if proc != nil {
+		m.agent.log.Info("gateway", "stopping sing-box (%s)", reason)
+		stopGatewayProcess(proc, "sing-box", m.agent.log)
+	}
+}
 
-	// Private destinations are never worth tunnelling, in any scope.
-	routeRules := []map[string]any{
-		{"ip_is_private": true, "outbound": "direct"},
+func (m *gatewayManager) stopRelay(reason string) {
+	// Bill what the relay carried before its counters disappear with it.
+	m.collectRelayUsage()
+	m.mu.Lock()
+	proc := m.relay
+	m.relay = nil
+	m.relayKey = ""
+	m.leaseExpiry = time.Time{}
+	m.candidates = 0
+	if proc != nil {
+		m.relayStoppedAt = time.Now()
 	}
-	// Mainland domains are resolved locally exactly when mainland traffic is
-	// routed direct. Matching DNS policy to routing policy is what makes a
-	// split tunnel actually split: resolving a mainland name through the
-	// relay would hand back an address that then routes the wrong way.
-	mainlandResolvedLocally := scope == "intl_only" || (scope != "cn_only" && a.cfg.GatewayBypassCN)
-	dnsRules := []map[string]any{}
-	if mainlandResolvedLocally {
-		dnsRules = append(dnsRules, map[string]any{
-			"action":   "route",
-			"rule_set": []string{gatewayCNRuleSet},
-			"server":   "local",
-		})
+	m.mu.Unlock()
+	m.agent.bypass.remove(gatewayRelayOwner)
+	if proc != nil {
+		m.agent.log.Info("gateway", "stopping native relay (%s)", reason)
+		stopGatewayProcess(proc, "native relay", m.agent.log)
+		cleanupRuntimeDir(proc.paths)
 	}
+	// A new relay counts from zero again.
+	m.usageMu.Lock()
+	m.relayCounters = counterPair{}
+	m.usageMu.Unlock()
+}
 
-	// scope decides where mainland traffic goes; bypass_cn only refines the
-	// catch-all "global" scope. Getting this backwards would silently send an
-	// intl_only router's domestic traffic through the relay.
-	finalOutbound := "proxy"
-	switch scope {
-	case "cn_only":
-		// Only mainland destinations go through the relay.
-		cn := map[string]any{"outbound": "proxy"}
-		for k, v := range cnMatch {
-			cn[k] = v
-		}
-		routeRules = append(routeRules, cn)
-		finalOutbound = "direct"
-	case "intl_only":
-		// Everything except mainland destinations goes through the relay.
-		cn := map[string]any{"outbound": "direct"}
-		for k, v := range cnMatch {
-			cn[k] = v
-		}
-		routeRules = append(routeRules, cn)
-	default: // global
-		if a.cfg.GatewayBypassCN {
-			cn := map[string]any{"outbound": "direct"}
-			for k, v := range cnMatch {
-				cn[k] = v
-			}
-			routeRules = append(routeRules, cn)
-		}
+// collectRelayUsage reports the relay's traffic as Ultra usage of the native
+// carrier, exactly like an ordinary runtime's.
+func (m *gatewayManager) collectRelayUsage() {
+	m.mu.Lock()
+	relay := m.relay
+	forwardID := m.plan.Carrier.ForwardID
+	generation := policyGeneration(m.plan.Carrier.UltraAccess)
+	m.mu.Unlock()
+	if relay == nil || forwardID <= 0 {
+		return
 	}
+	status, err := readRuntimeStatus(relay.paths.statusPath)
+	if err != nil {
+		return
+	}
+	if status.PolicyGeneration != "" {
+		generation = status.PolicyGeneration
+	}
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	m.agent.recordUsage(forwardID, generation, status, &m.relayCounters)
+}
 
-	config := map[string]any{
-		"log": map[string]any{"level": "warn", "timestamp": true},
-		"dns": map[string]any{
-			"servers": remoteDNS,
-			// The outbound matcher this used to rely on was deprecated in
-			// sing-box 1.12 and is removed in 1.14; matching on rule_set is
-			// both current and more precise.
-			"rules":    dnsRules,
-			"final":    "remote",
-			"strategy": "prefer_ipv4",
-		},
-		"inbounds": []map[string]any{{
-			"type":           "tun",
-			"tag":            "tun-in",
-			"interface_name": gatewayTunName,
-			"address":        []string{a.cfg.GatewayTunAddress},
-			"mtu":            a.cfg.GatewayTunMTU,
-			"auto_route":     true,
-			"strict_route":   false,
-			"stack":          "system",
-		}},
-		"outbounds": []map[string]any{
-			{"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": gatewaySocksPort, "version": "5"},
-			{"type": "direct", "tag": "direct"},
-		},
-		"route": map[string]any{
-			"rule_set": routeRuleSets,
-			"rules":    routeRules,
-			"final":    finalOutbound,
-			// sing-box 1.12 requires the domain resolver to be stated
-			// explicitly for outbound dials; leaving it implicit is already
-			// deprecated and is removed in 1.14. "local" is the safe choice:
-			// the proxy outbound is a loopback address, so resolving through
-			// the relay would only create a resolution loop.
-			"default_domain_resolver": "local",
-			"auto_detect_interface":   true,
-		},
-	}
-	return config, nil
+// stopAll tears down in dependency order: sing-box first (its routes go with
+// its TUN), then the bypass rules, then the relay.
+func (m *gatewayManager) stopAll(reason string) {
+	m.stopSingBox(reason)
+	m.agent.bypass.deactivate()
+	m.stopRelay(reason)
 }
 
 func (a *Agent) gatewayView() *GatewayView {
-	manager := a.gateway
+	cfg := a.config()
 	view := &GatewayView{
-		Enabled:     a.cfg.GatewayEnabled,
-		CarrierID:   a.cfg.GatewayForwardID,
-		RouteScope:  a.cfg.GatewayRouteScope,
-		RoutePolicy: a.cfg.GatewayRoutePolicy,
-		SocksPort:   gatewaySocksPort,
-		BypassCN:    a.cfg.GatewayBypassCN,
+		Enabled:    cfg.GatewayEnabled,
+		Active:     cfg.gatewayActive(),
+		CarrierID:  cfg.GatewayForwardID,
+		WantScope:  cfg.GatewayRouteScope,
+		WantPolicy: cfg.GatewayRoutePolicy,
+		TunAddress: cfg.GatewayTunAddress,
+		SocksPort:  gatewaySocksPort,
+		BypassCN:   cfg.GatewayBypassCN,
+		DNSMode:    firstNonEmpty(cfg.GatewayDNSMode, "auto"),
+		Carriers:   []GatewayCarrierView{},
 	}
+	a.mu.Lock()
+	capability := a.nativeCap
+	manager := a.gateway
+	a.mu.Unlock()
+	if capability != nil && capability.Enabled {
+		view.NativeGranted = true
+		for _, carrier := range capability.Forwards {
+			view.Carriers = append(view.Carriers, GatewayCarrierView{
+				ForwardID:         carrier.ForwardID,
+				Direction:         carrier.Direction,
+				RouteScopes:       nativeScopesOf(carrier),
+				DefaultRouteScope: carrier.DefaultRouteScope,
+				UnrestrictedOK:    carrier.UnrestrictedOK,
+				Default:           capability.DefaultForwardID != nil && *capability.DefaultForwardID == carrier.ForwardID,
+			})
+		}
+	}
+	view.BypassRules, view.BypassError = a.bypass.view()
 	if manager == nil {
 		return view
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	view.Running = manager.proc != nil && manager.proc.alive()
-	if manager.carrier.ForwardID > 0 {
-		view.CarrierID = manager.carrier.ForwardID
+	view.RelayRunning = manager.relay != nil && manager.relay.alive()
+	view.SingBoxRun = manager.singbox != nil && manager.singbox.alive()
+	view.Running = view.RelayRunning && view.SingBoxRun
+	if manager.plan.Carrier.ForwardID > 0 {
+		view.CarrierID = manager.plan.Carrier.ForwardID
+		view.Direction = manager.plan.Native.Direction
+		view.RouteScope = manager.plan.Scope
+		view.RoutePolicy = manager.plan.Policy
+		view.Unrestricted = manager.plan.Native.UnrestrictedOK
+		view.Notes = append([]string(nil), manager.plan.Notes...)
 	}
+	view.RuleSets = manager.ruleSetSource
+	view.Candidates = manager.candidates
+	if !manager.leaseExpiry.IsZero() {
+		view.LeaseExpiry = formatRFC3339(manager.leaseExpiry)
+	}
+	view.LeaseError = manager.leaseErr
 	view.LastError = manager.lastErr
 	return view
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -18,18 +19,22 @@ func readRandom(buf []byte) (int, error) { return rand.Read(buf) }
 // reloadConfig re-reads UCI and adopts any change the operator made in LuCI
 // without requiring a service restart.
 func (a *Agent) reloadConfig() {
-	previousMode := a.cfg.Mode
-	previousUplink := a.cfg.UplinkEnabled
-	a.cfg = loadConfig()
-	a.panel.egress.setOverride(a.cfg.PanelEgressInterface)
+	next := loadConfig()
+	a.mu.Lock()
+	previous := a.cfg
+	a.cfg = next
+	a.mu.Unlock()
+	a.panel.egress.setOverride(next.PanelEgressInterface)
 	a.log.Info("ctl", "configuration reloaded (mode=%s uplink=%v gateway=%v)",
-		a.cfg.Mode, a.cfg.UplinkEnabled, a.cfg.gatewayActive())
-	if previousMode != a.cfg.Mode {
-		a.log.Warn("ctl", "operating mode changed %s -> %s", previousMode, a.cfg.Mode)
-		a.triggerGatewayReconcile()
+		next.Mode, next.UplinkEnabled, next.gatewayActive())
+	if previous.Mode != next.Mode {
+		a.log.Warn("ctl", "operating mode changed %s -> %s", previous.Mode, next.Mode)
 	}
-	if previousUplink != a.cfg.UplinkEnabled {
-		a.log.Warn("ctl", "uplink high availability %v -> %v; a service restart applies this change", previousUplink, a.cfg.UplinkEnabled)
+	// Any gateway option may have changed; the gateway loop re-plans and only
+	// restarts what its new configuration actually differs in.
+	a.triggerGatewayReconcile()
+	if previous.UplinkEnabled != next.UplinkEnabled {
+		a.log.Warn("ctl", "uplink high availability %v -> %v; a service restart applies this change", previous.UplinkEnabled, next.UplinkEnabled)
 	}
 }
 
@@ -164,7 +169,14 @@ func (a *Agent) diagnose() DiagnosticReport {
 	}
 	if a.cfg.gatewayActive() {
 		gateway := a.gatewayView()
-		add("gateway", gateway.Running, firstNonEmpty(gateway.LastError, "socks 127.0.0.1:"+itoa(gateway.SocksPort)))
+		add("gateway", gateway.Running, firstNonEmpty(gateway.LastError,
+			fmt.Sprintf("carrier #%d %s scope=%s policy=%s socks 127.0.0.1:%d", gateway.CarrierID, gateway.Direction,
+				gateway.RouteScope, gateway.RoutePolicy, gateway.SocksPort)))
+		add("gateway_native_lease", gateway.LeaseExpiry != "" && gateway.LeaseError == "",
+			firstNonEmpty(gateway.LeaseError, fmt.Sprintf("%d candidates, expires %s", gateway.Candidates, gateway.LeaseExpiry)))
+		add("gateway_relay_bypass", gateway.BypassError == "",
+			firstNonEmpty(gateway.BypassError, fmt.Sprintf("%d direct rules (pref %d)", gateway.BypassRules, gatewayBypassRulePref)))
+		add("gateway_rule_sets", gateway.RuleSets != "remote", firstNonEmpty(gateway.RuleSets, "not rendered yet"))
 	}
 	return report
 }

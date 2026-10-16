@@ -12,6 +12,7 @@ deterministic and offline.
 Usage: fake_relay.py <listen-port> <echo-port> [--reject-auth]
 """
 
+import os
 import socket
 import sys
 import threading
@@ -19,6 +20,8 @@ import threading
 LISTEN = int(sys.argv[1])
 ECHO = int(sys.argv[2])
 REJECT_AUTH = "--reject-auth" in sys.argv
+# The gateway test puts the relay behind an upstream router, off loopback.
+HOST = os.environ.get("FAKE_RELAY_HOST", "127.0.0.1")
 
 
 def read_exactly(conn, count):
@@ -116,7 +119,7 @@ def handle(conn):
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("127.0.0.1", LISTEN))
+    server.bind((HOST, LISTEN))
     server.listen(64)
     while True:
         try:

@@ -11,6 +11,7 @@
 #
 # Requires: curl, tar, python3, network access to downloads.openwrt.org.
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 LEIKWAND="${1:?path to a linux/amd64 leikwand binary}"
 WORK="${2:-/tmp/leikwan-gateway-check}"
@@ -79,14 +80,23 @@ LIBS=$(dirname "$(find "$WORK/root" -name 'libgcc_s.so.1' | head -1)")
 run_singbox() { "$LOADER" --library-path "$LIBS" "$WORK/sing-box" "$@"; }
 echo "sing-box: $(run_singbox version 2>&1 | head -1)"
 
+# The bundled rule-sets the leikwand package installs under
+# /usr/share/leikwan/rule-set. "remote" exercises the fallback definitions.
+RULESETS="$(cd "$SCRIPT_DIR/../../../openwrt/leikwand/files/rule-set" && pwd)"
+
 pass=0
 fail=0
 for scope in global cn_only intl_only; do
 	for policy in restricted unrestricted; do
 		for bypass in 1 0; do
-			label="$scope/$policy/bypass_cn=$bypass"
-			uci="$WORK/uci-$scope-$policy-$bypass"
-			cat > "$uci" <<EOF
+			for dns in auto custom; do
+				for sets in bundled remote; do
+					label="$scope/$policy/bypass_cn=$bypass/dns=$dns/rule_sets=$sets"
+					key="$scope-$policy-$bypass-$dns-$sets"
+					uci="$WORK/uci-$key"
+					set_dir="$RULESETS"
+					[ "$sets" = "remote" ] && set_dir="$WORK/no-rule-sets"
+					cat > "$uci" <<UCI
 config leikwan 'main'
 	option enabled '1'
 	option mode 'gateway'
@@ -94,37 +104,49 @@ config leikwan 'main'
 	option gateway_route_scope '$scope'
 	option gateway_route_policy '$policy'
 	option gateway_bypass_cn '$bypass'
-EOF
-			cfg="$WORK/cfg-$scope-$policy-$bypass.json"
-			if ! LEIKWAN_UCI_PATH="$uci" "$LEIKWAND" gateway-config > "$cfg" 2>"$WORK/err"; then
-				echo "  FAIL $label: the agent produced no configuration ($(head -c 120 "$WORK/err"))"
-				fail=$((fail + 1)); continue
-			fi
-			if out=$(run_singbox check -c "$cfg" 2>&1); then
-				if printf '%s' "$out" | grep -qi 'deprecat'; then
-					echo "  WARN $label: accepted but deprecated — $(printf '%s' "$out" | head -1)"
-				else
-					echo "  PASS $label"
-				fi
-				pass=$((pass + 1))
-			else
-				echo "  FAIL $label: $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
-				fail=$((fail + 1))
-			fi
+	option gateway_dns_mode '$dns'
+	option gateway_dns_servers '8.8.8.8 9.9.9.9:5353'
+	option gateway_rule_set_dir '$set_dir'
+UCI
+					cfg="$WORK/cfg-$key.json"
+					if ! LEIKWAN_UCI_PATH="$uci" "$LEIKWAND" gateway-config > "$cfg" 2>"$WORK/err"; then
+						echo "  FAIL $label: the agent produced no configuration ($(head -c 120 "$WORK/err"))"
+						fail=$((fail + 1)); continue
+					fi
+					# "check" only parses; remote rule-sets are not fetched, so
+					# both variants validate offline.
+					if out=$(cd "$WORK" && run_singbox check -c "$cfg" 2>&1); then
+						if printf '%s' "$out" | grep -qi 'deprecat\|warn'; then
+							echo "  FAIL $label: accepted with a warning — $(printf '%s' "$out" | head -1)"
+							fail=$((fail + 1))
+						else
+							pass=$((pass + 1))
+						fi
+					else
+						echo "  FAIL $label: $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+						fail=$((fail + 1))
+					fi
+				done
+			done
 		done
 	done
 done
 
 echo
-echo "== scope semantics (catch-all outbound and mainland rule) =="
+echo "== scope semantics (catch-all outbound, mainland rule, DNS final) =="
 for scope in global cn_only intl_only; do
-	python3 - "$WORK/cfg-$scope-restricted-1.json" "$scope" <<'PY'
+	for policy in restricted unrestricted; do
+		python3 - "$WORK/cfg-$scope-$policy-1-auto-bundled.json" "$scope/$policy" <<'PY'
 import json, sys
 config = json.load(open(sys.argv[1]))
-route = config['route']
-cn = [r for r in route['rules'] if isinstance(r.get('rule_set'), list) and 'geosite-cn' in r['rule_set']]
-print('  %-10s final=%-6s mainland->%s' % (sys.argv[2], route['final'], cn[0]['outbound'] if cn else 'none'))
+route, dns = config['route'], config['dns']
+cn = [r for r in route['rules'] if 'geosite-cn' in (r.get('rule_set') or [])]
+servers = {s['tag']: s for s in dns['servers']}
+remote = servers[dns['final']]
+print('  %-24s final=%-6s mainland->%-6s dns=%s via %s' % (sys.argv[2], route['final'],
+      cn[0]['outbound'] if cn else 'none', remote.get('server'), remote.get('detour', 'direct')))
 PY
+	done
 done
 
 echo
