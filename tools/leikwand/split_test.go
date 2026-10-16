@@ -192,15 +192,15 @@ func TestRenderSplitCarrier(t *testing.T) {
 		t.Fatalf("restricted split rule = %v", rules)
 	}
 
-	// Without a valid split lease nothing about it is rendered.
+	// Without a split carrier nothing about it is rendered.
 	plain := renderSplit(t, "intl_only", "unrestricted", nil)
 	for _, outbound := range objects(plain["outbounds"]) {
 		if outbound["tag"] == "split" {
-			t.Fatal("no split outbound without a split lease")
+			t.Fatal("no split outbound without a split carrier")
 		}
 	}
 	if ruleIndex(objects(section(t, plain, "route")["rules"]), func(r map[string]any) bool { return r["outbound"] == "split" }) >= 0 {
-		t.Fatal("no split rule without a split lease")
+		t.Fatal("no split rule without a split carrier")
 	}
 }
 
@@ -216,5 +216,29 @@ func TestGatewaySlotsAreIndependent(t *testing.T) {
 	}
 	if manager.leaseValid(&manager.split, time.Now()) {
 		t.Fatal("an idle split slot has no lease")
+	}
+}
+
+// The split rule follows the plan, not the split relay's lease: a relay
+// restart must not change the rendered config (and so restart sing-box).
+func TestSplitRenderIgnoresLeaseState(t *testing.T) {
+	now := time.Now()
+	cfg := defaultConfig()
+	cfg.GatewaySplitForwardID = 326
+	base, err := resolveGatewayPlan(cfg, testSplitCapability(), testSplitForwards(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := resolveGatewaySplit(cfg, testSplitCapability(), testSplitForwards(now), base, []string{"163.53.52.0/22"})
+	if render := splitRenderFor(plan); render == nil || render.Policy != "unrestricted" || len(render.CIDRs) != 1 {
+		t.Fatalf("split render = %+v", render)
+	}
+	if splitRenderFor(base) != nil {
+		t.Fatal("no split carrier, no split rule")
+	}
+	empty := plan
+	empty.SplitCIDRs = nil
+	if splitRenderFor(empty) != nil {
+		t.Fatal("an empty list renders nothing")
 	}
 }

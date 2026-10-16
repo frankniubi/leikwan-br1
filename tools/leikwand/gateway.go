@@ -26,8 +26,10 @@ import (
 //     relay is only restarted when it or its control channel is gone, or the
 //     plan changes.
 //   - an optional split relay does the same for a second carrier that only a
-//     CIDR list uses (e.g. SHIXP members). It can fail on its own: sing-box
-//     then simply stops sending that list to it.
+//     CIDR list uses (e.g. SHIXP members). Its sing-box rule stays in place
+//     while the relay restarts or renews, so a split failure only affects the
+//     listed destinations and never restarts sing-box (which would drop every
+//     LAN session, the primary carrier's included).
 //   - sing-box owns auto_route (its own ip rules and routes) and is only
 //     restarted when its generated configuration changes, never on a lease
 //     rotation, so LAN sessions survive renewals.
@@ -73,8 +75,8 @@ type GatewayCarrierView struct {
 	Default           bool     `json:"default"`
 }
 
-// GatewaySplitView is the split carrier's state. Active means sing-box is
-// currently routing the CIDR list to it.
+// GatewaySplitView is the split carrier's state. Active means sing-box routes
+// the CIDR list to it and its relay holds a valid lease.
 type GatewaySplitView struct {
 	CarrierID    int    `json:"carrier_forward_id"`
 	Direction    string `json:"direction,omitempty"`
@@ -277,7 +279,6 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 		return
 	}
 
-	splitActive := false
 	if plan.Split != nil {
 		if m.relayDead(&m.split) {
 			m.stopSlot(&m.split, "relay_exited")
@@ -289,11 +290,10 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 				}
 			}
 		}
-		splitActive = m.leaseValid(&m.split, time.Now())
 	} else {
 		m.stopSlot(&m.split, "split_off")
 	}
-	if err := m.ensureSingBox(ctx, cfg, plan, splitActive); err != nil {
+	if err := m.ensureSingBox(ctx, cfg, plan); err != nil {
 		m.setErr("%v", err)
 		return
 	}
@@ -535,16 +535,23 @@ func watchGatewayProcess(a *Agent, proc *runtimeProcess, label string) {
 	}
 }
 
+// splitRenderFor is the split carrier as sing-box sees it. It depends on the
+// plan only, never on the split relay's lease state: the rule stays while the
+// relay restarts, so a split outage fails just the listed destinations
+// instead of restarting sing-box twice.
+func splitRenderFor(plan gatewayPlan) *gatewaySplitRender {
+	if plan.Split == nil || len(plan.SplitCIDRs) == 0 {
+		return nil
+	}
+	return &gatewaySplitRender{Policy: plan.Split.Policy, CIDRs: plan.SplitCIDRs}
+}
+
 // ensureSingBox renders the configuration and (re)starts sing-box only when
 // it changed or the process is gone. The relay bypass rules are activated
-// before sing-box installs its routes. The split list is only rendered while
-// the split relay holds a valid lease.
-func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan, splitActive bool) error {
+// before sing-box installs its routes.
+func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan) error {
 	a := m.agent
-	var split *gatewaySplitRender
-	if splitActive && plan.Split != nil {
-		split = &gatewaySplitRender{Policy: plan.Split.Policy, CIDRs: plan.SplitCIDRs}
-	}
+	split := splitRenderFor(plan)
 	rendered, source := renderGatewayConfig(cfg, plan.Scope, plan.Policy, split)
 	encoded, err := json.MarshalIndent(rendered, "", "  ")
 	if err != nil {
@@ -793,7 +800,8 @@ func (a *Agent) gatewayView() *GatewayView {
 			view.Split.CIDRs = len(manager.plan.SplitCIDRs)
 		}
 		view.Split.RelayRunning = split.relay != nil && split.relay.alive()
-		view.Split.Active = manager.splitActive && view.SingBoxRun
+		view.Split.Active = manager.splitActive && view.SingBoxRun && view.Split.RelayRunning &&
+			!split.leaseExpiry.IsZero() && time.Now().Before(split.leaseExpiry)
 		view.Split.Candidates = split.candidates
 		if !split.leaseExpiry.IsZero() {
 			view.Split.LeaseExpiry = formatRFC3339(split.leaseExpiry)

@@ -197,7 +197,7 @@ type gatewaySplitRender struct {
 }
 
 // renderGatewayConfig builds the whole sing-box configuration for one plan.
-// split is nil unless the split carrier holds a valid lease.
+// split is nil when no split carrier is configured or granted.
 func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRender) (map[string]any, string) {
 	scope = normalizeRouteScope(scope)
 	policy = normalizeRoutePolicy(policy)
