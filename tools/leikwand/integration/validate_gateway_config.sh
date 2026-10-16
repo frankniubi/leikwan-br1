@@ -132,6 +132,42 @@ UCI
 	done
 done
 
+# The split carrier (packaged SHIXP list on a second SOCKS outbound) on top
+# of every primary scope and policy, with both split policies.
+SPLIT_LIST="$(cd "$SCRIPT_DIR/../../../openwrt/leikwand/files/split" && pwd)/shixp-v4.txt"
+for scope in global cn_only intl_only; do
+	for policy in restricted unrestricted; do
+		for split_policy in restricted unrestricted; do
+			label="split/$scope/$policy/split=$split_policy"
+			key="split-$scope-$policy-$split_policy"
+			uci="$WORK/uci-$key"
+			cat > "$uci" <<UCI
+config leikwan 'main'
+	option enabled '1'
+	option mode 'gateway'
+	option gateway_enabled '1'
+	option gateway_route_scope '$scope'
+	option gateway_route_policy '$policy'
+	option gateway_rule_set_dir '$RULESETS'
+	option gateway_split_forward_id '326'
+	option gateway_split_route_policy '$split_policy'
+	option gateway_split_cidr_file '$SPLIT_LIST'
+UCI
+			cfg="$WORK/cfg-$key.json"
+			if ! LEIKWAN_UCI_PATH="$uci" "$LEIKWAND" gateway-config > "$cfg" 2>"$WORK/err" || ! grep -q '"tag": "split"' "$cfg"; then
+				echo "  FAIL $label: no split outbound rendered ($(head -c 120 "$WORK/err"))"
+				fail=$((fail + 1)); continue
+			fi
+			if out=$(cd "$WORK" && run_singbox check -c "$cfg" 2>&1) && ! printf '%s' "$out" | grep -qi 'deprecat\|warn'; then
+				pass=$((pass + 1))
+			else
+				echo "  FAIL $label: $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+				fail=$((fail + 1))
+			fi
+		done
+	done
+done
+
 echo
 echo "== scope semantics (catch-all outbound, mainland rule, DNS final) =="
 for scope in global cn_only intl_only; do

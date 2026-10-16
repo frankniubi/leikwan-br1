@@ -82,7 +82,7 @@ func TestForwardRuntimeConfigEmitsOnlyAcceptedKeys(t *testing.T) {
 
 func TestNativeRuntimeConfigEmitsOnlyAcceptedKeys(t *testing.T) {
 	cfg := defaultConfig()
-	runtime := buildNativeRuntimeConfig(cfg, 3, gatewayRelayPaths("/run"), strings.Repeat("a", 64), strings.Repeat("b", 64), "restricted")
+	runtime := buildNativeRuntimeConfig(cfg, 3, gatewaySocksPort, gatewayRelayPaths("/run"), strings.Repeat("a", 64), strings.Repeat("b", 64), "restricted")
 	assertKnownKeys(t, "native runtime config", runtime)
 	// ultra-client exits with "runtime configuration invalid" on an empty
 	// target, native mode included.
@@ -92,7 +92,7 @@ func TestNativeRuntimeConfigEmitsOnlyAcceptedKeys(t *testing.T) {
 	if runtime.ListenPort != gatewaySocksPort || runtime.NativeFilterProfile != "opengfw_tcp" {
 		t.Fatalf("listen=%d filter=%s", runtime.ListenPort, runtime.NativeFilterProfile)
 	}
-	if unrestricted := buildNativeRuntimeConfig(cfg, 3, gatewayRelayPaths("/run"), "", "", "unrestricted"); unrestricted.NativeFilterProfile != "off" || unrestricted.NativeRoutePolicy != "unrestricted" {
+	if unrestricted := buildNativeRuntimeConfig(cfg, 3, gatewaySocksPort, gatewayRelayPaths("/run"), "", "", "unrestricted"); unrestricted.NativeFilterProfile != "off" || unrestricted.NativeRoutePolicy != "unrestricted" {
 		t.Fatalf("unrestricted relay = %s/%s", unrestricted.NativeRoutePolicy, unrestricted.NativeFilterProfile)
 	}
 }

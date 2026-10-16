@@ -304,11 +304,11 @@ func buildRuntimeConfig(cfg Config, forward ForwardConfig, paths runtimePaths, p
 // fixed-target forward and becomes a loopback SOCKS5 facade whose egress is
 // the Panel-selected native line. The values follow the desktop's
 // NativeOutboundRelayHost, sized up for a whole LAN.
-func buildNativeRuntimeConfig(cfg Config, forwardID int, paths runtimePaths, policyGeneration, scopeDigest, routePolicy string) RuntimeConfig {
+func buildNativeRuntimeConfig(cfg Config, forwardID, listenPort int, paths runtimePaths, policyGeneration, scopeDigest, routePolicy string) RuntimeConfig {
 	return RuntimeConfig{
 		ForwardID:  forwardID,
 		ListenHost: "127.0.0.1",
-		ListenPort: gatewaySocksPort,
+		ListenPort: listenPort,
 		// ultra-client refuses an empty target even in native mode; the
 		// desktop passes the same placeholder. Native SOCKS5 never dials it:
 		// the destination comes from each SOCKS request.

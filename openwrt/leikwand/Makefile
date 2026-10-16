@@ -71,6 +71,9 @@ define Package/leikwand/install
 	$(INSTALL_DIR) $(1)/usr/share/leikwan/rule-set
 	$(INSTALL_DATA) ./files/rule-set/geoip-cn.srs ./files/rule-set/geosite-cn.srs $(1)/usr/share/leikwan/rule-set/
 	$(INSTALL_DATA) ./files/rule-set/NOTICE.txt ./files/rule-set/LICENSE.txt ./files/rule-set/COPYING.txt $(1)/usr/share/leikwan/rule-set/
+	# Destination lists for the gateway split carrier (SHIXP members).
+	$(INSTALL_DIR) $(1)/usr/share/leikwan/split
+	$(INSTALL_DATA) ./files/split/shixp-v4.txt $(1)/usr/share/leikwan/split/
 endef
 
 define Package/leikwand/postinst

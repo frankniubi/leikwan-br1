@@ -34,15 +34,17 @@ import (
 //     closed until a remote rule-set's first download finishes, and GitHub is
 //     slow or unreachable from the mainland.
 const (
-	gatewayTunName      = "lkwtun0"
-	gatewaySocksPort    = 2080
-	gatewayConfigName   = "sing-box.json"
-	gatewayCNRuleSet    = "geosite-cn"
-	gatewayCNIPRuleSet  = "geoip-cn"
-	gatewayTableIndex   = 2022
-	gatewayRuleIndex    = 9000
-	gatewayLowPortRange = "1:999"
-	gatewayRuleSetHost  = "raw.githubusercontent.com"
+	gatewayTunName   = "lkwtun0"
+	gatewaySocksPort = 2080
+	// The split carrier's relay; only its CIDR list is routed to it.
+	gatewaySplitSocksPort = 2081
+	gatewayConfigName     = "sing-box.json"
+	gatewayCNRuleSet      = "geosite-cn"
+	gatewayCNIPRuleSet    = "geoip-cn"
+	gatewayTableIndex     = 2022
+	gatewayRuleIndex      = 9000
+	gatewayLowPortRange   = "1:999"
+	gatewayRuleSetHost    = "raw.githubusercontent.com"
 
 	cloudflareDoHAddress = "1.1.1.1"
 	cloudflareDoHName    = "cloudflare-dns.com"
@@ -187,8 +189,16 @@ func renderGatewayDNS(cfg Config, scope, policy string, bypassHosts []string) ma
 	}
 }
 
+// gatewaySplitRender is the split carrier as sing-box sees it: a second SOCKS
+// outbound that only the listed destinations use.
+type gatewaySplitRender struct {
+	Policy string
+	CIDRs  []string
+}
+
 // renderGatewayConfig builds the whole sing-box configuration for one plan.
-func renderGatewayConfig(cfg Config, scope, policy string) (map[string]any, string) {
+// split is nil unless the split carrier holds a valid lease.
+func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRender) (map[string]any, string) {
 	scope = normalizeRouteScope(scope)
 	policy = normalizeRoutePolicy(policy)
 	restricted := policy != "unrestricted"
@@ -219,13 +229,27 @@ func renderGatewayConfig(cfg Config, scope, policy string) (map[string]any, stri
 	if len(bypassHosts) > 0 {
 		rules = append(rules, map[string]any{"domain": bypassHosts, "outbound": "direct"})
 	}
+	resolveFirst := !restricted || scope != "global" || split != nil
+	resolved := false
+	if split != nil && len(split.CIDRs) > 0 {
+		// The split list is matched by IP, so resolve first; it sits ahead of
+		// the primary policy because its own policy decides its ports.
+		splitPorts := "1:65535"
+		if normalizeRoutePolicy(split.Policy) != "unrestricted" {
+			splitPorts = itoa(nativePortMin) + ":65535"
+		}
+		rules = append(rules,
+			map[string]any{"action": "resolve", "strategy": "ipv4_only"},
+			map[string]any{"ip_cidr": split.CIDRs, "network": []string{"tcp", "udp"}, "port_range": []string{splitPorts}, "outbound": "split"},
+		)
+		resolved = true
+	}
 	if restricted {
 		// The relay is a game path under the restricted policy: privileged
 		// and control-plane ports stay local, exactly as the relay enforces.
 		rules = append(rules, map[string]any{"network": []string{"tcp", "udp"}, "port_range": []string{gatewayLowPortRange}, "outbound": "direct"})
 	}
-	resolveFirst := !restricted || scope != "global"
-	if resolveFirst {
+	if resolveFirst && !resolved {
 		rules = append(rules, map[string]any{"action": "resolve", "strategy": "ipv4_only"})
 	}
 	final := "proxy"
@@ -243,6 +267,21 @@ func renderGatewayConfig(cfg Config, scope, policy string) (map[string]any, stri
 	domainResolver := "local"
 	if resolveFirst {
 		domainResolver, _ = dns["final"].(string)
+	}
+
+	outbounds := []map[string]any{
+		{
+			"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": gatewaySocksPort, "version": "5",
+			// Keep the native UDP leg as real UDP.
+			"udp_over_tcp": map[string]any{"enabled": false},
+		},
+		{"type": "direct", "tag": "direct"},
+	}
+	if resolved {
+		outbounds = append(outbounds, map[string]any{
+			"type": "socks", "tag": "split", "server": "127.0.0.1", "server_port": gatewaySplitSocksPort, "version": "5",
+			"udp_over_tcp": map[string]any{"enabled": false},
+		})
 	}
 
 	config := map[string]any{
@@ -263,14 +302,7 @@ func renderGatewayConfig(cfg Config, scope, policy string) (map[string]any, stri
 			"iproute2_table_index": gatewayTableIndex,
 			"iproute2_rule_index":  gatewayRuleIndex,
 		}},
-		"outbounds": []map[string]any{
-			{
-				"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": gatewaySocksPort, "version": "5",
-				// Keep the native UDP leg as real UDP.
-				"udp_over_tcp": map[string]any{"enabled": false},
-			},
-			{"type": "direct", "tag": "direct"},
-		},
+		"outbounds": outbounds,
 		"route": map[string]any{
 			"rule_set":                ruleSets,
 			"rules":                   rules,

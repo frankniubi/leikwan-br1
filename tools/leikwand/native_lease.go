@@ -38,7 +38,7 @@ func newLeaseNonce() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-func buildNativeLeaseRequest(deviceID string, plan gatewayPlan, policy *UltraPolicy, maxCandidates int) (LeaseRequest, error) {
+func buildNativeLeaseRequest(deviceID string, plan carrierPlan, policy *UltraPolicy, maxCandidates int) (LeaseRequest, error) {
 	if policy == nil {
 		return LeaseRequest{}, errors.New("native carrier has no Ultra grant")
 	}
@@ -68,7 +68,7 @@ func buildNativeLeaseRequest(deviceID string, plan gatewayPlan, policy *UltraPol
 // frames ultra-client expects on its control socket. One bad lease rejects
 // the whole batch, exactly like the desktop: a partial batch would hand the
 // runtime a candidate set the Panel did not intend.
-func validateNativeLeases(leases []LeaseFrame, plan gatewayPlan, policy *UltraPolicy, now time.Time) ([]LeaseFrame, error) {
+func validateNativeLeases(leases []LeaseFrame, plan carrierPlan, policy *UltraPolicy, now time.Time) ([]LeaseFrame, error) {
 	if len(leases) == 0 || len(leases) > 4 {
 		return nil, fmt.Errorf("native lease batch size %d", len(leases))
 	}
@@ -143,7 +143,7 @@ func nativeRuntimeFrame(lease LeaseFrame) LeaseFrame {
 }
 
 // requestNativeLeases asks the Panel for a native batch and validates it.
-func (a *Agent) requestNativeLeases(ctx context.Context, plan gatewayPlan) ([]LeaseFrame, []string, error) {
+func (a *Agent) requestNativeLeases(ctx context.Context, plan carrierPlan) ([]LeaseFrame, []string, error) {
 	policy := plan.Carrier.UltraAccess
 	request, err := buildNativeLeaseRequest(a.deviceID, plan, policy, a.cfg.MaxCandidates)
 	if err != nil {

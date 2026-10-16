@@ -18,7 +18,7 @@ func renderConfig(t *testing.T, scope, policy string, bypassCN bool) map[string]
 
 func renderConfigWith(t *testing.T, cfg Config, scope, policy string) map[string]any {
 	t.Helper()
-	rendered, _ := renderGatewayConfig(cfg, scope, policy)
+	rendered, _ := renderGatewayConfig(cfg, scope, policy, nil)
 	// The config must survive a JSON round trip: it is written to disk and read
 	// by sing-box, so a value that only exists as a Go type is not enough.
 	raw, err := json.Marshal(rendered)
@@ -311,7 +311,7 @@ func TestGatewayPrefersBundledRuleSets(t *testing.T) {
 	cfg := defaultConfig()
 	dir := t.TempDir()
 	cfg.GatewayRuleSetDir = dir
-	if _, source := renderGatewayConfig(cfg, "intl_only", "unrestricted"); source != "remote" {
+	if _, source := renderGatewayConfig(cfg, "intl_only", "unrestricted", nil); source != "remote" {
 		t.Fatalf("empty directory must fall back to remote, got %s", source)
 	}
 	for _, name := range []string{"geoip-cn.srs", "geosite-cn.srs"} {

@@ -17,11 +17,25 @@ import (
 // The live scope and policy depend on the Panel grant. Offline, "auto" is
 // shown as the most permissive explicit value it can resolve to; the
 // LEIKWAN_GATEWAY_SCOPE / LEIKWAN_GATEWAY_POLICY variables pin either one.
+// With a split carrier configured, its CIDR list is rendered as if its relay
+// held a lease (LEIKWAN_GATEWAY_SPLIT_POLICY pins its policy).
 func printGatewayConfig() int {
 	cfg := loadConfig()
 	scope := offlineGatewayChoice(os.Getenv("LEIKWAN_GATEWAY_SCOPE"), cfg.GatewayRouteScope, "global")
 	policy := offlineGatewayChoice(os.Getenv("LEIKWAN_GATEWAY_POLICY"), cfg.GatewayRoutePolicy, "unrestricted")
-	rendered, _ := renderGatewayConfig(cfg, scope, policy)
+	var split *gatewaySplitRender
+	if cfg.GatewaySplitForwardID > 0 {
+		cidrs, err := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "split carrier #%d is off: %v\n", cfg.GatewaySplitForwardID, err)
+		} else if len(cidrs) > 0 {
+			split = &gatewaySplitRender{
+				Policy: offlineGatewayChoice(os.Getenv("LEIKWAN_GATEWAY_SPLIT_POLICY"), cfg.GatewaySplitRoutePolicy, "unrestricted"),
+				CIDRs:  cidrs,
+			}
+		}
+	}
+	rendered, _ := renderGatewayConfig(cfg, scope, policy, split)
 	encoded, err := json.MarshalIndent(rendered, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not encode the gateway configuration: %v\n", err)

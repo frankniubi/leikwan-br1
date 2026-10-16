@@ -132,7 +132,7 @@ func TestNativeLeaseRequestMatchesTheDesktopContract(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.GatewayRoutePolicy = policy
 		plan := testPlan(t, cfg, testCapability(true))
-		request, err := buildNativeLeaseRequest("device-1", plan, plan.Carrier.UltraAccess, 4)
+		request, err := buildNativeLeaseRequest("device-1", plan.carrierPlan, plan.Carrier.UltraAccess, 4)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +188,7 @@ func TestNativeLeaseFramesCarryTheScopeDigestAsTargetDigest(t *testing.T) {
 	plan := testPlan(t, defaultConfig(), testCapability(true))
 	lease := goodNativeLease(plan, now)
 	lease.SessionTicket = "should-not-reach-the-runtime"
-	frames, err := validateNativeLeases([]LeaseFrame{lease}, plan, plan.Carrier.UltraAccess, now)
+	frames, err := validateNativeLeases([]LeaseFrame{lease}, plan.carrierPlan, plan.Carrier.UltraAccess, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,11 +224,11 @@ func TestNativeLeaseValidationRejectsEachMismatch(t *testing.T) {
 		good := goodNativeLease(plan, now)
 		bad := goodNativeLease(plan, now)
 		mutate(&bad)
-		if _, err := validateNativeLeases([]LeaseFrame{good, bad}, plan, plan.Carrier.UltraAccess, now); err == nil {
+		if _, err := validateNativeLeases([]LeaseFrame{good, bad}, plan.carrierPlan, plan.Carrier.UltraAccess, now); err == nil {
 			t.Fatalf("%s: a bad lease must reject the whole batch", name)
 		}
 	}
-	if _, err := validateNativeLeases(nil, plan, plan.Carrier.UltraAccess, now); err == nil {
+	if _, err := validateNativeLeases(nil, plan.carrierPlan, plan.Carrier.UltraAccess, now); err == nil {
 		t.Fatal("an empty batch must be rejected")
 	}
 }
@@ -396,8 +396,10 @@ func TestNativeRelayUsageIsReported(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manager := &gatewayManager{agent: agent, plan: testPlan(t, defaultConfig(), testCapability(true))}
-	manager.relay = &runtimeProcess{native: true, paths: paths}
+	manager := newGatewayManager(agent)
+	manager.plan = testPlan(t, defaultConfig(), testCapability(true))
+	manager.primary.plan = manager.plan.carrierPlan
+	manager.primary.relay = &runtimeProcess{native: true, paths: paths}
 	agent.gateway = manager
 
 	writeStatus(1000, 200)
@@ -408,7 +410,7 @@ func TestNativeRelayUsageIsReported(t *testing.T) {
 	if len(pending) != 2 || pending[0].ForwardID != 180 || pending[0].BytesIn != 1000 || pending[1].BytesIn != 500 || pending[1].BytesOut != 60 {
 		t.Fatalf("relay usage = %+v", pending)
 	}
-	if manager.relayCounters != (counterPair{}) {
+	if manager.primary.counters != (counterPair{}) {
 		t.Fatal("a new relay must count from zero")
 	}
 }
@@ -505,15 +507,14 @@ func TestNativeRenewalWaitsForGrantRenewAfter(t *testing.T) {
 	}
 
 	cfg := defaultConfig() // lease_renew_lead 90s: the lease is "due" immediately
-	manager := &gatewayManager{
-		relay:          &runtimeProcess{},
-		leaseExpiry:    leaseExpiry,
-		renewNotBefore: notBefore,
-	}
-	if manager.leaseDue(now, cfg) {
+	manager := newGatewayManager(nil)
+	manager.primary.relay = &runtimeProcess{}
+	manager.primary.leaseExpiry = leaseExpiry
+	manager.primary.renewNotBefore = notBefore
+	if manager.leaseDue(&manager.primary, now, cfg) {
 		t.Fatal("a renewal before renew_after cannot extend the lease and must wait")
 	}
-	if !manager.leaseDue(now.Add(51*time.Second), cfg) {
+	if !manager.leaseDue(&manager.primary, now.Add(51*time.Second), cfg) {
 		t.Fatal("past renew_after the lease must renew")
 	}
 

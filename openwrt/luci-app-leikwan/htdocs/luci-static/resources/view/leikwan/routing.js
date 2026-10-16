@@ -168,6 +168,14 @@ return view.extend({
 					g.candidates || 0, g.lease_expires_at || '-', g.bypass_rules || 0)
 			];
 
+			if (g.split)
+				lines.push(_('分流线路 #%d %s · 中继 %s · %s · %d 条网段 · 租约到期 %s').format(
+					g.split.carrier_forward_id || 0, g.split.direction || '',
+					g.split.relay_running ? _('运行中') : _('未运行'),
+					g.split.active ? _('已生效') : _('未生效'),
+					g.split.cidrs || 0, g.split.lease_expires_at || '-'));
+			if (g.split && g.split.lease_error)
+				lines.push(_('分流租约错误：%s').format(g.split.lease_error));
 			(g.notes || []).forEach(function(note) { lines.push(_('提示：%s').format(note)); });
 			if (g.lease_error)
 				lines.push(_('租约错误：%s').format(g.lease_error));
@@ -194,6 +202,33 @@ return view.extend({
 		o.description = this.carriers.length
 			? _('列表来自面板授权的原生出口 (native outbound) 线路。')
 			: _('面板尚未下发原生出口线路：请在面板为本账号的线路开启 Native outbound。');
+
+		o = s.taboption('gateway', form.ListValue, 'gateway_split_forward_id', _('分流线路 (Split carrier)'));
+		o.value('0', _('关闭 (off)'));
+		this.carriers.forEach(function(carrier) {
+			o.value(String(carrier.forward_id), _('#%d %s%s').format(
+				carrier.forward_id, carrier.direction || '',
+				carrier.unrestricted_allowed ? _(' · 可无审全路由') : ''));
+		});
+		var configuredSplit = String(uci.get('leikwan', 'main', 'gateway_split_forward_id') || '0');
+		if (configuredSplit !== '0' && !this.carriers.some(function(c) { return String(c.forward_id) === configuredSplit; }))
+			o.value(configuredSplit, _('#%s（面板当前未授权此线路）').format(configuredSplit));
+		o.default = '0';
+		o.rmempty = false;
+		o.description = _('第二条原生出口线路：只有下方网段列表中的目标走它（例如 SHIXP 成员网络），其余流量仍按承载线路分流；它故障时不影响承载线路。');
+
+		o = s.taboption('gateway', form.ListValue, 'gateway_split_route_policy', _('分流线路策略 (Split route policy)'));
+		o.value('auto', _('自动 (auto) — 套餐授权时使用无审全路由'));
+		o.value('restricted', _('受限 (restricted) — 仅 1000 以上端口'));
+		o.value('unrestricted', _('无审全路由 (unrestricted) — 全部端口'));
+		o.default = 'auto';
+		o.rmempty = false;
+		o.depends({ gateway_split_forward_id: '0', '!reverse': true });
+
+		o = s.taboption('gateway', form.Value, 'gateway_split_cidr_file', _('分流网段列表 (Split CIDR file)'));
+		o.placeholder = '/usr/share/leikwan/split/shixp-v4.txt';
+		o.depends({ gateway_split_forward_id: '0', '!reverse': true });
+		o.description = _('每行一个 IPv4 网段；默认是随包附带的 SHIXP 成员网段。');
 
 		o = s.taboption('gateway', form.ListValue, 'gateway_route_scope', _('路由范围 (Route scope)'));
 		o.value('auto', _('自动 (auto) — 按线路方向分流'));

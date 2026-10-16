@@ -51,6 +51,11 @@ type Config struct {
 	GatewayBypassCN    bool
 	GatewaySingBoxBin  string
 	GatewayRuleSetDir  string
+	// Split carrier: a second native carrier that only the destinations in
+	// GatewaySplitCIDRFile use (e.g. SHIXP members), next to the primary one.
+	GatewaySplitForwardID   int
+	GatewaySplitRoutePolicy string
+	GatewaySplitCIDRFile    string
 
 	// Uplink (multi-WAN) high availability
 	UplinkEnabled       bool
@@ -99,41 +104,43 @@ func applyEnvOverrides(cfg *Config) {
 
 func defaultConfig() Config {
 	return Config{
-		Enabled:               true,
-		PanelURL:              "https://v3.leikwanhost.com",
-		FallbackURL:           "https://api-leikwanbridge.nbwly.com",
-		PanelEgressInterface:  egressAuto,
-		Mode:                  "forward",
-		PollIntervalSecs:      30,
-		HeartbeatIntervalSecs: 30,
-		HealthIntervalSecs:    20,
-		ColdStartGraceSecs:    90,
-		RestartCooldownSecs:   30,
-		LeaseRenewLeadSecs:    90,
-		MaxCandidates:         4,
-		AutoUpdate:            true,
-		LogLevel:              "info",
-		DataDir:               "/etc/leikwan",
-		RunDir:                "/var/run/leikwand",
-		RuntimeBin:            "/usr/libexec/leikwan/ultra-client",
-		GatewayRouteScope:     "auto",
-		GatewayRoutePolicy:    "auto",
-		GatewayTunAddress:     "172.19.0.1/30",
-		GatewayTunMTU:         1280,
-		GatewayDNSMode:        "auto",
-		GatewayDNSServers:     "",
-		GatewayBypassCN:       true,
-		GatewaySingBoxBin:     "/usr/bin/sing-box",
-		GatewayRuleSetDir:     "/usr/share/leikwan/rule-set",
-		UplinkScope:           "relay",
-		UplinkIntervalSecs:    5,
-		UplinkTimeoutMS:       2000,
-		UplinkFailThreshold:   3,
-		UplinkRecoverThresh:   2,
-		UplinkMinImprovePct:   20,
-		UplinkRouteTable:      1001,
-		UplinkFwMark:          0x4c4b,
-		CNIPList:              "/etc/leikwan/CN.conf",
+		Enabled:                 true,
+		PanelURL:                "https://v3.leikwanhost.com",
+		FallbackURL:             "https://api-leikwanbridge.nbwly.com",
+		PanelEgressInterface:    egressAuto,
+		Mode:                    "forward",
+		PollIntervalSecs:        30,
+		HeartbeatIntervalSecs:   30,
+		HealthIntervalSecs:      20,
+		ColdStartGraceSecs:      90,
+		RestartCooldownSecs:     30,
+		LeaseRenewLeadSecs:      90,
+		MaxCandidates:           4,
+		AutoUpdate:              true,
+		LogLevel:                "info",
+		DataDir:                 "/etc/leikwan",
+		RunDir:                  "/var/run/leikwand",
+		RuntimeBin:              "/usr/libexec/leikwan/ultra-client",
+		GatewayRouteScope:       "auto",
+		GatewayRoutePolicy:      "auto",
+		GatewayTunAddress:       "172.19.0.1/30",
+		GatewayTunMTU:           1280,
+		GatewayDNSMode:          "auto",
+		GatewayDNSServers:       "",
+		GatewayBypassCN:         true,
+		GatewaySingBoxBin:       "/usr/bin/sing-box",
+		GatewayRuleSetDir:       "/usr/share/leikwan/rule-set",
+		GatewaySplitRoutePolicy: "auto",
+		GatewaySplitCIDRFile:    "/usr/share/leikwan/split/shixp-v4.txt",
+		UplinkScope:             "relay",
+		UplinkIntervalSecs:      5,
+		UplinkTimeoutMS:         2000,
+		UplinkFailThreshold:     3,
+		UplinkRecoverThresh:     2,
+		UplinkMinImprovePct:     20,
+		UplinkRouteTable:        1001,
+		UplinkFwMark:            0x4c4b,
+		CNIPList:                "/etc/leikwan/CN.conf",
 	}
 }
 
@@ -197,6 +204,9 @@ func loadConfig() Config {
 	cfg.GatewayBypassCN = boolDefault(get("gateway_bypass_cn", "1"), true)
 	cfg.GatewaySingBoxBin = get("gateway_singbox_bin", cfg.GatewaySingBoxBin)
 	cfg.GatewayRuleSetDir = get("gateway_rule_set_dir", cfg.GatewayRuleSetDir)
+	cfg.GatewaySplitForwardID = atoiDefault(get("gateway_split_forward_id", "0"), 0)
+	cfg.GatewaySplitRoutePolicy = normalizeGatewayChoice(get("gateway_split_route_policy", cfg.GatewaySplitRoutePolicy), "restricted", "unrestricted")
+	cfg.GatewaySplitCIDRFile = get("gateway_split_cidr_file", cfg.GatewaySplitCIDRFile)
 
 	cfg.UplinkEnabled = boolDefault(get("uplink_enabled", "0"), false)
 	cfg.UplinkScope = strings.ToLower(get("uplink_scope", cfg.UplinkScope))

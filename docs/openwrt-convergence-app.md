@@ -120,6 +120,27 @@ sing-box `auto_route` 会捕获路由器上所有未绑定接口的套接字，�
 混合模式下普通转发线路的中转地址同样加入例外，避免它们被推进原生出口。轮换时保留上一代地址让
 旧连接自然结束；超过 /8（IPv6 /16）的前缀、回环和未指定地址一律拒收。
 
+#### 分流线路（split carrier，例如 SHIXP）
+
+网关可以同时承载第二条原生出口线路，只给一张目的网段表用：
+
+| UCI | 默认 | 说明 |
+|---|---|---|
+| `gateway_split_forward_id` | `0`（关闭） | 第二条原生出口线路 ID，必须是面板授权的另一条原生线路 |
+| `gateway_split_route_policy` | `auto` | 同 `gateway_route_policy`，单独作用于分流线路 |
+| `gateway_split_cidr_file` | `/usr/share/leikwan/split/shixp-v4.txt` | 每行一个 IPv4 网段；随包附带 SHIXP 成员网段（与面板组合 61 的目标白名单同一份，328 条） |
+
+- **独立的中继**：分流中继监听 127.0.0.1:2081，有自己的租约、续租节奏、直连例外（owner `gateway:split`）和用量上报；
+  它申请 `global` 范围，由路由器按网段表收窄。
+- **只在租约有效时生效**：sing-box 仅在分流租约有效时渲染 `split` 出站和 `ip_cidr` 规则；分流线路授权缺失、
+  网段表为空或续租失败只记一条提示，承载线路照常工作，网段表里的目标回落到原有规则。
+- **规则位置**：先 `resolve`（按 IP 匹配），再分流规则，排在受限策略的低端口直连规则和国内直连规则之前——
+  SHIXP 成员大多是大陆前缀，否则会被 `intl_only` 的国内直连规则截走。
+- **网段表过滤**：IPv6、私网、回环、未指定、比 /8 更宽的条目一律丢弃，防止误把局域网或整个互联网推进分流线路。
+- **面板侧**：组合 61（SHIXP 白名单）拒绝原生出口——原生 SOCKS 可以到达任意目标，白名单就失效了。
+  所以 2026-10-17 为 plan 9 单独建了组合 72 / 路线 36「SHA -> SHIXP (native)」（同一条线路 22，无白名单），
+  不挂到客户套餐上。
+
 #### 防火墙
 
 安装时创建 fw4 区域 `leikwan`（设备 `lkwtun0`，input/output ACCEPT，forward REJECT）和
@@ -225,6 +246,7 @@ leikwand ctl sign_out
 | `gateway_dns_mode` | auto | auto = 防污染 DoH；custom = `gateway_dns_servers` |
 | `gateway_tun_mtu` | 1280 | 与桌面相同；只影响 UDP（TCP 在 sing-box 本地终结） |
 | `gateway_rule_set_dir` | /usr/share/leikwan/rule-set | 内置国内规则集 |
+| `gateway_split_forward_id` / `gateway_split_route_policy` / `gateway_split_cidr_file` | 0 / auto / SHIXP 表 | 分流线路（见 4.1） |
 | `log_level` | info | debug / info / warn / error |
 
 ### 端口与文件
@@ -306,11 +328,12 @@ leikwand ctl sign_out
 （表单类型拼错、rpc 方法名写错、render 抛异常、页面没有任何可操作按钮、
 菜单指向不存在的视图、ACL 漏授权），**6/6 全部被抓到**。
 
-### 网关配置（真实 sing-box 1.12.22，48 项）
+### 网关配置（真实 sing-box 1.12.22，60 项）
 
 `tools/leikwand/integration/validate_gateway_config.sh` 会下载 OpenWrt 24.10 发布的
 sing-box 与目标 rootfs 里的 musl 运行库，用 `sing-box check` 逐个校验
-3 种 scope × 2 种 policy × 2 种 bypass × 2 种 DNS 模式 × 2 种规则集来源的**全部 48 种组合**，当前全部通过且**零告警**。
+3 种 scope × 2 种 policy × 2 种 bypass × 2 种 DNS 模式 × 2 种规则集来源的**全部 48 种组合**，
+外加分流线路（随包 SHIXP 表）在 3 种 scope × 2 种 policy × 2 种分流 policy 上的 12 种组合，当前全部通过且**零告警**。
 
 这一步抓到了三个真实缺陷（单元测试全都发现不了）：
 1. 配置里用了 `geoip` 规则字段 —— sing-box 1.12 **已移除**，网关直接 FATAL 起不来；
