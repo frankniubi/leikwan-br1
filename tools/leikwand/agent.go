@@ -21,12 +21,14 @@ type runtimeState struct {
 	contract string
 	policy   *UltraPolicy
 
-	leaseExpiry   time.Time
-	leaseIDs      []string
-	candidates    int
-	lastLeaseAt   time.Time
-	leaseFailures int
-	lastLeaseErr  string
+	leaseExpiry time.Time
+	// renewNotBefore holds renewals back until the grant can be renewed.
+	renewNotBefore time.Time
+	leaseIDs       []string
+	candidates     int
+	lastLeaseAt    time.Time
+	leaseFailures  int
+	lastLeaseErr   string
 
 	status       *RuntimeStatus
 	statusAt     time.Time
@@ -59,17 +61,26 @@ type Agent struct {
 	deviceNm string
 	log      *Logger
 
-	mu        sync.Mutex
-	runtimes  map[int]*runtimeState
-	forwards  map[int]ForwardConfig
-	nativeCap *NativeOutboundCapability
+	mu       sync.Mutex
+	runtimes map[int]*runtimeState
+	// panelStopped holds forwards the Panel stopped out of band, keyed to the
+	// policy generation they were stopped under. A full pull still lists them,
+	// so without this the next config pull would restart them immediately.
+	panelStopped map[int]string
+	forwards     map[int]ForwardConfig
+	nativeCap    *NativeOutboundCapability
 	// nativeForwards are the Panel's native outbound carriers. They never
 	// run on the ordinary forward path; the gateway relay serves them.
 	nativeForwards map[int]ForwardConfig
 	lastPullAt     time.Time
-	lastPullErr    string
-	clientMeta     ClientMeta
-	diagToken      string
+	// configLoaded is set by the first full (200) pull of this process. The
+	// persisted revision only describes a previous process's state, so it is
+	// never sent as since_revision before this process holds a config: a 304
+	// would leave the forwards and the native capability empty indefinitely.
+	configLoaded bool
+	lastPullErr  string
+	clientMeta   ClientMeta
+	diagToken    string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -113,6 +124,7 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		deviceNm:         deviceNm,
 		log:              log,
 		runtimes:         map[int]*runtimeState{},
+		panelStopped:     map[int]string{},
 		forwards:         map[int]ForwardConfig{},
 		nativeForwards:   map[int]ForwardConfig{},
 		bypass:           newBypassRoutes(),
@@ -261,8 +273,11 @@ func (a *Agent) clearPullFailureLocked() {
 
 func (a *Agent) pullOnce(ctx context.Context) error {
 	pullState := a.store.Pull()
+	a.mu.Lock()
+	loaded := a.configLoaded
+	a.mu.Unlock()
 	since := ""
-	if !pullState.LastPullAt.IsZero() && !a.grantRefreshDue(time.Now()) {
+	if loaded && !pullState.LastPullAt.IsZero() && !a.grantRefreshDue(time.Now()) {
 		since = pullState.ConfigRevision
 	}
 	return a.pullWith(ctx, since, 20)
@@ -329,6 +344,7 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	a.mu.Lock()
 	a.clientMeta = response.Client
 	a.lastPullAt = time.Now()
+	a.configLoaded = true
 	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
@@ -443,10 +459,28 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	if !a.enrolled() {
 		return
 	}
+	// Ordinary forwards are served only in forward and hybrid mode. In gateway
+	// mode the router carries the LAN over the native carrier alone, so the
+	// client's other forwards get no listener and no lease here.
+	serving := a.config().forwardActive()
 	a.mu.Lock()
 	desired := make(map[int]ForwardConfig, len(a.forwards))
-	for k, v := range a.forwards {
-		desired[k] = v
+	if serving {
+		for k, v := range a.forwards {
+			if generation, stopped := a.panelStopped[k]; stopped {
+				if generation == policyGenerationOf(v) {
+					continue
+				}
+				// A new grant generation is the Panel re-enabling the forward.
+				delete(a.panelStopped, k)
+			}
+			desired[k] = v
+		}
+	}
+	for k := range a.panelStopped {
+		if _, listed := a.forwards[k]; !listed {
+			delete(a.panelStopped, k)
+		}
 	}
 	a.mu.Unlock()
 
@@ -467,7 +501,11 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	}
 	a.mu.Unlock()
 	for _, state := range stale {
-		a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		if serving {
+			a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		} else {
+			a.log.Info("runtime", "forward %d is not served in gateway mode; stopping", state.forward.ForwardID)
+		}
 		a.stopRuntime(state.proc, "withdrawn")
 		a.store.DeleteApplied(state.forward.ForwardID)
 	}

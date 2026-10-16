@@ -78,6 +78,8 @@ type gatewayManager struct {
 	relayKey       string
 	relayStoppedAt time.Time
 	leaseExpiry    time.Time
+	// renewNotBefore holds renewals back until the grant can be renewed.
+	renewNotBefore time.Time
 	lastLeaseAt    time.Time
 	leaseFailures  int
 	leaseErr       string
@@ -162,10 +164,11 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 		return
 	}
 	a.mu.Lock()
-	pulled := !a.lastPullAt.IsZero()
+	pulled := a.configLoaded
 	a.mu.Unlock()
 	if !pulled {
-		// Not a fault: the capability arrives with the first config pull.
+		// Not a fault: the capability arrives with the first full config pull
+		// (a 304 carries no capability, so it does not count).
 		m.mu.Lock()
 		m.lastErr = "waiting for the first panel config pull"
 		m.mu.Unlock()
@@ -255,7 +258,29 @@ func (m *gatewayManager) leaseDue(now time.Time, cfg Config) bool {
 	if m.leaseFailures > 0 && now.Sub(m.lastLeaseAt) < time.Duration(clampInt(m.leaseFailures*5, 5, 60))*time.Second {
 		return false
 	}
+	if now.Before(m.renewNotBefore) {
+		return false
+	}
 	return now.Add(time.Duration(cfg.LeaseRenewLeadSecs) * time.Second).After(m.leaseExpiry)
+}
+
+// nextLeaseRenewal is the earliest time a renewal can extend the lease. The
+// Panel caps a lease at its grant's expiry and keeps serving the same
+// grant until renew_after, so renewing earlier only re-mints a lease with the
+// same expiry (a tight loop once the renew lead is reached). The wait never
+// runs past ten seconds before the lease expires.
+func nextLeaseRenewal(grant *UltraPolicy, leaseExpiry time.Time) time.Time {
+	if grant == nil || leaseExpiry.IsZero() {
+		return time.Time{}
+	}
+	renewAfter, err := parseRFC3339(grant.RenewAfter)
+	if err != nil {
+		return time.Time{}
+	}
+	if latest := leaseExpiry.Add(-10 * time.Second); renewAfter.After(latest) {
+		return latest
+	}
+	return renewAfter
 }
 
 // renewLease mints a native batch from a freshly pulled grant (the session
@@ -326,8 +351,10 @@ func (m *gatewayManager) renewLease(ctx context.Context, plan gatewayPlan) error
 		}
 	}
 	expiry := earliestLeaseExpiry(frames)
+	notBefore := nextLeaseRenewal(plan.Carrier.UltraAccess, expiry)
 	m.mu.Lock()
 	m.leaseExpiry = expiry
+	m.renewNotBefore = notBefore
 	m.leaseFailures = 0
 	m.leaseErr = ""
 	m.candidates = len(frames)
@@ -524,6 +551,7 @@ func (m *gatewayManager) stopRelay(reason string) {
 	m.relay = nil
 	m.relayKey = ""
 	m.leaseExpiry = time.Time{}
+	m.renewNotBefore = time.Time{}
 	m.candidates = 0
 	if proc != nil {
 		m.relayStoppedAt = time.Now()

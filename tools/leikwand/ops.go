@@ -29,6 +29,8 @@ func (a *Agent) reloadConfig() {
 		next.Mode, next.UplinkEnabled, next.gatewayActive())
 	if previous.Mode != next.Mode {
 		a.log.Warn("ctl", "operating mode changed %s -> %s", previous.Mode, next.Mode)
+		// Leaving or entering forward service starts or stops ordinary forwards.
+		a.triggerReconcile("mode")
 	}
 	// Any gateway option may have changed; the gateway loop re-plans and only
 	// restarts what its new configuration actually differs in.

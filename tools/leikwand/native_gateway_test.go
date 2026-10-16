@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -408,4 +411,178 @@ func TestNativeRelayUsageIsReported(t *testing.T) {
 	if manager.relayCounters != (counterPair{}) {
 		t.Fatal("a new relay must count from zero")
 	}
+}
+
+// Gateway mode carries the LAN over the native carrier alone. The client's
+// ordinary forwards must not get a listener or a lease on the router: a
+// runtime left over from forward mode is stopped, and none is started.
+func TestGatewayModeDoesNotServeOrdinaryForwards(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Mode = "gateway"
+	cfg.GatewayEnabled = true
+	cfg.RuntimeBin = "/nonexistent/ultra-client"
+	agent := newTestAgent(t, cfg)
+	agent.panel.setToken("token", 3)
+
+	ordinary := ForwardConfig{ForwardID: 256, BackendMode: "ultra", ListenPort: 10001, ClientMode: "race"}
+	native := ForwardConfig{ForwardID: 325, BackendMode: "ultra", ListenPort: 44626, NativeOutboundEnabled: true}
+	agent.applyForwards([]ForwardConfig{ordinary, native})
+	agent.runtimes[256] = &runtimeState{proc: &runtimeProcess{forwardID: 256}, forward: ordinary}
+
+	agent.reconcileNow(context.Background(), "test")
+	if len(agent.runtimes) != 0 {
+		t.Fatalf("gateway mode kept ordinary runtimes: %v", agent.runtimes)
+	}
+	if _, ok := agent.nativeForwards[325]; !ok {
+		t.Fatal("the native carrier must stay available to the gateway")
+	}
+
+	// Hybrid serves both again: reconcile attempts the ordinary forward (and
+	// fails here only because the test has no runtime binary).
+	agent.mu.Lock()
+	agent.cfg.Mode = "hybrid"
+	agent.mu.Unlock()
+	if !agent.config().forwardActive() {
+		t.Fatal("hybrid must serve ordinary forwards")
+	}
+}
+
+// A restarted agent inherits the previous process's revision on disk but holds
+// no config in memory. Its first pull must be unconditional; sending the stale
+// revision earns a 304 that leaves the forwards and the native capability empty
+// for good (gateway mode has no ordinary grant to force a refresh later).
+func TestFirstPullOfAProcessIgnoresThePersistedRevision(t *testing.T) {
+	var sinces []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		since := r.URL.Query().Get("since_revision")
+		sinces = append(sinces, since)
+		if since == "rev-1" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		writeJSON(t, w, map[string]any{"ok": true, "config_revision": "rev-1", "forwards": []any{}})
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	cfg.FallbackURL = ""
+	agent := newTestAgent(t, cfg)
+	agent.panel = newPanelClient(agent.cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
+	agent.store.UpdatePull(func(state *PullState) {
+		state.ConfigRevision = "rev-1"
+		state.LastPullAt = time.Now()
+	})
+
+	if err := agent.pullOnce(context.Background()); err != nil {
+		t.Fatalf("first pull: %v", err)
+	}
+	if err := agent.pullOnce(context.Background()); err != errNotModified {
+		t.Fatalf("second pull = %v, want errNotModified", err)
+	}
+	if len(sinces) != 2 || sinces[0] != "" || sinces[1] != "rev-1" {
+		t.Fatalf("since_revision sequence = %q, want [\"\" \"rev-1\"]", sinces)
+	}
+	if !agent.configLoaded {
+		t.Fatal("a full pull must mark the config as loaded")
+	}
+}
+
+// The Panel keeps serving a native grant until its renew_after and caps the
+// lease at the grant's expiry. Renewing inside the renew lead but before
+// renew_after re-mints the same expiry, so the gateway must wait for
+// renew_after (it hot-looped every ~1.5s on the live Panel without this).
+func TestNativeRenewalWaitsForGrantRenewAfter(t *testing.T) {
+	now := time.Now()
+	grant := testGrant(now)
+	grant.ExpiresAt = formatRFC3339(now.Add(80 * time.Second))
+	grant.RenewAfter = formatRFC3339(now.Add(50 * time.Second))
+	leaseExpiry := now.Add(80 * time.Second)
+
+	notBefore := nextLeaseRenewal(grant, leaseExpiry)
+	if !notBefore.Equal(now.Add(50 * time.Second).Truncate(time.Second)) {
+		t.Fatalf("notBefore = %v, want renew_after", notBefore)
+	}
+
+	cfg := defaultConfig() // lease_renew_lead 90s: the lease is "due" immediately
+	manager := &gatewayManager{
+		relay:          &runtimeProcess{},
+		leaseExpiry:    leaseExpiry,
+		renewNotBefore: notBefore,
+	}
+	if manager.leaseDue(now, cfg) {
+		t.Fatal("a renewal before renew_after cannot extend the lease and must wait")
+	}
+	if !manager.leaseDue(now.Add(51*time.Second), cfg) {
+		t.Fatal("past renew_after the lease must renew")
+	}
+
+	// renew_after at or past the lease expiry still leaves a safety margin.
+	late := testGrant(now)
+	late.RenewAfter = formatRFC3339(now.Add(5 * time.Minute))
+	if got := nextLeaseRenewal(late, leaseExpiry); !got.Equal(leaseExpiry.Add(-10 * time.Second)) {
+		t.Fatalf("late renew_after clipped to %v, want 10s before expiry", got)
+	}
+	if !nextLeaseRenewal(&UltraPolicy{}, leaseExpiry).IsZero() || !nextLeaseRenewal(nil, leaseExpiry).IsZero() {
+		t.Fatal("no renew_after means no extra hold-back")
+	}
+}
+
+// Ordinary forwards share the cap: inside the renew lead the lease loop holds
+// back until renew_after, and a newer grant from the pull loop lifts the hold.
+func TestOrdinaryLeaseRenewalHoldsUntilGrantRefresh(t *testing.T) {
+	now := time.Now()
+	agent := &Agent{cfg: defaultConfig(), log: newLogger("error")}
+	used := testGrant(now)
+	state := &runtimeState{
+		forward:        ForwardConfig{ForwardID: 180, UltraAccess: used},
+		policy:         used,
+		leaseExpiry:    now.Add(60 * time.Second),
+		renewNotBefore: now.Add(30 * time.Second),
+	}
+	if agent.leaseRefreshDue(state, now) {
+		t.Fatal("inside the lead but before renew_after the lease must wait")
+	}
+	if !agent.leaseRefreshDue(state, now.Add(31*time.Second)) {
+		t.Fatal("past the hold the lease must renew")
+	}
+	newer := testGrant(now.Add(time.Minute))
+	state.forward.UltraAccess = newer
+	if !agent.leaseRefreshDue(state, now) {
+		t.Fatal("a newer grant can extend the lease and lifts the hold")
+	}
+}
+
+// A Panel stop action must stick: a full pull keeps listing the forward under
+// the same grant, and restarting it there would undo the Panel's command. A
+// new grant generation (or the forward leaving and returning) re-enables it.
+func TestPanelStopActionSticksUntilNewGeneration(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.RuntimeBin = "/nonexistent/ultra-client"
+	agent := newTestAgent(t, cfg)
+	agent.panel.setToken("token", 3)
+	now := time.Now()
+	forward := ForwardConfig{ForwardID: 3, BackendMode: "ultra", ListenPort: 10001, ClientMode: "race", UltraAccess: testGrant(now)}
+	agent.applyForwards([]ForwardConfig{forward})
+	agent.runtimes[3] = &runtimeState{proc: &runtimeProcess{forwardID: 3}, forward: forward}
+
+	agent.applyPolicyAction(UltraPolicyAction{ForwardID: 3, Action: "stop", Reason: "test"})
+	if _, running := agent.runtimes[3]; running {
+		t.Fatal("stop must remove the runtime")
+	}
+	agent.reconcileNow(context.Background(), "config_changed")
+	if _, held := agent.panelStopped[3]; !held {
+		t.Fatal("the same generation must stay stopped across a reconcile")
+	}
+
+	renewed := forward
+	renewed.UltraAccess = testGrant(now)
+	renewed.UltraAccess.PolicyGeneration = strings.Repeat("b", 64)
+	agent.applyForwards([]ForwardConfig{renewed})
+	agent.reconcileNow(context.Background(), "config_changed")
+	if _, held := agent.panelStopped[3]; held {
+		t.Fatal("a new grant generation re-enables the forward")
+	}
+
+	(&Agent{log: newLogger("error")}).applyPolicyAction(UltraPolicyAction{ForwardID: 9, Action: "stop"})
 }
