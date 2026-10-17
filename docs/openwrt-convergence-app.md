@@ -145,6 +145,16 @@ sing-box `auto_route` 会捕获路由器上所有未绑定接口的套接字，�
   所以 2026-10-17 为 plan 9 单独建了组合 72 / 路线 36「SHA -> SHIXP (native)」（同一条线路 22，无白名单），
   不挂到客户套餐上。
 
+#### 仅按网段接管（`gateway_capture=cidr`，服务器 / PVE 宿主机）
+
+`gateway_capture` 默认 `full`（整个局域网 + 防污染 DNS）。设为 `cidr` 时，承载线路只接管 `gateway_split_cidr_file` 里的目的网段：
+
+- sing-box 的 TUN 用 `route_address` 只为这些网段装路由，**没有 DNS 段、不劫持 DNS、不识别流量**；宿主机的默认路由、DNS 和其他流量完全不动。
+- 线路提供 `global` 时自动用 `global`（由本机按网段收窄）；网段表缺失或为空是错误（不会静默空转）；分流线路在此模式下忽略并提示。
+- 非 OpenWrt 主机用 `LEIKWAN_UCI_PATH` 指向一个 UCI 格式的配置文件即可运行（无需 `uci` 命令）。2026-10-17 在 PVE 宿主机 180.153.83.59 上以此模式直连 SHIXP 线路 #326，
+  宿主机的虚拟机经网桥层改投（nft bridge 改写目的 MAC）同样使用，见该机 `/usr/local/sbin/shixp-routes`。
+
+
 #### 防火墙
 
 安装时创建 fw4 区域 `leikwan`（设备 `lkwtun0`，input/output ACCEPT，forward REJECT）和

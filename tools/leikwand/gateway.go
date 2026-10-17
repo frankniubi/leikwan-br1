@@ -64,6 +64,8 @@ type GatewayView struct {
 	Carriers      []GatewayCarrierView `json:"carriers"`
 	NativeGranted bool                 `json:"native_granted"`
 	Split         *GatewaySplitView    `json:"split,omitempty"`
+	Capture       string               `json:"capture"`
+	CaptureCIDRs  int                  `json:"capture_cidrs,omitempty"`
 }
 
 type GatewayCarrierView struct {
@@ -552,7 +554,13 @@ func splitRenderFor(plan gatewayPlan) *gatewaySplitRender {
 func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan) error {
 	a := m.agent
 	split := splitRenderFor(plan)
-	rendered, source := renderGatewayConfig(cfg, plan.Scope, plan.Policy, split)
+	var rendered map[string]any
+	var source string
+	if len(plan.CaptureCIDRs) > 0 {
+		rendered, source = renderGatewayCIDRConfig(cfg, plan.Policy, plan.CaptureCIDRs), "none"
+	} else {
+		rendered, source = renderGatewayConfig(cfg, plan.Scope, plan.Policy, split)
+	}
 	encoded, err := json.MarshalIndent(rendered, "", "  ")
 	if err != nil {
 		return err
@@ -741,6 +749,7 @@ func (a *Agent) gatewayView() *GatewayView {
 		BypassCN:   cfg.GatewayBypassCN,
 		DNSMode:    firstNonEmpty(cfg.GatewayDNSMode, "auto"),
 		Carriers:   []GatewayCarrierView{},
+		Capture:    cfg.GatewayCapture,
 	}
 	if cfg.GatewaySplitForwardID > 0 {
 		view.Split = &GatewaySplitView{
@@ -784,6 +793,7 @@ func (a *Agent) gatewayView() *GatewayView {
 		view.RoutePolicy = manager.plan.Policy
 		view.Unrestricted = manager.plan.Native.UnrestrictedOK
 		view.Notes = append([]string(nil), manager.plan.Notes...)
+		view.CaptureCIDRs = len(manager.plan.CaptureCIDRs)
 	}
 	view.RuleSets = manager.ruleSetSource
 	view.Candidates = primary.candidates

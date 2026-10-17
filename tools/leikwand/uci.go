@@ -56,6 +56,10 @@ type Config struct {
 	GatewaySplitForwardID   int
 	GatewaySplitRoutePolicy string
 	GatewaySplitCIDRFile    string
+	// GatewayCapture is "full" (the whole LAN, DNS protected) or "cidr": only
+	// the destinations in GatewaySplitCIDRFile are captured, by the primary
+	// carrier, with DNS and everything else left alone (servers, PVE hosts).
+	GatewayCapture string
 
 	// Uplink (multi-WAN) high availability
 	UplinkEnabled       bool
@@ -132,6 +136,7 @@ func defaultConfig() Config {
 		GatewayRuleSetDir:       "/usr/share/leikwan/rule-set",
 		GatewaySplitRoutePolicy: "auto",
 		GatewaySplitCIDRFile:    "/usr/share/leikwan/split/shixp-v4.txt",
+		GatewayCapture:          "full",
 		UplinkScope:             "relay",
 		UplinkIntervalSecs:      5,
 		UplinkTimeoutMS:         2000,
@@ -207,6 +212,7 @@ func loadConfig() Config {
 	cfg.GatewaySplitForwardID = atoiDefault(get("gateway_split_forward_id", "0"), 0)
 	cfg.GatewaySplitRoutePolicy = normalizeGatewayChoice(get("gateway_split_route_policy", cfg.GatewaySplitRoutePolicy), "restricted", "unrestricted")
 	cfg.GatewaySplitCIDRFile = get("gateway_split_cidr_file", cfg.GatewaySplitCIDRFile)
+	cfg.GatewayCapture = normalizeGatewayCapture(get("gateway_capture", cfg.GatewayCapture))
 
 	cfg.UplinkEnabled = boolDefault(get("uplink_enabled", "0"), false)
 	cfg.UplinkScope = strings.ToLower(get("uplink_scope", cfg.UplinkScope))
@@ -423,4 +429,12 @@ func normalizeGatewayDNSMode(value string) string {
 		return "custom"
 	}
 	return "auto"
+}
+
+// normalizeGatewayCapture keeps "cidr"; anything else is the full LAN gateway.
+func normalizeGatewayCapture(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "cidr") {
+		return "cidr"
+	}
+	return "full"
 }

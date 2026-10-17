@@ -28,6 +28,9 @@ type gatewayPlan struct {
 	carrierPlan
 	Split      *carrierPlan
 	SplitCIDRs []string
+	// CaptureCIDRs is set in cidr capture mode: the primary carrier carries
+	// only these destinations and nothing else on the box is touched.
+	CaptureCIDRs []string
 	// Notes explain a downgrade from what the operator asked for.
 	Notes []string
 }
@@ -47,8 +50,14 @@ func (a *Agent) gatewayPlan() (gatewayPlan, error) {
 	cfg := a.cfg
 	a.mu.Unlock()
 	plan, err := resolveGatewayPlan(cfg, capability, forwards)
-	if err != nil || cfg.GatewaySplitForwardID <= 0 {
+	if err != nil {
 		return plan, err
+	}
+	if cfg.GatewayCapture == "cidr" {
+		return resolveCIDRCapture(cfg, plan)
+	}
+	if cfg.GatewaySplitForwardID <= 0 {
+		return plan, nil
 	}
 	cidrs, loadErr := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
 	if loadErr != nil {
@@ -99,6 +108,30 @@ func resolveGatewayPlan(cfg Config, capability *NativeOutboundCapability, forwar
 	plan := gatewayPlan{carrierPlan: carrierPlan{Carrier: carrier, Native: native}}
 	plan.Scope, plan.Notes = resolveGatewayScope(cfg.GatewayRouteScope, native, plan.Notes)
 	plan.Policy, plan.Notes = resolveGatewayPolicy(cfg.GatewayRoutePolicy, native, plan.Notes)
+	return plan, nil
+}
+
+// resolveCIDRCapture turns the plan into a CIDR-only capture: the list is
+// required (an empty or unreadable list would capture nothing, which is an
+// error rather than a silently idle gateway), the scope is global whenever the
+// line offers it (the router, not the line, narrows the destinations), and a
+// split carrier has no meaning here.
+func resolveCIDRCapture(cfg Config, plan gatewayPlan) (gatewayPlan, error) {
+	cidrs, err := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
+	if err != nil {
+		return plan, fmt.Errorf("cidr capture: %w", err)
+	}
+	if len(cidrs) == 0 {
+		return plan, fmt.Errorf("cidr capture: %s has no usable prefixes", cfg.GatewaySplitCIDRFile)
+	}
+	plan.CaptureCIDRs = cidrs
+	want := strings.ToLower(strings.TrimSpace(cfg.GatewayRouteScope))
+	if (want == "" || want == "auto") && containsString(nativeScopesOf(plan.Native), "global") {
+		plan.Scope = "global"
+	}
+	if cfg.GatewaySplitForwardID > 0 {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("split carrier #%d is ignored in cidr capture mode", cfg.GatewaySplitForwardID))
+	}
 	return plan, nil
 }
 

@@ -316,3 +316,45 @@ func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRe
 
 // nativePortMin mirrors ultra-client's restricted-policy floor.
 const nativePortMin = 1000
+
+// renderGatewayCIDRConfig is the cidr capture mode: the TUN routes only the
+// listed prefixes (route_address), so the rest of the box - its DNS, its
+// default route, its VMs' other traffic - never enters sing-box. Everything
+// that does enter goes to the carrier; there is no DNS block and no sniffing.
+func renderGatewayCIDRConfig(cfg Config, policy string, cidrs []string) map[string]any {
+	ports := "1:65535"
+	if normalizeRoutePolicy(policy) != "unrestricted" {
+		ports = itoa(nativePortMin) + ":65535"
+	}
+	return map[string]any{
+		"log": map[string]any{"level": "warn", "timestamp": true},
+		"inbounds": []map[string]any{{
+			"type":                     "tun",
+			"tag":                      "tun-in",
+			"interface_name":           gatewayTunName,
+			"address":                  []string{cfg.GatewayTunAddress},
+			"mtu":                      cfg.GatewayTunMTU,
+			"auto_route":               true,
+			"strict_route":             false,
+			"route_address":            cidrs,
+			"stack":                    "mixed",
+			"endpoint_independent_nat": true,
+			"iproute2_table_index":     gatewayTableIndex,
+			"iproute2_rule_index":      gatewayRuleIndex,
+		}},
+		"outbounds": []map[string]any{
+			{
+				"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": gatewaySocksPort, "version": "5",
+				"udp_over_tcp": map[string]any{"enabled": false},
+			},
+			{"type": "direct", "tag": "direct"},
+		},
+		"route": map[string]any{
+			"rules": []map[string]any{
+				{"ip_cidr": cidrs, "network": []string{"tcp", "udp"}, "port_range": []string{ports}, "outbound": "proxy"},
+			},
+			"final":                 "direct",
+			"auto_detect_interface": true,
+		},
+	}
+}

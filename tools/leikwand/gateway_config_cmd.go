@@ -23,6 +23,20 @@ func printGatewayConfig() int {
 	cfg := loadConfig()
 	scope := offlineGatewayChoice(os.Getenv("LEIKWAN_GATEWAY_SCOPE"), cfg.GatewayRouteScope, "global")
 	policy := offlineGatewayChoice(os.Getenv("LEIKWAN_GATEWAY_POLICY"), cfg.GatewayRoutePolicy, "unrestricted")
+	if cfg.GatewayCapture == "cidr" {
+		cidrs, err := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
+		if err != nil || len(cidrs) == 0 {
+			fmt.Fprintf(os.Stderr, "cidr capture: no usable prefixes in %s (%v)\n", cfg.GatewaySplitCIDRFile, err)
+			return 1
+		}
+		encoded, err := json.MarshalIndent(renderGatewayCIDRConfig(cfg, policy, cidrs), "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not encode the gateway configuration: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(encoded))
+		return 0
+	}
 	var split *gatewaySplitRender
 	if cfg.GatewaySplitForwardID > 0 {
 		cidrs, err := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
