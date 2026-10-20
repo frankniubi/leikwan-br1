@@ -98,9 +98,9 @@
   "client_rate_limit": {
     "artifact_url": "/artifacts/leikwan-rate-limit.py",
     "path": "client-agent/leikwan_rate_limit.py",
-    "sha256": "917cf5ef1958a10a7277cf21deab3583cfed1598c54ba456b3b042b20496e4a5",
-    "size_bytes": 4981,
-    "version": "2026.08.29.1"
+    "sha256": "df07f8a55879ce21a41ea9856174c033f6539fc0339e236d3c7429a98c2a437a",
+    "size_bytes": 7218,
+    "version": "2026.10.21.1"
   },
   "external_uot_installer": {
     "artifact_url": "/artifacts/install-external-uot.sh",
