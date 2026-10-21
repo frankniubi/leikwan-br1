@@ -11,8 +11,8 @@ struct NativeOutboundSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.gutter) {
-            SectionTitle("Native outbound")
-            Text("The server provides the exit, so no node of your own is needed; turn on the exit you want. While native outbound is on, all traffic uses it and the bindings below do not run.")
+            SectionTitle(L("Native outbound"))
+            Text(L("The server provides the exit, so no node of your own is needed; turn on the exit you want. While native outbound is on, all traffic uses it and the bindings below do not run."))
                 .font(.caption)
                 .foregroundStyle(Palette.onSurfaceVariant)
             LazyVGrid(columns: columns, spacing: Metrics.gutter) {
@@ -25,8 +25,8 @@ struct NativeOutboundSection: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if model.nativeOutboundRouteScopes.count > 1 {
                         VStack(alignment: .leading, spacing: 8) {
-                            FieldLabel("Traffic scope")
-                            Picker("Traffic scope", selection: scopeBinding) {
+                            FieldLabel(L("Traffic scope"))
+                            Picker(L("Traffic scope"), selection: scopeBinding) {
                                 ForEach(model.nativeOutboundRouteScopes, id: \.self) { scope in
                                     Text(scope.displayName).tag(scope)
                                 }
@@ -39,7 +39,7 @@ struct NativeOutboundSection: View {
                     }
 
                     if model.nativeOutboundSelection?.routeScope == .global {
-                        Toggle("Bypass mainland China", isOn: bypassChinaBinding)
+                        Toggle(L("Bypass mainland China"), isOn: bypassChinaBinding)
                             .font(.subheadline)
                     }
 
@@ -48,7 +48,7 @@ struct NativeOutboundSection: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(NativeRoutePolicy.unrestricted.displayName)
                                     .font(.subheadline)
-                                Text("Standard routing when off")
+                                Text(L("Standard routing when off"))
                                     .font(.caption)
                                     .foregroundStyle(Palette.onSurfaceVariant)
                             }
@@ -71,9 +71,9 @@ struct NativeOutboundSection: View {
 
     private var scopeExplanation: String {
         switch model.nativeOutboundSelection?.routeScope {
-        case .cnOnly: return "Only traffic to mainland China uses native outbound; the rest goes direct."
-        case .intlOnly: return "Only traffic outside mainland China uses native outbound; the rest goes direct."
-        case .global: return "All traffic uses native outbound."
+        case .cnOnly: return L("Only traffic to mainland China uses native outbound; the rest goes direct.")
+        case .intlOnly: return L("Only traffic outside mainland China uses native outbound; the rest goes direct.")
+        case .global: return L("All traffic uses native outbound.")
         case nil: return ""
         }
     }
@@ -140,12 +140,12 @@ private struct NativeCarrierCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Pill(
-                    text: "#\(carrier.forwardId) · Native outbound",
+                    text: L("#%@ · Native outbound", String(describing: carrier.forwardId)),
                     fill: isActive ? Palette.primary : Palette.secondaryContainer,
                     foreground: isActive ? Palette.onPrimary : Palette.onSecondaryContainer
                 )
                 Spacer()
-                Toggle("Use this native outbound", isOn: activeBinding)
+                Toggle(L("Use this native outbound"), isOn: activeBinding)
                     .labelsHidden()
             }
 
@@ -191,9 +191,9 @@ private struct NativeCarrierCard: View {
     /// Panel exit, no node: the current scope when active, else what the carrier offers.
     private var scopeSummary: String {
         if isActive, let selection = model.nativeOutboundSelection {
-            return "Server exit · " + selection.routeScope.displayName
+            return L("Server exit · %@", selection.routeScope.displayName)
         }
-        return "Server exit · " + carrier.routeScopes.map(\.displayName).joined(separator: " / ")
+        return L("Server exit · %@", carrier.routeScopes.map(\.displayName).joined(separator: " / "))
     }
 
     private var activeBinding: Binding<Bool> {

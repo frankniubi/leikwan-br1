@@ -284,7 +284,7 @@ public struct CloudBulkUploadResult: Equatable {
 
     /// e.g. "已上传 3 个，云端已有 1 个，不支持 0 个，失败 0 个".
     public var summary: String {
-        return "Uploaded \(uploaded), already in cloud \(alreadyHosted), unsupported \(unsupported), failed \(failed)"
+        return L("Uploaded %@, already in cloud %@, unsupported %@, failed %@", String(describing: uploaded), String(describing: alreadyHosted), String(describing: unsupported), String(describing: failed))
     }
 }
 

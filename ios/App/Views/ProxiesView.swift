@@ -21,11 +21,11 @@ struct ProxiesView: View {
                         NativeOutboundSection()
                     }
 
-                    SectionTitle("Bindings", trailing: bindingsBadge)
+                    SectionTitle(L("Bindings"), trailing: bindingsBadge)
                     if model.isNativeOutboundActive {
                         NativeActiveBanner()
                     } else {
-                        Text("Each forward is bound to one node, and every enabled binding runs at the same time. Under Rules you can send an app through a specific binding; everything else uses the default binding.")
+                        Text(L("Each forward is bound to one node, and every enabled binding runs at the same time. Under Rules you can send an app through a specific binding; everything else uses the default binding."))
                             .font(.caption)
                             .foregroundStyle(Palette.onSurfaceVariant)
                     }
@@ -35,7 +35,7 @@ struct ProxiesView: View {
                         }
                     }
 
-                    SectionTitle("Nodes", trailing: AnyView(nodeActions))
+                    SectionTitle(L("Nodes"), trailing: AnyView(nodeActions))
                     CloudStatusBar()
                     if model.nodes.isEmpty && model.unsupportedCloudNodes.isEmpty {
                         EmptyNodesCard()
@@ -58,7 +58,7 @@ struct ProxiesView: View {
                 await model.refreshCloudNodes()
             }
             .pageBackground()
-            .navigationTitle("Lines")
+            .navigationTitle(L("Lines"))
             .overlay(alignment: .bottomTrailing) {
                 StartButton()
                     .padding(Metrics.pagePadding + 4)
@@ -73,10 +73,10 @@ struct ProxiesView: View {
 
     private var bindingsBadge: AnyView? {
         if model.isNativeOutboundActive {
-            return AnyView(Pill(text: "Paused", fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
+            return AnyView(Pill(text: L("Paused"), fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
         }
         guard let hidden = model.catalog?.unsupportedHiddenCount, hidden > 0 else { return nil }
-        return AnyView(Pill(text: "\(hidden) unsupported forward(s) hidden"))
+        return AnyView(Pill(text: L("%@ unsupported forward(s) hidden", String(describing: hidden))))
     }
 
     private var nodeActions: some View {
@@ -87,23 +87,23 @@ struct ProxiesView: View {
                 Image(systemName: "bolt.fill")
             }
             .disabled(model.nodes.isEmpty || !latency.testing.isEmpty)
-            .accessibilityLabel("Test latency")
+            .accessibilityLabel(L("Test latency"))
 
             Menu {
                 Button {
                     Task { await importClipboard() }
                 } label: {
-                    Label("Import from clipboard", systemImage: "doc.on.clipboard")
+                    Label(L("Import from clipboard"), systemImage: "doc.on.clipboard")
                 }
                 Button {
                     editing = ProxyNode(name: "", server: "", port: 8388, settings: .shadowsocks(ShadowsocksSettings(method: "aes-128-gcm", password: "")))
                 } label: {
-                    Label("Add Shadowsocks", systemImage: "plus")
+                    Label(L("Add Shadowsocks"), systemImage: "plus")
                 }
                 Button {
                     editing = ProxyNode(name: "", server: "", port: 1080, settings: .socks(SocksSettings()))
                 } label: {
-                    Label("Add SOCKS5", systemImage: "plus")
+                    Label(L("Add SOCKS5"), systemImage: "plus")
                 }
                 if model.isCloudAvailable && !model.localOnlyNodes.isEmpty {
                     Divider()
@@ -114,7 +114,7 @@ struct ProxiesView: View {
                             }
                         }
                     } label: {
-                        Label("Upload all device nodes to the cloud", systemImage: "icloud.and.arrow.up")
+                        Label(L("Upload all device nodes to the cloud"), systemImage: "icloud.and.arrow.up")
                     }
                 }
             } label: {
@@ -124,14 +124,14 @@ struct ProxiesView: View {
                     Image(systemName: "plus.circle.fill")
                 }
             }
-            .accessibilityLabel("Add node")
+            .accessibilityLabel(L("Add node"))
         }
         .font(.headline)
     }
 
     private func importClipboard() async {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            model.notice = "The clipboard is empty"
+            model.notice = L("The clipboard is empty")
             return
         }
         importing = true
@@ -163,13 +163,13 @@ private struct BindingCard: View {
                         foreground: isRunning ? Palette.onPrimary : Palette.onSecondaryContainer
                     )
                 } else {
-                    Pill(text: "Direct")
+                    Pill(text: L("Direct"))
                 }
                 if row.isDefault && !suspended {
-                    Pill(text: "Default", fill: Palette.successContainer, foreground: Palette.onSuccessContainer)
+                    Pill(text: L("Default"), fill: Palette.successContainer, foreground: Palette.onSuccessContainer)
                 }
                 Spacer()
-                Toggle("Enabled", isOn: enabledBinding)
+                Toggle(L("Enabled"), isOn: enabledBinding)
                     .labelsHidden()
                     .disabled(suspended || (row.node == nil && row.forward?.kind != .ultra))
             }
@@ -195,7 +195,7 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
                 if let forward = row.forward, !suspended {
                     Menu {
-                        Button("No node") {
+                        Button(L("No node")) {
                             Task { await model.setNode(nil, forForward: forward.forwardId) }
                         }
                         Divider()
@@ -233,7 +233,7 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
                 Spacer()
                 if !row.isDefault && isRunning {
-                    Button("Make default") {
+                    Button(L("Make default")) {
                         model.setDefaultBinding(row.id)
                     }
                     .font(.caption.weight(.semibold))
@@ -267,12 +267,12 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurface)
                     .lineLimit(1)
             } else if let unsupported = row.unsupportedCloudNode {
-                Text("\(unsupported.name) (iOS does not support \(unsupported.nodeProtocol) yet)")
+                Text(L("%@ (iOS does not support %@ yet)", String(describing: unsupported.name), String(describing: unsupported.nodeProtocol)))
                     .font(.subheadline)
                     .foregroundStyle(Palette.bad)
                     .lineLimit(1)
             } else {
-                Text(row.forward?.kind == .ultra ? "No node (forward only)" : "Choose node")
+                Text(row.forward?.kind == .ultra ? L("No node (forward only)") : L("Choose node"))
                     .font(.subheadline)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
@@ -300,7 +300,7 @@ private struct NativeActiveBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
-                Text("Native outbound \u{201C}\(nativeTitle)\u{201D} is in use, so the bindings below do not run (their settings are kept).")
+                Text(L("Native outbound \u{201C}%@\u{201D} is in use, so the bindings below do not run (their settings are kept).", String(describing: nativeTitle)))
             } icon: {
                 Image(systemName: "pause.circle.fill")
             }
@@ -309,7 +309,7 @@ private struct NativeActiveBanner: View {
             Button {
                 model.setNativeOutboundEnabled(false)
             } label: {
-                Text(tunnel.isConnected || tunnel.isBusy ? "Use bindings instead (disconnects first)" : "Use bindings instead")
+                Text(tunnel.isConnected || tunnel.isBusy ? L("Use bindings instead (disconnects first)") : L("Use bindings instead"))
                     .font(.subheadline.weight(.semibold))
             }
         }
@@ -319,7 +319,7 @@ private struct NativeActiveBanner: View {
     }
 
     private var nativeTitle: String {
-        guard let carrier = model.selectedNativeOutboundCarrier else { return "Native outbound" }
+        guard let carrier = model.selectedNativeOutboundCarrier else { return L("Native outbound") }
         let direction = model.nativeOutboundForward(for: carrier)?.directionTitle ?? model.nativeOutboundTitle(for: carrier)
         return "#\(carrier.forwardId) \(direction)"
     }
@@ -352,7 +352,7 @@ private struct CloudStatusBar: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .accessibilityLabel("Refresh from cloud")
+                .accessibilityLabel(L("Refresh from cloud"))
             }
         }
         .padding(12)
@@ -370,17 +370,17 @@ private struct CloudStatusBar: View {
     }
 
     private var title: String {
-        if model.cloudStatus.isSyncing { return "Syncing…" }
-        if model.cloudStatus.lastError != nil { return "Cloud sync failed" }
-        return "\(model.cloudNodes.count) cloud · \(model.localOnlyNodes.count) on this device"
+        if model.cloudStatus.isSyncing { return L("Syncing…") }
+        if model.cloudStatus.lastError != nil { return L("Cloud sync failed") }
+        return L("%@ cloud · %@ on this device", String(describing: model.cloudNodes.count), String(describing: model.localOnlyNodes.count))
     }
 
     private var detail: String {
         if let error = model.cloudStatus.lastError { return error }
         if let date = model.cloudLastSyncedAt {
-            return "Last synced " + date.formatted(date: .omitted, time: .shortened) + " · nodes and bindings sync with your other devices"
+            return L("Last synced %@ · nodes and bindings sync with your other devices", date.formatted(date: .omitted, time: .shortened))
         }
-        return model.isCloudAvailable ? "Nodes and bindings sync with your other devices" : "Syncs after you sign in"
+        return model.isCloudAvailable ? L("Nodes and bindings sync with your other devices") : L("Syncs after you sign in")
     }
 }
 
@@ -403,7 +403,7 @@ private struct NodeCard: View {
                 Image(systemName: node.isHosted ? "icloud.fill" : "iphone")
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)
-                    .accessibilityLabel(node.isHosted ? "Cloud node" : "Device node")
+                    .accessibilityLabel(node.isHosted ? L("Cloud node") : L("Device node"))
             }
             Spacer(minLength: 0)
             HStack {
@@ -435,30 +435,30 @@ private struct NodeCard: View {
             Button {
                 onEdit()
             } label: {
-                Label("Edit", systemImage: "pencil")
+                Label(L("Edit"), systemImage: "pencil")
             }
             if !node.isHosted && model.canUploadToCloud(node) {
                 Button {
                     Task { await model.uploadNodeToCloud(node.id) }
                 } label: {
-                    Label("Upload to cloud", systemImage: "icloud.and.arrow.up")
+                    Label(L("Upload to cloud"), systemImage: "icloud.and.arrow.up")
                 }
             }
             Button {
                 model.addDirectBinding(nodeID: node.id)
             } label: {
-                Label("Use this node directly (add binding)", systemImage: "arrow.right")
+                Label(L("Use this node directly (add binding)"), systemImage: "arrow.right")
             }
             Button {
                 UIPasteboard.general.string = ProxyShareLink.format(node) ?? ""
             } label: {
-                Label("Copy share link", systemImage: "link")
+                Label(L("Copy share link"), systemImage: "link")
             }
             Divider()
             Button(role: .destructive) {
                 model.deleteNodes([node.id])
             } label: {
-                Label(node.isHosted ? "Delete from cloud" : "Delete", systemImage: "trash")
+                Label(node.isHosted ? L("Delete from cloud") : L("Delete"), systemImage: "trash")
             }
         }
         .onTapGesture(perform: onEdit)
@@ -481,7 +481,7 @@ private struct UnsupportedNodeCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
             Spacer(minLength: 0)
-            Text("\(dto.nodeProtocol.uppercased()) · not supported on iOS yet")
+            Text(L("%@ · not supported on iOS yet", String(describing: dto.nodeProtocol.uppercased())))
                 .font(.caption2)
                 .foregroundStyle(Palette.onSurfaceVariant)
         }
@@ -498,9 +498,9 @@ private struct EmptyNodesCard: View {
             Image(systemName: "tray")
                 .font(.largeTitle)
                 .foregroundStyle(Palette.onSurfaceVariant)
-            Text("No nodes yet")
+            Text(L("No nodes yet"))
                 .font(.headline)
-            Text("Tap + to import an ss:// or socks5:// link from the clipboard, or add one by hand. Nodes uploaded to the cloud from your other devices show up here.")
+            Text(L("Tap + to import an ss:// or socks5:// link from the clipboard, or add one by hand. Nodes uploaded to the cloud from your other devices show up here."))
                 .font(.footnote)
                 .foregroundStyle(Palette.onSurfaceVariant)
                 .multilineTextAlignment(.center)

@@ -36,7 +36,7 @@ final class UltraLeaseManager {
         lock.lock()
         defer { lock.unlock() }
         guard let forwardID = alerts.keys.sorted().first, let message = alerts[forwardID] else { return nil }
-        return "Ultra forward \(forwardID): \(message)"
+        return L("Ultra forward %@: %@", String(describing: forwardID), String(describing: message))
     }
 
     func start() {
@@ -301,17 +301,17 @@ final class UltraLeaseManager {
     static func userMessage(_ code: String) -> String {
         switch code {
         case "ultra_forward_changed_reconnect":
-            return "The forward settings changed. Reconnect"
+            return L("The forward settings changed. Reconnect")
         case "ultra_policy_unavailable", "policy_unavailable":
-            return "Ultra authorization unavailable (service inactive or expired)"
+            return L("Ultra authorization unavailable (service inactive or expired)")
         case "lease_sealing_required", "lease_key_invalid", "lease_unseal_failed", "lease_device_key_conflict":
-            return "Line key check failed (\(code))"
+            return L("Line key check failed (%@)", String(describing: code))
         case "ultra_lease_rejected_by_runtime":
-            return "The local Ultra runtime rejected the line"
+            return L("The local Ultra runtime rejected the line")
         case "no_approved_candidate":
-            return "No line available yet; retrying automatically"
+            return L("No line available yet; retrying automatically")
         default:
-            return "Could not get a line (\(code)); retrying automatically"
+            return L("Could not get a line (%@); retrying automatically", String(describing: code))
         }
     }
 }

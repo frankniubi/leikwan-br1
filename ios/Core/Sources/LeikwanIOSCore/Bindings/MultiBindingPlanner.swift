@@ -163,7 +163,7 @@ public enum MultiBindingPlanner {
             }
         }
         if planned.isEmpty {
-            let reason = skipped.first?.reason.message ?? "Add and select a node first"
+            let reason = skipped.first?.reason.message ?? L("Add and select a node first")
             throw MultiBindingPlanError(reason)
         }
 
@@ -205,13 +205,13 @@ public enum MultiBindingPlanner {
     ) throws -> ForwardUnit {
         switch forward.kind {
         case .ultra:
-            guard environment.hasPanelSession else { throw MultiBindingPlanError("Sign in to use Ultra forwards") }
+            guard environment.hasPanelSession else { throw MultiBindingPlanError(L("Sign in to use Ultra forwards")) }
             guard let policy = UltraPolicy.from(forward.contract, now: environment.now) else {
-                throw MultiBindingPlanError("Ultra authorization unavailable. Refresh and try again")
+                throw MultiBindingPlanError(L("Ultra authorization unavailable. Refresh and try again"))
             }
             let paths = UltraRuntimePaths.compact(directory: environment.runtimeDirectory, forwardId: forward.forwardId)
             if paths.controlSocketPath.utf8.count > UltraRuntimePaths.maxSocketPathBytes {
-                throw MultiBindingPlanError("Ultra control socket path is too long")
+                throw MultiBindingPlanError(L("Ultra control socket path is too long"))
             }
             let maxCandidates = max(1, min(environment.ultraMaxCandidates, UltraConstants.maxLeaseCandidates))
             // iOS plans before the leases exist: always ask for candidates and let the runtime choose.

@@ -27,7 +27,7 @@ struct LoginView: View {
                         error = nil
                         editing = ProfileDraft()
                     } label: {
-                        Label("New profile", systemImage: "plus")
+                        Label(L("New profile"), systemImage: "plus")
                             .font(.headline)
                             .frame(maxWidth: .infinity, minHeight: 48)
                             .foregroundStyle(Palette.onPrimaryContainer)
@@ -53,22 +53,22 @@ struct LoginView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .pageBackground()
-                .navigationTitle(draft.profileID == nil ? "New profile" : "Edit profile")
+                .navigationTitle(draft.profileID == nil ? L("New profile") : L("Edit profile"))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { editing = nil }
+                        Button(L("Cancel")) { editing = nil }
                     }
                 }
             }
         }
         .confirmationDialog(
-            "Deleting the profile also deletes its Agent Token from this device.",
+            L("Deleting the profile also deletes its Agent Token from this device."),
             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
             titleVisibility: .visible,
             presenting: deleting
         ) { profile in
-            Button("Delete \u{201C}\(profile.displayName)\u{201D}", role: .destructive) {
+            Button(L("Delete \u{201C}%@\u{201D}", String(describing: profile.displayName)), role: .destructive) {
                 model.deleteProfile(profile.id)
             }
         }
@@ -90,7 +90,7 @@ struct LoginView: View {
             Text("Bridge")
                 .font(.largeTitle.weight(.bold))
                 .foregroundStyle(Palette.onSurface)
-            Text("Sign in with your server address, Client ID and Agent Token")
+            Text(L("Sign in with your server address, Client ID and Agent Token"))
                 .font(.subheadline)
                 .foregroundStyle(Palette.onSurfaceVariant)
                 .multilineTextAlignment(.center)
@@ -100,7 +100,7 @@ struct LoginView: View {
 
     private var savedProfiles: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Saved profiles")
+            Text(L("Saved profiles"))
                 .font(.caption.weight(.medium))
                 .foregroundStyle(Palette.onSurfaceVariant)
                 .padding(.horizontal, 4)
@@ -164,17 +164,17 @@ struct ProfileDraft: Identifiable {
         let serverEndpoint: PanelEndpoint
         switch PanelEndpoint.parse(server) {
         case .success(let endpoint): serverEndpoint = endpoint
-        case .failure(let reason): return .failure(AppError("Server address: " + Self.describe(reason)))
+        case .failure(let reason): return .failure(AppError(L("Server address: %@", Self.describe(reason))))
         }
         var backup: PanelEndpoint?
         if !backupServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             switch PanelEndpoint.parse(backupServer) {
             case .success(let endpoint): backup = endpoint
-            case .failure(let reason): return .failure(AppError("Backup address: " + Self.describe(reason)))
+            case .failure(let reason): return .failure(AppError(L("Backup address: %@", Self.describe(reason))))
             }
         }
         guard let clientId = Int64(clientID.trimmingCharacters(in: .whitespaces)), clientId > 0 else {
-            return .failure(AppError("Client ID must be a positive number"))
+            return .failure(AppError(L("Client ID must be a positive number")))
         }
         return .success(PanelProfile(
             id: profileID ?? UUID(),
@@ -188,10 +188,10 @@ struct ProfileDraft: Identifiable {
 
     static func describe(_ error: PanelEndpoint.ParseError) -> String {
         switch error {
-        case .empty: return "required"
-        case .insecure: return "must use https"
-        case .hasCredentials: return "must not contain a user name or password"
-        case .invalid: return "not a valid address"
+        case .empty: return L("required")
+        case .insecure: return L("must use https")
+        case .hasCredentials: return L("must not contain a user name or password")
+        case .invalid: return L("not a valid address")
         }
     }
 }
@@ -230,11 +230,11 @@ private struct ProfileForm: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            InputField(title: "Profile name (optional)", systemImage: "tag") {
-                TextField("e.g. Home / Office", text: $draft.name)
+            InputField(title: L("Profile name (optional)"), systemImage: "tag") {
+                TextField(L("e.g. Home / Office"), text: $draft.name)
                     .focused($focused, equals: .name)
             }
-            InputField(title: "Server address", systemImage: "server.rack") {
+            InputField(title: L("Server address"), systemImage: "server.rack") {
                 TextField("https://", text: $draft.server)
                     .keyboardType(.URL)
                     .textContentType(.URL)
@@ -242,31 +242,31 @@ private struct ProfileForm: View {
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .server)
             }
-            InputField(title: "Client ID", systemImage: "person.text.rectangle") {
+            InputField(title: L("Client ID"), systemImage: "person.text.rectangle") {
                 TextField("e.g. 1024", text: $draft.clientID)
                     .keyboardType(.numberPad)
                     .focused($focused, equals: .clientID)
             }
             InputField(title: "Agent Token", systemImage: "key.horizontal") {
-                SecureField(hasSavedToken ? "Saved; leave blank to keep it" : "Agent Token", text: $draft.token)
+                SecureField(hasSavedToken ? L("Saved; leave blank to keep it") : "Agent Token", text: $draft.token)
                     .textContentType(.password)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .token)
             }
-            InputField(title: "Backup server address (optional)", systemImage: "arrow.triangle.branch") {
-                TextField("Tried when the main address is unreachable", text: $draft.backupServer)
+            InputField(title: L("Backup server address (optional)"), systemImage: "arrow.triangle.branch") {
+                TextField(L("Tried when the main address is unreachable"), text: $draft.backupServer)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .backup)
             }
 
-            Toggle("Save Agent Token on this device", isOn: $draft.rememberToken)
+            Toggle(L("Save Agent Token on this device"), isOn: $draft.rememberToken)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .card()
-            Text("The server address, Client ID and profile name are always saved on this device; the Agent Token is kept in the system Keychain. With the switch off, the token is deleted when you sign out.")
+            Text(L("The server address, Client ID and profile name are always saved on this device; the Agent Token is kept in the system Keychain. With the switch off, the token is deleted when you sign out."))
                 .font(.caption2)
                 .foregroundStyle(Palette.onSurfaceVariant)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,7 +283,7 @@ private struct ProfileForm: View {
                     if working {
                         ProgressView().tint(Palette.onPrimary)
                     } else {
-                        Text("Save and sign in").font(.headline)
+                        Text(L("Save and sign in")).font(.headline)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 52)
@@ -337,12 +337,12 @@ private struct ProfileCard: View {
                             .font(.body.weight(.semibold))
                             .foregroundStyle(Palette.onSurface)
                             .lineLimit(1)
-                        Text("\(profile.server.host) · Client \(profile.clientId)")
+                        Text(L("%@ · Client %@", String(describing: profile.server.host), String(describing: profile.clientId)))
                             .font(.caption)
                             .foregroundStyle(Palette.onSurfaceVariant)
                             .lineLimit(1)
                         if !hasToken {
-                            Text("No token saved; tap to enter it")
+                            Text(L("No token saved; tap to enter it"))
                                 .font(.caption2)
                                 .foregroundStyle(Palette.fair)
                         }
@@ -361,15 +361,15 @@ private struct ProfileCard: View {
             .buttonStyle(.plain)
 
             Menu {
-                Button(action: onEdit) { Label("Edit", systemImage: "pencil") }
-                Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                Button(action: onEdit) { Label(L("Edit"), systemImage: "pencil") }
+                Button(role: .destructive, action: onDelete) { Label(L("Delete"), systemImage: "trash") }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.title3)
                     .foregroundStyle(Palette.onSurfaceVariant)
                     .frame(width: 36, height: 36)
             }
-            .accessibilityLabel("More")
+            .accessibilityLabel(L("More"))
         }
         .padding(14)
         .card()

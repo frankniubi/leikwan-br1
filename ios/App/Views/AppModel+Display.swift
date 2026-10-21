@@ -10,7 +10,7 @@ extension AppModel {
         if let row = defaultBindingRow {
             return row.title
         }
-        return "No line selected"
+        return L("No line selected")
     }
 
     /// The binding Connect routes untargeted traffic through (nil while native outbound is on).
@@ -30,12 +30,12 @@ extension AppModel {
 
     var routeDetail: String? {
         if isNativeOutboundActive, let selection = nativeOutboundSelection {
-            return "Native outbound · " + selection.routeScope.displayName + " · bindings paused"
+            return L("Native outbound · %@ · bindings paused", selection.routeScope.displayName)
         }
-        guard let row = defaultBindingRow else { return "Choose a forward and node under Lines" }
+        guard let row = defaultBindingRow else { return L("Choose a forward and node under Lines") }
         let count = resolvedBindings.active.count
-        let kind = row.forward?.kindLabel ?? "Direct node"
-        return count > 1 ? "Binding exit · \(kind) · default of \(count) bindings" : "Binding exit · \(kind)"
+        let kind = row.forward?.kindLabel ?? L("Direct node")
+        return count > 1 ? L("Binding exit · %@ · default of %@ bindings", kind, String(count)) : L("Binding exit · %@", kind)
     }
 }
 
@@ -44,7 +44,7 @@ extension IOSSupportedForward {
     var directionTitle: String {
         let direction = contract.direction.trimmingCharacters(in: .whitespacesAndNewlines)
         if !direction.isEmpty { return direction }
-        return serviceName.isEmpty ? "Forward #\(forwardId)" : serviceName
+        return serviceName.isEmpty ? L("Forward #%@", String(describing: forwardId)) : serviceName
     }
 
     /// Entry endpoint(s) as ip:port; Ultra entries come from leases at connect time.

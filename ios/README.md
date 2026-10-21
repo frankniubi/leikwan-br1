@@ -3,8 +3,12 @@
 Native SwiftUI client with a Network Extension packet tunnel. Feature scope
 follows the Android client, with these iOS-specific decisions:
 
-- **Language**: the UI is English (development language `en`). The country and
-  category catalogs still carry their Chinese names as data, but the UI does not show them.
+- **Languages**: English (base), Spanish, Simplified Chinese, Traditional Chinese
+  and Korean, following the system language. UI text goes through `L("English text")`
+  (`Shared/L10n.swift`; Core has its own in `Support/L10n.swift`); every placeholder is
+  `%@`. Tables: `App/Localization`, `PacketTunnel/Localization` and
+  `Core/Sources/LeikwanIOSCore/Resources`, one `<lang>.lproj/Localizable.strings` each,
+  keyed by the English text. Country names come from the system locale.
 
 - **Sign-in**: server address + Client ID + Agent Token, saved as profiles.
   No server address is built in: the user types it (https only; a backup

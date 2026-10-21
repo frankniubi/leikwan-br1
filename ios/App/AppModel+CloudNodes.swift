@@ -33,22 +33,22 @@ struct BindingRow: Identifiable {
     /// "<forward> → <node>" / "直连 → <node>".
     var title: String {
         let nodeName = node.map { $0.name.isEmpty ? "\($0.server):\($0.port)" : $0.name }
-            ?? unsupportedCloudNode.map { "\($0.name) (not supported on iOS)" }
-            ?? "No node selected"
-        guard let forward = forward else { return "Direct → " + nodeName }
+            ?? unsupportedCloudNode.map { L("%@ (not supported on iOS)", String(describing: $0.name)) }
+            ?? L("No node selected")
+        guard let forward = forward else { return L("Direct → %@", nodeName) }
         let direction = forward.contract.direction.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = forward.serviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let forwardName = !name.isEmpty ? name : (!direction.isEmpty ? direction : "Forward #\(forward.forwardId)")
+        let forwardName = !name.isEmpty ? name : (!direction.isEmpty ? direction : L("Forward #%@", String(describing: forward.forwardId)))
         return forwardName + " → " + nodeName
     }
 
     /// "本机选择" / "云端绑定" / "云端自动匹配" / "当前节点" / "".
     var nodeSourceLabel: String {
         switch nodeSource {
-        case .local: return "Chosen on this device"
-        case .cloudExplicit: return "Bound in the cloud"
-        case .cloudTargetMatch: return "Matched in the cloud"
-        case .selection: return "Current node"
+        case .local: return L("Chosen on this device")
+        case .cloudExplicit: return L("Bound in the cloud")
+        case .cloudTargetMatch: return L("Matched in the cloud")
+        case .selection: return L("Current node")
         case .unset: return ""
         }
     }
@@ -371,10 +371,10 @@ extension AppModel {
 
     /// Picker label for a target: the binding title, or "Default binding".
     func routingTargetTitle(nodeID: Int64?) -> String {
-        guard let nodeID = nodeID else { return "Default binding" }
+        guard let nodeID = nodeID else { return L("Default binding") }
         if let row = bindingRows.first(where: { $0.node?.id == nodeID && $0.isEnabled }) { return row.title }
-        if let node = nodes.first(where: { $0.id == nodeID }) { return "\(node.name) (not enabled)" }
-        return "Node deleted"
+        if let node = nodes.first(where: { $0.id == nodeID }) { return L("%@ (not enabled)", String(describing: node.name)) }
+        return L("Node deleted")
     }
 
     // MARK: Launch planning
@@ -411,7 +411,7 @@ extension AppModel {
         if !plan.skipped.isEmpty {
             let first = plan.skipped[0]
             let title = bindingRows.first { $0.id == first.id }?.title ?? first.id.rawValue
-            notice = "Skipped \(plan.skipped.count) binding(s): \(title) (\(first.reason.message))"
+            notice = L("Skipped %@ binding(s): %@ (%@)", String(describing: plan.skipped.count), String(describing: title), String(describing: first.reason.message))
         }
         let runtimes = plan.runtimes.map { runtime in
             RuntimeLaunch(

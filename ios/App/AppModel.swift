@@ -101,7 +101,7 @@ final class AppModel: ObservableObject {
         let saved = profiles.profile(id: draft.id).flatMap { Keychain.string($0.tokenAccount) }
         let agentToken = typed.isEmpty ? (saved ?? "") : typed
         guard draft.clientId > 0, !agentToken.isEmpty else {
-            throw AppError("Enter the Client ID and Agent Token")
+            throw AppError(L("Enter the Client ID and Agent Token"))
         }
         let candidate = makeClient(draft, token: agentToken)
         let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
@@ -122,9 +122,9 @@ final class AppModel: ObservableObject {
 
     /// Signs in with a saved profile and its saved token.
     func signIn(profileID: UUID) async throws {
-        guard let saved = profiles.profile(id: profileID) else { throw AppError("Profile not found") }
+        guard let saved = profiles.profile(id: profileID) else { throw AppError(L("Profile not found")) }
         guard Keychain.string(saved.tokenAccount) != nil else {
-            throw AppError("No Agent Token is saved for this profile. Edit the profile to enter it")
+            throw AppError(L("No Agent Token is saved for this profile. Edit the profile to enter it"))
         }
         try await signIn(saved, token: nil)
     }
@@ -245,13 +245,15 @@ final class AppModel: ObservableObject {
             do {
                 added += try await addSubscription(url: url)
             } catch {
-                return "Subscription import failed: \(Self.describe(error))"
+                return L("Subscription import failed: %@", String(describing: Self.describe(error)))
             }
         }
         if added == 0 {
-            return result.skippedLines > 0 ? "No Shadowsocks / SOCKS5 nodes found (skipped \(result.skippedLines) lines)" : "Nothing to import on the clipboard"
+            return result.skippedLines > 0 ? L("No Shadowsocks / SOCKS5 nodes found (skipped %@ lines)", String(describing: result.skippedLines)) : L("Nothing to import on the clipboard")
         }
-        return "Imported \(added) node(s)" + (result.skippedLines > 0 ? ", skipped \(result.skippedLines) lines" : "")
+        return result.skippedLines > 0
+            ? L("Imported %@ node(s), skipped %@ lines", String(added), String(result.skippedLines))
+            : L("Imported %@ node(s)", String(added))
     }
 
     func addNodes(_ incoming: [ProxyNode], subscriptionID: Int64?) -> Int {
@@ -302,7 +304,7 @@ final class AppModel: ObservableObject {
 
     func addSubscription(url: String) async throws -> Int {
         let id = (subscriptions.map(\.id).max() ?? 0) + 1
-        let name = URL(string: url)?.host ?? "Subscription \(id)"
+        let name = URL(string: url)?.host ?? L("Subscription %@", String(describing: id))
         let subscription = Subscription(id: id, name: name, url: url, lastUpdated: nil)
         subscriptions.append(subscription)
         return try await refreshSubscription(subscription)
@@ -310,12 +312,12 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func refreshSubscription(_ subscription: Subscription) async throws -> Int {
-        guard let url = URL(string: subscription.url) else { throw AppError("Invalid subscription URL") }
+        guard let url = URL(string: subscription.url) else { throw AppError(L("Invalid subscription URL")) }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue(ImportRouter.subscriptionUserAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
-            throw AppError("Subscription returned HTTP \(http.statusCode)")
+            throw AppError(L("Subscription returned HTTP %@", String(describing: http.statusCode)))
         }
         let body = String(decoding: data, as: UTF8.self)
         let parsed = ImportRouter.parseSubscriptionBody(body)
@@ -401,13 +403,13 @@ final class AppModel: ObservableObject {
     /// The tunnel requests, delivers and renews the native leases (NativeOutboundLeaseManager).
     private func buildNativeOutboundLaunch() throws -> TunnelLaunchOptions {
         guard let panel = panelSession() else {
-            throw AppError("Sign in to use native outbound")
+            throw AppError(L("Sign in to use native outbound"))
         }
         guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
-            throw AppError("Native outbound is not available for this forward")
+            throw AppError(L("Native outbound is not available for this forward"))
         }
         guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {
-            throw AppError("The native outbound forward is unavailable. Refresh and try again")
+            throw AppError(L("The native outbound forward is unavailable. Refresh and try again"))
         }
         let builder = makeSingboxBuilder()
         let snapshot = builder.routingEngine.compile(

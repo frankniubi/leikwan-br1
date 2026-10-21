@@ -13,19 +13,19 @@ struct ToolsView: View {
                     NavigationLink {
                         LogsView()
                     } label: {
-                        ToolRow(title: "Tunnel logs", detail: "Runtime and sing-box logs", systemImage: "doc.text.magnifyingglass")
+                        ToolRow(title: L("Tunnel logs"), detail: L("Runtime and sing-box logs"), systemImage: "doc.text.magnifyingglass")
                     }
                 } header: {
-                    Text("Tools")
+                    Text(L("Tools"))
                 }
                 .listRowBackground(Palette.surfaceContainer)
 
                 Section {
                     Toggle(isOn: $model.routing.enableIPv6) {
-                        ToolRow(title: "IPv6", detail: "Use IPv6 inside the tunnel", systemImage: "6.circle")
+                        ToolRow(title: "IPv6", detail: L("Use IPv6 inside the tunnel"), systemImage: "6.circle")
                     }
                     HStack {
-                        ToolRow(title: "Remote DNS", detail: nil, systemImage: "server.rack")
+                        ToolRow(title: L("Remote DNS"), detail: nil, systemImage: "server.rack")
                         TextField("1.1.1.1", text: $model.routing.dnsServer)
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numbersAndPunctuation)
@@ -34,56 +34,56 @@ struct ToolsView: View {
                             .foregroundStyle(Palette.onSurfaceVariant)
                     }
                 } header: {
-                    Text("Network")
+                    Text(L("Network"))
                 }
                 .listRowBackground(Palette.surfaceContainer)
 
                 Section {
-                    InfoRow(title: "Profile", value: model.profile?.displayName ?? "—")
-                    InfoRow(title: "Server", value: model.profile?.server.host ?? "—", monospaced: true)
+                    InfoRow(title: L("Profile"), value: model.profile?.displayName ?? "—")
+                    InfoRow(title: L("Server"), value: model.profile?.server.host ?? "—", monospaced: true)
                     if let backup = model.profile?.backupServer {
-                        InfoRow(title: "Backup server", value: backup.host, monospaced: true)
+                        InfoRow(title: L("Backup server"), value: backup.host, monospaced: true)
                     }
-                    InfoRow(title: "Client ID", value: model.profile.map { String($0.clientId) } ?? "—")
-                    InfoRow(title: "Device ID", value: deviceID, monospaced: true)
+                    InfoRow(title: L("Client ID"), value: model.profile.map { String($0.clientId) } ?? "—")
+                    InfoRow(title: L("Device ID"), value: deviceID, monospaced: true)
                     Button {
                         Task {
                             await model.refreshCatalog()
-                            model.notice = model.catalogError ?? "Forward list refreshed"
+                            model.notice = model.catalogError ?? L("Forward list refreshed")
                         }
                     } label: {
-                        ToolRow(title: "Refresh forward list", detail: nil, systemImage: "arrow.clockwise")
+                        ToolRow(title: L("Refresh forward list"), detail: nil, systemImage: "arrow.clockwise")
                     }
                     .foregroundStyle(Palette.onSurface)
                     if let catalog = model.catalog, !catalog.hidden.isEmpty {
                         NavigationLink {
                             HiddenForwardsView(hidden: catalog.hidden)
                         } label: {
-                            ToolRow(title: "Forwards not supported on iOS", detail: "\(catalog.hidden.count)", systemImage: "eye.slash")
+                            ToolRow(title: L("Forwards not supported on iOS"), detail: "\(catalog.hidden.count)", systemImage: "eye.slash")
                         }
                     }
                 } header: {
-                    Text("Account")
+                    Text(L("Account"))
                 }
                 .listRowBackground(Palette.surfaceContainer)
 
                 Section {
-                    InfoRow(title: "Version", value: model.appVersion)
+                    InfoRow(title: L("Version"), value: model.appVersion)
                     Button(role: .destructive) {
                         confirmingSignOut = true
                     } label: {
-                        ToolRow(title: "Sign out", detail: "Back to the profile list to switch profiles", systemImage: "rectangle.portrait.and.arrow.right", tint: Palette.bad)
+                        ToolRow(title: L("Sign out"), detail: L("Back to the profile list to switch profiles"), systemImage: "rectangle.portrait.and.arrow.right", tint: Palette.bad)
                     }
                 } header: {
-                    Text("About")
+                    Text(L("About"))
                 }
                 .listRowBackground(Palette.surfaceContainer)
             }
             .scrollContentBackground(.hidden)
             .pageBackground()
-            .navigationTitle("Tools")
-            .confirmationDialog("Signing out disconnects the current connection.", isPresented: $confirmingSignOut, titleVisibility: .visible) {
-                Button("Sign out", role: .destructive) { model.signOut() }
+            .navigationTitle(L("Tools"))
+            .confirmationDialog(L("Signing out disconnects the current connection."), isPresented: $confirmingSignOut, titleVisibility: .visible) {
+                Button(L("Sign out"), role: .destructive) { model.signOut() }
             }
         }
     }
@@ -149,7 +149,7 @@ private struct HiddenForwardsView: View {
             Section {
                 ForEach(Array(hidden.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(item.serviceName.isEmpty ? "Forward #\(item.forwardId.map(String.init) ?? "?")" : item.serviceName)
+                        Text(item.serviceName.isEmpty ? L("Forward #%@", String(describing: item.forwardId.map(String.init) ?? "?")) : item.serviceName)
                             .foregroundStyle(Palette.onSurface)
                         Text(item.reason.message)
                             .font(.caption)
@@ -158,12 +158,12 @@ private struct HiddenForwardsView: View {
                     .listRowBackground(Palette.surfaceContainer)
                 }
             } footer: {
-                Text("iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress.")
+                Text(L("iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress."))
             }
         }
         .scrollContentBackground(.hidden)
         .pageBackground()
-        .navigationTitle("Unsupported forwards")
+        .navigationTitle(L("Unsupported forwards"))
         .navigationBarTitleDisplayMode(.inline)
     }
 }

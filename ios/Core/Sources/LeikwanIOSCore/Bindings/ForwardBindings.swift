@@ -171,13 +171,13 @@ public enum BindingSkipReason: Equatable {
 
     public var message: String {
         switch self {
-        case .forwardUnavailable: return "Forward unavailable (deleted or not supported on iOS)"
-        case .nodeMissing: return "No node selected"
-        case .nodeDisabled: return "Node is disabled"
-        case .cloudNodeUnsupported: return "iOS does not support the node type bound in the cloud"
-        case .nodeAlreadyUsed: return "This node is already used by another binding"
-        case .overLimit(let limit): return "At most \(limit) forward bindings can run at once"
-        case .planFailed(let detail): return "Could not start: \(detail)"
+        case .forwardUnavailable: return L("Forward unavailable (deleted or not supported on iOS)")
+        case .nodeMissing: return L("No node selected")
+        case .nodeDisabled: return L("Node is disabled")
+        case .cloudNodeUnsupported: return L("iOS does not support the node type bound in the cloud")
+        case .nodeAlreadyUsed: return L("This node is already used by another binding")
+        case .overLimit(let limit): return L("At most %@ forward bindings can run at once", String(describing: limit))
+        case .planFailed(let detail): return L("Could not start: %@", String(describing: detail))
         }
     }
 }

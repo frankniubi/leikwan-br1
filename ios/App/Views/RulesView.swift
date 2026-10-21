@@ -17,21 +17,21 @@ struct RulesView: View {
                 }
 
                 Section {
-                    Picker("Mode", selection: $model.routing.mode) {
-                        Text("Rule").tag(RoutingGlobalMode.rule)
-                        Text("Global").tag(RoutingGlobalMode.global)
-                        Text("Direct").tag(RoutingGlobalMode.direct)
+                    Picker(L("Mode"), selection: $model.routing.mode) {
+                        Text(L("Rule")).tag(RoutingGlobalMode.rule)
+                        Text(L("Global")).tag(RoutingGlobalMode.global)
+                        Text(L("Direct")).tag(RoutingGlobalMode.direct)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("Mainland China sites and IPs direct", isOn: $model.routing.bypassChina)
+                    Toggle(L("Mainland China sites and IPs direct"), isOn: $model.routing.bypassChina)
                 } footer: {
-                    Text("Rule: matched in the order shown; anything unmatched uses the proxy. Global: everything except the server and the lines themselves uses the proxy. Direct: everything goes direct.")
+                    Text(L("Rule: matched in the order shown; anything unmatched uses the proxy. Global: everything except the server and the lines themselves uses the proxy. Direct: everything goes direct."))
                 }
 
                 Section {
                     ForEach(AppPresetCatalog.presets, id: \.key) { preset in
                         OutcomePicker(
-                            title: preset.labelEn,
+                            title: CatalogNames.appPreset(preset),
                             selection: presetBinding(preset.key)
                         )
                         if model.routing.appPresets[preset.key] == .tunnel && model.routingTargetBindings.count > 1 {
@@ -42,16 +42,16 @@ struct RulesView: View {
                         }
                     }
                 } header: {
-                    Text("Apps")
+                    Text(L("Apps"))
                 } footer: {
-                    Text("iOS cannot route by app, so each app is matched by the domains and IP ranges it uses, which comes close to per-app routing.")
+                    Text(L("iOS cannot route by app, so each app is matched by the domains and IP ranges it uses, which comes close to per-app routing."))
                 }
 
-                Section("Countries / regions (by IP)") {
+                Section(L("Countries / regions (by IP)")) {
                     ForEach(model.routing.countries.keys.sorted(), id: \.self) { code in
                         VStack(spacing: 6) {
                             OutcomePicker(
-                                title: "\(CountryCatalog.name(for: code, zh: false)) (\(code.uppercased()))",
+                                title: "\(CatalogNames.country(code)) (\(code.uppercased()))",
                                 selection: countryBinding(code)
                             )
                             if model.routing.countries[code] == .tunnel && model.routingTargetBindings.count > 1 {
@@ -71,7 +71,7 @@ struct RulesView: View {
                     Button {
                         addingCountry = true
                     } label: {
-                        Label("Add country or region", systemImage: "plus")
+                        Label(L("Add country or region"), systemImage: "plus")
                     }
                 }
 
@@ -96,12 +96,12 @@ struct RulesView: View {
                     Button {
                         addingRule = true
                     } label: {
-                        Label("Add rule", systemImage: "plus")
+                        Label(L("Add rule"), systemImage: "plus")
                     }
                 } header: {
-                    Text("Custom rules")
+                    Text(L("Custom rules"))
                 } footer: {
-                    Text("Custom rules come before app and country rules and are matched in list order.")
+                    Text(L("Custom rules come before app and country rules and are matched in list order."))
                 }
 
                 Section {
@@ -111,13 +111,13 @@ struct RulesView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 } header: {
-                    Text("Direct list")
+                    Text(L("Direct list"))
                 } footer: {
-                    Text("One IP, CIDR or domain per line, sent direct just before the last step of Rule mode. To force a domain through the proxy, use a custom rule.")
+                    Text(L("One IP, CIDR or domain per line, sent direct just before the last step of Rule mode. To force a domain through the proxy, use a custom rule."))
                 }
 
                 Section {
-                    Button("Apply to current connection") {
+                    Button(L("Apply to current connection")) {
                         Task { await model.applyToRunningTunnel() }
                     }
                     .disabled(!model.tunnel.isConnected)
@@ -125,7 +125,7 @@ struct RulesView: View {
             }
             .scrollContentBackground(.hidden)
             .pageBackground()
-            .navigationTitle("Routing rules")
+            .navigationTitle(L("Routing rules"))
             .toolbar { EditButton() }
             .sheet(isPresented: $addingRule) {
                 CustomRuleEditor { rule in
@@ -161,9 +161,9 @@ struct RulesView: View {
 
     static func outcomeLabel(_ outcome: CustomRuleOutcome) -> String {
         switch outcome {
-        case .proxy: return "Proxy"
-        case .direct: return "Direct"
-        case .reject: return "Reject"
+        case .proxy: return L("Proxy")
+        case .direct: return L("Direct")
+        case .reject: return L("Reject")
         }
     }
 }
@@ -174,9 +174,9 @@ private struct OutcomePicker: View {
 
     var body: some View {
         Picker(title, selection: $selection) {
-            Text("Default").tag(UserTrafficOutcome?.none)
-            Text("Proxy").tag(UserTrafficOutcome?.some(.tunnel))
-            Text("Direct").tag(UserTrafficOutcome?.some(.direct))
+            Text(L("Default")).tag(UserTrafficOutcome?.none)
+            Text(L("Proxy")).tag(UserTrafficOutcome?.some(.tunnel))
+            Text(L("Direct")).tag(UserTrafficOutcome?.some(.direct))
         }
     }
 }
@@ -191,27 +191,27 @@ private struct CustomRuleEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Type", selection: $type) {
+                Picker(L("Type"), selection: $type) {
                     ForEach(CustomRuleType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 TextField(placeholder, text: $value)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Picker("Action", selection: $outcome) {
+                Picker(L("Action"), selection: $outcome) {
                     ForEach(CustomRuleOutcome.allCases, id: \.self) { Text(RulesView.outcomeLabel($0)).tag($0) }
                 }
                 if !value.isEmpty, candidate == nil {
-                    Text("Invalid value").foregroundStyle(.red).font(.footnote)
+                    Text(L("Invalid value")).foregroundStyle(.red).font(.footnote)
                 }
             }
-            .navigationTitle("Add rule")
+            .navigationTitle(L("Add rule"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L("Cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
+                    Button(L("Add")) {
                         if let candidate {
                             onAdd(candidate)
                             dismiss()
@@ -234,7 +234,7 @@ private struct CustomRuleEditor: View {
         case .domainSuffix: return "example.com"
         case .domainKeyword: return "example"
         case .ipCidr: return "1.2.3.0/24"
-        case .geoip: return "Country code, e.g. jp"
+        case .geoip: return L("Country code, e.g. jp")
         }
     }
 }
@@ -244,15 +244,29 @@ private struct CountryPicker: View {
     @State private var query = ""
     let onPick: (String) -> Void
 
+    /// Catalog search plus a match on the name in the UI language; only countries with a
+    /// bundled geoip set.
+    private var countries: [Country] {
+        let routable = CountryCatalog.all.filter { BundledRuleSets.hasGeoip($0.code) }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return routable.sorted { CatalogNames.country($0.code).localizedCompare(CatalogNames.country($1.code)) == .orderedAscending }
+        }
+        let found = CountryCatalog.search(trimmed, limit: 60).map(\.code)
+        return routable.filter { country in
+            found.contains(country.code) || CatalogNames.country(country.code).localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            List((query.isEmpty ? CountryCatalog.all : CountryCatalog.search(query, limit: 60)).filter { BundledRuleSets.hasGeoip($0.code) }, id: \.code) { country in
+            List(countries, id: \.code) { country in
                 Button {
                     onPick(country.code)
                     dismiss()
                 } label: {
                     HStack {
-                        Text(country.nameEn)
+                        Text(CatalogNames.country(country.code))
                         Spacer()
                         Text(country.code.uppercased())
                             .foregroundStyle(.secondary)
@@ -261,12 +275,12 @@ private struct CountryPicker: View {
                 }
                 .foregroundStyle(.primary)
             }
-            .searchable(text: $query, prompt: "Search countries or regions")
-            .navigationTitle("Choose country or region")
+            .searchable(text: $query, prompt: L("Search countries or regions"))
+            .navigationTitle(L("Choose country or region"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L("Cancel")) { dismiss() }
                 }
             }
         }
@@ -280,18 +294,18 @@ private struct MatchOrderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("Rule mode match order", systemImage: "list.number")
+            CardHeader(L("Rule mode match order"), systemImage: "list.number")
             VStack(alignment: .leading, spacing: 6) {
-                step(1, "The server and the forward lines", "Direct (fixed)")
-                step(2, "Custom rules", "In list order: proxy / direct / reject; proxy can name a binding")
-                step(3, "Apps", "By each app's domains and IP ranges; can name a binding")
-                step(4, "Countries / regions", "By the destination IP's country")
-                step(5, "Mainland China sites and IPs", bypassChina ? "Direct (on)" : "Off, skipped")
-                step(6, "Direct list", "Direct")
-                step(7, "All other traffic", "Default binding")
+                step(1, L("The server and the forward lines"), L("Direct (fixed)"))
+                step(2, L("Custom rules"), L("In list order: proxy / direct / reject; proxy can name a binding"))
+                step(3, L("Apps"), L("By each app's domains and IP ranges; can name a binding"))
+                step(4, L("Countries / regions"), L("By the destination IP's country"))
+                step(5, L("Mainland China sites and IPs"), bypassChina ? L("Direct (on)") : L("Off, skipped"))
+                step(6, L("Direct list"), L("Direct"))
+                step(7, L("All other traffic"), L("Default binding"))
             }
             if mode != .rule {
-                Label(mode == .global ? "Global mode: steps 2–6 are skipped and everything uses the proxy." : "Direct mode: the rules above are skipped and everything goes direct.", systemImage: "exclamationmark.circle")
+                Label(mode == .global ? L("Global mode: steps 2–6 are skipped and everything uses the proxy.") : L("Direct mode: the rules above are skipped and everything goes direct."), systemImage: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(Palette.onWarningContainer)
                     .padding(10)
@@ -329,14 +343,14 @@ private struct TargetPicker: View {
 
     var body: some View {
         Picker(selection: $selection) {
-            Text("Default binding").tag(Int64?.none)
+            Text(L("Default binding")).tag(Int64?.none)
             ForEach(model.routingTargetBindings) { row in
                 if let node = row.node {
                     Text(row.title).tag(Int64?.some(node.id))
                 }
             }
         } label: {
-            Label("Via", systemImage: "arrow.turn.down.right")
+            Label(L("Via"), systemImage: "arrow.turn.down.right")
                 .font(.subheadline)
                 .foregroundStyle(Palette.onSurfaceVariant)
         }

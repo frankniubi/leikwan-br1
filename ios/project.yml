@@ -50,7 +50,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSCameraUsageDescription: Scan a QR code to import a node
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         ITSAppUsesNonExemptEncryption: false
         BridgeAppGroup: $(BRIDGE_APP_GROUP)
     entitlements:
@@ -89,6 +90,8 @@ targets:
       path: PacketTunnel/Info.plist
       properties:
         CFBundleDisplayName: Bridge Tunnel
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         BridgeAppGroup: $(BRIDGE_APP_GROUP)

@@ -7,6 +7,7 @@ import PackageDescription
 
 let package = Package(
     name: "LeikwanIOSCore",
+    defaultLocalization: "en",
     platforms: [
         .iOS(.v16),
         .macOS(.v13)
@@ -15,7 +16,7 @@ let package = Package(
         .library(name: "LeikwanIOSCore", targets: ["LeikwanIOSCore"])
     ],
     targets: [
-        .target(name: "LeikwanIOSCore"),
+        .target(name: "LeikwanIOSCore", resources: [.process("Resources")]),
         .testTarget(name: "LeikwanIOSCoreTests", dependencies: ["LeikwanIOSCore"])
     ]
 )

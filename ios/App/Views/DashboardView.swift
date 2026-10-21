@@ -32,7 +32,7 @@ struct DashboardView: View {
                 await model.refreshCatalog()
             }
             .pageBackground()
-            .navigationTitle("Dashboard")
+            .navigationTitle(L("Dashboard"))
             .overlay(alignment: .bottomTrailing) {
                 StartButton()
                     .padding(Metrics.pagePadding + 4)
@@ -52,12 +52,12 @@ struct DashboardView: View {
 
     static func describeAlert(_ alert: String) -> String {
         if alert.hasPrefix("device_limit_reached") {
-            return "Online device limit of the plan reached; this device resumes when a slot frees up"
+            return L("Online device limit of the plan reached; this device resumes when a slot frees up")
         }
         switch alert {
-        case "device_kicked": return "This device was signed out by the server"
-        case "device_banned": return "This device was banned by the server"
-        case "device_untrusted": return "The server does not trust this device"
+        case "device_kicked": return L("This device was signed out by the server")
+        case "device_banned": return L("This device was banned by the server")
+        case "device_untrusted": return L("The server does not trust this device")
         default: return alert
         }
     }
@@ -86,7 +86,7 @@ private struct NetworkSpeedCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CardHeader("Network speed", systemImage: "speedometer", trailing: AnyView(
+            CardHeader(L("Network speed"), systemImage: "speedometer", trailing: AnyView(
                 HStack(spacing: 12) {
                     RateLabel(symbol: "arrow.up", value: tunnel.snapshot.uplink, color: Palette.upload)
                     RateLabel(symbol: "arrow.down", value: tunnel.snapshot.downlink, color: Palette.download)
@@ -94,13 +94,13 @@ private struct NetworkSpeedCard: View {
             ))
             Chart {
                 ForEach(paddedHistory) { sample in
-                    AreaMark(x: .value("Time", sample.index), y: .value("Download", Double(sample.downlink)))
+                    AreaMark(x: .value(L("Time"), sample.index), y: .value(L("Download"), Double(sample.downlink)))
                         .foregroundStyle(Palette.download.opacity(0.18))
                         .interpolationMethod(.monotone)
-                    LineMark(x: .value("Time", sample.index), y: .value("Download", Double(sample.downlink)), series: .value("Direction", "Download"))
+                    LineMark(x: .value(L("Time"), sample.index), y: .value(L("Download"), Double(sample.downlink)), series: .value("Direction", "Download"))
                         .foregroundStyle(Palette.download)
                         .interpolationMethod(.monotone)
-                    LineMark(x: .value("Time", sample.index), y: .value("Upload", Double(sample.uplink)), series: .value("Direction", "Upload"))
+                    LineMark(x: .value(L("Time"), sample.index), y: .value(L("Upload"), Double(sample.uplink)), series: .value("Direction", "Upload"))
                         .foregroundStyle(Palette.upload)
                         .interpolationMethod(.monotone)
                 }
@@ -170,7 +170,7 @@ private struct OutboundModeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CardHeader("Outbound mode", systemImage: "arrow.triangle.branch")
+            CardHeader(L("Outbound mode"), systemImage: "arrow.triangle.branch")
             VStack(spacing: 4) {
                 ForEach(RoutingGlobalMode.allCases, id: \.self) { mode in
                     ModeRow(mode: mode, selected: model.routing.mode == mode) {
@@ -226,17 +226,17 @@ private struct ModeRow: View {
 
     private var title: String {
         switch mode {
-        case .rule: return "Rule"
-        case .global: return "Global"
-        case .direct: return "Direct"
+        case .rule: return L("Rule")
+        case .global: return L("Global")
+        case .direct: return L("Direct")
         }
     }
 
     private var caption: String {
         switch mode {
-        case .rule: return "By routing rules; unmatched traffic uses the proxy"
-        case .global: return "Everything through the proxy"
-        case .direct: return "Everything direct"
+        case .rule: return L("By routing rules; unmatched traffic uses the proxy")
+        case .global: return L("Everything through the proxy")
+        case .direct: return L("Everything direct")
         }
     }
 
@@ -267,22 +267,22 @@ private struct RulesSummaryCard: View {
             navigator.section = .rules
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                CardHeader("Routing rules", systemImage: "list.bullet.rectangle.portrait", trailing: AnyView(
+                CardHeader(L("Routing rules"), systemImage: "list.bullet.rectangle.portrait", trailing: AnyView(
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Palette.onSurfaceVariant)
                 ))
                 if model.routing.mode == .rule {
-                    SummaryLine(title: "Mainland China direct", value: model.routing.bypassChina ? "On" : "Off")
-                    SummaryLine(title: "Apps", value: "\(model.routing.appPresets.count)")
-                    SummaryLine(title: "Countries / regions", value: "\(model.routing.countries.count)")
-                    SummaryLine(title: "Custom", value: "\(model.routing.customRules.count)")
-                    Text("Everything else uses the proxy")
+                    SummaryLine(title: L("Mainland China direct"), value: model.routing.bypassChina ? L("On") : L("Off"))
+                    SummaryLine(title: L("Apps"), value: "\(model.routing.appPresets.count)")
+                    SummaryLine(title: L("Countries / regions"), value: "\(model.routing.countries.count)")
+                    SummaryLine(title: L("Custom"), value: "\(model.routing.customRules.count)")
+                    Text(L("Everything else uses the proxy"))
                         .font(.caption2)
                         .foregroundStyle(Palette.onSurfaceVariant)
                 } else {
                     Spacer(minLength: 0)
-                    Text(model.routing.mode == .global ? "Rules are off in Global mode" : "Rules are off in Direct mode")
+                    Text(model.routing.mode == .global ? L("Rules are off in Global mode") : L("Rules are off in Direct mode"))
                         .font(.subheadline)
                         .foregroundStyle(Palette.onSurfaceVariant)
                     Spacer(minLength: 0)
@@ -320,13 +320,13 @@ private struct TrafficUsageCard: View {
         let up = tunnel.snapshot.uplinkTotal
         let down = tunnel.snapshot.downlinkTotal
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("Traffic", systemImage: "chart.pie")
+            CardHeader(L("Traffic"), systemImage: "chart.pie")
             HStack(spacing: 12) {
                 Donut(up: Double(up), down: Double(down))
                     .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 8) {
-                    LegendRow(color: Palette.upload, title: "Upload", value: ByteFormat.total(up))
-                    LegendRow(color: Palette.download, title: "Download", value: ByteFormat.total(down))
+                    LegendRow(color: Palette.upload, title: L("Upload"), value: ByteFormat.total(up))
+                    LegendRow(color: Palette.download, title: L("Download"), value: ByteFormat.total(down))
                 }
             }
             .frame(maxHeight: .infinity)
@@ -392,7 +392,7 @@ private struct CurrentRouteCard: View {
             navigator.section = .proxies
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                CardHeader("Current line", systemImage: "point.3.connected.trianglepath.dotted", trailing: AnyView(
+                CardHeader(L("Current line"), systemImage: "point.3.connected.trianglepath.dotted", trailing: AnyView(
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Palette.onSurfaceVariant)
@@ -436,7 +436,7 @@ private struct RunTimeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("Uptime", systemImage: "timer")
+            CardHeader(L("Uptime"), systemImage: "timer")
             Spacer(minLength: 0)
             if tunnel.isConnected {
                 RunTimeText(since: tunnel.connectedSince)
@@ -448,7 +448,7 @@ private struct RunTimeCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
             Pill(
-                text: tunnel.isConnected ? "Connected" : statusText,
+                text: tunnel.isConnected ? L("Connected") : statusText,
                 fill: tunnel.isConnected ? Palette.successContainer : Palette.secondaryContainer,
                 foreground: tunnel.isConnected ? Palette.onSuccessContainer : Palette.onSecondaryContainer
             )
@@ -460,11 +460,11 @@ private struct RunTimeCard: View {
 
     private var statusText: String {
         switch tunnel.status {
-        case .connecting: return "Connecting"
-        case .disconnecting: return "Disconnecting"
-        case .reasserting: return "Reconnecting"
-        case .connected: return "Connected"
-        default: return "Not connected"
+        case .connecting: return L("Connecting")
+        case .disconnecting: return L("Disconnecting")
+        case .reasserting: return L("Reconnecting")
+        case .connected: return L("Connected")
+        default: return L("Not connected")
         }
     }
 }
@@ -474,7 +474,7 @@ private struct ConnectionsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("Connections", systemImage: "link")
+            CardHeader(L("Connections"), systemImage: "link")
             Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(tunnel.snapshot.connectionsOut)")
@@ -487,7 +487,7 @@ private struct ConnectionsCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "memorychip")
                     .font(.caption2)
-                Text("Memory " + (tunnel.snapshot.memory > 0 ? ByteFormat.total(tunnel.snapshot.memory) : "—"))
+                Text(L("Memory %@", tunnel.snapshot.memory > 0 ? ByteFormat.total(tunnel.snapshot.memory) : "—"))
                     .font(.caption.monospacedDigit())
             }
             .foregroundStyle(Palette.onSurfaceVariant)

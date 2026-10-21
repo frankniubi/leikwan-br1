@@ -175,19 +175,19 @@ public struct HostedNodeError: Error, Equatable, CustomStringConvertible {
     /// User-facing text for a code (codes only, never node content).
     public static func userMessage(_ code: String) -> String {
         switch code {
-        case "hosted_nodes_offline": return "Not signed in; cloud nodes cannot sync"
-        case "device_untrusted": return "The server does not trust this device; cloud nodes are unavailable"
-        case "hosted_nodes_unsupported", "hosted_nodes_unavailable": return "This server does not support cloud nodes"
-        case PanelError.deviceLimitCode: return "Online device limit reached"
-        case "rate_limited": return "Too many requests. Try again later"
-        case "hosted_node_limit_reached": return "Cloud node limit reached (32)"
-        case "hosted_node_duplicate": return "The same node is already in the cloud"
-        case "hosted_node_not_found": return "Cloud node not found (it may have been deleted on another device)"
-        case "hosted_node_forward_not_found": return "The forward does not exist or belongs to another account"
-        case "hosted_node_invalid": return "The server rejected the node settings"
-        case "hosted_node_unsupported_on_ios": return "iOS does not support this node type yet; edit it on another device or in the console"
-        case "hosted_nodes_network": return "Network error; retrying automatically"
-        default: return "Cloud sync failed (\(code))"
+        case "hosted_nodes_offline": return L("Not signed in; cloud nodes cannot sync")
+        case "device_untrusted": return L("The server does not trust this device; cloud nodes are unavailable")
+        case "hosted_nodes_unsupported", "hosted_nodes_unavailable": return L("This server does not support cloud nodes")
+        case PanelError.deviceLimitCode: return L("Online device limit reached")
+        case "rate_limited": return L("Too many requests. Try again later")
+        case "hosted_node_limit_reached": return L("Cloud node limit reached (32)")
+        case "hosted_node_duplicate": return L("The same node is already in the cloud")
+        case "hosted_node_not_found": return L("Cloud node not found (it may have been deleted on another device)")
+        case "hosted_node_forward_not_found": return L("The forward does not exist or belongs to another account")
+        case "hosted_node_invalid": return L("The server rejected the node settings")
+        case "hosted_node_unsupported_on_ios": return L("iOS does not support this node type yet; edit it on another device or in the console")
+        case "hosted_nodes_network": return L("Network error; retrying automatically")
+        default: return L("Cloud sync failed (%@)", String(describing: code))
         }
     }
 }

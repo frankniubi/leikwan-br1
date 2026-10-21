@@ -48,9 +48,9 @@ public enum NativeRouteScope: String, Codable, CaseIterable, Equatable {
     /// UI label (Android `connections_native_scope_*`).
     public var displayName: String {
         switch self {
-        case .cnOnly: return "Mainland China only"
-        case .intlOnly: return "International only"
-        case .global: return "Global"
+        case .cnOnly: return L("Mainland China only")
+        case .intlOnly: return L("International only")
+        case .global: return L("Global")
         }
     }
 
@@ -80,8 +80,8 @@ public enum NativeRoutePolicy: String, Codable, CaseIterable, Equatable {
     /// UI label (Android `connections_native_unrestricted` for the unrestricted toggle).
     public var displayName: String {
         switch self {
-        case .restricted: return "Standard routing"
-        case .unrestricted: return "Unrestricted routing"
+        case .restricted: return L("Standard routing")
+        case .unrestricted: return L("Unrestricted routing")
         }
     }
 
@@ -532,27 +532,27 @@ public enum NativeOutboundErrors {
     public static func userMessage(_ code: String) -> String {
         switch code {
         case "native_outbound_not_allowed", "native_forward_unavailable", "native_outbound_carrier_unavailable":
-            return "Native outbound is not available for this plan or forward"
+            return L("Native outbound is not available for this plan or forward")
         case "native_route_scope_invalid":
-            return "The selected traffic scope is not available. Refresh and try again"
+            return L("The selected traffic scope is not available. Refresh and try again")
         case "native_route_policy_invalid", "native_route_policy_not_allowed":
-            return "This plan does not include unrestricted routing"
+            return L("This plan does not include unrestricted routing")
         case "native_policy_invalid", "native_policy_unavailable", "forward_inactive", "native_transport_invalid":
-            return "Native outbound authorization unavailable (service inactive or expired)"
+            return L("Native outbound authorization unavailable (service inactive or expired)")
         case "native_forward_direction_mismatch":
-            return "The native outbound line changed. Refresh and try again"
+            return L("The native outbound line changed. Refresh and try again")
         case "native_lease_refresh_expired":
-            return "The native outbound line expired. Reconnect"
+            return L("The native outbound line expired. Reconnect")
         case "native_lease_rejected_by_runtime":
-            return "The local runtime rejected the native outbound line"
+            return L("The local runtime rejected the native outbound line")
         case "native_control_path_too_long":
-            return "Native outbound control socket path is too long"
+            return L("Native outbound control socket path is too long")
         case "lease_sealing_required", "lease_key_invalid", "lease_unseal_failed", "lease_device_key_conflict":
-            return "Line key check failed (\(code))"
+            return L("Line key check failed (%@)", String(describing: code))
         case "no_approved_candidate":
-            return "No native line available yet; retrying automatically"
+            return L("No native line available yet; retrying automatically")
         default:
-            return "Could not get a native outbound line (\(code)); retrying automatically"
+            return L("Could not get a native outbound line (%@); retrying automatically", String(describing: code))
         }
     }
 }

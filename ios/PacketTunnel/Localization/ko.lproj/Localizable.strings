@@ -1,0 +1,10 @@
+/* Generated: Bridge UI text (ko). Keys are the English source text. */
+
+"Native outbound: %@" = "네이티브 아웃바운드: %@";
+"Ultra forward %@: %@" = "Ultra 포워드 %@: %@";
+"The forward settings changed. Reconnect" = "포워드 설정이 변경되었습니다. 다시 연결하세요";
+"Ultra authorization unavailable (service inactive or expired)" = "Ultra 인증을 사용할 수 없습니다 (서비스 비활성 또는 만료)";
+"Line key check failed (%@)" = "회선 키 확인 실패 (%@)";
+"The local Ultra runtime rejected the line" = "로컬 Ultra 런타임이 회선을 거부했습니다";
+"No line available yet; retrying automatically" = "아직 사용할 수 있는 회선이 없습니다. 자동으로 다시 시도합니다";
+"Could not get a line (%@); retrying automatically" = "회선을 가져오지 못했습니다 (%@). 자동으로 다시 시도합니다";

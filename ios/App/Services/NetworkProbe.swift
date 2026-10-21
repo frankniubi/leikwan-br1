@@ -44,10 +44,10 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .dashboard: return "Dashboard"
-        case .proxies: return "Lines"
-        case .rules: return "Rules"
-        case .tools: return "Tools"
+        case .dashboard: return L("Dashboard")
+        case .proxies: return L("Lines")
+        case .rules: return L("Rules")
+        case .tools: return L("Tools")
         }
     }
 

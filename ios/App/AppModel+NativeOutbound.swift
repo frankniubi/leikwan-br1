@@ -111,7 +111,7 @@ extension AppModel {
         let name = nativeOutboundForward(for: carrier)?.serviceName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !name.isEmpty { return name }
         let direction = carrier.direction.trimmingCharacters(in: .whitespacesAndNewlines)
-        return direction.isEmpty ? "Native line" : direction
+        return direction.isEmpty ? L("Native line") : direction
     }
 
     /// Switches native outbound on or off. Switching on is ignored when it is not offered;
@@ -188,7 +188,7 @@ extension AppModel {
             return cached
         }
         guard let port = NativeOutboundPortCache.allocateLoopbackPort() else {
-            throw AppError("Could not allocate a local port for native outbound")
+            throw AppError(L("Could not allocate a local port for native outbound"))
         }
         NativeOutboundPortCache.forwardID = forwardID
         NativeOutboundPortCache.port = port

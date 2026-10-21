@@ -21,46 +21,46 @@ struct NodeEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Basics") {
-                    TextField("Name (optional)", text: $node.name)
-                    TextField("Server address", text: $node.server)
+                Section(L("Basics")) {
+                    TextField(L("Name (optional)"), text: $node.name)
+                    TextField(L("Server address"), text: $node.server)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    TextField("Port", text: $portText)
+                    TextField(L("Port"), text: $portText)
                         .keyboardType(.numberPad)
                 }
                 switch node.settings {
                 case let .shadowsocks(settings):
                     Section("Shadowsocks") {
-                        Picker("Cipher", selection: ssBinding(settings, \.method)) {
+                        Picker(L("Cipher"), selection: ssBinding(settings, \.method)) {
                             ForEach(Self.ssMethods, id: \.self) { Text($0).tag($0) }
                         }
-                        SecureField("Password", text: ssBinding(settings, \.password))
-                        TextField("Plugin (obfs-local / v2ray-plugin, optional)", text: ssOptionalBinding(settings, \.plugin))
+                        SecureField(L("Password"), text: ssBinding(settings, \.password))
+                        TextField(L("Plugin (obfs-local / v2ray-plugin, optional)"), text: ssOptionalBinding(settings, \.plugin))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("Plugin options (optional)", text: ssOptionalBinding(settings, \.pluginOpts))
+                        TextField(L("Plugin options (optional)"), text: ssOptionalBinding(settings, \.pluginOpts))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
                 case let .socks(settings):
                     Section("SOCKS5") {
-                        TextField("User name (optional)", text: socksBinding(settings, \.username))
+                        TextField(L("User name (optional)"), text: socksBinding(settings, \.username))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        SecureField("Password (optional)", text: socksBinding(settings, \.password))
+                        SecureField(L("Password (optional)"), text: socksBinding(settings, \.password))
                     }
                 }
             }
-            .navigationTitle(node.id == 0 ? "Add node" : "Edit node")
+            .navigationTitle(node.id == 0 ? L("Add node") : L("Edit node"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L("Cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(L("Save")) {
                         var saved = node
                         saved.port = Int(portText) ?? 0
                         saved.server = saved.server.trimmingCharacters(in: .whitespaces)

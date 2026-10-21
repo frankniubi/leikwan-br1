@@ -51,7 +51,7 @@ final class NativeOutboundLeaseManager {
         lock.lock()
         defer { lock.unlock() }
         guard let message = currentAlert else { return nil }
-        return "Native outbound: \(message)"
+        return L("Native outbound: %@", String(describing: message))
     }
 
     func start() {

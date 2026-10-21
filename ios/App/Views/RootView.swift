@@ -105,7 +105,7 @@ struct StartButton: View {
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: tunnel.isConnected)
-        .accessibilityLabel(tunnel.isConnected ? "Disconnect" : "Connect")
+        .accessibilityLabel(tunnel.isConnected ? L("Disconnect") : L("Connect"))
     }
 }
 
@@ -138,7 +138,7 @@ struct NoticeBanner: View {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
             }
-            .accessibilityLabel("Close")
+            .accessibilityLabel(L("Close"))
         }
         .foregroundStyle(Palette.onSecondaryContainer)
         .padding(14)
