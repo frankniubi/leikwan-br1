@@ -10,12 +10,19 @@ declare(strict_types=1);
  * The standalone hosts (not sidecar points, not pool nodes) used to get their
  * /etc/leikwan-external-uot.json by hand, so every forward created after the
  * last hand push was refused with "forward is not allowed". This renders each
- * host's forwards (ExternalUotConfigController::renderForHost) and pipes them
- * over SSH to sidecar-agent/external_uot_forward_merge.py, which the host's
- * authorized_keys forces for this key. The merge only adds or updates
- * forwards.<id> entries and hot-reloads the sidecar, so existing sessions stay.
+ * host's forwards (ExternalUotConfigController::renderForHost) and pipes
+ * {"forwards": ..., "remove": [...]} over SSH to
+ * sidecar-agent/external_uot_forward_merge.py, which the host's
+ * authorized_keys forces for this key. The merge adds or updates
+ * forwards.<id> entries, deletes the listed non-live forwards and hot-reloads
+ * the sidecar.
  *
- * A host is pushed when its rendered forwards changed since the last good push,
+ * Every run also calls the same forced command with "usage"
+ * (SSH_ORIGINAL_COMMAND=usage), which prints the sidecar's per-forward UDP
+ * byte counters; they are recorded as source "standalone:<host>". A failed
+ * pull is only logged.
+ *
+ * A host is pushed when its rendered document changed since the last good push,
  * or the last good push is older than --max-age (default 3600 s), or --force.
  * Runs from root's crontab every minute; prints one line per push or failure.
  *
@@ -46,6 +53,47 @@ use Leikwan\Master\Support\CliOptions;
 function standaloneSyncLog(string $message): void
 {
     fwrite(STDOUT, gmdate('Y-m-d\TH:i:s\Z') . ' ' . $message . "\n");
+}
+
+/**
+ * @param array<string, mixed> $entry
+ * @return list<string>
+ */
+function standaloneSshCommand(array $entry, string $host, string $defaultKey, string $defaultKnownHosts, string $remoteCommand): array
+{
+    $port = (int) ($entry['ssh_port'] ?? 22);
+    $user = (string) ($entry['ssh_user'] ?? 'root');
+
+    return [
+        'ssh', '-i', (string) ($entry['ssh_key'] ?? $defaultKey),
+        '-p', (string) ($port > 0 && $port < 65536 ? $port : 22),
+        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=10',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', 'UserKnownHostsFile=' . (string) ($entry['known_hosts'] ?? $defaultKnownHosts),
+        '-o', 'IdentitiesOnly=yes',
+        $user . '@' . $host,
+        $remoteCommand,
+    ];
+}
+
+/**
+ * @param list<string> $command
+ * @return array{0: int, 1: string, 2: string}|null exit code, stdout, stderr; null when ssh could not start
+ */
+function standaloneSshRun(array $command, string $stdin): ?array
+{
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($process)) {
+        return null;
+    }
+    fwrite($pipes[0], $stdin);
+    fclose($pipes[0]);
+    $stdout = (string) stream_get_contents($pipes[1]);
+    $stderr = (string) stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+
+    return [proc_close($process), $stdout, $stderr];
 }
 
 try {
@@ -101,6 +149,18 @@ foreach ($hosts as $entry) {
         $failures++;
         continue;
     }
+
+    if (!$dryRun) {
+        $pulled = standaloneSshRun(standaloneSshCommand($entry, $host, $defaultKey, $defaultKnownHosts, 'usage'), '');
+        $usage = $pulled !== null && $pulled[0] === 0 ? json_decode(trim($pulled[1]), true) : null;
+        if (is_array($usage)) {
+            $controller->ingestUsage('standalone:' . $host, $usage);
+        } else {
+            $detail = $pulled === null ? 'ssh_spawn_failed' : sprintf('exit=%d %s', $pulled[0], trim(substr($pulled[2], 0, 300)));
+            standaloneSyncLog(sprintf('%s usage_pull_failed %s', $host, str_replace("\n", ' ', $detail)));
+        }
+    }
+
     try {
         $document = $controller->renderForHost($host);
     } catch (Throwable $exception) {
@@ -111,11 +171,12 @@ foreach ($hosts as $entry) {
     // buildPayload() returns forwards as an object so an empty set stays a JSON map.
     $forwards = $document['forwards'] ?? [];
     $forwards = is_object($forwards) ? get_object_vars($forwards) : $forwards;
-    if (!is_array($forwards) || $forwards === []) {
+    $remove = array_values(array_map('intval', (array) ($document['remove'] ?? [])));
+    if (!is_array($forwards) || ($forwards === [] && $remove === [])) {
         continue; // nothing targets this host; never push an empty set
     }
     ksort($forwards, SORT_NUMERIC);
-    $payload = json_encode(['forwards' => (object) $forwards], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    $payload = json_encode(['forwards' => (object) $forwards, 'remove' => $remove], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     $digest = hash('sha256', $payload);
     $statePath = $stateDir . '/' . preg_replace('/[^A-Za-z0-9._-]/', '_', $host) . '.json';
     $state = json_decode((string) @file_get_contents($statePath), true);
@@ -125,35 +186,17 @@ foreach ($hosts as $entry) {
         continue;
     }
     if ($dryRun) {
-        standaloneSyncLog(sprintf('%s would_push forwards=%d digest=%s', $host, count($forwards), substr($digest, 0, 12)));
+        standaloneSyncLog(sprintf('%s would_push forwards=%d remove=%d digest=%s', $host, count($forwards), count($remove), substr($digest, 0, 12)));
         continue;
     }
 
-    $port = (int) ($entry['ssh_port'] ?? 22);
-    $user = (string) ($entry['ssh_user'] ?? 'root');
-    $command = [
-        'ssh', '-i', (string) ($entry['ssh_key'] ?? $defaultKey),
-        '-p', (string) ($port > 0 && $port < 65536 ? $port : 22),
-        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=10',
-        '-o', 'StrictHostKeyChecking=yes',
-        '-o', 'UserKnownHostsFile=' . (string) ($entry['known_hosts'] ?? $defaultKnownHosts),
-        '-o', 'IdentitiesOnly=yes',
-        $user . '@' . $host,
-        'external-uot-forward-merge',
-    ];
-    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-    if (!is_resource($process)) {
+    $pushed = standaloneSshRun(standaloneSshCommand($entry, $host, $defaultKey, $defaultKnownHosts, 'external-uot-forward-merge'), $payload);
+    if ($pushed === null) {
         standaloneSyncLog("$host ssh_spawn_failed");
         $failures++;
         continue;
     }
-    fwrite($pipes[0], $payload);
-    fclose($pipes[0]);
-    $stdout = (string) stream_get_contents($pipes[1]);
-    $stderr = (string) stream_get_contents($pipes[2]);
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    $exit = proc_close($process);
+    [$exit, $stdout, $stderr] = $pushed;
 
     $lines = array_values(array_filter(array_map('trim', explode("\n", $stdout)), static fn ($line) => $line !== ''));
     $result = json_decode((string) end($lines), true);
@@ -166,10 +209,11 @@ foreach ($hosts as $entry) {
     file_put_contents($statePath, json_encode(['digest' => $digest, 'at' => time()]), LOCK_EX);
     if (($result['changed'] ?? false) === true) {
         standaloneSyncLog(sprintf(
-            '%s pushed added=[%s] updated=[%s] forwards=%d',
+            '%s pushed added=[%s] updated=[%s] removed=[%s] forwards=%d',
             $host,
             implode(',', (array) ($result['added'] ?? [])),
             implode(',', (array) ($result['updated'] ?? [])),
+            implode(',', (array) ($result['removed'] ?? [])),
             (int) ($result['forwards'] ?? 0)
         ));
     }
