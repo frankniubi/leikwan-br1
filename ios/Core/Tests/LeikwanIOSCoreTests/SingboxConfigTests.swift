@@ -27,7 +27,7 @@ final class SingboxConfigTests: XCTestCase {
         if mode == .services {
             runtime = try bondRuntime()
         }
-        let compiled = try SingboxConfigBuilder(settings: settings).build(
+        let compiled = try SingboxConfigBuilder(settings: settings, safePathRegistry: Fixtures.safePaths).build(
             proxyNodes: nodes, runtime: runtime, routing: routing, connectionMode: mode, runtimeOnlyProxy: runtimeOnly
         )
         return (Fixtures.parseJSON(compiled.configJSON), compiled)
@@ -70,13 +70,12 @@ final class SingboxConfigTests: XCTestCase {
         let r = rules(config)
         XCTAssertEqual(r[0]["action"] as? String, "sniff")
         XCTAssertEqual(r[1]["action"] as? String, "hijack-dns")
-        XCTAssertEqual(r[2]["domain"] as? [String], ["v3.leikwanhost.com", "api-leikwanbridge.nbwly.com"])
+        XCTAssertEqual(r[2]["domain"] as? [String], ["panel.example.com", "backup.example.net"])
         XCTAssertEqual(r[2]["outbound"] as? String, "direct")
-        XCTAssertEqual(r[3]["domain"] as? [String], ["v3-mirror.leikwanhost.com"])
-        XCTAssertEqual(r[4]["ip_cidr"] as? [String], ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
+        XCTAssertEqual(r[3]["ip_cidr"] as? [String], ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
         // Runtime reachability: endpoint IP + hosts + cdn host + the node's own server.
-        XCTAssertEqual(r[5]["ip_cidr"] as? [String], ["1.2.3.4/32"])
-        XCTAssertEqual(r[6]["domain"] as? [String], ["edge.example.com", "cdn.example.com", "ss.example.com"])
+        XCTAssertEqual(r[4]["ip_cidr"] as? [String], ["1.2.3.4/32"])
+        XCTAssertEqual(r[5]["domain"] as? [String], ["edge.example.com", "cdn.example.com", "ss.example.com"])
 
         let dns = config["dns"] as! [String: Any]
         let servers = dns["servers"] as! [[String: Any]]
@@ -100,7 +99,7 @@ final class SingboxConfigTests: XCTestCase {
         XCTAssertEqual(socks["version"] as? String, "5")
     }
 
-    func testRuleSetsCustomRulesOrderingAndDownloadDetour() throws {
+    func testRuleSetsCustomRulesOrderingAndLocalRuleSets() throws {
         let engine = RoutingPolicyEngine()
         let snapshot = engine.compile(
             customRules: [
@@ -112,8 +111,8 @@ final class SingboxConfigTests: XCTestCase {
             countryRules: [RoutingRule(id: "k1", kind: .country, matchValue: "CN", outcome: .direct)],
             categoryRules: [RoutingRule(id: "g1", kind: .websiteCategory, matchValue: "china_direct", outcome: .direct)]
         )
-        let settings = SingboxSettings(bypassChina: true, customBypassRules: "cafe.de\n8.8.8.8\n", cacheFilePath: "/c.db")
-        let (config, _) = try build(nodes: [ssNode], settings: settings, routing: snapshot)
+        let settings = SingboxSettings(bypassChina: true, customBypassRules: "cafe.de\n8.8.8.8\n", cacheFilePath: "/c.db", ruleSetDirectory: "/group/rule-sets/")
+        let (config, compiled) = try build(nodes: [ssNode], settings: settings, routing: snapshot)
         let r = rules(config)
 
         let firstCustom = r.firstIndex { ($0["domain_suffix"] as? [String]) == ["corp.example"] }!
@@ -136,10 +135,14 @@ final class SingboxConfigTests: XCTestCase {
         XCTAssertEqual(ruleSets.map { $0["tag"] as? String ?? "" },
                        ["geoip-cn", "geosite-cn", "geoip-jp", "geosite-telegram", "geoip-telegram", "geosite-geolocation-cn"])
         for set in ruleSets {
-            XCTAssertEqual(set["download_detour"] as? String, "proxy-1")
+            let tag = set["tag"] as? String ?? ""
+            XCTAssertEqual(set["type"] as? String, "local")
             XCTAssertEqual(set["format"] as? String, "binary")
-            XCTAssertEqual(set["type"] as? String, "remote")
+            XCTAssertEqual(set["path"] as? String, "/group/rule-sets/\(tag).srs")
+            XCTAssertNil(set["url"])
+            XCTAssertNil(set["download_detour"])
         }
+        XCTAssertFalse(compiled.configJSON.contains("://"), "nothing is downloaded")
         let dnsRules = (config["dns"] as! [String: Any])["rules"] as! [[String: Any]]
         XCTAssertEqual(dnsRules.last?["rule_set"] as? [String], ["geosite-cn"])
         XCTAssertTrue((dnsRules[0]["domain"] as? [String] ?? []).contains("cafe.de"))

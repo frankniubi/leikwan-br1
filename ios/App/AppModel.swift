@@ -9,7 +9,10 @@ import UIKit
 final class AppModel: ObservableObject {
     let tunnel = TunnelController()
 
-    @Published private(set) var login: StoredLogin?
+    /// Saved server profiles and which one is signed in (`profiles.active`).
+    @Published private(set) var profiles = PanelProfileList() {
+        didSet { JSONStore.save(profiles, name: "profiles") }
+    }
     @Published private(set) var catalog: IOSForwardCatalog?
     @Published private(set) var catalogError: String?
     @Published private(set) var isRefreshing = false
@@ -31,15 +34,34 @@ final class AppModel: ObservableObject {
     /// Transient banner text.
     @Published var notice: String?
 
-    private var client: PanelClient?
+    // MARK: Cloud nodes + bindings (stored state only; logic and the UI surface live in
+    // AppModel+CloudNodes.swift). Write these through the methods there, not directly.
+
+    /// Which (forward, node) bindings run, the default binding and rule targets.
+    @Published var bindingPreferences = BindingPreferences() {
+        didSet { JSONStore.save(bindingPreferences, name: "bindings") }
+    }
+    /// Last applied cloud listing: revision, panel pairings, cloud nodes iOS cannot run.
+    @Published var cloudNodeState = CloudNodeSyncState() {
+        didSet { JSONStore.save(cloudNodeState, name: "cloud_nodes_state") }
+    }
+    /// Cloud sync progress for the UI (syncing / last synced / last error).
+    @Published var cloudStatus = CloudSyncStatus()
+    /// Serializes cloud operations (see `performCloud`).
+    var cloudQueue: Task<Void, Never>?
+
+    private(set) var client: PanelClient?
 
     var appVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
     }
 
+    /// The signed-in profile; nil shows the sign-in screen.
+    var profile: PanelProfile? { profiles.active }
+
     var selectedForward: IOSSupportedForward? {
         guard let id = selectedForwardID else { return nil }
-        return catalog?.supportedForward(id: id)
+        return catalog?.bindableForward(id: id)
     }
 
     var selectedNode: ProxyNode? {
@@ -55,43 +77,102 @@ final class AppModel: ObservableObject {
         routing = JSONStore.load(RoutingPreferences.self, name: "routing") ?? RoutingPreferences()
         selectedForwardID = (UserDefaults.standard.object(forKey: "selected_forward_id") as? NSNumber)?.int64Value
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
+        loadCloudNodeCaches()
         await tunnel.load()
-        if let stored = JSONStore.load(StoredLogin.self, name: "login"), let token = Keychain.string("agent_token") {
-            login = stored
-            client = makeClient(clientID: stored.clientID, token: token, endpoint: PanelEndpoint.fromStorage(stored.endpoint))
-            await refreshCatalog()
+        profiles = JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList()
+        if let active = profiles.active {
+            if let token = Keychain.string(active.tokenAccount) {
+                client = makeClient(active, token: token)
+                await refreshCatalog()
+            } else {
+                // The token is gone (Keychain reset): back to the profile list.
+                profiles.activeId = nil
+            }
         }
     }
 
-    // MARK: Account
+    // MARK: Profiles
 
-    func signIn(clientID: Int64, token: String, endpoint: PanelEndpoint, remember: Bool) async throws {
-        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clientID > 0, !trimmedToken.isEmpty else {
-            throw AppError("请填写客户端 ID 和 Agent Token")
+    /// Signs in with a new or edited profile. `token` nil or blank reuses the token saved for
+    /// that profile. On success the profile is saved (an existing one for the same server and
+    /// Client ID is updated instead) and becomes the signed-in profile.
+    func signIn(_ draft: PanelProfile, token: String?) async throws {
+        let typed = (token ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let saved = profiles.profile(id: draft.id).flatMap { Keychain.string($0.tokenAccount) }
+        let agentToken = typed.isEmpty ? (saved ?? "") : typed
+        guard draft.clientId > 0, !agentToken.isEmpty else {
+            throw AppError(L("Enter the Client ID and Agent Token"))
         }
-        let candidate = makeClient(clientID: clientID, token: trimmedToken, endpoint: endpoint)
+        let candidate = makeClient(draft, token: agentToken)
+        let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
         let result = try await candidate.pullCatalog(
-            selectedForwardId: selectedForwardID,
+            selectedForwardId: sameAccount ? selectedForwardID : nil,
             heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
         )
-        Keychain.set(trimmedToken, for: "agent_token")
-        let stored = StoredLogin(clientID: clientID, endpoint: endpoint.storageKey, rememberToken: remember)
-        JSONStore.save(stored, name: "login")
+        var list = profiles
+        let stored = list.upsert(draft)
+        list.activeId = stored.id
+        Keychain.set(agentToken, for: stored.tokenAccount)
+        adoptAccount(stored)
+        profiles = list
         client = candidate
-        login = stored
         apply(result.catalog)
+        scheduleCloudSync(after: result.response)
     }
 
+    /// Signs in with a saved profile and its saved token.
+    func signIn(profileID: UUID) async throws {
+        guard let saved = profiles.profile(id: profileID) else { throw AppError(L("Profile not found")) }
+        guard Keychain.string(saved.tokenAccount) != nil else {
+            throw AppError(L("No Agent Token is saved for this profile. Edit the profile to enter it"))
+        }
+        try await signIn(saved, token: nil)
+    }
+
+    /// Whether `profile` has an Agent Token on this device.
+    func hasSavedToken(_ profile: PanelProfile) -> Bool {
+        return Keychain.string(profile.tokenAccount) != nil
+    }
+
+    /// Back to the profile list. The token stays saved unless the profile opted out.
     func signOut() {
         tunnel.disconnect()
-        if login?.rememberToken != true {
-            Keychain.set(nil, for: "agent_token")
+        if let current = profile, !current.rememberToken {
+            Keychain.set(nil, for: current.tokenAccount)
         }
-        JSONStore.save(Optional<StoredLogin>.none, name: "login")
-        login = nil
+        profiles.activeId = nil
         client = nil
         catalog = nil
+    }
+
+    /// Removes a saved profile and its token.
+    func deleteProfile(_ id: UUID) {
+        if profiles.activeId == id { signOut() }
+        if let removed = profiles.profile(id: id) {
+            Keychain.set(nil, for: removed.tokenAccount)
+        }
+        profiles.remove(id: id)
+    }
+
+    /// UserDefaults key of the account (`PanelProfile.accountKey`) the cached forward choices,
+    /// bindings and cloud nodes belong to.
+    private static let accountKeyDefaultsKey = "account_key"
+
+    /// Signing in to another account drops what was cached for the previous one; nodes added
+    /// on this device stay.
+    private func adoptAccount(_ profile: PanelProfile) {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.accountKeyDefaultsKey) != profile.accountKey else { return }
+        nodes.removeAll { $0.isHosted }
+        if let selected = selectedNodeID, !nodes.contains(where: { $0.id == selected }) {
+            selectedNodeID = nodes.first?.id
+        }
+        cloudNodeState = CloudNodeSyncState()
+        bindingPreferences = BindingPreferences()
+        nativeOutboundPreferences = NativeOutboundPreferences()
+        selectedForwardID = nil
+        catalog = nil
+        defaults.set(profile.accountKey, forKey: Self.accountKeyDefaultsKey)
     }
 
     func refreshCatalog() async {
@@ -105,6 +186,7 @@ final class AppModel: ObservableObject {
             )
             apply(result.catalog)
             catalogError = nil
+            scheduleCloudSync(after: result.response)
         } catch {
             catalogError = Self.describe(error)
         }
@@ -112,16 +194,35 @@ final class AppModel: ObservableObject {
 
     private func apply(_ catalog: IOSForwardCatalog) {
         self.catalog = catalog
-        if let id = selectedForwardID, catalog.supportedForward(id: id) == nil {
+        if let id = selectedForwardID, catalog.bindableForward(id: id) == nil {
             selectedForwardID = nil
         }
         if selectedForwardID == nil {
-            selectedForwardID = catalog.supported.first?.forwardId
+            selectedForwardID = catalog.bindableForwards.first?.forwardId
         }
+        dropNativeOutboundBindings(catalog)
     }
 
-    private func makeClient(clientID: Int64, token: String, endpoint: PanelEndpoint) -> PanelClient {
-        PanelClient(endpoint: endpoint, credentials: credentials(clientID: clientID, token: token))
+    private func makeClient(_ profile: PanelProfile, token: String) -> PanelClient {
+        PanelClient(
+            endpoint: profile.server,
+            fallback: profile.backupServer,
+            credentials: credentials(clientID: profile.clientId, token: token)
+        )
+    }
+
+    /// sing-box builder for the signed-in profile: its server hosts stay direct, rule-sets are
+    /// the bundled copies in the app group.
+    func makeSingboxBuilder() -> SingboxConfigBuilder {
+        let settings = SingboxSettings(
+            dnsServer: routing.dnsServer,
+            bypassChina: routing.bypassChina,
+            customBypassRules: routing.customBypass,
+            enableIPv6: routing.enableIPv6,
+            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path,
+            ruleSetDirectory: AppGroup.ruleSetDirectory.path
+        )
+        return SingboxConfigBuilder(settings: settings, safePathRegistry: .iosBaseline(panelHosts: profile?.panelHosts ?? []))
     }
 
     private func credentials(clientID: Int64, token: String) -> PanelCredentials {
@@ -144,19 +245,23 @@ final class AppModel: ObservableObject {
             do {
                 added += try await addSubscription(url: url)
             } catch {
-                return "订阅导入失败：\(Self.describe(error))"
+                return L("Subscription import failed: %@", String(describing: Self.describe(error)))
             }
         }
         if added == 0 {
-            return result.skippedLines > 0 ? "没有识别到 Shadowsocks / SOCKS5 节点（跳过 \(result.skippedLines) 行）" : "剪贴板里没有可导入的内容"
+            return result.skippedLines > 0 ? L("No Shadowsocks / SOCKS5 nodes found (skipped %@ lines)", String(describing: result.skippedLines)) : L("Nothing to import on the clipboard")
         }
-        return "已导入 \(added) 个节点" + (result.skippedLines > 0 ? "，跳过 \(result.skippedLines) 行" : "")
+        return result.skippedLines > 0
+            ? L("Imported %@ node(s), skipped %@ lines", String(added), String(result.skippedLines))
+            : L("Imported %@ node(s)", String(added))
     }
 
     func addNodes(_ incoming: [ProxyNode], subscriptionID: Int64?) -> Int {
+        // A link equal to a cloud node already on this device is not added twice.
+        let fresh = ProxyNodeIdentity.withoutHostedDuplicates(incoming, existing: nodes)
         var nextID = (nodes.map(\.id).max() ?? 0) + 1
         var appended: [ProxyNode] = []
-        for var node in incoming {
+        for var node in fresh {
             node.id = nextID
             node.subscriptionId = subscriptionID
             node.enabled = true
@@ -171,6 +276,11 @@ final class AppModel: ObservableObject {
     }
 
     func saveNode(_ node: ProxyNode) {
+        // Cloud nodes are written through the panel first (AppModel+CloudNodes.swift).
+        if node.isHosted, nodes.contains(where: { $0.id == node.id }) {
+            Task { _ = await self.saveCloudNode(node) }
+            return
+        }
         if let index = nodes.firstIndex(where: { $0.id == node.id }) {
             nodes[index] = node
         } else {
@@ -179,15 +289,22 @@ final class AppModel: ObservableObject {
     }
 
     func deleteNodes(_ ids: Set<Int64>) {
-        nodes.removeAll { ids.contains($0.id) }
-        if let selected = selectedNodeID, ids.contains(selected) {
+        // Cloud nodes are deleted on the panel (every device of the client), then resynced.
+        let hosted = Set(nodes.filter { ids.contains($0.id) && $0.isHosted }.map { $0.id })
+        if !hosted.isEmpty {
+            Task { await self.deleteCloudNodes(hosted) }
+        }
+        let localIDs = ids.subtracting(hosted)
+        nodes.removeAll { localIDs.contains($0.id) }
+        bindingPreferences.forgetNodes(localIDs)
+        if let selected = selectedNodeID, localIDs.contains(selected) {
             selectedNodeID = nodes.first?.id
         }
     }
 
     func addSubscription(url: String) async throws -> Int {
         let id = (subscriptions.map(\.id).max() ?? 0) + 1
-        let name = URL(string: url)?.host ?? "订阅 \(id)"
+        let name = URL(string: url)?.host ?? L("Subscription %@", String(describing: id))
         let subscription = Subscription(id: id, name: name, url: url, lastUpdated: nil)
         subscriptions.append(subscription)
         return try await refreshSubscription(subscription)
@@ -195,12 +312,12 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func refreshSubscription(_ subscription: Subscription) async throws -> Int {
-        guard let url = URL(string: subscription.url) else { throw AppError("订阅地址无效") }
+        guard let url = URL(string: subscription.url) else { throw AppError(L("Invalid subscription URL")) }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue(ImportRouter.subscriptionUserAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
-            throw AppError("订阅返回 HTTP \(http.statusCode)")
+            throw AppError(L("Subscription returned HTTP %@", String(describing: http.statusCode)))
         }
         let body = String(decoding: data, as: UTF8.self)
         let parsed = ImportRouter.parseSubscriptionBody(body)
@@ -246,17 +363,55 @@ final class AppModel: ObservableObject {
     }
 
     func buildLaunch() throws -> TunnelLaunchOptions {
-        guard let node = selectedNode else {
-            throw AppError("请先添加并选择一个节点")
+        // Native outbound needs no node and has its own plan (see "MARK: Native outbound").
+        if nativeOutboundPreferences.enabled {
+            return try buildNativeOutboundLaunch()
         }
-        let settings = SingboxSettings(
-            dnsServer: routing.dnsServer,
-            bypassChina: routing.bypassChina,
-            customBypassRules: routing.customBypass,
-            enableIPv6: routing.enableIPv6,
-            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path
+        // Every enabled (forward, node) binding runs at once; with none configured this is the
+        // single selected forward + node, exactly as before (AppModel+CloudNodes.swift).
+        return try buildBindingsLaunch()
+    }
+
+    func panelSession() -> TunnelPanelSession? {
+        guard let profile, let token = Keychain.string(profile.tokenAccount) else { return nil }
+        return TunnelPanelSession(
+            endpoint: profile.server.storageKey,
+            backupEndpoint: profile.backupServer?.storageKey,
+            clientID: profile.clientId,
+            agentToken: token,
+            installID: Keychain.installID(),
+            deviceName: Self.deviceName,
+            appVersion: appVersion
         )
-        let builder = SingboxConfigBuilder(settings: settings)
+    }
+
+    // MARK: Native outbound
+    //
+    // Native outbound ("原生出口") uses a plan-approved Ultra carrier forward as a SOCKS5 exit for
+    // all traffic, with no user node (Android ConnectionsViewModel / TunnelOrchestrator native path).
+    // The UI binds to `nativeOutboundPreferences` and to the read-only members and setters in
+    // AppModel+NativeOutbound.swift. While `nativeOutboundPreferences.enabled` is true,
+    // buildLaunch() returns the native plan below instead of the node/forward plan.
+
+    /// The user's native outbound choices, persisted across launches. Write it through the
+    /// `setNativeOutbound…` methods so the values stay consistent with the entitlement.
+    @Published var nativeOutboundPreferences: NativeOutboundPreferences = NativeOutboundPreferences.load() {
+        didSet { nativeOutboundPreferences.save() }
+    }
+
+    /// One native-mode ultra runtime (SOCKS5 facade on 127.0.0.1) + sing-box `proxy-native`.
+    /// The tunnel requests, delivers and renews the native leases (NativeOutboundLeaseManager).
+    private func buildNativeOutboundLaunch() throws -> TunnelLaunchOptions {
+        guard let panel = panelSession() else {
+            throw AppError(L("Sign in to use native outbound"))
+        }
+        guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
+            throw AppError(L("Native outbound is not available for this forward"))
+        }
+        guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {
+            throw AppError(L("The native outbound forward is unavailable. Refresh and try again"))
+        }
+        let builder = makeSingboxBuilder()
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
             customRules: routing.customRules,
@@ -267,108 +422,55 @@ final class AppModel: ObservableObject {
                 RoutingRule(id: "country-\(code)", kind: .country, matchValue: code, outcome: outcome)
             }
         )
-
-        var nodeForRun = node
-        nodeForRun.forwardId = nil
-        guard let forward = selectedForward else {
-            // No forward selected: dial the node directly.
-            let config = try builder.build(proxyNodes: [nodeForRun], runtime: nil, routing: snapshot, connectionMode: .direct)
-            return TunnelLaunchOptions(configContent: config.configJSON, runtimes: [], panel: panelSession())
-        }
-        switch forward.kind {
-        case .ultra:
-            // The tunnel requests and renews the leases itself (UltraLeaseManager); the plan
-            // only carries the static runtime config and the policy it was built from. Lease
-            // endpoints need no sing-box bypass: the tunnel process's own sockets skip the tunnel.
-            guard let panel = panelSession() else {
-                throw AppError("Ultra 转发需要先登录")
-            }
-            guard let policy = UltraPolicy.from(forward.contract) else {
-                throw AppError("Ultra 授权不可用，请刷新后重试")
-            }
-            let paths = UltraRuntimePaths.compact(directory: AppGroup.runtimeDirectory.path, forwardId: forward.forwardId)
-            if paths.controlSocketPath.utf8.count > UltraRuntimePaths.maxSocketPathBytes {
-                throw AppError("Ultra 控制通道路径过长")
-            }
-            let maxCandidates = UltraConstants.maxLeaseCandidates
-            // Android turns auto_select on for multi-candidate batches; iOS plans before the
-            // leases exist, so it always asks for candidates and lets the runtime choose.
-            let autoSelect = maxCandidates > 1
-            let plan = try UltraRuntimeConfigBuilder.buildPlan(
+        let paths = UltraRuntimePaths.compact(directory: AppGroup.runtimeDirectory.path, forwardId: forward.forwardId)
+        let socksPort = try nativeOutboundSocksPort(forwardID: forward.forwardId)
+        let plan: NativeOutboundPlan
+        do {
+            plan = try NativeOutboundPlanner.plan(
+                availability: availability,
                 forward: forward.contract,
-                policy: policy,
+                selection: selection,
                 paths: paths,
-                autoSelect: autoSelect
+                socksPort: socksPort,
+                builder: builder,
+                routing: snapshot
             )
-            let config = try builder.build(
-                proxyNodes: [nodeForRun],
-                runtime: .ultra(plan, leases: []),
-                routing: snapshot,
-                connectionMode: .services,
-                runtimeOnlyProxy: true
-            )
-            let runtimeName = "fwd-\(forward.forwardId)-ultra"
-            let runtime = RuntimeLaunch(
-                name: runtimeName,
-                kind: .ultra,
-                arguments: [],
-                configJSON: plan.configJSON,
-                files: [],
-                forwardID: forward.forwardId
-            )
-            let entry = UltraForwardLaunch(
-                forwardID: forward.forwardId,
-                runtimeName: runtimeName,
-                target: forward.contract.target,
-                backendMode: forward.contract.backendMode,
-                serviceStatus: forward.contract.serviceStatus,
-                listenPort: plan.localListenPort,
-                ultraAccessJSON: try CanonicalJSON.string(forward.contract.ultraAccess ?? [:]),
-                targetDigest: policy.targetDigest,
-                transport: policy.transport,
-                controlSocketPath: paths.controlSocketPath,
-                statusPath: paths.statusPath,
-                maxCandidates: maxCandidates,
-                autoSelect: autoSelect
-            )
-            return TunnelLaunchOptions(configContent: config.configJSON, runtimes: [runtime], panel: panel, ultra: [entry])
-        default:
-            let plan = try bondPlan(for: forward)
-            let config = try builder.build(proxyNodes: [nodeForRun], runtime: .bond(plan), routing: snapshot, connectionMode: .services)
-            let runtimes = plan.invocations.enumerated().map { index, invocation in
-                RuntimeLaunch(
-                    name: "fwd-\(forward.forwardId)-\(invocation.role.rawValue)-\(index)",
-                    kind: RuntimeLaunch.Kind(rawValue: invocation.role.rawValue) ?? .bond,
-                    arguments: invocation.arguments,
-                    configJSON: nil,
-                    files: invocation.role == .bond ? plan.strategyFile.map { [RuntimeFile(path: $0.path, contents: $0.contents)] } ?? [] : [],
-                    forwardID: forward.forwardId
-                )
-            }
-            return TunnelLaunchOptions(configContent: config.configJSON, runtimes: runtimes, panel: panelSession())
+        } catch let error as UltraLeaseError {
+            throw AppError(NativeOutboundErrors.userMessage(error.message))
         }
-    }
-
-    private func bondPlan(for forward: IOSSupportedForward) throws -> BondRuntimePlan {
-        let strategy = BondStrategyFile.make(
-            directory: AppGroup.runtimeDirectory.path,
-            panelId: PanelEndpoint.fromStorage(login?.endpoint).urlString,
-            clientId: login?.clientID ?? 0,
-            forwardId: forward.forwardId
+        let runtimeName = "fwd-\(forward.forwardId)-native"
+        let runtime = RuntimeLaunch(
+            name: runtimeName,
+            kind: .ultra,
+            arguments: [],
+            configJSON: plan.runtime.configJSON,
+            files: [],
+            forwardID: forward.forwardId
         )
-        return try BondPlanBuilder.buildPlan(forward: forward.contract, strategyFile: strategy)
-    }
-
-    private func panelSession() -> TunnelPanelSession? {
-        guard let login, let token = Keychain.string("agent_token") else { return nil }
-        return TunnelPanelSession(
-            endpoint: login.endpoint,
-            clientID: login.clientID,
-            agentToken: token,
-            installID: Keychain.installID(),
-            deviceName: Self.deviceName,
-            appVersion: appVersion
+        let native = NativeOutboundLaunch(
+            forwardID: forward.forwardId,
+            runtimeName: runtimeName,
+            target: forward.contract.target,
+            backendMode: forward.contract.backendMode,
+            serviceStatus: forward.contract.serviceStatus,
+            direction: forward.contract.direction,
+            forwardListenPort: forward.contract.listenPort,
+            ultraAccessJSON: try CanonicalJSON.string(forward.contract.ultraAccess ?? [:]),
+            socksPort: socksPort,
+            carrierDirection: plan.carrier.direction,
+            carrierScopeDigest: plan.carrier.scopeDigest,
+            carrierTransport: plan.carrier.transport,
+            carrierRouteScopes: plan.carrier.routeScopes.map { $0.rawValue },
+            carrierDefaultRouteScope: plan.carrier.defaultRouteScope.rawValue,
+            carrierUnrestrictedAllowed: plan.carrier.unrestrictedAllowed,
+            routeScope: plan.selection.routeScope.rawValue,
+            routePolicy: plan.selection.routePolicy.rawValue,
+            policyGeneration: plan.policy.policyGeneration,
+            controlSocketPath: paths.controlSocketPath,
+            statusPath: paths.statusPath,
+            maxCandidates: NativeOutboundConstants.maxLeaseCandidates
         )
+        return TunnelLaunchOptions(configContent: plan.singbox.configJSON, runtimes: [runtime], panel: panel, nativeOutbound: native)
     }
 
     // MARK: Helpers

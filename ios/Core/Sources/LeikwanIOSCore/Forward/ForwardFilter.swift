@@ -70,6 +70,10 @@ public struct IOSSupportedForward {
     public var forwardId: Int64 { return contract.forwardId }
     public var serviceName: String { return contract.serviceName }
     public var methodDisplay: String { return kind == .ultra ? "Ultra" : "Host" }
+
+    /// A native outbound rule (Windows `IsNativeOutboundRule`): it only carries the native
+    /// outbound relay, so it is never paired with a node or run as an ordinary binding.
+    public var isNativeOutboundRule: Bool { return kind == .ultra && contract.nativeOutbound }
 }
 
 public struct IOSHiddenForward: Equatable {
@@ -88,6 +92,8 @@ public struct IOSForwardCatalog {
     public let supported: [IOSSupportedForward]
     public let hidden: [IOSHiddenForward]
     public let selectedForwardId: Int64?
+    /// The pull's `native_outbound` entitlement (nil when the plan has none or it is unusable).
+    public var nativeOutbound: NativeOutboundAvailability? = nil
 
     /// Count for "N forwards hidden (unsupported on iOS)".
     public var unsupportedHiddenCount: Int {
@@ -96,6 +102,15 @@ public struct IOSForwardCatalog {
 
     public func supportedForward(id: Int64) -> IOSSupportedForward? {
         return supported.first { $0.forwardId == id }
+    }
+
+    /// Forwards a node can be bound to: `supported` minus native outbound rules.
+    public var bindableForwards: [IOSSupportedForward] {
+        return supported.filter { !$0.isNativeOutboundRule }
+    }
+
+    public func bindableForward(id: Int64) -> IOSSupportedForward? {
+        return bindableForwards.first { $0.forwardId == id }
     }
 }
 

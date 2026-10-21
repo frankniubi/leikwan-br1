@@ -141,7 +141,7 @@ jobs:
         run: |
           mkdir -p build
           xcodebuild build \
-            -project LeiKwan.xcodeproj -scheme LeiKwan \
+            -project Bridge.xcodeproj -scheme Bridge \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/sim \
@@ -151,7 +151,7 @@ jobs:
         run: |
           mkdir -p build
           xcodebuild build \
-            -project LeiKwan.xcodeproj -scheme LeiKwan \
+            -project Bridge.xcodeproj -scheme Bridge \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/device \
@@ -160,16 +160,24 @@ jobs:
         working-directory: ios
         run: |
           set -euo pipefail
-          app="build/device/Build/Products/Release-iphoneos/LeiKwan.app"
+          app="build/device/Build/Products/Release-iphoneos/Bridge.app"
           test -d "$app/PlugIns/PacketTunnel.appex"
+          test -s "$app/PlugIns/PacketTunnel.appex/RuleSets/SHA256SUMS"
+          # Visible metadata carries no brand, built-in server or third-party host.
+          for plist in "$app/Info.plist" "$app/PlugIns/PacketTunnel.appex/Info.plist"; do
+            if plutil -p "$plist" | grep -i -E 'leikwan|nbwly|githubusercontent|ip\.sb|cdn-cgi'; then
+              echo "branded or external value in $plist" >&2
+              exit 1
+            fi
+          done
           mkdir -p build/ipa/Payload
           cp -R "$app" build/ipa/Payload/
-          (cd build/ipa && zip -qry ../LeiKwan-unsigned.ipa Payload)
-          ls -lh build/LeiKwan-unsigned.ipa
+          (cd build/ipa && zip -qry ../Bridge-unsigned.ipa Payload)
+          ls -lh build/Bridge-unsigned.ipa
           echo "### Unsigned build" >> "$GITHUB_STEP_SUMMARY"
           du -sh "$app" "$app/PlugIns/PacketTunnel.appex" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: LeiKwan-unsigned-ipa
-          path: ios/build/LeiKwan-unsigned.ipa
+          name: Bridge-unsigned-ipa
+          path: ios/build/Bridge-unsigned.ipa
           retention-days: 14

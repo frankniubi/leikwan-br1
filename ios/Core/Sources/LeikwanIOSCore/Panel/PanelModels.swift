@@ -99,6 +99,8 @@ public struct PullConfigsResponse {
     }
 
     public func catalog(selectedForwardId: Int64?) -> IOSForwardCatalog {
-        return IOSForwardFilter.buildCatalog(rawForwards: forwards, selectedForwardId: selectedForwardId)
+        var catalog = IOSForwardFilter.buildCatalog(rawForwards: forwards, selectedForwardId: selectedForwardId)
+        catalog.nativeOutbound = nativeOutbound
+        return catalog
     }
 }
