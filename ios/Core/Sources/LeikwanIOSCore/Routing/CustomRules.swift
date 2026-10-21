@@ -68,9 +68,9 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
         case .ipCidr:
             return CustomRoutingRule.normalizeAnyCidr(raw)
         case .geoip:
+            // Only countries with a bundled geoip set (a missing set would stop sing-box).
             let code = raw.lowercased()
-            guard code.count == 2, code.allSatisfy({ $0 >= "a" && $0 <= "z" }) else { return nil }
-            return code
+            return BundledRuleSets.hasGeoip(code) ? code : nil
         }
     }
 
@@ -91,8 +91,7 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
     /// sing-box rule-set tag needed by this rule (GEOIP only).
     public var ruleSetRef: RuleSetRef? {
         guard type == .geoip, let code = normalizedValue() else { return nil }
-        let tag = "geoip-\(code)"
-        return RuleSetRef(tag: tag, url: RoutingPolicyEngine.geoipUrl(tag))
+        return RuleSetRef(tag: "geoip-\(code)")
     }
 
     /// The sing-box route rule (without outbound/action) or nil when invalid.

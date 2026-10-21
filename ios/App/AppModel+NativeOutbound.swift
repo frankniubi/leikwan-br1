@@ -106,12 +106,12 @@ extension AppModel {
         return catalog?.supportedForward(id: carrier.forwardId)
     }
 
-    /// Row title for a carrier: the forward's service name, else its direction, else "原生线路".
+    /// Row title for a carrier: the forward's service name, else its direction, else "Native line".
     func nativeOutboundTitle(for carrier: NativeOutboundCarrier) -> String {
         let name = nativeOutboundForward(for: carrier)?.serviceName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !name.isEmpty { return name }
         let direction = carrier.direction.trimmingCharacters(in: .whitespacesAndNewlines)
-        return direction.isEmpty ? "原生线路" : direction
+        return direction.isEmpty ? "Native line" : direction
     }
 
     /// Switches native outbound on or off. Switching on is ignored when it is not offered;
@@ -188,7 +188,7 @@ extension AppModel {
             return cached
         }
         guard let port = NativeOutboundPortCache.allocateLoopbackPort() else {
-            throw AppError("无法分配原生出口本地端口")
+            throw AppError("Could not allocate a local port for native outbound")
         }
         NativeOutboundPortCache.forwardID = forwardID
         NativeOutboundPortCache.port = port

@@ -16,7 +16,7 @@ struct LogsView: View {
             .listStyle(.plain)
             .overlay {
                 if lines.isEmpty {
-                    Text(tunnel.isConnected ? "暂无日志" : "连接后可查看隧道日志")
+                    Text(tunnel.isConnected ? "No logs yet" : "Tunnel logs appear after you connect")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -24,7 +24,7 @@ struct LogsView: View {
                 if count > 0 { proxy.scrollTo(count - 1, anchor: .bottom) }
             }
         }
-        .navigationTitle("隧道日志")
+        .navigationTitle("Tunnel logs")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Button {

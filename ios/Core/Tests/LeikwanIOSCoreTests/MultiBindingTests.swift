@@ -9,7 +9,7 @@ final class MultiBindingTests: XCTestCase {
     private let thirdNode = ProxyNode(id: 3, name: "Direct", server: "9.9.9.9", port: 443,
                                       settings: .socks(SocksSettings()))
 
-    private let environment = MultiBindingEnvironment(runtimeDirectory: "/rt", panelId: "https://v3.leikwanhost.com",
+    private let environment = MultiBindingEnvironment(runtimeDirectory: "/rt", panelId: "https://panel.example.com",
                                                       clientId: 5, hasPanelSession: true, now: Fixtures.now)
 
     private func supported(_ contract: ForwardContract) -> IOSSupportedForward {
@@ -55,7 +55,7 @@ final class MultiBindingTests: XCTestCase {
         let plan = try MultiBindingPlanner.plan(resolved: resolved, environment: environment, builder: builder, routing: snapshot)
 
         // Same sing-box config and runtimes as the pre-multi-binding single plan.
-        let strategy = BondStrategyFile.make(directory: "/rt", panelId: "https://v3.leikwanhost.com", clientId: 5, forwardId: 12)
+        let strategy = BondStrategyFile.make(directory: "/rt", panelId: "https://panel.example.com", clientId: 5, forwardId: 12)
         let legacyPlan = try BondPlanBuilder.buildPlan(forward: bondForward.contract, strategyFile: strategy)
         let legacy = try builder.build(proxyNodes: [ssNode], runtime: .bond(legacyPlan), routing: snapshot, connectionMode: .services)
         XCTAssertEqual(plan.singbox.configJSON, legacy.configJSON)

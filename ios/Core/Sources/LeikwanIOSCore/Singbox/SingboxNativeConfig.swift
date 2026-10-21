@@ -86,10 +86,7 @@ extension SingboxConfigBuilder {
         )
         route["final"] = scope == .cnOnly ? "direct" : tag
         route["default_domain_resolver"] = resolveDomains ? "remote" : "local"
-        // A restricted relay refuses 443, so rule-sets download direct; unrestricted downloads
-        // follow the exit except for cn_only, whose exit only serves China.
-        let downloadDetour = (restricted || scope == .cnOnly) ? "direct" : tag
-        let ruleSets = buildNativeRuleSets(snapshot: snapshot, needsChinaSets: scope.isSplit || bypassChina, downloadDetour: downloadDetour)
+        let ruleSets = buildNativeRuleSets(snapshot: snapshot, needsChinaSets: scope.isSplit || bypassChina)
         if !ruleSets.isEmpty {
             route["rule_set"] = ruleSets
         }
@@ -266,28 +263,14 @@ extension SingboxConfigBuilder {
         return rules
     }
 
-    func buildNativeRuleSets(snapshot: RoutingPolicySnapshot, needsChinaSets: Bool, downloadDetour: String) -> [[String: Any]] {
-        var result: [[String: Any]] = []
-        var seen = Set<String>()
-        func add(_ tag: String, _ url: String) {
-            guard seen.insert(tag).inserted else { return }
-            result.append([
-                "tag": tag,
-                "type": "remote",
-                "format": "binary",
-                "url": url,
-                "download_detour": downloadDetour,
-            ])
-        }
+    func buildNativeRuleSets(snapshot: RoutingPolicySnapshot, needsChinaSets: Bool) -> [[String: Any]] {
+        var tags: [String] = []
         if needsChinaSets {
-            add("geoip-cn", SingboxConfigBuilder.chinaGeoipUrl)
-            add("geosite-cn", SingboxConfigBuilder.chinaGeositeUrl)
+            tags.append(contentsOf: BundledRuleSets.chinaTags)
         }
         if snapshot.globalMode == .rule {
-            for ref in routingEngine.requiredRuleSets(snapshot) {
-                add(ref.tag, ref.url)
-            }
+            tags.append(contentsOf: routingEngine.requiredRuleSets(snapshot).map { $0.tag })
         }
-        return result
+        return localRuleSets(tags)
     }
 }

@@ -149,7 +149,7 @@ enum LatencyStyle {
 
     static func text(_ milliseconds: Int?, failed: Bool) -> String {
         if let milliseconds { return "\(milliseconds) ms" }
-        return failed ? "超时" : "—"
+        return failed ? "Timeout" : "—"
     }
 }
 

@@ -5,14 +5,12 @@ import Foundation
 /// iOS differences: shadowsocks + socks nodes only; SERVICES / DIRECT modes only (native outbound is
 /// `buildNative` in SingboxNativeConfig.swift;
 /// no client route-direction rules); TUN stack/MTU configurable (default mixed / 9000); `log.level`
-/// configurable; `experimental.cache_file`; every panel host protected; custom rules and app presets;
-/// rule-set `download_detour` = proxy when a proxy exists, else direct; `route.default_domain_resolver`
-/// = "direct-dns". Output is deterministic JSON (sorted keys).
+/// configurable; `experimental.cache_file`; the profile's panel hosts protected; custom rules and app
+/// presets; rule-sets are the bundled `local` ones (`BundledRuleSets`, nothing is downloaded);
+/// `route.default_domain_resolver` = "direct-dns". Output is deterministic JSON (sorted keys).
 public struct SingboxConfigBuilder {
     public static let tunIPv4Address = "172.19.0.1/30"
     public static let tunIPv6Address = "fdfe:dcba:9876::1/126"
-    public static let chinaGeoipUrl = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
-    public static let chinaGeositeUrl = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
 
     public let settings: SingboxSettings
     public let safePathRegistry: SafePathRegistry
@@ -87,8 +85,7 @@ public struct SingboxConfigBuilder {
         )
         route["final"] = finalOutbound(snapshot: snapshot, finalProxyTag: finalProxyTag, nodeTags: nodeTags, warnings: &warnings)
         route["default_domain_resolver"] = "direct-dns"
-        let downloadDetour = hasProxy ? finalProxyTag : "direct"
-        let ruleSets = buildRuleSets(snapshot: snapshot, bypassChina: bypassChinaActive, downloadDetour: downloadDetour)
+        let ruleSets = buildRuleSets(snapshot: snapshot, bypassChina: bypassChinaActive)
         if !ruleSets.isEmpty {
             route["rule_set"] = ruleSets
         }
@@ -354,25 +351,21 @@ public struct SingboxConfigBuilder {
         }
     }
 
-    func buildRuleSets(snapshot: RoutingPolicySnapshot, bypassChina: Bool, downloadDetour: String) -> [[String: Any]] {
+    func buildRuleSets(snapshot: RoutingPolicySnapshot, bypassChina: Bool) -> [[String: Any]] {
+        var tags: [String] = []
+        if bypassChina {
+            tags.append(contentsOf: BundledRuleSets.chinaTags)
+        }
+        tags.append(contentsOf: routingEngine.requiredRuleSets(snapshot).map { $0.tag })
+        return localRuleSets(tags)
+    }
+
+    /// Bundled rule-set entries for `tags`, de-duplicated in order.
+    func localRuleSets(_ tags: [String]) -> [[String: Any]] {
         var result: [[String: Any]] = []
         var seen = Set<String>()
-        func add(_ tag: String, _ url: String) {
-            guard seen.insert(tag).inserted else { return }
-            result.append([
-                "tag": tag,
-                "type": "remote",
-                "format": "binary",
-                "url": url,
-                "download_detour": downloadDetour,
-            ])
-        }
-        if bypassChina {
-            add("geoip-cn", SingboxConfigBuilder.chinaGeoipUrl)
-            add("geosite-cn", SingboxConfigBuilder.chinaGeositeUrl)
-        }
-        for ref in routingEngine.requiredRuleSets(snapshot) {
-            add(ref.tag, ref.url)
+        for tag in tags where seen.insert(tag).inserted {
+            result.append(BundledRuleSets.singboxEntry(tag: tag, directory: settings.ruleSetDirectory))
         }
         return result
     }

@@ -6,7 +6,8 @@ import NetworkExtension
 /// and stops the packet tunnel, and polls its status.
 @MainActor
 final class TunnelController: ObservableObject {
-    static let tunnelBundleIdentifier = "com.leikwan.bridge.ios.tunnel"
+    /// The extension's bundle id is the app's plus ".tunnel" (project.yml).
+    static let tunnelBundleIdentifier = (Bundle.main.bundleIdentifier ?? "org.forfoxsakesantuary.foxbridgeinternal") + ".tunnel"
 
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var snapshot = TunnelStatusSnapshot()
@@ -78,10 +79,10 @@ final class TunnelController: ObservableObject {
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleIdentifier
-        proto.serverAddress = "LeiKwan"
+        proto.serverAddress = "Bridge"
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
-        manager.localizedDescription = "LeiKwan"
+        manager.localizedDescription = "Bridge"
         manager.isEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.

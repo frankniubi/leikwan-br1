@@ -42,6 +42,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         LibboxSetMemoryLimit(true)
         RuntimeHost.installLogSink()
         TunnelLog.shared.write("tunnel starting: \(launch.runtimes.count) runtime(s), libbox \(LibboxVersion())")
+        try RuleSetInstaller.ensureInstalled()
 
         UltraLeaseManager.settleRuntimeFiles(launch.ultra, ledger: usageLedger)
         NativeOutboundLeaseManager.settleRuntimeFiles(launch.nativeOutbound, ledger: usageLedger)
@@ -77,8 +78,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         startUltraLeases(launch)
         startNativeLeases(launch)
         statusMonitor.start()
-        if let panel = launch.panel {
-            let loop = TunnelControlLoop(session: panel, usageLedger: usageLedger) { [weak self] alert in
+        if let client = launch.panel?.makeClient() {
+            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
                 self?.handleTerminal(alert)
             }
             controlLoop = loop
@@ -223,8 +224,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if previous?.panel != next.panel {
             controlLoop?.stop()
             controlLoop = nil
-            if let panel = next.panel {
-                let loop = TunnelControlLoop(session: panel, usageLedger: usageLedger) { [weak self] alert in
+            if let client = next.panel?.makeClient() {
+                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
                     self?.handleTerminal(alert)
                 }
                 controlLoop = loop
@@ -235,7 +236,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Starts lease delivery for the plan's Ultra forwards (no-op when one is already running).
     private func startUltraLeases(_ plan: TunnelLaunchOptions) {
-        guard ultraLeases == nil, let panel = plan.panel else { return }
+        guard ultraLeases == nil, let client = plan.panel?.makeClient() else { return }
         // Bindings whose runtime did not start get no lease loop (it would only raise alerts).
         let groups = plan.optionalRuntimeGroups
         let forwards = plan.ultra.filter { forward in
@@ -243,7 +244,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return failedBindings[group] == nil
         }
         guard !forwards.isEmpty else { return }
-        let manager = UltraLeaseManager(session: panel, forwards: forwards)
+        let manager = UltraLeaseManager(client: client, forwards: forwards)
         ultraLeases = manager
         manager.start()
     }
@@ -255,11 +256,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Starts native lease delivery for the plan's native outbound runtime (no-op when running).
     private func startNativeLeases(_ plan: TunnelLaunchOptions) {
-        guard nativeLeases == nil, let native = plan.nativeOutbound, let panel = plan.panel,
+        guard nativeLeases == nil, let native = plan.nativeOutbound, let client = plan.panel?.makeClient(),
               let baseRuntime = plan.runtimes.first(where: { $0.name == native.runtimeName })
         else { return }
         let manager = NativeOutboundLeaseManager(
-            session: panel,
+            client: client,
             launch: native,
             restartRuntime: { [weak self] configJSON in
                 guard let self = self else { return }
@@ -294,17 +295,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func resolveLaunch(_ options: [String: NSObject]?) throws -> TunnelLaunchOptions {
+        let launch: TunnelLaunchOptions
         if let data = options?[TunnelLaunchOptions.optionKey] as? Data {
-            let launch = try TunnelLaunchOptions.decode(data)
+            launch = try TunnelLaunchOptions.decode(data)
             try? data.write(to: AppGroup.launchSnapshotURL, options: .atomic)
-            return launch
+        } else {
+            // Started by the system (on-demand, "Connect" in Settings): reuse the
+            // last plan the app supplied.
+            guard let data = try? Data(contentsOf: AppGroup.launchSnapshotURL) else {
+                throw RuntimeHostError("no tunnel configuration; open Bridge to connect")
+            }
+            launch = try TunnelLaunchOptions.decode(data)
         }
-        // Started by the system (on-demand, "Connect" in Settings): reuse the
-        // last plan the app supplied.
-        guard let data = try? Data(contentsOf: AppGroup.launchSnapshotURL) else {
-            throw RuntimeHostError("no tunnel configuration; open LeiKwan to connect")
+        if let panel = launch.panel, panel.makeClient() == nil {
+            throw RuntimeHostError("invalid server address; open Bridge and sign in again")
         }
-        return try TunnelLaunchOptions.decode(data)
+        return launch
     }
 
     /// The panel revoked this device (kicked/banned/untrusted): stop

@@ -138,10 +138,10 @@ final class NativeOutboundTests: XCTestCase {
         XCTAssertEqual(NativeRoutePolicy.normalize(" Unrestricted "), .unrestricted)
         XCTAssertEqual(NativeRoutePolicy.normalize("anything"), .restricted)
         XCTAssertFalse(NativeRoutePolicy.isValidValue("anything"))
-        XCTAssertEqual(NativeRouteScope.cnOnly.displayName, "仅中国大陆")
-        XCTAssertEqual(NativeRouteScope.intlOnly.displayName, "仅国际")
-        XCTAssertEqual(NativeRouteScope.global.displayName, "全局")
-        XCTAssertEqual(NativeRoutePolicy.unrestricted.displayName, "无审全路由")
+        XCTAssertEqual(NativeRouteScope.cnOnly.displayName, "Mainland China only")
+        XCTAssertEqual(NativeRouteScope.intlOnly.displayName, "International only")
+        XCTAssertEqual(NativeRouteScope.global.displayName, "Global")
+        XCTAssertEqual(NativeRoutePolicy.unrestricted.displayName, "Unrestricted routing")
     }
 
     func testAvailabilityRejections() {
@@ -354,7 +354,7 @@ final class NativeOutboundTests: XCTestCase {
         let body = try CanonicalJSON.string(["ok": true, "leases": [NativeFixtures.leaseJSON()]] as [String: Any])
         let transport = MockPanelTransport([.respond(200, body)])
         let credentials = PanelCredentials(clientId: 12345, agentToken: "t", installId: "i", deviceName: "d", appVersion: "1")
-        let client = PanelClient(endpoint: .cloudflare, credentials: credentials, transport: transport)
+        let client = PanelClient(endpoint: Fixtures.panel, credentials: credentials, transport: transport)
         let leases = try await client.resolveNativeOutboundLeases(
             forward: NativeFixtures.forward(),
             availability: NativeFixtures.availability(),
@@ -374,7 +374,7 @@ final class NativeOutboundTests: XCTestCase {
 
     func testResolveNativeLeasesLocalRefusals() async {
         let client = PanelClient(
-            endpoint: .cloudflare,
+            endpoint: Fixtures.panel,
             credentials: PanelCredentials(clientId: 1, agentToken: "t", installId: "i", deviceName: "d", appVersion: "1"),
             transport: MockPanelTransport([])
         )

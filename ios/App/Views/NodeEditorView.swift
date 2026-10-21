@@ -21,46 +21,46 @@ struct NodeEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("基本") {
-                    TextField("名称（可选）", text: $node.name)
-                    TextField("服务器地址", text: $node.server)
+                Section("Basics") {
+                    TextField("Name (optional)", text: $node.name)
+                    TextField("Server address", text: $node.server)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    TextField("端口", text: $portText)
+                    TextField("Port", text: $portText)
                         .keyboardType(.numberPad)
                 }
                 switch node.settings {
                 case let .shadowsocks(settings):
                     Section("Shadowsocks") {
-                        Picker("加密方式", selection: ssBinding(settings, \.method)) {
+                        Picker("Cipher", selection: ssBinding(settings, \.method)) {
                             ForEach(Self.ssMethods, id: \.self) { Text($0).tag($0) }
                         }
-                        SecureField("密码", text: ssBinding(settings, \.password))
-                        TextField("插件（obfs-local / v2ray-plugin，可选）", text: ssOptionalBinding(settings, \.plugin))
+                        SecureField("Password", text: ssBinding(settings, \.password))
+                        TextField("Plugin (obfs-local / v2ray-plugin, optional)", text: ssOptionalBinding(settings, \.plugin))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("插件参数（可选）", text: ssOptionalBinding(settings, \.pluginOpts))
+                        TextField("Plugin options (optional)", text: ssOptionalBinding(settings, \.pluginOpts))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
                 case let .socks(settings):
                     Section("SOCKS5") {
-                        TextField("用户名（可选）", text: socksBinding(settings, \.username))
+                        TextField("User name (optional)", text: socksBinding(settings, \.username))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        SecureField("密码（可选）", text: socksBinding(settings, \.password))
+                        SecureField("Password (optional)", text: socksBinding(settings, \.password))
                     }
                 }
             }
-            .navigationTitle(node.id == 0 ? "添加节点" : "编辑节点")
+            .navigationTitle(node.id == 0 ? "Add node" : "Edit node")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button("Save") {
                         var saved = node
                         saved.port = Int(portText) ?? 0
                         saved.server = saved.server.trimmingCharacters(in: .whitespaces)

@@ -8,7 +8,7 @@ struct CloudSyncStatus: Equatable {
     /// Stable error code of the last failed cloud call (nil after a success), e.g.
     /// "device_untrusted", "hosted_node_invalid", "hosted_nodes_network".
     var lastErrorCode: String?
-    /// Chinese text for `lastErrorCode`.
+    /// User-facing text for `lastErrorCode`.
     var lastError: String?
 }
 
@@ -27,28 +27,28 @@ struct BindingRow: Identifiable {
     let isEnabled: Bool
     /// Route final + untargeted "proxy" rules.
     let isDefault: Bool
-    /// Enabled but will not run, and why (Chinese); nil when it runs or is disabled.
+    /// Enabled but will not run, and why; nil when it runs or is disabled.
     let skipReason: String?
 
     /// "<forward> → <node>" / "直连 → <node>".
     var title: String {
         let nodeName = node.map { $0.name.isEmpty ? "\($0.server):\($0.port)" : $0.name }
-            ?? unsupportedCloudNode.map { "\($0.name)（iOS 不支持）" }
-            ?? "未选择节点"
-        guard let forward = forward else { return "直连 → " + nodeName }
+            ?? unsupportedCloudNode.map { "\($0.name) (not supported on iOS)" }
+            ?? "No node selected"
+        guard let forward = forward else { return "Direct → " + nodeName }
         let direction = forward.contract.direction.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = forward.serviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let forwardName = !name.isEmpty ? name : (!direction.isEmpty ? direction : "转发 #\(forward.forwardId)")
+        let forwardName = !name.isEmpty ? name : (!direction.isEmpty ? direction : "Forward #\(forward.forwardId)")
         return forwardName + " → " + nodeName
     }
 
     /// "本机选择" / "云端绑定" / "云端自动匹配" / "当前节点" / "".
     var nodeSourceLabel: String {
         switch nodeSource {
-        case .local: return "本机选择"
-        case .cloudExplicit: return "云端绑定"
-        case .cloudTargetMatch: return "云端自动匹配"
-        case .selection: return "当前节点"
+        case .local: return "Chosen on this device"
+        case .cloudExplicit: return "Bound in the cloud"
+        case .cloudTargetMatch: return "Matched in the cloud"
+        case .selection: return "Current node"
         case .unset: return ""
         }
     }
@@ -79,18 +79,18 @@ extension AppModel {
     /// Cloud nodes iOS cannot run (e.g. VLESS): show read-only ("iOS 暂不支持"); never edited or
     /// deleted from iOS.
     var unsupportedCloudNodes: [HostedNodeDTO] {
-        guard let clientID = login?.clientID, cloudNodeState.clientId == clientID else { return [] }
+        guard let clientID = profile?.clientId, cloudNodeState.clientId == clientID else { return [] }
         return cloudNodeState.unsupportedNodes
     }
 
     /// Cloud features need a signed-in panel session.
     var isCloudAvailable: Bool {
-        return client != nil && login != nil
+        return client != nil && profile != nil
     }
 
     /// Last successful cloud sync for the signed-in client.
     var cloudLastSyncedAt: Date? {
-        guard let clientID = login?.clientID, cloudNodeState.clientId == clientID else { return nil }
+        guard let clientID = profile?.clientId, cloudNodeState.clientId == clientID else { return nil }
         return cloudNodeState.syncedAt
     }
 
@@ -369,26 +369,19 @@ extension AppModel {
         scheduleTunnelReload()
     }
 
-    /// Picker label for a target: the binding title, or "默认绑定".
+    /// Picker label for a target: the binding title, or "Default binding".
     func routingTargetTitle(nodeID: Int64?) -> String {
-        guard let nodeID = nodeID else { return "默认绑定" }
+        guard let nodeID = nodeID else { return "Default binding" }
         if let row = bindingRows.first(where: { $0.node?.id == nodeID && $0.isEnabled }) { return row.title }
-        if let node = nodes.first(where: { $0.id == nodeID }) { return "\(node.name)（未启用）" }
-        return "节点已删除"
+        if let node = nodes.first(where: { $0.id == nodeID }) { return "\(node.name) (not enabled)" }
+        return "Node deleted"
     }
 
     // MARK: Launch planning
 
     /// The multi-binding launch (called by `buildLaunch()` when native outbound is off).
     func buildBindingsLaunch() throws -> TunnelLaunchOptions {
-        let settings = SingboxSettings(
-            dnsServer: routing.dnsServer,
-            bypassChina: routing.bypassChina,
-            customBypassRules: routing.customBypass,
-            enableIPv6: routing.enableIPv6,
-            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path
-        )
-        let builder = SingboxConfigBuilder(settings: settings)
+        let builder = makeSingboxBuilder()
         let preferences = bindingPreferences
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
@@ -405,8 +398,8 @@ extension AppModel {
         let panel = panelSession()
         let environment = MultiBindingEnvironment(
             runtimeDirectory: AppGroup.runtimeDirectory.path,
-            panelId: PanelEndpoint.fromStorage(login?.endpoint).urlString,
-            clientId: login?.clientID ?? 0,
+            panelId: profile?.server.urlString ?? "",
+            clientId: profile?.clientId ?? 0,
             hasPanelSession: panel != nil
         )
         let plan: MultiBindingPlan
@@ -418,7 +411,7 @@ extension AppModel {
         if !plan.skipped.isEmpty {
             let first = plan.skipped[0]
             let title = bindingRows.first { $0.id == first.id }?.title ?? first.id.rawValue
-            notice = "已跳过 \(plan.skipped.count) 个绑定：\(title)（\(first.reason.message)）"
+            notice = "Skipped \(plan.skipped.count) binding(s): \(title) (\(first.reason.message))"
         }
         let runtimes = plan.runtimes.map { runtime in
             RuntimeLaunch(
@@ -479,7 +472,7 @@ extension AppModel {
     /// Cloud -> device half of the sync. Never surfaces a banner; failures land in `cloudStatus`
     /// and the next pull retries (the stored revision only moves after a successful apply).
     func syncCloudNodesIfChanged(revision: String?) async {
-        guard let clientID = login?.clientID, isCloudAvailable else { return }
+        guard let clientID = profile?.clientId, isCloudAvailable else { return }
         switch CloudNodeMerge.decide(revision: revision, clientId: clientID, state: cloudNodeState, nodes: nodes) {
         case .upToDate:
             return
@@ -496,7 +489,7 @@ extension AppModel {
 
     /// Cloud state of the signed-in client only (another client's pairings never apply).
     var effectiveCloudState: CloudNodeSyncState {
-        guard let clientID = login?.clientID, cloudNodeState.clientId == clientID else { return .empty }
+        guard let clientID = profile?.clientId, cloudNodeState.clientId == clientID else { return .empty }
         return cloudNodeState
     }
 
@@ -515,7 +508,7 @@ extension AppModel {
 
     /// Materializes a panel listing into `nodes`, `cloudNodeState` and the per-forward choices.
     func applyCloudListing(_ listing: HostedNodesListing) {
-        guard let clientID = login?.clientID else { return }
+        guard let clientID = profile?.clientId else { return }
         let result = CloudNodeMerge.apply(listing, to: nodes, previous: cloudNodeState, clientId: clientID)
         nodes = result.nodes
         cloudNodeState = result.state

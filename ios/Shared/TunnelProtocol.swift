@@ -165,8 +165,10 @@ struct RuntimeLaunch: Codable, Equatable {
 }
 
 struct TunnelPanelSession: Codable, Equatable {
-    /// PanelEndpoint storage key ("cloudflare" / "aliyun_cdn").
+    /// The profile's server address (PanelEndpoint storage key, `https://...`).
     var endpoint: String
+    /// The profile's backup address, if any.
+    var backupEndpoint: String? = nil
     var clientID: Int64
     var agentToken: String
     var installID: String

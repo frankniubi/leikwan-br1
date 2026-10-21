@@ -45,12 +45,12 @@ public enum NativeRouteScope: String, Codable, CaseIterable, Equatable {
         }
     }
 
-    /// Chinese label (Android `connections_native_scope_*`).
+    /// UI label (Android `connections_native_scope_*`).
     public var displayName: String {
         switch self {
-        case .cnOnly: return "仅中国大陆"
-        case .intlOnly: return "仅国际"
-        case .global: return "全局"
+        case .cnOnly: return "Mainland China only"
+        case .intlOnly: return "International only"
+        case .global: return "Global"
         }
     }
 
@@ -77,11 +77,11 @@ public enum NativeRoutePolicy: String, Codable, CaseIterable, Equatable {
         return normalized == "restricted" || normalized == "unrestricted"
     }
 
-    /// Chinese label (Android `connections_native_unrestricted` for the unrestricted toggle).
+    /// UI label (Android `connections_native_unrestricted` for the unrestricted toggle).
     public var displayName: String {
         switch self {
-        case .restricted: return "标准路由"
-        case .unrestricted: return "无审全路由"
+        case .restricted: return "Standard routing"
+        case .unrestricted: return "Unrestricted routing"
         }
     }
 
@@ -507,7 +507,7 @@ public struct NativeOutboundLease {
 }
 
 /// Error codes after which Android stops native outbound instead of retrying
-/// (`TunnelOrchestrator.isNativeAuthorizationFailure`), plus Chinese messages for the app.
+/// (`TunnelOrchestrator.isNativeAuthorizationFailure`), plus user-facing messages for the app.
 public enum NativeOutboundErrors {
     public static let authorizationFailureCodes: Set<String> = [
         "native_outbound_not_allowed",
@@ -532,27 +532,27 @@ public enum NativeOutboundErrors {
     public static func userMessage(_ code: String) -> String {
         switch code {
         case "native_outbound_not_allowed", "native_forward_unavailable", "native_outbound_carrier_unavailable":
-            return "当前套餐或转发不可用原生出口"
+            return "Native outbound is not available for this plan or forward"
         case "native_route_scope_invalid":
-            return "所选流量范围不可用，请刷新后重试"
+            return "The selected traffic scope is not available. Refresh and try again"
         case "native_route_policy_invalid", "native_route_policy_not_allowed":
-            return "当前套餐不支持无审全路由"
+            return "This plan does not include unrestricted routing"
         case "native_policy_invalid", "native_policy_unavailable", "forward_inactive", "native_transport_invalid":
-            return "原生出口授权不可用（服务未激活或已过期）"
+            return "Native outbound authorization unavailable (service inactive or expired)"
         case "native_forward_direction_mismatch":
-            return "原生出口线路已变更，请刷新后重试"
+            return "The native outbound line changed. Refresh and try again"
         case "native_lease_refresh_expired":
-            return "原生出口线路已过期，请重新连接"
+            return "The native outbound line expired. Reconnect"
         case "native_lease_rejected_by_runtime":
-            return "本地运行时拒绝了原生出口线路"
+            return "The local runtime rejected the native outbound line"
         case "native_control_path_too_long":
-            return "原生出口控制通道路径过长"
+            return "Native outbound control socket path is too long"
         case "lease_sealing_required", "lease_key_invalid", "lease_unseal_failed", "lease_device_key_conflict":
-            return "线路密钥校验失败（\(code)）"
+            return "Line key check failed (\(code))"
         case "no_approved_candidate":
-            return "暂无可用原生线路，稍后自动重试"
+            return "No native line available yet; retrying automatically"
         default:
-            return "获取原生出口线路失败（\(code)），稍后自动重试"
+            return "Could not get a native outbound line (\(code)); retrying automatically"
         }
     }
 }

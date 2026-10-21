@@ -19,22 +19,15 @@ import Security
 final class UltraLeaseManager {
     private let client: PanelClient
     private let forwards: [UltraForwardLaunch]
-    private let deliveryQueue = DispatchQueue(label: "com.leikwan.tunnel.ultra-lease", attributes: .concurrent)
+    private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.ultra-lease", attributes: .concurrent)
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
     private var alerts: [Int64: String] = [:]
     /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
     private var candidateEndpoints: [Int64: [String: String]] = [:]
 
-    init(session: TunnelPanelSession, forwards: [UltraForwardLaunch]) {
-        let credentials = PanelCredentials(
-            clientId: session.clientID,
-            agentToken: session.agentToken,
-            installId: session.installID,
-            deviceName: session.deviceName,
-            appVersion: session.appVersion
-        )
-        client = PanelClient(endpoint: PanelEndpoint.fromStorage(session.endpoint), credentials: credentials)
+    init(client: PanelClient, forwards: [UltraForwardLaunch]) {
+        self.client = client
         self.forwards = forwards
     }
 
@@ -43,7 +36,7 @@ final class UltraLeaseManager {
         lock.lock()
         defer { lock.unlock() }
         guard let forwardID = alerts.keys.sorted().first, let message = alerts[forwardID] else { return nil }
-        return "Ultra 转发 \(forwardID)：\(message)"
+        return "Ultra forward \(forwardID): \(message)"
     }
 
     func start() {
@@ -308,17 +301,17 @@ final class UltraLeaseManager {
     static func userMessage(_ code: String) -> String {
         switch code {
         case "ultra_forward_changed_reconnect":
-            return "转发配置已变更，请重新连接"
+            return "The forward settings changed. Reconnect"
         case "ultra_policy_unavailable", "policy_unavailable":
-            return "Ultra 授权不可用（服务未激活或已过期）"
+            return "Ultra authorization unavailable (service inactive or expired)"
         case "lease_sealing_required", "lease_key_invalid", "lease_unseal_failed", "lease_device_key_conflict":
-            return "线路密钥校验失败（\(code)）"
+            return "Line key check failed (\(code))"
         case "ultra_lease_rejected_by_runtime":
-            return "本地 Ultra 运行时拒绝了线路"
+            return "The local Ultra runtime rejected the line"
         case "no_approved_candidate":
-            return "暂无可用线路，稍后自动重试"
+            return "No line available yet; retrying automatically"
         default:
-            return "获取线路失败（\(code)），稍后自动重试"
+            return "Could not get a line (\(code)); retrying automatically"
         }
     }
 }
@@ -327,7 +320,7 @@ final class UltraLeaseManager {
 /// after-first-unlock, this device only). Generated once; regenerated only when no key exists or
 /// the stored one is unusable, never because the panel reported a key conflict.
 enum UltraLeaseKeychain {
-    private static let service = "com.leikwan.bridge.ios.ultra-lease-key"
+    private static let service = "org.forfoxsakesantuary.foxbridgeinternal.ultra-lease-key"
     private static let account = "lease-key-v1"
     private static let lock = NSLock()
     private static var cached: UltraSealedLeaseOpener?

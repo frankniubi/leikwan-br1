@@ -7,15 +7,12 @@ import Foundation
 /// > bypass-China > custom bypass > final. In `.global` / `.direct` mode user rules are ignored.
 public struct RoutingPolicyEngine {
     public static let proxyOutboundSentinel = "<PROXY>"
-    public static let geoipBase = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/"
 
     public static func nodeSentinel(_ nodeId: Int64) -> String { return "<NODE:\(nodeId)>" }
 
     public static func geoipTag(_ countryCode: String) -> String {
         return "geoip-" + countryCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
-
-    public static func geoipUrl(_ tag: String) -> String { return geoipBase + tag + ".srs" }
 
     public let safePathRegistry: SafePathRegistry
     public let categoryCatalog: RoutingCategoryCatalog
@@ -123,7 +120,7 @@ public struct RoutingPolicyEngine {
         return compiled
     }
 
-    /// Every remote rule-set the snapshot's user rules need, de-duplicated by tag (first seen wins).
+    /// Every bundled rule-set the snapshot's user rules need, de-duplicated by tag (first seen wins).
     public func requiredRuleSets(_ snapshot: RoutingPolicySnapshot) -> [RuleSetRef] {
         guard snapshot.globalMode == .rule else { return [] }
         var refs: [RuleSetRef] = []
@@ -138,8 +135,7 @@ public struct RoutingPolicyEngine {
             AppPresetCatalog.preset(for: rule.matchValue)?.ruleSets.forEach(add)
         }
         for rule in snapshot.userCountryRules {
-            let tag = RoutingPolicyEngine.geoipTag(rule.matchValue)
-            add(RuleSetRef(tag: tag, url: RoutingPolicyEngine.geoipUrl(tag)))
+            add(RuleSetRef(tag: RoutingPolicyEngine.geoipTag(rule.matchValue)))
         }
         for rule in snapshot.userCategoryRules {
             categoryCatalog.ruleSets(for: rule.matchValue).forEach(add)
@@ -188,8 +184,8 @@ public struct RoutingPolicyEngine {
         }
     }
 
+    /// A known country with a bundled geoip set.
     static func isSupportedCountry(_ value: String) -> Bool {
-        let code = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return code.count == 2 && code.allSatisfy { $0.isLetter }
+        return BundledRuleSets.hasGeoip(value)
     }
 }

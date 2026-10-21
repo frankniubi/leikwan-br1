@@ -25,8 +25,11 @@ public struct SingboxSettings: Equatable {
     public var tunStack: String
     public var tunMTU: Int
     public var enableIPv6: Bool
-    /// `experimental.cache_file.path` (keeps downloaded rule-sets). nil omits cache_file.
+    /// `experimental.cache_file.path`. nil omits cache_file.
     public var cacheFilePath: String?
+    /// Directory holding the bundled `<tag>.srs` files (the app group copy the tunnel installs).
+    /// Empty writes bare file names.
+    public var ruleSetDirectory: String
 
     public init(
         dnsServer: String = "1.1.1.1",
@@ -38,7 +41,8 @@ public struct SingboxSettings: Equatable {
         tunStack: String = "mixed",
         tunMTU: Int = 9000,
         enableIPv6: Bool = false,
-        cacheFilePath: String? = nil
+        cacheFilePath: String? = nil,
+        ruleSetDirectory: String = ""
     ) {
         self.dnsServer = dnsServer
         self.dnsFallback = dnsFallback
@@ -50,6 +54,7 @@ public struct SingboxSettings: Equatable {
         self.tunMTU = tunMTU
         self.enableIPv6 = enableIPv6
         self.cacheFilePath = cacheFilePath
+        self.ruleSetDirectory = ruleSetDirectory
     }
 }
 

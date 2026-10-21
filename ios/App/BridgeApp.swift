@@ -1,11 +1,10 @@
 import SwiftUI
 
 @main
-struct LeiKwanApp: App {
+struct BridgeApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var navigator = Navigator()
     @StateObject private var latency = LatencyStore()
-    @StateObject private var probe = NetworkProbe()
 
     var body: some Scene {
         WindowGroup {
@@ -14,7 +13,6 @@ struct LeiKwanApp: App {
                 .environmentObject(model.tunnel)
                 .environmentObject(navigator)
                 .environmentObject(latency)
-                .environmentObject(probe)
                 .tint(Palette.primary)
                 .task {
                     await model.bootstrap()

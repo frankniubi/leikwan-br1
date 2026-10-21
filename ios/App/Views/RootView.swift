@@ -5,7 +5,7 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if model.login == nil {
+            if model.profile == nil {
                 LoginView()
             } else {
                 MainShell()
@@ -36,7 +36,7 @@ private struct MainShell: View {
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
                 }
-                .navigationTitle("LeiKwan")
+                .navigationTitle("Bridge")
                 .scrollContentBackground(.hidden)
                 .background(Palette.surfaceContainerLow)
             } detail: {
@@ -105,7 +105,7 @@ struct StartButton: View {
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: tunnel.isConnected)
-        .accessibilityLabel(tunnel.isConnected ? "断开" : "连接")
+        .accessibilityLabel(tunnel.isConnected ? "Disconnect" : "Connect")
     }
 }
 
@@ -138,7 +138,7 @@ struct NoticeBanner: View {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
             }
-            .accessibilityLabel("关闭")
+            .accessibilityLabel("Close")
         }
         .foregroundStyle(Palette.onSecondaryContainer)
         .padding(14)

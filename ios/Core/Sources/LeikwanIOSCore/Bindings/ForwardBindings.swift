@@ -171,13 +171,13 @@ public enum BindingSkipReason: Equatable {
 
     public var message: String {
         switch self {
-        case .forwardUnavailable: return "转发不可用（已删除或 iOS 不支持）"
-        case .nodeMissing: return "未选择节点"
-        case .nodeDisabled: return "节点已停用"
-        case .cloudNodeUnsupported: return "云端绑定的节点类型 iOS 暂不支持"
-        case .nodeAlreadyUsed: return "该节点已在其他绑定中使用"
-        case .overLimit(let limit): return "同时运行的转发绑定最多 \(limit) 个"
-        case .planFailed(let detail): return "无法启动：\(detail)"
+        case .forwardUnavailable: return "Forward unavailable (deleted or not supported on iOS)"
+        case .nodeMissing: return "No node selected"
+        case .nodeDisabled: return "Node is disabled"
+        case .cloudNodeUnsupported: return "iOS does not support the node type bound in the cloud"
+        case .nodeAlreadyUsed: return "This node is already used by another binding"
+        case .overLimit(let limit): return "At most \(limit) forward bindings can run at once"
+        case .planFailed(let detail): return "Could not start: \(detail)"
         }
     }
 }

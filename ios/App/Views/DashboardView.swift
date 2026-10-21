@@ -6,8 +6,6 @@ import SwiftUI
 struct DashboardView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var tunnel: TunnelController
-    @EnvironmentObject private var probe: NetworkProbe
-
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: Metrics.gutter)]
 
     var body: some View {
@@ -23,7 +21,6 @@ struct DashboardView: View {
                         RulesSummaryCard()
                         TrafficUsageCard()
                         CurrentRouteCard()
-                        NetworkDetectionCard()
                         RunTimeCard()
                         ConnectionsCard()
                     }
@@ -33,20 +30,12 @@ struct DashboardView: View {
             }
             .refreshable {
                 await model.refreshCatalog()
-                await probe.detect()
             }
             .pageBackground()
-            .navigationTitle("仪表盘")
+            .navigationTitle("Dashboard")
             .overlay(alignment: .bottomTrailing) {
                 StartButton()
                     .padding(Metrics.pagePadding + 4)
-            }
-        }
-        .task(id: tunnel.status) {
-            // Re-detect the exit IP whenever the tunnel comes up or goes down.
-            if tunnel.status == .connected || tunnel.status == .disconnected || tunnel.status == .invalid {
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                await probe.detect()
             }
         }
     }
@@ -63,12 +52,12 @@ struct DashboardView: View {
 
     static func describeAlert(_ alert: String) -> String {
         if alert.hasPrefix("device_limit_reached") {
-            return "在线设备数已达套餐上限，空出名额后会自动恢复"
+            return "Online device limit of the plan reached; this device resumes when a slot frees up"
         }
         switch alert {
-        case "device_kicked": return "此设备已被面板踢下线"
-        case "device_banned": return "此设备已被面板封禁"
-        case "device_untrusted": return "面板不信任此设备"
+        case "device_kicked": return "This device was signed out by the server"
+        case "device_banned": return "This device was banned by the server"
+        case "device_untrusted": return "The server does not trust this device"
         default: return alert
         }
     }
@@ -97,7 +86,7 @@ private struct NetworkSpeedCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CardHeader("网络速度", systemImage: "speedometer", trailing: AnyView(
+            CardHeader("Network speed", systemImage: "speedometer", trailing: AnyView(
                 HStack(spacing: 12) {
                     RateLabel(symbol: "arrow.up", value: tunnel.snapshot.uplink, color: Palette.upload)
                     RateLabel(symbol: "arrow.down", value: tunnel.snapshot.downlink, color: Palette.download)
@@ -105,13 +94,13 @@ private struct NetworkSpeedCard: View {
             ))
             Chart {
                 ForEach(paddedHistory) { sample in
-                    AreaMark(x: .value("时间", sample.index), y: .value("下载", Double(sample.downlink)))
+                    AreaMark(x: .value("Time", sample.index), y: .value("Download", Double(sample.downlink)))
                         .foregroundStyle(Palette.download.opacity(0.18))
                         .interpolationMethod(.monotone)
-                    LineMark(x: .value("时间", sample.index), y: .value("下载", Double(sample.downlink)), series: .value("方向", "下载"))
+                    LineMark(x: .value("Time", sample.index), y: .value("Download", Double(sample.downlink)), series: .value("Direction", "Download"))
                         .foregroundStyle(Palette.download)
                         .interpolationMethod(.monotone)
-                    LineMark(x: .value("时间", sample.index), y: .value("上传", Double(sample.uplink)), series: .value("方向", "上传"))
+                    LineMark(x: .value("Time", sample.index), y: .value("Upload", Double(sample.uplink)), series: .value("Direction", "Upload"))
                         .foregroundStyle(Palette.upload)
                         .interpolationMethod(.monotone)
                 }
@@ -181,7 +170,7 @@ private struct OutboundModeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            CardHeader("出站模式", systemImage: "arrow.triangle.branch")
+            CardHeader("Outbound mode", systemImage: "arrow.triangle.branch")
             VStack(spacing: 4) {
                 ForEach(RoutingGlobalMode.allCases, id: \.self) { mode in
                     ModeRow(mode: mode, selected: model.routing.mode == mode) {
@@ -237,17 +226,17 @@ private struct ModeRow: View {
 
     private var title: String {
         switch mode {
-        case .rule: return "规则"
-        case .global: return "全局"
-        case .direct: return "直连"
+        case .rule: return "Rule"
+        case .global: return "Global"
+        case .direct: return "Direct"
         }
     }
 
     private var caption: String {
         switch mode {
-        case .rule: return "按分流规则，未命中走代理"
-        case .global: return "全部走代理"
-        case .direct: return "全部直连"
+        case .rule: return "By routing rules; unmatched traffic uses the proxy"
+        case .global: return "Everything through the proxy"
+        case .direct: return "Everything direct"
         }
     }
 
@@ -278,22 +267,22 @@ private struct RulesSummaryCard: View {
             navigator.section = .rules
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                CardHeader("分流规则", systemImage: "list.bullet.rectangle.portrait", trailing: AnyView(
+                CardHeader("Routing rules", systemImage: "list.bullet.rectangle.portrait", trailing: AnyView(
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Palette.onSurfaceVariant)
                 ))
                 if model.routing.mode == .rule {
-                    SummaryLine(title: "大陆直连", value: model.routing.bypassChina ? "开" : "关")
-                    SummaryLine(title: "应用分流", value: "\(model.routing.appPresets.count) 项")
-                    SummaryLine(title: "国家 / 地区", value: "\(model.routing.countries.count) 项")
-                    SummaryLine(title: "自定义", value: "\(model.routing.customRules.count) 条")
-                    Text("其余走代理")
+                    SummaryLine(title: "Mainland China direct", value: model.routing.bypassChina ? "On" : "Off")
+                    SummaryLine(title: "Apps", value: "\(model.routing.appPresets.count)")
+                    SummaryLine(title: "Countries / regions", value: "\(model.routing.countries.count)")
+                    SummaryLine(title: "Custom", value: "\(model.routing.customRules.count)")
+                    Text("Everything else uses the proxy")
                         .font(.caption2)
                         .foregroundStyle(Palette.onSurfaceVariant)
                 } else {
                     Spacer(minLength: 0)
-                    Text(model.routing.mode == .global ? "全局模式下规则不生效" : "直连模式下规则不生效")
+                    Text(model.routing.mode == .global ? "Rules are off in Global mode" : "Rules are off in Direct mode")
                         .font(.subheadline)
                         .foregroundStyle(Palette.onSurfaceVariant)
                     Spacer(minLength: 0)
@@ -331,13 +320,13 @@ private struct TrafficUsageCard: View {
         let up = tunnel.snapshot.uplinkTotal
         let down = tunnel.snapshot.downlinkTotal
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("流量统计", systemImage: "chart.pie")
+            CardHeader("Traffic", systemImage: "chart.pie")
             HStack(spacing: 12) {
                 Donut(up: Double(up), down: Double(down))
                     .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 8) {
-                    LegendRow(color: Palette.upload, title: "上传", value: ByteFormat.total(up))
-                    LegendRow(color: Palette.download, title: "下载", value: ByteFormat.total(down))
+                    LegendRow(color: Palette.upload, title: "Upload", value: ByteFormat.total(up))
+                    LegendRow(color: Palette.download, title: "Download", value: ByteFormat.total(down))
                 }
             }
             .frame(maxHeight: .infinity)
@@ -403,7 +392,7 @@ private struct CurrentRouteCard: View {
             navigator.section = .proxies
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                CardHeader("当前线路", systemImage: "point.3.connected.trianglepath.dotted", trailing: AnyView(
+                CardHeader("Current line", systemImage: "point.3.connected.trianglepath.dotted", trailing: AnyView(
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Palette.onSurfaceVariant)
@@ -442,52 +431,12 @@ private struct CurrentRouteCard: View {
     }
 }
 
-private struct NetworkDetectionCard: View {
-    @EnvironmentObject private var probe: NetworkProbe
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHeader("网络检测", systemImage: "network", trailing: AnyView(
-                Button {
-                    Task { await probe.detect() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Palette.onSurfaceVariant)
-                .disabled(probe.detecting)
-            ))
-            Spacer(minLength: 0)
-            if probe.detecting {
-                ProgressView()
-            } else if let info = probe.exitIP {
-                Text(info.flag)
-                    .font(.system(size: 30))
-                Text(info.ip)
-                    .font(.footnote.monospaced().weight(.medium))
-                    .foregroundStyle(Palette.onSurface)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .textSelection(.enabled)
-            } else {
-                Text(probe.failed ? "检测失败" : "—")
-                    .font(.subheadline)
-                    .foregroundStyle(Palette.onSurfaceVariant)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-        .card()
-    }
-}
-
 private struct RunTimeCard: View {
     @EnvironmentObject private var tunnel: TunnelController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("运行时长", systemImage: "timer")
+            CardHeader("Uptime", systemImage: "timer")
             Spacer(minLength: 0)
             if tunnel.isConnected {
                 RunTimeText(since: tunnel.connectedSince)
@@ -499,7 +448,7 @@ private struct RunTimeCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
             Pill(
-                text: tunnel.isConnected ? "已连接" : statusText,
+                text: tunnel.isConnected ? "Connected" : statusText,
                 fill: tunnel.isConnected ? Palette.successContainer : Palette.secondaryContainer,
                 foreground: tunnel.isConnected ? Palette.onSuccessContainer : Palette.onSecondaryContainer
             )
@@ -511,11 +460,11 @@ private struct RunTimeCard: View {
 
     private var statusText: String {
         switch tunnel.status {
-        case .connecting: return "连接中"
-        case .disconnecting: return "断开中"
-        case .reasserting: return "重连中"
-        case .connected: return "已连接"
-        default: return "未连接"
+        case .connecting: return "Connecting"
+        case .disconnecting: return "Disconnecting"
+        case .reasserting: return "Reconnecting"
+        case .connected: return "Connected"
+        default: return "Not connected"
         }
     }
 }
@@ -525,20 +474,20 @@ private struct ConnectionsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("连接", systemImage: "link")
+            CardHeader("Connections", systemImage: "link")
             Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(tunnel.snapshot.connectionsOut)")
                     .font(.title2.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Palette.onSurface)
-                Text("个")
+                Text("open")
                     .font(.caption)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
             HStack(spacing: 6) {
                 Image(systemName: "memorychip")
                     .font(.caption2)
-                Text("内存 " + (tunnel.snapshot.memory > 0 ? ByteFormat.total(tunnel.snapshot.memory) : "—"))
+                Text("Memory " + (tunnel.snapshot.memory > 0 ? ByteFormat.total(tunnel.snapshot.memory) : "—"))
                     .font(.caption.monospacedDigit())
             }
             .foregroundStyle(Palette.onSurfaceVariant)

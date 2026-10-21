@@ -172,22 +172,22 @@ public struct HostedNodeError: Error, Equatable, CustomStringConvertible {
         return "hosted_nodes_failed"
     }
 
-    /// Chinese text for a code (codes only, never node content).
+    /// User-facing text for a code (codes only, never node content).
     public static func userMessage(_ code: String) -> String {
         switch code {
-        case "hosted_nodes_offline": return "未登录，无法同步云端节点"
-        case "device_untrusted": return "此设备未被面板信任，无法使用云端节点"
-        case "hosted_nodes_unsupported", "hosted_nodes_unavailable": return "面板暂不支持云端节点"
-        case PanelError.deviceLimitCode: return "在线设备数已达上限"
-        case "rate_limited": return "操作太频繁，请稍后再试"
-        case "hosted_node_limit_reached": return "云端节点数量已达上限（32 个）"
-        case "hosted_node_duplicate": return "云端已有相同的节点"
-        case "hosted_node_not_found": return "云端节点不存在（可能已在其他设备删除）"
-        case "hosted_node_forward_not_found": return "转发不存在或不属于此账户"
-        case "hosted_node_invalid": return "节点参数不被云端接受"
-        case "hosted_node_unsupported_on_ios": return "该节点类型 iOS 暂不支持，只能在其他设备或控制台修改"
-        case "hosted_nodes_network": return "网络错误，稍后自动重试"
-        default: return "云端同步失败（\(code)）"
+        case "hosted_nodes_offline": return "Not signed in; cloud nodes cannot sync"
+        case "device_untrusted": return "The server does not trust this device; cloud nodes are unavailable"
+        case "hosted_nodes_unsupported", "hosted_nodes_unavailable": return "This server does not support cloud nodes"
+        case PanelError.deviceLimitCode: return "Online device limit reached"
+        case "rate_limited": return "Too many requests. Try again later"
+        case "hosted_node_limit_reached": return "Cloud node limit reached (32)"
+        case "hosted_node_duplicate": return "The same node is already in the cloud"
+        case "hosted_node_not_found": return "Cloud node not found (it may have been deleted on another device)"
+        case "hosted_node_forward_not_found": return "The forward does not exist or belongs to another account"
+        case "hosted_node_invalid": return "The server rejected the node settings"
+        case "hosted_node_unsupported_on_ios": return "iOS does not support this node type yet; edit it on another device or in the console"
+        case "hosted_nodes_network": return "Network error; retrying automatically"
+        default: return "Cloud sync failed (\(code))"
         }
     }
 }

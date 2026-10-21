@@ -8,7 +8,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         bypassChina: Bool = false,
         settings: SingboxSettings = SingboxSettings(cacheFilePath: "/cache/cache.db")
     ) throws -> (config: [String: Any], compiled: CompiledSingboxConfig) {
-        let compiled = try SingboxConfigBuilder(settings: settings).buildNative(
+        let compiled = try SingboxConfigBuilder(settings: settings, safePathRegistry: Fixtures.safePaths).buildNative(
             NativeSingboxOptions(localProxyPort: 50123, routeScope: scope, routePolicy: policy, bypassChina: bypassChina)
         )
         return (Fixtures.parseJSON(compiled.configJSON), compiled)
@@ -78,7 +78,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual(r[2]["action"] as? String, "reject")
         XCTAssertEqual(r[2]["method"] as? String, "drop")
         XCTAssertEqual(r[3]["network"] as? String, "udp")
-        XCTAssertEqual(r[4]["domain"] as? [String], ["v3.leikwanhost.com", "api-leikwanbridge.nbwly.com"])
+        XCTAssertEqual(r[4]["domain"] as? [String], ["panel.example.com", "backup.example.net"])
         XCTAssertTrue(lowPortDirect(config))
         XCTAssertFalse(hasResolve(config), "restricted global hands hostnames to the relay")
         XCTAssertNil(splitRule(config))
@@ -111,7 +111,9 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual(route["default_domain_resolver"] as? String, "remote")
         let ruleSets = route["rule_set"] as! [[String: Any]]
         XCTAssertEqual(ruleSets.map { $0["tag"] as? String }, ["geoip-cn", "geosite-cn"])
-        XCTAssertEqual(ruleSets[0]["download_detour"] as? String, "direct")
+        XCTAssertEqual(ruleSets[0]["type"] as? String, "local")
+        XCTAssertEqual(ruleSets[0]["path"] as? String, "geoip-cn.srs")
+        XCTAssertNil(ruleSets[0]["download_detour"])
     }
 
     func testIntlOnlyUnrestricted() throws {
@@ -126,7 +128,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual(split["outbound"] as? String, "direct")
         let route = config["route"] as! [String: Any]
         XCTAssertEqual(route["final"] as? String, "proxy-native")
-        XCTAssertEqual((route["rule_set"] as! [[String: Any]])[0]["download_detour"] as? String, "proxy-native")
+        XCTAssertEqual((route["rule_set"] as! [[String: Any]])[0]["type"] as? String, "local")
     }
 
     func testGlobalUnrestrictedBypassChina() throws {

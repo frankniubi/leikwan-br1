@@ -10,7 +10,7 @@ extension AppModel {
         if let row = defaultBindingRow {
             return row.title
         }
-        return "未选择线路"
+        return "No line selected"
     }
 
     /// The binding Connect routes untargeted traffic through (nil while native outbound is on).
@@ -30,12 +30,12 @@ extension AppModel {
 
     var routeDetail: String? {
         if isNativeOutboundActive, let selection = nativeOutboundSelection {
-            return "原生出口 · " + selection.routeScope.displayName + " · 绑定已暂停"
+            return "Native outbound · " + selection.routeScope.displayName + " · bindings paused"
         }
-        guard let row = defaultBindingRow else { return "在「线路」里选择转发和节点" }
+        guard let row = defaultBindingRow else { return "Choose a forward and node under Lines" }
         let count = resolvedBindings.active.count
-        let kind = row.forward?.kindLabel ?? "直连节点"
-        return count > 1 ? "绑定出口 · \(kind) · 默认，共 \(count) 个绑定" : "绑定出口 · \(kind)"
+        let kind = row.forward?.kindLabel ?? "Direct node"
+        return count > 1 ? "Binding exit · \(kind) · default of \(count) bindings" : "Binding exit · \(kind)"
     }
 }
 
@@ -44,7 +44,7 @@ extension IOSSupportedForward {
     var directionTitle: String {
         let direction = contract.direction.trimmingCharacters(in: .whitespacesAndNewlines)
         if !direction.isEmpty { return direction }
-        return serviceName.isEmpty ? "转发 #\(forwardId)" : serviceName
+        return serviceName.isEmpty ? "Forward #\(forwardId)" : serviceName
     }
 
     /// Entry endpoint(s) as ip:port; Ultra entries come from leases at connect time.

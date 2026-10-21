@@ -21,11 +21,11 @@ struct ProxiesView: View {
                         NativeOutboundSection()
                     }
 
-                    SectionTitle("绑定", trailing: bindingsBadge)
+                    SectionTitle("Bindings", trailing: bindingsBadge)
                     if model.isNativeOutboundActive {
                         NativeActiveBanner()
                     } else {
-                        Text("每个转发绑定一个节点，所有启用的绑定同时运行；在「规则」里可以指定某个 App 走哪个绑定，其余走默认绑定。")
+                        Text("Each forward is bound to one node, and every enabled binding runs at the same time. Under Rules you can send an app through a specific binding; everything else uses the default binding.")
                             .font(.caption)
                             .foregroundStyle(Palette.onSurfaceVariant)
                     }
@@ -35,7 +35,7 @@ struct ProxiesView: View {
                         }
                     }
 
-                    SectionTitle("节点", trailing: AnyView(nodeActions))
+                    SectionTitle("Nodes", trailing: AnyView(nodeActions))
                     CloudStatusBar()
                     if model.nodes.isEmpty && model.unsupportedCloudNodes.isEmpty {
                         EmptyNodesCard()
@@ -58,7 +58,7 @@ struct ProxiesView: View {
                 await model.refreshCloudNodes()
             }
             .pageBackground()
-            .navigationTitle("线路")
+            .navigationTitle("Lines")
             .overlay(alignment: .bottomTrailing) {
                 StartButton()
                     .padding(Metrics.pagePadding + 4)
@@ -73,10 +73,10 @@ struct ProxiesView: View {
 
     private var bindingsBadge: AnyView? {
         if model.isNativeOutboundActive {
-            return AnyView(Pill(text: "已暂停", fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
+            return AnyView(Pill(text: "Paused", fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
         }
         guard let hidden = model.catalog?.unsupportedHiddenCount, hidden > 0 else { return nil }
-        return AnyView(Pill(text: "已隐藏 \(hidden) 条不支持的转发"))
+        return AnyView(Pill(text: "\(hidden) unsupported forward(s) hidden"))
     }
 
     private var nodeActions: some View {
@@ -87,23 +87,23 @@ struct ProxiesView: View {
                 Image(systemName: "bolt.fill")
             }
             .disabled(model.nodes.isEmpty || !latency.testing.isEmpty)
-            .accessibilityLabel("测速")
+            .accessibilityLabel("Test latency")
 
             Menu {
                 Button {
                     Task { await importClipboard() }
                 } label: {
-                    Label("从剪贴板导入", systemImage: "doc.on.clipboard")
+                    Label("Import from clipboard", systemImage: "doc.on.clipboard")
                 }
                 Button {
                     editing = ProxyNode(name: "", server: "", port: 8388, settings: .shadowsocks(ShadowsocksSettings(method: "aes-128-gcm", password: "")))
                 } label: {
-                    Label("添加 Shadowsocks", systemImage: "plus")
+                    Label("Add Shadowsocks", systemImage: "plus")
                 }
                 Button {
                     editing = ProxyNode(name: "", server: "", port: 1080, settings: .socks(SocksSettings()))
                 } label: {
-                    Label("添加 SOCKS5", systemImage: "plus")
+                    Label("Add SOCKS5", systemImage: "plus")
                 }
                 if model.isCloudAvailable && !model.localOnlyNodes.isEmpty {
                     Divider()
@@ -114,7 +114,7 @@ struct ProxiesView: View {
                             }
                         }
                     } label: {
-                        Label("本机节点全部上传到云端", systemImage: "icloud.and.arrow.up")
+                        Label("Upload all device nodes to the cloud", systemImage: "icloud.and.arrow.up")
                     }
                 }
             } label: {
@@ -124,14 +124,14 @@ struct ProxiesView: View {
                     Image(systemName: "plus.circle.fill")
                 }
             }
-            .accessibilityLabel("添加节点")
+            .accessibilityLabel("Add node")
         }
         .font(.headline)
     }
 
     private func importClipboard() async {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            model.notice = "剪贴板是空的"
+            model.notice = "The clipboard is empty"
             return
         }
         importing = true
@@ -163,13 +163,13 @@ private struct BindingCard: View {
                         foreground: isRunning ? Palette.onPrimary : Palette.onSecondaryContainer
                     )
                 } else {
-                    Pill(text: "直连")
+                    Pill(text: "Direct")
                 }
                 if row.isDefault && !suspended {
-                    Pill(text: "默认", fill: Palette.successContainer, foreground: Palette.onSuccessContainer)
+                    Pill(text: "Default", fill: Palette.successContainer, foreground: Palette.onSuccessContainer)
                 }
                 Spacer()
-                Toggle("启用", isOn: enabledBinding)
+                Toggle("Enabled", isOn: enabledBinding)
                     .labelsHidden()
                     .disabled(suspended || (row.node == nil && row.forward?.kind != .ultra))
             }
@@ -195,7 +195,7 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
                 if let forward = row.forward, !suspended {
                     Menu {
-                        Button("不绑定节点") {
+                        Button("No node") {
                             Task { await model.setNode(nil, forForward: forward.forwardId) }
                         }
                         Divider()
@@ -233,7 +233,7 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
                 Spacer()
                 if !row.isDefault && isRunning {
-                    Button("设为默认") {
+                    Button("Make default") {
                         model.setDefaultBinding(row.id)
                     }
                     .font(.caption.weight(.semibold))
@@ -267,12 +267,12 @@ private struct BindingCard: View {
                     .foregroundStyle(Palette.onSurface)
                     .lineLimit(1)
             } else if let unsupported = row.unsupportedCloudNode {
-                Text("\(unsupported.name)（iOS 暂不支持 \(unsupported.nodeProtocol)）")
+                Text("\(unsupported.name) (iOS does not support \(unsupported.nodeProtocol) yet)")
                     .font(.subheadline)
                     .foregroundStyle(Palette.bad)
                     .lineLimit(1)
             } else {
-                Text(row.forward?.kind == .ultra ? "未绑定节点（直通转发）" : "选择节点")
+                Text(row.forward?.kind == .ultra ? "No node (forward only)" : "Choose node")
                     .font(.subheadline)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
@@ -300,7 +300,7 @@ private struct NativeActiveBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
-                Text("正在使用原生出口「\(nativeTitle)」，下面的绑定不会运行（设置会保留）。")
+                Text("Native outbound \u{201C}\(nativeTitle)\u{201D} is in use, so the bindings below do not run (their settings are kept).")
             } icon: {
                 Image(systemName: "pause.circle.fill")
             }
@@ -309,7 +309,7 @@ private struct NativeActiveBanner: View {
             Button {
                 model.setNativeOutboundEnabled(false)
             } label: {
-                Text(tunnel.isConnected || tunnel.isBusy ? "改用绑定（会先断开当前连接）" : "改用绑定")
+                Text(tunnel.isConnected || tunnel.isBusy ? "Use bindings instead (disconnects first)" : "Use bindings instead")
                     .font(.subheadline.weight(.semibold))
             }
         }
@@ -319,7 +319,7 @@ private struct NativeActiveBanner: View {
     }
 
     private var nativeTitle: String {
-        guard let carrier = model.selectedNativeOutboundCarrier else { return "原生出口" }
+        guard let carrier = model.selectedNativeOutboundCarrier else { return "Native outbound" }
         let direction = model.nativeOutboundForward(for: carrier)?.directionTitle ?? model.nativeOutboundTitle(for: carrier)
         return "#\(carrier.forwardId) \(direction)"
     }
@@ -352,7 +352,7 @@ private struct CloudStatusBar: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .accessibilityLabel("从云端刷新")
+                .accessibilityLabel("Refresh from cloud")
             }
         }
         .padding(12)
@@ -370,17 +370,17 @@ private struct CloudStatusBar: View {
     }
 
     private var title: String {
-        if model.cloudStatus.isSyncing { return "同步中…" }
-        if model.cloudStatus.lastError != nil { return "云端同步失败" }
-        return "云端节点 \(model.cloudNodes.count) 个 · 本机 \(model.localOnlyNodes.count) 个"
+        if model.cloudStatus.isSyncing { return "Syncing…" }
+        if model.cloudStatus.lastError != nil { return "Cloud sync failed" }
+        return "\(model.cloudNodes.count) cloud · \(model.localOnlyNodes.count) on this device"
     }
 
     private var detail: String {
         if let error = model.cloudStatus.lastError { return error }
         if let date = model.cloudLastSyncedAt {
-            return "上次同步 " + date.formatted(date: .omitted, time: .shortened) + " · 节点和绑定与其他设备同步"
+            return "Last synced " + date.formatted(date: .omitted, time: .shortened) + " · nodes and bindings sync with your other devices"
         }
-        return model.isCloudAvailable ? "节点和绑定与其他设备同步" : "登录后自动同步"
+        return model.isCloudAvailable ? "Nodes and bindings sync with your other devices" : "Syncs after you sign in"
     }
 }
 
@@ -403,7 +403,7 @@ private struct NodeCard: View {
                 Image(systemName: node.isHosted ? "icloud.fill" : "iphone")
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)
-                    .accessibilityLabel(node.isHosted ? "云端节点" : "本机节点")
+                    .accessibilityLabel(node.isHosted ? "Cloud node" : "Device node")
             }
             Spacer(minLength: 0)
             HStack {
@@ -435,30 +435,30 @@ private struct NodeCard: View {
             Button {
                 onEdit()
             } label: {
-                Label("编辑", systemImage: "pencil")
+                Label("Edit", systemImage: "pencil")
             }
             if !node.isHosted && model.canUploadToCloud(node) {
                 Button {
                     Task { await model.uploadNodeToCloud(node.id) }
                 } label: {
-                    Label("上传到云端", systemImage: "icloud.and.arrow.up")
+                    Label("Upload to cloud", systemImage: "icloud.and.arrow.up")
                 }
             }
             Button {
                 model.addDirectBinding(nodeID: node.id)
             } label: {
-                Label("直连此节点（加入绑定）", systemImage: "arrow.right")
+                Label("Use this node directly (add binding)", systemImage: "arrow.right")
             }
             Button {
                 UIPasteboard.general.string = ProxyShareLink.format(node) ?? ""
             } label: {
-                Label("复制分享链接", systemImage: "link")
+                Label("Copy share link", systemImage: "link")
             }
             Divider()
             Button(role: .destructive) {
                 model.deleteNodes([node.id])
             } label: {
-                Label(node.isHosted ? "从云端删除" : "删除", systemImage: "trash")
+                Label(node.isHosted ? "Delete from cloud" : "Delete", systemImage: "trash")
             }
         }
         .onTapGesture(perform: onEdit)
@@ -481,7 +481,7 @@ private struct UnsupportedNodeCard: View {
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
             Spacer(minLength: 0)
-            Text("\(dto.nodeProtocol.uppercased()) · iOS 暂不支持")
+            Text("\(dto.nodeProtocol.uppercased()) · not supported on iOS yet")
                 .font(.caption2)
                 .foregroundStyle(Palette.onSurfaceVariant)
         }
@@ -498,9 +498,9 @@ private struct EmptyNodesCard: View {
             Image(systemName: "tray")
                 .font(.largeTitle)
                 .foregroundStyle(Palette.onSurfaceVariant)
-            Text("还没有节点")
+            Text("No nodes yet")
                 .font(.headline)
-            Text("点右上角 + 从剪贴板导入 ss:// 或 socks5:// 链接，或手动添加。其他设备上传到云端的节点会自动出现在这里。")
+            Text("Tap + to import an ss:// or socks5:// link from the clipboard, or add one by hand. Nodes uploaded to the cloud from your other devices show up here.")
                 .font(.footnote)
                 .foregroundStyle(Palette.onSurfaceVariant)
                 .multilineTextAlignment(.center)

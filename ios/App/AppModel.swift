@@ -9,7 +9,10 @@ import UIKit
 final class AppModel: ObservableObject {
     let tunnel = TunnelController()
 
-    @Published private(set) var login: StoredLogin?
+    /// Saved server profiles and which one is signed in (`profiles.active`).
+    @Published private(set) var profiles = PanelProfileList() {
+        didSet { JSONStore.save(profiles, name: "profiles") }
+    }
     @Published private(set) var catalog: IOSForwardCatalog?
     @Published private(set) var catalogError: String?
     @Published private(set) var isRefreshing = false
@@ -53,6 +56,9 @@ final class AppModel: ObservableObject {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
     }
 
+    /// The signed-in profile; nil shows the sign-in screen.
+    var profile: PanelProfile? { profiles.active }
+
     var selectedForward: IOSSupportedForward? {
         guard let id = selectedForwardID else { return nil }
         return catalog?.bindableForward(id: id)
@@ -73,43 +79,100 @@ final class AppModel: ObservableObject {
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
         await tunnel.load()
-        if let stored = JSONStore.load(StoredLogin.self, name: "login"), let token = Keychain.string("agent_token") {
-            login = stored
-            client = makeClient(clientID: stored.clientID, token: token, endpoint: PanelEndpoint.fromStorage(stored.endpoint))
-            await refreshCatalog()
+        profiles = JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList()
+        if let active = profiles.active {
+            if let token = Keychain.string(active.tokenAccount) {
+                client = makeClient(active, token: token)
+                await refreshCatalog()
+            } else {
+                // The token is gone (Keychain reset): back to the profile list.
+                profiles.activeId = nil
+            }
         }
     }
 
-    // MARK: Account
+    // MARK: Profiles
 
-    func signIn(clientID: Int64, token: String, endpoint: PanelEndpoint, remember: Bool) async throws {
-        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clientID > 0, !trimmedToken.isEmpty else {
-            throw AppError("请填写客户端 ID 和 Agent Token")
+    /// Signs in with a new or edited profile. `token` nil or blank reuses the token saved for
+    /// that profile. On success the profile is saved (an existing one for the same server and
+    /// Client ID is updated instead) and becomes the signed-in profile.
+    func signIn(_ draft: PanelProfile, token: String?) async throws {
+        let typed = (token ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let saved = profiles.profile(id: draft.id).flatMap { Keychain.string($0.tokenAccount) }
+        let agentToken = typed.isEmpty ? (saved ?? "") : typed
+        guard draft.clientId > 0, !agentToken.isEmpty else {
+            throw AppError("Enter the Client ID and Agent Token")
         }
-        let candidate = makeClient(clientID: clientID, token: trimmedToken, endpoint: endpoint)
+        let candidate = makeClient(draft, token: agentToken)
+        let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
         let result = try await candidate.pullCatalog(
-            selectedForwardId: selectedForwardID,
+            selectedForwardId: sameAccount ? selectedForwardID : nil,
             heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
         )
-        Keychain.set(trimmedToken, for: "agent_token")
-        let stored = StoredLogin(clientID: clientID, endpoint: endpoint.storageKey, rememberToken: remember)
-        JSONStore.save(stored, name: "login")
+        var list = profiles
+        let stored = list.upsert(draft)
+        list.activeId = stored.id
+        Keychain.set(agentToken, for: stored.tokenAccount)
+        adoptAccount(stored)
+        profiles = list
         client = candidate
-        login = stored
         apply(result.catalog)
         scheduleCloudSync(after: result.response)
     }
 
+    /// Signs in with a saved profile and its saved token.
+    func signIn(profileID: UUID) async throws {
+        guard let saved = profiles.profile(id: profileID) else { throw AppError("Profile not found") }
+        guard Keychain.string(saved.tokenAccount) != nil else {
+            throw AppError("No Agent Token is saved for this profile. Edit the profile to enter it")
+        }
+        try await signIn(saved, token: nil)
+    }
+
+    /// Whether `profile` has an Agent Token on this device.
+    func hasSavedToken(_ profile: PanelProfile) -> Bool {
+        return Keychain.string(profile.tokenAccount) != nil
+    }
+
+    /// Back to the profile list. The token stays saved unless the profile opted out.
     func signOut() {
         tunnel.disconnect()
-        if login?.rememberToken != true {
-            Keychain.set(nil, for: "agent_token")
+        if let current = profile, !current.rememberToken {
+            Keychain.set(nil, for: current.tokenAccount)
         }
-        JSONStore.save(Optional<StoredLogin>.none, name: "login")
-        login = nil
+        profiles.activeId = nil
         client = nil
         catalog = nil
+    }
+
+    /// Removes a saved profile and its token.
+    func deleteProfile(_ id: UUID) {
+        if profiles.activeId == id { signOut() }
+        if let removed = profiles.profile(id: id) {
+            Keychain.set(nil, for: removed.tokenAccount)
+        }
+        profiles.remove(id: id)
+    }
+
+    /// UserDefaults key of the account (`PanelProfile.accountKey`) the cached forward choices,
+    /// bindings and cloud nodes belong to.
+    private static let accountKeyDefaultsKey = "account_key"
+
+    /// Signing in to another account drops what was cached for the previous one; nodes added
+    /// on this device stay.
+    private func adoptAccount(_ profile: PanelProfile) {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.accountKeyDefaultsKey) != profile.accountKey else { return }
+        nodes.removeAll { $0.isHosted }
+        if let selected = selectedNodeID, !nodes.contains(where: { $0.id == selected }) {
+            selectedNodeID = nodes.first?.id
+        }
+        cloudNodeState = CloudNodeSyncState()
+        bindingPreferences = BindingPreferences()
+        nativeOutboundPreferences = NativeOutboundPreferences()
+        selectedForwardID = nil
+        catalog = nil
+        defaults.set(profile.accountKey, forKey: Self.accountKeyDefaultsKey)
     }
 
     func refreshCatalog() async {
@@ -140,8 +203,26 @@ final class AppModel: ObservableObject {
         dropNativeOutboundBindings(catalog)
     }
 
-    private func makeClient(clientID: Int64, token: String, endpoint: PanelEndpoint) -> PanelClient {
-        PanelClient(endpoint: endpoint, credentials: credentials(clientID: clientID, token: token))
+    private func makeClient(_ profile: PanelProfile, token: String) -> PanelClient {
+        PanelClient(
+            endpoint: profile.server,
+            fallback: profile.backupServer,
+            credentials: credentials(clientID: profile.clientId, token: token)
+        )
+    }
+
+    /// sing-box builder for the signed-in profile: its server hosts stay direct, rule-sets are
+    /// the bundled copies in the app group.
+    func makeSingboxBuilder() -> SingboxConfigBuilder {
+        let settings = SingboxSettings(
+            dnsServer: routing.dnsServer,
+            bypassChina: routing.bypassChina,
+            customBypassRules: routing.customBypass,
+            enableIPv6: routing.enableIPv6,
+            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path,
+            ruleSetDirectory: AppGroup.ruleSetDirectory.path
+        )
+        return SingboxConfigBuilder(settings: settings, safePathRegistry: .iosBaseline(panelHosts: profile?.panelHosts ?? []))
     }
 
     private func credentials(clientID: Int64, token: String) -> PanelCredentials {
@@ -164,13 +245,13 @@ final class AppModel: ObservableObject {
             do {
                 added += try await addSubscription(url: url)
             } catch {
-                return "订阅导入失败：\(Self.describe(error))"
+                return "Subscription import failed: \(Self.describe(error))"
             }
         }
         if added == 0 {
-            return result.skippedLines > 0 ? "没有识别到 Shadowsocks / SOCKS5 节点（跳过 \(result.skippedLines) 行）" : "剪贴板里没有可导入的内容"
+            return result.skippedLines > 0 ? "No Shadowsocks / SOCKS5 nodes found (skipped \(result.skippedLines) lines)" : "Nothing to import on the clipboard"
         }
-        return "已导入 \(added) 个节点" + (result.skippedLines > 0 ? "，跳过 \(result.skippedLines) 行" : "")
+        return "Imported \(added) node(s)" + (result.skippedLines > 0 ? ", skipped \(result.skippedLines) lines" : "")
     }
 
     func addNodes(_ incoming: [ProxyNode], subscriptionID: Int64?) -> Int {
@@ -221,7 +302,7 @@ final class AppModel: ObservableObject {
 
     func addSubscription(url: String) async throws -> Int {
         let id = (subscriptions.map(\.id).max() ?? 0) + 1
-        let name = URL(string: url)?.host ?? "订阅 \(id)"
+        let name = URL(string: url)?.host ?? "Subscription \(id)"
         let subscription = Subscription(id: id, name: name, url: url, lastUpdated: nil)
         subscriptions.append(subscription)
         return try await refreshSubscription(subscription)
@@ -229,12 +310,12 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func refreshSubscription(_ subscription: Subscription) async throws -> Int {
-        guard let url = URL(string: subscription.url) else { throw AppError("订阅地址无效") }
+        guard let url = URL(string: subscription.url) else { throw AppError("Invalid subscription URL") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue(ImportRouter.subscriptionUserAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
-            throw AppError("订阅返回 HTTP \(http.statusCode)")
+            throw AppError("Subscription returned HTTP \(http.statusCode)")
         }
         let body = String(decoding: data, as: UTF8.self)
         let parsed = ImportRouter.parseSubscriptionBody(body)
@@ -290,10 +371,11 @@ final class AppModel: ObservableObject {
     }
 
     func panelSession() -> TunnelPanelSession? {
-        guard let login, let token = Keychain.string("agent_token") else { return nil }
+        guard let profile, let token = Keychain.string(profile.tokenAccount) else { return nil }
         return TunnelPanelSession(
-            endpoint: login.endpoint,
-            clientID: login.clientID,
+            endpoint: profile.server.storageKey,
+            backupEndpoint: profile.backupServer?.storageKey,
+            clientID: profile.clientId,
             agentToken: token,
             installID: Keychain.installID(),
             deviceName: Self.deviceName,
@@ -319,22 +401,15 @@ final class AppModel: ObservableObject {
     /// The tunnel requests, delivers and renews the native leases (NativeOutboundLeaseManager).
     private func buildNativeOutboundLaunch() throws -> TunnelLaunchOptions {
         guard let panel = panelSession() else {
-            throw AppError("原生出口需要先登录")
+            throw AppError("Sign in to use native outbound")
         }
         guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
-            throw AppError("当前转发不可用原生出口")
+            throw AppError("Native outbound is not available for this forward")
         }
         guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {
-            throw AppError("原生出口转发不可用，请刷新后重试")
+            throw AppError("The native outbound forward is unavailable. Refresh and try again")
         }
-        let settings = SingboxSettings(
-            dnsServer: routing.dnsServer,
-            bypassChina: routing.bypassChina,
-            customBypassRules: routing.customBypass,
-            enableIPv6: routing.enableIPv6,
-            cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path
-        )
-        let builder = SingboxConfigBuilder(settings: settings)
+        let builder = makeSingboxBuilder()
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
             customRules: routing.customRules,

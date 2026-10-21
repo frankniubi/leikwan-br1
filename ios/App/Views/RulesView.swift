@@ -17,21 +17,21 @@ struct RulesView: View {
                 }
 
                 Section {
-                    Picker("模式", selection: $model.routing.mode) {
-                        Text("规则").tag(RoutingGlobalMode.rule)
-                        Text("全局").tag(RoutingGlobalMode.global)
-                        Text("直连").tag(RoutingGlobalMode.direct)
+                    Picker("Mode", selection: $model.routing.mode) {
+                        Text("Rule").tag(RoutingGlobalMode.rule)
+                        Text("Global").tag(RoutingGlobalMode.global)
+                        Text("Direct").tag(RoutingGlobalMode.direct)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("中国大陆网站和 IP 直连", isOn: $model.routing.bypassChina)
+                    Toggle("Mainland China sites and IPs direct", isOn: $model.routing.bypassChina)
                 } footer: {
-                    Text("规则：按上面的顺序逐条匹配，都没命中就走代理。全局：除面板和线路本身外全部走代理。直连：全部直连，代理只在被选中时可用。")
+                    Text("Rule: matched in the order shown; anything unmatched uses the proxy. Global: everything except the server and the lines themselves uses the proxy. Direct: everything goes direct.")
                 }
 
                 Section {
                     ForEach(AppPresetCatalog.presets, id: \.key) { preset in
                         OutcomePicker(
-                            title: preset.labelZh,
+                            title: preset.labelEn,
                             selection: presetBinding(preset.key)
                         )
                         if model.routing.appPresets[preset.key] == .tunnel && model.routingTargetBindings.count > 1 {
@@ -42,16 +42,16 @@ struct RulesView: View {
                         }
                     }
                 } header: {
-                    Text("应用分流")
+                    Text("Apps")
                 } footer: {
-                    Text("iOS 不允许按 App 分流，这里按每个 App 使用的域名和 IP 段匹配，效果接近按 App 分流。")
+                    Text("iOS cannot route by app, so each app is matched by the domains and IP ranges it uses, which comes close to per-app routing.")
                 }
 
-                Section("国家 / 地区（按 IP）") {
+                Section("Countries / regions (by IP)") {
                     ForEach(model.routing.countries.keys.sorted(), id: \.self) { code in
                         VStack(spacing: 6) {
                             OutcomePicker(
-                                title: "\(CountryCatalog.name(for: code, zh: true)) (\(code.uppercased()))",
+                                title: "\(CountryCatalog.name(for: code, zh: false)) (\(code.uppercased()))",
                                 selection: countryBinding(code)
                             )
                             if model.routing.countries[code] == .tunnel && model.routingTargetBindings.count > 1 {
@@ -71,7 +71,7 @@ struct RulesView: View {
                     Button {
                         addingCountry = true
                     } label: {
-                        Label("添加国家或地区", systemImage: "plus")
+                        Label("Add country or region", systemImage: "plus")
                     }
                 }
 
@@ -96,12 +96,12 @@ struct RulesView: View {
                     Button {
                         addingRule = true
                     } label: {
-                        Label("添加规则", systemImage: "plus")
+                        Label("Add rule", systemImage: "plus")
                     }
                 } header: {
-                    Text("自定义规则")
+                    Text("Custom rules")
                 } footer: {
-                    Text("自定义规则优先于应用分流和国家规则，按列表顺序匹配。")
+                    Text("Custom rules come before app and country rules and are matched in list order.")
                 }
 
                 Section {
@@ -111,13 +111,13 @@ struct RulesView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 } header: {
-                    Text("直连列表")
+                    Text("Direct list")
                 } footer: {
-                    Text("每行一个 IP、CIDR 或域名，在规则模式最后一步之前匹配为直连。要强制某个域名走代理，请用自定义规则。")
+                    Text("One IP, CIDR or domain per line, sent direct just before the last step of Rule mode. To force a domain through the proxy, use a custom rule.")
                 }
 
                 Section {
-                    Button("应用到当前连接") {
+                    Button("Apply to current connection") {
                         Task { await model.applyToRunningTunnel() }
                     }
                     .disabled(!model.tunnel.isConnected)
@@ -125,7 +125,7 @@ struct RulesView: View {
             }
             .scrollContentBackground(.hidden)
             .pageBackground()
-            .navigationTitle("分流规则")
+            .navigationTitle("Routing rules")
             .toolbar { EditButton() }
             .sheet(isPresented: $addingRule) {
                 CustomRuleEditor { rule in
@@ -161,9 +161,9 @@ struct RulesView: View {
 
     static func outcomeLabel(_ outcome: CustomRuleOutcome) -> String {
         switch outcome {
-        case .proxy: return "代理"
-        case .direct: return "直连"
-        case .reject: return "拒绝"
+        case .proxy: return "Proxy"
+        case .direct: return "Direct"
+        case .reject: return "Reject"
         }
     }
 }
@@ -174,9 +174,9 @@ private struct OutcomePicker: View {
 
     var body: some View {
         Picker(title, selection: $selection) {
-            Text("默认").tag(UserTrafficOutcome?.none)
-            Text("代理").tag(UserTrafficOutcome?.some(.tunnel))
-            Text("直连").tag(UserTrafficOutcome?.some(.direct))
+            Text("Default").tag(UserTrafficOutcome?.none)
+            Text("Proxy").tag(UserTrafficOutcome?.some(.tunnel))
+            Text("Direct").tag(UserTrafficOutcome?.some(.direct))
         }
     }
 }
@@ -191,27 +191,27 @@ private struct CustomRuleEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("类型", selection: $type) {
+                Picker("Type", selection: $type) {
                     ForEach(CustomRuleType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 TextField(placeholder, text: $value)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Picker("策略", selection: $outcome) {
+                Picker("Action", selection: $outcome) {
                     ForEach(CustomRuleOutcome.allCases, id: \.self) { Text(RulesView.outcomeLabel($0)).tag($0) }
                 }
                 if !value.isEmpty, candidate == nil {
-                    Text("格式不正确").foregroundStyle(.red).font(.footnote)
+                    Text("Invalid value").foregroundStyle(.red).font(.footnote)
                 }
             }
-            .navigationTitle("添加规则")
+            .navigationTitle("Add rule")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("添加") {
+                    Button("Add") {
                         if let candidate {
                             onAdd(candidate)
                             dismiss()
@@ -234,7 +234,7 @@ private struct CustomRuleEditor: View {
         case .domainSuffix: return "example.com"
         case .domainKeyword: return "example"
         case .ipCidr: return "1.2.3.0/24"
-        case .geoip: return "国家代码，如 jp"
+        case .geoip: return "Country code, e.g. jp"
         }
     }
 }
@@ -246,13 +246,13 @@ private struct CountryPicker: View {
 
     var body: some View {
         NavigationStack {
-            List(query.isEmpty ? CountryCatalog.all : CountryCatalog.search(query, limit: 60), id: \.code) { country in
+            List((query.isEmpty ? CountryCatalog.all : CountryCatalog.search(query, limit: 60)).filter { BundledRuleSets.hasGeoip($0.code) }, id: \.code) { country in
                 Button {
                     onPick(country.code)
                     dismiss()
                 } label: {
                     HStack {
-                        Text(country.nameZh)
+                        Text(country.nameEn)
                         Spacer()
                         Text(country.code.uppercased())
                             .foregroundStyle(.secondary)
@@ -261,12 +261,12 @@ private struct CountryPicker: View {
                 }
                 .foregroundStyle(.primary)
             }
-            .searchable(text: $query, prompt: "搜索国家或地区")
-            .navigationTitle("选择国家或地区")
+            .searchable(text: $query, prompt: "Search countries or regions")
+            .navigationTitle("Choose country or region")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
             }
         }
@@ -280,18 +280,18 @@ private struct MatchOrderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeader("规则模式的匹配顺序", systemImage: "list.number")
+            CardHeader("Rule mode match order", systemImage: "list.number")
             VStack(alignment: .leading, spacing: 6) {
-                step(1, "面板和转发线路本身", "直连（不可修改）")
-                step(2, "自定义规则", "按列表顺序，代理 / 直连 / 拒绝；代理可指定绑定")
-                step(3, "应用分流", "按每个 App 的域名和 IP 段；可指定绑定")
-                step(4, "国家 / 地区", "按目标 IP 所在国家")
-                step(5, "中国大陆网站和 IP", bypassChina ? "直连（已开启）" : "未开启，跳过")
-                step(6, "直连列表", "直连")
-                step(7, "其余所有流量", "走默认绑定")
+                step(1, "The server and the forward lines", "Direct (fixed)")
+                step(2, "Custom rules", "In list order: proxy / direct / reject; proxy can name a binding")
+                step(3, "Apps", "By each app's domains and IP ranges; can name a binding")
+                step(4, "Countries / regions", "By the destination IP's country")
+                step(5, "Mainland China sites and IPs", bypassChina ? "Direct (on)" : "Off, skipped")
+                step(6, "Direct list", "Direct")
+                step(7, "All other traffic", "Default binding")
             }
             if mode != .rule {
-                Label(mode == .global ? "当前是全局模式：以上第 2–6 步不生效，全部走代理。" : "当前是直连模式：以上规则不生效，全部直连。", systemImage: "exclamationmark.circle")
+                Label(mode == .global ? "Global mode: steps 2–6 are skipped and everything uses the proxy." : "Direct mode: the rules above are skipped and everything goes direct.", systemImage: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(Palette.onWarningContainer)
                     .padding(10)
@@ -329,14 +329,14 @@ private struct TargetPicker: View {
 
     var body: some View {
         Picker(selection: $selection) {
-            Text("默认绑定").tag(Int64?.none)
+            Text("Default binding").tag(Int64?.none)
             ForEach(model.routingTargetBindings) { row in
                 if let node = row.node {
                     Text(row.title).tag(Int64?.some(node.id))
                 }
             }
         } label: {
-            Label("走", systemImage: "arrow.turn.down.right")
+            Label("Via", systemImage: "arrow.turn.down.right")
                 .font(.subheadline)
                 .foregroundStyle(Palette.onSurfaceVariant)
         }

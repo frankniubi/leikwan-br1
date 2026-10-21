@@ -68,7 +68,7 @@ final class CloudNodeTests: XCTestCase {
         let body = listingJSON(nodes: [nodeJSON(id: 7, uri: uri, name: "SS")], pairings: #"[{"forward_id":12,"node_id":7,"source":"explicit"}]"#,
                                extra: #","node_id":7,"created":true"#)
         let transport = MockPanelTransport([.respond(200, body), .respond(200, body), .respond(200, body), .respond(200, body)])
-        let client = PanelClient(endpoint: .cloudflare, credentials: credentials, transport: transport)
+        let client = PanelClient(endpoint: Fixtures.panel, credentials: credentials, transport: transport)
 
         let listing = try await client.listHostedNodes()
         XCTAssertEqual(listing.revision, "rev1")
@@ -84,7 +84,7 @@ final class CloudNodeTests: XCTestCase {
 
         let requests = transport.requests
         XCTAssertEqual(requests[0].httpMethod, "GET")
-        XCTAssertEqual(requests[0].url?.absoluteString, "https://v3.leikwanhost.com/api/client/hosted-nodes")
+        XCTAssertEqual(requests[0].url?.absoluteString, "https://panel.example.com/api/client/hosted-nodes")
         XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-Device-Platform"), "ios")
         XCTAssertEqual(requests[1].httpMethod, "POST")
         let sent = Fixtures.parseJSON(String(decoding: requests[1].httpBody ?? Data(), as: UTF8.self))
@@ -108,7 +108,7 @@ final class CloudNodeTests: XCTestCase {
             (200, #"{"ok":false,"error":"hosted_nodes_unavailable"}"#, "hosted_nodes_unavailable", nil),
         ]
         for (status, body, code, _) in cases {
-            let client = PanelClient(endpoint: .cloudflare, credentials: credentials,
+            let client = PanelClient(endpoint: Fixtures.panel, credentials: credentials,
                                      transport: MockPanelTransport([.respond(status, body)]))
             do {
                 _ = try await client.listHostedNodes()
@@ -120,7 +120,7 @@ final class CloudNodeTests: XCTestCase {
                 XCTFail("unexpected \(error)")
             }
         }
-        XCTAssertEqual(HostedNodeError.userMessage("hosted_node_duplicate"), "云端已有相同的节点")
+        XCTAssertEqual(HostedNodeError.userMessage("hosted_node_duplicate"), "The same node is already in the cloud")
     }
 
     // MARK: Merge

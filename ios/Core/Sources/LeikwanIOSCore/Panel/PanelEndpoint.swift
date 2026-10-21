@@ -1,45 +1,86 @@
 import Foundation
 
-/// Allowlisted panel origins (port of `data/PanelEndpoint.kt`).
-public enum PanelEndpoint: String, CaseIterable, Equatable {
-    case cloudflare = "cloudflare"
-    case aliyunCDN = "aliyun_cdn"
+/// A panel origin the user typed in (each profile has one, plus an optional backup).
+/// Always `https://<host>[:port][/path]` with a lowercased authority and no trailing slash,
+/// query or fragment, so equal servers compare equal.
+public struct PanelEndpoint: Equatable, Hashable, Codable {
+    public enum ParseError: Error, Equatable {
+        case empty
+        /// `http://`; the panel carries the Agent Token and must use TLS.
+        case insecure
+        /// `user:password@` in the address.
+        case hasCredentials
+        case invalid
+    }
 
-    public static let defaultEndpoint: PanelEndpoint = .cloudflare
-    /// Panel mirror host that must also stay direct (Android `SafePathRegistry` baseline).
-    public static let mirrorHost = "v3-mirror.leikwanhost.com"
+    public let urlString: String
+    public let baseURL: URL
 
-    public var urlString: String {
-        switch self {
-        case .cloudflare: return "https://v3.leikwanhost.com"
-        case .aliyunCDN: return "https://api-leikwanbridge.nbwly.com"
+    private init(urlString: String, baseURL: URL) {
+        self.urlString = urlString
+        self.baseURL = baseURL
+    }
+
+    /// Normalizes what the user typed: trims it, adds `https://` when no scheme is given, and
+    /// drops a trailing slash, query and fragment.
+    public static func parse(_ input: String) -> Result<PanelEndpoint, ParseError> {
+        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .failure(.empty) }
+        if let separator = text.range(of: "://") {
+            let scheme = text[..<separator.lowerBound].lowercased()
+            if scheme == "http" { return .failure(.insecure) }
+            guard scheme == "https" else { return .failure(.invalid) }
+            text = String(text[separator.upperBound...])
         }
+        if let cut = text.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            text = String(text[..<cut])
+        }
+        let slash = text.firstIndex(of: "/") ?? text.endIndex
+        let authority = text[..<slash].lowercased()
+        var path = String(text[slash...])
+        while path.hasSuffix("/") { path.removeLast() }
+        guard !authority.isEmpty, !authority.contains(where: { $0.isWhitespace }) else { return .failure(.invalid) }
+        if authority.contains("@") { return .failure(.hasCredentials) }
+        guard !path.contains(where: { $0.isWhitespace }) else { return .failure(.invalid) }
+        let normalized = "https://" + authority + path
+        guard let url = URL(string: normalized), let host = url.host, !host.isEmpty else { return .failure(.invalid) }
+        return .success(PanelEndpoint(urlString: normalized, baseURL: url))
     }
 
-    public var baseURL: URL {
-        // Both literals are valid absolute URLs.
-        return URL(string: urlString)!
+    /// A previously stored `urlString`; nil for anything that is not already normalized
+    /// (including the removed "cloudflare" / "aliyun_cdn" keys of older builds).
+    public init?(storage: String?) {
+        guard let storage = storage, case .success(let endpoint) = PanelEndpoint.parse(storage),
+              endpoint.urlString == storage
+        else {
+            return nil
+        }
+        self = endpoint
     }
 
+    /// Lowercased host without IPv6 brackets.
     public var host: String {
-        return baseURL.host ?? ""
+        var value = (baseURL.host ?? "").lowercased()
+        if value.hasPrefix("[") && value.hasSuffix("]") {
+            value = String(value.dropFirst().dropLast())
+        }
+        return value
     }
 
-    public var storageKey: String { return rawValue }
+    public var storageKey: String { return urlString }
 
-    /// The other endpoint, used for transport-failure failover.
-    public var alternate: PanelEndpoint {
-        return self == .cloudflare ? .aliyunCDN : .cloudflare
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        guard let endpoint = PanelEndpoint(storage: value) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "not a panel address: \(value)")
+        }
+        self = endpoint
     }
 
-    public static func fromStorage(_ value: String?) -> PanelEndpoint {
-        let normalized = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return PanelEndpoint(rawValue: normalized) ?? defaultEndpoint
-    }
-
-    /// Every panel host plus the mirror; all are routed direct by the sing-box config.
-    public static var allProtectedHosts: [String] {
-        return PanelEndpoint.allCases.map { $0.host } + [mirrorHost]
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(urlString)
     }
 }
 
@@ -94,7 +135,7 @@ public struct PanelCredentials: Equatable {
             "Authorization": "Bearer \(agentToken.trimmingCharacters(in: .whitespacesAndNewlines))",
             "X-Device-Platform": "ios",
             "X-Client-Version": appVersion,
-            "User-Agent": "LeiKwan-iOS/\(appVersion)",
+            "User-Agent": "Bridge-iOS/\(appVersion)",
             "X-Device-Id": deviceId,
         ]
         if let name = IOSDeviceIdentity.sanitizeDeviceName(deviceName) {

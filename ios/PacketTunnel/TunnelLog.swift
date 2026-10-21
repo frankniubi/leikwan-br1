@@ -6,8 +6,8 @@ import os.log
 final class TunnelLog {
     static let shared = TunnelLog()
 
-    private let logger = Logger(subsystem: "com.leikwan.bridge.ios.tunnel", category: "tunnel")
-    private let queue = DispatchQueue(label: "com.leikwan.tunnel.log")
+    private let logger = Logger(subsystem: "org.forfoxsakesantuary.foxbridgeinternal.tunnel", category: "tunnel")
+    private let queue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.log")
     private var lines: [String] = []
     private let capacity = 600
     private let formatter: DateFormatter = {

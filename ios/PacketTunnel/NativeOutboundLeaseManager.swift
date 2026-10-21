@@ -27,7 +27,7 @@ final class NativeOutboundLeaseManager {
     private let launch: NativeOutboundLaunch
     private let restartRuntime: RuntimeRestarter
     private let onFatal: FatalHandler
-    private let deliveryQueue = DispatchQueue(label: "com.leikwan.tunnel.native-lease")
+    private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.native-lease")
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var currentAlert: String?
@@ -35,19 +35,12 @@ final class NativeOutboundLeaseManager {
     private var candidateEndpoints: [String] = []
 
     init(
-        session: TunnelPanelSession,
+        client: PanelClient,
         launch: NativeOutboundLaunch,
         restartRuntime: @escaping RuntimeRestarter,
         onFatal: @escaping FatalHandler
     ) {
-        let credentials = PanelCredentials(
-            clientId: session.clientID,
-            agentToken: session.agentToken,
-            installId: session.installID,
-            deviceName: session.deviceName,
-            appVersion: session.appVersion
-        )
-        client = PanelClient(endpoint: PanelEndpoint.fromStorage(session.endpoint), credentials: credentials)
+        self.client = client
         self.launch = launch
         self.restartRuntime = restartRuntime
         self.onFatal = onFatal
@@ -58,7 +51,7 @@ final class NativeOutboundLeaseManager {
         lock.lock()
         defer { lock.unlock() }
         guard let message = currentAlert else { return nil }
-        return "原生出口：\(message)"
+        return "Native outbound: \(message)"
     }
 
     func start() {
