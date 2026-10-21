@@ -497,10 +497,18 @@ abstract class BaseController
         return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' . $payload . '"';
     }
 
-    /** Single quoted PowerShell literal: quotes are escaped by doubling them. */
+    /**
+     * Single quoted PowerShell literal: quotes are escaped by doubling them.
+     * PowerShell treats U+2018..U+201B as single quotes too, so those are
+     * doubled as well; otherwise a curly quote would close the literal.
+     */
     protected function powershellSingleQuote(string $value): string
     {
-        return "'" . str_replace("'", "''", $value) . "'";
+        return "'" . str_replace(
+            ["'", "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}"],
+            ["''", "\u{2018}\u{2018}", "\u{2019}\u{2019}", "\u{201A}\u{201A}", "\u{201B}\u{201B}"],
+            $value
+        ) . "'";
     }
 
     protected function linuxArm64ClientInstallerUrl(): string

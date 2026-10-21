@@ -53,11 +53,7 @@ assertContains('final class OidcController extends BaseController', $oidc, 'OIDC
 assertContains('public function start(', $oidc, 'OIDC start action missing');
 assertContains('public function callback(', $oidc, 'OIDC callback action missing');
 assertContains('private function localReturnPath(', $oidc, 'OIDC return path sanitizer missing');
-assertContains("str_starts_with(\$returnTo, '/')", $oidc, 'return path must be an absolute local path');
-assertContains("str_starts_with(\$returnTo, '//')", $oidc, 'scheme-relative return path must be rejected');
-assertContains("str_contains(\$returnTo, '\\\\')", $oidc, 'backslash return path must be rejected');
-assertContains("preg_match('/[\\r\\n]/'", $oidc, 'CRLF return path must be rejected');
-assertContains('return \'/\';', $oidc, 'unsafe return path must fall back to root');
+assertContains("LocalRedirectPath::sanitize(\$returnTo, '/')", $oidc, 'return path must use the shared local-path validator and fall back to root');
 assertContains("\$request->input('return', '/')", $oidc, 'start must read optional return target');
 assertContains('$this->sessionStore->create(', $oidc, 'start must create OIDC flow state');
 assertContains('$this->oidcClient->authorizationUrl($flow)', $oidc, 'start must redirect to authorization URL');
@@ -93,6 +89,7 @@ assertContains('session_regenerate_id(true)', $session, 'session login must rege
 assertOrdered('self::boot()', 'session_regenerate_id(true)', $session, 'session must be active before regeneration');
 assertOrdered('session_regenerate_id(true)', "\$_SESSION['auth']", $session, 'identity must be written after session regeneration');
 
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
 require_once __DIR__ . '/../src/Support/SessionAuth.php';
 session_id('oidc-web-test-' . bin2hex(random_bytes(8)));
 session_start();
