@@ -3,16 +3,21 @@ declare(strict_types=1);
 
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
+use Leikwan\Master\Support\HttpSecurity;
 use Leikwan\Master\Support\MigrationRunner;
 
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
+
+HttpSecurity::removeServerBanner();
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
+    HttpSecurity::startSession();
 }
 
 header('Cache-Control: no-store');
 header('Pragma: no-cache');
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
+header("Content-Security-Policy: frame-ancestors 'none'");
 header('Referrer-Policy: no-referrer');
 
 spl_autoload_register(static function (string $class): void {

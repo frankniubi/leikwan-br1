@@ -145,6 +145,9 @@ final class ArtifactController extends BaseController
         $forwardId = (int) $request->input('forward_id', 0);
         $token = trim((string) $request->input('token', ''));
         if ($forwardId > 0 && $token !== '') {
+            if (!self::isInstallerToken($token)) {
+                return self::invalidInstallerTokenResponse();
+            }
             $script = $this->renderForwardSpecificWindowsInstallerWrapper($forwardId, $token);
             return new Response(200, [
                 'Content-Type' => 'text/plain; charset=utf-8',
@@ -160,6 +163,9 @@ final class ArtifactController extends BaseController
         $clientId = (int) $request->input('client_id', 0);
         $agentToken = trim((string) $request->input('agent_token', ''));
         if ($clientId > 0 && $agentToken !== '') {
+            if (!self::isInstallerToken($agentToken)) {
+                return self::invalidInstallerTokenResponse();
+            }
             $script = $this->renderClientSpecificWindowsManagerWrapper($clientId, $agentToken);
             return new Response(200, [
                 'Content-Type' => 'text/plain; charset=utf-8',
@@ -826,9 +832,26 @@ final class ArtifactController extends BaseController
         ]);
     }
 
+    /**
+     * Tokens are interpolated into a generated PowerShell script, so only the
+     * shapes the panel actually issues are accepted (client/agent tokens are
+     * bin2hex(random_bytes(24)); admin-set agent tokens use [A-Za-z0-9_-]).
+     */
+    public static function isInstallerToken(string $token): bool
+    {
+        return preg_match('/^[A-Za-z0-9_-]{1,256}$/D', $token) === 1;
+    }
+
+    private static function invalidInstallerTokenResponse(): Response
+    {
+        return Response::json(400, ['error' => 'invalid_token'])->withHeaders([
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
     private function powerShellSingleQuoted(string $value): string
     {
-        return "'" . str_replace("'", "''", $value) . "'";
+        return $this->powershellSingleQuote($value);
     }
 
     /**

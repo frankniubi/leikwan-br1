@@ -100,17 +100,6 @@ final class WhmcsSsoService
 
     private function localPath(string $path, string $fallback): string
     {
-        $path = trim($path);
-        if (
-            $path === ''
-            || !str_starts_with($path, '/')
-            || str_starts_with($path, '//')
-            || str_contains($path, '\\')
-            || preg_match('/[\r\n]/', $path) === 1
-        ) {
-            return $fallback;
-        }
-
-        return $path;
+        return LocalRedirectPath::sanitize($path, $fallback);
     }
 }

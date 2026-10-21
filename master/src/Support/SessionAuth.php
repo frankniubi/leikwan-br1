@@ -11,7 +11,7 @@ final class SessionAuth
     public static function boot(): void
     {
         if (session_status() !== PHP_SESSION_ACTIVE) {
-            session_start();
+            HttpSecurity::startSession();
         }
     }
 

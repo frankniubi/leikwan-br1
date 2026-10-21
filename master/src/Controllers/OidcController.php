@@ -7,6 +7,7 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\LocalRedirectPath;
 use Leikwan\Master\Support\OidcClient;
 use Leikwan\Master\Support\OidcIdentityService;
 use Leikwan\Master\Support\OidcProviderException;
@@ -108,17 +109,6 @@ final class OidcController extends BaseController
 
     private function localReturnPath(string $returnTo): string
     {
-        $returnTo = trim($returnTo);
-        if (
-            $returnTo === ''
-            || !str_starts_with($returnTo, '/')
-            || str_starts_with($returnTo, '//')
-            || str_contains($returnTo, '\\')
-            || preg_match('/[\r\n]/', $returnTo) === 1
-        ) {
-            return '/';
-        }
-
-        return $returnTo;
+        return LocalRedirectPath::sanitize($returnTo, '/');
     }
 }
