@@ -43,6 +43,11 @@ checkCli(str_contains($sync, "\$forwards === []"), 'sync must never push an empt
 $controller = (string) file_get_contents(__DIR__ . '/../src/Controllers/ExternalUotConfigController.php');
 checkCli(str_contains($controller, "'forwards' => (object) \$forwards"), 'buildPayload forwards shape changed; re-check the sync');
 checkCli(str_contains($sync, 'get_object_vars($forwards)'), 'sync must accept the object forwards map');
-checkCli(str_contains($sync, "['forwards' => (object) \$forwards]"), 'sync must always send forwards as a JSON map');
+checkCli(str_contains($sync, "['forwards' => (object) \$forwards, 'remove' => \$remove]"), 'sync must always send forwards as a JSON map plus the remove list');
+checkCli(str_contains($sync, "'external-uot-forward-merge'") && str_contains($sync, "'usage'"), 'sync must push and pull usage through the same forced command');
+checkCli(str_contains($sync, "ingestUsage('standalone:' . \$host"), 'pulled usage is recorded as standalone:<host>');
+$reconcile = (string) file_get_contents(__DIR__ . '/../cli/external-uot-usage-reconcile.php');
+checkCli(str_contains($reconcile, 'CliOptions::parse(') && !str_contains($reconcile, 'getopt('), 'reconcile CLI parses with CliOptions');
+checkCli(str_contains($reconcile, "['date'], ['dry-run', 'help']"), 'reconcile CLI takes --date and --dry-run');
 
 echo "cli_options_test: ok\n";

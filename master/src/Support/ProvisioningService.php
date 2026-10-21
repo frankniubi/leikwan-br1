@@ -4638,12 +4638,16 @@ final class ProvisioningService
         }
         $rows = $this->db->fetchAll(
             'SELECT f.id AS forward_id,
+                    f.target_host,
+                    f.target_port,
+                    fc.id AS forward_combination_id,
                     fc.ultra_destination_zone,
                     fc.ultra_allowed_ingress_zones_json,
                     fc.ultra_fallback_policy,
                     fc.external_uot_enabled,
                     fc.external_uot_sidecar_target,
                     fc.external_uot_token,
+                    fc.external_uot_hmac_secret,
                     fc.external_uot_queue_packets,
                     fc.external_uot_keepalive_seconds,
                     fc.external_uot_reconnect_grace_seconds,
@@ -4686,6 +4690,7 @@ final class ProvisioningService
         );
         $result = [];
         $seenByForward = [];
+        $externalUotSecrets = [];
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
             if (!isset($eligible[$forwardId]) || count($result[(string) $forwardId]['lines'] ?? []) >= ($requireFreshMaterial ? 8 : 16)) {
@@ -4710,6 +4715,23 @@ final class ProvisioningService
                 if ((int) ($row['external_uot_enabled'] ?? 0) === 1) {
                     $sidecarTarget = trim((string) ($row['external_uot_sidecar_target'] ?? ''));
                     $token = trim((string) ($row['external_uot_token'] ?? ''));
+                    // Per-forward HMAC token (plan C3) once enabled; a combination
+                    // whose secret cannot be stored keeps handing out the static token.
+                    if (ExternalUotCredentials::issueHmacTokens($this->config)) {
+                        $combinationId = (int) ($row['forward_combination_id'] ?? 0);
+                        $externalUotSecrets[$combinationId] ??= ExternalUotCredentials::ensureSecret($this->db, [
+                            'id' => $combinationId,
+                            'external_uot_hmac_secret' => $row['external_uot_hmac_secret'] ?? null,
+                        ]);
+                        $hmacToken = ExternalUotCredentials::token(
+                            $externalUotSecrets[$combinationId],
+                            $forwardId,
+                            trim((string) ($row['target_host'] ?? '')) . ':' . (int) ($row['target_port'] ?? 0)
+                        );
+                        if ($hmacToken !== null) {
+                            $token = $hmacToken;
+                        }
+                    }
                     if ($sidecarTarget !== '' && $token !== '') {
                         $result[$key]['external_uot'] = [
                             'enabled' => true,
@@ -6213,10 +6235,10 @@ final class ProvisioningService
             )
             : null;
         $mptcpConfig = $sidecarRequired && $clientMode === 'mptcp' ? $this->buildMptcpClientConfig($forward, $endpoints) : null;
-        $serviceBandwidthLimitMbps = max(0, (int) ($forward['service_bandwidth_limit_mbps'] ?? 0));
-        $lineSpeedLimitMbps = max(0, (int) ($forward['line_speed_limit_mbps'] ?? 0));
-        $limitCandidates = array_values(array_filter([$serviceBandwidthLimitMbps, $lineSpeedLimitMbps], static fn(int $value): bool => $value > 0));
-        $effectiveSpeedLimitMbps = $limitCandidates !== [] ? min($limitCandidates) : null;
+        $effectiveSpeedLimitMbps = self::effectiveSpeedLimitMbps(
+            $forward['service_bandwidth_limit_mbps'] ?? 0,
+            $forward['line_speed_limit_mbps'] ?? 0
+        );
         $billingMode = $this->normalizeBillingMode((string) ($forward['service_billing_mode'] ?? 'monthly_bundle'));
         $trafficLimitGb = max(0, (int) ($forward['service_monthly_included_traffic_gb'] ?? 0));
         if ($trafficLimitGb <= 0) {
@@ -6415,53 +6437,14 @@ final class ProvisioningService
         try {
             return $this->db->transaction(function () use ($params, $forwardId, $clientId, $bytesIn, $bytesOut, $forward, $generation): ?array {
                 $this->db->insert('ultra_usage_events', $params);
-                $serviceBefore = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => (int) $forward['service_id']]);
-                if (!is_array($serviceBefore)) {
-                    throw new \RuntimeException('ultra_usage_service_missing');
-                }
-                $this->syncServiceBillingCycle($serviceBefore);
-                $this->db->execute(
-                    'UPDATE services s INNER JOIN forwards f ON f.service_id = s.id
-                     SET s.traffic_used_bytes = COALESCE(s.traffic_used_bytes, 0) + :bytes_total,
-                         s.billing_cycle_traffic_used_bytes = COALESCE(s.billing_cycle_traffic_used_bytes, 0) + :bytes_total,
-                         s.updated_at = :updated_at WHERE f.id = :forward_id',
-                    [
-                        'bytes_total' => $bytesIn + $bytesOut,
-                        'updated_at' => gmdate('Y-m-d H:i:s'),
-                        'forward_id' => $forwardId,
-                    ]
+                $suspended = $this->addServiceTrafficBytes(
+                    (int) $forward['service_id'],
+                    $bytesIn + $bytesOut,
+                    function () use ($clientId, $bytesIn, $bytesOut): void {
+                        $this->recordAgentUsage('client', $clientId, $bytesIn, $bytesOut);
+                    }
                 );
-                $this->recordAgentUsage('client', $clientId, $bytesIn, $bytesOut);
-                $service = $this->db->fetchOne(
-                    'SELECT id, status, traffic_limit_gb, monthly_included_traffic_gb,
-                            billing_cycle_traffic_used_bytes, billing_mode
-                     FROM services WHERE id = :id LIMIT 1',
-                    ['id' => (int) $forward['service_id']]
-                );
-                if (!is_array($service)) {
-                    throw new \RuntimeException('ultra_usage_service_missing_after_update');
-                }
-                $limitGb = max(0, (int) ($service['monthly_included_traffic_gb'] ?? 0));
-                if ($limitGb <= 0) {
-                    $limitGb = max(0, (int) ($service['traffic_limit_gb'] ?? 0));
-                }
-                $limitBytes = $limitGb > 0 ? $limitGb * 1024 * 1024 * 1024 : 0;
-                $usedBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
-                if (strtolower(trim((string) ($service['billing_mode'] ?? 'monthly_bundle'))) !== 'metered'
-                    && $limitBytes > 0 && $usedBytes >= $limitBytes
-                    && (string) ($service['status'] ?? '') === 'active') {
-                    $this->db->execute(
-                        'UPDATE services SET status = :status, suspend_reason = :reason, updated_at = :updated_at
-                         WHERE id = :id AND status = :active_status',
-                        [
-                            'id' => (int) $service['id'],
-                            'status' => 'traffic_suspended',
-                            'reason' => 'traffic_limit',
-                            'updated_at' => gmdate('Y-m-d H:i:s'),
-                            'active_status' => 'active',
-                        ]
-                    );
-                    $this->queueLifecycleTasks((int) $service['id'], 'suspend');
+                if ($suspended) {
                     return [
                         'forward_id' => $forwardId,
                         'policy_generation' => $generation,
@@ -6478,6 +6461,85 @@ final class ProvisioningService
             }
             throw $exception;
         }
+    }
+
+    /**
+     * Adds traffic to a service (lifetime and current billing cycle, rolling
+     * the cycle first) and suspends it when a bundle quota is now exhausted.
+     * Must run inside a transaction. Returns true when this call suspended it.
+     *
+     * @param (callable(): void)|null $afterUpdate runs between the update and the quota check
+     */
+    public function addServiceTrafficBytes(int $serviceId, int $bytes, ?callable $afterUpdate = null): bool
+    {
+        $serviceBefore = $this->db->fetchOne('SELECT * FROM services WHERE id = :id LIMIT 1', ['id' => $serviceId]);
+        if (!is_array($serviceBefore)) {
+            throw new \RuntimeException('ultra_usage_service_missing');
+        }
+        $this->syncServiceBillingCycle($serviceBefore);
+        $this->db->execute(
+            'UPDATE services
+             SET traffic_used_bytes = COALESCE(traffic_used_bytes, 0) + :bytes_total,
+                 billing_cycle_traffic_used_bytes = COALESCE(billing_cycle_traffic_used_bytes, 0) + :bytes_total,
+                 updated_at = :updated_at WHERE id = :service_id',
+            [
+                'bytes_total' => $bytes,
+                'updated_at' => gmdate('Y-m-d H:i:s'),
+                'service_id' => $serviceId,
+            ]
+        );
+        if ($afterUpdate !== null) {
+            $afterUpdate();
+        }
+        $service = $this->db->fetchOne(
+            'SELECT id, status, traffic_limit_gb, monthly_included_traffic_gb,
+                    billing_cycle_traffic_used_bytes, billing_mode
+             FROM services WHERE id = :id LIMIT 1',
+            ['id' => $serviceId]
+        );
+        if (!is_array($service)) {
+            throw new \RuntimeException('ultra_usage_service_missing_after_update');
+        }
+        $limitGb = max(0, (int) ($service['monthly_included_traffic_gb'] ?? 0));
+        if ($limitGb <= 0) {
+            $limitGb = max(0, (int) ($service['traffic_limit_gb'] ?? 0));
+        }
+        $limitBytes = $limitGb > 0 ? $limitGb * 1024 * 1024 * 1024 : 0;
+        $usedBytes = max(0, (int) ($service['billing_cycle_traffic_used_bytes'] ?? 0));
+        if (strtolower(trim((string) ($service['billing_mode'] ?? 'monthly_bundle'))) === 'metered'
+            || $limitBytes <= 0 || $usedBytes < $limitBytes
+            || (string) ($service['status'] ?? '') !== 'active') {
+            return false;
+        }
+        $this->db->execute(
+            'UPDATE services SET status = :status, suspend_reason = :reason, updated_at = :updated_at
+             WHERE id = :id AND status = :active_status',
+            [
+                'id' => (int) $service['id'],
+                'status' => 'traffic_suspended',
+                'reason' => 'traffic_limit',
+                'updated_at' => gmdate('Y-m-d H:i:s'),
+                'active_status' => 'active',
+            ]
+        );
+        $this->queueLifecycleTasks((int) $service['id'], 'suspend');
+
+        return true;
+    }
+
+    /**
+     * The smaller positive of the service bandwidth and the line client's
+     * speed limit, or null for unlimited. Shared by the client config and the
+     * external UoT sidecar config so both enforce the same number.
+     */
+    public static function effectiveSpeedLimitMbps(mixed $serviceBandwidthLimitMbps, mixed $lineSpeedLimitMbps): ?int
+    {
+        $candidates = array_values(array_filter(
+            [max(0, (int) $serviceBandwidthLimitMbps), max(0, (int) $lineSpeedLimitMbps)],
+            static fn(int $value): bool => $value > 0
+        ));
+
+        return $candidates !== [] ? min($candidates) : null;
     }
 
     private function ultraUsageForwardIncludesGroup(mixed $encodedGroups, int $clientGroupId): bool

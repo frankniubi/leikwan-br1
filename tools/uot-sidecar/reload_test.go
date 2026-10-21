@@ -2,12 +2,14 @@ package main
 
 // Coverage for the safe configuration reload: a valid reload admits a new
 // forward id, a rejected reload keeps the previous snapshot serving untouched,
-// an established session survives removal and rotation of its binding, and a
-// reload racing concurrent HELLOs never produces a torn read (run with -race).
+// an established session is revoked when a reload removes or rotates its
+// credentials (and only then), and a reload racing concurrent HELLOs never
+// produces a torn read (run with -race).
 
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,8 +43,10 @@ func (b *syncBuffer) String() string {
 
 // reloadBindingFixture is one forward of a generated configuration file.
 type reloadBindingFixture struct {
-	secret  string
-	targets []string
+	secret        string
+	token         string
+	targets       []string
+	rateLimitMbps float64
 }
 
 // writeReloadConfig renders a complete sidecar configuration file. Listeners use
@@ -53,10 +57,17 @@ func writeReloadConfig(path string, forwards map[string]reloadBindingFixture) er
 	// would silently emit empty bindings for them.
 	forwardsDocument := map[string]any{}
 	for forwardID, binding := range forwards {
-		forwardsDocument[forwardID] = map[string]any{
+		entry := map[string]any{
 			"secret":  binding.secret,
 			"targets": binding.targets,
 		}
+		if binding.token != "" {
+			entry["token"] = binding.token
+		}
+		if binding.rateLimitMbps != 0 {
+			entry["rate_limit_mbps"] = binding.rateLimitMbps
+		}
+		forwardsDocument[forwardID] = entry
 	}
 	document := map[string]any{
 		"listen_host":                 "127.0.0.1",
@@ -114,7 +125,7 @@ func startReloadHarness(t *testing.T, path string) *reloadHarness {
 
 // reload performs exactly what a SIGHUP or a reload marker triggers.
 func (h *reloadHarness) reload() {
-	applyReload(h.store, h.logger)
+	applyReload(h.store, h.logger, h.server.enforceSnapshot)
 }
 
 // sessionTag builds a deterministic, distinct session id per test participant.
@@ -350,7 +361,30 @@ func TestSidecarReloadRejectionsLeaveSnapshotUntouched(t *testing.T) {
 	mustAcceptHello(t, h.address, sessionTag(1), "secret-a", 170, echo.address())
 }
 
-func TestSidecarReloadRemovalKeepsEstablishedSession(t *testing.T) {
+// mustBeRevoked waits for the sidecar to close a carrier. Keepalives may still
+// be in flight, so frames are drained until the read fails; a read timeout
+// means the carrier was left open.
+func mustBeRevoked(t *testing.T, carrier *testCarrier) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := carrier.read(t, time.Until(deadline)); err != nil {
+			if isTimeout(err) {
+				break
+			}
+			return
+		}
+	}
+	t.Fatal("carrier of a revoked session stayed open")
+}
+
+func registeredSessions(server *sidecarServer) int {
+	server.registry.mu.Lock()
+	defer server.registry.mu.Unlock()
+	return len(server.registry.sessions)
+}
+
+func TestSidecarReloadRemovalRevokesOnlyThatForward(t *testing.T) {
 	echo := startEchoServer(t)
 	path := filepath.Join(t.TempDir(), "leikwan-external-uot.json")
 	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
@@ -358,10 +392,15 @@ func TestSidecarReloadRemovalKeepsEstablishedSession(t *testing.T) {
 		"181": {secret: "secret-b", targets: []string{echo.address()}},
 	})
 	h := startReloadHarness(t, path)
-	session := sessionTag(7)
-	carrier := mustAcceptHello(t, h.address, session, "secret-a", 170, echo.address())
-	if got := relayRoundTrip(t, carrier, 1, "before"); got != "before" {
+	revokedSession := sessionTag(7)
+	revoked := mustAcceptHello(t, h.address, revokedSession, "secret-a", 170, echo.address())
+	if got := relayRoundTrip(t, revoked, 1, "before"); got != "before" {
 		t.Fatalf("round trip before the removal returned %q", got)
+	}
+	keptSession := sessionTag(8)
+	kept := mustAcceptHello(t, h.address, keptSession, "secret-b", 181, echo.address())
+	if got := relayRoundTrip(t, kept, 1, "before"); got != "before" {
+		t.Fatalf("unrelated round trip before the removal returned %q", got)
 	}
 
 	// Remove 170 and add 182, so the reload really publishes a different set.
@@ -370,28 +409,33 @@ func TestSidecarReloadRemovalKeepsEstablishedSession(t *testing.T) {
 		"182": {secret: "secret-c", targets: []string{echo.address()}},
 	})
 	h.reload()
-	mustAcceptHello(t, h.address, sessionTag(8), "secret-c", 182, echo.address())
 
-	// 1. The established session keeps relaying on its existing carrier.
-	if got := relayRoundTrip(t, carrier, 2, "after-removal"); got != "after-removal" {
-		t.Fatalf("established session broke when its binding was removed: %q", got)
+	// 1. The removed forward's live session is closed, carrier included.
+	mustBeRevoked(t, revoked)
+	wantLog := "session revoked sid=" + hex.EncodeToString(revokedSession[:])[:8] + " forward=170"
+	if logs := h.logs.String(); !strings.Contains(logs, wantLog) {
+		t.Fatalf("revocation was not logged with forward id and short session id: %s", logs)
 	}
-	// 2. Removal stops NEW HELLOs from using the id.
+	// 2. It can neither reattach nor open a new session.
+	mustRejectHello(t, h.address, revokedSession, "secret-a", 170, echo.address(), "forward is not allowed")
 	mustRejectHello(t, h.address, sessionTag(9), "secret-a", 170, echo.address(), "forward is not allowed")
-	// 3. A carrier reattach of the SAME established session is still authorised
-	// by the binding negotiated when it was opened.
-	reattached := dialCarrier(t, h.address, session)
-	reattached.send(t, msgHello, 0, helloPayloadFor(t, "secret-a", 170, echo.address(), 1200))
-	ack := decodeAck(t, reattached.mustRead(t, 3*time.Second).payload)
-	if ack["ok"] != true || ack["session"] != "OKR" {
-		t.Fatalf("established session could not reattach after its binding was removed: %v", ack)
+	// 3. The unrelated forward's session is undisturbed: its carrier keeps
+	// relaying and a reattach still resumes the same session.
+	if got := relayRoundTrip(t, kept, 2, "after-removal"); got != "after-removal" {
+		t.Fatalf("unrelated session broke when another forward was removed: %q", got)
+	}
+	reattached := dialCarrier(t, h.address, keptSession)
+	reattached.send(t, msgHello, 0, helloPayloadFor(t, "secret-b", 181, echo.address(), 1200))
+	if ack := decodeAck(t, reattached.mustRead(t, 3*time.Second).payload); ack["ok"] != true || ack["session"] != "OKR" {
+		t.Fatalf("unrelated session could not reattach after another forward was removed: %v", ack)
 	}
 	if got := relayRoundTrip(t, reattached, 3, "after-reattach"); got != "after-reattach" {
-		t.Fatalf("reattached session did not relay: %q", got)
+		t.Fatalf("reattached unrelated session did not relay: %q", got)
 	}
+	mustAcceptHello(t, h.address, sessionTag(10), "secret-c", 182, echo.address())
 }
 
-func TestSidecarReloadTokenRotationKeepsEstablishedSession(t *testing.T) {
+func TestSidecarReloadTokenRotationRevokesOldTokenSession(t *testing.T) {
 	echo := startEchoServer(t)
 	path := filepath.Join(t.TempDir(), "leikwan-external-uot.json")
 	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
@@ -412,22 +456,139 @@ func TestSidecarReloadTokenRotationKeepsEstablishedSession(t *testing.T) {
 		t.Fatalf("rotation was not reported: %s", logs)
 	}
 
-	// The in-flight session is unaffected by the rotation.
-	if got := relayRoundTrip(t, carrier, 2, "after"); got != "after" {
-		t.Fatalf("established session broke when the token rotated: %q", got)
-	}
-	// The retired token can no longer create a session.
+	// The session holding the retired token is closed, and the retired token
+	// can neither reattach nor create a session.
+	mustBeRevoked(t, carrier)
+	mustRejectHello(t, h.address, session, "secret-a", 170, echo.address(), "authentication or target binding failed")
 	mustRejectHello(t, h.address, sessionTag(5), "secret-a", 170, echo.address(), "authentication or target binding failed")
-	// The rotated token works for a new session.
-	mustAcceptHello(t, h.address, sessionTag(6), "secret-rotated", 170, echo.address())
-	// The established session may still reattach with the token it negotiated.
+	// A client that picked up the rotated token simply starts over, even under
+	// the same session id: the revoked session is gone, so this is OKN.
+	fresh := dialCarrier(t, h.address, session)
+	fresh.send(t, msgHello, 0, helloPayloadFor(t, "secret-rotated", 170, echo.address(), 1200))
+	if ack := decodeAck(t, fresh.mustRead(t, 3*time.Second).payload); ack["ok"] != true || ack["session"] != "OKN" {
+		t.Fatalf("rotated token could not open a session: %v", ack)
+	}
+	if got := relayRoundTrip(t, fresh, 1, "rotated"); got != "rotated" {
+		t.Fatalf("session with the rotated token did not relay: %q", got)
+	}
+}
+
+func TestSidecarReloadKeepingCredentialsKeepsSession(t *testing.T) {
+	echo := startEchoServer(t)
+	path := filepath.Join(t.TempDir(), "leikwan-external-uot.json")
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
+		"170": {secret: "secret-a", targets: []string{echo.address()}},
+	})
+	h := startReloadHarness(t, path)
+	session := sessionTag(11)
+	carrier := mustAcceptHello(t, h.address, session, "secret-a", 170, echo.address())
+	if got := relayRoundTrip(t, carrier, 1, "before"); got != "before" {
+		t.Fatalf("round trip before the reload returned %q", got)
+	}
+
+	// Same credentials for 170; another forward is added and 170 gains a limit.
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
+		"170": {secret: "secret-a", targets: []string{echo.address()}, rateLimitMbps: 500},
+		"181": {secret: "secret-b", targets: []string{echo.address()}},
+	})
+	h.reload()
+
+	if got := relayRoundTrip(t, carrier, 2, "after"); got != "after" {
+		t.Fatalf("session with unchanged credentials broke on reload: %q", got)
+	}
 	reattached := dialCarrier(t, h.address, session)
 	reattached.send(t, msgHello, 0, helloPayloadFor(t, "secret-a", 170, echo.address(), 1200))
-	if ack := decodeAck(t, reattached.mustRead(t, 3*time.Second).payload); ack["ok"] != true {
-		t.Fatalf("established session could not reattach after the token rotated: %v", ack)
+	if ack := decodeAck(t, reattached.mustRead(t, 3*time.Second).payload); ack["ok"] != true || ack["session"] != "OKR" {
+		t.Fatalf("session with unchanged credentials could not reattach: %v", ack)
 	}
-	if got := relayRoundTrip(t, reattached, 3, "rotated-reattach"); got != "rotated-reattach" {
+	if got := relayRoundTrip(t, reattached, 3, "reattached"); got != "reattached" {
 		t.Fatalf("reattached session did not relay: %q", got)
+	}
+	if strings.Contains(h.logs.String(), "session revoked") {
+		t.Fatalf("a reload that kept the credentials revoked a session: %s", h.logs.String())
+	}
+	// The new limit was applied in place to the forward's shared meter.
+	meter := h.server.meters.forward(170)
+	if got := meter.toTarget.limitMbps(); got != 500 {
+		t.Fatalf("to_target limit after reload = %v Mbps, want 500", got)
+	}
+	if got := meter.fromTarget.limitMbps(); got != 500 {
+		t.Fatalf("from_target limit after reload = %v Mbps, want 500", got)
+	}
+	if logs := h.logs.String(); !strings.Contains(logs, "rate_limit_changed=[170]") {
+		t.Fatalf("rate limit change was not reported: %s", logs)
+	}
+}
+
+func TestSidecarReloadStaticTokenWithdrawalRevokesOnlyStaticSessions(t *testing.T) {
+	echo := startEchoServer(t)
+	path := filepath.Join(t.TempDir(), "leikwan-external-uot.json")
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
+		"170": {secret: "secret-a", token: "static-170", targets: []string{echo.address()}},
+	})
+	h := startReloadHarness(t, path)
+	static := dialCarrier(t, h.address, sessionTag(12))
+	static.send(t, msgHello, 0, helloWithToken(t, "static-170", 170, echo.address()))
+	if ack := decodeAck(t, static.mustRead(t, 3*time.Second).payload); ack["ok"] != true {
+		t.Fatalf("static token HELLO rejected: %v", ack)
+	}
+	hmacCarrier := mustAcceptHello(t, h.address, sessionTag(13), "secret-a", 170, echo.address())
+
+	// EXTERNAL_UOT_ACCEPT_STATIC_TOKEN turned off: the token disappears from
+	// the entry while the secret stays.
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
+		"170": {secret: "secret-a", targets: []string{echo.address()}},
+	})
+	h.reload()
+
+	mustBeRevoked(t, static)
+	if got := relayRoundTrip(t, hmacCarrier, 1, "hmac-still-works"); got != "hmac-still-works" {
+		t.Fatalf("HMAC session broke when the static token was withdrawn: %q", got)
+	}
+	if got := registeredSessions(h.server); got != 1 {
+		t.Fatalf("registered sessions = %d, want only the HMAC session", got)
+	}
+}
+
+// helloWithToken builds a HELLO that carries a literal (static) token.
+func helloWithToken(t *testing.T, token string, forwardID int64, target string) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"token":             token,
+		"forward_id":        forwardID,
+		"target":            target,
+		"frame_payload_max": 1200,
+	})
+	if err != nil {
+		t.Fatalf("hello marshal failed: %v", err)
+	}
+	return payload
+}
+
+func TestSidecarHelloAuthorisedAgainstStaleSnapshotIsRefused(t *testing.T) {
+	// A connection takes its snapshot when it is accepted. If a reload
+	// withdraws the credentials before the HELLO is processed, that reload's
+	// sweep cannot see the session yet; the post-registration check must
+	// refuse it instead.
+	echo := startEchoServer(t)
+	path := filepath.Join(t.TempDir(), "leikwan-external-uot.json")
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{
+		"170": {secret: "secret-a", targets: []string{echo.address()}},
+	})
+	h := startReloadHarness(t, path)
+	carrier := dialCarrier(t, h.address, sessionTag(14))
+	// Let the server accept the TCP connection, and so take the pre-reload
+	// snapshot, before the reload lands.
+	time.Sleep(50 * time.Millisecond)
+	mustWriteReloadConfig(t, path, map[string]reloadBindingFixture{})
+	h.reload()
+	carrier.send(t, msgHello, 0, helloPayloadFor(t, "secret-a", 170, echo.address(), 1200))
+	ack := decodeAck(t, carrier.mustRead(t, 3*time.Second).payload)
+	if ack["ok"] != false || ack["error"] != "forward is not allowed" {
+		t.Fatalf("HELLO authorised against a stale snapshot was accepted: %v", ack)
+	}
+	if got := registeredSessions(h.server); got != 0 {
+		t.Fatalf("stale HELLO left %d registered sessions", got)
 	}
 }
 
