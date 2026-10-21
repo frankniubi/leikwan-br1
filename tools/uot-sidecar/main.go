@@ -5,6 +5,11 @@ package main
 //
 //	leikwan-external-uot --config /etc/leikwan-external-uot.json
 //
+// Beyond the Python sidecar it meters UDP per forward into --usage-file,
+// enforces the optional per-forward rate_limit_mbps, and closes live sessions
+// whose credentials a reload withdrew (docs/plans/2026-10-21-external-uot-
+// sidecar-enforcement.md, C4).
+//
 // It speaks exactly the UOT2 contract of sidecar-agent/leikwan_external_uot.py
 // and accepts the same JSON configuration, so it can replace the Python entry
 // point without touching the panel, the runtime or the systemd unit name.
@@ -16,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,6 +29,17 @@ import (
 
 // sidecarBuildVersion is stamped by scripts/build-uot-sidecar.ps1.
 var sidecarBuildVersion = "dev"
+
+// defaultUsageFile is where the panel's collectors read the usage counters.
+// Windows builds exist for local testing only, so there the default is off
+// rather than a /var/lib directory under the system drive created as a side
+// effect of a local test run.
+func defaultUsageFile() string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	return "/var/lib/leikwan-external-uot/usage.json"
+}
 
 func main() {
 	configPath := flag.String("config", "", "path to the sidecar JSON configuration")
@@ -35,6 +52,7 @@ func main() {
 	target := flag.String("target", "", "target host:port (with --print-token)")
 	checkConfig := flag.Bool("check-config", false, "validate --config, print the effective sidecar summary as JSON and exit")
 	reloadFile := flag.String("reload-file", "", "local reload marker file; creating it reloads the configuration (default <config>.reload, \"-\" disables)")
+	usageFile := flag.String("usage-file", defaultUsageFile(), "per-forward UDP usage counters, rewritten every 10s (\"\" disables)")
 	flag.Parse()
 
 	if *showVersion {
@@ -101,11 +119,29 @@ func main() {
 		logger.infof("external UoT reload triggers: SIGHUP (unix), local reload marker path=%s", markerPath)
 	}
 
+	// The usage writer must never stop the relay: if it cannot even start (no
+	// randomness for the instance id) the sidecar runs unmetered and says so.
+	stopUsage := make(chan struct{})
+	usageDone := make(chan struct{})
+	if *usageFile == "" {
+		close(usageDone)
+		logger.infof("external UoT usage file disabled")
+	} else if writer, err := newUsageWriter(*usageFile, server.meters, logger); err != nil {
+		close(usageDone)
+		logger.warnf("external UoT usage file disabled: %v", err)
+	} else {
+		logger.infof("external UoT usage file path=%s instance=%s interval=%s", *usageFile, writer.instance, usageWriteInterval)
+		go func() {
+			defer close(usageDone)
+			writer.run(stopUsage, usageWriteInterval)
+		}()
+	}
+
 	// Reload is local-only by construction: a signal the operator sends, or a
 	// marker file only a local user with write access to the configuration
 	// directory can create. No network path reaches either trigger.
 	stopReloads := make(chan struct{})
-	go runReloadMarkerLoop(stopReloads, markerPath, reloadMarkerPollInterval, logger, func() { applyReload(store, logger) })
+	go runReloadMarkerLoop(stopReloads, markerPath, reloadMarkerPollInterval, logger, func() { applyReload(store, logger, server.enforceSnapshot) })
 
 	// SIGINT/SIGTERM keep exactly their previous meaning: log and shut down.
 	signals := make(chan os.Signal, 1)
@@ -118,9 +154,12 @@ func main() {
 			logger.infof("external UoT sidecar stopping")
 			close(stopReloads)
 			server.close()
+			// Final usage write after every session has stopped counting.
+			close(stopUsage)
+			<-usageDone
 			return
 		case <-reloadSignals:
-			applyReload(store, logger)
+			applyReload(store, logger, server.enforceSnapshot)
 		}
 	}
 }
