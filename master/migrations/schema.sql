@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS whmcs_login_challenges (
     expires_at DATETIME NOT NULL,
     verified_at DATETIME NULL,
     closed_at DATETIME NULL,
+    failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_whmcs_login_challenges_user FOREIGN KEY (user_id) REFERENCES users(id),
@@ -1828,4 +1829,12 @@ CREATE TABLE IF NOT EXISTS client_hosted_node_pairings (
     updated_at DATETIME NOT NULL,
     PRIMARY KEY (client_id, forward_id),
     INDEX idx_client_hosted_node_pairings_node (node_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+    bucket_key CHAR(64) NOT NULL PRIMARY KEY,
+    window_started_at BIGINT UNSIGNED NOT NULL,
+    hits INT UNSIGNED NOT NULL DEFAULT 0,
+    expires_at BIGINT UNSIGNED NOT NULL,
+    INDEX idx_auth_rate_limits_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
