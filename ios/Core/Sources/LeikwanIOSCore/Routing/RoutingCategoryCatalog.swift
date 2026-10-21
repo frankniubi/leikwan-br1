@@ -1,6 +1,6 @@
 import Foundation
 
-/// A labelled preset backed by remote rule-set refs (port of `CategoryPreset`).
+/// A labelled preset backed by bundled rule-sets (port of `CategoryPreset`).
 public struct CategoryPreset: Equatable {
     public let key: String
     public let labelEn: String
@@ -20,20 +20,14 @@ public struct CategoryPreset: Equatable {
 
 /// Port of `routing/RoutingCategoryCatalog.kt`.
 /// Fixes vs Android: `geolocation-cn` -> `geosite-geolocation-cn`; dropped `geosite-stackoverflow` and
-/// `geosite-applemusic`, which do not exist in SagerNet/sing-geosite (404 would break sing-box start).
+/// `geosite-applemusic`, which do not exist in sing-geosite. Every tag is in `BundledRuleSets`.
 public struct RoutingCategoryCatalog {
-    public static let geositeBase = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/"
-
     public let presets: [CategoryPreset]
     private let aliases: [String: CategoryPreset]
 
     public init(presets: [CategoryPreset], aliases: [String: CategoryPreset] = [:]) {
         self.presets = presets
         self.aliases = aliases
-    }
-
-    public static func geositeUrl(_ tag: String) -> String {
-        return geositeBase + tag + ".srs"
     }
 
     public var presetKeys: [String] { return presets.map { $0.key } }
@@ -53,7 +47,7 @@ public struct RoutingCategoryCatalog {
 
     public func ruleSets(for matchValue: String) -> [RuleSetRef] {
         guard let preset = preset(for: matchValue) else { return [] }
-        return preset.tags.map { RuleSetRef(tag: $0, url: RoutingCategoryCatalog.geositeUrl($0)) }
+        return preset.tags.map { RuleSetRef(tag: $0) }
     }
 
     static let streamingTags = [

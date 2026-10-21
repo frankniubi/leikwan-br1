@@ -31,7 +31,7 @@ enum JSONStore {
 
     private static func url(_ name: String) -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("LeiKwan", isDirectory: true)
+            .appendingPathComponent("Bridge", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent(name + ".json")
     }
@@ -42,11 +42,4 @@ struct Subscription: Codable, Equatable, Identifiable {
     var name: String
     var url: String
     var lastUpdated: Date?
-}
-
-/// Login state kept across launches. The agent token lives in the Keychain.
-struct StoredLogin: Codable, Equatable {
-    var clientID: Int64
-    var endpoint: String
-    var rememberToken: Bool
 }

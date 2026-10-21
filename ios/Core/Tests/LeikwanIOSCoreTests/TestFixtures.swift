@@ -3,6 +3,11 @@ import Foundation
 
 enum Fixtures {
     static let now = Date(timeIntervalSince1970: 1_800_000_000) // 2027-01-15T08:00:00Z
+    /// A profile's server address and its backup (test-only names).
+    static let panel = try! PanelEndpoint.parse("panel.example.com").get()
+    static let backupPanel = try! PanelEndpoint.parse("https://backup.example.net/").get()
+    /// Direct-route registry of a profile with both addresses.
+    static let safePaths = SafePathRegistry.iosBaseline(panelHosts: [panel.host, backupPanel.host])
     static let generation = String(repeating: "a", count: 64)
     static let target = "1.2.3.4:443"
     /// SHA-256("1.2.3.4:443") computed with Python hashlib.

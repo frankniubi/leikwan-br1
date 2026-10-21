@@ -47,7 +47,7 @@ public struct UltraRuntimePlan {
     public let invocation: RuntimeInvocation
 }
 
-/// Port of `UltraForwardRunner.buildPlan` (non-native path only; native SOCKS5 is not supported on iOS).
+/// Port of `UltraForwardRunner.buildPlan` (ordinary Ultra; the native SOCKS5 plan is `buildNativePlan`).
 public enum UltraRuntimeConfigBuilder {
     public static func buildPlan(
         forward: ForwardContract,

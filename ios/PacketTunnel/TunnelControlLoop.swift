@@ -15,16 +15,9 @@ final class TunnelControlLoop {
     /// Ultra usage rides the heartbeat; unacknowledged rows stay pending and are resent.
     private let usageLedger: UltraUsageLedger?
 
-    init(session: TunnelPanelSession, usageLedger: UltraUsageLedger? = nil, onTerminal: @escaping (String) -> Void) {
+    init(client: PanelClient, usageLedger: UltraUsageLedger? = nil, onTerminal: @escaping (String) -> Void) {
         self.usageLedger = usageLedger
-        let credentials = PanelCredentials(
-            clientId: session.clientID,
-            agentToken: session.agentToken,
-            installId: session.installID,
-            deviceName: session.deviceName,
-            appVersion: session.appVersion
-        )
-        client = PanelClient(endpoint: PanelEndpoint.fromStorage(session.endpoint), credentials: credentials)
+        self.client = client
         self.onTerminal = onTerminal
     }
 

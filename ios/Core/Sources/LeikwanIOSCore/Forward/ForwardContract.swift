@@ -193,6 +193,9 @@ public struct ForwardContract {
     public var mptcp: MptcpContract?
     public var ultraAccess: [String: Any]?
     public var routeRuleHelperOnly: Bool
+    /// Panel `native_outbound`: on an Ultra forward this is a native outbound rule, which is
+    /// configuration for the native outbound relay only (Windows `IsNativeOutboundRule`).
+    public var nativeOutbound: Bool
 
     public init(
         forwardId: Int64,
@@ -222,7 +225,8 @@ public struct ForwardContract {
         bonding: BondingContract? = nil,
         mptcp: MptcpContract? = nil,
         ultraAccess: [String: Any]? = nil,
-        routeRuleHelperOnly: Bool = false
+        routeRuleHelperOnly: Bool = false,
+        nativeOutbound: Bool = false
     ) {
         self.forwardId = forwardId
         self.serviceName = serviceName
@@ -252,6 +256,7 @@ public struct ForwardContract {
         self.mptcp = mptcp
         self.ultraAccess = ultraAccess
         self.routeRuleHelperOnly = routeRuleHelperOnly
+        self.nativeOutbound = nativeOutbound
     }
 
     public func withListenPort(_ port: Int) -> ForwardContract {
@@ -330,7 +335,8 @@ public enum ForwardContractParser {
             bonding: bonding,
             mptcp: mptcp,
             ultraAccess: obj["ultra_access"] as? [String: Any],
-            routeRuleHelperOnly: JSONLenient.bool(obj["route_rule_helper_only"]) ?? false
+            routeRuleHelperOnly: JSONLenient.bool(obj["route_rule_helper_only"]) ?? false,
+            nativeOutbound: JSONLenient.bool(obj["native_outbound"]) ?? false
         )
     }
 }

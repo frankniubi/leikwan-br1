@@ -1,0 +1,10 @@
+/* Generated: Bridge UI text (es). Keys are the English source text. */
+
+"Native outbound: %@" = "Salida nativa: %@";
+"Ultra forward %@: %@" = "Reenvío Ultra %@: %@";
+"The forward settings changed. Reconnect" = "La configuración del reenvío cambió. Vuelve a conectar";
+"Ultra authorization unavailable (service inactive or expired)" = "Autorización Ultra no disponible (servicio inactivo o vencido)";
+"Line key check failed (%@)" = "Falló la verificación de la clave de línea (%@)";
+"The local Ultra runtime rejected the line" = "El runtime Ultra local rechazó la línea";
+"No line available yet; retrying automatically" = "Aún no hay líneas disponibles; se reintentará automáticamente";
+"Could not get a line (%@); retrying automatically" = "No se pudo obtener una línea (%@); se reintentará automáticamente";

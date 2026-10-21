@@ -17,12 +17,32 @@ struct TunnelLaunchOptions: Codable, Equatable {
     var panel: TunnelPanelSession?
     /// Ultra forwards whose runtimes need leases; the tunnel's UltraLeaseManager owns them.
     var ultra: [UltraForwardLaunch] = []
+    /// Native outbound plan (the single ultra runtime in `runtimes` runs in native SOCKS5 mode);
+    /// the tunnel's NativeOutboundLeaseManager keeps it supplied with native leases.
+    var nativeOutbound: NativeOutboundLaunch? = nil
+    /// Multi-binding: which runtimes belong to which (forward, node) binding. Runtimes of a
+    /// non-default binding are optional: if they fail to start, the tunnel starts without that
+    /// binding instead of failing. Empty in older snapshots (every runtime required).
+    var bindings: [TunnelBindingInfo] = []
 
     enum CodingKeys: String, CodingKey {
         case configContent
         case runtimes
         case panel
         case ultra
+        case nativeOutbound
+        case bindings
+    }
+
+    /// runtime name -> binding id, for the runtimes the tunnel may skip on failure.
+    var optionalRuntimeGroups: [String: String] {
+        var groups: [String: String] = [:]
+        for binding in bindings where !binding.isDefault {
+            for name in binding.runtimeNames {
+                groups[name] = binding.id
+            }
+        }
+        return groups
     }
 
     func encoded() throws -> Data {
@@ -46,7 +66,57 @@ extension TunnelLaunchOptions {
         runtimes = try container.decode([RuntimeLaunch].self, forKey: .runtimes)
         panel = try container.decodeIfPresent(TunnelPanelSession.self, forKey: .panel)
         ultra = try container.decodeIfPresent([UltraForwardLaunch].self, forKey: .ultra) ?? []
+        nativeOutbound = try container.decodeIfPresent(NativeOutboundLaunch.self, forKey: .nativeOutbound)
+        bindings = try container.decodeIfPresent([TunnelBindingInfo].self, forKey: .bindings) ?? []
     }
+}
+
+/// One running (forward, node) binding (diagnostics + optional-runtime grouping).
+struct TunnelBindingInfo: Codable, Equatable {
+    /// BindingID raw value ("f:12" / "n:3").
+    var id: String
+    var forwardID: Int64?
+    var nodeID: Int64?
+    /// sing-box outbound tag of the node, if any.
+    var outboundTag: String?
+    var runtimeNames: [String]
+    var isDefault: Bool
+}
+
+/// What the tunnel needs to keep the native outbound runtime supplied with leases
+/// (Android `ActiveNativeRuntime` plus the plan-time inputs of `startNativeForForward`).
+/// Plain strings so the shared file stays free of LeikwanIOSCore types.
+struct NativeOutboundLaunch: Codable, Equatable {
+    var forwardID: Int64
+    /// RuntimeLaunch.name of the native-mode ultra runtime.
+    var runtimeName: String
+    /// Forward fields `UltraPolicy.from` validates the plan-time `ultra_access` against.
+    var target: String
+    var backendMode: String
+    var serviceStatus: String
+    /// The forward's own direction label (`forward_combination_direction`).
+    var direction: String
+    var forwardListenPort: Int
+    /// Canonical JSON of the forward's `ultra_access` at plan time (first lease while valid).
+    var ultraAccessJSON: String
+    /// Port of the runtime's SOCKS5 facade on 127.0.0.1 (`listen_port`; sing-box `proxy-native`).
+    var socksPort: Int
+    /// The plan-time carrier entry of `native_outbound.forwards[]`.
+    var carrierDirection: String
+    var carrierScopeDigest: String
+    var carrierTransport: String
+    var carrierRouteScopes: [String]
+    var carrierDefaultRouteScope: String
+    var carrierUnrestrictedAllowed: Bool
+    /// The user's effective choice: "cn_only" / "intl_only" / "global", "restricted" / "unrestricted".
+    var routeScope: String
+    var routePolicy: String
+    /// Baked into the runtime config; a newer generation restarts the runtime (Android rotation).
+    var policyGeneration: String
+    var controlSocketPath: String
+    var statusPath: String
+    /// Native lease candidates to request (Android: 4, the runtime probes the batch).
+    var maxCandidates: Int
 }
 
 /// What the tunnel needs to keep one Ultra runtime supplied with leases.
@@ -95,8 +165,10 @@ struct RuntimeLaunch: Codable, Equatable {
 }
 
 struct TunnelPanelSession: Codable, Equatable {
-    /// PanelEndpoint storage key ("cloudflare" / "aliyun_cdn").
+    /// The profile's server address (PanelEndpoint storage key, `https://...`).
     var endpoint: String
+    /// The profile's backup address, if any.
+    var backupEndpoint: String? = nil
     var clientID: Int64
     var agentToken: String
     var installID: String
@@ -128,6 +200,10 @@ struct TunnelStatusSnapshot: Codable, Equatable {
     /// Terminal panel/runtime problem the app should surface (kicked,
     /// device limit, runtime failed).
     var alert: String?
+    /// Ultra forward id (decimal string) → relay entry "ip:port" currently in use.
+    var ultraEndpoints: [String: String]?
+    /// Non-default bindings whose runtimes failed to start ("f:12: <error>"); nil when none.
+    var bindingErrors: [String]? = nil
 }
 
 struct RuntimeStatus: Codable, Equatable {
