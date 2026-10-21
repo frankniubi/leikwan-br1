@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "9856a4c389aceface71c7342655d894c512a8035784814109388e0b5005c85b8",
+    "sha256": "6822abb68fa6930abbd9da5f4699e80b12491a1feb6006e2104e2aacc91c6235",
     "size": 409776,
     "size_bytes": 409776,
-    "version": "2026.10.12.1"
+    "version": "2026.10.21.1"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
