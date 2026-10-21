@@ -7,6 +7,8 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AuthRateLimiter;
 use Leikwan\Master\Support\HomePageContent;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebaseOutline;
@@ -612,7 +614,16 @@ final class AuthController extends BaseController
     {
         try {
             SessionAuth::validateCsrf($request);
-            $this->passwordResetService()->requestReset((string) $request->input('email', ''));
+            $email = strtolower(trim((string) $request->input('email', '')));
+            try {
+                $this->authRateLimiter()->hit([
+                    AuthRateLimiter::bucket('password-reset:email', $email, AuthRateLimiter::RESET_EMAIL_LIMIT, AuthRateLimiter::RESET_WINDOW_SECONDS),
+                    AuthRateLimiter::bucket('password-reset:ip', $this->clientIp($request), AuthRateLimiter::RESET_IP_LIMIT, AuthRateLimiter::RESET_WINDOW_SECONDS),
+                ]);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many password reset requests. Please wait %s before requesting another reset email.', '/forgot-password', 'Back');
+            }
+            $this->passwordResetService()->requestReset($email);
             SessionAuth::flash('success', 'If that email belongs to an active account, a password reset link has been sent.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Unable to send the reset email: ' . $this->displayThrowableMessage($throwable));
@@ -702,24 +713,36 @@ final class AuthController extends BaseController
 
         $email = strtolower(trim((string) $request->input('email', '')));
         $password = (string) $request->input('password', '');
-        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        $limiter = $this->authRateLimiter();
+        $buckets = AuthRateLimiter::loginBuckets('login', $this->clientIp($request), $email);
+        try {
+            $limiter->hit($buckets);
+        } catch (ApiException $exception) {
+            return $this->tooManyAttemptsPage($exception, 'Too many sign-in attempts. Please wait %s and try again.', '/login?legacy=1', 'Back to Login');
+        }
 
-        if ($user !== null && (string) ($user['status'] ?? '') === 'pending_verification') {
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        // Always run one bcrypt verification so the response time does not
+        // tell whether the email has an account.
+        $passwordMatches = AuthRateLimiter::verifyPassword($password, $user['password_hash'] ?? null) && $user !== null;
+
+        // Only someone who knows the password learns that the account is
+        // still waiting for email verification; everyone else gets the same
+        // answer as for an unknown email.
+        if ($passwordMatches && (string) ($user['status'] ?? '') === 'pending_verification') {
+            $limiter->reset([$buckets[0]]);
+            $limiter->refund([$buckets[1]]);
             SessionAuth::flash('error', 'This account is waiting for email verification. Please open the verification email first.');
             return Response::redirect('/login?legacy=1');
         }
 
-        if (
-            $user === null ||
-            (string) $user['status'] !== 'active' ||
-            !is_string($user['password_hash']) ||
-            $user['password_hash'] === '' ||
-            !password_verify($password, (string) $user['password_hash'])
-        ) {
+        if (!$passwordMatches || (string) ($user['status'] ?? '') !== 'active') {
             SessionAuth::flash('error', 'Email or password is incorrect, or this account has not set a local password yet.');
             return Response::redirect('/login?legacy=1');
         }
 
+        $limiter->reset([$buckets[0]]);
+        $limiter->refund([$buckets[1]]);
         SessionAuth::login($user);
         SessionAuth::flash('success', 'Signed in successfully.');
         return Response::redirect('/');
@@ -734,11 +757,22 @@ final class AuthController extends BaseController
                 throw new \RuntimeException('buy_login_not_configured');
             }
 
+            $email = (string) $request->input('email', '');
+            $limiter = $this->authRateLimiter();
+            $buckets = AuthRateLimiter::loginBuckets('buy-login', $this->clientIp($request), $email);
+            try {
+                $limiter->hit($buckets);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many sign-in attempts. Please wait %s and try again.', '/login?buy=1', 'Back to Login');
+            }
+
             $identity = $service->authenticate(
-                (string) $request->input('email', ''),
+                $email,
                 (string) $request->input('password', '')
             );
             $user = $service->loginWithAuthenticatedIdentity($identity);
+            $limiter->reset([$buckets[0]]);
+            $limiter->refund([$buckets[1]]);
             SessionAuth::login($user);
             SessionAuth::flash('success', 'Signed in with LeiKwan Buy.');
             return Response::redirect('/');
@@ -773,9 +807,16 @@ final class AuthController extends BaseController
                 return Response::redirect('/tenant/account');
             }
 
-            $ticketLabel = $result['ticket_tid'] !== '' ? '#' . $result['ticket_tid'] : '#' . (int) $result['ticket_id'];
-            SessionAuth::flash('success', 'Verification ticket ' . $ticketLabel . ' has been created. Open it in your Buy station account, copy the code, and finish binding.');
+            // Worded the same whether or not the email has a Buy station
+            // account (see WhmcsIdentityService::decoyChallenge()).
+            SessionAuth::flash('success', 'If that email belongs to a Buy station account that can be linked, a verification ticket has been opened in it. Open the ticket, copy the code, and finish binding.');
             return Response::redirect('/buy-binding/verify?challenge=' . urlencode((string) $result['public_token']));
+        } catch (ApiException $exception) {
+            if ($exception->getMessage() === 'rate_limited') {
+                return $this->tooManyAttemptsPage($exception, 'Too many Buy station verification requests. Please wait %s before requesting another code.', '/tenant/account', 'Back');
+            }
+            SessionAuth::flash('error', 'Buy station binding failed: ' . $this->displayThrowableMessage($exception));
+            return Response::redirect('/tenant/account');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Buy station binding failed: ' . $this->displayThrowableMessage($throwable));
             return Response::redirect('/tenant/account');
@@ -792,23 +833,20 @@ final class AuthController extends BaseController
             $details = $this->whmcsIdentityService()->challengeDetails($challengeToken);
             $challenge = is_array($details['challenge'] ?? null) ? $details['challenge'] : [];
             $user = is_array($details['user'] ?? null) ? $details['user'] : [];
-            $ticketLabel = trim((string) ($challenge['ticket_tid'] ?? '')) !== ''
-                ? '#' . $this->escape((string) $challenge['ticket_tid'])
-                : '#' . (int) ($challenge['ticket_id'] ?? 0);
 
             $body = '
                 <section class="auth-hero">
                   <div>
                     <span class="eyebrow">Buy Station Binding</span>
                     <h1>Finish linking your Buy station account</h1>
-                    <p>We created a verification ticket for ' . $this->escape((string) ($challenge['whmcs_email'] ?? '')) . '. Open that ticket, copy the code, and submit it here.</p>
+                    <p>If ' . $this->escape((string) ($challenge['whmcs_email'] ?? '')) . ' belongs to a Buy station account that can be linked, a verification ticket has been opened in it. Open that ticket, copy the code, and submit it here.</p>
                   </div>
                 </section>
                 <section class="auth-grid">
                   <section class="surface-card">
                     <span class="card-kicker">Verification Code</span>
                     <h2>Enter the code from the ticket</h2>
-                    <p class="muted">Ticket ' . $ticketLabel . ' expires at ' . $this->escape((string) ($challenge['expires_at'] ?? '')) . ' UTC.</p>
+                    <p class="muted">The code expires at ' . $this->escape((string) ($challenge['expires_at'] ?? '')) . ' UTC and is cancelled after ' . WhmcsIdentityService::MAX_CHALLENGE_ATTEMPTS . ' incorrect attempts.</p>
                     <form method="post" action="/buy-binding/verify">
                       <input type="hidden" name="csrf_token" value="' . $csrf . '">
                       <input type="hidden" name="challenge" value="' . $this->escape($challengeToken) . '">
@@ -853,10 +891,20 @@ final class AuthController extends BaseController
     {
         try {
             SessionAuth::validateCsrf($request);
+            // The per-challenge attempt cap stops guessing one code; this
+            // per-address budget stops spraying guesses across challenges.
+            $limiter = $this->authRateLimiter();
+            $ipBucket = [AuthRateLimiter::bucket('whmcs-binding-verify:ip', $this->clientIp($request), AuthRateLimiter::BINDING_VERIFY_IP_LIMIT, AuthRateLimiter::BINDING_VERIFY_WINDOW_SECONDS)];
+            try {
+                $limiter->hit($ipBucket);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many verification attempts. Please wait %s and try again.', '/buy-binding/verify?challenge=' . urlencode((string) $request->input('challenge', '')), 'Back');
+            }
             $user = $this->whmcsIdentityService()->verifyLoginChallenge(
                 (string) $request->input('challenge', ''),
                 (string) $request->input('code', '')
             );
+            $limiter->refund($ipBucket);
             SessionAuth::login($user);
             SessionAuth::flash('success', 'Your Buy station account has been linked successfully.');
             return Response::redirect('/tenant/account');
@@ -890,6 +938,43 @@ final class AuthController extends BaseController
     private function knowledgebaseStyles(): string
     {
         return '<link rel="stylesheet" href="/assets/knowledgebase-docs.css?v=20260914a">';
+    }
+
+    private function authRateLimiter(): AuthRateLimiter
+    {
+        return new AuthRateLimiter($this->db);
+    }
+
+    private function clientIp(Request $request): string
+    {
+        return AuthRateLimiter::clientIp($this->config, $request);
+    }
+
+    /**
+     * HTTP 429 page for a throttled form post. $message holds one %s for the
+     * wait ("about 12 minutes"). No credential was checked for this request.
+     */
+    private function tooManyAttemptsPage(ApiException $exception, string $message, string $backHref, string $backLabel): Response
+    {
+        if ($exception->getMessage() !== 'rate_limited') {
+            throw $exception;
+        }
+        $retryAfter = max(1, (int) ($exception->details()['retry_after'] ?? 60));
+        $minutes = max(1, (int) ceil($retryAfter / 60));
+        $wait = 'about ' . $minutes . ' minute' . ($minutes === 1 ? '' : 's');
+        $body = '
+            <section class="surface-card">
+              <span class="card-kicker">Please Wait</span>
+              <h2>Too many attempts</h2>
+              <p class="muted">' . $this->escape(sprintf($message, $wait)) . '</p>
+              <div class="actions">
+                <a class="button" href="' . $this->escape($backHref) . '">' . $this->escape($backLabel) . '</a>
+              </div>
+            </section>';
+
+        $page = $this->publicPage($this->displayBrandName() . ' Too Many Attempts', $body, SessionAuth::currentUser($this->db));
+        return (new Response(429, $page->headers(), $page->body()))
+            ->withHeaders(['Retry-After' => (string) $retryAfter]);
     }
 
     private function registrationService(): TenantRegistrationService
