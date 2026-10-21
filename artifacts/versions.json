@@ -61,9 +61,9 @@
     "format": "elf-onefile-pyinstaller",
     "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
     "runtime_mode": "frozen",
-    "sha256": "46c673374e9590e04e83b3ef9d3b52c6ea7e0ddf1781a2605d1a1be198502ca1",
-    "size_bytes": 8950872,
-    "version": "2026.10.12.1"
+    "sha256": "ef7aec4e5bac5c26e4f1e4e65eb654f43232d7c6202bf9b3af4dce992e568480",
+    "size_bytes": 8936464,
+    "version": "2026.10.21.1"
   },
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
