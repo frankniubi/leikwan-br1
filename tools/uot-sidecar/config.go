@@ -27,6 +27,10 @@ type sidecarConfig struct {
 	sessionGraceSeconds      float64
 	sessionLimit             int
 	udpConnectTimeoutSeconds float64
+	// allowPrivateHostnameTargets lets a hostname target resolve to a
+	// non-global address (loopback, RFC 1918, link-local, ...). It is off by
+	// default; IP-literal targets are never affected by it.
+	allowPrivateHostnameTargets bool
 }
 
 func (c sidecarConfig) validate() error {
@@ -147,6 +151,11 @@ func parseConfig(raw []byte) (sidecarConfig, error) {
 		return sidecarConfig{}, fmt.Errorf("listen_port is invalid")
 	}
 	config.listenPort = port
+	allowPrivate, err := boolOrDefault(document, "allow_private_hostname_targets", false)
+	if err != nil {
+		return sidecarConfig{}, err
+	}
+	config.allowPrivateHostnameTargets = allowPrivate
 	if err := config.validate(); err != nil {
 		return sidecarConfig{}, err
 	}
@@ -342,6 +351,35 @@ func stringOrDefault(document map[string]any, key string, fallback string) strin
 		return text
 	}
 	return fallback
+}
+
+// boolOrDefault reads an optional boolean switch. A missing or null value is
+// the default; anything that is not clearly true or false rejects the file, so
+// a typo can never silently flip a security switch.
+func boolOrDefault(document map[string]any, key string, fallback bool) (bool, error) {
+	switch typed := document[key].(type) {
+	case nil:
+		return fallback, nil
+	case bool:
+		return typed, nil
+	case json.Number:
+		switch typed.String() {
+		case "0":
+			return false, nil
+		case "1":
+			return true, nil
+		}
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "":
+			return fallback, nil
+		case "true", "1", "yes", "on":
+			return true, nil
+		case "false", "0", "no", "off":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("%s must be a boolean", key)
 }
 
 func intOrDefault(document map[string]any, key string, fallback int) int {

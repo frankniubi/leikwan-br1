@@ -45,10 +45,26 @@ final class ProvisioningService
      */
     private array $sidecarPointIdByCombination = [];
 
+    /**
+     * Resolves a tenant hostname target for the SSRF check in
+     * assertTenantTargetIsPublic(). Null means the system resolver
+     * (ForwardLineApiContract::resolveTargetHostAddresses); tests inject a
+     * fixed table so they never touch real DNS.
+     *
+     * @var (\Closure(string): array<int, string>)|null
+     */
+    private ?\Closure $targetHostResolver = null;
+
     public function __construct(
         private Config $config,
         private Database $db,
     ) {
+    }
+
+    /** @param (callable(string): array<int, string>)|null $resolver */
+    public function setTargetHostResolver(?callable $resolver): void
+    {
+        $this->targetHostResolver = $resolver === null ? null : \Closure::fromCallable($resolver);
     }
 
     private function leigodLineCatalog(): LeigodLineCatalogService
@@ -1103,7 +1119,13 @@ final class ProvisioningService
      * aim one at a private address. Native Outbound is exempt: its carrier
      * runs on the tenant's device and the target is server-assigned. Service-IP
      * targets are platform-assigned addresses of the tenant's own service.
-     * Hostnames resolve on the node and are not checked here.
+     *
+     * A hostname target is resolved here (A and AAAA) and refused when any
+     * answer is a non-global address, so a name pointing at 127.0.0.1, 10.x
+     * or 169.254.169.254 cannot slip past the literal check. IP literals keep
+     * exactly the literal check: legacy forwards on 127.0.0.1 stay editable as
+     * before. A name that does not resolve is accepted as before; the data
+     * plane (external UoT sidecar) re-checks the address it actually dials.
      *
      * @param array<string, mixed> $payload
      * @param array<string, mixed>|null $current
@@ -1124,6 +1146,25 @@ final class ProvisioningService
         if (filter_var($host, FILTER_VALIDATE_IP) !== false
             && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE) === false) {
             throw new ApiException('validation_failed', 422, ['fields' => ['target.host' => 'private_range']]);
+        }
+        if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false
+            || preg_match('/\A[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9.])?\z/D', $host) !== 1
+            || preg_match('/[A-Za-z]/', $host) !== 1) {
+            // IP literal, or not a plausible DNS name (validateTargetHost
+            // rejects those later); nothing to resolve.
+            return;
+        }
+        try {
+            $addresses = $this->targetHostResolver !== null
+                ? ($this->targetHostResolver)($host)
+                : ForwardLineApiContract::resolveTargetHostAddresses($host);
+        } catch (\Throwable) {
+            $addresses = [];
+        }
+        foreach (is_array($addresses) ? $addresses : [] as $address) {
+            if (is_string($address) && ForwardLineApiContract::isNonGlobalAddress($address)) {
+                throw new ApiException('validation_failed', 422, ['fields' => ['target.host' => 'resolves_to_private_range']]);
+            }
         }
     }
 

@@ -177,6 +177,81 @@ namespace {
     if (($result[1] ?? null) === ['target.host' => 'private_range']) {
         fail('native outbound must be exempt from the private-range block');
     }
+
+    // Hostname targets: resolved (A + AAAA) and refused when any answer is
+    // non-global. Resolution is injected; these tests never touch real DNS.
+    $lookups = [];
+    $dns = [
+        'internal.example.com' => ['10.0.0.5'],
+        'metadata.example.com' => ['169.254.169.254'],
+        'loopback.example.com' => ['127.0.0.1'],
+        'cgnat.example.com' => ['100.100.100.200'],
+        'mapped.example.com' => ['::ffff:127.0.0.1'],
+        'ula.example.com' => ['fd00::1'],
+        'mixed.example.com' => ['203.0.113.10', '192.168.1.1'],
+        'public.example.com' => ['203.0.113.10', '2001:4860:4860::8888'],
+        'nxdomain.example.com' => [],
+    ];
+    $resolver = static function (string $host) use (&$lookups, $dns): array {
+        $lookups[] = $host;
+        if ($host === 'broken.example.com') {
+            throw new \RuntimeException('resolver exploded');
+        }
+        return $dns[$host] ?? [];
+    };
+    $createResolved = static function (array $payload, array $state) use ($envPath, $policy, $resolver): ?array {
+        Database::$state = $state;
+        $service = new ProvisioningService(new Config($envPath), new Database());
+        $service->setTargetHostResolver($resolver);
+        try {
+            $service->createForward(30, $payload, 'user_api:5', null, null, 64, $policy);
+        } catch (ApiException $exception) {
+            return [$exception->getMessage(), $exception->details()['fields'] ?? null];
+        } catch (\Throwable $throwable) {
+            return null;
+        }
+        return null;
+    };
+    $refusedAsResolved = ['validation_failed', ['target.host' => 'resolves_to_private_range']];
+    foreach (['internal.example.com', 'metadata.example.com', 'loopback.example.com', 'cgnat.example.com', 'mapped.example.com', 'ula.example.com', 'mixed.example.com'] as $privateName) {
+        $result = $createResolved(['target_source' => 'manual', 'target_host' => $privateName, 'target_port' => 443], $base);
+        if ($result !== $refusedAsResolved) {
+            fail('tenant create to hostname ' . $privateName . ' must be refused as resolves_to_private_range, got ' . json_encode($result));
+        }
+    }
+    foreach (['public.example.com', 'nxdomain.example.com', 'broken.example.com'] as $acceptedName) {
+        $result = $createResolved(['target_source' => 'manual', 'target_host' => $acceptedName, 'target_port' => 443], $base);
+        if (($result[1] ?? null) === ['target.host' => 'resolves_to_private_range']) {
+            fail('hostname ' . $acceptedName . ' (public / unresolvable / resolver failure) must not be refused, got ' . json_encode($result));
+        }
+    }
+    $lookups = [];
+    $result = $createResolved(['target_source' => 'manual', 'target_host' => '127.0.0.1', 'target_port' => 443], $base);
+    if ($lookups !== [] || ($result[1] ?? null) === ['target.host' => 'resolves_to_private_range']) {
+        fail('an IP-literal target must keep the literal check only and never be resolved, got ' . json_encode([$lookups, $result]));
+    }
+    $result = $createResolved(['target_source' => 'manual', 'target_host' => 'internal.example.com', 'target_port' => 443, 'native_outbound' => true], $base);
+    if ($lookups !== [] || ($result[1] ?? null) === ['target.host' => 'resolves_to_private_range']) {
+        fail('native outbound must stay exempt and must not resolve its target, got ' . json_encode([$lookups, $result]));
+    }
+    // Tenant update paths re-check the hostname the same way.
+    foreach (['updateForward', 'updateForwardNonStructural'] as $updateMethod) {
+        Database::$state = $base;
+        $service = new ProvisioningService(new Config($envPath), new Database());
+        $service->setTargetHostResolver($resolver);
+        $result = null;
+        try {
+            $service->{$updateMethod}(170, ['target_source' => 'manual', 'target_host' => 'metadata.example.com', 'target_port' => 443], 'tenant:5', 7, $policy);
+        } catch (ApiException $exception) {
+            $result = [$exception->getMessage(), $exception->details()['fields'] ?? null];
+        } catch (\Throwable $throwable) {
+            $result = null;
+        }
+        if ($result !== $refusedAsResolved) {
+            fail($updateMethod . ' to a hostname resolving to metadata must be refused, got ' . json_encode($result));
+        }
+    }
+
     $result = $create(['target_source' => 'manual', 'target_host' => '203.0.113.10', 'target_port' => 443], ['billing_mode' => 'metered', 'wallet' => '0.00'] + $base);
     if (($result[0] ?? null) !== 'insufficient_balance') {
         fail('a metered service must not create forwards at zero balance, got ' . json_encode($result));
