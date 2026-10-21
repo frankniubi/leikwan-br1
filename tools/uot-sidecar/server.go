@@ -154,7 +154,12 @@ func (s *uotSession) open(dialer *net.Dialer) error {
 	if err != nil {
 		return err
 	}
-	connection, err := dialer.Dial("udp", net.JoinHostPort(host, port))
+	var connection net.Conn
+	if targetIsHostname(host) {
+		connection, err = s.dialHostnameTarget(dialer, host, port)
+	} else {
+		connection, err = dialer.Dial("udp", net.JoinHostPort(host, port))
+	}
 	if err != nil {
 		return err
 	}
@@ -170,6 +175,41 @@ func (s *uotSession) open(dialer *net.Dialer) error {
 	s.udpConn = udpConn
 	go s.udpReader()
 	return nil
+}
+
+// dialHostnameTarget resolves a hostname target exactly once, refuses it when
+// any answer is a non-global address (unless the operator set
+// allow_private_hostname_targets) and dials the vetted addresses themselves in
+// resolver order, as net.Dial does for "udp". Dialling an IP and never the name
+// again means a rebinding DNS answer cannot slip in between check and connect.
+func (s *uotSession) dialHostnameTarget(dialer *net.Dialer, host string, port string) (net.Conn, error) {
+	ctx := context.Background()
+	if dialer.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, dialer.Timeout)
+		defer cancel()
+	}
+	addrs, err := resolveHostnameTarget(ctx, s.server.lookupHost, host, s.config.allowPrivateHostnameTargets)
+	if err != nil {
+		var refused nonGlobalTargetError
+		if errors.As(err, &refused) {
+			s.server.logger.warnf("external UoT session target refused sid=%s forward=%d target=%s resolved=%s reason=non-global address",
+				s.shortID(), s.binding.forwardID, s.target, refused.addr)
+			return nil, protocolError{reason: errNonGlobalHostnameTarget}
+		}
+		return nil, err
+	}
+	var firstErr error
+	for _, addr := range addrs {
+		connection, dialErr := dialer.DialContext(ctx, "udp", net.JoinHostPort(addr.String(), port))
+		if dialErr == nil {
+			return connection, nil
+		}
+		if firstErr == nil {
+			firstErr = dialErr
+		}
+	}
+	return nil, firstErr
 }
 
 func (s *uotSession) udpReader() {
@@ -623,6 +663,11 @@ func (r *sessionRegistry) announceMode(snapshot *sidecarConfig, id [sessionIDByt
 	// The UDP dialer is built from the same snapshot, so a reloaded
 	// udp_connect_timeout_seconds is applied whole rather than half.
 	if err := session.open(r.server.dialer(snapshot)); err != nil {
+		if isProtocolFailure(err) {
+			// A refused hostname target is answered with a HELLO rejection,
+			// unlike an unreachable one, so the client sees why.
+			return nil, false, err
+		}
 		return nil, false, connectionError{err: err}
 	}
 	r.mu.Lock()
@@ -732,6 +777,9 @@ type sidecarServer struct {
 	registry *sessionRegistry
 	meters   *meterRegistry
 	listener net.Listener
+	// lookupHost resolves hostname targets (see target_guard.go). Tests
+	// replace it before start so no real DNS is used.
+	lookupHost hostLookup
 
 	// enforceMu serialises enforceSnapshot: the signal loop and the marker loop
 	// can both trigger a reload.
@@ -745,9 +793,10 @@ type sidecarServer struct {
 
 func newSidecarServer(config *configStore, logger *sidecarLogger) *sidecarServer {
 	server := &sidecarServer{
-		config:   config,
-		logger:   logger,
-		carriers: make(map[net.Conn]struct{}),
+		config:     config,
+		logger:     logger,
+		lookupHost: systemHostLookup,
+		carriers:   make(map[net.Conn]struct{}),
 	}
 	server.registry = newSessionRegistry(server)
 	server.meters = newMeterRegistry(func(forwardID int64) float64 {

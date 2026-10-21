@@ -400,6 +400,28 @@ foreach (['example.com', 'a1.example.net', 'host-1.example.org', '8.8.8.8', '200
     same($hostname, ForwardLineApiContract::validateTargetHost($hostname), 'ordinary hostname still accepted: ' . $hostname);
 }
 
+// Resolved-address classifier for hostname targets (mirrors
+// tools/uot-sidecar/target_guard.go isNonGlobalAddr).
+foreach ([
+    '127.0.0.1', '127.255.255.254', '10.0.0.5', '172.16.0.1', '172.31.255.255', '192.168.1.1',
+    '169.254.169.254', '169.254.0.1', '0.0.0.0', '0.1.2.3', '100.64.0.1', '100.127.255.255',
+    '100.100.100.200', '192.0.0.1', '198.18.0.1', '198.19.255.255', '224.0.0.1', '239.255.255.250',
+    '240.0.0.1', '255.255.255.255', '::', '::1', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'febf::1',
+    'fec0::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:169.254.169.254', '::ffff:10.1.2.3',
+    '::127.0.0.1', '64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '2002:7f00:1::1', '2002:a00:1::',
+    'not-an-ip', '',
+] as $nonGlobal) {
+    trueValue(ForwardLineApiContract::isNonGlobalAddress($nonGlobal), 'resolved address must be non-global: ' . $nonGlobal);
+}
+foreach ([
+    '1.1.1.1', '8.8.8.8', '203.0.113.10', '198.51.100.7', '172.32.0.1', '172.15.255.255',
+    '100.63.255.255', '100.128.0.1', '169.253.0.1', '192.0.1.1', '192.169.0.1', '198.17.255.255',
+    '198.20.0.1', '223.255.255.255', '11.0.0.1', '126.255.255.255', '2001:4860:4860::8888',
+    '2606:4700:4700::1111', '::ffff:8.8.8.8', '64:ff9b::808:808', '2002:808:808::1',
+] as $global) {
+    trueValue(!ForwardLineApiContract::isNonGlobalAddress($global), 'resolved address must be global: ' . $global);
+}
+
 foreach (['tcp', 'udp', 'tcp+udp'] as $transport) {
     trueValue(($ungatedRoute['transports'][$transport]['available'] ?? false) === true, 'ungated route should be available for ' . $transport);
 }
