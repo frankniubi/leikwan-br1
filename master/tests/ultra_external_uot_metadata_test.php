@@ -117,6 +117,17 @@ namespace {
         'service_status' => 'active',
         'forward_combination_direction' => 'Shanghai to Japan',
     ]];
+    // Until EXTERNAL_UOT_ISSUE_HMAC_TOKENS is switched on the static token is
+    // still issued and no secret is generated.
+    $database = new Database();
+    $database->overrides = ['forward_id' => 170, 'forward_combination_id' => 9, 'target_host' => '1.2.3.4', 'target_port' => 53];
+    $metadata = (new ProvisioningService(new Config($envPath), $database))->ultraLineMetadataForAssignedForwards($eligible);
+    if (($metadata['170']['external_uot']['token'] ?? '') !== 'metadata-uot-token' || $database->secretWrites !== 0) {
+        fwrite(STDERR, "HMAC token issued before EXTERNAL_UOT_ISSUE_HMAC_TOKENS was enabled\n");
+        exit(1);
+    }
+    file_put_contents($envPath, "DEFAULT_TLS_CERT_REF=default-edge-cert\nEXTERNAL_UOT_ISSUE_HMAC_TOKENS=true\n");
+
     $database = new Database();
     $database->overrides = [
         'forward_id' => 170, 'forward_combination_id' => 9, 'target_host' => '1.2.3.4', 'target_port' => 53,

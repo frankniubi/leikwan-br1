@@ -20,12 +20,29 @@ final class ExternalUotCredentials
 {
     public const TOKEN_PREFIX = 'hmac-sha256:';
     public const ACCEPT_STATIC_TOKEN_KEY = 'EXTERNAL_UOT_ACCEPT_STATIC_TOKEN';
+    public const ISSUE_HMAC_TOKENS_KEY = 'EXTERNAL_UOT_ISSUE_HMAC_TOKENS';
     private const ASCII_SPACE = " \t\n\x0B\f\r";
 
     /** While true, sidecar entries still carry the static combination token. */
     public static function acceptStaticToken(Config $config): bool
     {
-        $raw = strtolower(trim((string) ($config->get(self::ACCEPT_STATIC_TOKEN_KEY, 'true') ?? 'true')));
+        return self::flag($config, self::ACCEPT_STATIC_TOKEN_KEY, 'true');
+    }
+
+    /**
+     * Whether clients are handed per-forward HMAC tokens. Off by default: a
+     * sidecar only accepts them once it holds the secrets, so this is switched
+     * on after every sidecar serving a UoT combination runs the new merge
+     * script or pool agent.
+     */
+    public static function issueHmacTokens(Config $config): bool
+    {
+        return self::flag($config, self::ISSUE_HMAC_TOKENS_KEY, 'false');
+    }
+
+    private static function flag(Config $config, string $key, string $default): bool
+    {
+        $raw = strtolower(trim((string) ($config->get($key, $default) ?? $default)));
 
         return in_array($raw, ['1', 'true', 'yes', 'on'], true);
     }

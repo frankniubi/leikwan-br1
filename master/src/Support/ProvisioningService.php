@@ -4715,20 +4715,22 @@ final class ProvisioningService
                 if ((int) ($row['external_uot_enabled'] ?? 0) === 1) {
                     $sidecarTarget = trim((string) ($row['external_uot_sidecar_target'] ?? ''));
                     $token = trim((string) ($row['external_uot_token'] ?? ''));
-                    // Per-forward HMAC token (plan C3); a combination whose secret
-                    // cannot be stored keeps handing out the static token.
-                    $combinationId = (int) ($row['forward_combination_id'] ?? 0);
-                    $externalUotSecrets[$combinationId] ??= ExternalUotCredentials::ensureSecret($this->db, [
-                        'id' => $combinationId,
-                        'external_uot_hmac_secret' => $row['external_uot_hmac_secret'] ?? null,
-                    ]);
-                    $hmacToken = ExternalUotCredentials::token(
-                        $externalUotSecrets[$combinationId],
-                        $forwardId,
-                        trim((string) ($row['target_host'] ?? '')) . ':' . (int) ($row['target_port'] ?? 0)
-                    );
-                    if ($hmacToken !== null) {
-                        $token = $hmacToken;
+                    // Per-forward HMAC token (plan C3) once enabled; a combination
+                    // whose secret cannot be stored keeps handing out the static token.
+                    if (ExternalUotCredentials::issueHmacTokens($this->config)) {
+                        $combinationId = (int) ($row['forward_combination_id'] ?? 0);
+                        $externalUotSecrets[$combinationId] ??= ExternalUotCredentials::ensureSecret($this->db, [
+                            'id' => $combinationId,
+                            'external_uot_hmac_secret' => $row['external_uot_hmac_secret'] ?? null,
+                        ]);
+                        $hmacToken = ExternalUotCredentials::token(
+                            $externalUotSecrets[$combinationId],
+                            $forwardId,
+                            trim((string) ($row['target_host'] ?? '')) . ':' . (int) ($row['target_port'] ?? 0)
+                        );
+                        if ($hmacToken !== null) {
+                            $token = $hmacToken;
+                        }
                     }
                     if ($sidecarTarget !== '' && $token !== '') {
                         $result[$key]['external_uot'] = [

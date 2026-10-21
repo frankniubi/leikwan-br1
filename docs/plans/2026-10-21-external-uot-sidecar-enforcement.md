@@ -135,8 +135,17 @@ token = "hmac-sha256:" + lowercase_hex(HMAC_SHA256(key = secret_utf8, msg = "<fo
 
 ## Rollout order
 
+Two panel flags: `EXTERNAL_UOT_ISSUE_HMAC_TOKENS` (default false) controls whether clients get HMAC tokens; `EXTERNAL_UOT_ACCEPT_STATIC_TOKEN` (default true) keeps the static token in sidecar entries.
+
 1. **Standalone hosts.** Install the new merge script, then the new sidecar binary. The restart briefly drops sessions, and clients reattach within grace.
-2. **Panel.** Deploy the migration, controllers and CLIs with `EXTERNAL_UOT_ACCEPT_STATIC_TOKEN=1`. Clients receive HMAC tokens; Linux and desktop restart that forward once.
-3. **Cron.** Add the reconcile job.
-4. **Pool node 117.55.193.163.** Needs owner-provided SSH access. Until then it accepts HMAC tokens through the existing binary, but has no metering, rate limit, or revocation kill.
-5. **Static tokens.** After 24-48 h, set `EXTERNAL_UOT_ACCEPT_STATIC_TOKEN=0` and rotate the static tokens.
+2. **Panel.** Deploy the migration, controllers and CLIs, leaving both flags at their defaults:
+   - Sidecar configs now carry only live forwards, plus `secret` and `rate_limit_mbps`.
+   - Standalone pushes include `remove`, and usage is pulled every minute.
+   - Clients still hold the static token, so nothing restarts.
+3. **Cron.** Add `cli/external-uot-usage-reconcile.php` hourly.
+4. **Turn on HMAC tokens.** Once every sidecar serving a live UoT combination holds secrets (`pool:` nodes included), set `EXTERNAL_UOT_ISSUE_HMAC_TOKENS=true`. Linux and desktop clients restart that forward once.
+5. **Pool node 117.55.193.163.** Needs owner-provided SSH access to get the new binary and `uot_pool_sync.py`. Until then:
+   - It still writes the full config the panel serves, and the old binary verifies HMAC, so HMAC tokens work.
+   - It has no metering, no rate limit, and no revocation kill.
+   - Its old agent needs `token`, so keep `EXTERNAL_UOT_ACCEPT_STATIC_TOKEN` on.
+6. **Static tokens.** After 24-48 h, and after step 5, set `EXTERNAL_UOT_ACCEPT_STATIC_TOKEN=false` and rotate the static tokens.
