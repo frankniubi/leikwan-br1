@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -117,11 +118,16 @@ func parseConfig(raw []byte) (sidecarConfig, error) {
 		if secret == "" {
 			secret = asJSONString(entry["hmac_secret"])
 		}
+		rateLimit, err := parseRateLimitMbps(entry["rate_limit_mbps"])
+		if err != nil {
+			return sidecarConfig{}, fmt.Errorf("forward %d: %w", forwardID, err)
+		}
 		forwards[forwardID] = forwardBinding{
-			forwardID:   forwardID,
-			secret:      []byte(secret),
-			targets:     targets,
-			staticToken: strings.TrimSpace(asJSONString(entry["token"])),
+			forwardID:     forwardID,
+			secret:        []byte(secret),
+			targets:       targets,
+			staticToken:   strings.TrimSpace(asJSONString(entry["token"])),
+			rateLimitMbps: rateLimit,
 		}
 	}
 	config := sidecarConfig{
@@ -145,6 +151,40 @@ func parseConfig(raw []byte) (sidecarConfig, error) {
 		return sidecarConfig{}, err
 	}
 	return config, nil
+}
+
+// maxRateLimitMbps bounds rate_limit_mbps. The panel and the standalone merge
+// script apply the same ceiling, so a larger value can only be a corrupt file.
+const maxRateLimitMbps = 100000
+
+// parseRateLimitMbps reads the optional per-forward sidecar speed limit. A
+// missing, null or empty value means unlimited (0). The value is in Mbps where
+// 1 Mbps = 1,000,000 bit/s, matching tools/ultra-client/policy.go. Anything
+// that is not a finite number in [0, maxRateLimitMbps] rejects the whole file,
+// so a reload never silently drops a limit the panel meant to enforce.
+func parseRateLimitMbps(value any) (float64, error) {
+	var text string
+	switch typed := value.(type) {
+	case nil:
+		return 0, nil
+	case json.Number:
+		text = typed.String()
+	case string:
+		text = strings.TrimSpace(typed)
+		if text == "" {
+			return 0, nil
+		}
+	default:
+		return 0, fmt.Errorf("rate_limit_mbps must be a number")
+	}
+	parsed, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("rate_limit_mbps must be a number")
+	}
+	if parsed < 0 || parsed > maxRateLimitMbps {
+		return 0, fmt.Errorf("rate_limit_mbps must be between 0 and %d", maxRateLimitMbps)
+	}
+	return parsed, nil
 }
 
 func parseTargets(value any) (map[string]struct{}, error) {
@@ -381,6 +421,7 @@ func summarizeConfig(config sidecarConfig) []byte {
 			"targets":          targets,
 			"has_secret":       len(binding.secret) > 0,
 			"has_static_token": binding.staticToken != "",
+			"rate_limit_mbps":  binding.rateLimitMbps,
 		})
 	}
 	return encodeJSON(map[string]any{

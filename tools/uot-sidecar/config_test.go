@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,55 @@ func TestLoadConfigFromDisk(t *testing.T) {
 	}
 	if config.listenPort != 7443 || len(config.forwards) != 3 {
 		t.Fatalf("unexpected config: %+v", config)
+	}
+}
+
+func TestParseConfigRateLimitMbps(t *testing.T) {
+	config, err := parseConfig([]byte(`{"forwards": {
+		"170": {"secret": "s", "rate_limit_mbps": 100},
+		"171": {"secret": "s", "rate_limit_mbps": 2.5},
+		"172": {"secret": "s", "rate_limit_mbps": 0},
+		"173": {"secret": "s"},
+		"174": {"secret": "s", "rate_limit_mbps": null},
+		"175": {"secret": "s", "rate_limit_mbps": "50"},
+		"176": "shorthand-secret",
+		"177": {"token": "t", "rate_limit_mbps": 100000}
+	}}`))
+	if err != nil {
+		t.Fatalf("parseConfig failed: %v", err)
+	}
+	want := map[int64]float64{170: 100, 171: 2.5, 172: 0, 173: 0, 174: 0, 175: 50, 176: 0, 177: 100000}
+	for forwardID, limit := range want {
+		if got := config.forwards[forwardID].rateLimitMbps; got != limit {
+			t.Fatalf("forward %d rate_limit_mbps = %v, want %v", forwardID, got, limit)
+		}
+	}
+}
+
+func TestParseConfigRejectsInvalidRateLimit(t *testing.T) {
+	for _, value := range []string{`-1`, `-0.5`, `100000.5`, `1e9`, `"NaN"`, `"Inf"`, `"fast"`, `true`, `[]`, `{}`} {
+		payload := `{"forwards": {"170": {"secret": "s", "rate_limit_mbps": ` + value + `}}}`
+		if _, err := parseConfig([]byte(payload)); err == nil || !strings.Contains(err.Error(), "rate_limit_mbps") {
+			t.Fatalf("rate_limit_mbps %s: err = %v, want a rate_limit_mbps rejection", value, err)
+		}
+	}
+}
+
+func TestSummarizeConfigReportsRateLimitWithoutSecrets(t *testing.T) {
+	config, err := parseConfig([]byte(`{"forwards": {
+		"170": {"secret": "super-secret-value", "targets": ["203.0.113.10:5201"], "rate_limit_mbps": 100},
+		"171": {"token": "static-token-value", "targets": "*"}
+	}}`))
+	if err != nil {
+		t.Fatalf("parseConfig failed: %v", err)
+	}
+	summary := string(summarizeConfig(config))
+	for _, fragment := range []string{`"forward_id":170`, `"rate_limit_mbps":100`, `"forward_id":171`, `"rate_limit_mbps":0`} {
+		if !strings.Contains(summary, fragment) {
+			t.Fatalf("summary lacks %s: %s", fragment, summary)
+		}
+	}
+	if strings.Contains(summary, "super-secret-value") || strings.Contains(summary, "static-token-value") {
+		t.Fatalf("summary leaked a credential: %s", summary)
 	}
 }

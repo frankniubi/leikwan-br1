@@ -15,7 +15,15 @@ package main
 //     no half-applied state.
 //   - Readers never lock. Every request loads the pointer once and keeps that
 //     snapshot for its lifetime, so a swap cannot be observed half-way through
-//     a HELLO, and a session admitted under a retired binding keeps working.
+//     a HELLO.
+//
+// After a successful reload the server enforces the new snapshot on live
+// state (sidecarServer.enforceSnapshot): per-forward rate limits change in
+// place, and every live session whose HELLO credentials no longer verify -
+// its forward was removed, or its secret or static token rotated - is closed
+// together with its carriers. Revocation is how a disabled, suspended or
+// expired forward loses access, so sessions are deliberately NOT retained
+// across a reload that withdraws their credentials.
 //
 // Both triggers are local only: SIGHUP on Unix and a marker file that a local
 // user has to create. Nothing here opens a socket, so an unauthenticated remote
@@ -96,8 +104,10 @@ func checkReloadable(previous *sidecarConfig, candidate *sidecarConfig) error {
 }
 
 // applyReload performs one reload triggered by a signal or the marker file and
-// reports the outcome: a rejection is a log line, never a state change.
-func applyReload(store *configStore, logger *sidecarLogger) {
+// reports the outcome: a rejection is a log line, never a state change. After
+// a successful reload enforce (when non-nil) applies the new snapshot to live
+// sessions and limiters.
+func applyReload(store *configStore, logger *sidecarLogger, enforce func()) {
 	previous := store.snapshot()
 	next, err := store.reload()
 	if err != nil {
@@ -106,6 +116,9 @@ func applyReload(store *configStore, logger *sidecarLogger) {
 		return
 	}
 	logger.infof("external UoT configuration reloaded path=%s %s", store.path, describeForwardChange(previous, next))
+	if enforce != nil {
+		enforce()
+	}
 }
 
 // describeForwardChange summarises what a reload did without ever printing a
@@ -114,6 +127,7 @@ func describeForwardChange(previous *sidecarConfig, next *sidecarConfig) string 
 	added := make([]int64, 0)
 	removed := make([]int64, 0)
 	credentials := make([]int64, 0)
+	limits := make([]int64, 0)
 	for forwardID, nextBinding := range next.forwards {
 		previousBinding, present := previous.forwards[forwardID]
 		if !present {
@@ -123,14 +137,18 @@ func describeForwardChange(previous *sidecarConfig, next *sidecarConfig) string 
 		if !bytes.Equal(previousBinding.secret, nextBinding.secret) || previousBinding.staticToken != nextBinding.staticToken {
 			credentials = append(credentials, forwardID)
 		}
+		if previousBinding.rateLimitMbps != nextBinding.rateLimitMbps {
+			limits = append(limits, forwardID)
+		}
 	}
 	for forwardID := range previous.forwards {
 		if _, present := next.forwards[forwardID]; !present {
 			removed = append(removed, forwardID)
 		}
 	}
-	return fmt.Sprintf("forwards=%d->%d added=%v removed=%v credentials_changed=%v",
-		len(previous.forwards), len(next.forwards), sortedForwardIDs(added), sortedForwardIDs(removed), sortedForwardIDs(credentials))
+	return fmt.Sprintf("forwards=%d->%d added=%v removed=%v credentials_changed=%v rate_limit_changed=%v",
+		len(previous.forwards), len(next.forwards), sortedForwardIDs(added), sortedForwardIDs(removed), sortedForwardIDs(credentials),
+		sortedForwardIDs(limits))
 }
 
 func sortedForwardIDs(ids []int64) []int64 {

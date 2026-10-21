@@ -233,6 +233,9 @@ type forwardBinding struct {
 	secret      []byte
 	targets     map[string]struct{}
 	staticToken string
+	// rateLimitMbps is the per-forward sidecar speed limit applied to each
+	// direction separately; 0 means unlimited.
+	rateLimitMbps float64
 }
 
 const wildcardTarget = "*"
