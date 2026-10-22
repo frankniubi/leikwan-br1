@@ -52,11 +52,11 @@ def bundle_pk(call, identifier):
     return d["data"][0]["id"]
 
 
-def distribution_cert(call, work):
+def distribution_cert(call, work, rotate):
     st, d = call("GET", "/certificates?filter[certificateType]=IOS_DISTRIBUTION&limit=5")
-    if st == 200 and d.get("data"):
-        raise SystemExit("a distribution certificate already exists; reuse it instead "
-                         "(this script would create a second one)")
+    if st == 200 and d.get("data") and not rotate:
+        raise SystemExit("a distribution certificate already exists; pass --rotate to create "
+                         "a second one (Apple allows two)")
     key = work / "dist.key"
     csr = work / "dist.csr"
     subprocess.run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
@@ -78,7 +78,9 @@ def app_store_profile(call, name, bundle, cert_pk):
     if st == 200:
         for item in d.get("data", []):
             if item["attributes"]["name"] == name:
-                return item["id"]
+                # Rebind the name to the current certificate.
+                call("DELETE", "/profiles/" + item["id"])
+                break
     st, d = call("POST", "/profiles", {"data": {"type": "profiles", "attributes": {
         "name": name, "profileType": "IOS_APP_STORE"},
         "relationships": {
@@ -130,17 +132,21 @@ def main():
     ap.add_argument("--issuer-id", required=True)
     ap.add_argument("--github-repo")
     ap.add_argument("--out", default="ios/build/signing")
+    ap.add_argument("--rotate", action="store_true",
+                    help="create a new distribution certificate even though one exists")
     a = ap.parse_args()
     out = pathlib.Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     work = pathlib.Path(tempfile.mkdtemp())
     call = client(a.key, a.key_id, a.issuer_id)
 
-    cert_pk, key, pem = distribution_cert(call, work)
+    cert_pk, key, pem = distribution_cert(call, work, a.rotate)
     password = secrets.token_urlsafe(18)
     p12 = out / "distribution.p12"
-    subprocess.run(["openssl", "pkcs12", "-export", "-inkey", str(key), "-in", str(pem),
-                    "-out", str(p12), "-password", "pass:" + password, "-name", "Bridge Distribution"],
+    # macOS `security import` cannot read OpenSSL 3's default PKCS#12 encryption.
+    subprocess.run(["openssl", "pkcs12", "-export", "-legacy", "-inkey", str(key), "-in", str(pem),
+                    "-out", str(p12), "-password", "pass:" + password, "-name", "Bridge Distribution",
+                    "-macalg", "sha1"],
                    check=True, capture_output=True)
 
     app_pk = bundle_pk(call, APP_ID)
