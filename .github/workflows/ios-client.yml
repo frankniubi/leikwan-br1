@@ -291,20 +291,26 @@ jobs:
         working-directory: ios
         run: |
           set -o pipefail
-          opts=build/ExportOptions.plist
           style=automatic
           if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then style=manual; fi
-          plutil -create xml1 "$opts"
-          plutil -insert method -string app-store-connect "$opts"
-          plutil -insert destination -string upload "$opts"
-          plutil -insert teamID -string "$APPLE_TEAM_ID" "$opts"
-          plutil -insert signingStyle -string "$style" "$opts"
-          plutil -insert manageAppVersionAndBuildNumber -bool NO "$opts"
-          if [ "$style" = "manual" ]; then
-            plutil -insert provisioningProfiles -dictionary "$opts"
-            plutil -insert provisioningProfiles.org.forfoxsakesantuary.foxbridgeinternal -string "Bridge App Store" "$opts"
-            plutil -insert provisioningProfiles.org.forfoxsakesantuary.foxbridgeinternal.tunnel -string "Bridge Tunnel App Store" "$opts"
-          fi
+          # Written with Python: plutil splits dotted key paths (bundle ids contain dots).
+          STYLE="$style" python3 - <<'PY'
+          import os, plistlib
+          options = {
+              "method": "app-store-connect",
+              "destination": "upload",
+              "teamID": os.environ["APPLE_TEAM_ID"],
+              "signingStyle": os.environ["STYLE"],
+              "manageAppVersionAndBuildNumber": False,
+          }
+          if os.environ["STYLE"] == "manual":
+              options["provisioningProfiles"] = {
+                  "org.forfoxsakesantuary.foxbridgeinternal": "Bridge App Store",
+                  "org.forfoxsakesantuary.foxbridgeinternal.tunnel": "Bridge Tunnel App Store",
+              }
+          with open("build/ExportOptions.plist", "wb") as f:
+              plistlib.dump(options, f)
+          PY
           xcodebuild -exportArchive \
             -archivePath build/Bridge.xcarchive \
             -exportOptionsPlist "$opts" \
