@@ -185,7 +185,8 @@ jobs:
   # Uploads every non-PR run once the secrets exist; build number = run number.
   testflight:
     name: Signed build to TestFlight
-    runs-on: macos-15
+    # App Store Connect refuses uploads built with an older SDK: Xcode 26 / iOS 26 SDK.
+    runs-on: macos-26
     needs: [frameworks, core-tests]
     # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
     if: github.event_name != 'pull_request'
