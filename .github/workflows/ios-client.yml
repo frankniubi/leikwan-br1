@@ -293,24 +293,8 @@ jobs:
           set -o pipefail
           style=automatic
           if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then style=manual; fi
-          # Written with Python: plutil splits dotted key paths (bundle ids contain dots).
-          STYLE="$style" python3 - <<'PY'
-          import os, plistlib
-          options = {
-              "method": "app-store-connect",
-              "destination": "upload",
-              "teamID": os.environ["APPLE_TEAM_ID"],
-              "signingStyle": os.environ["STYLE"],
-              "manageAppVersionAndBuildNumber": False,
-          }
-          if os.environ["STYLE"] == "manual":
-              options["provisioningProfiles"] = {
-                  "org.forfoxsakesantuary.foxbridgeinternal": "Bridge App Store",
-                  "org.forfoxsakesantuary.foxbridgeinternal.tunnel": "Bridge Tunnel App Store",
-              }
-          with open("build/ExportOptions.plist", "wb") as f:
-              plistlib.dump(options, f)
-          PY
+          # Bundle ids contain dots, which plutil key paths cannot express.
+          STYLE="$style" python3 scripts/export_options.py build/ExportOptions.plist
           xcodebuild -exportArchive \
             -archivePath build/Bridge.xcarchive \
             -exportOptionsPlist "$opts" \
