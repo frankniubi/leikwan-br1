@@ -182,6 +182,7 @@ jobs:
           path: ios/build/Bridge-unsigned.ipa
           retention-days: 14
 
+  # Uploads every non-PR run once the secrets exist; build number = run number.
   testflight:
     name: Signed build to TestFlight
     runs-on: macos-15
