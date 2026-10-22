@@ -22,13 +22,18 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
     public var value: String
     public var outcome: CustomRuleOutcome
     public var enabled: Bool
+    /// `.proxy` only: run this rule's traffic through the binding of this node (its sing-box
+    /// outbound `proxy-<id>`); nil = the default binding. Optional, so rules saved before
+    /// multi-binding still decode.
+    public var targetNodeId: Int64?
 
-    public init(id: String, type: CustomRuleType, value: String, outcome: CustomRuleOutcome, enabled: Bool = true) {
+    public init(id: String, type: CustomRuleType, value: String, outcome: CustomRuleOutcome, enabled: Bool = true, targetNodeId: Int64? = nil) {
         self.id = id
         self.type = type
         self.value = value
         self.outcome = outcome
         self.enabled = enabled
+        self.targetNodeId = targetNodeId
     }
 
     /// Parses `TYPE,value,OUTCOME` (Shadowrocket line syntax; `IP-CIDR6` is accepted as `IP-CIDR`,
@@ -63,9 +68,9 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
         case .ipCidr:
             return CustomRoutingRule.normalizeAnyCidr(raw)
         case .geoip:
+            // Only countries with a bundled geoip set (a missing set would stop sing-box).
             let code = raw.lowercased()
-            guard code.count == 2, code.allSatisfy({ $0 >= "a" && $0 <= "z" }) else { return nil }
-            return code
+            return BundledRuleSets.hasGeoip(code) ? code : nil
         }
     }
 
@@ -86,8 +91,7 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
     /// sing-box rule-set tag needed by this rule (GEOIP only).
     public var ruleSetRef: RuleSetRef? {
         guard type == .geoip, let code = normalizedValue() else { return nil }
-        let tag = "geoip-\(code)"
-        return RuleSetRef(tag: tag, url: RoutingPolicyEngine.geoipUrl(tag))
+        return RuleSetRef(tag: "geoip-\(code)")
     }
 
     /// The sing-box route rule (without outbound/action) or nil when invalid.

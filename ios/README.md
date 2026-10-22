@@ -1,10 +1,26 @@
-# LeiKwan iOS client
+# Bridge iOS client
 
 Native SwiftUI client with a Network Extension packet tunnel. Feature scope
 follows the Android client, with these iOS-specific decisions:
 
-- **Sign-in**: Client ID + Agent Token (same as the Windows client). Device id
-  `ios-client-<clientId>-<hash16>`, `X-Device-Platform: ios`.
+- **Languages**: English (base), Spanish, Simplified Chinese, Traditional Chinese
+  and Korean, following the system language. UI text goes through `L("English text")`
+  (`Shared/L10n.swift`; Core has its own in `Support/L10n.swift`); every placeholder is
+  `%@`. Tables: `App/Localization`, `PacketTunnel/Localization` and
+  `Core/Sources/LeikwanIOSCore/Resources`, one `<lang>.lproj/Localizable.strings` each,
+  keyed by the English text. Country names come from the system locale.
+
+- **Sign-in**: server address + Client ID + Agent Token, saved as profiles.
+  No server address is built in: the user types it (https only; a backup
+  address is optional and used on transport failure). Profiles live in the
+  app's Application Support, tokens in the Keychain. Signing in to another
+  server/Client ID clears that device's cached forward choices and cloud
+  nodes. Device id `ios-client-<clientId>-<hash16>`, `X-Device-Platform: ios`.
+- **No outside addresses**: the app contacts only the profile's server and the
+  user's own nodes/subscriptions. Routing rule-sets are bundled
+  (`RuleSets/`, refreshed by `scripts/update-rule-sets.sh` from
+  `scripts/rule-sets.tsv`, ~1.9 MB) and read as sing-box `local` rule-sets;
+  there is no exit-IP probe.
 - **Forward modes**: only `current_mode` bond with `plain_tcp_mux` ingress, and
   `ultra`. Everything else returned by `configs/pull` is filtered out and
   listed under Settings as unsupported. wstunnel is not shipped.
@@ -33,13 +49,13 @@ follows the Android client, with these iOS-specific decisions:
 ```sh
 bash ios/scripts/build-go-mobile.sh      # ios/Frameworks/Libbox.xcframework (sing-box v1.13.12 + ultra)
 bash ios/scripts/build-rust-runtime.sh   # ios/Frameworks/LeikwanRuntime.xcframework (ingress + bond)
-cd ios && xcodegen generate && open LeiKwan.xcodeproj
+cd ios && xcodegen generate && open Bridge.xcodeproj
 (cd ios/Core && swift test)
 ```
 
 `.github/workflows/ios-client.yml` runs the same steps: Core tests, runtime
 host tests (Rust, leikwan-bond, ultra), both frameworks (cached), a simulator
-build and an unsigned device build packaged as `LeiKwan-unsigned.ipa`.
+build and an unsigned device build packaged as `Bridge-unsigned.ipa`.
 
 ## Signing and devices
 
@@ -47,9 +63,12 @@ CI produces an **unsigned** ipa. The packet tunnel needs the Network Extension
 entitlement, which requires a paid Apple Developer team (free personal teams
 and AltStore/SideStore re-signing do not get it), or TrollStore on a supported
 iOS version. Packet tunnels do not run in the iOS Simulator, so traffic can
-only be verified on a signed device build. Bundle ids:
-`com.leikwan.bridge.ios` (app) and `com.leikwan.bridge.ios.tunnel`
-(extension), app group `group.com.leikwan.bridge.ios`.
+only be verified on a signed device build. Identifiers are set once in
+`project.yml`: `BRIDGE_BUNDLE_ID` (app, default
+`org.forfoxsakesantuary.foxbridgeinternal`; the extension is `<that>.tunnel`),
+`BRIDGE_APP_GROUP` (default `group.org.forfoxsakesantuary.foxbridgeinternal`)
+and `DEVELOPMENT_TEAM`. The Keychain service follows the bundle id. If the app
+group changes, also update `AppGroup.fallbackIdentifier`.
 
 The extension has a ~50 MB memory budget; libbox is built with
 `with_low_memory` and enforces it, but bond and ultra running together must be

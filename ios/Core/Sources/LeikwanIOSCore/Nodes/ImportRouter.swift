@@ -64,10 +64,10 @@ public enum ImportRouter {
     }
 
     /// Subscription response body -> nodes (Android `SubscriptionFetcher.fetch` parsing step).
-    /// Fetching is left to the app: use a direct (non-proxied) URLSession with UA "LeiKwanBridge/0.1.0".
+    /// Fetching is left to the app: use a direct (non-proxied) URLSession with UA `subscriptionUserAgent`.
     public static func parseSubscriptionBody(_ body: String) -> ProxyParseResult {
         return ProxyUriParser.parseMultiple(body)
     }
 
-    public static let subscriptionUserAgent = "LeiKwanBridge/0.1.0"
+    public static let subscriptionUserAgent = "Bridge-iOS/0.1.0"
 }

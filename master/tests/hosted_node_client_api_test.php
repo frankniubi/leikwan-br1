@@ -130,7 +130,8 @@ $expectGate = static function (callable $action, string $code, string $label): v
 
 // --- gates -------------------------------------------------------------------
 $expectGate(fn() => $call('GET', 'clientList', ['X-Device-Platform' => 'android']), 'client_agent_auth_failed', 'token required');
-$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', 'ios-client-' . str_repeat('a', 32), 'session-seven', 'ios')), 'device_untrusted', 'platforms without an official client are refused');
+$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', 'ios-client-' . str_repeat('a', 32), 'session-seven', 'ios')), 'device_untrusted', 'a malformed iOS device id is refused');
+$expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', 'android-client-7-' . str_repeat('a', 16), 'session-seven', 'symbian')), 'device_untrusted', 'platforms without an official client are refused');
 $expectGate(fn() => $call('GET', 'clientList', ['Authorization' => 'Bearer token-seven', 'X-Device-Id' => 'windows-client-7-' . str_repeat('d', 16)]), 'device_untrusted', 'a missing platform is refused');
 $expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceSeven, 'wrong-session', 'windows-desktop')), 'device_untrusted', 'an attested Android id is held to the Android gate whatever platform it claims');
 $expectGate(fn() => $call('GET', 'clientList', $headers('token-seven', $deviceSeven, 'wrong-session')), 'device_untrusted', 'device session required');
@@ -235,6 +236,11 @@ assertSame([200, 'Desk'], [$status, $body['nodes'][0]['name'] ?? null], 'macOS d
 // Linux headless has no nodes feature yet: node credentials are not exposed to it.
 $expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'linux', $linuxSeven)), 'device_untrusted', 'Linux headless is refused');
 $expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'windows-desktop', $linuxSeven)), 'device_untrusted', 'a linux id cannot pose as Windows');
+$iosSeven = 'ios-client-7-' . str_repeat('c', 16);
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'ios', 'ios-client-8-' . str_repeat('c', 16))), 'device_untrusted', 'an iOS device id is bound to its client');
+$expectGate(fn() => $call('GET', 'clientList', $desktop('token-seven', 'ios', $windowsSeven)), 'device_untrusted', 'a Windows id cannot pose as iOS');
+[$status, $body] = $call('GET', 'clientList', $desktop('token-seven', 'ios', $iosSeven));
+assertSame([200, 'Desk'], [$status, $body['nodes'][0]['name'] ?? null], 'the iOS client of the same client receives it');
 [$status, $body] = $call('GET', 'clientList', $seven);
 assertSame('Desk', $body['nodes'][0]['name'] ?? null, 'Android device of the client sees the desktop upload');
 if ($policy->calls < $callsBefore + 2) {

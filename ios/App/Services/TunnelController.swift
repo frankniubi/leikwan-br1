@@ -6,11 +6,20 @@ import NetworkExtension
 /// and stops the packet tunnel, and polls its status.
 @MainActor
 final class TunnelController: ObservableObject {
-    static let tunnelBundleIdentifier = "com.leikwan.bridge.ios.tunnel"
+    /// The extension's bundle id is the app's plus ".tunnel" (project.yml).
+    static let tunnelBundleIdentifier = (Bundle.main.bundleIdentifier ?? "org.forfoxsakesantuary.foxbridgeinternal") + ".tunnel"
 
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var snapshot = TunnelStatusSnapshot()
     @Published private(set) var lastError: String?
+    /// Last 60 one-second traffic samples, oldest first, for the speed chart.
+    @Published private(set) var speedHistory: [SpeedSample] = []
+    /// Ultra forward id → relay entry "ip:port" last reported by the tunnel; kept across
+    /// launches so the card still shows it while disconnected.
+    @Published private(set) var ultraEndpoints: [Int64: String] = TunnelController.loadUltraEndpoints()
+
+    /// When the current connection came up (for the run-time counter).
+    var connectedSince: Date? { manager?.connection.connectedDate }
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -58,22 +67,27 @@ final class TunnelController: ObservableObject {
     }
 
     func fetchLogs() async -> [String] {
-        guard let reply = await send(TunnelRequest(command: .logs, launch: nil)),
-              let logs = try? JSONDecoder().decode(TunnelLogsSnapshot.self, from: reply)
-        else {
-            return []
+        if let reply = await send(TunnelRequest(command: .logs, launch: nil)),
+           let logs = try? JSONDecoder().decode(TunnelLogsSnapshot.self, from: reply),
+           !logs.lines.isEmpty {
+            return logs.lines
         }
-        return logs.lines
+        // The tunnel process is not answering (e.g. it failed to start): use the shared file.
+        guard let data = try? Data(contentsOf: AppGroup.tunnelLogURL) else { return [] }
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .suffix(400)
+            .map(String.init)
     }
 
     private func installedManager() async throws -> NETunnelProviderManager {
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleIdentifier
-        proto.serverAddress = "LeiKwan"
+        proto.serverAddress = "LeiKwan Bridge"
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
-        manager.localizedDescription = "LeiKwan"
+        manager.localizedDescription = "LeiKwan Bridge"
         manager.isEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.
@@ -108,6 +122,7 @@ final class TunnelController: ObservableObject {
             pollTask = nil
             if status == .disconnected {
                 snapshot = TunnelStatusSnapshot()
+                speedHistory = []
                 fetchDisconnectError()
             }
         }
@@ -140,6 +155,22 @@ final class TunnelController: ObservableObject {
             return
         }
         self.snapshot = snapshot
+        if let reported = snapshot.ultraEndpoints, !reported.isEmpty {
+            var merged = ultraEndpoints
+            for (key, endpoint) in reported {
+                if let forwardID = Int64(key) {
+                    merged[forwardID] = endpoint
+                }
+            }
+            if merged != ultraEndpoints {
+                ultraEndpoints = merged
+                Self.saveUltraEndpoints(merged)
+            }
+        }
+        speedHistory.append(SpeedSample(date: Date(), uplink: snapshot.uplink, downlink: snapshot.downlink))
+        if speedHistory.count > 60 {
+            speedHistory.removeFirst(speedHistory.count - 60)
+        }
     }
 
     private func send(_ request: TunnelRequest) async -> Data? {
@@ -161,5 +192,38 @@ final class TunnelController: ObservableObject {
 
     private static func isOurs(_ manager: NETunnelProviderManager) -> Bool {
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == tunnelBundleIdentifier
+    }
+}
+
+struct SpeedSample: Identifiable, Equatable {
+    let date: Date
+    let uplink: Int64
+    let downlink: Int64
+
+    var id: Date { date }
+}
+
+extension TunnelController {
+    nonisolated private static let ultraEndpointsKey = "ultra_endpoints"
+
+    nonisolated static func loadUltraEndpoints() -> [Int64: String] {
+        guard let stored = UserDefaults.standard.dictionary(forKey: ultraEndpointsKey) as? [String: String] else {
+            return [:]
+        }
+        var result: [Int64: String] = [:]
+        for (key, value) in stored {
+            if let forwardID = Int64(key) {
+                result[forwardID] = value
+            }
+        }
+        return result
+    }
+
+    nonisolated static func saveUltraEndpoints(_ endpoints: [Int64: String]) {
+        var stored: [String: String] = [:]
+        for (forwardID, value) in endpoints {
+            stored[String(forwardID)] = value
+        }
+        UserDefaults.standard.set(stored, forKey: ultraEndpointsKey)
     }
 }

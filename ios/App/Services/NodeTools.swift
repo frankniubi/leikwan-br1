@@ -50,32 +50,3 @@ enum TCPPing {
         }
     }
 }
-
-/// Shareable ss:// (SIP002) and socks5:// links for a node.
-enum ProxyShareLink {
-    static func make(_ node: ProxyNode) -> String {
-        let host = node.server.contains(":") ? "[\(node.server)]" : node.server
-        let fragment = node.name.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? ""
-        switch node.settings {
-        case let .shadowsocks(settings):
-            let userInfo = Data("\(settings.method):\(settings.password)".utf8).base64EncodedString()
-                .replacingOccurrences(of: "+", with: "-")
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "=", with: "")
-            var link = "ss://\(userInfo)@\(host):\(node.port)"
-            if let plugin = settings.plugin, !plugin.isEmpty {
-                let value = [plugin, settings.pluginOpts].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ";")
-                link += "/?plugin=" + (value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value)
-            }
-            return link + (fragment.isEmpty ? "" : "#\(fragment)")
-        case let .socks(settings):
-            var auth = ""
-            if let username = settings.username, !username.isEmpty {
-                let user = username.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) ?? username
-                let password = (settings.password ?? "").addingPercentEncoding(withAllowedCharacters: .urlPasswordAllowed) ?? ""
-                auth = "\(user):\(password)@"
-            }
-            return "socks5://\(auth)\(host):\(node.port)" + (fragment.isEmpty ? "" : "#\(fragment)")
-        }
-    }
-}

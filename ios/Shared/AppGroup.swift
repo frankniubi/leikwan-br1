@@ -6,10 +6,10 @@ import Foundation
 /// container path alone is ~83, so everything that hosts a socket lives
 /// directly under a one-letter directory of the container.
 enum AppGroup {
-    static let fallbackIdentifier = "group.com.leikwan.bridge.ios"
+    static let fallbackIdentifier = "group.org.forfoxsakesantuary.foxbridgeinternal"
 
     static var identifier: String {
-        (Bundle.main.object(forInfoDictionaryKey: "LeikwanAppGroup") as? String)
+        (Bundle.main.object(forInfoDictionaryKey: "BridgeAppGroup") as? String)
             .flatMap { $0.isEmpty ? nil : $0 } ?? fallbackIdentifier
     }
 
@@ -20,7 +20,7 @@ enum AppGroup {
             return url
         }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent("LeiKwan", isDirectory: true)
+        return support.appendingPathComponent("Bridge", isDirectory: true)
     }
 
     /// libbox base path; holds command.sock.
@@ -28,6 +28,10 @@ enum AppGroup {
 
     /// Private directory for runtime control sockets and status files.
     static var runtimeDirectory: URL { ensure(containerURL.appendingPathComponent("r", isDirectory: true)) }
+
+    /// The bundled rule-sets, copied here by the tunnel (`RuleSetInstaller`); sing-box reads
+    /// them as `local` rule-sets from this path.
+    static var ruleSetDirectory: URL { ensure(containerURL.appendingPathComponent("rule-sets", isDirectory: true)) }
 
     static var cacheDirectory: URL {
         ensure(containerURL.appendingPathComponent("Library/Caches", isDirectory: true))
