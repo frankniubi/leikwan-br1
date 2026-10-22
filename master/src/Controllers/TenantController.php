@@ -1125,11 +1125,11 @@ final class TenantController extends BaseController
     {
         $appleId = AppleId::normalize($user['apple_id'] ?? '');
         if ($appleId === null) {
-            return '<span class="muted">Not set · add it on the <a href="/tenant/clients">Clients</a> page to unlock the TestFlight invite</span>';
+            return '<span class="muted">未填写 · 到<a href="/tenant/clients">客户端</a>页面填写后可获取 TestFlight 邀请</span>';
         }
         $submittedAt = trim((string) ($user['apple_id_submitted_at'] ?? ''));
         return '<code>' . $this->escape($appleId) . '</code>'
-            . ($submittedAt !== '' ? ' <span class="muted">· submitted ' . $this->escape($submittedAt) . ' UTC</span>' : '');
+            . ($submittedAt !== '' ? ' <span class="muted">· 提交于 ' . $this->escape($submittedAt) . ' UTC</span>' : '');
     }
 
     /** @param array<int, array<string, mixed>> $services */
@@ -1661,6 +1661,11 @@ final class TenantController extends BaseController
      * Apple ID stays visible on Account Security and in the admin tenant
      * directory so an invite can be traced.
      *
+     * Copy is Chinese like the rest of the app center and is not routed through
+     * the client-side i18n dictionary: these sentences are assembled from
+     * concatenated fragments, and patch.js only replaces text nodes that match
+     * a dictionary key exactly.
+     *
      * @param array<string, mixed> $user
      */
     private function tenantIosSection(array $user): string
@@ -1672,41 +1677,47 @@ final class TenantController extends BaseController
         if (!$hasMembership) {
             return '<section class="tenant-client-install__platform" data-ios-testflight>'
                 . $header
-                . '<div class="muted">iOS builds are distributed through TestFlight and are available with an active package. '
-                . '<a href="/tenant/plans">View packages</a></div>'
+                . '<div class="muted">iOS 版通过 TestFlight 分发，需要有效套餐才能获取邀请。'
+                . '<a href="/tenant/plans">查看套餐</a></div>'
                 . '</section>';
         }
 
         if ($appleId !== null) {
             return '<section class="tenant-client-install__platform" data-ios-testflight>'
                 . $header
-                . '<div class="muted">Invite for <code data-ios-apple-id>' . $this->escape($appleId) . '</code>'
-                . ' · <a href="/tenant/security">Change or review on Account Security</a></div>'
+                . '<div class="muted">邀请已提交到 <code data-ios-apple-id>' . $this->escape($appleId) . '</code>'
+                . ' · <a href="/tenant/security">在账户安全中查看</a></div>'
                 . '<div class="actions">'
-                . $this->renderCommandLink('Open TestFlight invite', self::IOS_TESTFLIGHT_INVITE_URL, 'secondary')
+                . '<a class="button" href="' . $this->escape(self::IOS_TESTFLIGHT_INVITE_URL) . '" target="_blank" rel="noopener">打开 TestFlight 邀请链接</a>'
                 . '</div>'
+                . $this->renderIosServerAddresses()
                 . '</section>';
         }
 
         // One-shot form: the Apple ID is recorded here, and the page then walks
-        // through the 5 s "inviting" state before revealing the invite link.
+        // through the 5 s "inviting" state before revealing the invite link and
+        // the server address the app asks for on first launch.
         $csrf = $this->escape(SessionAuth::csrfToken());
         $inviteUrl = $this->escape(self::IOS_TESTFLIGHT_INVITE_URL);
+        $serverAddresses = $this->renderIosServerAddresses();
         return '<section class="tenant-client-install__platform" data-ios-testflight>'
             . $header
-            . '<div class="muted">TestFlight invites are tied to the Apple ID you sign in with. '
-            . 'Enter it once; you can review it later on Account Security.</div>'
+            . '<div class="muted">TestFlight 邀请会发到你登录 App 用的 Apple ID。填写一次即可，'
+            . '之后可以在<a href="/tenant/security">账户安全</a>查看。</div>'
             . '<form method="post" action="/tenant/clients/ios/apple-id" data-ios-form>'
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<div class="field"><label for="tenant-ios-apple-id">Apple ID</label>'
             . '<input id="tenant-ios-apple-id" type="email" name="apple_id" autocomplete="email" '
             . 'placeholder="you@example.com" required maxlength="191"></div>'
-            . '<div class="actions"><button class="button" type="submit">Request TestFlight invite</button></div>'
+            . '<div class="actions"><button class="button" type="submit">申请 TestFlight 邀请</button></div>'
             . '</form>'
             . '<div class="muted tenant-client-install__ios-progress" data-ios-progress hidden>正在为你开通 TestFlight 邀请…</div>'
             . '<div class="tenant-client-install__ios-invite" data-ios-invite hidden>'
+            . '<div class="muted">邀请已提交到 <code data-ios-apple-id></code>，请在 TestFlight 中接受。</div>'
+            . '<div class="actions">'
             . '<a class="button" href="' . $inviteUrl . '" target="_blank" rel="noopener">打开 TestFlight 邀请链接</a>'
-            . '<span class="muted">邀请已允许，请在 TestFlight 中接受。</span>'
+            . '</div>'
+            . $serverAddresses
             . '</div>'
             . '<script data-ios-script>'
             . '(function(){'
@@ -1732,6 +1743,8 @@ final class TenantController extends BaseController
             . 'progress.hidden=false;'
             . 'return;'
             . '}'
+            . 'var shown=invite.querySelector("[data-ios-apple-id]");'
+            . 'if(shown&&result.data.apple_id){shown.textContent=result.data.apple_id;}'
             . 'form.hidden=true;'
             . 'progress.textContent="正在允许 TestFlight 邀请…";'
             . 'progress.hidden=false;'
@@ -1741,6 +1754,39 @@ final class TenantController extends BaseController
             . '})();'
             . '</script>'
             . '</section>';
+    }
+
+    /**
+     * The panel addresses to type into the iOS app's "Server address" field, in
+     * the order to try them. The Cloudflare edge is the normal one; the Aliyun
+     * CDN host is the backup that still answers from mainland networks when the
+     * Cloudflare edge does not.
+     */
+    private function renderIosServerAddresses(): string
+    {
+        $primary = $this->artifactBaseUrl();
+        $backup = $this->artifactMirrorBaseUrl();
+        if ($primary === '' && $backup === '') {
+            return '';
+        }
+
+        $row = function (string $label, string $url) : string {
+            return '<div class="tenant-client-install__ios-server">'
+                . '<span class="muted">' . $this->escape($label) . '</span>'
+                . '<code>' . $this->escape($url) . '</code>'
+                . $this->renderCopyButton('复制', $url, 'secondary', '已复制', '复制失败')
+                . '</div>';
+        };
+
+        $html = '<div class="tenant-client-install__ios-servers">'
+            . '<div class="muted">首次打开 App 时，把下面的服务器地址填进「Server address」：</div>';
+        if ($primary !== '') {
+            $html .= $row('会聚 Cloudflare', $primary);
+        }
+        if ($backup !== '' && $backup !== $primary) {
+            $html .= $row('会聚阿里云', $backup);
+        }
+        return $html . '</div>';
     }
 
     /**
