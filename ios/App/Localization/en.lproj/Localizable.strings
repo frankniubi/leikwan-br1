@@ -222,3 +222,5 @@
 "Signing out disconnects the current connection." = "Signing out disconnects the current connection.";
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress.";
 "Unsupported forwards" = "Unsupported forwards";
+"Target: %@" = "Target: %@";
+"Entry: %@" = "Entry: %@";

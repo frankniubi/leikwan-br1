@@ -222,3 +222,5 @@
 "Signing out disconnects the current connection." = "로그아웃하면 현재 연결이 끊어집니다.";
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS는 Ultra 포워드와 plain_tcp_mux 인그레스의 Bond 포워드를 지원합니다.";
 "Unsupported forwards" = "지원되지 않는 포워드";
+"Target: %@" = "대상: %@";
+"Entry: %@" = "입구: %@";

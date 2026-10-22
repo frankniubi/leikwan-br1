@@ -180,12 +180,20 @@ private struct BindingCard: View {
                         .font(.headline)
                         .foregroundStyle(Palette.onSurface)
                         .lineLimit(1)
-                    Text(model.endpointText(for: forward))
+                    Text(L("Target: %@", forward.targetText))
                         .font(.caption.monospaced())
                         .foregroundStyle(Palette.onSurfaceVariant)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .textSelection(.enabled)
+                    if let entry = model.relayEntryText(for: forward) {
+                        Text(L("Entry: %@", entry))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(Palette.onSurfaceVariant)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .textSelection(.enabled)
+                    }
                 }
             }
 

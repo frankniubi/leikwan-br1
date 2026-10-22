@@ -222,3 +222,5 @@
 "Signing out disconnects the current connection." = "退出登录会断开当前连接。";
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS 支持 Ultra 转发，以及 plain_tcp_mux 入口的 Bond 转发。";
 "Unsupported forwards" = "暂不支持的转发";
+"Target: %@" = "目标：%@";
+"Entry: %@" = "入口：%@";
