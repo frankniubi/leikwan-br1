@@ -22,10 +22,14 @@ extension AppModel {
     /// Entry "ip:port" for a forward card. Ultra entries come from the lease the
     /// runtime selected (last known value while disconnected).
     func endpointText(for forward: IOSSupportedForward) -> String {
-        if forward.kind == .ultra, let endpoint = tunnel.ultraEndpoints[forward.forwardId] {
-            return endpoint
-        }
+        if let entry = relayEntryText(for: forward) { return entry }
         return forward.endpointSummary
+    }
+
+    /// The relay entry the tunnel last reported for an Ultra forward, if any.
+    func relayEntryText(for forward: IOSSupportedForward) -> String? {
+        guard forward.kind == .ultra else { return nil }
+        return tunnel.ultraEndpoints[forward.forwardId]
     }
 
     var routeDetail: String? {
@@ -56,6 +60,12 @@ extension IOSSupportedForward {
         let host = first.host.contains(":") ? "[\(first.host)]" : first.host
         let more = endpoints.count > 1 ? "  +\(endpoints.count - 1)" : ""
         return "\(host):\(first.port)\(more)"
+    }
+
+    /// The target the panel configured for this forward (destination ip:port).
+    var targetText: String {
+        let target = contract.target.trimmingCharacters(in: .whitespacesAndNewlines)
+        return target.isEmpty ? "—" : target
     }
 
     var kindLabel: String {

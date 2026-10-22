@@ -409,6 +409,13 @@ private struct CurrentRouteCard: View {
                             .foregroundStyle(Palette.onSurfaceVariant)
                             .lineLimit(1)
                     }
+                    if let target = model.defaultBindingRow?.forward?.targetText {
+                        Text(L("Target: %@", target))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(Palette.onSurfaceVariant)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
                 Spacer(minLength: 0)
                 if let node = model.defaultBindingRow?.node {
