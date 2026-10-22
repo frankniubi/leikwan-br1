@@ -44,6 +44,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: FoxBridge
+        CFBundleName: FoxBridge
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
@@ -97,6 +98,7 @@ targets:
       path: PacketTunnel/Info.plist
       properties:
         CFBundleDisplayName: FoxBridge Tunnel
+        CFBundleName: FoxBridgeTunnel
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
