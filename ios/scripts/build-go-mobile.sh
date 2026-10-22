@@ -62,7 +62,9 @@ GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$(xcrun --sdk iphoneos --find clang)" \
 
 # Tags: only what the iOS client needs (tun via gVisor, shadowsocks and socks
 # are always built in). with_low_memory matches upstream's iOS build.
-tags="with_gvisor,with_low_memory,badlinkname,tfogo_checklinkname0,grpcnotrace"
+# with_clash_api: sing-box requires the Clash API whenever the platform passes a log
+# writer (libbox sets PlatformLogWriter), which the packet tunnel does.
+tags="with_gvisor,with_low_memory,with_clash_api,badlinkname,tfogo_checklinkname0,grpcnotrace"
 version="${SING_BOX_VERSION#v}"
 ldflags="-X github.com/sagernet/sing-box/constant.Version=$version"
 ldflags="$ldflags -X github.com/sagernet/sing-box/leikwan/ultracore.runtimeBuildVersion=$ULTRA_VERSION"
