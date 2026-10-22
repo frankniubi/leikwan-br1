@@ -297,7 +297,7 @@ jobs:
           STYLE="$style" python3 scripts/export_options.py build/ExportOptions.plist
           xcodebuild -exportArchive \
             -archivePath build/Bridge.xcarchive \
-            -exportOptionsPlist "$opts" \
+            -exportOptionsPlist build/ExportOptions.plist \
             -exportPath build/export \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$ASC_KEY_PATH" \
