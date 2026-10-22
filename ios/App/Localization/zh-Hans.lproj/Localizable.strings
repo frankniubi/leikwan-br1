@@ -39,7 +39,7 @@
 "Direct node" = "直连节点";
 "Binding exit · %@ · default of %@ bindings" = "绑定出口 · %@ · 默认，共 %@ 个绑定";
 "Binding exit · %@" = "绑定出口 · %@";
-"Online device limit of the plan reached; this device resumes when a slot frees up" = "在线设备数已达套餐上限，空出名额后会自动恢复";
+"Online device limit of this server reached; this device resumes when a slot frees up" = "在线设备数已达该服务器上限，空出名额后会自动恢复";
 "This device was signed out by the server" = "此设备已被服务器踢下线";
 "This device was banned by the server" = "此设备已被服务器封禁";
 "The server does not trust this device" = "服务器不信任此设备";
@@ -223,3 +223,26 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS 支持 Ultra 转发，以及 plain_tcp_mux 入口的 Bond 转发。";
 "Unsupported forwards" = "暂不支持的转发";
 "Target: %@" = "目标：%@";
+
+/* Privacy disclosure (App Store guideline 5.4) */
+"What this app sends" = "此 App 发送的信息";
+"Server address, Client ID and Agent Token" = "服务器地址、Client ID 和 Agent Token";
+"Used to sign in and to authenticate every request to the server you entered." = "用于登录并向你填写的服务器认证每一个请求。";
+"A device identifier" = "设备标识符";
+"A stable value derived from this installation. The server uses it to recognize this device and apply its device limit." = "由本次安装派生出的固定值。服务器用它识别此设备并执行设备数量限制。";
+"Device model and iOS version" = "设备型号和 iOS 版本";
+"Lets the server pick compatible settings and show this device in its own device list." = "让服务器选择兼容的设置，并在其设备列表中显示此设备。";
+"Traffic volume" = "流量统计";
+"Bytes uploaded and downloaded per forward, so the server can account for usage and limits." = "每条转发的上传与下载字节数，供服务器计量用量和限额。";
+"Connection details" = "连接信息";
+"The line selected, timestamps and error codes, used to connect and to troubleshoot." = "所选线路、时间戳和错误码，用于建立连接和排查问题。";
+"Kept on this device. They leave it only if you copy or share them." = "仅保存在本机。只有在你复制或分享时才会离开设备。";
+"Bridge connects this device to a server you choose. Before the first connection, this is exactly what leaves this device and why." = "Bridge 将此设备连接到你自己选择的服务器。首次连接前，这里准确说明哪些信息会离开设备以及原因。";
+"Never collected" = "绝不收集";
+"Browsing history, DNS queries, message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK." = "绝不收集浏览记录、DNS 查询、通讯内容、通讯录、位置、照片和广告标识符（IDFA）。App 内没有任何分析、广告或崩溃上报 SDK。";
+"Who receives it" = "谁会收到";
+"Only the server address saved in your profile. The two preset addresses belong to the developer; if you enter your own server, nothing is sent to the developer's servers. This data is not sold, used, or disclosed to third parties for any purpose." = "只会发送到配置中保存的服务器地址。两个预置地址由开发者运营；如果你填写自己的服务器，不会有任何数据发往开发者服务器。这些数据不会被出售、使用或出于任何目的向第三方披露。";
+"Privacy Policy" = "隐私政策";
+"Privacy" = "隐私";
+"I understand" = "我已知悉";
+"Done" = "完成";

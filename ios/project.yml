@@ -37,6 +37,9 @@ targets:
     sources:
       - path: App
       - path: Shared
+      # Privacy manifest: declared required-reason APIs + collected data types.
+      - path: Privacy/App/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: LeikwanIOSCore
       - target: PacketTunnel
@@ -83,6 +86,9 @@ targets:
       # Bundled sing-box rule-sets, copied as a folder (RuleSetInstaller reads RuleSets/).
       - path: RuleSets
         type: folder
+        buildPhase: resources
+      # The tunnel reads file attributes (log rotation) in its own container.
+      - path: Privacy/Tunnel/PrivacyInfo.xcprivacy
         buildPhase: resources
     dependencies:
       - package: LeikwanIOSCore
