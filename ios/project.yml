@@ -43,8 +43,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: ForFoxSake Bridge
-        CFBundleName: ForFoxSakeBridge
+        CFBundleDisplayName: LeiKwan Bridge
+        CFBundleName: LeiKwanBridge
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
@@ -97,8 +97,8 @@ targets:
     info:
       path: PacketTunnel/Info.plist
       properties:
-        CFBundleDisplayName: ForFoxSake Bridge Tunnel
-        CFBundleName: ForFoxSakeTunnel
+        CFBundleDisplayName: LeiKwan Bridge Tunnel
+        CFBundleName: LeiKwanBridgeTunnel
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
