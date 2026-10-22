@@ -23,6 +23,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     )
 
     override func startTunnel(options: [String: NSObject]?) async throws {
+        do {
+            try await startTunnelRecordingFailure(options)
+        } catch {
+            TunnelLog.shared.write("tunnel start failed: \(error.localizedDescription)", level: 1)
+            throw error
+        }
+    }
+
+    private func startTunnelRecordingFailure(_ options: [String: NSObject]?) async throws {
         let launch = try resolveLaunch(options)
         self.launch = launch
 
