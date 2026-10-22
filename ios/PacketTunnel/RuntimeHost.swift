@@ -123,21 +123,31 @@ final class RuntimeHost {
         lock.lock()
         let items = running
         lock.unlock()
-        return items.map { item in
-            switch item.handle {
-            case let .native(handle):
-                let state = lk_runtime_state(handle)
-                let error = state == LK_STATE_FAILED ? Self.lastError(handle) : nil
-                return RuntimeStatus(name: item.launch.name, kind: item.launch.kind, running: state == LK_STATE_RUNNING, error: error)
-            case let .ultra(runtime):
-                let error = runtime.lastError()
-                return RuntimeStatus(
-                    name: item.launch.name,
-                    kind: item.launch.kind,
-                    running: runtime.running(),
-                    error: error.isEmpty ? nil : error
-                )
-            }
+        return items.map(Self.status)
+    }
+
+    /// Status of the runtime with this name, or nil when it was never started.
+    func status(named name: String) -> RuntimeStatus? {
+        lock.lock()
+        let item = running.first { $0.launch.name == name }
+        lock.unlock()
+        return item.map(Self.status)
+    }
+
+    private static func status(_ item: Running) -> RuntimeStatus {
+        switch item.handle {
+        case let .native(handle):
+            let state = lk_runtime_state(handle)
+            let error = state == LK_STATE_FAILED ? Self.lastError(handle) : nil
+            return RuntimeStatus(name: item.launch.name, kind: item.launch.kind, running: state == LK_STATE_RUNNING, error: error)
+        case let .ultra(runtime):
+            let error = runtime.lastError()
+            return RuntimeStatus(
+                name: item.launch.name,
+                kind: item.launch.kind,
+                running: runtime.running(),
+                error: error.isEmpty ? nil : error
+            )
         }
     }
 
