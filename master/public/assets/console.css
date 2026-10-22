@@ -1246,6 +1246,27 @@ html body.pg-app .tenant-client-install__platform .actions {
   margin-top: 12px !important;
 }
 
+/* The TestFlight card toggles these from an inline script; both are display
+   rules in their own right so the hidden attribute is not overridden by the
+   .actions flex rule. */
+html body.pg-app .tenant-client-install__ios-progress {
+  margin-top: 10px;
+  font-size: 12px !important;
+}
+
+html body.pg-app .tenant-client-install__ios-invite {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+html body.pg-app .tenant-client-install__ios-progress[hidden],
+html body.pg-app .tenant-client-install__ios-invite[hidden] {
+  display: none !important;
+}
+
 html body.pg-app .tenant-client-install__command {
   max-height: 132px;
   margin: 10px 0 0 !important;

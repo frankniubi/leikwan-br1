@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\AppleId;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
@@ -21,6 +22,9 @@ use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
 {
+    /** Public TestFlight invite for the iOS build, released from the app center. */
+    public const IOS_TESTFLIGHT_INVITE_URL = 'https://testflight.apple.com/join/r1pGPj81';
+
     private AccessPolicyService $accessPolicy;
 
     public function __construct(
@@ -63,8 +67,14 @@ final class TenantController extends BaseController
             $serviceIds = array_map(static fn(array $service): int => (int) ($service['id'] ?? 0), $activeServices);
             $serviceIds = array_values(array_filter($serviceIds, static fn(int $id): bool => $id > 0));
             if ($serviceIds !== []) {
+                // Count rules that still exist. Deleting a forward is a soft
+                // delete (enabled = 0 + user_deleted_at set), so counting the
+                // table as-is made the number climb with every create/delete.
                 $forwardRow = $this->db->fetchOne(
-                    'SELECT COUNT(*) AS total FROM forwards WHERE service_id IN (' . implode(',', $serviceIds) . ')'
+                    'SELECT COUNT(*) AS total
+                     FROM forwards
+                     WHERE service_id IN (' . implode(',', $serviceIds) . ')
+                       AND user_deleted_at IS NULL'
                 );
                 $forwardCount = (int) ($forwardRow['total'] ?? 0);
             }
@@ -1080,6 +1090,7 @@ final class TenantController extends BaseController
             . '<dt>Main province</dt><dd>' . $this->escape($mainProvince !== '' ? $mainProvince : 'Not bound') . '</dd>'
             . '<dt>Last verified</dt><dd>' . $this->escape((string) ($profile['last_verified_at'] ?? 'Not verified')) . '</dd>'
             . '<dt>Next self-change</dt><dd>' . $this->escape($availableAt !== '' ? $availableAt : 'Available now') . '</dd>'
+            . '<dt>Apple ID <span class="muted">iOS</span></dt><dd>' . $this->renderAppleIdValue($user) . '</dd>'
             . '</dl>'
             . '<form method="post" action="/tenant/security/main-province"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
@@ -1102,6 +1113,23 @@ final class TenantController extends BaseController
             . $deviceRows . '</tbody></table></div></section>';
 
         return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    /**
+     * The stored Apple ID, or the way to add one. Editing is intentionally not
+     * offered here: the value is recorded once, and support can correct it.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function renderAppleIdValue(array $user): string
+    {
+        $appleId = AppleId::normalize($user['apple_id'] ?? '');
+        if ($appleId === null) {
+            return '<span class="muted">Not set · add it on the <a href="/tenant/clients">Clients</a> page to unlock the TestFlight invite</span>';
+        }
+        $submittedAt = trim((string) ($user['apple_id_submitted_at'] ?? ''));
+        return '<code>' . $this->escape($appleId) . '</code>'
+            . ($submittedAt !== '' ? ' <span class="muted">· submitted ' . $this->escape($submittedAt) . ' UTC</span>' : '');
     }
 
     /** @param array<int, array<string, mixed>> $services */
@@ -1250,6 +1278,7 @@ final class TenantController extends BaseController
         }
 
         $installCommand = $this->clientAgentInstallCommand($client);
+        $iosSection = $this->tenantIosSection($user);
         $sessionService = new ClientOnlineSessionService($this->db);
         $onlineCount = $sessionService->activeCountForClient($clientId);
         $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
@@ -1452,6 +1481,7 @@ final class TenantController extends BaseController
             . '</div></section>'
             . $windowsSection
             . $macosSection
+            . $iosSection
             // Docker installation is hidden until container runtime acceptance passes.
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
@@ -1606,6 +1636,145 @@ final class TenantController extends BaseController
         }
 
         return Response::redirect('/tenant/clients');
+    }
+
+    /**
+     * Both gates of the iOS card read membership from the same rows: status
+     * alone is not enough, because nothing writes 'expired' to services.status.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function userServices(int $userId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT status, expire_at FROM services WHERE user_id = :user_id',
+            ['user_id' => $userId]
+        );
+    }
+
+    /**
+     * iOS card for the app center.
+     *
+     * The TestFlight invite is per account: a tenant with a valid package types
+     * the Apple ID the invite should go to, the panel stores it (one per
+     * account), shows a short "inviting" state, and then releases the link. The
+     * Apple ID stays visible on Account Security and in the admin tenant
+     * directory so an invite can be traced.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function tenantIosSection(array $user): string
+    {
+        $appleId = AppleId::normalize($user['apple_id'] ?? '');
+        $hasMembership = AppleId::hasValidMembership($this->userServices((int) $user['id']));
+
+        $header = '<strong>' . $this->platformIcon('ios') . 'iOS · TestFlight</strong>';
+        if (!$hasMembership) {
+            return '<section class="tenant-client-install__platform" data-ios-testflight>'
+                . $header
+                . '<div class="muted">iOS builds are distributed through TestFlight and are available with an active package. '
+                . '<a href="/tenant/plans">View packages</a></div>'
+                . '</section>';
+        }
+
+        if ($appleId !== null) {
+            return '<section class="tenant-client-install__platform" data-ios-testflight>'
+                . $header
+                . '<div class="muted">Invite for <code data-ios-apple-id>' . $this->escape($appleId) . '</code>'
+                . ' · <a href="/tenant/security">Change or review on Account Security</a></div>'
+                . '<div class="actions">'
+                . $this->renderCommandLink('Open TestFlight invite', self::IOS_TESTFLIGHT_INVITE_URL, 'secondary')
+                . '</div>'
+                . '</section>';
+        }
+
+        // One-shot form: the Apple ID is recorded here, and the page then walks
+        // through the 5 s "inviting" state before revealing the invite link.
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $inviteUrl = $this->escape(self::IOS_TESTFLIGHT_INVITE_URL);
+        return '<section class="tenant-client-install__platform" data-ios-testflight>'
+            . $header
+            . '<div class="muted">TestFlight invites are tied to the Apple ID you sign in with. '
+            . 'Enter it once; you can review it later on Account Security.</div>'
+            . '<form method="post" action="/tenant/clients/ios/apple-id" data-ios-form>'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<div class="field"><label for="tenant-ios-apple-id">Apple ID</label>'
+            . '<input id="tenant-ios-apple-id" type="email" name="apple_id" autocomplete="email" '
+            . 'placeholder="you@example.com" required maxlength="191"></div>'
+            . '<div class="actions"><button class="button" type="submit">Request TestFlight invite</button></div>'
+            . '</form>'
+            . '<div class="muted tenant-client-install__ios-progress" data-ios-progress hidden>正在为你开通 TestFlight 邀请…</div>'
+            . '<div class="tenant-client-install__ios-invite" data-ios-invite hidden>'
+            . '<a class="button" href="' . $inviteUrl . '" target="_blank" rel="noopener">打开 TestFlight 邀请链接</a>'
+            . '<span class="muted">邀请已允许，请在 TestFlight 中接受。</span>'
+            . '</div>'
+            . '<script data-ios-script>'
+            . '(function(){'
+            . 'var section=document.currentScript.parentNode;'
+            . 'var form=section.querySelector("[data-ios-form]");'
+            . 'var progress=section.querySelector("[data-ios-progress]");'
+            . 'var invite=section.querySelector("[data-ios-invite]");'
+            . 'if(!form||!progress||!invite){return;}'
+            . 'form.addEventListener("submit",function(event){'
+            . 'event.preventDefault();'
+            . 'if(form.getAttribute("data-busy")==="1"){return;}'
+            . 'form.setAttribute("data-busy","1");'
+            . 'var button=form.querySelector("button[type=submit]");'
+            . 'if(button){button.disabled=true;}'
+            . 'var body=new FormData(form);'
+            . 'fetch(form.action,{method:"POST",body:body,credentials:"same-origin",headers:{"Accept":"application/json"}})'
+            . '.then(function(response){return response.json().catch(function(){return {};}).then(function(data){return {ok:response.ok,data:data};});})'
+            . '.then(function(result){'
+            . 'if(!result.ok||!result.data||result.data.ok!==true){'
+            . 'form.removeAttribute("data-busy");'
+            . 'if(button){button.disabled=false;}'
+            . 'progress.textContent="Apple ID 未能保存，请检查后重试。";'
+            . 'progress.hidden=false;'
+            . 'return;'
+            . '}'
+            . 'form.hidden=true;'
+            . 'progress.textContent="正在允许 TestFlight 邀请…";'
+            . 'progress.hidden=false;'
+            . 'window.setTimeout(function(){progress.hidden=true;invite.hidden=false;},5000);'
+            . '});'
+            . '});'
+            . '})();'
+            . '</script>'
+            . '</section>';
+    }
+
+    /**
+     * Record the Apple ID for the iOS TestFlight invite. The client-side flow
+     * posts here and then reveals the link itself, so the response is JSON.
+     */
+    public function submitIosAppleId(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::json(401, ['ok' => false, 'error' => 'user_auth_failed']);
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            // Same gate as the card: no invite without a live package, even if
+            // the POST is replayed after the package lapsed.
+            if (!AppleId::hasValidMembership($this->userServices((int) $user['id']))) {
+                throw new ApiException('membership_required', 403);
+            }
+            $claim = AppleId::claim($this->db, (int) $user['id'], $request->input('apple_id', ''));
+            return Response::json(200, [
+                'ok' => true,
+                'apple_id' => $claim['apple_id'],
+                'invite_url' => self::IOS_TESTFLIGHT_INVITE_URL,
+            ]);
+        } catch (ApiException $exception) {
+            return Response::json($exception->statusCode(), [
+                'ok' => false,
+                'error' => $exception->getMessage(),
+            ]);
+        } catch (\Throwable) {
+            return Response::json(500, ['ok' => false, 'error' => 'apple_id_save_failed']);
+        }
     }
 
     public function sidecarsPage(Request $request, array $params): Response

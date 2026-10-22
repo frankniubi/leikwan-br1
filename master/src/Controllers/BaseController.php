@@ -432,6 +432,7 @@ abstract class BaseController
             'macos' => '<path d="M12 7.6c-3 0-5.2 2.4-5.2 5.6 0 3.2 2.3 5.9 5.2 5.9s5.2-2.7 5.2-5.9c0-3.2-2.2-5.6-5.2-5.6z"/><ellipse cx="14.6" cy="4.7" rx="2.6" ry="1.2" transform="rotate(-32 14.6 4.7)"/><rect x="11.6" y="5.4" width="1" height="2.6" rx="0.5"/>',
             'linux' => '<circle cx="12" cy="7.2" r="4.3"/><ellipse cx="12" cy="16" rx="5.6" ry="6.4"/><path d="M10 9.2h4L12 11.9z"/><ellipse cx="6.4" cy="20.4" rx="2.6" ry="1.1"/><ellipse cx="17.6" cy="20.4" rx="2.6" ry="1.1"/>',
             'android' => '<path d="M5.6 10.4h12.8v6.8a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2z"/><path d="M5.6 9.6a6.4 6.4 0 0 1 12.8 0z"/><path d="M8.2 3.4 6.9 1.8M15.8 3.4l1.3-1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="3.1" y="10.6" width="1.7" height="5.6" rx="0.85"/><rect x="19.2" y="10.6" width="1.7" height="5.6" rx="0.85"/>',
+            'ios' => '<path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.9-3-.9-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.9 2.2 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.1.9-1.2 1.2-2.4 1.3-2.5-.1 0-2.5-1-2.5-3.6z"/><path d="M14.2 5.5c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z"/>',
             'helper' => '<path d="M12 4.6a7.4 7.4 0 1 0 7.1 9.4l-2.1-.6A5.2 5.2 0 1 1 12 6.8z"/><path d="M12 2.2l4 3-4 3z"/>',
             'docker' => '<path d="M3 11h3.4v3.4H3zM7.1 11h3.4v3.4H7.1zM11.2 9.2h3.4v5.2h-3.4zM15.3 10.2h3.4v4.2h-3.4z"/><path d="M3.2 15.8h17.6l-1.1 2.2H4.3z"/><path d="M6.1 7.2h1.1V5.4h1.2v1.8h1.1V6h1.2v1.2h1l1 1v1.1h-6.6z"/>',
         ];
@@ -2016,7 +2017,7 @@ HTML;
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
-  <link rel="stylesheet" href="/assets/console.css?v=20260926c">
+  <link rel="stylesheet" href="/assets/console.css?v=20261022a">
 </head>
 <body class="pg-app">
   <div class="shell">

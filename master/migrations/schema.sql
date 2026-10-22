@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS users (
     whmcs_bound_at DATETIME NULL,
     whmcs_last_synced_at DATETIME NULL,
     wallet_low_balance_threshold DECIMAL(10,2) NOT NULL DEFAULT 5.00,
-    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0
+    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0,
+    apple_id VARCHAR(191) NULL,
+    apple_id_submitted_at DATETIME NULL
 );
 
 CREATE TABLE IF NOT EXISTS oidc_identities (
