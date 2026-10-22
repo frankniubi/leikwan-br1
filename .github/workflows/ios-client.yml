@@ -307,7 +307,6 @@ jobs:
             || { grep -E 'error:|Error|ITMS-' build/export.log | head -60; tail -40 build/export.log; exit 1; }
           # The upload result lives only in this log; surface it in the job output.
           grep -E 'Upload|upload|ITMS|Progress|No errors' build/export.log | tail -30 || true
-          ls -lh build/export
           echo "### Uploaded build ${{ github.run_number }} to TestFlight" >> "$GITHUB_STEP_SUMMARY"
       - name: Remove the API key and signing assets
         if: always()
