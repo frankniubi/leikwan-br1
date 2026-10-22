@@ -52,6 +52,13 @@ def bundle_pk(call, identifier):
     return d["data"][0]["id"]
 
 
+def existing_distribution_cert(call):
+    st, d = call("GET", "/certificates?filter[certificateType]=IOS_DISTRIBUTION&limit=5")
+    if st != 200 or not d.get("data"):
+        raise SystemExit("no distribution certificate yet; run once without --profiles-only")
+    return d["data"][0]["id"]
+
+
 def distribution_cert(call, work, rotate):
     st, d = call("GET", "/certificates?filter[certificateType]=IOS_DISTRIBUTION&limit=5")
     if st == 200 and d.get("data") and not rotate:
@@ -134,20 +141,28 @@ def main():
     ap.add_argument("--out", default="ios/build/signing")
     ap.add_argument("--rotate", action="store_true",
                     help="create a new distribution certificate even though one exists")
+    ap.add_argument("--profiles-only", action="store_true",
+                    help="reuse the installed certificate and only rebuild the App Store profiles "
+                         "(e.g. after enabling the App Group in the portal)")
     a = ap.parse_args()
     out = pathlib.Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     work = pathlib.Path(tempfile.mkdtemp())
     call = client(a.key, a.key_id, a.issuer_id)
 
-    cert_pk, key, pem = distribution_cert(call, work, a.rotate)
-    password = secrets.token_urlsafe(18)
-    p12 = out / "distribution.p12"
-    # macOS `security import` cannot read OpenSSL 3's default PKCS#12 encryption.
-    subprocess.run(["openssl", "pkcs12", "-export", "-legacy", "-inkey", str(key), "-in", str(pem),
-                    "-out", str(p12), "-password", "pass:" + password, "-name", "Bridge Distribution",
-                    "-macalg", "sha1"],
-                   check=True, capture_output=True)
+    if a.profiles_only:
+        cert_pk = existing_distribution_cert(call)
+        p12 = None
+        password = None
+    else:
+        cert_pk, key, pem = distribution_cert(call, work, a.rotate)
+        password = secrets.token_urlsafe(18)
+        p12 = out / "distribution.p12"
+        # macOS `security import` cannot read OpenSSL 3's default PKCS#12 encryption.
+        subprocess.run(["openssl", "pkcs12", "-export", "-legacy", "-inkey", str(key), "-in", str(pem),
+                        "-out", str(p12), "-password", "pass:" + password, "-name", "Bridge Distribution",
+                        "-macalg", "sha1"],
+                       check=True, capture_output=True)
 
     app_pk = bundle_pk(call, APP_ID)
     tunnel_pk = bundle_pk(call, TUNNEL_ID)
@@ -158,12 +173,14 @@ def main():
     print("wrote %s" % out)
 
     if a.github_repo:
-        set_github(a.github_repo, {
-            "MANUAL_P12_BASE64": base64.b64encode(p12.read_bytes()).decode(),
-            "MANUAL_P12_PASSWORD": password,
+        values = {
             "MANUAL_PROFILE_APP_BASE64": base64.b64encode(app_profile.read_bytes()).decode(),
             "MANUAL_PROFILE_TUNNEL_BASE64": base64.b64encode(tunnel_profile.read_bytes()).decode(),
-        })
+        }
+        if p12 is not None:
+            values["MANUAL_P12_BASE64"] = base64.b64encode(p12.read_bytes()).decode()
+            values["MANUAL_P12_PASSWORD"] = password
+        set_github(a.github_repo, values)
 
 
 if __name__ == "__main__":
