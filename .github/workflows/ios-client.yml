@@ -300,6 +300,11 @@ jobs:
           plutil -insert teamID -string "$APPLE_TEAM_ID" "$opts"
           plutil -insert signingStyle -string "$style" "$opts"
           plutil -insert manageAppVersionAndBuildNumber -bool NO "$opts"
+          if [ "$style" = "manual" ]; then
+            plutil -insert provisioningProfiles -dictionary "$opts"
+            plutil -insert provisioningProfiles.org.forfoxsakesantuary.foxbridgeinternal -string "Bridge App Store" "$opts"
+            plutil -insert provisioningProfiles.org.forfoxsakesantuary.foxbridgeinternal.tunnel -string "Bridge Tunnel App Store" "$opts"
+          fi
           xcodebuild -exportArchive \
             -archivePath build/Bridge.xcarchive \
             -exportOptionsPlist "$opts" \
