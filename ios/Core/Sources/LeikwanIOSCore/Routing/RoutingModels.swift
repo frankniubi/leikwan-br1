@@ -64,8 +64,8 @@ public struct SafePathEntry: Equatable {
     }
 }
 
-/// Port of `routing/SafePathRegistry.kt`. On iOS every panel endpoint host is protected
-/// (the user may fail over between them), plus the mirror and loopback/RFC-1918.
+/// Port of `routing/SafePathRegistry.kt`. On iOS the hosts of the signed-in profile's server
+/// addresses are protected (the client may fail over to the backup), plus loopback/RFC-1918.
 public struct SafePathRegistry: Equatable {
     public let entries: [SafePathEntry]
 
@@ -73,18 +73,23 @@ public struct SafePathRegistry: Equatable {
         self.entries = entries
     }
 
-    public static func iosBaseline(
-        panelHosts: [String] = PanelEndpoint.allCases.map { $0.host },
-        mirrorHost: String = PanelEndpoint.mirrorHost
-    ) -> SafePathRegistry {
+    /// `panelHosts`: the profile's server hosts (`PanelProfile.panelHosts`); IP literals become
+    /// /32 or /128 entries, empty when signed out.
+    public static func iosBaseline(panelHosts: [String] = []) -> SafePathRegistry {
         var hosts: [String] = []
+        var cidrs: [String] = []
         for host in panelHosts {
             let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !normalized.isEmpty && !hosts.contains(normalized) { hosts.append(normalized) }
+            if normalized.isEmpty { continue }
+            if let ip = IPLiteral.normalize(normalized) {
+                let cidr = ip.contains(":") ? "\(ip)/128" : "\(ip)/32"
+                if !cidrs.contains(cidr) { cidrs.append(cidr) }
+            } else if !hosts.contains(normalized) {
+                hosts.append(normalized)
+            }
         }
         return SafePathRegistry(entries: [
-            SafePathEntry(id: "panel-api", domains: hosts, ipCidrs: []),
-            SafePathEntry(id: "panel-mirror", domains: [mirrorHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()], ipCidrs: []),
+            SafePathEntry(id: "panel-api", domains: hosts, ipCidrs: cidrs),
             SafePathEntry(id: "loopback-control", domains: [], ipCidrs: ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]),
         ])
     }
@@ -103,14 +108,12 @@ public struct SafePathRegistry: Equatable {
     }
 }
 
-/// A remote `.srs` rule-set reference (format "binary").
+/// A `.srs` rule-set (format "binary") shipped inside the app; see `BundledRuleSets`.
 public struct RuleSetRef: Equatable, Hashable {
     public let tag: String
-    public let url: String
 
-    public init(tag: String, url: String) {
+    public init(tag: String) {
         self.tag = tag
-        self.url = url
     }
 }
 

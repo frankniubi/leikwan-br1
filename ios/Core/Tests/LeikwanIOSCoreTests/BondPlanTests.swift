@@ -52,9 +52,9 @@ final class BondPlanTests: XCTestCase {
     }
 
     func testStrategyFileAndInjectedPorts() throws {
-        let strategy = BondStrategyFile.make(directory: "/tmp/strategies/", panelId: " V3.LeiKwanHost.com ", clientId: 5, forwardId: 12, strategy: .speedMax)
-        // SHA-256("v3.leikwanhost.com") prefix 16 = 68b03444e4add763 (Python hashlib).
-        XCTAssertEqual(strategy.path, "/tmp/strategies/68b03444e4add763-5-12.strategy")
+        let strategy = BondStrategyFile.make(directory: "/tmp/strategies/", panelId: " Panel.Example.com ", clientId: 5, forwardId: 12, strategy: .speedMax)
+        // SHA-256("panel.example.com") prefix 16 = b2e4d3393cc32a1e (Python hashlib).
+        XCTAssertEqual(strategy.path, "/tmp/strategies/b2e4d3393cc32a1e-5-12.strategy")
         XCTAssertEqual(strategy.contents, "speed_max\n")
 
         var requests: [BondLegPortRequest] = []
@@ -69,7 +69,7 @@ final class BondPlanTests: XCTestCase {
         let bond = plan.invocations[2].arguments
         XCTAssertEqual(Array(bond[0..<5]), ["client", "--protocol", "tcp", "--listen", "127.0.0.1:50000"])
         XCTAssertEqual(Array(bond[7..<13]), [
-            "--session-token", "st", "--strategy-file", "/tmp/strategies/68b03444e4add763-5-12.strategy", "--default-strategy", "latency_best",
+            "--session-token", "st", "--strategy-file", "/tmp/strategies/b2e4d3393cc32a1e-5-12.strategy", "--default-strategy", "latency_best",
         ])
         XCTAssertTrue(bond[6].contains("tcp://127.0.0.1:40000?"))
     }

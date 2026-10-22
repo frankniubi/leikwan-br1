@@ -38,7 +38,8 @@ public final class URLSessionPanelTransport: PanelHTTPTransport {
 }
 
 /// Panel control-plane client for iOS (Client ID + Agent Token login).
-/// Thread-safe; the active endpoint flips to the alternate after a transport failure when failover is on.
+/// Thread-safe; after a transport failure the active endpoint flips to the profile's backup
+/// address (when it has one and failover is on).
 public final class PanelClient {
     public static let configsPullPath = "api/client/configs/pull"
     public static let heartbeatPath = "api/client/heartbeat"
@@ -46,33 +47,44 @@ public final class PanelClient {
 
     public let credentials: PanelCredentials
     public let allowFailover: Bool
+    /// Primary first, then the backup (never a duplicate of the primary).
+    public let endpoints: [PanelEndpoint]
     private let transport: PanelHTTPTransport
     private let lock = NSLock()
-    private var currentEndpoint: PanelEndpoint
+    private var activeIndex = 0
 
     public init(
         endpoint: PanelEndpoint,
+        fallback: PanelEndpoint? = nil,
         credentials: PanelCredentials,
         transport: PanelHTTPTransport = URLSessionPanelTransport(),
         allowFailover: Bool = true
     ) {
-        self.currentEndpoint = endpoint
+        var endpoints = [endpoint]
+        if let fallback = fallback, fallback != endpoint { endpoints.append(fallback) }
+        self.endpoints = endpoints
         self.credentials = credentials
         self.transport = transport
         self.allowFailover = allowFailover
     }
 
-    private func setActiveEndpoint(_ endpoint: PanelEndpoint) {
-        lock.lock()
-        currentEndpoint = endpoint
-        lock.unlock()
-    }
-
-    /// Endpoint that answered last (or the user's choice before any request).
+    /// Endpoint that answered last (or the primary before any request).
     public var activeEndpoint: PanelEndpoint {
         lock.lock()
         defer { lock.unlock() }
-        return currentEndpoint
+        return endpoints[activeIndex]
+    }
+
+    private func currentIndex() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeIndex
+    }
+
+    private func activate(_ index: Int) {
+        lock.lock()
+        activeIndex = index
+        lock.unlock()
     }
 
     // MARK: Requests
@@ -107,14 +119,14 @@ public final class PanelClient {
 
     /// Sends with transport failover. Returns body + status for 2xx; throws `PanelError` otherwise.
     func perform(path: String, method: String, jsonBody: [String: Any]?, extraHeaders: [String: String]) async throws -> (Data, HTTPURLResponse) {
-        let primary = activeEndpoint
+        let primaryIndex = currentIndex()
         do {
-            return try await performOnce(endpoint: primary, path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
+            return try await performOnce(endpoint: endpoints[primaryIndex], path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
         } catch let error as PanelError {
-            guard error.isTransport, allowFailover else { throw error }
-            let alternate = primary.alternate
-            let result = try await performOnce(endpoint: alternate, path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
-            setActiveEndpoint(alternate)
+            guard error.isTransport, allowFailover, endpoints.count > 1 else { throw error }
+            let alternateIndex = (primaryIndex + 1) % endpoints.count
+            let result = try await performOnce(endpoint: endpoints[alternateIndex], path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
+            activate(alternateIndex)
             return result
         }
     }

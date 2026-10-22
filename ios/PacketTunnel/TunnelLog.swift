@@ -6,8 +6,8 @@ import os.log
 final class TunnelLog {
     static let shared = TunnelLog()
 
-    private let logger = Logger(subsystem: "com.leikwan.bridge.ios.tunnel", category: "tunnel")
-    private let queue = DispatchQueue(label: "com.leikwan.tunnel.log")
+    private let logger = Logger(subsystem: "org.forfoxsakesantuary.foxbridgeinternal.tunnel", category: "tunnel")
+    private let queue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.log")
     private var lines: [String] = []
     private let capacity = 600
     private let formatter: DateFormatter = {
@@ -25,6 +25,24 @@ final class TunnelLog {
             if self.lines.count > self.capacity {
                 self.lines.removeFirst(self.lines.count - self.capacity)
             }
+            Self.appendToFile(line)
+        }
+    }
+
+    /// Appends to the shared log file so the app can show what happened even when the
+    /// tunnel process died during start (the in-memory ring dies with the process).
+    private static func appendToFile(_ line: String) {
+        let url = AppGroup.tunnelLogURL
+        let data = Data((line + "\n").utf8)
+        if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 256 * 1024 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url, options: [.atomic])
         }
     }
 

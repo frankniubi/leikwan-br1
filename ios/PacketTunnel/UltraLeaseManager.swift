@@ -19,20 +19,15 @@ import Security
 final class UltraLeaseManager {
     private let client: PanelClient
     private let forwards: [UltraForwardLaunch]
-    private let deliveryQueue = DispatchQueue(label: "com.leikwan.tunnel.ultra-lease", attributes: .concurrent)
+    private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.ultra-lease", attributes: .concurrent)
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
     private var alerts: [Int64: String] = [:]
+    /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
+    private var candidateEndpoints: [Int64: [String: String]] = [:]
 
-    init(session: TunnelPanelSession, forwards: [UltraForwardLaunch]) {
-        let credentials = PanelCredentials(
-            clientId: session.clientID,
-            agentToken: session.agentToken,
-            installId: session.installID,
-            deviceName: session.deviceName,
-            appVersion: session.appVersion
-        )
-        client = PanelClient(endpoint: PanelEndpoint.fromStorage(session.endpoint), credentials: credentials)
+    init(client: PanelClient, forwards: [UltraForwardLaunch]) {
+        self.client = client
         self.forwards = forwards
     }
 
@@ -41,7 +36,7 @@ final class UltraLeaseManager {
         lock.lock()
         defer { lock.unlock() }
         guard let forwardID = alerts.keys.sorted().first, let message = alerts[forwardID] else { return nil }
-        return "Ultra 转发 \(forwardID)：\(message)"
+        return L("Ultra forward %@: %@", String(describing: forwardID), String(describing: message))
     }
 
     func start() {
@@ -206,6 +201,7 @@ final class UltraLeaseManager {
             for index in discarded.indices { discarded[index].wipe() }
             throw CancellationError()
         }
+        recordEndpoints(leases, for: forward.forwardID)
         let socketPath = forward.controlSocketPath
         let slow = forward.autoSelect
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
@@ -219,6 +215,55 @@ final class UltraLeaseManager {
                 continuation.resume(returning: accepted)
             }
         }
+    }
+
+    // MARK: Endpoints
+
+    /// Remembers which relay endpoint each delivered candidate points at, keyed by lease hash,
+    /// so the app can show the entry the runtime actually selected.
+    private func recordEndpoints(_ leases: [UltraLease], for forwardID: Int64) {
+        var map: [String: String] = [:]
+        for lease in leases {
+            let host = lease.endpointIp.contains(":") ? "[\(lease.endpointIp)]" : lease.endpointIp
+            map[lease.leaseHash.lowercased()] = "\(host):\(lease.endpointPort)"
+        }
+        lock.lock()
+        candidateEndpoints[forwardID] = map
+        lock.unlock()
+    }
+
+    /// Forward id → "ip:port" of the relay entry in use: the candidate the runtime's status file
+    /// reports as selected (UDP first, then TCP), or the only candidate when there was one.
+    func activeEndpoints() -> [Int64: String] {
+        lock.lock()
+        let candidates = candidateEndpoints
+        lock.unlock()
+        var result: [Int64: String] = [:]
+        for forward in forwards {
+            guard let map = candidates[forward.forwardID], !map.isEmpty else { continue }
+            if let hash = Self.selectedLeaseHash(statusPath: forward.statusPath), let endpoint = map[hash] {
+                result[forward.forwardID] = endpoint
+            } else if map.count == 1, let only = map.values.first {
+                result[forward.forwardID] = only
+            }
+        }
+        return result
+    }
+
+    private static func selectedLeaseHash(statusPath: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statusPath)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        for key in ["active_udp", "udp_runtime_session", "latest_tcp"] {
+            if let selection = object[key] as? [String: Any],
+               let hash = selection["lease_hash"] as? String,
+               !hash.isEmpty {
+                return hash.lowercased()
+            }
+        }
+        return nil
     }
 
     // MARK: Helpers
@@ -256,17 +301,17 @@ final class UltraLeaseManager {
     static func userMessage(_ code: String) -> String {
         switch code {
         case "ultra_forward_changed_reconnect":
-            return "转发配置已变更，请重新连接"
+            return L("The forward settings changed. Reconnect")
         case "ultra_policy_unavailable", "policy_unavailable":
-            return "Ultra 授权不可用（服务未激活或已过期）"
+            return L("Ultra authorization unavailable (service inactive or expired)")
         case "lease_sealing_required", "lease_key_invalid", "lease_unseal_failed", "lease_device_key_conflict":
-            return "线路密钥校验失败（\(code)）"
+            return L("Line key check failed (%@)", String(describing: code))
         case "ultra_lease_rejected_by_runtime":
-            return "本地 Ultra 运行时拒绝了线路"
+            return L("The local Ultra runtime rejected the line")
         case "no_approved_candidate":
-            return "暂无可用线路，稍后自动重试"
+            return L("No line available yet; retrying automatically")
         default:
-            return "获取线路失败（\(code)），稍后自动重试"
+            return L("Could not get a line (%@); retrying automatically", String(describing: code))
         }
     }
 }
@@ -275,7 +320,7 @@ final class UltraLeaseManager {
 /// after-first-unlock, this device only). Generated once; regenerated only when no key exists or
 /// the stored one is unusable, never because the panel reported a key conflict.
 enum UltraLeaseKeychain {
-    private static let service = "com.leikwan.bridge.ios.ultra-lease-key"
+    private static let service = "org.forfoxsakesantuary.foxbridgeinternal.ultra-lease-key"
     private static let account = "lease-key-v1"
     private static let lock = NSLock()
     private static var cached: UltraSealedLeaseOpener?

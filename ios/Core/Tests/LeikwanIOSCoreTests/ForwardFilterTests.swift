@@ -130,4 +130,22 @@ final class ForwardFilterTests: XCTestCase {
         XCTAssertEqual(ForwardMode.normalize("multipath-tcp"), .mptcp)
         XCTAssertEqual(ForwardMode.normalize(nil), .unknown)
     }
+
+    func testNativeOutboundRulesAreSupportedButNotBindable() {
+        let raw: [Any] = [
+            ["forward_id": 1, "backend_mode": "ultra", "native_outbound": true] as [String: Any],
+            ["forward_id": 2, "backend_mode": "ultra", "native_outbound": "0"] as [String: Any],
+            ["forward_id": 3, "backend_mode": "ultra"] as [String: Any],
+            // The flag only matters on Ultra forwards (Windows IsNativeOutboundRule).
+            ["forward_id": 4, "backend_mode": "current_mode", "client_mode": "bond",
+             "bond_ingress_mode": "plain_tcp_mux", "bonding": [String: Any](), "native_outbound": true] as [String: Any],
+        ]
+        let catalog = IOSForwardFilter.buildCatalog(rawForwards: raw, selectedForwardId: nil)
+        XCTAssertEqual(catalog.supported.map { $0.forwardId }, [1, 2, 3, 4])
+        XCTAssertEqual(catalog.supported.filter { $0.isNativeOutboundRule }.map { $0.forwardId }, [1])
+        XCTAssertEqual(catalog.bindableForwards.map { $0.forwardId }, [2, 3, 4])
+        XCTAssertNil(catalog.bindableForward(id: 1))
+        XCTAssertNotNil(catalog.supportedForward(id: 1))
+        XCTAssertNotNil(catalog.bindableForward(id: 4))
+    }
 }

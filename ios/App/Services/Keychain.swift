@@ -1,10 +1,10 @@
 import Foundation
 import Security
 
-/// Minimal generic-password Keychain wrapper for the agent token and the
-/// stable install id.
+/// Minimal generic-password Keychain wrapper for the profiles' Agent Tokens
+/// (`PanelProfile.tokenAccount`) and the stable install id.
 enum Keychain {
-    private static let service = "com.leikwan.bridge.ios"
+    private static let service = Bundle.main.bundleIdentifier ?? "org.forfoxsakesantuary.foxbridgeinternal"
 
     static func string(_ account: String) -> String? {
         let query: [String: Any] = [

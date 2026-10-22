@@ -227,10 +227,10 @@ final class HostedNodeController extends BaseController
         return $client;
     }
 
-    /** Desktop platform family from X-Device-Platform ('windows-desktop', 'macos-desktop'), or ''. */
+    /** Platform family from X-Device-Platform ('windows-desktop', 'macos-desktop', 'ios'), or ''. */
     private static function desktopFamily(string $platform): string
     {
-        foreach (['windows', 'macos'] as $family) {
+        foreach (['windows', 'macos', 'ios'] as $family) {
             if ($platform === $family || str_starts_with($platform, $family . '-')) {
                 return $family;
             }
@@ -241,7 +241,8 @@ final class HostedNodeController extends BaseController
     /**
      * The device id each official desktop build persists per install:
      * Windows windows-client-<client id>-<16 hex> (bound to this client),
-     * macOS macos-client-<32 hex>.
+     * macOS macos-client-<32 hex>,
+     * iOS ios-client-<client id>-<16 hex> (bound to this client).
      */
     private static function isDesktopDeviceId(string $family, string $deviceId, int $clientId): bool
     {
@@ -249,6 +250,8 @@ final class HostedNodeController extends BaseController
             'windows' => preg_match('/^windows-client-([1-9][0-9]*)-[a-f0-9]{16}$/', $deviceId, $match) === 1
                 && (int) $match[1] === $clientId,
             'macos' => preg_match('/^macos-client-[a-f0-9]{32}$/', $deviceId) === 1,
+            'ios' => preg_match('/^ios-client-([1-9][0-9]*)-[a-f0-9]{16}$/', $deviceId, $match) === 1
+                && (int) $match[1] === $clientId,
             default => false,
         };
     }

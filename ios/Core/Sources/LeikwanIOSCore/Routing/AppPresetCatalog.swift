@@ -21,19 +21,16 @@ public struct AppPreset: Equatable {
     public var tags: [String] { return ruleSets.map { $0.tag } }
 }
 
-/// Curated app preset pack. Geosite refs use the SagerNet sing-geosite URL pattern (same as Android).
-/// SagerNet/sing-geoip only publishes country sets, so app IP sets (telegram, google, netflix, facebook,
-/// twitter) come from MetaCubeX/meta-rules-dat (`sing` branch); all URLs were checked to exist (2026-10-12).
+/// Curated app preset pack. Geosite sets are the sing-geosite ones Android uses; sing-geoip only
+/// has country sets, so the app IP sets (telegram, google, netflix, facebook, twitter) are the
+/// meta-rules-dat ones. All of them are bundled (`BundledRuleSets`, `ios/RuleSets/sources.tsv`).
 public enum AppPresetCatalog {
-    public static let metaGeoipBase = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/"
-
     static func site(_ name: String) -> RuleSetRef {
-        let tag = "geosite-" + name
-        return RuleSetRef(tag: tag, url: RoutingCategoryCatalog.geositeUrl(tag))
+        return RuleSetRef(tag: "geosite-" + name)
     }
 
     static func appIp(_ name: String) -> RuleSetRef {
-        return RuleSetRef(tag: "geoip-" + name, url: metaGeoipBase + name + ".srs")
+        return RuleSetRef(tag: "geoip-" + name)
     }
 
     public static let presets: [AppPreset] = [
