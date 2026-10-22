@@ -195,6 +195,10 @@ jobs:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      MANUAL_P12_BASE64: ${{ secrets.MANUAL_P12_BASE64 }}
+      MANUAL_P12_PASSWORD: ${{ secrets.MANUAL_P12_PASSWORD }}
+      MANUAL_PROFILE_APP_BASE64: ${{ secrets.MANUAL_PROFILE_APP_BASE64 }}
+      MANUAL_PROFILE_TUNNEL_BASE64: ${{ secrets.MANUAL_PROFILE_TUNNEL_BASE64 }}
     steps:
       - name: Check signing secrets
         id: secrets
@@ -204,6 +208,11 @@ jobs:
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "### TestFlight skipped: signing secrets are not set (see ios/scripts/apple_setup.py)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$MANUAL_P12_BASE64" ] && [ -n "$MANUAL_PROFILE_APP_BASE64" ] && [ -n "$MANUAL_PROFILE_TUNNEL_BASE64" ]; then
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "manual=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
         if: steps.secrets.outputs.ready == 'true'
@@ -221,19 +230,49 @@ jobs:
           mkdir -p "$RUNNER_TEMP/asc"
           printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
           echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" >> "$GITHUB_ENV"
+      - name: Import the distribution certificate and profiles
+        if: steps.secrets.outputs.ready == 'true' && steps.secrets.outputs.manual == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MANUAL_P12_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$keychain" -P "$MANUAL_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          profiles="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles"
+          printf '%s' "$MANUAL_PROFILE_APP_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$MANUAL_PROFILE_TUNNEL_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/tunnel.mobileprovision"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          cp "$RUNNER_TEMP/tunnel.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          security find-identity -v -p codesigning "$keychain"
       - name: Generate project
         if: steps.secrets.outputs.ready == 'true'
         working-directory: ios
         run: xcodegen generate
-      # App Store distribution identity: a distribution profile needs no device UDIDs,
-      # while a development profile does (and a CI Mac has no devices).
-      - name: Archive (automatic signing)
+      # Manual, App Store profiles when the CI secrets carry them (a distribution profile
+      # needs no device UDIDs); automatic signing as a last resort.
+      - name: Archive
         if: steps.secrets.outputs.ready == 'true'
         working-directory: ios
         run: |
           set -o pipefail
           mkdir -p build
-          # Build number: the workflow run number, always increasing for this repository.
+          signing=()
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then
+            signing=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="Apple Distribution"
+              BRIDGE_APP_PROFILE="Bridge App Store"
+              BRIDGE_TUNNEL_PROFILE="Bridge Tunnel App Store"
+            )
+          else
+            signing=(CODE_SIGN_STYLE=Automatic)
+          fi
           xcodebuild archive \
             -project Bridge.xcodeproj -scheme Bridge \
             -configuration Release \
@@ -244,8 +283,8 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" > build/archive.log 2>&1 \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            "${signing[@]}" > build/archive.log 2>&1 \
             || { grep -E 'error:|Provisioning|provisioning|Signing' build/archive.log | head -60; tail -40 build/archive.log; exit 1; }
       - name: Export and upload to TestFlight
         if: steps.secrets.outputs.ready == 'true'
@@ -253,15 +292,17 @@ jobs:
         run: |
           set -o pipefail
           opts=build/ExportOptions.plist
+          style=automatic
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then style=manual; fi
           plutil -create xml1 "$opts"
           plutil -insert method -string app-store-connect "$opts"
           plutil -insert destination -string upload "$opts"
           plutil -insert teamID -string "$APPLE_TEAM_ID" "$opts"
-          plutil -insert signingStyle -string automatic "$opts"
+          plutil -insert signingStyle -string "$style" "$opts"
           plutil -insert manageAppVersionAndBuildNumber -bool NO "$opts"
           xcodebuild -exportArchive \
             -archivePath build/Bridge.xcarchive \
-            -exportOptionsPlist build/ExportOptions.plist \
+            -exportOptionsPlist "$opts" \
             -exportPath build/export \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$ASC_KEY_PATH" \
@@ -269,6 +310,8 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" > build/export.log 2>&1 \
             || { grep -E 'error:|Error|ITMS-' build/export.log | head -60; tail -40 build/export.log; exit 1; }
           echo "### Uploaded build ${{ github.run_number }} to TestFlight" >> "$GITHUB_STEP_SUMMARY"
-      - name: Remove the API key
+      - name: Remove the API key and signing assets
         if: always()
-        run: rm -rf "$RUNNER_TEMP/asc"
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP"/app.mobileprovision "$RUNNER_TEMP"/tunnel.mobileprovision
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
