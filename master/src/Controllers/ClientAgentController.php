@@ -1458,7 +1458,8 @@ final class ClientAgentController extends BaseController
         $platform = strtolower(trim($platform));
         return str_starts_with($platform, 'windows')
             || str_starts_with($platform, 'linux')
-            || str_starts_with($platform, 'macos');
+            || str_starts_with($platform, 'macos')
+            || str_starts_with($platform, 'ios');
     }
 
     /** @param array<string,mixed> $forward @return array<string,mixed> */
