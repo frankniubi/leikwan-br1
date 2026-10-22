@@ -197,6 +197,22 @@ struct ProfileDraft: Identifiable {
 }
 
 /// New / edit profile form; signs in on submit.
+/// Panel entry points offered as one tap on the profile form.
+private struct ServerPreset: Identifiable {
+    let id: String
+    let title: String
+    let url: String
+
+    static let all: [ServerPreset] = [
+        ServerPreset(id: "cloudflare", title: "Cloudflare CDN", url: "https://v3.leikwanhost.com"),
+        ServerPreset(id: "direct", title: "Directly CDN", url: "https://api-leikwanbridge.nbwly.com"),
+    ]
+
+    static func other(than id: String) -> ServerPreset? {
+        return all.first { $0.id != id }
+    }
+}
+
 private struct ProfileForm: View {
     @EnvironmentObject private var model: AppModel
     @State private var draft: ProfileDraft
@@ -228,6 +244,34 @@ private struct ProfileForm: View {
             && (!draft.token.isEmpty || hasSavedToken)
     }
 
+    /// One-tap entry points for the two panel addresses. The field stays editable, so a user
+    /// running their own server simply types it instead.
+    private var serverPresets: some View {
+        HStack(spacing: 8) {
+            ForEach(ServerPreset.all) { preset in
+                let selected = draft.server.trimmingCharacters(in: .whitespacesAndNewlines) == preset.url
+                Button {
+                    draft.server = preset.url
+                    if draft.backupServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let other = ServerPreset.other(than: preset.id) {
+                        draft.backupServer = other.url
+                    }
+                } label: {
+                    Text(preset.title)
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .foregroundStyle(selected ? Palette.onPrimaryContainer : Palette.onSurfaceVariant)
+                        .background(
+                            selected ? Palette.primaryContainer : Palette.surfaceContainer,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             InputField(title: L("Profile name (optional)"), systemImage: "tag") {
@@ -242,6 +286,7 @@ private struct ProfileForm: View {
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .server)
             }
+            serverPresets
             InputField(title: L("Client ID"), systemImage: "person.text.rectangle") {
                 TextField("e.g. 1024", text: $draft.clientID)
                     .keyboardType(.numberPad)

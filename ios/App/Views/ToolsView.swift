@@ -5,6 +5,7 @@ import SwiftUI
 struct ToolsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmingSignOut = false
+    @State private var showingPrivacy = false
 
     var body: some View {
         NavigationStack {
@@ -68,6 +69,15 @@ struct ToolsView: View {
                 .listRowBackground(Palette.surfaceContainer)
 
                 Section {
+                    Button {
+                        showingPrivacy = true
+                    } label: {
+                        ToolRow(title: L("What this app sends"), detail: nil, systemImage: "shield.lefthalf.filled")
+                    }
+                    .foregroundStyle(Palette.onSurface)
+                    Link(destination: PrivacyDisclosureView.policyURL) {
+                        ToolRow(title: L("Privacy Policy"), detail: nil, systemImage: "hand.raised")
+                    }
                     InfoRow(title: L("Version"), value: model.appVersion)
                     Button(role: .destructive) {
                         confirmingSignOut = true
@@ -84,6 +94,9 @@ struct ToolsView: View {
             .navigationTitle(L("Tools"))
             .confirmationDialog(L("Signing out disconnects the current connection."), isPresented: $confirmingSignOut, titleVisibility: .visible) {
                 Button(L("Sign out"), role: .destructive) { model.signOut() }
+            }
+            .sheet(isPresented: $showingPrivacy) {
+                PrivacyDisclosureView()
             }
         }
     }

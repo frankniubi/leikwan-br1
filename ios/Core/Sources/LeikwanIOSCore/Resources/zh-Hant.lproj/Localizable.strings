@@ -30,9 +30,9 @@
 "Global" = "全域";
 "Standard routing" = "標準路由";
 "Unrestricted routing" = "無審全路由";
-"Native outbound is not available for this plan or forward" = "目前方案或轉發無法使用原生出口";
+"Native outbound is not available for this server or forward" = "目前伺服器或轉發無法使用原生出口";
 "The selected traffic scope is not available. Refresh and try again" = "所選流量範圍無法使用，請重新整理後再試";
-"This plan does not include unrestricted routing" = "目前方案不支援無審全路由";
+"This server does not include unrestricted routing" = "目前伺服器不支援無審全路由";
 "Native outbound authorization unavailable (service inactive or expired)" = "原生出口授權無法使用（服務未啟用或已過期）";
 "The native outbound line changed. Refresh and try again" = "原生出口線路已變更，請重新整理後再試";
 "The native outbound line expired. Reconnect" = "原生出口線路已過期，請重新連線";
