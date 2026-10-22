@@ -38,10 +38,11 @@ public enum UltraLocalListener {
         if errno != EINPROGRESS { return false }
 
         var entry = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
-        let ready: Int32
-        repeat {
+        var ready: Int32 = 0
+        while true {
             ready = Darwin.poll(&entry, 1, Int32(timeoutMilliseconds))
-        } while ready < 0 && errno == EINTR
+            if ready >= 0 || errno != EINTR { break }
+        }
         if ready <= 0 { return false }
         var socketError: Int32 = 0
         var length = socklen_t(MemoryLayout<Int32>.size)
