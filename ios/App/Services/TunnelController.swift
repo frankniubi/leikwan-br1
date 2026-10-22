@@ -84,10 +84,10 @@ final class TunnelController: ObservableObject {
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleIdentifier
-        proto.serverAddress = "Bridge"
+        proto.serverAddress = "LeiKwan Bridge"
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
-        manager.localizedDescription = "Bridge"
+        manager.localizedDescription = "LeiKwan Bridge"
         manager.isEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.

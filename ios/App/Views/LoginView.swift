@@ -87,7 +87,7 @@ struct LoginView: View {
                 )
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .accessibilityHidden(true)
-            Text("Bridge")
+            Text("LeiKwan Bridge")
                 .font(.largeTitle.weight(.bold))
                 .foregroundStyle(Palette.onSurface)
             Text(L("Sign in with your server address, Client ID and Agent Token"))
