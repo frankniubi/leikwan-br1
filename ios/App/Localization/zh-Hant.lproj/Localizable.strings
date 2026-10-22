@@ -223,4 +223,3 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS 支援 Ultra 轉發，以及 plain_tcp_mux 入口的 Bond 轉發。";
 "Unsupported forwards" = "暫不支援的轉發";
 "Target: %@" = "目標：%@";
-"Entry: %@" = "入口：%@";

@@ -223,4 +223,3 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS admite reenvíos Ultra y reenvíos Bond con entrada plain_tcp_mux.";
 "Unsupported forwards" = "Reenvíos no compatibles";
 "Target: %@" = "Destino: %@";
-"Entry: %@" = "Entrada: %@";

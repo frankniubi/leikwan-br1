@@ -186,14 +186,6 @@ private struct BindingCard: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .textSelection(.enabled)
-                    if let entry = model.relayEntryText(for: forward) {
-                        Text(L("Entry: %@", entry))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(Palette.onSurfaceVariant)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                            .textSelection(.enabled)
-                    }
                 }
             }
 

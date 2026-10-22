@@ -154,7 +154,7 @@ private struct NativeCarrierCard: View {
                     .font(.headline)
                     .foregroundStyle(Palette.onSurface)
                     .lineLimit(1)
-                Text(forward.map { model.endpointText(for: $0) } ?? "—")
+                Text(forward?.targetText ?? "—")
                     .font(.caption.monospaced())
                     .foregroundStyle(Palette.onSurfaceVariant)
                     .lineLimit(1)
