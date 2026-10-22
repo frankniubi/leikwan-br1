@@ -67,12 +67,17 @@ final class TunnelController: ObservableObject {
     }
 
     func fetchLogs() async -> [String] {
-        guard let reply = await send(TunnelRequest(command: .logs, launch: nil)),
-              let logs = try? JSONDecoder().decode(TunnelLogsSnapshot.self, from: reply)
-        else {
-            return []
+        if let reply = await send(TunnelRequest(command: .logs, launch: nil)),
+           let logs = try? JSONDecoder().decode(TunnelLogsSnapshot.self, from: reply),
+           !logs.lines.isEmpty {
+            return logs.lines
         }
-        return logs.lines
+        // The tunnel process is not answering (e.g. it failed to start): use the shared file.
+        guard let data = try? Data(contentsOf: AppGroup.tunnelLogURL) else { return [] }
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .suffix(400)
+            .map(String.init)
     }
 
     private func installedManager() async throws -> NETunnelProviderManager {
