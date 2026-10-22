@@ -70,6 +70,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BRIDGE_BUNDLE_ID)
         PRODUCT_NAME: Bridge
+        # CI sets these to the App Store profile names for manual signing; unset in Xcode.
+        PROVISIONING_PROFILE_SPECIFIER: "$(BRIDGE_APP_PROFILE)"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   PacketTunnel:
     type: app-extension
@@ -114,6 +116,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BRIDGE_BUNDLE_ID).tunnel
         PRODUCT_NAME: PacketTunnel
+        PROVISIONING_PROFILE_SPECIFIER: "$(BRIDGE_TUNNEL_PROFILE)"
         OTHER_LDFLAGS:
           - -lc++
 schemes:
