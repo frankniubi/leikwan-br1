@@ -181,3 +181,91 @@ jobs:
           name: Bridge-unsigned-ipa
           path: ios/build/Bridge-unsigned.ipa
           retention-days: 14
+
+  testflight:
+    name: Signed build to TestFlight
+    runs-on: macos-15
+    needs: [frameworks, core-tests]
+    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 60
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+    steps:
+      - name: Check signing secrets
+        id: secrets
+        run: |
+          if [ -n "$APPLE_TEAM_ID" ] && [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "### TestFlight skipped: signing secrets are not set (see ios/scripts/apple_setup.py)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: actions/download-artifact@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+      - name: Install XcodeGen
+        if: steps.secrets.outputs.ready == 'true'
+        run: brew install xcodegen
+      - name: Write the API key
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" >> "$GITHUB_ENV"
+      - name: Generate project
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: xcodegen generate
+      - name: Archive (automatic signing)
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          mkdir -p build
+          # Build number: the workflow run number, always increasing for this repository.
+          xcodebuild archive \
+            -project Bridge.xcodeproj -scheme Bridge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Bridge.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" > build/archive.log 2>&1 \
+            || { grep -E 'error:|Provisioning|provisioning|Signing' build/archive.log | head -60; tail -40 build/archive.log; exit 1; }
+      - name: Export and upload to TestFlight
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          opts=build/ExportOptions.plist
+          plutil -create xml1 "$opts"
+          plutil -insert method -string app-store-connect "$opts"
+          plutil -insert destination -string upload "$opts"
+          plutil -insert teamID -string "$APPLE_TEAM_ID" "$opts"
+          plutil -insert signingStyle -string automatic "$opts"
+          plutil -insert manageAppVersionAndBuildNumber -bool NO "$opts"
+          xcodebuild -exportArchive \
+            -archivePath build/Bridge.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > build/export.log 2>&1 \
+            || { grep -E 'error:|Error|ITMS-' build/export.log | head -60; tail -40 build/export.log; exit 1; }
+          echo "### Uploaded build ${{ github.run_number }} to TestFlight" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"
