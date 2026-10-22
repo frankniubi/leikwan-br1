@@ -59,9 +59,17 @@ def existing_distribution_cert(call):
     return d["data"][0]["id"]
 
 
-def distribution_cert(call, work, rotate):
+def distribution_cert(call, work, rotate, revoke):
     st, d = call("GET", "/certificates?filter[certificateType]=IOS_DISTRIBUTION&limit=5")
-    if st == 200 and d.get("data") and not rotate:
+    existing = d.get("data", []) if st == 200 else []
+    if revoke:
+        # The private keys of older certificates are gone; clear them so the profile always
+        # binds to the certificate whose .p12 we are about to store.
+        for item in existing:
+            st, err = call("DELETE", "/certificates/" + item["id"])
+            print("revoked certificate %s (%s)" % (item["id"], st))
+        existing = []
+    elif existing and not rotate:
         raise SystemExit("a distribution certificate already exists; pass --rotate to create "
                          "a second one (Apple allows two)")
     key = work / "dist.key"
@@ -141,6 +149,8 @@ def main():
     ap.add_argument("--out", default="ios/build/signing")
     ap.add_argument("--rotate", action="store_true",
                     help="create a new distribution certificate even though one exists")
+    ap.add_argument("--revoke", action="store_true",
+                    help="revoke the team's existing distribution certificates first")
     ap.add_argument("--profiles-only", action="store_true",
                     help="reuse the installed certificate and only rebuild the App Store profiles "
                          "(e.g. after enabling the App Group in the portal)")
@@ -155,7 +165,7 @@ def main():
         p12 = None
         password = None
     else:
-        cert_pk, key, pem = distribution_cert(call, work, a.rotate)
+        cert_pk, key, pem = distribution_cert(call, work, a.rotate, a.revoke)
         password = secrets.token_urlsafe(18)
         p12 = out / "distribution.p12"
         # macOS `security import` cannot read OpenSSL 3's default PKCS#12 encryption.
