@@ -86,9 +86,15 @@ public enum UltraRuntimeConfigBuilder {
         if autoSelect {
             config["probe_target"] = "1.1.1.1:53"
             config["auto_select"] = true
-            config["probe_duration_seconds"] = 30
-            config["probe_samples"] = 30
-            config["probe_interval_ms"] = 1000
+            // The runtime answers the first control frame only after it has probed the batch,
+            // and it binds its local listener after that. iOS hosts the runtime inside the
+            // Network Extension, which must produce its network settings soon after start, so
+            // the probe window matches the native-outbound budget (5 s, 20 samples) instead of
+            // Android's 30 s foreground window. Selection itself is unchanged: every candidate
+            // is still probed and ranked.
+            config["probe_duration_seconds"] = 5
+            config["probe_samples"] = 20
+            config["probe_interval_ms"] = 250
             config["probe_workers"] = 4
         } else {
             config["auto_select"] = false
