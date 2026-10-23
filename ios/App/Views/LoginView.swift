@@ -171,6 +171,7 @@ struct ProfileDraft: Identifiable {
             id: profileID ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             server: serverEndpoint,
+            backupServer: PanelPreset.backup(for: serverEndpoint),
             clientId: clientId,
             rememberToken: rememberToken
         ))
@@ -187,19 +188,6 @@ struct ProfileDraft: Identifiable {
 }
 
 /// New / edit profile form; signs in on submit.
-/// Panel entry points offered as one tap on the profile form.
-private struct ServerPreset: Identifiable {
-    let id: String
-    let title: String
-    let url: String
-
-    static let all: [ServerPreset] = [
-        ServerPreset(id: "cloudflare", title: "Cloudflare CDN", url: "https://v3.leikwanhost.com"),
-        ServerPreset(id: "direct", title: "Directly CDN", url: "https://api-leikwanbridge.nbwly.com"),
-    ]
-
-}
-
 private struct ProfileForm: View {
     @EnvironmentObject private var model: AppModel
     @State private var draft: ProfileDraft
@@ -231,19 +219,21 @@ private struct ProfileForm: View {
             && (!draft.token.isEmpty || hasSavedToken)
     }
 
-    /// The preset whose address the server field currently holds, if any.
-    private var selectedPreset: ServerPreset? {
-        let typed = draft.server.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ServerPreset.all.first { $0.url == typed }
+    /// The built-in address the server field currently holds, if any.
+    private var selectedPreset: PanelPreset? {
+        switch PanelEndpoint.parse(draft.server) {
+        case .success(let endpoint): return PanelPreset.matching(endpoint)
+        case .failure: return nil
+        }
     }
 
     /// One-tap entry points for the two panel addresses. They are shown only until one is
     /// chosen; a custom address is typed into the server field as before.
     private var serverPresets: some View {
         HStack(spacing: 8) {
-            ForEach(ServerPreset.all) { preset in
+            ForEach(PanelPreset.allCases, id: \.self) { preset in
                 Button {
-                    draft.server = preset.url
+                    draft.server = preset.endpoint.urlString
                 } label: {
                     Text(preset.title)
                         .font(.caption.weight(.semibold))
