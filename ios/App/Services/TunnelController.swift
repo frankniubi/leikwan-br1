@@ -53,7 +53,23 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Demo sessions (`DemoAccount`) never start the Network Extension; the status is simulated.
+    private(set) var isSimulated = false
+
+    func simulateConnection(_ connected: Bool) {
+        isSimulated = connected
+        status = connected ? .connected : .disconnected
+        if !connected {
+            snapshot = TunnelStatusSnapshot()
+            speedHistory = []
+        }
+    }
+
     func disconnect() {
+        if isSimulated {
+            simulateConnection(false)
+            return
+        }
         manager?.connection.stopVPNTunnel()
     }
 

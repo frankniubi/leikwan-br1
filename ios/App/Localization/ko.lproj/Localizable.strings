@@ -249,3 +249,4 @@
 
 "Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "도메인 조회는 도구에 설정된 DNS 서버로 전송됩니다(기본 1.1.1.1, 직접 연결 도메인은 8.8.8.8). 노드 지연 테스트와 구독 가져오기는 입력한 주소에만 연결합니다. 터널 로그에는 연결한 호스트 이름이 포함될 수 있으며 이 기기에만 보관됩니다.";
 "Lookups and logs" = "조회 및 로그";
+"Demo (no server connection)" = "데모 (서버 연결 없음)";

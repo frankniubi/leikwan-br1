@@ -44,6 +44,9 @@ struct ToolsView: View {
                     InfoRow(title: L("Server"), value: model.profile?.server.host ?? "—", monospaced: true)
                     InfoRow(title: L("Client ID"), value: model.profile.map { String($0.clientId) } ?? "—")
                     InfoRow(title: L("Device ID"), value: deviceID, monospaced: true)
+                    if model.isDemo {
+                        InfoRow(title: L("Mode"), value: L("Demo (no server connection)"))
+                    }
                     Button {
                         Task {
                             await model.refreshCatalog()
