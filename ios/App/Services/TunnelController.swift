@@ -53,7 +53,23 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Demo sessions (`DemoAccount`) never start the Network Extension; the status is simulated.
+    private(set) var isSimulated = false
+
+    func simulateConnection(_ connected: Bool) {
+        isSimulated = connected
+        status = connected ? .connected : .disconnected
+        if !connected {
+            snapshot = TunnelStatusSnapshot()
+            speedHistory = []
+        }
+    }
+
     func disconnect() {
+        if isSimulated {
+            simulateConnection(false)
+            return
+        }
         manager?.connection.stopVPNTunnel()
     }
 
@@ -84,10 +100,10 @@ final class TunnelController: ObservableObject {
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleIdentifier
-        proto.serverAddress = "LeiKwan Bridge"
+        proto.serverAddress = "Bridge"
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
-        manager.localizedDescription = "LeiKwan Bridge"
+        manager.localizedDescription = "Bridge"
         manager.isEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.

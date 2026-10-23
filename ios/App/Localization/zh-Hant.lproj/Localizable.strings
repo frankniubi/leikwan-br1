@@ -249,3 +249,4 @@
 
 "Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "網域解析會送往「工具」中設定的 DNS 伺服器（預設 1.1.1.1，直連網域為 8.8.8.8）。節點測速與訂閱匯入只連接你輸入的位址。隧道紀錄可能包含你連線的主機名稱，僅保存在本機。";
 "Lookups and logs" = "網域解析與紀錄";
+"Demo (no server connection)" = "示範（不連線伺服器）";

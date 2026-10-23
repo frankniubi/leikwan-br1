@@ -2,7 +2,7 @@ import LeikwanIOSCore
 import SwiftUI
 
 /// Sign-in: the saved profiles (server address + Client ID + Agent Token) and an editor for a
-/// new or changed one. The server address is whatever the user types; nothing is built in.
+/// new or changed one. The server address is typed or picked from the two built-in presets.
 struct LoginView: View {
     @EnvironmentObject private var model: AppModel
     @State private var editing: ProfileDraft?
@@ -87,7 +87,7 @@ struct LoginView: View {
                 )
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .accessibilityHidden(true)
-            Text("LeiKwan Bridge")
+            Text("Bridge")
                 .font(.largeTitle.weight(.bold))
                 .foregroundStyle(Palette.onSurface)
             Text(L("Sign in with your server address, Client ID and Agent Token"))
