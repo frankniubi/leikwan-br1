@@ -81,12 +81,17 @@ struct PrivacyDisclosureView: View {
 
                     section(
                         title: L("Never collected"),
-                        text: L("Browsing history, DNS queries, message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK.")
+                        text: L("Message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK.")
                     )
 
                     section(
                         title: L("Who receives it"),
-                        text: L("Only the server address saved in your profile. The two preset addresses belong to the developer; if you enter your own server, nothing is sent to the developer's servers. This data is not sold, used, or disclosed to third parties for any purpose.")
+                        text: L("The server address saved in your profile receives the data above. Your connections are carried through the relay lines that server assigns. The two preset addresses belong to the developer; with your own server, nothing is sent to the developer's servers.")
+                    )
+
+                    section(
+                        title: L("Lookups and logs"),
+                        text: L("Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device.")
                     )
 
                     Link(destination: Self.policyURL) {
