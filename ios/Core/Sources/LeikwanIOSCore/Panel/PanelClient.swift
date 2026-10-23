@@ -38,8 +38,8 @@ public final class URLSessionPanelTransport: PanelHTTPTransport {
 }
 
 /// Panel control-plane client for iOS (Client ID + Agent Token login).
-/// Thread-safe; after a transport failure the active endpoint flips to the profile's backup
-/// address (when it has one and failover is on).
+/// Thread-safe; after a network failure or a CDN edge error (see `PanelError.isFailoverEligible`)
+/// the active endpoint flips to the profile's backup address (when it has one and failover is on).
 public final class PanelClient {
     public static let configsPullPath = "api/client/configs/pull"
     public static let heartbeatPath = "api/client/heartbeat"
@@ -117,13 +117,14 @@ public final class PanelClient {
         return request
     }
 
-    /// Sends with transport failover. Returns body + status for 2xx; throws `PanelError` otherwise.
+    /// Sends with address failover. Returns body + status for 2xx; throws `PanelError` otherwise.
+    /// An eligible failure retries once on the other address, which then stays active.
     func perform(path: String, method: String, jsonBody: [String: Any]?, extraHeaders: [String: String]) async throws -> (Data, HTTPURLResponse) {
         let primaryIndex = currentIndex()
         do {
             return try await performOnce(endpoint: endpoints[primaryIndex], path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
         } catch let error as PanelError {
-            guard error.isTransport, allowFailover, endpoints.count > 1 else { throw error }
+            guard error.isFailoverEligible, allowFailover, endpoints.count > 1 else { throw error }
             let alternateIndex = (primaryIndex + 1) % endpoints.count
             let result = try await performOnce(endpoint: endpoints[alternateIndex], path: path, method: method, jsonBody: jsonBody, extraHeaders: extraHeaders)
             activate(alternateIndex)
