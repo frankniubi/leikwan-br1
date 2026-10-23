@@ -239,10 +239,13 @@
 "Kept on this device. They leave it only if you copy or share them." = "이 기기에만 보관됩니다. 직접 복사하거나 공유할 때만 기기를 떠납니다.";
 "Bridge connects this device to a server you choose. Before the first connection, this is exactly what leaves this device and why." = "Bridge는 이 기기를 사용자가 선택한 서버에 연결합니다. 첫 연결 전에, 이 기기에서 나가는 정보와 그 이유를 정확히 알려드립니다.";
 "Never collected" = "수집하지 않는 정보";
-"Browsing history, DNS queries, message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK." = "방문 기록, DNS 쿼리, 메시지 내용, 연락처, 위치, 사진, 광고 식별자(IDFA)는 수집하지 않습니다. 이 앱에는 분석, 광고, 충돌 보고 SDK가 없습니다.";
+"Message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK." = "메시지 내용, 연락처, 위치, 사진, 광고 식별자(IDFA)는 수집하지 않습니다. 이 앱에는 분석, 광고, 충돌 보고 SDK가 없습니다.";
 "Who receives it" = "수신자";
-"Only the server address saved in your profile. The two preset addresses belong to the developer; if you enter your own server, nothing is sent to the developer's servers. This data is not sold, used, or disclosed to third parties for any purpose." = "프로필에 저장된 서버 주소로만 전송됩니다. 두 개의 기본 주소는 개발자가 운영합니다. 직접 서버를 입력하면 개발자 서버로는 아무것도 전송되지 않습니다. 이 데이터는 어떤 목적으로도 제3자에게 판매, 사용 또는 공개되지 않습니다.";
+"The server address saved in your profile receives the data above. Your connections are carried through the relay lines that server assigns. The two preset addresses belong to the developer; with your own server, nothing is sent to the developer's servers." = "프로필에 저장된 서버 주소가 위의 정보를 받습니다. 연결은 해당 서버가 할당한 중계 회선을 통해 전달됩니다. 기본 두 주소는 개발자가 운영합니다. 직접 서버를 입력하면 개발자 서버로는 아무것도 전송되지 않습니다.";
 "Privacy Policy" = "개인정보 처리방침";
 "Privacy" = "개인정보";
 "I understand" = "동의합니다";
 "Done" = "완료";
+
+"Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "도메인 조회는 도구에 설정된 DNS 서버로 전송됩니다(기본 1.1.1.1, 직접 연결 도메인은 8.8.8.8). 노드 지연 테스트와 구독 가져오기는 입력한 주소에만 연결합니다. 터널 로그에는 연결한 호스트 이름이 포함될 수 있으며 이 기기에만 보관됩니다.";
+"Lookups and logs" = "조회 및 로그";
