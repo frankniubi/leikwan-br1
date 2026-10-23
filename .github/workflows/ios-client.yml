@@ -189,8 +189,7 @@ jobs:
     runs-on: macos-26
     needs: [frameworks, core-tests]
     # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
-    # Compile-check snapshot only: never upload from this scratch branch.
-    if: false
+    if: github.event_name != 'pull_request'
     timeout-minutes: 60
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
