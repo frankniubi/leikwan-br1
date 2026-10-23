@@ -79,7 +79,7 @@ final class AppModel: ObservableObject {
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
         await tunnel.load()
-        profiles = JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList()
+        profiles = Self.withoutBackupServers(JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList())
         if let active = profiles.active {
             if let token = Keychain.string(active.tokenAccount) {
                 client = makeClient(active, token: token)
@@ -92,6 +92,18 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Profiles
+
+    /// The backup server is no longer offered, so a profile saved with one is loaded without it
+    /// (failover then has nothing to fall back to, and the next save writes the profile back clean).
+    private static func withoutBackupServers(_ list: PanelProfileList) -> PanelProfileList {
+        var cleaned = list
+        cleaned.profiles = list.profiles.map { profile in
+            var profile = profile
+            profile.backupServer = nil
+            return profile
+        }
+        return cleaned
+    }
 
     /// Signs in with a new or edited profile. `token` nil or blank reuses the token saved for
     /// that profile. On success the profile is saved (an existing one for the same server and
