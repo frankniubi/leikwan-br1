@@ -42,7 +42,7 @@ private struct MainShell: View {
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
                 }
-                .navigationTitle("LeiKwan Bridge")
+                .navigationTitle("Bridge")
                 .scrollContentBackground(.hidden)
                 .background(Palette.surfaceContainerLow)
             } detail: {

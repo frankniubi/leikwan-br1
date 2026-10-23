@@ -46,8 +46,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: LeiKwan Bridge
-        CFBundleName: LeiKwanBridge
+        CFBundleDisplayName: Bridge
+        CFBundleName: Bridge
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
@@ -103,8 +103,8 @@ targets:
     info:
       path: PacketTunnel/Info.plist
       properties:
-        CFBundleDisplayName: LeiKwan Bridge Tunnel
-        CFBundleName: LeiKwanBridgeTunnel
+        CFBundleDisplayName: Bridge Tunnel
+        CFBundleName: BridgeTunnel
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
