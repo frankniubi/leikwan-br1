@@ -143,7 +143,6 @@ struct ProfileDraft: Identifiable {
     var profileID: UUID?
     var name = ""
     var server = ""
-    var backupServer = ""
     var clientID = ""
     var token = ""
     var rememberToken = true
@@ -154,7 +153,6 @@ struct ProfileDraft: Identifiable {
         profileID = profile.id
         name = profile.name
         server = profile.server.urlString
-        backupServer = profile.backupServer?.urlString ?? ""
         clientID = String(profile.clientId)
         rememberToken = profile.rememberToken
     }
@@ -166,13 +164,6 @@ struct ProfileDraft: Identifiable {
         case .success(let endpoint): serverEndpoint = endpoint
         case .failure(let reason): return .failure(AppError(L("Server address: %@", Self.describe(reason))))
         }
-        var backup: PanelEndpoint?
-        if !backupServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            switch PanelEndpoint.parse(backupServer) {
-            case .success(let endpoint): backup = endpoint
-            case .failure(let reason): return .failure(AppError(L("Backup address: %@", Self.describe(reason))))
-            }
-        }
         guard let clientId = Int64(clientID.trimmingCharacters(in: .whitespaces)), clientId > 0 else {
             return .failure(AppError(L("Client ID must be a positive number")))
         }
@@ -180,7 +171,7 @@ struct ProfileDraft: Identifiable {
             id: profileID ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             server: serverEndpoint,
-            backupServer: backup,
+            backupServer: PanelPreset.backup(for: serverEndpoint),
             clientId: clientId,
             rememberToken: rememberToken
         ))
@@ -197,22 +188,6 @@ struct ProfileDraft: Identifiable {
 }
 
 /// New / edit profile form; signs in on submit.
-/// Panel entry points offered as one tap on the profile form.
-private struct ServerPreset: Identifiable {
-    let id: String
-    let title: String
-    let url: String
-
-    static let all: [ServerPreset] = [
-        ServerPreset(id: "cloudflare", title: "Cloudflare CDN", url: "https://v3.leikwanhost.com"),
-        ServerPreset(id: "direct", title: "Directly CDN", url: "https://api-leikwanbridge.nbwly.com"),
-    ]
-
-    static func other(than id: String) -> ServerPreset? {
-        return all.first { $0.id != id }
-    }
-}
-
 private struct ProfileForm: View {
     @EnvironmentObject private var model: AppModel
     @State private var draft: ProfileDraft
@@ -224,7 +199,7 @@ private struct ProfileForm: View {
     @FocusState private var focused: Field?
 
     private enum Field {
-        case name, server, backup, clientID, token
+        case name, server, clientID, token
     }
 
     init(draft: ProfileDraft, isNew: Bool, onDone: (() -> Void)?) {
@@ -244,27 +219,27 @@ private struct ProfileForm: View {
             && (!draft.token.isEmpty || hasSavedToken)
     }
 
-    /// One-tap entry points for the two panel addresses. The field stays editable, so a user
-    /// running their own server simply types it instead.
+    /// The built-in address the server field currently holds, if any.
+    private var selectedPreset: PanelPreset? {
+        switch PanelEndpoint.parse(draft.server) {
+        case .success(let endpoint): return PanelPreset.matching(endpoint)
+        case .failure: return nil
+        }
+    }
+
+    /// One-tap entry points for the two panel addresses. They are shown only until one is
+    /// chosen; a custom address is typed into the server field as before.
     private var serverPresets: some View {
         HStack(spacing: 8) {
-            ForEach(ServerPreset.all) { preset in
-                let selected = draft.server.trimmingCharacters(in: .whitespacesAndNewlines) == preset.url
+            ForEach(PanelPreset.allCases, id: \.self) { preset in
                 Button {
-                    draft.server = preset.url
-                    if draft.backupServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       let other = ServerPreset.other(than: preset.id) {
-                        draft.backupServer = other.url
-                    }
+                    draft.server = preset.endpoint.urlString
                 } label: {
                     Text(preset.title)
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 36)
-                        .foregroundStyle(selected ? Palette.onPrimaryContainer : Palette.onSurfaceVariant)
-                        .background(
-                            selected ? Palette.primaryContainer : Palette.surfaceContainer,
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        )
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                        .background(Palette.surfaceContainer, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -286,7 +261,9 @@ private struct ProfileForm: View {
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .server)
             }
-            serverPresets
+            if selectedPreset == nil {
+                serverPresets
+            }
             InputField(title: L("Client ID"), systemImage: "person.text.rectangle") {
                 TextField("e.g. 1024", text: $draft.clientID)
                     .keyboardType(.numberPad)
@@ -298,13 +275,6 @@ private struct ProfileForm: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .token)
-            }
-            InputField(title: L("Backup server address (optional)"), systemImage: "arrow.triangle.branch") {
-                TextField(L("Tried when the main address is unreachable"), text: $draft.backupServer)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .focused($focused, equals: .backup)
             }
 
             Toggle(L("Save Agent Token on this device"), isOn: $draft.rememberToken)

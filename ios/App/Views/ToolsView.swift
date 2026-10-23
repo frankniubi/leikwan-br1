@@ -42,9 +42,6 @@ struct ToolsView: View {
                 Section {
                     InfoRow(title: L("Profile"), value: model.profile?.displayName ?? "—")
                     InfoRow(title: L("Server"), value: model.profile?.server.host ?? "—", monospaced: true)
-                    if let backup = model.profile?.backupServer {
-                        InfoRow(title: L("Backup server"), value: backup.host, monospaced: true)
-                    }
                     InfoRow(title: L("Client ID"), value: model.profile.map { String($0.clientId) } ?? "—")
                     InfoRow(title: L("Device ID"), value: deviceID, monospaced: true)
                     Button {

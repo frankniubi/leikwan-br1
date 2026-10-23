@@ -79,7 +79,7 @@ final class AppModel: ObservableObject {
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
         await tunnel.load()
-        profiles = JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList()
+        profiles = Self.withPresetBackups(JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList())
         if let active = profiles.active {
             if let token = Keychain.string(active.tokenAccount) {
                 client = makeClient(active, token: token)
@@ -92,6 +92,18 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Profiles
+
+    /// A profile's backup is the built-in pairing of its server (`PanelPreset`), never a saved
+    /// value: applied on load, so a file written before the pairing existed follows the app.
+    private static func withPresetBackups(_ list: PanelProfileList) -> PanelProfileList {
+        var updated = list
+        updated.profiles = list.profiles.map { profile in
+            var profile = profile
+            profile.backupServer = PanelPreset.backup(for: profile.server)
+            return profile
+        }
+        return updated
+    }
 
     /// Signs in with a new or edited profile. `token` nil or blank reuses the token saved for
     /// that profile. On success the profile is saved (an existing one for the same server and
