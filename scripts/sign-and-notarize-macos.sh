@@ -102,6 +102,14 @@ security unlock-keychain -p "$keychain_password" "$keychain"
 security import "$p12" -k "$keychain" -P "$MACOS_DEVID_P12_PASSWORD" -T /usr/bin/codesign >/dev/null \
   || fail "could not import the Developer ID .p12 (check MACOS_DEVID_P12_PASSWORD)"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+# The .p12 carries only the leaf certificate. Import Apple's Developer ID intermediates
+# (G2 for current certificates, G1 for older ones) so the chain validates on any runner.
+for authority in DeveloperIDG2CA.cer DeveloperIDCA.cer; do
+  curl -fsSL "https://www.apple.com/certificateauthority/$authority" -o "$work_dir/$authority" \
+    || fail "could not download Apple intermediate certificate: $authority"
+  security import "$work_dir/$authority" -k "$keychain" >/dev/null \
+    || fail "could not import Apple intermediate certificate: $authority"
+done
 security list-keychains -d user -s "$keychain" ${original_keychains[@]+"${original_keychains[@]}"}
 keychain_list_changed=1
 
