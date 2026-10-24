@@ -299,17 +299,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
-      "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
-      "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
-      "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-      "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
-      "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+      "bin/leikwan-bond": "c2b15af07b88f077e9242498ced87c15ed5ae21a10dd6487f004050d6531c1fa",
+      "bin/leikwan-ingress": "26b178aaa347c1b448482db850043afc070e43d807788cc717c556bddb607b64",
+      "bin/leikwan-uot-bond": "f27fc19162fdd5c20c886f009735656341eb4350e814b0a466d182f14e3a8a69",
+      "bin/sing-box": "0b70e5d8aadb490dc90ad2a63260d57f2bcc05cf04dd05fde7e21229f5f505e7",
+      "bin/ultra-client": "4578a4405e7e435f33da6d77069df38fce479e4cbc3678113dea6e44c51d5a6f",
+      "bin/wstunnel": "7e203514eb07b90186b8a668c0f192701008699d40fa52738164095b406c5977"
     },
-    "sha256": "7b9f1e0d7b3dc7c34d9a4015ffbe7b2b642e3d746af9ebdb5fd15b1c968d44ae",
-    "size_bytes": 78536706,
-    "version": "1.0.58",
-    "source_commit": "9a195d7896d3d4a160a19af2eee8c51731d089b1"
+    "sha256": "57d76cef7109f6eadc973d51ff3025a9211874e9b719dcc0118670db0fe044b4",
+    "size_bytes": 79039232,
+    "version": "1.0.59",
+    "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -346,17 +346,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/leikwan-bond": "d1c3409909af2ba0a6521b2f9369e065899053fad458a2ce1c945d5d8ccbcd77",
-      "bin/leikwan-ingress": "9ac95c2d22c1beee1d00b196a9fa159956220cc9ceb0a712c55b878d5357c948",
-      "bin/leikwan-uot-bond": "9e4c34048331fc7304fb007b56ecfee007f71498206416e7259d3c51bebc26a8",
-      "bin/sing-box": "8f0824484db0d79aab416ba966a0bb23fed715a686e27f013268e6c2534f6739",
-      "bin/ultra-client": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
-      "bin/wstunnel": "59805c8615eddfeeca4e04bf07ae384a4b99d1729c292d71edc4376da5253365"
+      "bin/leikwan-bond": "c2b15af07b88f077e9242498ced87c15ed5ae21a10dd6487f004050d6531c1fa",
+      "bin/leikwan-ingress": "26b178aaa347c1b448482db850043afc070e43d807788cc717c556bddb607b64",
+      "bin/leikwan-uot-bond": "f27fc19162fdd5c20c886f009735656341eb4350e814b0a466d182f14e3a8a69",
+      "bin/sing-box": "0b70e5d8aadb490dc90ad2a63260d57f2bcc05cf04dd05fde7e21229f5f505e7",
+      "bin/ultra-client": "4578a4405e7e435f33da6d77069df38fce479e4cbc3678113dea6e44c51d5a6f",
+      "bin/wstunnel": "7e203514eb07b90186b8a668c0f192701008699d40fa52738164095b406c5977"
     },
-    "sha256": "09d0940391701e018c3ddc69934d6cf4838c6cb7048e248ce3c8cf79a6275ef8",
-    "size_bytes": 70044374,
-    "version": "1.0.58",
-    "source_commit": "9a195d7896d3d4a160a19af2eee8c51731d089b1"
+    "sha256": "ce658b3bfffbb17357da28303ce7abc7116d21d8765f2103a072dd4080a3a23f",
+    "size_bytes": 70407201,
+    "version": "1.0.59",
+    "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
