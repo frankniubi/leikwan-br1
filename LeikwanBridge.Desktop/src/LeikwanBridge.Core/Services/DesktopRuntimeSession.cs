@@ -16,6 +16,12 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     /// </summary>
     event Action<DeviceLimitReachedException?>? DeviceLimitChanged { add { } remove { } }
 
+    /// <summary>
+    /// Raised once per successful full config pull with its
+    /// <c>client_update</c> policy (null when the pull carried none).
+    /// </summary>
+    event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived { add { } remove { } }
+
     IReadOnlyList<ForwardConfig> Forwards { get; }
     NativeOutboundCapability? NativeOutbound { get; }
 
@@ -136,6 +142,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             _polling.RequestControlPlaneRecovery();
         };
         _polling.ClientUpdated += client => QueueDiagnostics(client);
+        _polling.ClientUpdatePolicyReceived += policy => ClientUpdatePolicyReceived?.Invoke(policy);
         _health.HealthIssue += (forwardId, issue) => LogRaised?.Invoke($"health_issue:{forwardId}:{BoundCode(issue)}");
         _heartbeat.UltraActionsReceived += ApplyUltraPolicyActions;
     }
@@ -145,6 +152,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     public event Action<int, string>? ForwardRejected;
     public event Action<string>? LogRaised;
     public event Action<DeviceLimitReachedException?>? DeviceLimitChanged;
+    public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
 
     public IReadOnlyList<ForwardConfig> Forwards => _polling.LatestForwards;
 

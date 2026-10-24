@@ -11,7 +11,8 @@ extension TunnelPanelSession {
             agentToken: agentToken,
             installId: installID,
             deviceName: deviceName,
-            appVersion: appVersion
+            appVersion: appVersion,
+            appBuild: appBuild ?? ""
         )
         return PanelClient(endpoint: server, fallback: PanelEndpoint(storage: backupEndpoint), credentials: credentials)
     }

@@ -349,6 +349,10 @@
     <string name="update_failed">Update failed. Check your connection and try again.</string>
     <string name="update_retry">Retry</string>
     <string name="update_install_hint">If Android asks, allow installs from this app, then tap Install again.</string>
+    <string name="update_required_title">Update required</string>
+    <string name="update_required_body">A required update is available. Update to keep using LeiKwan Bridge.</string>
+    <string name="update_required_versions">Required: %1$s or later. Installed: %2$s.</string>
+    <string name="update_required_unavailable">The required version is not available for download yet. Try again later.</string>
     <string name="connections_services_heading">Services</string>
     <string name="connections_tap_to_connect">Tap to connect</string>
     <string name="connections_tap_to_disconnect">Tap to disconnect</string>

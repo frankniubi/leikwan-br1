@@ -720,6 +720,8 @@
     "MPTCP": "MPTCP",
     "LeiKwan Bridge": "LeiKwan Bridge",
     "Sign in": "登入",
+    "Please Wait": "請稍候",
+    "Too many attempts": "嘗試次數過多",
     "v3 Core": "v3核心",
     "Setup": "設定",
     "Best when you need stable ingress, unified line management, and a controllable forwarding path.": "當您需要穩定的入口、統一的線路管理和可控的轉發路徑時，這是最佳選擇。",

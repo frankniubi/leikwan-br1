@@ -1001,6 +1001,182 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void RequiredPolicyShowsUndismissableOverlayAndChecksForTheUpdate()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot { IsSignedIn = true, IsConnected = true, ConnectionStatus = "connected" });
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("1.0.59", vm.RequiredUpdateMinimumVersion);
+        Assert.Equal(1, checks);
+        Assert.False(vm.IsUpdateBannerVisible);
+        // No update known yet (manifest not fetched or failed): Retry re-checks.
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsRequiredUpdateInstallVisible);
+        Assert.True(vm.IsConnected);
+        Assert.Equal(0, controller.DisconnectCalls);
+    }
+
+    [Theory]
+    [InlineData("1.0.58")]
+    [InlineData("1.0.57")]
+    [InlineData("1.0.58.0")]
+    [InlineData("")]
+    [InlineData("not-a-version")]
+    public void MetOrUnparseableMinimumDoesNotGate(string minimum)
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy(minimum);
+
+        Assert.False(vm.IsUpdateRequired);
+        Assert.Equal(0, checks);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateOffersInstallAndCannotBeDismissed()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installs = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) => Task.CompletedTask,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installs++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        controller.RaiseUpdate("1.0.59");
+
+        Assert.True(vm.IsRequiredUpdateInstallVisible);
+        Assert.False(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+
+        vm.DismissUpdateCommand.Execute(null);
+        Assert.True(vm.IsUpdateVisible);
+        Assert.True(vm.IsUpdateRequired);
+
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(1, installs);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateInstallFailureKeepsOverlayWithRetryOnly()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installs = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) => Task.CompletedTask,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installs++;
+                if (installs == 1)
+                    throw new InvalidOperationException("update_hash_mismatch");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+        controller.RaiseUpdate("1.0.59");
+
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.True(vm.ShowUpdateError);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsRequiredUpdateInstallVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+        vm.DismissUpdateCommand.Execute(null);
+        Assert.True(vm.ShowUpdateError);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(2, installs);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateCheckFailureKeepsOverlayAndRetryRechecks()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                if (checks == 1)
+                    throw new InvalidOperationException("manifest unreachable");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(2, checks);
+        Assert.True(vm.IsUpdateRequired);
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+    }
+
+    [Fact]
+    public void AbsentPolicyInLaterPullDoesNotClearTheGate()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        controller.RaiseClientUpdatePolicy(null);
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("1.0.59", vm.RequiredUpdateMinimumVersion);
+        Assert.Equal(1, checks);
+
+        controller.RaiseClientUpdatePolicy("1.0.50");
+        Assert.False(vm.IsUpdateRequired);
+    }
+
+    [Fact]
     public void UpdateProgressReportsPhasePercentAndMessage()
     {
         var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
@@ -1167,6 +1343,7 @@ public sealed class MainWindowViewModelTests
         public event Action<string>? NoticeRaised;
         public event Action<string>? LogRaised;
         public event Action<string>? UpdateAvailable;
+        public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
 
         public DesktopClientSnapshot Snapshot { get; private set; } = initial;
         public NativeOutboundCapability? NativeOutbound => Snapshot.NativeOutbound;
@@ -1174,6 +1351,7 @@ public sealed class MainWindowViewModelTests
         public int AgentTokenLoginCalls { get; private set; }
         public int ConnectCalls { get; private set; }
         public int RefreshCalls { get; private set; }
+        public int DisconnectCalls { get; private set; }
         public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
         public bool SignInOnAgentToken { get; init; }
         public bool ThrowOnConnect { get; init; }
@@ -1249,7 +1427,11 @@ public sealed class MainWindowViewModelTests
             RefreshCalls++;
             return Task.CompletedTask;
         }
-        public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task DisconnectAsync(CancellationToken ct = default)
+        {
+            DisconnectCalls++;
+            return Task.CompletedTask;
+        }
         public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         {
             StartedForwards.Add(forwardId);
@@ -1302,6 +1484,9 @@ public sealed class MainWindowViewModelTests
         }
         public void RaiseNotice(string notice) => NoticeRaised?.Invoke(notice);
         public void RaiseUpdate(string version) => UpdateAvailable?.Invoke(version);
+        public void RaiseClientUpdatePolicy(string? minimumVersion)
+            => ClientUpdatePolicyReceived?.Invoke(
+                minimumVersion is null ? null : new ClientUpdatePolicy { MinimumVersion = minimumVersion });
         public void RaiseLog(string message) => LogRaised?.Invoke(message);
     }
 

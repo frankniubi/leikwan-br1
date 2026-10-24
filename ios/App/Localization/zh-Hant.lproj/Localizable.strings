@@ -255,3 +255,6 @@
 "The connection is still reconnecting, so the change was not applied. Try again" = "連線仍在重新連線中，變更未套用，請再試一次";
 "The VPN connection is not available. Reconnect and try again" = "VPN 連線無法使用，請重新連線後再試";
 "Disconnect to change this forward's node. The exit is always the forward's target." = "中斷連線後才能更換此轉發的節點。出口始終是該轉發的目標。";
+"Update required" = "需要更新";
+"A newer version of Bridge is required. Install the latest version and open the app again." = "需要較新版本的 Bridge。請安裝最新版本後重新開啟 App。";
+"Check again" = "重新檢查";

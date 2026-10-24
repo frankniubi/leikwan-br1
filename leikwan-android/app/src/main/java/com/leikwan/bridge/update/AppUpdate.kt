@@ -138,6 +138,25 @@ object AppUpdateController {
         }
     }
 
+    /**
+     * The panel requires a newer build ([ClientUpdatePolicy]): make sure the manifest is known
+     * so the required-update dialog can offer the download. Skips work already under way or
+     * done; a failure surfaces as [AppUpdateState.Failed] so the dialog can offer a retry.
+     */
+    fun checkForRequiredUpdate(context: Context) {
+        val needsManifest = when (val current = mutableState.value) {
+            is AppUpdateState.Available,
+            is AppUpdateState.Downloading,
+            is AppUpdateState.ReadyToInstall,
+            AppUpdateState.Checking,
+            -> false
+            // A failed download keeps its info; the dialog's retry resumes it.
+            is AppUpdateState.Failed -> current.info == null
+            AppUpdateState.Idle, AppUpdateState.UpToDate -> true
+        }
+        if (needsManifest) check(context, userInitiated = true)
+    }
+
     /** Downloads (if needed) and hands the verified APK to the system installer. */
     fun downloadAndInstall(context: Context) {
         val appContext = context.applicationContext

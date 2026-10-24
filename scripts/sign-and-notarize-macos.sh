@@ -224,14 +224,27 @@ submit_and_wait() {
   printf 'notarization accepted: %s (%s)\n' "$label" "$submission_id"
 }
 
+# Retry stapling and keep the stapler output, so a failure reports why instead of exiting silently.
+staple_ticket() {
+  local target="$1"
+  local attempt output
+  for attempt in 1 2 3 4 5 6; do
+    if output="$(xcrun stapler staple "$target" 2>&1)" && xcrun stapler validate "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+    printf 'stapler attempt %s for %s failed: %s\n' "$attempt" "$(basename "$target")" "$output" >&2
+    sleep 20
+  done
+  fail "could not staple the notarization ticket to $(basename "$target")"
+}
+
 app_zip="$work_dir/notary-app.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
 submit_and_wait "$app_zip" app
 rm -f "$app_zip"
 
 # 5. Staple the ticket to the app and check it, then the Gatekeeper decision.
-xcrun stapler staple "$app" >/dev/null
-xcrun stapler validate "$app" >/dev/null
+staple_ticket "$app"
 spctl --assess --type execute --verbose=4 "$app"
 
 # 6. Optional release DMG built from the stapled app, then signed and notarized itself.
@@ -245,8 +258,7 @@ if [[ -n "$dmg" ]]; then
   codesign --force --timestamp --keychain "$keychain" --sign "$identity" "$dmg"
   codesign --verify --strict --verbose=2 "$dmg"
   submit_and_wait "$dmg" dmg
-  xcrun stapler staple "$dmg" >/dev/null
-  xcrun stapler validate "$dmg" >/dev/null
+  staple_ticket "$dmg"
   spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
 fi
 

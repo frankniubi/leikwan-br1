@@ -16,6 +16,8 @@ data class PullConfigsResponse(
     @SerializedName("direction_runtime_bindings") val directionRuntimeBindings: List<DirectionRuntimeBindingDto>? = null,
     @SerializedName("capabilities") val routeRuleCapabilities: RouteRuleCapabilitiesDto? = null,
     @SerializedName("native_outbound") val nativeOutbound: NativeOutboundCapabilityDto? = null,
+    /** `{"minimum_version": "0.2.45"}` when the panel enforces a minimum; read by ClientUpdatePolicy. */
+    @SerializedName("client_update") val clientUpdate: JsonElement? = null,
 )
 
 data class HeartbeatRequest(

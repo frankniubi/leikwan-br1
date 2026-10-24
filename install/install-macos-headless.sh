@@ -33,7 +33,7 @@
 # it does not come up connected. "disable_auto_updates": true in the daemon
 # config refuses even requested updates.
 set -eu
-INSTALLER_VERSION="1.0.58"
+INSTALLER_VERSION="1.0.59"
 
 LABEL="com.leikwan.bridge.headless"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"

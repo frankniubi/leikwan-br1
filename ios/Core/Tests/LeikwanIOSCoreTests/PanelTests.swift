@@ -35,7 +35,8 @@ final class PanelTests: XCTestCase {
         agentToken: " agent-token ",
         installId: " Install-ABC ",
         deviceName: "Frank's\r\niPhone",
-        appVersion: "1.0.0"
+        appVersion: "1.0.0",
+        appBuild: " 52 "
     )
 
     /// Golden: SHA-256("ios|12345|install-abc") = acbf215cac438980... (Python hashlib; install id is
@@ -56,6 +57,12 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(headers["User-Agent"], "Bridge-iOS/1.0.0")
         XCTAssertEqual(headers["X-Device-Id"], "ios-client-12345-acbf215cac438980")
         XCTAssertEqual(headers["X-Device-Name"], "Frank's  iPhone")
+        XCTAssertEqual(headers["X-Client-Build"], "52")
+        // No build number (older callers): the header is omitted, not sent blank.
+        let noBuild = PanelCredentials(clientId: 1, agentToken: "t", installId: "i", deviceName: "d", appVersion: "1")
+        XCTAssertNil(noBuild.headers()["X-Client-Build"])
+        XCTAssertEqual(PanelCredentials.sanitizeBuild(" 5\r\n3 "), "53")
+        XCTAssertNil(PanelCredentials.sanitizeBuild("  "))
         XCTAssertEqual(IOSDeviceIdentity.sanitizeDeviceName(String(repeating: "x", count: 300))?.count, 128)
         XCTAssertNil(IOSDeviceIdentity.sanitizeDeviceName(" \r\n "))
     }
@@ -174,6 +181,7 @@ final class PanelTests: XCTestCase {
         let request = transport.requests[0]
         XCTAssertEqual(request.url?.absoluteString, "https://panel.example.com/api/client/configs/pull")
         XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Bridge-iOS/1.0.0")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Client-Build"), "52")
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Leikwan-Ultra-Offline-Validity"), "1800")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer agent-token")
