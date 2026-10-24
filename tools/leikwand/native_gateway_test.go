@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -628,6 +632,165 @@ func TestNativeRenewalWaitsForGrantRenewAfter(t *testing.T) {
 	}
 	if !nextLeaseRenewal(&UltraPolicy{}, leaseExpiry).IsZero() || !nextLeaseRenewal(nil, leaseExpiry).IsZero() {
 		t.Fatal("no renew_after means no extra hold-back")
+	}
+}
+
+// A native renewal pulls a fresh grant, mints a new batch from its ticket and
+// delivers it to the relay that is already running, over its control socket.
+// The relay is not restarted and sing-box, which has its own process slot, is
+// not touched, so LAN sessions survive the rotation.
+func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	pulls := 0
+	var leaseTickets []string
+	plan := testPlan(t, defaultConfig(), testCapability(false))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/client/configs/pull":
+			pulls++
+			forward := testCarrierForwards(now)[180]
+			forward.UltraAccess.SessionTicket = "ticket-" + itoa(pulls)
+			writeJSON(t, w, map[string]any{"ok": true, "config_revision": "rev-1",
+				"forwards": []any{forward}, "native_outbound": testCapability(false)})
+		case "/api/client/ultra/lease":
+			var request LeaseRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if len(request.Forwards) == 1 {
+				leaseTickets = append(leaseTickets, request.Forwards[0].SessionTicket)
+			}
+			writeJSON(t, w, map[string]any{"ok": true, "leases": []LeaseFrame{goodNativeLease(plan, now)}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	cfg.FallbackURL = ""
+	cfg.Mode = "gateway"
+	cfg.GatewayEnabled = true
+	agent := newTestAgent(t, cfg)
+	agent.panel.setToken("token", 3)
+
+	dir, err := os.MkdirTemp("", "lkw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	control := filepath.Join(dir, "c.sock")
+	batches := serveFakeControl(t, control)
+
+	manager := newGatewayManager(agent)
+	relay := startTestChild(t)
+	relay.native = true
+	relay.paths = runtimePaths{dir: dir, controlSocket: control}
+	singbox := startTestChild(t)
+	manager.primary.relay = relay
+	manager.primary.relayKey = plan.key()
+	manager.singbox = singbox
+	manager.singboxGen = "unchanged"
+
+	for round := 1; round <= 2; round++ {
+		if err := manager.renewLease(context.Background(), &manager.primary, plan.carrierPlan); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if got := batches(); len(got) != round || got[round-1] != 1 {
+			t.Fatalf("round %d: control socket batches = %v", round, got)
+		}
+		mu.Lock()
+		ticket := leaseTickets[len(leaseTickets)-1]
+		mu.Unlock()
+		if ticket != "ticket-"+itoa(round) {
+			t.Fatalf("round %d: lease minted from %q, not the freshly pulled grant", round, ticket)
+		}
+	}
+	if manager.primary.relay != relay || !relay.alive() {
+		t.Fatal("a renewal must reach the running relay, not replace it")
+	}
+	if manager.singbox != singbox || !singbox.alive() || manager.singboxGen != "unchanged" {
+		t.Fatal("a renewal must not touch sing-box")
+	}
+	if manager.split.relay != nil {
+		t.Fatal("the primary renewal must not use the split slot")
+	}
+	wantExpiry, _ := parseRFC3339(goodNativeLease(plan, now).ExpiresAt)
+	if !manager.primary.leaseExpiry.Equal(wantExpiry) || !manager.leaseValid(&manager.primary, time.Now()) {
+		t.Fatalf("lease expiry = %v, want %v", manager.primary.leaseExpiry, wantExpiry)
+	}
+	renewAfter, _ := parseRFC3339(testGrant(now).RenewAfter)
+	if !manager.primary.renewNotBefore.Equal(renewAfter) {
+		t.Fatalf("next renewal = %v, want the grant's renew_after %v", manager.primary.renewNotBefore, renewAfter)
+	}
+	if manager.leaseDue(&manager.primary, now, cfg) || !manager.leaseDue(&manager.primary, renewAfter.Add(time.Second), cfg) {
+		t.Fatal("the renewed lease must come due again at renew_after")
+	}
+}
+
+// TestHelperProcessSleep is the child startTestChild runs: alive() needs a
+// real process, and nothing in these tests may signal the test binary itself.
+func TestHelperProcessSleep(t *testing.T) {
+	if os.Getenv("LEIKWAND_TEST_SLEEP") != "1" {
+		return
+	}
+	time.Sleep(time.Minute)
+	os.Exit(0)
+}
+
+func startTestChild(t *testing.T) *runtimeProcess {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcessSleep$")
+	cmd.Env = append(os.Environ(), "LEIKWAND_TEST_SLEEP=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return &runtimeProcess{cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
+}
+
+// serveFakeControl answers lease batches the way ultra-client does and
+// reports how many leases each batch carried.
+func serveFakeControl(t *testing.T, path string) func() []int {
+	t.Helper()
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	var mu sync.Mutex
+	var sizes []int
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			if payload, err := readControlFrame(conn); err == nil {
+				var body struct {
+					Leases []LeaseFrame `json:"leases"`
+				}
+				_ = json.Unmarshal(payload, &body)
+				mu.Lock()
+				sizes = append(sizes, len(body.Leases))
+				mu.Unlock()
+				reply := []byte(`{"ok":true}`)
+				var header [4]byte
+				binary.BigEndian.PutUint32(header[:], uint32(len(reply)))
+				_, _ = conn.Write(append(header[:], reply...))
+			}
+			conn.Close()
+		}
+	}()
+	return func() []int {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]int(nil), sizes...)
 	}
 }
 
