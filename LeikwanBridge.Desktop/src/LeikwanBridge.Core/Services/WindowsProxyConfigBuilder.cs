@@ -360,7 +360,7 @@ public static class WindowsProxyConfigBuilder
             ["type"] = "tun",
             ["tag"] = "tun-in",
             ["interface_name"] = TunInterfaceName,
-            ["address"] = new JsonArray(TunAddress),
+            ["address"] = new JsonArray(TunAddress, TunIpv6Address),
             // The runtime measures the native-UDP payload ceiling per association; an
             // MTU above it would only produce frames the path silently drops.
             ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
@@ -382,6 +382,8 @@ public static class WindowsProxyConfigBuilder
         {
             "127.0.0.0/8",
             "255.255.255.255/32",
+            "::1/128",
+            "ff00::/8",
         };
         routeExcludes.AddRange(bypassIps);
         if (routeExcludes.Count > 0)
