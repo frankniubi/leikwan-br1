@@ -232,6 +232,9 @@ jobs:
           ASC_ISSUER_ID: ${{ github.event_name != 'pull_request' && secrets.ASC_ISSUER_ID || '' }}
         run: |
           set -euo pipefail
+          # Fingerprint the Ultra runtime reports to the panel (see build-macos-client.sh).
+          export LEIKWAN_ULTRA_BUILD_VERSION="$(date -u +%Y.%m.%d).1.${GITHUB_SHA::8}"
+          echo "Ultra runtime fingerprint: $LEIKWAN_ULTRA_BUILD_VERSION"
           bash scripts/build-macos-client.sh \
             --rid "${{ matrix.rid }}" \
             --version "$MAC_CLIENT_VERSION"

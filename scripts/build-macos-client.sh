@@ -171,11 +171,19 @@ cargo build \
   --release \
   --target "$rust_target"
 
+# The runtime reports this build identity to the panel's attestation check. Without it the
+# runtime says "development", an unpublished fingerprint the panel does not enforce.
+ultra_ldflags='-s -w -buildid='
+if [[ -n "${LEIKWAN_ULTRA_BUILD_VERSION:-}" ]]; then
+  [[ "$LEIKWAN_ULTRA_BUILD_VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(\.[0-9a-f]{7,40})?$ ]] \
+    || fail "LEIKWAN_ULTRA_BUILD_VERSION must look like 2026.10.25.1.<shortsha>"
+  ultra_ldflags="$ultra_ldflags -X main.runtimeBuildVersion=$LEIKWAN_ULTRA_BUILD_VERSION"
+fi
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
     "$garble_path" -literals -seed="$garble_seed" build \
-      -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+      -mod=readonly -trimpath -buildvcs=false -ldflags="$ultra_ldflags" \
       -o "$helper_dir/ultra-client" .
 )
 assert_ultra_obfuscated "$helper_dir/ultra-client"
