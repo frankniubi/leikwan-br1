@@ -40,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
@@ -245,6 +246,16 @@ private fun ServicesSection(
                 }
             }
         }
+        // The running tunnel was built for the current service and node; a new pick only takes
+        // effect on the next connect, so both stay locked until then.
+        if (rows.isNotEmpty() && state.vpnStatus != VpnStatus.DISCONNECTED) {
+            Text(
+                stringResource(R.string.connections_locked_while_connected),
+                modifier = Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -298,6 +309,8 @@ private fun ServiceRow(
             }
             else -> Surface(
                 onClick = onOpenNodePicker,
+                enabled = !locked,
+                modifier = Modifier.alpha(if (locked) 0.6f else 1f),
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
