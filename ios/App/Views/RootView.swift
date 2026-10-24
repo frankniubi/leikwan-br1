@@ -8,7 +8,10 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if model.profile == nil {
+            // The panel requires a newer build: nothing else is reachable (the tunnel keeps running).
+            if model.updateRequired {
+                UpdateRequiredView()
+            } else if model.profile == nil {
                 LoginView()
             } else {
                 MainShell()

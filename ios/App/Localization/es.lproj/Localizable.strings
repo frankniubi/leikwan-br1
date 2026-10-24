@@ -255,3 +255,6 @@
 "The connection is still reconnecting, so the change was not applied. Try again" = "La conexión aún se está restableciendo, así que el cambio no se aplicó. Inténtalo de nuevo";
 "The VPN connection is not available. Reconnect and try again" = "La conexión VPN no está disponible. Vuelve a conectar e inténtalo de nuevo";
 "Disconnect to change this forward's node. The exit is always the forward's target." = "Desconecta para cambiar el nodo de este reenvío. La salida siempre es el destino del reenvío.";
+"Update required" = "Actualización necesaria";
+"A newer version of Bridge is required. Install the latest version and open the app again." = "Se necesita una versión más reciente de Bridge. Instala la versión más reciente y vuelve a abrir la app.";
+"Check again" = "Comprobar de nuevo";
