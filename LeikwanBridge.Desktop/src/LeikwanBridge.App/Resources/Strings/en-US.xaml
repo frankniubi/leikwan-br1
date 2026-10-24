@@ -195,6 +195,8 @@
     <system:String x:Key="ProxyModeProcess">Game acceleration</system:String>
     <system:String x:Key="ProxySelectedForwardUnavailable">The service you selected is unavailable. Choose another service to connect.</system:String>
     <system:String x:Key="ProxySwitchRequiresDisconnect">Disconnect first to switch the service or mode.</system:String>
+    <system:String x:Key="ProxyReconnecting">Connection lost. Reconnecting in {0} s (attempt {1}/{2})...</system:String>
+    <system:String x:Key="ProxyReconnectFailed">Could not reconnect after {0} attempts. Press Connect to try again.</system:String>
     <system:String x:Key="ProxyModeHttpWebRtcNotice">HTTP mode does not cover browser WebRTC. Use TUN to protect the whole device.</system:String>
     <system:String x:Key="ProxyBypassChinaMainland">Bypass mainland China IPs (direct)</system:String>
     <system:String x:Key="ProxyDnsMode">DNS mode</system:String>
