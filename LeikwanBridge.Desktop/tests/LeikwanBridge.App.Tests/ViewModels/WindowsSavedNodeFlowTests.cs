@@ -104,7 +104,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         suspended.ServiceStatus = "suspended";
         _vm.ApplyForwardSnapshot([suspended, Forward(60)], _ => false);
 
-        Assert.Equal(60, _vm.SelectedProxyForwardId);
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+        Assert.True(_vm.IsSelectedProxyForwardUnavailable);
         Assert.Single(_vm.ProxyForwardOptions);
     }
 
@@ -419,6 +420,29 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         Assert.Equal(first, row60.SelectedProfileId);
         Assert.Equal(second, _vm.Config.ProxyProfileIdsByForwardId[59]);
         Assert.Equal(first, _vm.Config.ProxyProfileIdsByForwardId[60]);
+    }
+
+    [Fact]
+    public async Task ChosenForwardIsNotReplacedWhenItBecomesUnavailable()
+    {
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([Forward(59), Forward(60)], _ => false);
+        Assert.Equal(59, _vm.SelectedProxyForwardId);
+        _vm.SelectedProxyForwardId = 60;
+
+        var suspended = Forward(60);
+        suspended.ServiceStatus = "suspended";
+        _vm.ApplyForwardSnapshot([Forward(59), suspended], _ => false);
+
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+        Assert.True(_vm.IsSelectedProxyForwardUnavailable);
+        Assert.Equal(60, _vm.Config.ProxySelectedForwardId);
+        _vm.ApplyForwardSnapshot([Forward(59)], _ => false);
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+
+        _vm.ApplyForwardSnapshot([Forward(59), Forward(60)], _ => false);
+        Assert.Equal(60, _vm.SelectedProxyForwardId);
+        Assert.False(_vm.IsSelectedProxyForwardUnavailable);
     }
 
     [Fact]

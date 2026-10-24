@@ -193,6 +193,7 @@
     <system:String x:Key="ProxyModeHttp">HTTP</system:String>
     <system:String x:Key="ProxyModeTun">TUN (whole device)</system:String>
     <system:String x:Key="ProxyModeProcess">Game acceleration</system:String>
+    <system:String x:Key="ProxySelectedForwardUnavailable">The service you selected is unavailable. Choose another service to connect.</system:String>
     <system:String x:Key="ProxyModeHttpWebRtcNotice">HTTP mode does not cover browser WebRTC. Use TUN to protect the whole device.</system:String>
     <system:String x:Key="ProxyBypassChinaMainland">Bypass mainland China IPs (direct)</system:String>
     <system:String x:Key="ProxyDnsMode">DNS mode</system:String>
