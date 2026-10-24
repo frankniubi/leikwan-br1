@@ -57,6 +57,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         let inbound = (config["inbounds"] as! [[String: Any]])[0]
         XCTAssertEqual(inbound["type"] as? String, "tun")
         XCTAssertNil(inbound["route_exclude_address"], "iOS: tunnel-process sockets bypass the tunnel")
+        XCTAssertEqual(inbound["address"] as? [String], ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "IPv6 captured with the toggle off")
 
         let dns = config["dns"] as! [String: Any]
         XCTAssertEqual(dns["final"] as? String, "remote")
@@ -74,7 +75,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual(r[0]["action"] as? String, "sniff")
         XCTAssertEqual(r[1]["action"] as? String, "hijack-dns")
         XCTAssertEqual(r[2]["network"] as? String, "tcp")
-        XCTAssertEqual(r[2]["ip_cidr"] as? [String], ["172.19.0.2/32"])
+        XCTAssertEqual(r[2]["ip_cidr"] as? [String], ["172.19.0.2/32", "fdfe:dcba:9876::2/128"])
         XCTAssertEqual(r[2]["action"] as? String, "reject")
         XCTAssertEqual(r[2]["method"] as? String, "drop")
         XCTAssertEqual(r[3]["network"] as? String, "udp")

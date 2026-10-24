@@ -25,6 +25,9 @@ struct ToolsView: View {
                     Toggle(isOn: $model.routing.enableIPv6) {
                         ToolRow(title: "IPv6", detail: L("Use IPv6 inside the tunnel"), systemImage: "6.circle")
                     }
+                    .onChange(of: model.routing.enableIPv6) { _ in
+                        Task { await model.applyToRunningTunnel() }
+                    }
                     HStack {
                         ToolRow(title: L("Remote DNS"), detail: nil, systemImage: "server.rack")
                         TextField("1.1.1.1", text: $model.routing.dnsServer)
