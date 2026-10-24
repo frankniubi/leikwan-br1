@@ -111,12 +111,92 @@ func TestGatewayScopeSemantics(t *testing.T) {
 				t.Fatalf("%s/%s: final = %v, want %s", tc.scope, policy, route["final"], tc.final)
 			}
 			rules := objects(route["rules"])
-			i := ruleIndex(rules, usesCNRuleSet)
+			i := ruleIndex(rules, func(r map[string]any) bool { return usesCNRuleSet(r) && r["action"] != "reject" })
 			if i < 0 || rules[i]["outbound"] != tc.mainland {
 				t.Fatalf("%s/%s: mainland rule = %v, want %s", tc.scope, policy, rules, tc.mainland)
 			}
 		}
 	}
+}
+
+// With only an IPv4 TUN address auto_route left LAN IPv6 on the WAN, around
+// the carrier. The TUN now captures IPv6 too; whatever the policy would hand
+// to the IPv4-only relay is rejected (so clients fall back to IPv4), and IPv6
+// the policy sends direct stays direct.
+func TestGatewayCapturesIPv6AndKeepsItOffTheRelay(t *testing.T) {
+	for _, policy := range allPolicies {
+		for _, scope := range allScopes {
+			config := renderConfig(t, scope, policy, true)
+			tun := objects(config["inbounds"])[0]
+			if addresses, _ := tun["address"].([]any); len(addresses) != 2 || addresses[1] != defaultConfig().GatewayTunAddress6 {
+				t.Fatalf("%s/%s: tun address = %v", scope, policy, tun["address"])
+			}
+			route := section(t, config, "route")
+			rules := objects(route["rules"])
+			hijack := ruleIndex(rules, func(r map[string]any) bool { return r["action"] == "hijack-dns" })
+			private := ruleIndex(rules, func(r map[string]any) bool { return r["ip_is_private"] == true })
+			for i, rule := range rules {
+				v6 := rule["ip_version"] != nil
+				if v6 && (rule["action"] != "reject" || rule["outbound"] != nil || i < hijack || i < private) {
+					t.Fatalf("%s/%s: IPv6 rule %d = %v", scope, policy, i, rule)
+				}
+				if rule["outbound"] != "proxy" {
+					continue
+				}
+				prev := rules[i-1]
+				if prev["ip_version"] != float64(6) || prev["action"] != "reject" {
+					t.Fatalf("%s/%s: proxy rule %v is not shadowed by an IPv6 reject (got %v)", scope, policy, rule, prev)
+				}
+				for key, value := range rule {
+					if key != "outbound" {
+						if a, b := mustJSON(t, value), mustJSON(t, prev[key]); a != b {
+							t.Fatalf("%s/%s: IPv6 reject differs in %s: %s vs %s", scope, policy, key, b, a)
+						}
+					}
+				}
+			}
+			last := rules[len(rules)-1]
+			if (route["final"] == "proxy") != (last["ip_version"] == float64(6) && last["rule_set"] == nil && last["action"] == "reject") {
+				t.Fatalf("%s/%s: final=%v, last rule %v", scope, policy, route["final"], last)
+			}
+		}
+	}
+
+	cfg := defaultConfig()
+	cfg.GatewayTunAddress6 = normalizeTunAddress6("off")
+	plain := renderConfigWith(t, cfg, "global", "unrestricted")
+	if addresses, _ := objects(plain["inbounds"])[0]["address"].([]any); len(addresses) != 1 {
+		t.Fatalf("IPv6 capture switched off but tun address = %v", addresses)
+	}
+	if raw, _ := json.Marshal(plain); strings.Contains(string(raw), "ip_version") {
+		t.Fatal("no IPv6 address, no IPv6 rules")
+	}
+	cfg = defaultConfig()
+	cfg.GatewayTunMTU = 1200
+	if tunIPv6Usable(cfg) {
+		t.Fatal("below 1280 the kernel refuses IPv6 on the TUN; it must not be configured")
+	}
+	if cidr := renderGatewayCIDRConfig(defaultConfig(), "unrestricted", []string{"163.53.52.0/22"}); len(objects(mustRoundTrip(t, cidr)["inbounds"])[0]["address"].([]any)) != 1 {
+		t.Fatal("cidr capture touches only the listed IPv4 prefixes")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func mustRoundTrip(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(mustJSON(t, value)), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func TestGatewayBypassOnlyAffectsGlobalScope(t *testing.T) {

@@ -50,6 +50,7 @@ type GatewayView struct {
 	WantPolicy    string               `json:"configured_route_policy"`
 	Unrestricted  bool                 `json:"unrestricted_allowed"`
 	TunAddress    string               `json:"tun_address,omitempty"`
+	TunAddress6   string               `json:"tun_address6,omitempty"`
 	SocksPort     int                  `json:"socks_port"`
 	BypassCN      bool                 `json:"bypass_cn"`
 	DNSMode       string               `json:"dns_mode"`
@@ -558,6 +559,9 @@ func splitRenderFor(plan gatewayPlan) *gatewaySplitRender {
 // before sing-box installs its routes.
 func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan) error {
 	a := m.agent
+	if !tunIPv6Usable(cfg) {
+		cfg.GatewayTunAddress6 = ""
+	}
 	split := splitRenderFor(plan)
 	var rendered map[string]any
 	var source string
@@ -629,6 +633,18 @@ func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gat
 	a.log.Info("gateway", "sing-box started pid=%d (scope=%s policy=%s dns=%s rule_sets=%s split=%s)",
 		proc.pid, plan.Scope, plan.Policy, firstNonEmpty(cfg.GatewayDNSMode, "auto"), source, splitNote)
 	return nil
+}
+
+// tunIPv6Usable reports whether the TUN can take its IPv6 address. Without
+// kernel IPv6, or below the IPv6 minimum MTU, adding it would make sing-box
+// fail to start and take the whole gateway down; a box like that has no LAN
+// IPv6 to leak either.
+func tunIPv6Usable(cfg Config) bool {
+	if cfg.GatewayTunAddress6 == "" || cfg.GatewayTunMTU < 1280 {
+		return false
+	}
+	raw, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	return err == nil && strings.TrimSpace(string(raw)) == "0"
 }
 
 func stopGatewayProcess(proc *runtimeProcess, label string, log *Logger) {
@@ -755,6 +771,9 @@ func (a *Agent) gatewayView() *GatewayView {
 		DNSMode:    firstNonEmpty(cfg.GatewayDNSMode, "auto"),
 		Carriers:   []GatewayCarrierView{},
 		Capture:    cfg.GatewayCapture,
+	}
+	if cfg.GatewayCapture != "cidr" && tunIPv6Usable(cfg) {
+		view.TunAddress6 = cfg.GatewayTunAddress6
 	}
 	if cfg.GatewaySplitForwardID > 0 {
 		view.Split = &GatewaySplitView{

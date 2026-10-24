@@ -45,6 +45,8 @@ type Config struct {
 	GatewayRouteScope  string
 	GatewayRoutePolicy string
 	GatewayTunAddress  string
+	// GatewayTunAddress6 lets the TUN capture IPv6 as well; "" turns that off.
+	GatewayTunAddress6 string
 	GatewayTunMTU      int
 	GatewayDNSMode     string
 	GatewayDNSServers  string
@@ -128,6 +130,7 @@ func defaultConfig() Config {
 		GatewayRouteScope:       "auto",
 		GatewayRoutePolicy:      "auto",
 		GatewayTunAddress:       "172.19.0.1/30",
+		GatewayTunAddress6:      "fdfe:dcba:9876::1/126",
 		GatewayTunMTU:           1280,
 		GatewayDNSMode:          "auto",
 		GatewayDNSServers:       "",
@@ -203,6 +206,7 @@ func loadConfig() Config {
 	cfg.GatewayRouteScope = normalizeGatewayChoice(get("gateway_route_scope", cfg.GatewayRouteScope), "cn_only", "intl_only", "global")
 	cfg.GatewayRoutePolicy = normalizeGatewayChoice(get("gateway_route_policy", cfg.GatewayRoutePolicy), "restricted", "unrestricted")
 	cfg.GatewayTunAddress = get("gateway_tun_address", cfg.GatewayTunAddress)
+	cfg.GatewayTunAddress6 = normalizeTunAddress6(get("gateway_tun_address6", cfg.GatewayTunAddress6))
 	cfg.GatewayTunMTU = clampInt(atoiDefault(get("gateway_tun_mtu", ""), cfg.GatewayTunMTU), 576, 9000)
 	cfg.GatewayDNSMode = normalizeGatewayDNSMode(get("gateway_dns_mode", cfg.GatewayDNSMode))
 	cfg.GatewayDNSServers = get("gateway_dns_servers", cfg.GatewayDNSServers)
@@ -429,6 +433,15 @@ func normalizeGatewayDNSMode(value string) string {
 		return "custom"
 	}
 	return "auto"
+}
+
+// normalizeTunAddress6 maps the opt-out spellings to "" (no IPv6 capture).
+func normalizeTunAddress6(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "off", "none", "disabled":
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 // normalizeGatewayCapture keeps "cidr"; anything else is the full LAN gateway.

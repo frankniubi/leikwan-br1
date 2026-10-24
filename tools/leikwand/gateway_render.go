@@ -284,6 +284,12 @@ func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRe
 		})
 	}
 
+	addresses := []string{cfg.GatewayTunAddress}
+	if cfg.GatewayTunAddress6 != "" {
+		addresses = append(addresses, cfg.GatewayTunAddress6)
+		rules = rejectIPv6Proxied(rules, final)
+	}
+
 	config := map[string]any{
 		"log": map[string]any{"level": "warn", "timestamp": true},
 		"dns": dns,
@@ -291,7 +297,7 @@ func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRe
 			"type":                     "tun",
 			"tag":                      "tun-in",
 			"interface_name":           gatewayTunName,
-			"address":                  []string{cfg.GatewayTunAddress},
+			"address":                  addresses,
 			"mtu":                      cfg.GatewayTunMTU,
 			"auto_route":               true,
 			"strict_route":             false,
@@ -312,6 +318,37 @@ func renderGatewayConfig(cfg Config, scope, policy string, split *gatewaySplitRe
 		},
 	}
 	return config, ruleSetSource
+}
+
+// rejectIPv6Proxied keeps IPv6 off the carriers. With only an IPv4 TUN
+// address auto_route left IPv6 alone, so LAN IPv6 that the policy meant for
+// the relay (WebRTC STUN to an IPv6 literal, apps with their own resolver)
+// left on the WAN around the carrier. Once the TUN captures IPv6 that traffic
+// is rejected instead of proxied: the carrier path is IPv4 (DNS answers are
+// ipv4_only, leases and split lists are IPv4), and a fast reject lets the
+// client fall back to IPv4, which the relay does carry. IPv6 the policy sends
+// direct (private, control plane, low ports on restricted, the direct side of
+// a split scope) stays direct.
+func rejectIPv6Proxied(rules []map[string]any, final string) []map[string]any {
+	out := make([]map[string]any, 0, len(rules)+2)
+	for _, rule := range rules {
+		if outbound, _ := rule["outbound"].(string); outbound == "proxy" {
+			reject := map[string]any{}
+			for key, value := range rule {
+				if key != "outbound" {
+					reject[key] = value
+				}
+			}
+			reject["ip_version"] = 6
+			reject["action"] = "reject"
+			out = append(out, reject)
+		}
+		out = append(out, rule)
+	}
+	if final == "proxy" {
+		out = append(out, map[string]any{"ip_version": 6, "action": "reject"})
+	}
+	return out
 }
 
 // nativePortMin mirrors ultra-client's restricted-policy floor.
