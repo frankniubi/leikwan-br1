@@ -2,6 +2,9 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    /// Guideline 5.4 wants the data declaration on screen before the service is used; the
+    /// cover sits above the sign-in screen until the user acknowledges it.
+    @AppStorage(PrivacyDisclosureView.acknowledgmentKey) private var privacyAcknowledged = false
 
     var body: some View {
         Group {
@@ -20,6 +23,9 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: model.notice)
+        .fullScreenCover(isPresented: Binding(get: { !privacyAcknowledged }, set: { _ in })) {
+            PrivacyDisclosureView { privacyAcknowledged = true }
+        }
     }
 }
 
@@ -36,7 +42,7 @@ private struct MainShell: View {
                     Label(section.title, systemImage: section.systemImage)
                         .tag(section)
                 }
-                .navigationTitle("LeiKwan Bridge")
+                .navigationTitle("Bridge")
                 .scrollContentBackground(.hidden)
                 .background(Palette.surfaceContainerLow)
             } detail: {

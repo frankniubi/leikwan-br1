@@ -37,13 +37,16 @@ targets:
     sources:
       - path: App
       - path: Shared
+      # Privacy manifest: declared required-reason APIs + collected data types.
+      - path: Privacy/App/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: LeikwanIOSCore
       - target: PacketTunnel
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: LeiKwan Bridge
+        CFBundleDisplayName: Bridge the Fox Sake
         CFBundleName: LeiKwanBridge
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
@@ -84,6 +87,9 @@ targets:
       - path: RuleSets
         type: folder
         buildPhase: resources
+      # The tunnel reads file attributes (log rotation) in its own container.
+      - path: Privacy/Tunnel/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: LeikwanIOSCore
       - framework: Frameworks/Libbox.xcframework
@@ -97,7 +103,7 @@ targets:
     info:
       path: PacketTunnel/Info.plist
       properties:
-        CFBundleDisplayName: LeiKwan Bridge Tunnel
+        CFBundleDisplayName: Bridge the Fox Sake Tunnel
         CFBundleName: LeiKwanBridgeTunnel
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]

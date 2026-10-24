@@ -32,6 +32,24 @@ public enum PanelError: Error {
         if case .transport = self { return true }
         return false
     }
+
+    /// The panel itself never answered: a network failure, or a CDN edge reporting that it could
+    /// not reach the origin (Cloudflare 52x, or a gateway error). Another address of the same panel
+    /// can still answer. An answer from the panel application (400, 401, 500, ...) is not eligible:
+    /// the other address reaches the same application.
+    public var isFailoverEligible: Bool {
+        switch self {
+        case .transport:
+            return true
+        case .http(let status, _):
+            return PanelError.edgeFailureStatuses.contains(status)
+        default:
+            return false
+        }
+    }
+
+    /// 502-504 gateway errors and Cloudflare's 520-526 (origin unreachable, timed out, or TLS).
+    public static let edgeFailureStatuses: Set<Int> = Set([502, 503, 504] + Array(520...526))
 }
 
 extension PanelError: CustomStringConvertible {

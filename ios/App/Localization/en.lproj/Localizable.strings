@@ -39,7 +39,7 @@
 "Direct node" = "Direct node";
 "Binding exit · %@ · default of %@ bindings" = "Binding exit · %@ · default of %@ bindings";
 "Binding exit · %@" = "Binding exit · %@";
-"Online device limit of the plan reached; this device resumes when a slot frees up" = "Online device limit of the plan reached; this device resumes when a slot frees up";
+"Online device limit of this server reached; this device resumes when a slot frees up" = "Online device limit of this server reached; this device resumes when a slot frees up";
 "This device was signed out by the server" = "This device was signed out by the server";
 "This device was banned by the server" = "This device was banned by the server";
 "The server does not trust this device" = "The server does not trust this device";

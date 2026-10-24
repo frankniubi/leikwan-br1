@@ -16,6 +16,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var catalog: IOSForwardCatalog?
     @Published private(set) var catalogError: String?
     @Published private(set) var isRefreshing = false
+    /// True while the App Review demo account is signed in (`DemoAccount`): no panel requests,
+    /// no Network Extension.
+    @Published private(set) var isDemo = false
     @Published var nodes: [ProxyNode] = [] {
         didSet { JSONStore.save(nodes, name: "nodes") }
     }
@@ -79,11 +82,15 @@ final class AppModel: ObservableObject {
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
         await tunnel.load()
-        profiles = JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList()
+        profiles = Self.withPresetBackups(JSONStore.load(PanelProfileList.self, name: "profiles") ?? PanelProfileList())
         if let active = profiles.active {
             if let token = Keychain.string(active.tokenAccount) {
-                client = makeClient(active, token: token)
-                await refreshCatalog()
+                if DemoAccount.matches(clientId: active.clientId, token: token) {
+                    startDemo()
+                } else {
+                    client = makeClient(active, token: token)
+                    await refreshCatalog()
+                }
             } else {
                 // The token is gone (Keychain reset): back to the profile list.
                 profiles.activeId = nil
@@ -92,6 +99,18 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Profiles
+
+    /// A profile's backup is the built-in pairing of its server (`PanelPreset`), never a saved
+    /// value: applied on load, so a file written before the pairing existed follows the app.
+    private static func withPresetBackups(_ list: PanelProfileList) -> PanelProfileList {
+        var updated = list
+        updated.profiles = list.profiles.map { profile in
+            var profile = profile
+            profile.backupServer = PanelPreset.backup(for: profile.server)
+            return profile
+        }
+        return updated
+    }
 
     /// Signs in with a new or edited profile. `token` nil or blank reuses the token saved for
     /// that profile. On success the profile is saved (an existing one for the same server and
@@ -102,6 +121,16 @@ final class AppModel: ObservableObject {
         let agentToken = typed.isEmpty ? (saved ?? "") : typed
         guard draft.clientId > 0, !agentToken.isEmpty else {
             throw AppError(L("Enter the Client ID and Agent Token"))
+        }
+        if DemoAccount.matches(clientId: draft.clientId, token: agentToken) {
+            var list = profiles
+            let stored = list.upsert(draft)
+            list.activeId = stored.id
+            Keychain.set(agentToken, for: stored.tokenAccount)
+            adoptAccount(stored)
+            profiles = list
+            startDemo()
+            return
         }
         let candidate = makeClient(draft, token: agentToken)
         let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
@@ -143,6 +172,15 @@ final class AppModel: ObservableObject {
         profiles.activeId = nil
         client = nil
         catalog = nil
+        isDemo = false
+    }
+
+    /// The demo session: the catalog comes from `DemoAccount`, and no client exists, so nothing
+    /// reaches the panel (`refreshCatalog` and cloud sync both need a client).
+    private func startDemo() {
+        isDemo = true
+        client = nil
+        apply(DemoAccount.catalog(selectedForwardId: selectedForwardID))
     }
 
     /// Removes a saved profile and its token.
@@ -176,6 +214,10 @@ final class AppModel: ObservableObject {
     }
 
     func refreshCatalog() async {
+        if isDemo {
+            apply(DemoAccount.catalog(selectedForwardId: selectedForwardID))
+            return
+        }
         guard let client else { return }
         isRefreshing = true
         defer { isRefreshing = false }
@@ -342,6 +384,10 @@ final class AppModel: ObservableObject {
     func toggleConnection() async {
         if tunnel.isConnected || tunnel.isBusy {
             tunnel.disconnect()
+            return
+        }
+        if isDemo {
+            tunnel.simulateConnection(true)
             return
         }
         do {
