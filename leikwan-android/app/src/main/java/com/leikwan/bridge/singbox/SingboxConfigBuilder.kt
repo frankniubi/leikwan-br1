@@ -99,7 +99,11 @@ class SingboxConfigBuilder(
         runtimeContext: RuntimeContext?,
         routingPolicySnapshot: RoutingPolicySnapshot? = null,
         connectionMode: ProxyConnectionMode = ProxyConnectionMode.SERVICES,
-        enableIpv6Tun: Boolean = false,
+        /**
+         * Hand apps AAAA answers (the user's DNS strategy). The TUN captures IPv6 either way; with
+         * this off, IPv6 destinations are rejected inside the tunnel instead of being carried.
+         */
+        enableIpv6Dns: Boolean = false,
         routeRuleSnapshot: ClientRouteRuleSnapshot? = null,
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding> = emptyList(),
         runtimeOnlyProxy: Boolean = false,
@@ -153,7 +157,7 @@ class SingboxConfigBuilder(
             buildDns(
                 dnsProxyDetourTag,
                 dnsBootstrapDomains,
-                enableIpv6Tun,
+                enableIpv6Dns,
                 nativeMode = nativeMode,
                 nativeRouteScope = normalizedNativeScope,
                 nativeBypassChina = nativeMode && nativeBypassChina,
@@ -162,7 +166,6 @@ class SingboxConfigBuilder(
         root.add(
             "inbounds",
             buildInbounds(
-                enableIpv6Tun = enableIpv6Tun,
                 routeExcludeCidrs = if (nativeMode) protectedConnectivity.ipCidrs else emptySet(),
             ),
         )
@@ -203,7 +206,7 @@ class SingboxConfigBuilder(
                 normalizedNativeScope,
                 nativeBypassChina,
                 normalizedNativePolicy,
-                enableIpv6Tun,
+                enableIpv6Dns,
             )
         )
         return try {
@@ -220,7 +223,7 @@ class SingboxConfigBuilder(
     private fun buildDns(
         proxyDetourTag: String?,
         bootstrapDomains: Set<String>,
-        enableIpv6Tun: Boolean,
+        enableIpv6Dns: Boolean,
         nativeMode: Boolean = false,
         nativeRouteScope: String = NATIVE_ROUTE_SCOPE_GLOBAL,
         nativeBypassChina: Boolean = false,
@@ -305,7 +308,7 @@ class SingboxConfigBuilder(
         }
         dns.add("rules", rules)
         dns.addProperty("final", "remote")
-        dns.addProperty("strategy", if (enableIpv6Tun) settings.dnsStrategy else "ipv4_only")
+        dns.addProperty("strategy", if (enableIpv6Dns) settings.dnsStrategy else "ipv4_only")
         return dns
     }
 
@@ -331,18 +334,18 @@ class SingboxConfigBuilder(
     }
 
     private fun buildInbounds(
-        enableIpv6Tun: Boolean,
         routeExcludeCidrs: Set<String> = emptySet(),
     ): JsonArray {
         return JsonArray().apply {
             add(JsonObject().apply {
                 addProperty("type", "tun")
                 addProperty("tag", "tun-in")
+                // Both families are always captured. Without an IPv6 address and route the VPN
+                // leaves IPv6 on the physical network, where WebRTC and v6-only hosts see the
+                // real address; captured v6 is carried or rejected by the route, never leaked.
                 add("address", JsonArray().apply {
                     add("172.19.0.1/30")
-                    if (enableIpv6Tun) {
-                        add("fdfe:dcba:9876::1/126")
-                    }
+                    add("fdfe:dcba:9876::1/126")
                 })
                 addProperty("auto_route", true)
                 addProperty("strict_route", true)
@@ -354,10 +357,9 @@ class SingboxConfigBuilder(
                 addProperty("stack", "gvisor")
                 addProperty("endpoint_independent_nat", true)
                 addProperty("mtu", 9000)
-                val effectiveRouteExcludes = routeExcludeCidrs.filter { enableIpv6Tun || !it.contains(':') }
-                if (effectiveRouteExcludes.isNotEmpty()) {
+                if (routeExcludeCidrs.isNotEmpty()) {
                     add("route_exclude_address", JsonArray().apply {
-                        effectiveRouteExcludes.forEach { add(it) }
+                        routeExcludeCidrs.forEach { add(it) }
                     })
                 }
                 // Per-app scope, applied by VpnService.Builder in openTun. This app is always
@@ -671,7 +673,7 @@ class SingboxConfigBuilder(
         nativeRouteScope: String = "global",
         nativeBypassChina: Boolean = false,
         nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
-        enableIpv6Tun: Boolean = false,
+        enableIpv6Dns: Boolean = false,
     ): JsonObject {
         val route = JsonObject()
         val rules = JsonArray()
@@ -685,6 +687,16 @@ class SingboxConfigBuilder(
             addProperty("action", "hijack-dns")
         })
 
+        // DNS hands out IPv4 only, so captured IPv6 is literal-address traffic (WebRTC, DoH
+        // answers) that the proxy path may not carry. Refuse it at once: apps fall back to IPv4
+        // instead of timing out, and it never leaves around the tunnel.
+        if (!enableIpv6Dns) {
+            rules.add(JsonObject().apply {
+                addProperty("ip_version", 6)
+                addProperty("action", "reject")
+            })
+        }
+
         // Reject packets aimed at the TUN peer before the RFC-1918 direct rule.
         // Otherwise strict routing can feed gateway discovery back into the VPN.
         if (nativeMode) {
@@ -694,7 +706,7 @@ class SingboxConfigBuilder(
                     addProperty("network", network)
                     add("ip_cidr", JsonArray().apply {
                         add(NATIVE_TUN_GATEWAY_IPV4)
-                        if (enableIpv6Tun) add(NATIVE_TUN_GATEWAY_IPV6)
+                        add(NATIVE_TUN_GATEWAY_IPV6)
                     })
                     addProperty("action", "reject")
                     addProperty("method", "drop")
