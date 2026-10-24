@@ -65,6 +65,101 @@
 网关模式依赖面板的 **native outbound** 能力（`pull` 响应里的 `native_outbound`）。
 面板没授权时，`leikwand` 会明确报告"面板尚未为本设备授权原生出口"，而不是假装工作。
 
+### 4.1 网关模式 = 原生出口（native outbound）（leikwand 1.1）
+
+网关模式就是桌面/安卓客户端的 native outbound，只是承载者从一台电脑换成整个局域网。
+契约与 [docs/api/native-outbound.md](api/native-outbound.md) 第 6 节完全一致：
+
+- **原生线路不走普通转发路径**：`native_outbound=true` 的线路不绑定 `listen_port`、
+  不申请普通租约、不做监听就绪检查；它们只由网关的本机中继承载。
+- **原生租约与桌面同形**：每次申请前先做一次不带 `since_revision` 的完整拉取拿到最新授权，
+  再带 `session_ticket`、`policy_generation`、随机 `nonce`、范围摘要（受限策略 v1、
+  无审全路由 v2）请求 `purpose=native_outbound`。面板回的 `scope_digest` 按运行时要求放进
+  `target_digest` 再投递；批次里任何一条字段不符都整批拒收（与桌面 `ParseNativeOutboundLease` 相同）。
+- **两个进程、两套生命周期**：中继（`ultra-client`，`native_socks5`，127.0.0.1:2080）持有租约，
+  续租通过控制套接字投递给正在运行的中继；sing-box 只在其配置变化时重启。续租不断开局域网会话。
+- **撤销即停**：面板撤回原生出口、服务停用或配额耗尽时，sing-box、中继和直连例外全部撤掉，
+  局域网回到普通路由（不会把流量黑洞掉），LuCI 显示原因。
+
+#### 范围与策略
+
+| UCI | 取值 | 说明 |
+|---|---|---|
+| `gateway_route_scope` | `auto`（默认）/ `intl_only` / `cn_only` / `global` | `auto` 按线路方向：国内→国际 = `intl_only`，国际→国内 = `cn_only`，其他 = `global`。线路不支持所选范围时回退到 `auto` 并在状态里提示 |
+| `gateway_route_policy` | `auto`（默认）/ `restricted` / `unrestricted` | `auto`：套餐开了 `allow_native_outbound_unrestricted`（无审全路由）就用全路由，否则受限。手动选 `unrestricted` 但未授权时降为受限并提示 |
+| `gateway_forward_id` | `0`（自动）或线路 ID | 只能选面板授权的原生出口线路；指定的线路不在授权里是错误，不会静默换线 |
+
+受限策略与中继自身的限制一致：1–999 端口一律直连，只有 1000 以上端口进线路（游戏用途）。
+
+#### 抗污染（与桌面/安卓同一套）
+
+| 场景 | 解析 |
+|---|---|
+| 无审全路由，`global` / `intl_only` | Cloudflare DoH（1.1.1.1）**经线路**；`intl_only`（或开了绕过大陆的 `global`）下国内域名走国内解析 |
+| 受限策略（`cn_only` 以外） | AliDNS DoH（223.5.5.5）直连 —— 中继拒绝 443 等低端口，DNS 不能走线路 |
+| `cn_only` | 国外域名 Cloudflare DoH 直连；国内域名 AliDNS DoH，无审全路由时**经线路**（出口在国内，答案无污染且就近） |
+| `gateway_dns_mode=custom` | `gateway_dns_servers` 以真 UDP 发送，允许时经线路（Windows 0.1.20.68 同一修复）；`cn_only` 不使用自定义服务器 |
+
+- **局域网 DNS 自动接管**：TUN 里的所有 DNS 包都被 sing-box 劫持，包括 dnsmasq 自己的上游查询，
+  所以把路由器当 DNS 的设备直接得到受保护的答案，**不改 dnsmasq 配置**；sing-box 退出时 TUN
+  随之消失，DNS 自动回到原状。
+- **"本地"解析器是明确的国内服务器**（223.5.5.5 UDP），不是系统解析器：路由器的系统解析器就是
+  dnsmasq，它的上游会被劫持回 sing-box，形成环路。
+- **IPv4 only**（与桌面一致），**交接前先解析**（无审全路由或分流范围），中继不会在另一条 DNS
+  路径上二次解析。
+- **国内规则集随包内置**（`/usr/share/leikwan/rule-set/`，与 macOS/Windows 同一份 SRS，哈希一致）：
+  sing-box 在远程规则集首次下载完成前不开放入站，而 GitHub 在大陆不可达。
+- **控制面直连**：面板域名与运行时的入口区域探测（`api.bilibili.com`）强制直连并本地解析，
+  否则探测会报告出口所在地而选错线路。面板请求本身仍走严格 DoH + 绑定物理 WAN。
+
+#### 中继不会拨到自己
+
+sing-box `auto_route` 会捕获路由器上所有未绑定接口的套接字，包括 ultra-client 连中转的连接。
+面板在每个候选里给出 `direct_ip_cidrs`（必含中转端点），leikwand 为每个地址装
+`ip rule to <cidr> lookup main pref 8970`，排在 sing-box 自己的规则（固定从 9000 开始）之前。
+混合模式下普通转发线路的中转地址同样加入例外，避免它们被推进原生出口。轮换时保留上一代地址让
+旧连接自然结束；超过 /8（IPv6 /16）的前缀、回环和未指定地址一律拒收。
+
+#### 分流线路（split carrier，例如 SHIXP）
+
+网关可以同时承载第二条原生出口线路，只给一张目的网段表用：
+
+| UCI | 默认 | 说明 |
+|---|---|---|
+| `gateway_split_forward_id` | `0`（关闭） | 第二条原生出口线路 ID，必须是面板授权的另一条原生线路 |
+| `gateway_split_route_policy` | `auto` | 同 `gateway_route_policy`，单独作用于分流线路 |
+| `gateway_split_cidr_file` | `/usr/share/leikwan/split/shixp-v4.txt` | 每行一个 IPv4 网段；随包附带 SHIXP **不在公网路由表里**的成员网段（357 条，见下） |
+
+- **独立的中继**：分流中继监听 127.0.0.1:2081，有自己的租约、续租节奏、直连例外（owner `gateway:split`）和用量上报；
+  它申请 `global` 范围，由路由器按网段表收窄。
+- **规则常驻**：只要分流线路已授权、网段表非空，sing-box 就一直带着 `split` 出站和 `ip_cidr` 规则；分流中继重启或
+  续租失败时，只有表里的目标连接失败，**sing-box 不重启**（重启会断开所有局域网会话，包括承载线路的）。
+  授权缺失或网段表为空只记一条提示，承载线路照常工作。所以网段表只应放「只有这条线路能到」的网段。
+- **规则位置**：先 `resolve`（按 IP 匹配），再分流规则，排在受限策略的低端口直连规则和国内直连规则之前——
+  SHIXP 成员大多是大陆前缀，否则会被 `intl_only` 的国内直连规则截走。
+- **网段表过滤**：IPv6、私网、回环、未指定、比 /8 更宽的条目一律丢弃，防止误把局域网或整个互联网推进分流线路。
+- **随包 SHIXP 表（2026-10-17）**：SHIXP 全部成员地址空间（659 段）减去 bgp.tools 全球路由表里任何源的公告
+  （精确、覆盖或更细），再用 RIPE RIS 复核（剔除 113.45.100.0/23、117.120.196.0/22），得到 357 段、约 394 万地址。
+  云厂公网 BGP（华为云、百度、腾讯、阿里、UCloud 等）全部排除；旧的 328 条 IRR-only 表里有 146 条其实整段在公网路由。
+- **面板侧**：组合 61（SHIXP 白名单）拒绝原生出口——原生 SOCKS 可以到达任意目标，白名单就失效了。
+  所以 2026-10-17 为 plan 9 单独建了组合 72 / 路线 36「SHA -> SHIXP (native)」（同一条线路 22，无白名单），
+  不挂到客户套餐上。
+
+#### 仅按网段接管（`gateway_capture=cidr`，服务器 / PVE 宿主机）
+
+`gateway_capture` 默认 `full`（整个局域网 + 防污染 DNS）。设为 `cidr` 时，承载线路只接管 `gateway_split_cidr_file` 里的目的网段：
+
+- sing-box 的 TUN 用 `route_address` 只为这些网段装路由，**没有 DNS 段、不劫持 DNS、不识别流量**；宿主机的默认路由、DNS 和其他流量完全不动。
+- 线路提供 `global` 时自动用 `global`（由本机按网段收窄）；网段表缺失或为空是错误（不会静默空转）；分流线路在此模式下忽略并提示。
+- 非 OpenWrt 主机用 `LEIKWAN_UCI_PATH` 指向一个 UCI 格式的配置文件即可运行（无需 `uci` 命令）。2026-10-17 在 PVE 宿主机 180.153.83.59 上以此模式直连 SHIXP 线路 #326，
+  宿主机的虚拟机经网桥层改投（nft bridge 改写目的 MAC）同样使用，见该机 `/usr/local/sbin/shixp-routes`。
+
+
+#### 防火墙
+
+安装时创建 fw4 区域 `leikwan`（设备 `lkwtun0`，input/output ACCEPT，forward REJECT）和
+`lan → leikwan` 转发。TUN 只在 sing-box 运行时存在，所以区域平时是空的；卸载时删除（升级不删）。
+
 ## 5. 快速上线（3 种方式）
 
 ### 方式 A：配对码（最快，推荐给最终用户）
@@ -160,7 +255,12 @@ leikwand ctl sign_out
 | `max_candidates` | 4 | 每次向面板申请的候选数（上限 4，硬约束） |
 | `uplink_enabled` | 0 | 多 WAN 高可用 |
 | `uplink_interfaces` | 空 | 留空=自动探测默认路由设备 |
-| `gateway_enabled` | 0 | 透明网关 |
+| `gateway_enabled` | 0 | 透明网关（见 4.1） |
+| `gateway_route_scope` / `gateway_route_policy` | auto / auto | 见 4.1 |
+| `gateway_dns_mode` | auto | auto = 防污染 DoH；custom = `gateway_dns_servers` |
+| `gateway_tun_mtu` | 1280 | 与桌面相同；只影响 UDP（TCP 在 sing-box 本地终结） |
+| `gateway_rule_set_dir` | /usr/share/leikwan/rule-set | 内置国内规则集 |
+| `gateway_split_forward_id` / `gateway_split_route_policy` / `gateway_split_cidr_file` | 0 / auto / SHIXP 表 | 分流线路（见 4.1） |
 | `log_level` | info | debug / info / warn / error |
 
 ### 端口与文件
@@ -208,11 +308,13 @@ leikwand ctl sign_out
 
 | 套件 | 项数 | 结果 |
 |---|---|---|
-| 守护进程单元测试 `go test` | 42 | 全部通过，`go vet` 干净 |
-| LuCI 界面测试（Node，真实渲染 7 个页面） | 83 | 全部通过 |
+| 守护进程单元测试 `go test` | 93 | 全部通过，`go vet` 干净 |
+| LuCI 界面测试（Node，真实渲染 7 个页面） | 101 | 全部通过 |
 | LuCI 测试变异检查（注入 6 个真实缺陷） | 6 | 6/6 被抓到 |
-| 网关配置 × 真实 sing-box 1.12.22 | 12 | 全部接受，零弃用告警 |
-| 端到端集成测试（真守护进程 + 真运行时） | 32 | 全部通过 |
+| 网关配置 × 真实 sing-box 1.12.22 | 48 | 全部接受，零告警 |
+| 网关端到端（网络命名空间，真 TUN，2 种策略） | 24 × 2 | 全部通过 |
+| 端到端集成测试（真守护进程 + 真运行时） | 39 | 全部通过 |
+| 固件 rootfs chroot（真 OpenWrt busybox/uci） | 首次启动 + 升级迁移 | 通过 |
 
 ### 守护进程（`go test`，42 项）
 
@@ -240,16 +342,38 @@ leikwand ctl sign_out
 （表单类型拼错、rpc 方法名写错、render 抛异常、页面没有任何可操作按钮、
 菜单指向不存在的视图、ACL 漏授权），**6/6 全部被抓到**。
 
-### 网关配置（真实 sing-box 1.12.22，12 项）
+### 网关配置（真实 sing-box 1.12.22，60 项）
 
 `tools/leikwand/integration/validate_gateway_config.sh` 会下载 OpenWrt 24.10 发布的
 sing-box 与目标 rootfs 里的 musl 运行库，用 `sing-box check` 逐个校验
-3 种 scope × 2 种 policy × 2 种 bypass 的**全部 12 种组合**，当前全部通过且**零弃用告警**。
+3 种 scope × 2 种 policy × 2 种 bypass × 2 种 DNS 模式 × 2 种规则集来源的**全部 48 种组合**，
+外加分流线路（随包 SHIXP 表）在 3 种 scope × 2 种 policy × 2 种分流 policy 上的 12 种组合，当前全部通过且**零告警**。
 
 这一步抓到了三个真实缺陷（单元测试全都发现不了）：
 1. 配置里用了 `geoip` 规则字段 —— sing-box 1.12 **已移除**，网关直接 FATAL 起不来；
 2. DNS 用了旧版服务器写法与 `outbound` 匹配器 —— 1.12 弃用、1.14 移除；
 3. `cn_only` 的语义是错的：final 恒为 proxy，等于把 `cn_only` 静默变成了 `global`。
+
+### 网关模式（native outbound）端到端（1.1 新增）
+
+`tools/leikwand/integration/run_gateway_e2e.sh`（root）搭三个网络命名空间：局域网终端 →
+路由器（真 leikwand + 真 ultra-client + OpenWrt 发布的 sing-box 1.12.22）→ 上游（假中转放在
+网关之后的公网测试地址 198.51.100.10）。模拟面板按 `resolveUltraLease` 的规则校验原生租约
+（ticket、nonce、摘要、范围、策略），拒绝时写明错误码。`auto/auto` 与 `auto/restricted` 各 24 项全部通过：
+
+- 局域网连一个上游根本不存在的地址（203.0.113.80），回复来自中转后的回显服务 —— 证明 TUN 真的接管了转发流量；
+- 面板接受原生租约请求（`intl_only` + `unrestricted` / `restricted` 由 `auto` 推出）；
+- 直连例外装在 8970、sing-box 规则从 9000 开始；**手动删掉例外后新连接失败（中继拨到了自己），恢复后通路恢复** —— 例外是承重的；
+- 受限策略下 80 端口不进线路，无审全路由下进线路；
+- 100 秒租约在到期前续租，中继与 sing-box 的 PID 不变，续租后通路仍通；
+- 中继承载的流量作为原生线路 #50 的 Ultra 用量随心跳上报（与桌面 native-usage 相同）；
+- 面板撤回原生出口后中继停止、TUN 消失、所有例外删除，状态给出原因。
+
+配置矩阵 `validate_gateway_config.sh` 扩展为 3 范围 × 2 策略 × 2 绕过 × 2 DNS 模式 × 2 规则集来源 = 48 种，全部被真实 sing-box 接受。
+
+固件 rootfs chroot（用构建出的 x86_64 镜像自己的 busybox/uci/musl）：首次启动脚本创建 fw4 区域一次且幂等；
+1.0.1 配置升级迁移（`global→auto`、`remote→auto`、MTU `1420→1280`、删除 `gateway_redirect_lan`，保留显式 `unrestricted`）；
+包内 leikwand 与固件内 sing-box 对 6 种范围/策略都 `check` 通过且使用内置规则集。
 
 ### 构建与集成
 
@@ -280,9 +404,14 @@ sing-box 与目标 rootfs 里的 musl 运行库，用 `sing-box check` 逐个校
   因为本机 github.com 不可达，packages feed（lua/libnl）装不上，`luci-base` 自身无法编译。
   构建与产物内容（文件清单、权限、control 元数据）都真实可用，
   但在有完整 feed 的环境里应再跑一次完整依赖构建。
-- **网关模式的 sing-box 数据面未做端到端实测** —— 配置已被真实 sing-box **接受**
-  （12 种组合零告警），但"LAN 设备真的走了隧道"仍未验证：那需要 TUN 设备与 root
-  网络命名空间，本环境不具备。**配置正确 ≠ 数据面通。**
+- **网关 TCP 数据面已在网络命名空间里端到端实测（见第 10 节），但没有在真路由器上跑过**；
+  fw4 区域只在 chroot 里验证了配置写入，**没有在运行中的 fw4 上验证转发放行**。
+- **网关 DNS 防污染未做数据面实测**：DoH 需要真实公网，测试环境离线；验证的是生成配置
+  （单元测试逐条断言 + 真实 sing-box 接受），不是"答案确实干净"。上真机后请在 LAN 终端
+  `nslookup www.google.com` 对照。
+- **网关 UDP 未端到端实测**（假中转不实现 UDP），与普通线路相同。
+- **IPv6**：与桌面一致只接管 IPv4，DNS 只返回 A 记录；LAN 设备直接使用的 IPv6 字面地址不经线路。
+- **范围 `cn_only` 的数据面没有单独实测**（测试目标地址在国外，cn_only 下按设计直连）。
 - **多 WAN L2 未做双上行实测** —— 决策过程有注入式测试，但没有在真的接了两条宽带的路由器上跑过。
 - **UDP 路径未端到端实测**：假中转只实现 TCP provider 握手，所以集成测试发布的是
   `transport=tcp` 的线路。运行时对 `tcp+udp` 线路要求两条路径都健康，这是正确行为。
@@ -298,7 +427,9 @@ sing-box 与目标 rootfs 里的 musl 运行库，用 `sing-box check` 逐个校
 4. **先只开一条 forward 线路**，`leikwand ctl forwards` 看 `health` 与 `rtt_ms`；
    用真实应用验证，不要只看端口通。
 5. 观察至少一个完整租约周期（≥5 分钟），确认没有反复重启。
-6. 再开网关模式，并且**先在一台测试终端**上把网关指向路由器验证。
+6. 再开网关模式（面板先给该账号的线路开 Native outbound），并且**先在一台测试终端**上把网关指向路由器验证：
+   `leikwand ctl diagnose` 里 `gateway`、`gateway_native_lease`、`gateway_relay_bypass` 都应为 ok；
+   终端上 `nslookup www.google.com` 与 `nslookup www.baidu.com` 分别应得到国外 / 国内地址。
 7. 多 WAN 单独灰度：先只开监控（`uplink_enabled=0` 时也能在 LuCI 看到只读视图），
    确认探测结果符合预期后再置 1。
 

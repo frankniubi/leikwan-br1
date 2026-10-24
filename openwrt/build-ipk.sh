@@ -4,7 +4,7 @@
 # Usage: ./build-ipk.sh [amd64|arm64] [sdk-dir]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-VERSION="${LEIKWAND_VERSION:-1.0.1}"
+VERSION="${LEIKWAND_VERSION:-1.1.0}"
 export VERSION
 export LEIKWAND_VERSION="$VERSION"
 export LEIKWAN_RUNTIME_VERSION="${LEIKWAN_RUNTIME_VERSION:-$VERSION}"

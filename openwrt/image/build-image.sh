@@ -120,6 +120,12 @@ chmod +x "$FILES/etc/uci-defaults/99-leikwan-image"
 # luci-ssl-openssl is deliberately NOT listed: it conflicts with the default
 # libustream-mbedtls that the base image already carries.
 PACKAGES="luci luci-ssl leikwand leikwan-runtime luci-app-leikwan"
+# Gateway mode (native outbound for the whole LAN) runs sing-box on a TUN.
+# Both come from the release feed; LEIKWAN_IMAGE_GATEWAY=0 builds a
+# forward-only image for small flash.
+if [ "${LEIKWAN_IMAGE_GATEWAY:-1}" != "0" ]; then
+	PACKAGES="$PACKAGES sing-box kmod-tun"
+fi
 
 # ImageBuilder shells out to find(1) with -execdir, which refuses to run when
 # PATH contains a relative or whitespace-bearing entry. That happens when the
@@ -143,7 +149,7 @@ cd "$IB"
 # diagnostic lines on failure.
 BUILD_LOG="${LEIKWAN_BUILD_LOG:-$IB/leikwan-image-build.log}"
 if ! make image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="$FILES" \
-	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.0.1}" >"$BUILD_LOG" 2>&1; then
+	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.1.0}" >"$BUILD_LOG" 2>&1; then
 	echo "firmware build failed; diagnostics from $BUILD_LOG:" >&2
 	grep -E 'Cannot install|check_data_file_clashes|Collected errors|^ \*|No such file|unknown package' "$BUILD_LOG" | head -20 >&2
 	tail -15 "$BUILD_LOG" >&2
