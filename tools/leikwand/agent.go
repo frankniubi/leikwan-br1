@@ -222,9 +222,9 @@ func (a *Agent) pullLoop(ctx context.Context) {
 		cancel()
 		switch {
 		case err == nil:
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), false)
 		case errors.Is(err, errNotModified):
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), true)
 		default:
 			delay = a.notePullFailure(err)
 		}
@@ -298,26 +298,66 @@ func (a *Agent) freshPull(ctx context.Context) error {
 // forward's grant is past renew_after (or close to expiry) the next pull is a
 // full one. Native carriers are excluded; the gateway refreshes those itself.
 func (a *Agent) grantRefreshDue(now time.Time) bool {
+	next, ok := a.nextGrantRefresh()
+	return ok && !next.After(now)
+}
+
+// nextGrantRefresh is the earliest point at which an ordinary forward's grant
+// needs a full pull; ok is false when no ordinary forward is applied.
+func (a *Agent) nextGrantRefresh() (next time.Time, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, forward := range a.forwards {
-		policy := forward.UltraAccess
-		if policy == nil {
-			return true
-		}
-		expiresAt, err := parseRFC3339(policy.ExpiresAt)
-		if err != nil || !expiresAt.After(now) {
-			return true
-		}
-		if renewAfter, err := parseRFC3339(policy.RenewAfter); err == nil {
-			if !renewAfter.After(now) {
-				return true
-			}
-		} else if !expiresAt.After(now.Add(2 * time.Minute)) {
-			return true
+		at := grantRefreshAt(forward.UltraAccess)
+		if !ok || at.Before(next) {
+			next, ok = at, true
 		}
 	}
-	return false
+	return next, ok
+}
+
+// grantRefreshAt is renew_after (or two minutes before expiry without one),
+// never later than the expiry. A missing or unreadable grant is due at once.
+func grantRefreshAt(policy *UltraPolicy) time.Time {
+	if policy == nil {
+		return time.Time{}
+	}
+	expiresAt, err := parseRFC3339(policy.ExpiresAt)
+	if err != nil {
+		return time.Time{}
+	}
+	refresh := expiresAt.Add(-2 * time.Minute)
+	if renewAfter, err := parseRFC3339(policy.RenewAfter); err == nil {
+		refresh = renewAfter
+	}
+	if refresh.After(expiresAt) {
+		return expiresAt
+	}
+	return refresh
+}
+
+// pullDelay is the wait before the next pull. A 304 carries no grants, so the
+// poll interval must not carry the loop past renew_after: grants live five
+// minutes with a one-minute renew window, and a long poll_interval (or a long
+// poll that ends after renew_after) would otherwise let them expire between
+// pulls. A full pull that still left a grant due falls back to the poll
+// interval, so a Panel that keeps serving it is not hammered.
+func (a *Agent) pullDelay(now time.Time, notModified bool) time.Duration {
+	delay := time.Duration(a.cfg.PollIntervalSecs) * time.Second
+	next, ok := a.nextGrantRefresh()
+	if !ok {
+		return delay
+	}
+	switch until := next.Sub(now); {
+	case until > 0:
+		if until+time.Second < delay {
+			delay = until + time.Second
+		}
+	case notModified:
+		// The next pull is a full one; do not sit out the interval first.
+		delay = time.Second
+	}
+	return delay
 }
 
 func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {

@@ -277,6 +277,108 @@ func TestGrantRefreshForcesAFullPull(t *testing.T) {
 	}
 }
 
+// The Panel answers a since_revision pull with 304 before it attaches grants,
+// so a forward kept alive only by long polls loses its grant about five
+// minutes after the last full pull. Against a Panel that does exactly that,
+// the forward must keep a valid grant: inside the renew window or past expiry
+// the pull drops since_revision and the fresh grant replaces the old one.
+func TestGrantSurvivesNotModifiedLongPolls(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	var sinces []string
+	issued := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		since := r.URL.Query().Get("since_revision")
+		sinces = append(sinces, since)
+		if since != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		issued++
+		grant := testGrant(now)
+		grant.SessionTicket = "ticket-" + itoa(issued)
+		if issued == 1 {
+			// Already inside its renew window.
+			grant.RenewAfter = formatRFC3339(now.Add(-time.Second))
+			grant.ExpiresAt = formatRFC3339(now.Add(time.Minute))
+		}
+		writeJSON(t, w, map[string]any{"ok": true, "config_revision": "rev-1", "forwards": []any{ForwardConfig{
+			ForwardID: 180, BackendMode: "ultra", ClientMode: "race", ServiceStatus: "active", ListenPort: 10001,
+			Target: "127.0.0.1:41000", Transport: "tcp+udp", UltraAccess: grant,
+		}}})
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	cfg.FallbackURL = ""
+	cfg.PollIntervalSecs = 3600
+	agent := newTestAgent(t, cfg)
+	agent.panel = newPanelClient(agent.cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
+	held := func() ForwardConfig {
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		return agent.forwards[180]
+	}
+	ticket := func() string {
+		if grant := held().UltraAccess; grant != nil {
+			return grant.SessionTicket
+		}
+		return ""
+	}
+	pull := func(want error) {
+		t.Helper()
+		if err := agent.pullOnce(context.Background()); !errors.Is(err, want) {
+			t.Fatalf("pull = %v, want %v", err, want)
+		}
+	}
+
+	pull(nil) // restart: unconditional, and the grant is already due
+	pull(nil) // due grant: full pull, fresh grant
+	if ticket() != "ticket-2" {
+		t.Fatalf("the full pull did not replace the due grant (held %q)", ticket())
+	}
+	pull(errNotModified) // fresh grant: long poll, 304
+	if forward := held(); ticket() != "ticket-2" || validatePolicy(forward.UltraAccess, forward, time.Now()) != "" {
+		t.Fatal("a 304 must keep the applied, valid grant")
+	}
+	// A 304 cannot carry the loop past renew_after, even with a one-hour poll.
+	if delay := agent.pullDelay(now, true); delay > 3*time.Minute+2*time.Second || delay < 2*time.Minute {
+		t.Fatalf("delay after a 304 = %s, want renew_after", delay)
+	}
+	if delay := agent.pullDelay(now.Add(3*time.Minute+time.Second), true); delay != time.Second {
+		t.Fatalf("a 304 that ended past renew_after must pull again at once, got %s", delay)
+	}
+	if delay := agent.pullDelay(now.Add(3*time.Minute+time.Second), false); delay != time.Hour {
+		t.Fatalf("a full pull that left the grant due keeps the interval, got %s", delay)
+	}
+
+	// Age the applied grant instead of the clock: past renew_after, then past
+	// expiry, each next pull must be a full one that installs a new grant.
+	for i, age := range []time.Duration{3*time.Minute + time.Second, 5*time.Minute + time.Second} {
+		aged := *held().UltraAccess
+		aged.RenewAfter = formatRFC3339(now.Add(3*time.Minute - age))
+		aged.ExpiresAt = formatRFC3339(now.Add(5*time.Minute - age))
+		agent.mu.Lock()
+		forward := agent.forwards[180]
+		forward.UltraAccess = &aged
+		agent.forwards[180] = forward
+		agent.mu.Unlock()
+		pull(nil)
+		if forward := held(); ticket() != "ticket-"+itoa(3+i) || validatePolicy(forward.UltraAccess, forward, time.Now()) != "" {
+			t.Fatalf("age %s: the aged grant was not replaced (held %q)", age, ticket())
+		}
+		pull(errNotModified)
+	}
+
+	want := []string{"", "", "rev-1", "", "rev-1", "", "rev-1"}
+	if strings.Join(sinces, ",") != strings.Join(want, ",") {
+		t.Fatalf("since_revision sequence = %q, want %q", sinces, want)
+	}
+}
+
 type fakeIP struct {
 	mu    sync.Mutex
 	calls []string
