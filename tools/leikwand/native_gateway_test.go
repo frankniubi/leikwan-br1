@@ -128,6 +128,42 @@ func TestGatewayPlanRefusesWhatThePanelDidNotGrant(t *testing.T) {
 	}
 }
 
+// A configured carrier the device cannot use stops the gateway with the reason
+// in status; it never falls back to the default carrier, and status names the
+// configured carrier rather than the one that ran before.
+func TestConfiguredCarrierMissingIsAnErrorInStatus(t *testing.T) {
+	now := time.Now()
+	cfg := defaultConfig()
+	cfg.Mode = "gateway"
+	cfg.GatewayEnabled = true
+	cfg.GatewaySingBoxBin = writeTempFile(t, "sing-box", "")
+	agent := newTestAgent(t, cfg)
+	agent.panel.setToken("token", 3)
+	agent.configLoaded = true
+	agent.nativeCap = testCapability(false)
+	agent.nativeForwards = testCarrierForwards(now)
+
+	manager := newGatewayManager(agent)
+	agent.gateway = manager
+	manager.plan = testPlan(t, cfg, testCapability(false)) // carrier 180 ran before
+	for _, configured := range []int{999, 181} {
+		agent.cfg.GatewayForwardID = configured
+		if configured == 181 {
+			// Granted as a native line but missing from the forward list.
+			capability := testCapability(false)
+			capability.Forwards = append(capability.Forwards, NativeOutboundForward{ForwardID: 181, Direction: testDirection, Transport: "tcp+udp"})
+			agent.nativeCap = capability
+		}
+		manager.reconcile(context.Background())
+		view := agent.gatewayView()
+		if view.CarrierID != configured || view.Running || view.Direction != "" ||
+			!strings.Contains(view.LastError, "#"+itoa(configured)) {
+			t.Fatalf("carrier %d: status = carrier %d running=%v direction=%q error=%q",
+				configured, view.CarrierID, view.Running, view.Direction, view.LastError)
+		}
+	}
+}
+
 // The request shape is the desktop's: purpose, the carrier's ticket and
 // generation, a fresh nonce, and the v1 digest for restricted / v2 for
 // unrestricted.

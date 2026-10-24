@@ -232,6 +232,11 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 		// The reason is recorded first so status never shows a silent stop.
 		m.setErr("%v", err)
 		m.stopAll("no_carrier")
+		// Status must show the carrier the operator configured, not the one
+		// that ran before.
+		m.mu.Lock()
+		m.plan = gatewayPlan{}
+		m.mu.Unlock()
 		return
 	}
 	m.mu.Lock()
