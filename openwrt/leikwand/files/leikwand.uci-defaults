@@ -17,6 +17,47 @@ uci -q get leikwan.main.panel_egress_interface >/dev/null 2>&1 || {
 	uci -q commit leikwan
 }
 
+# Gateway schema 2 (leikwand 1.1): native outbound with the desktop clients'
+# DNS policy. Gateway mode before 1.1 could not obtain a native lease, so the
+# old defaults were never in effect; they are moved to the new ones once.
+# Values an operator chose that are still meaningful are kept.
+if [ "$(uci -q get leikwan.main.gateway_schema)" != "2" ]; then
+	[ "$(uci -q get leikwan.main.gateway_route_scope)" = "global" ] && uci -q set leikwan.main.gateway_route_scope='auto'
+	[ "$(uci -q get leikwan.main.gateway_route_policy)" = "restricted" ] && uci -q set leikwan.main.gateway_route_policy='auto'
+	case "$(uci -q get leikwan.main.gateway_dns_mode)" in
+		remote|local|'') uci -q set leikwan.main.gateway_dns_mode='auto' ;;
+	esac
+	[ "$(uci -q get leikwan.main.gateway_dns_servers)" = "1.1.1.1" ] && uci -q set leikwan.main.gateway_dns_servers=''
+	[ "$(uci -q get leikwan.main.gateway_tun_mtu)" = "1420" ] && uci -q set leikwan.main.gateway_tun_mtu='1280'
+	uci -q get leikwan.main.gateway_rule_set_dir >/dev/null 2>&1 || \
+		uci -q set leikwan.main.gateway_rule_set_dir='/usr/share/leikwan/rule-set'
+	uci -q delete leikwan.main.gateway_redirect_lan
+	uci -q set leikwan.main.gateway_schema='2'
+	uci -q commit leikwan
+fi
+
+# Firewall zone for the gateway TUN. sing-box routes forwarded LAN traffic into
+# lkwtun0 and re-injects it locally, so fw4 must accept lan -> lkwtun0
+# forwarding and input from lkwtun0. The zone is inert while the gateway is
+# off (the device only exists while sing-box runs) and is visible and
+# editable in LuCI like any other zone.
+if [ -f /etc/config/firewall ] && ! uci -q get firewall.leikwan >/dev/null 2>&1; then
+	uci -q batch <<-EOF
+		set firewall.leikwan=zone
+		set firewall.leikwan.name='leikwan'
+		add_list firewall.leikwan.device='lkwtun0'
+		set firewall.leikwan.input='ACCEPT'
+		set firewall.leikwan.output='ACCEPT'
+		set firewall.leikwan.forward='REJECT'
+		set firewall.leikwan.mtu_fix='1'
+		set firewall.leikwan_lan=forwarding
+		set firewall.leikwan_lan.src='lan'
+		set firewall.leikwan_lan.dest='leikwan'
+		commit firewall
+	EOF
+	/etc/init.d/firewall reload >/dev/null 2>&1
+fi
+
 # The runtime directory carries the control socket and its per-boot token.
 mkdir -p /var/run/leikwand
 chmod 700 /var/run/leikwand

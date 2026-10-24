@@ -300,40 +300,47 @@ func buildRuntimeConfig(cfg Config, forward ForwardConfig, paths runtimePaths, p
 	return runtime
 }
 
-// buildNativeRuntimeConfig is the gateway-mode variant: the runtime stops
-// being a fixed-target forward and becomes a local SOCKS5 facade whose egress
-// is chosen by the Panel. LAN traffic is then steered into that facade.
-func buildNativeRuntimeConfig(cfg Config, forward ForwardConfig, paths runtimePaths, policy *UltraPolicy, routeScope, routePolicy string) RuntimeConfig {
-	runtime := RuntimeConfig{
-		ForwardID:           forward.ForwardID,
-		ListenHost:          "127.0.0.1",
-		ListenPort:          forward.ListenPort,
+// buildNativeRuntimeConfig is the gateway relay: the runtime stops being a
+// fixed-target forward and becomes a loopback SOCKS5 facade whose egress is
+// the Panel-selected native line. The values follow the desktop's
+// NativeOutboundRelayHost, sized up for a whole LAN.
+func buildNativeRuntimeConfig(cfg Config, forwardID, listenPort int, paths runtimePaths, policyGeneration, scopeDigest, routePolicy string) RuntimeConfig {
+	return RuntimeConfig{
+		ForwardID:  forwardID,
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		// ultra-client refuses an empty target even in native mode; the
+		// desktop passes the same placeholder. Native SOCKS5 never dials it:
+		// the destination comes from each SOCKS request.
+		Target:              nativeRuntimeTargetPlaceholder,
 		NativeSocks5:        true,
 		NativeRoutePolicy:   normalizeRoutePolicy(routePolicy),
-		NativePortMin:       1000,
+		NativePortMin:       nativePortMin,
 		NativeFilterProfile: nativeFilterProfile(routePolicy),
 		ControlSocket:       paths.controlSocket,
-		PolicyGeneration:    policy.PolicyGeneration,
-		TargetDigest:        policy.TargetDigest,
+		PolicyGeneration:    strings.ToLower(strings.TrimSpace(policyGeneration)),
+		TargetDigest:        strings.ToLower(strings.TrimSpace(scopeDigest)),
 		Transport:           "tcp+udp",
-		MaxTCPConnections:   1024,
+		MaxTCPConnections:   2048,
+		UDPQueuePackets:     1024,
+		UDPMaxAssociations:  2048,
 		ConnectTimeoutSecs:  5,
 		LocationCachePath:   filepath.Join(cfg.DataDir, "state", "ultra-location.json"),
 		LocationLockPath:    filepath.Join(cfg.RunDir, "location.lock"),
 		StatusPath:          paths.statusPath,
 		AutoSelect:          true,
 		ProbeTarget:         defaultProbeTarget,
-		ProbeDurationSecs:   defaultProbeDurationSecs,
+		// A short probe window like the desktop relay: the LAN is waiting on
+		// the first lease.
+		ProbeDurationSecs:   5,
 		ProbeTimeoutMillis:  defaultProbeTimeoutMillis,
 		ProbeWorkers:        defaultProbeWorkers,
-		ProbeSamples:        defaultProbeSamples,
+		ProbeSamples:        5,
 		ProbeIntervalMillis: defaultProbeIntervalMillis,
 	}
-	// The native facade has no fixed target; the runtime validates the scope
-	// binding through the digest instead.
-	runtime.Target = ""
-	return runtime
 }
+
+const nativeRuntimeTargetPlaceholder = "1.1.1.1:443"
 
 func nativeFilterProfile(routePolicy string) string {
 	if normalizeRoutePolicy(routePolicy) == "unrestricted" {

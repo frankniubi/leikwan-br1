@@ -81,7 +81,10 @@ func (a *Agent) leaseRefreshDue(state *runtimeState, now time.Time) bool {
 	}
 	lead := time.Duration(a.cfg.LeaseRenewLeadSecs) * time.Second
 	if now.Add(lead).After(state.leaseExpiry) {
-		return true
+		// The Panel caps the lease at the grant expiry, so until a newer grant
+		// arrives (pull loop) or renew_after passes, renewing only re-mints
+		// the same expiry; hold back instead of re-leasing every tick.
+		return !now.Before(state.renewNotBefore) || grantAdvanced(state)
 	}
 	// Back off failed attempts so a persistent Panel 409 does not turn into a
 	// request storm.
@@ -90,6 +93,20 @@ func (a *Agent) leaseRefreshDue(state *runtimeState, now time.Time) bool {
 		return now.Sub(state.lastLeaseAt) >= backoff
 	}
 	return false
+}
+
+// grantAdvanced reports a grant newer than the one the current lease was
+// minted from, which can extend the lease and so lifts any renewal hold.
+func grantAdvanced(state *runtimeState) bool {
+	current, used := state.forward.UltraAccess, state.policy
+	return current != nil && used != nil && current.ExpiresAt != used.ExpiresAt
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 // validatePolicy mirrors the desktop client's UltraPolicy validation. A grant
@@ -200,6 +217,13 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 		return
 	}
 
+	// In hybrid mode the gateway TUN would otherwise capture this runtime's
+	// relay connections and push them through the native exit.
+	a.bypass.set(forwardBypassOwner(state.forward.ForwardID), leaseBypassCIDRs(response.Leases))
+	if err := a.bypass.sync(); err != nil {
+		a.log.Warn("lease", "forward %d relay bypass rules incomplete: %v", state.forward.ForwardID, err)
+	}
+
 	control := ultraControl{socketPath: state.proc.paths.controlSocket}
 	if err := waitForControlSocket(ctx, state.proc.paths.controlSocket, 15*time.Second); err != nil {
 		state.leaseFailures++
@@ -222,6 +246,14 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	}
 
 	expiry := earliestLeaseExpiry(response.Leases)
+	state.renewNotBefore = nextLeaseRenewal(policy, expiry)
+	if !expiry.After(state.leaseExpiry) {
+		// No progress (the grant has not been refreshed yet): wait a little
+		// before trying again, but never past the safety margin.
+		if hold := minTime(time.Now().Add(10*time.Second), expiry.Add(-10*time.Second)); hold.After(state.renewNotBefore) {
+			state.renewNotBefore = hold
+		}
+	}
 	state.leaseFailures = 0
 	state.lastLeaseErr = ""
 	state.candidates = len(response.Leases)
@@ -286,6 +318,12 @@ func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
 		if ok {
 			delete(a.runtimes, action.ForwardID)
 		}
+		if forward, listed := a.forwards[action.ForwardID]; listed {
+			if a.panelStopped == nil {
+				a.panelStopped = map[int]string{}
+			}
+			a.panelStopped[action.ForwardID] = policyGenerationOf(forward)
+		}
 		a.mu.Unlock()
 		if ok {
 			a.log.Warn("panel", "panel action=%s for forward %d (%s); stopping", action.Action, action.ForwardID, action.Reason)
@@ -303,6 +341,15 @@ func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
 	default:
 		a.log.Debug("panel", "ignoring panel action %q for forward %d", action.Action, action.ForwardID)
 	}
+}
+
+// policyGenerationOf is the grant generation a forward is currently listed
+// under ("" without a grant).
+func policyGenerationOf(forward ForwardConfig) string {
+	if forward.UltraAccess == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(forward.UltraAccess.PolicyGeneration))
 }
 
 var errPolicyMissing = errors.New("ultra grant missing")
@@ -336,3 +383,5 @@ func (a *Agent) noteUnsealFailures(scope string, forwardID int, response *LeaseR
 	a.log.Warn(scope, "forward %d: %d sealed lease(s) dropped (%s), %d usable: %v",
 		forwardID, len(response.UnsealFailures), codeLeaseUnsealFailed, len(response.Leases), response.UnsealFailures[0])
 }
+
+func forwardBypassOwner(forwardID int) string { return "forward:" + itoa(forwardID) }

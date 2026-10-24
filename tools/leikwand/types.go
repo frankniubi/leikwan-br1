@@ -97,6 +97,24 @@ type NativeOutboundCapability struct {
 	Forwards          []NativeOutboundForward `json:"forwards"`
 }
 
+const (
+	nativeCapabilityProtocol = "socks5"
+	nativeLeaseProtocol      = "leikwan-ultra-native-socks5-v1"
+	nativeLeasePurpose       = "native_outbound"
+)
+
+func (c *NativeOutboundCapability) carrier(forwardID int) (NativeOutboundForward, bool) {
+	if c == nil {
+		return NativeOutboundForward{}, false
+	}
+	for _, candidate := range c.Forwards {
+		if candidate.ForwardID == forwardID {
+			return candidate, true
+		}
+	}
+	return NativeOutboundForward{}, false
+}
+
 type NativeOutboundForward struct {
 	ForwardID         int      `json:"forward_id"`
 	Direction         string   `json:"direction"`
@@ -159,6 +177,19 @@ type LeaseFrame struct {
 	Direction          string        `json:"direction,omitempty"`
 	RouteScope         string        `json:"route_scope,omitempty"`
 	RoutePolicy        string        `json:"route_policy,omitempty"`
+
+	// RelayPayloadCeiling is the per-line datagram ceiling the Panel declared;
+	// 0 means unknown and the runtime measures it.
+	RelayPayloadCeiling int `json:"relay_payload_ceiling,omitempty"`
+	// ScopeDigest is what a native lease carries instead of target_digest.
+	// The runtime expects it under target_digest, which nativeRuntimeFrame
+	// takes care of.
+	ScopeDigest string `json:"scope_digest,omitempty"`
+	// DirectIPCidrs are the addresses this candidate must be reached on
+	// directly (the relay endpoint plus any Panel-declared extras). The
+	// gateway keeps them out of its own TUN so the runtime never dials the
+	// relay through itself. The runtime ignores the field.
+	DirectIPCidrs []string `json:"direct_ip_cidrs,omitempty"`
 }
 
 type LeaseEndpoint struct {

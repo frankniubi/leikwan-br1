@@ -446,13 +446,26 @@ return view.extend({
 					? E('span', { 'class': 'label success' }, _('运行中 (Running)'))
 					: E('span', { 'class': 'label warning' }, _('未运行 (Stopped)'))),
 				infoRow(_('启用 (Enabled)'), gateway.enabled ? _('是 (yes)') : _('否 (no)')),
-				infoRow(_('承载线路 (Carrier forward)'), gateway.carrier_forward_id
-					? '#%d'.format(gateway.carrier_forward_id) : '-'),
-				infoRow(_('路由范围 (Route scope)'), '%s · %s'.format(gateway.route_scope || '-', gateway.route_policy || '-')),
+				infoRow(_('原生出口授权 (Native outbound)'), gateway.native_granted
+					? _('已授权 (granted)') : _('未授权 (not granted)')),
+				infoRow(_('承载线路 (Carrier line)'), gateway.carrier_forward_id
+					? '#%d %s'.format(gateway.carrier_forward_id, gateway.direction || '') : '-'),
+				infoRow(_('路由范围 (Route scope)'), '%s · %s'.format(gateway.route_scope || '-',
+					gateway.route_policy === 'unrestricted' ? _('无审全路由 (unrestricted)') : (gateway.route_policy || '-'))),
+				infoRow(_('中继 / sing-box (Relay / sing-box)'), '%s / %s'.format(
+					gateway.relay_running ? _('运行中') : _('未运行'),
+					gateway.singbox_running ? _('运行中') : _('未运行'))),
+				infoRow(_('原生租约 (Native lease)'), gateway.lease_expires_at
+					? _('%d 个候选，到期 %s').format(gateway.candidates || 0, gateway.lease_expires_at)
+					: (gateway.lease_error || '-')),
+				infoRow(_('DNS 防污染 (DNS)'), '%s · %s'.format(gateway.dns_mode || '-', gateway.rule_sets || '-')),
 				infoRow(_('TUN 地址 (TUN address)'), gateway.tun_address || '-'),
 				infoRow(_('SOCKS 端口 (SOCKS port)'), String(gateway.socks_port || '-')),
-				infoRow(_('绕过中国大陆 (Bypass CN)'), gateway.bypass_cn ? _('是 (yes)') : _('否 (no)')),
-				infoRow(_('sing-box 版本 (version)'), gateway.sing_box_version || '-'),
+				infoRow(_('中继直连例外 (Relay bypass rules)'), String(gateway.bypass_rules || 0)),
+				infoRow(_('全局绕过中国大陆 (Bypass CN)'), gateway.bypass_cn ? _('是 (yes)') : _('否 (no)')),
+				(gateway.notes || []).length
+					? infoRow(_('提示 (Notes)'), gateway.notes.join('; '))
+					: '',
 				gateway.last_error
 					? infoRow(_('最近错误 (Last error)'), E('span', { 'class': 'label danger' }, gateway.last_error))
 					: ''

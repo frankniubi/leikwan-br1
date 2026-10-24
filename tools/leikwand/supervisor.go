@@ -55,22 +55,18 @@ func (p *runtimeProcess) snapshot() (pid int, startedAt time.Time, failures int,
 	return p.pid, p.startedAt, p.failures, p.lastErr, running
 }
 
-// startRuntime writes the runtime config and launches ultra-client. The caller
-// must have already validated the forward contract.
-func (a *Agent) startRuntime(ctx context.Context, forward ForwardConfig, native bool, policy *UltraPolicy, routeScope, routePolicy string) (*runtimeProcess, error) {
+// startRuntime writes the runtime config and launches ultra-client for an
+// ordinary forward. The caller must have already validated the forward
+// contract. The native relay is started by the gateway manager instead.
+func (a *Agent) startRuntime(ctx context.Context, forward ForwardConfig, policy *UltraPolicy) (*runtimeProcess, error) {
 	if !fileExists(a.cfg.RuntimeBin) {
 		return nil, fmt.Errorf("ultra runtime %s is not installed", a.cfg.RuntimeBin)
 	}
 	paths := pathsForForward(a.cfg.RunDir, forward.ForwardID)
 	cleanupRuntimeDir(paths)
 
-	var runtime RuntimeConfig
-	if native {
-		runtime = buildNativeRuntimeConfig(a.cfg, forward, paths, policy, routeScope, routePolicy)
-	} else {
-		runtime = buildRuntimeConfig(a.cfg, forward, paths, policy)
-	}
-	if !native && (forward.ListenPort < 1 || forward.ListenPort > 65535) {
+	runtime := buildRuntimeConfig(a.cfg, forward, paths, policy)
+	if forward.ListenPort < 1 || forward.ListenPort > 65535 {
 		return nil, fmt.Errorf("forward %d has an invalid listen port", forward.ForwardID)
 	}
 	if err := writeRuntimeConfig(paths, runtime); err != nil {
@@ -90,14 +86,14 @@ func (a *Agent) startRuntime(ctx context.Context, forward ForwardConfig, native 
 	}
 	proc := &runtimeProcess{
 		forwardID: forward.ForwardID,
-		native:    native,
+		native:    false,
 		paths:     paths,
 		cmd:       cmd,
 		pid:       cmd.Process.Pid,
 		startedAt: time.Now(),
 	}
 	go a.watchRuntime(ctx, proc)
-	a.log.Info("runtime", "forward %d runtime started pid=%d native=%v port=%d", forward.ForwardID, proc.pid, native, forward.ListenPort)
+	a.log.Info("runtime", "forward %d runtime started pid=%d port=%d", forward.ForwardID, proc.pid, forward.ListenPort)
 	return proc, nil
 }
 
@@ -132,6 +128,10 @@ func (a *Agent) watchRuntime(ctx context.Context, proc *runtimeProcess) {
 func (a *Agent) stopRuntime(proc *runtimeProcess, reason string) {
 	if proc == nil {
 		return
+	}
+	if !proc.native && proc.forwardID > 0 {
+		a.bypass.remove(forwardBypassOwner(proc.forwardID))
+		_ = a.bypass.sync()
 	}
 	proc.mu.Lock()
 	if proc.cmd == nil || proc.cmd.Process == nil || proc.exitSeen {
