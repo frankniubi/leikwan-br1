@@ -34,6 +34,9 @@ public partial class MainViewModel : ObservableObject
     private bool _proxyServiceInitialized;
     private bool _proxyGameStoreInitialized;
     private WindowsClientAppArtifact? _availableUpdateArtifact;
+    // Last minimum-version policy seen in a pull. Memory only: a restart
+    // starts ungated until the next full pull carries the policy again.
+    private ClientUpdateRequirement _updateRequirement = new(CurrentAppVersion);
     private DispatcherTimer? _usageTimer;
     private readonly RuntimeUsageReader _usageReader = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
@@ -92,6 +95,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _updateErrorMessage = "";
     [ObservableProperty] private bool _isUpdateInProgress;
     [ObservableProperty] private bool _showUpdateError;
+    [ObservableProperty] private bool _isUpdateRequired;
+    [ObservableProperty] private string _requiredUpdateMinimumVersion = "";
     [ObservableProperty] private ForwardViewModel? _selectedForward;
     [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
     [ObservableProperty] private string _selectedProxyGameId = "";
@@ -132,14 +137,77 @@ public partial class MainViewModel : ObservableObject
     partial void OnCurrentViewChanged(string value)
         => OnPropertyChanged(nameof(IsForwardPairingView));
 
-    partial void OnShowUpdatePromptChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+    partial void OnShowUpdatePromptChanged(bool value) => NotifyUpdateOverlayState();
 
-    partial void OnShowUpdateErrorChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+    partial void OnShowUpdateErrorChanged(bool value) => NotifyUpdateOverlayState();
 
-    /// <summary>Shows the overlay for both the update prompt and failures.</summary>
-    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError;
+    partial void OnIsUpdateRequiredChanged(bool value) => NotifyUpdateOverlayState();
+
+    partial void OnIsUpdateInProgressChanged(bool value) => NotifyUpdateOverlayState();
+
+    private void NotifyUpdateOverlayState()
+    {
+        OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+        OnPropertyChanged(nameof(IsOptionalUpdateTitleVisible));
+        OnPropertyChanged(nameof(CanDeferUpdate));
+        OnPropertyChanged(nameof(CanDismissUpdateError));
+        OnPropertyChanged(nameof(IsUpdateRetryVisible));
+        OnPropertyChanged(nameof(IsRequiredUpdateUnavailable));
+    }
+
+    /// <summary>
+    /// Shows the overlay for the update prompt, failures and - without any
+    /// way to close it - while the panel's minimum version is not met.
+    /// </summary>
+    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError || IsUpdateRequired;
+
+    /// <summary>"Update available" title; the required title replaces it while gated.</summary>
+    public bool IsOptionalUpdateTitleVisible => ShowUpdatePrompt && !IsUpdateRequired;
+
+    /// <summary>A required update can only be installed, never deferred.</summary>
+    public bool CanDeferUpdate => ShowUpdatePrompt && !IsUpdateRequired;
+
+    /// <summary>A failed required update keeps the overlay up with Retry only.</summary>
+    public bool CanDismissUpdateError => ShowUpdateError && !IsUpdateRequired;
+
+    /// <summary>
+    /// Retry after a failure, and also while gated without an installable
+    /// update (manifest unreachable or not yet newer) - then it re-checks.
+    /// </summary>
+    public bool IsUpdateRetryVisible
+        => ShowUpdateError || (IsUpdateRequired && !ShowUpdatePrompt && !IsUpdateInProgress);
+
+    /// <summary>Gated, but no installer is known yet and nothing is running.</summary>
+    public bool IsRequiredUpdateUnavailable
+        => IsUpdateRequired && !ShowUpdatePrompt && !ShowUpdateError && !IsUpdateInProgress;
+
+    /// <summary>
+    /// Applies the <c>client_update</c> policy of a full config pull. A null
+    /// policy (the pull carried none) keeps the remembered one; the gate only
+    /// changes when a pull states a new minimum. Never touches the tunnel.
+    /// </summary>
+    public void ApplyClientUpdatePolicy(ClientUpdatePolicy? policy)
+    {
+        if (!_updateRequirement.Observe(policy))
+            return;
+        RequiredUpdateMinimumVersion = _updateRequirement.MinimumVersion;
+        IsUpdateRequired = _updateRequirement.IsRequired;
+        if (IsUpdateRequired)
+        {
+            Log.Warning(
+                "client update required (current={Current}, minimum={Minimum})",
+                _updateRequirement.CurrentVersion,
+                _updateRequirement.MinimumVersion);
+        }
+    }
+
+    /// <summary>Tests pin the running version the gate compares against.</summary>
+    public void ConfigureClientUpdateGateForTests(string currentVersion)
+    {
+        _updateRequirement = new ClientUpdateRequirement(currentVersion);
+        RequiredUpdateMinimumVersion = string.Empty;
+        IsUpdateRequired = false;
+    }
 
     /// <summary>
     /// Injected by MainWindow so the retry button can re-run the failed
@@ -160,6 +228,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void DismissUpdateError()
     {
+        if (IsUpdateRequired)
+            return;
         ShowUpdateError = false;
         UpdateErrorMessage = string.Empty;
     }
@@ -1096,6 +1166,7 @@ public partial class MainViewModel : ObservableObject
             polling.SyncError -= OnSyncError;
             if (_clientUpdatedHandler is not null)
                 polling.ClientUpdated -= _clientUpdatedHandler;
+            polling.ClientUpdatePolicyReceived -= OnClientUpdatePolicyReceived;
         }
         _clientUpdatedHandler = null;
         if (health is not null)
@@ -1370,6 +1441,16 @@ public partial class MainViewModel : ObservableObject
 
     public void ReportNoUpdateAvailableForTests(string version)
     {
+        if (IsUpdateRequired)
+        {
+            // The manifest offers nothing newer than this build yet; stay
+            // gated with Retry rather than claiming the client is current.
+            ShowUpdatePrompt = false;
+            AvailableUpdateVersion = string.Empty;
+            UpdateCheckStatus = GetString("UpdateRequiredUnavailable");
+            ReportUpdateFinished();
+            return;
+        }
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Already up to date ({version}).";
@@ -1514,6 +1595,7 @@ public partial class MainViewModel : ObservableObject
             _ = SyncHostedNodesIfChangedAsync(client.HostedNodesRevision, _lifecycleCts.Token);
         };
         _pollingService.ClientUpdated += _clientUpdatedHandler;
+        _pollingService.ClientUpdatePolicyReceived += OnClientUpdatePolicyReceived;
         _healthCheckService.HealthIssue += OnHealthIssue;
 
         var installRoot = AppDefaults.GetInstallRoot();
@@ -2026,6 +2108,13 @@ public partial class MainViewModel : ObservableObject
             Log.Information("live TUN MTU applied mtu={Mtu}", mtu);
             InvokeOnUiThread(() => AddLog($"TUN MTU updated to {mtu} to match the measured path."));
         }
+    }
+
+    private void OnClientUpdatePolicyReceived(ClientUpdatePolicy? policy)
+    {
+        if (IsShuttingDown)
+            return;
+        InvokeOnUiThread(() => ApplyClientUpdatePolicy(policy));
     }
 
     private void OnNativeOutboundUpdated(NativeOutboundCapability? capability)

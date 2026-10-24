@@ -85,6 +85,14 @@ public sealed class ConfigPollingService
     public event Action<Exception>? SyncError;
     public event Action<int, string>? ForwardRejected;
     public event Action<ClientMeta>? ClientUpdated;
+
+    /// <summary>
+    /// Raised once per successful full pull (never for 304 / failed pulls)
+    /// with the pull's <c>client_update</c> policy, or null when the panel
+    /// sent none. Raised before forward reconciliation so a slow apply does
+    /// not delay the update gate.
+    /// </summary>
+    public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
     public event Action<NativeOutboundCapability?>? NativeOutboundUpdated;
     public event Action<int, int>? PreparationProgress;
 
@@ -527,6 +535,7 @@ public sealed class ConfigPollingService
         _runtimeManager.ApplyAuthoritativeAgentConfig(pull.Client?.AgentConfigJson);
 
         _latestNativeOutbound = pull.NativeOutbound;
+        PublishClientUpdatePolicy(pull.ClientUpdate);
 
         var forwards = new List<ForwardConfig>();
         foreach (var forward in pull.Forwards)
@@ -598,6 +607,19 @@ public sealed class ConfigPollingService
             ClientUpdated?.Invoke(_latestClient);
         ForwardsUpdated?.Invoke(forwards);
         NativeOutboundUpdated?.Invoke(_latestNativeOutbound);
+    }
+
+    private void PublishClientUpdatePolicy(ClientUpdatePolicy? policy)
+    {
+        try
+        {
+            ClientUpdatePolicyReceived?.Invoke(policy);
+        }
+        catch (Exception exception)
+        {
+            // The gate is UI state; a faulty subscriber must not fail the pull.
+            Log.Warning(exception, "client update policy handler failed");
+        }
     }
 
     private async Task ReconcileForwardAsync(

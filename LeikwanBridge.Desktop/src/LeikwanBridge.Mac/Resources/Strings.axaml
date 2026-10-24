@@ -30,6 +30,9 @@
   <x:String x:Key="InstallAndRestart">Install and restart</x:String>
   <x:String x:Key="Retry">Retry</x:String>
   <x:String x:Key="DismissUpdate">Dismiss update</x:String>
+  <x:String x:Key="UpdateRequiredTitle">Update required</x:String>
+  <x:String x:Key="UpdateRequiredBody">A required update is available. Install it to keep using Bridge.</x:String>
+  <x:String x:Key="UpdateRequiredUnavailable">The required update could not be loaded yet. Check your connection and retry.</x:String>
   <x:String x:Key="RunStart">Start</x:String>
   <x:String x:Key="RunToggleStart">Start all forwards</x:String>
   <x:String x:Key="RunToggleStop">Stop all forwards and the local connection</x:String>

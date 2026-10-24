@@ -64,7 +64,7 @@ public sealed partial class MainWindowViewModel
         : L.T("CheckForUpdates", "Check for updates");
     public string UpdateReadyText => L.F("UpdateReadyFormat", "Version {0} is ready.", UpdateVersion);
     public string BypassEntriesText => L.F("BypassEntriesFormat", "Direct bypass entries: {0}", BypassAddressCount);
-    public bool HasUpdateAttention => IsUpdateVisible || ShowUpdateError;
+    public bool HasUpdateAttention => IsUpdateVisible || ShowUpdateError || IsUpdateRequired;
 
     public bool IsProxyModeSelected => SelectedConnectionMode == MacConnectionMode.Proxy;
     public bool IsVpnModeSelected => SelectedConnectionMode == MacConnectionMode.Vpn;
@@ -180,7 +180,8 @@ public sealed partial class MainWindowViewModel
                     OnLanguageSelected();
                     break;
                 case nameof(IsUpdateVisible) or nameof(ShowUpdateError) or nameof(IsUpdateInProgress)
-                    or nameof(UpdatePhaseText) or nameof(UpdateVersion) or nameof(IsCheckingForUpdates):
+                    or nameof(UpdatePhaseText) or nameof(UpdateVersion) or nameof(IsCheckingForUpdates)
+                    or nameof(IsUpdateRequired):
                     OnPropertyChanged(nameof(UpdateStatusText));
                     OnPropertyChanged(nameof(UpdateReadyText));
                     OnPropertyChanged(nameof(HasUpdateAttention));

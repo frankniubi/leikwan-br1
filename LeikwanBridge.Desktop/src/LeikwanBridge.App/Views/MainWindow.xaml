@@ -122,7 +122,16 @@
                     HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel Margin="8">
                     <TextBlock Text="{DynamicResource UpdateAvailableTitle}" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"
-                               Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
+                               Visibility="{Binding IsOptionalUpdateTitleVisible, Converter={StaticResource BoolToVis}}"/>
+                    <!-- Required update (panel minimum version): no Defer/Dismiss; the tunnel keeps running behind it. -->
+                    <TextBlock Text="{DynamicResource UpdateRequiredTitle}"
+                               FontSize="22" FontWeight="Bold" Margin="0,0,0,8"
+                               Visibility="{Binding IsUpdateRequired, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{DynamicResource UpdateRequiredBody}" TextWrapping="Wrap" Margin="0,0,0,8"
+                               Visibility="{Binding IsUpdateRequired, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{DynamicResource UpdateRequiredUnavailable}" TextWrapping="Wrap"
+                               Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,12"
+                               Visibility="{Binding IsRequiredUpdateUnavailable, Converter={StaticResource BoolToVis}}"/>
                     <TextBlock x:Name="UpdateVersionText"
                                Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,16"
                                Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
@@ -145,17 +154,17 @@
                                Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionRetryUpdate}"
                             Command="{Binding RetryUpdateCommand}" Margin="0,0,0,8"
-                            Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding IsUpdateRetryVisible, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionDismiss}"
                             Command="{Binding DismissUpdateErrorCommand}"
-                            Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding CanDismissUpdateError, Converter={StaticResource BoolToVis}}"/>
 
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionInstallNow}"
                             Click="OnInstallUpdateNow_Click" Margin="0,0,0,8"
                             Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionDeferUpdate}"
                             Click="OnDeferUpdateUntilRestart_Click"
-                            Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding CanDeferUpdate, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
         </Grid>
