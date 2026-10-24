@@ -77,7 +77,9 @@ import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
 import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
+import com.leikwan.bridge.ui.shared.RequiredUpdateDialog
 import com.leikwan.bridge.update.AppUpdateController
+import com.leikwan.bridge.update.ClientUpdatePolicy
 
 /** Top-level destinations in the floating navigation dock. */
 enum class Screen(
@@ -110,6 +112,20 @@ fun MainScreen(onLogout: () -> Unit = {}) {
     val activity = context as? MainActivity
 
     LaunchedEffect(Unit) { AppUpdateController.checkIfDue(context) }
+
+    // Panel-mandated minimum version (set by every configs/pull). The gate covers the whole
+    // app, connected or not, and leaves the VPN running.
+    val requiredMinimumVersion by ClientUpdatePolicy.requiredMinimumVersion.collectAsState()
+    val appUpdateState by AppUpdateController.state.collectAsState()
+    requiredMinimumVersion?.let { minimum ->
+        LaunchedEffect(minimum) { AppUpdateController.checkForRequiredUpdate(context) }
+        RequiredUpdateDialog(
+            minimumVersion = minimum,
+            state = appUpdateState,
+            onUpdate = { AppUpdateController.downloadAndInstall(context) },
+            onCheck = { AppUpdateController.check(context) },
+        )
+    }
 
     // Observe share intent imports
     LaunchedEffect(activity) {
