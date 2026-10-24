@@ -30,6 +30,9 @@
   <x:String x:Key="InstallAndRestart">安装并重启</x:String>
   <x:String x:Key="Retry">重试</x:String>
   <x:String x:Key="DismissUpdate">关闭更新提示</x:String>
+  <x:String x:Key="UpdateRequiredTitle">需要更新</x:String>
+  <x:String x:Key="UpdateRequiredBody">有一个必须安装的更新。请安装后继续使用 Bridge。</x:String>
+  <x:String x:Key="UpdateRequiredUnavailable">暂时无法获取必需的更新。请检查网络连接后重试。</x:String>
   <x:String x:Key="RunStart">启动</x:String>
   <x:String x:Key="RunToggleStart">启动全部转发</x:String>
   <x:String x:Key="RunToggleStop">停止全部转发和本机连接</x:String>

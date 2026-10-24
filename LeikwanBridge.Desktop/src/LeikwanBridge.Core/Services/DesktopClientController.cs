@@ -11,6 +11,12 @@ public interface IDesktopClientController : IAsyncDisposable
     event Action<string>? LogRaised;
     event Action<string>? UpdateAvailable;
 
+    /// <summary>
+    /// The connected session's per-pull <c>client_update</c> policy (null when
+    /// a full pull carried none). Consumers keep the last non-null policy.
+    /// </summary>
+    event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived { add { } remove { } }
+
     DesktopClientSnapshot Snapshot { get; }
     NativeOutboundCapability? NativeOutbound { get; }
     Task LoginAsync(string panelUrl, string email, string password, CancellationToken ct = default);
@@ -94,6 +100,7 @@ public sealed class DesktopClientController : IDesktopClientController
     public event Action<string>? NoticeRaised;
     public event Action<string>? LogRaised;
     public event Action<string>? UpdateAvailable;
+    public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
 
     public DesktopClientSnapshot Snapshot
     {
@@ -259,6 +266,7 @@ public sealed class DesktopClientController : IDesktopClientController
             session.ForwardRejected += (_, notice) => NoticeRaised?.Invoke(notice);
             session.LogRaised += message => LogRaised?.Invoke(message);
             session.DeviceLimitChanged += OnRuntimeDeviceLimitChanged;
+            session.ClientUpdatePolicyReceived += OnRuntimeClientUpdatePolicyReceived;
             _runtimeSession = session;
             PublishSnapshot(Snapshot with { ConnectionStatus = "starting_routes" });
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -538,6 +546,7 @@ public sealed class DesktopClientController : IDesktopClientController
             return;
         session.NativeOutboundChanged -= OnRuntimeNativeOutboundChanged;
         session.DeviceLimitChanged -= OnRuntimeDeviceLimitChanged;
+        session.ClientUpdatePolicyReceived -= OnRuntimeClientUpdatePolicyReceived;
         await session.StopAsync();
         await session.DisposeAsync();
         _nativeOutbound = null;
@@ -547,6 +556,9 @@ public sealed class DesktopClientController : IDesktopClientController
     {
         PublishSnapshot(Snapshot with { IsBusy = busy });
     }
+
+    private void OnRuntimeClientUpdatePolicyReceived(ClientUpdatePolicy? policy)
+        => ClientUpdatePolicyReceived?.Invoke(policy);
 
     private void OnRuntimeDeviceLimitChanged(DeviceLimitReachedException? limit)
     {
