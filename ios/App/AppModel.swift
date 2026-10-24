@@ -236,9 +236,8 @@ final class AppModel: ObservableObject {
 
     private func apply(_ catalog: IOSForwardCatalog) {
         self.catalog = catalog
-        if let id = selectedForwardID, catalog.bindableForward(id: id) == nil {
-            selectedForwardID = nil
-        }
+        // A chosen forward that is no longer offered stays chosen, so Connect reports it
+        // instead of silently exiting through another forward; only a first choice is made here.
         if selectedForwardID == nil {
             selectedForwardID = catalog.bindableForwards.first?.forwardId
         }
@@ -452,6 +451,9 @@ final class AppModel: ObservableObject {
             throw AppError(L("Sign in to use native outbound"))
         }
         guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
+            if nativeOutboundPreferences.forwardID != nil {
+                throw AppError(L("The native outbound line you chose is unavailable. Turn on another line or turn native outbound off"))
+            }
             throw AppError(L("Native outbound is not available for this forward"))
         }
         guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {

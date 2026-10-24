@@ -169,11 +169,20 @@ final class NativeSingboxConfigTests: XCTestCase {
 
     func testEffectiveSelection() {
         let availability = NativeFixtures.availability()
-        var selection = NativeOutboundPlanner.effectiveSelection(
+        XCTAssertNil(NativeOutboundPlanner.effectiveSelection(
             availability: availability, eligibleForwardIds: [12],
             preferredForwardId: 99, preferredScope: "intl_only", preferredPolicy: "unrestricted", bypassChina: true
+        ), "a chosen carrier that is no longer offered never falls back to another one")
+        XCTAssertNil(NativeOutboundPlanner.effectiveSelection(
+            availability: availability, eligibleForwardIds: [13],
+            preferredForwardId: 12, preferredScope: nil, preferredPolicy: nil, bypassChina: false
+        ), "a chosen carrier this device cannot run is not replaced")
+
+        var selection = NativeOutboundPlanner.effectiveSelection(
+            availability: availability, eligibleForwardIds: [12],
+            preferredForwardId: nil, preferredScope: "intl_only", preferredPolicy: "unrestricted", bypassChina: true
         )!
-        XCTAssertEqual(selection.forwardId, 12, "unknown preference falls back to the panel default")
+        XCTAssertEqual(selection.forwardId, 12, "no choice yet: the panel default")
         XCTAssertEqual(selection.routeScope, .global, "scope the carrier lacks falls back to its default")
         XCTAssertEqual(selection.routePolicy, .unrestricted)
         XCTAssertTrue(selection.bypassChina)

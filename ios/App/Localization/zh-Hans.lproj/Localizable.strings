@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "原生出口需要先登录";
 "Native outbound is not available for this forward" = "当前转发不可用原生出口";
 "The native outbound forward is unavailable. Refresh and try again" = "原生出口转发不可用，请刷新后重试";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "你选择的原生出口线路不可用。请开启其他线路，或关闭原生出口";
 "Timeout" = "超时";
 "Dashboard" = "仪表盘";
 "Lines" = "线路";

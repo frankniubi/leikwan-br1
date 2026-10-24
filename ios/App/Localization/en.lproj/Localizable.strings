@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "Sign in to use native outbound";
 "Native outbound is not available for this forward" = "Native outbound is not available for this forward";
 "The native outbound forward is unavailable. Refresh and try again" = "The native outbound forward is unavailable. Refresh and try again";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "The native outbound line you chose is unavailable. Turn on another line or turn native outbound off";
 "Timeout" = "Timeout";
 "Dashboard" = "Dashboard";
 "Lines" = "Lines";

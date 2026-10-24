@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "Inicia sesión para usar la salida nativa";
 "Native outbound is not available for this forward" = "La salida nativa no está disponible para este reenvío";
 "The native outbound forward is unavailable. Refresh and try again" = "El reenvío de salida nativa no está disponible. Actualiza e inténtalo de nuevo";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "La línea de salida nativa que elegiste no está disponible. Activa otra línea o desactiva la salida nativa";
 "Timeout" = "Tiempo agotado";
 "Dashboard" = "Panel";
 "Lines" = "Líneas";

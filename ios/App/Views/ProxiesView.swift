@@ -22,7 +22,7 @@ struct ProxiesView: View {
                     }
 
                     SectionTitle(L("Bindings"), trailing: bindingsBadge)
-                    if model.isNativeOutboundActive {
+                    if model.nativeOutboundPreferences.enabled {
                         NativeActiveBanner()
                     } else {
                         Text(L("Each forward is bound to one node, and every enabled binding runs at the same time. Under Rules you can send an app through a specific binding; everything else uses the default binding."))
@@ -31,7 +31,7 @@ struct ProxiesView: View {
                     }
                     LazyVGrid(columns: bindingColumns, spacing: Metrics.gutter) {
                         ForEach(model.bindingRows) { row in
-                            BindingCard(row: row, suspended: model.isNativeOutboundActive)
+                            BindingCard(row: row, suspended: model.nativeOutboundPreferences.enabled)
                         }
                     }
 
@@ -72,7 +72,7 @@ struct ProxiesView: View {
     }
 
     private var bindingsBadge: AnyView? {
-        if model.isNativeOutboundActive {
+        if model.nativeOutboundPreferences.enabled {
             return AnyView(Pill(text: L("Paused"), fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
         }
         guard let hidden = model.catalog?.unsupportedHiddenCount, hidden > 0 else { return nil }
@@ -300,7 +300,11 @@ private struct NativeActiveBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
-                Text(L("Native outbound \u{201C}%@\u{201D} is in use, so the bindings below do not run (their settings are kept).", String(describing: nativeTitle)))
+                if model.isNativeOutboundActive {
+                    Text(L("Native outbound \u{201C}%@\u{201D} is in use, so the bindings below do not run (their settings are kept).", String(describing: nativeTitle)))
+                } else {
+                    Text(L("The native outbound line you chose is unavailable. Turn on another line or turn native outbound off"))
+                }
             } icon: {
                 Image(systemName: "pause.circle.fill")
             }
