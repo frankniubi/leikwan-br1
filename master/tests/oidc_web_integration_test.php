@@ -53,11 +53,7 @@ assertContains('final class OidcController extends BaseController', $oidc, 'OIDC
 assertContains('public function start(', $oidc, 'OIDC start action missing');
 assertContains('public function callback(', $oidc, 'OIDC callback action missing');
 assertContains('private function localReturnPath(', $oidc, 'OIDC return path sanitizer missing');
-assertContains("str_starts_with(\$returnTo, '/')", $oidc, 'return path must be an absolute local path');
-assertContains("str_starts_with(\$returnTo, '//')", $oidc, 'scheme-relative return path must be rejected');
-assertContains("str_contains(\$returnTo, '\\\\')", $oidc, 'backslash return path must be rejected');
-assertContains("preg_match('/[\\r\\n]/'", $oidc, 'CRLF return path must be rejected');
-assertContains('return \'/\';', $oidc, 'unsafe return path must fall back to root');
+assertContains("LocalRedirectPath::sanitize(\$returnTo, '/')", $oidc, 'return path must use the shared local-path validator and fall back to root');
 assertContains("\$request->input('return', '/')", $oidc, 'start must read optional return target');
 assertContains('$this->sessionStore->create(', $oidc, 'start must create OIDC flow state');
 assertContains('$this->oidcClient->authorizationUrl($flow)', $oidc, 'start must redirect to authorization URL');
@@ -78,6 +74,8 @@ assertContains('catch (Throwable $throwable)', $oidc, 'callback failures must re
 assertContains("error_log(sprintf('OIDC callback failed: %s (%s)'", $oidc, 'callback failures must write a redacted server-side diagnostic');
 assertContains("SessionAuth::flash('error', 'Unable to sign in with the identity provider. Please try again.')", $oidc, 'failure must use a safe friendly message');
 assertContains("Response::redirect('/login')", $oidc, 'failure must return to login');
+assertContains("\$throwable->getMessage() === 'oidc_email_unverified'", $oidc, 'unverified provider email must get its own message');
+assertContains('verify your email address', $oidc, 'unverified provider email message must tell the user what to do');
 if (str_contains($oidc, 'super-secret') || preg_match('/(?:token|code|body)\\s*=>\\s*\\$?(?:token|code|body)/i', $oidc) === 1) {
     fail('OIDC controller must not expose provider tokens, codes, or response bodies');
 }
@@ -93,6 +91,7 @@ assertContains('session_regenerate_id(true)', $session, 'session login must rege
 assertOrdered('self::boot()', 'session_regenerate_id(true)', $session, 'session must be active before regeneration');
 assertOrdered('session_regenerate_id(true)', "\$_SESSION['auth']", $session, 'identity must be written after session regeneration');
 
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
 require_once __DIR__ . '/../src/Support/SessionAuth.php';
 session_id('oidc-web-test-' . bin2hex(random_bytes(8)));
 session_start();

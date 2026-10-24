@@ -20,8 +20,9 @@ import LeikwanIOSCore
 final class NativeOutboundLeaseManager {
     /// Restarts the native runtime with a new configuration JSON.
     typealias RuntimeRestarter = (_ configJSON: String) throws -> Void
-    /// Stops the tunnel; the argument is the user-facing reason.
-    typealias FatalHandler = (_ message: String) -> Void
+    /// Stops the tunnel with the user-facing reason. `permanent`: a restart cannot help (the plan
+    /// no longer allows this exit), as opposed to a lease that lapsed while renewals failed.
+    typealias FatalHandler = (_ message: String, _ permanent: Bool) -> Void
 
     private let client: PanelClient
     private let launch: NativeOutboundLaunch
@@ -31,6 +32,7 @@ final class NativeOutboundLeaseManager {
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var currentAlert: String?
+    private let wakeup = LoopWakeup()
     /// Distinct relay entries ("ip:port") of the last delivered batch, in candidate order.
     private var candidateEndpoints: [String] = []
 
@@ -71,6 +73,11 @@ final class NativeOutboundLeaseManager {
         currentAlert = nil
         lock.unlock()
         running?.cancel()
+    }
+
+    /// Re-checks now instead of at the end of the current wait (device wake, network change).
+    func nudge() {
+        wakeup.fire()
     }
 
     /// Captures the runtime's final usage counters, then deletes its status file. Call while the
@@ -350,7 +357,7 @@ final class NativeOutboundLeaseManager {
         let message = NativeOutboundErrors.userMessage(code)
         TunnelLog.shared.write("native outbound stopped (\(code))", level: 1)
         setAlert(message)
-        onFatal(message)
+        onFatal(message, code != "native_lease_refresh_expired")
     }
 
     private func setAlert(_ message: String?) {
@@ -360,8 +367,7 @@ final class NativeOutboundLeaseManager {
     }
 
     private func pause(seconds: Double) async {
-        let nanoseconds = UInt64(max(seconds, 0) * 1_000_000_000)
-        try? await Task.sleep(nanoseconds: nanoseconds)
+        await wakeup.sleep(seconds: seconds)
     }
 
     static func describe(_ error: Error) -> String {

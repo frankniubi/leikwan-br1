@@ -48,6 +48,16 @@ foreach (['forward_id' => 8, 'policy_generation' => str_repeat('b', 64), 'target
         requireUotResponse($error->getMessage() === 'external_uot_scope_mismatch', 'unexpected mismatch error');
     }
 }
+// Plan C3: the per-forward HMAC token rides the broker and the lease unchanged.
+$hmacToken = 'hmac-sha256:9f735a3755e0e022eee79297d7b4bf875c3b3d562e9d43166d2a7f2966f29c04';
+$broker = new ReflectionClass(\Leikwan\Master\Support\LeigodTokenBroker::class);
+$normalize = $broker->getMethod('normalizeExternalUoT');
+$brokered = $normalize->invoke($broker->newInstanceWithoutConstructor(), ['enabled' => true, 'sidecar_target' => '192.0.2.10:7443', 'token' => $hmacToken], '1.2.3.4:53');
+requireUotResponse(($brokered['token'] ?? '') === $hmacToken, 'broker rewrote or dropped the HMAC sidecar token');
+$hmacGrant = $lease + ['external_uot' => ['token' => $hmacToken] + $external];
+requireUotResponse(($attach->invoke($controller, $lease, $hmacGrant, false)['external_uot']['token'] ?? '') === $hmacToken,
+    'lease did not carry the HMAC sidecar token');
+
 $source = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
 requireUotResponse(str_contains($source, '$candidateLease = $this->attachExternalUotToLease($result[\'lease\'], $grant, $isNative);'),
     'real lease endpoint does not call the tested attachment boundary');

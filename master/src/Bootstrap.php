@@ -299,6 +299,7 @@ final class Bootstrap
         $this->router->add('POST', '/tenant/clients/ban', [$tenant, 'banClientDevice']);
         $this->router->add('POST', '/tenant/clients/unban', [$tenant, 'unbanClientDevice']);
         $this->router->add('POST', '/tenant/clients/android-enrollment-code', [$tenant, 'createAndroidEnrollmentCode']);
+        $this->router->add('POST', '/tenant/clients/ios/apple-id', [$tenant, 'submitIosAppleId']);
         $this->router->add('POST', '/tenant/clients', [$tenant, 'saveClient']);
         $this->router->add('GET', '/tenant/hosted-nodes', [$hostedNodes, 'tenantPage']);
         $this->router->add('POST', '/tenant/hosted-nodes', [$hostedNodes, 'tenantCreate']);

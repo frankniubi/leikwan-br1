@@ -33,6 +33,30 @@ public sealed class NativeDomainResolveTests
         Assert.Equal("custom-0", document.RootElement.GetProperty("dns").GetProperty("final").GetString());
     }
 
+    // TCP DNS through the native relay intermittently closes before replying
+    // (observed 2026-10-13: 28 of 30 queries to 8.8.8.8:53 hit EOF), and every
+    // hostname resolves through this server first, so browsing died while
+    // IP-only apps kept working. The native SOCKS5 relay carries real UDP.
+    [Theory]
+    [InlineData("global", "unrestricted")]
+    [InlineData("global", "restricted")]
+    [InlineData("intl_only", "restricted")]
+    public void NativeCustomDnsUsesUdpThroughTheRelay(string routeScope, string routePolicy)
+    {
+        using var lease = CreateNativeLease(routeScope, routePolicy);
+        using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.BuildNative(
+            lease,
+            WindowsProxyMode.Http,
+            [],
+            dnsMode: WindowsProxyDnsMode.Custom,
+            customDnsServers: ["8.8.8.8"]).Json);
+        var custom = document.RootElement.GetProperty("dns").GetProperty("servers").EnumerateArray()
+            .Single(server => server.GetProperty("tag").GetString() == "custom-0");
+
+        Assert.Equal("udp", custom.GetProperty("type").GetString());
+        Assert.Equal("proxy", custom.GetProperty("detour").GetString());
+    }
+
     [Fact]
     public void UnrestrictedGlobalResolvesWithRemoteDohByDefault()
     {

@@ -67,9 +67,18 @@ const STATUS = {
 			{ interface: 'wanb', up: true, healthy: false, active: false, gateway: '192.168.2.1', metric: 910, latency_ms: 0, loss_percent: 100, consecutive_successes: 0, consecutive_failures: 5, last_error: 'no_probe_response', last_switch: '' }
 		],
 		gateway: {
-			enabled: true, running: true, carrier_forward_id: 3, route_scope: 'global',
-			route_policy: 'restricted', tun_address: '172.19.0.1/30', socks_port: 2080,
-			bypass_cn: true, last_error: '', sing_box_version: ''
+			enabled: true, active: true, running: true, relay_running: true, singbox_running: true,
+			native_granted: true, carrier_forward_id: 7, direction: 'SHA -> HKG', route_scope: 'intl_only',
+			route_policy: 'unrestricted', configured_route_scope: 'auto', configured_route_policy: 'auto',
+			unrestricted_allowed: true, tun_address: '172.19.0.1/30', socks_port: 2080,
+			bypass_cn: true, dns_mode: 'auto', rule_sets: 'bundled', candidates: 2,
+			lease_expires_at: '2026-01-01T00:04:00Z', lease_error: '', bypass_rules: 3, bypass_error: '',
+			notes: [ 'route scope cn_only is not offered by this line (intl_only,global); using auto' ],
+			last_error: '',
+			carriers: [
+				{ forward_id: 7, direction: 'SHA -> HKG', route_scopes: [ 'intl_only', 'global' ], default_route_scope: 'global', unrestricted_allowed: true, default: true },
+				{ forward_id: 9, direction: 'HKG -> SHA', route_scopes: [ 'cn_only', 'global' ], default_route_scope: 'global', unrestricted_allowed: false, default: false }
+			]
 		},
 		runtime_bin: '/usr/libexec/leikwan/ultra-client', runtime_present: true, singbox_present: true,
 		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok',

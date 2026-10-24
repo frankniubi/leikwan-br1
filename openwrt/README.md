@@ -8,7 +8,7 @@
 
 | 包 | 安装内容 | 说明 |
 |---|---|---|
-| `leikwand` | `/usr/bin/leikwand`、`/etc/config/leikwan`、`/etc/init.d/leikwand` | 守护进程（Go，静态，无 libc 依赖） |
+| `leikwand` | `/usr/bin/leikwand`、`/etc/config/leikwan`、`/etc/init.d/leikwand`、`/usr/share/leikwan/rule-set/` | 守护进程（Go，静态，无 libc 依赖）；网关模式 = native outbound，见设计文档 4.1 |
 | `leikwan-runtime` | `/usr/libexec/leikwan/ultra-client` | 转发运行时（`tools/ultra-client`） |
 | `luci-app-leikwan` | LuCI 视图、menu.d、acl.d、rpcd ucode 桥 | 图形界面 |
 
@@ -50,7 +50,7 @@ export LEIKWAN_IPK_DIR=<上一步的 bin/packages/<arch>/base>
 openwrt/image/build-image.sh amd64
 ```
 
-固件预装 luci + 三个包，并预置面板地址。**固件里不含任何机密**：刷完机只需要在
+固件预装 luci + 三个包 + sing-box + kmod-tun（网关模式所需；`LEIKWAN_IMAGE_GATEWAY=0` 可去掉），并预置面板地址。**固件里不含任何机密**：刷完机只需要在
 LuCI 里输入一个配对码。
 
 ## 为什么 `luci-app-leikwan` 不用 `luci.mk`
@@ -71,8 +71,11 @@ node openwrt/luci-app-leikwan/tests/run-tests.cjs
 # 证明上面那套测试确实能抓到缺陷（注入 6 个真实缺陷）
 node openwrt/luci-app-leikwan/tests/mutation-check.cjs
 
-# 网关配置 × 真实 sing-box（下载 OpenWrt 24.10 的 sing-box 与 musl 运行库）
+# 网关配置 × 真实 sing-box（下载 OpenWrt 24.10 的 sing-box 与 musl 运行库；48 种组合）
 tools/leikwand/integration/validate_gateway_config.sh <linux-leikwand 二进制>
+
+# 网关（native outbound）数据面：网络命名空间 + 真 TUN，需要 root
+sudo tools/leikwand/integration/run_gateway_e2e.sh <leikwand> <ultra-client> <sing-box> [scope] [policy]
 
 # 端到端：真守护进程 + 真运行时 + 模拟面板 + 假中转
 tools/leikwand/integration/run_integration.sh <leikwand> <ultra-client>

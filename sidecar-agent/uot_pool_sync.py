@@ -3,18 +3,39 @@
 
 Network/panel failures retain the last known configuration. They never restart
 the data plane. The panel independently expires heartbeats after its TTL.
+
+Each heartbeat also carries the sidecar's per-forward UDP usage document
+(settings "usage_path", default /var/lib/leikwan-external-uot/usage.json), or
+null when it is absent or unreadable, so the panel can meter the pool node.
+
+A binding may carry only an HMAC "secret" and no static "token"; the probe then
+presents the per-forward HMAC token for the probe target, computed exactly as
+tools/uot-sidecar/protocol.go::makeHMACToken does.
 """
 import argparse
 import hashlib
+import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import subprocess
 import tempfile
 import time
 import urllib.request
+
+PROBE_TARGET = "1.1.1.1:53"
+DEFAULT_USAGE_PATH = "/var/lib/leikwan-external-uot/usage.json"
+MAX_USAGE_BYTES = 64 * 1024 * 1024
+# Go unicode.IsSpace, which strings.TrimSpace and the host check use. Python's
+# str.isspace() also treats U+001C..U+001F as whitespace, so it is not used.
+GO_SPACE = ("\t\n\v\f\r \u0085        "
+            "         　")
+# strconv.Atoi in base 10: optional sign, ASCII digits, no underscores.
+PORT_TEXT = re.compile(r"[+-]?[0-9]+")
 
 
 def atomic_write(path, data):
@@ -58,6 +79,87 @@ def receive(sock):
     return kind, session, body[36:]
 
 
+def canonical_ip(host):
+    """netip.ParseAddr(host).String(), or None when host is not an IP literal."""
+    # ParseAddr dispatches on the first '.', ':' or '%' it meets.
+    kinds = [char for char in host if char in ".:%"]
+    if not kinds or kinds[0] == "%":
+        return None
+    try:
+        if kinds[0] == ".":
+            return str(ipaddress.IPv4Address(host))
+        address, percent, zone = host.partition("%")
+        if percent and not zone:
+            return None
+        parsed = ipaddress.IPv6Address(address)
+    except ValueError:
+        return None
+    # Go prints an IPv4-mapped address dotted; Python before 3.13 prints hex.
+    mapped = parsed.ipv4_mapped
+    text = "::ffff:" + str(mapped) if mapped is not None else parsed.compressed
+    return text + percent + zone
+
+
+def go_lower(text):
+    """strings.ToLower: per-rune simple case mapping (U+0130 -> 'i', not 'i' U+0307)."""
+    return "".join(char.lower()[:1] for char in text)
+
+
+def normalize_target(value):
+    """Byte-for-byte port of tools/uot-sidecar/protocol.go::normalizeTarget."""
+    text = value.strip(GO_SPACE)
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0 or end + 1 >= len(text) or text[end + 1] != ":":
+            raise ValueError("target must be host:port")
+        host, port_text = text[1:end], text[end + 2:]
+    else:
+        sep = text.rfind(":")
+        if sep < 0:
+            raise ValueError("target must be host:port")
+        host, port_text = text[:sep], text[sep + 1:]
+    host = go_lower(host).strip(GO_SPACE)
+    if host == "" or any(char in GO_SPACE for char in host):
+        raise ValueError("target host is invalid")
+    port_text = port_text.strip(GO_SPACE)
+    if not PORT_TEXT.fullmatch(port_text):
+        raise ValueError("target port is invalid")
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        raise ValueError("target port is invalid")
+    canonical = canonical_ip(host)
+    if canonical is not None:
+        host = canonical
+    return host + ":" + str(port)
+
+
+def hmac_token(secret, forward_id, target):
+    """The contract C3 per-forward client token (protocol.go::makeHMACToken)."""
+    message = "%d\n%s" % (int(forward_id), normalize_target(target))
+    digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256)
+    return "hmac-sha256:" + digest.hexdigest()
+
+
+def probe_token(forward, binding, target=PROBE_TARGET):
+    """The binding's static token when present, else its HMAC token for target."""
+    if binding.get("token"):
+        return binding["token"]
+    return hmac_token(binding["secret"], forward, target)
+
+
+def read_usage(path):
+    """The sidecar usage document, or None when absent, unreadable or not an object."""
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(MAX_USAGE_BYTES + 1)
+        if len(raw) > MAX_USAGE_BYTES:
+            return None
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
 def validate_config(config):
     if config.get("listen_host") != "0.0.0.0" or not 1 <= config.get("listen_port", 0) <= 65535:
         raise ValueError("invalid listener")
@@ -65,7 +167,10 @@ def validate_config(config):
     if not isinstance(bindings, dict) or not bindings:
         raise ValueError("empty pool contract")
     for forward, binding in bindings.items():
-        if not str(forward).isdigit() or not isinstance(binding, dict) or not binding.get("token"):
+        if not str(forward).isdigit() or not isinstance(binding, dict):
+            raise ValueError("invalid forward binding")
+        if not any(isinstance(binding.get(name), str) and binding.get(name)
+                   for name in ("token", "secret")):
             raise ValueError("invalid forward binding")
 
 
@@ -76,8 +181,8 @@ def probe(config):
         session = os.urandom(16)
         with socket.create_connection(("127.0.0.1", config["listen_port"]), 2) as sock:
             sock.settimeout(2)
-            hello = {"token": binding["token"], "forward_id": int(forward),
-                     "target": "1.1.1.1:53", "frame_payload_max": 1200}
+            hello = {"token": probe_token(forward, binding), "forward_id": int(forward),
+                     "target": PROBE_TARGET, "frame_payload_max": 1200}
             sock.sendall(frame(1, session, json.dumps(hello).encode()))
             kind, received_session, body = receive(sock)
             if kind != 2 or received_session != session or json.loads(body).get("ok") is not True:
@@ -125,7 +230,8 @@ def synchronize(settings):
         probe(config)
         healthy = True
     finally:
-        request(settings, "heartbeat", {"healthy": healthy, "config_hash": digest})
+        usage = read_usage(settings.get("usage_path", DEFAULT_USAGE_PATH))
+        request(settings, "heartbeat", {"healthy": healthy, "config_hash": digest, "usage": usage})
     return digest, len(config["forwards"])
 
 

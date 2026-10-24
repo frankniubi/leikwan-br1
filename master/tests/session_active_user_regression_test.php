@@ -23,6 +23,7 @@ namespace {
     use Leikwan\Master\Database\Database;
     use Leikwan\Master\Support\SessionAuth;
 
+    require_once __DIR__ . '/../src/Support/HttpSecurity.php';
     require_once __DIR__ . '/../src/Support/SessionAuth.php';
 
     function fail_session_active_user(string $message): never

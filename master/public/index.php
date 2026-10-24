@@ -6,10 +6,14 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 
-require_once __DIR__ . '/../src/Bootstrap.php';
+use Leikwan\Master\Support\HttpSecurity;
 
+require_once __DIR__ . '/../src/Bootstrap.php';
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
+
+HttpSecurity::removeServerBanner();
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
+    HttpSecurity::startSession();
 }
 
 if (!is_file(__DIR__ . '/../.env')) {
@@ -39,7 +43,7 @@ try {
     $response = publicErrorResponse($request, $exception);
 }
 
-$response->send();
+HttpSecurity::withSecurityHeaders($response)->send();
 
 function publicErrorResponse(?Request $request, Throwable $exception): Response
 {

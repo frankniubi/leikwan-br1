@@ -173,8 +173,7 @@ extension SingboxConfigBuilder {
 
         // Reject packets aimed at the TUN peer before the private-range direct rule, so gateway
         // discovery is never fed back into the tunnel.
-        var peers = [SingboxConfigBuilder.nativeTunPeerIPv4]
-        if settings.enableIPv6 { peers.append(SingboxConfigBuilder.nativeTunPeerIPv6) }
+        let peers = [SingboxConfigBuilder.nativeTunPeerIPv4, SingboxConfigBuilder.nativeTunPeerIPv6]
         for network in ["tcp", "udp"] {
             rules.append([
                 "inbound": ["tun-in"],

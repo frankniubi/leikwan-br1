@@ -12,6 +12,7 @@ use Leikwan\Master\Support\WhmcsSsoService;
 require_once __DIR__ . '/../src/Config.php';
 require_once __DIR__ . '/../src/Database/Database.php';
 require_once __DIR__ . '/../src/Support/ApiException.php';
+require_once __DIR__ . '/../src/Support/LocalRedirectPath.php';
 require_once __DIR__ . '/../src/Support/WhmcsSsoService.php';
 
 function fail(string $message): never

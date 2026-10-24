@@ -212,13 +212,15 @@ public struct SingboxConfigBuilder {
         ]
     }
 
+    /// The IPv6 address is always present, whatever `enableIPv6` says: with it the packet tunnel
+    /// installs NEIPv6Settings with the `::/0` default route (TunnelPlatformInterface.openTun0);
+    /// without it iOS keeps IPv6 on the physical interface and WebRTC / literal-v6 traffic leaks
+    /// the real address. `enableIPv6` only controls whether DNS hands out AAAA answers.
     func buildTunInbound() -> [String: Any] {
-        var addresses = [SingboxConfigBuilder.tunIPv4Address]
-        if settings.enableIPv6 { addresses.append(SingboxConfigBuilder.tunIPv6Address) }
         return [
             "type": "tun",
             "tag": "tun-in",
-            "address": addresses,
+            "address": [SingboxConfigBuilder.tunIPv4Address, SingboxConfigBuilder.tunIPv6Address],
             "auto_route": true,
             "strict_route": true,
             "stack": settings.tunStack,

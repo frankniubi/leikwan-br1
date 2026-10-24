@@ -236,9 +236,8 @@ final class AppModel: ObservableObject {
 
     private func apply(_ catalog: IOSForwardCatalog) {
         self.catalog = catalog
-        if let id = selectedForwardID, catalog.bindableForward(id: id) == nil {
-            selectedForwardID = nil
-        }
+        // A chosen forward that is no longer offered stays chosen, so Connect reports it
+        // instead of silently exiting through another forward; only a first choice is made here.
         if selectedForwardID == nil {
             selectedForwardID = catalog.bindableForwards.first?.forwardId
         }
@@ -398,11 +397,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Re-plans and hands the new plan to a running tunnel (routing edits).
+    /// Re-plans and hands the new plan to a running tunnel (routing edits). Failures show in the
+    /// banner: a change that did not reach the tunnel must not look applied.
     func applyToRunningTunnel() async {
-        guard tunnel.isConnected else { return }
+        guard tunnel.isRunning else { return }
         do {
-            await tunnel.reload(try buildLaunch())
+            let launch = try buildLaunch()
+            if let error = await tunnel.reload(launch) {
+                notice = L("The change was not applied to the current connection: %@", error)
+            }
         } catch {
             notice = Self.describe(error)
         }
@@ -452,6 +455,9 @@ final class AppModel: ObservableObject {
             throw AppError(L("Sign in to use native outbound"))
         }
         guard let availability = nativeOutbound, let selection = nativeOutboundSelection else {
+            if nativeOutboundPreferences.forwardID != nil {
+                throw AppError(L("The native outbound line you chose is unavailable. Turn on another line or turn native outbound off"))
+            }
             throw AppError(L("Native outbound is not available for this forward"))
         }
         guard let forward = catalog?.supportedForward(id: selection.forwardId), forward.kind == .ultra else {

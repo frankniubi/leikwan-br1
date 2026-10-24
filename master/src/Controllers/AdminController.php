@@ -1350,11 +1350,11 @@ final class AdminController extends BaseController
         $editing = $editId > 0 ? $this->db->fetchOne('SELECT * FROM users WHERE id = :id AND role = :role LIMIT 1', ['id' => $editId, 'role' => 'tenant']) : null;
         $editingFlags = $editing !== null ? $this->provisioning?->decodeFeatureFlags((string) ($editing['feature_flags_json'] ?? '')) ?? $defaults : $defaults;
         $tenants = $this->db->fetchAll(
-            'SELECT u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, COUNT(s.id) AS service_count
+            'SELECT u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, u.apple_id, COUNT(s.id) AS service_count
              FROM users u
              LEFT JOIN services s ON s.user_id = u.id
              WHERE u.role = :role
-             GROUP BY u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at
+             GROUP BY u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, u.apple_id
              ORDER BY u.updated_at DESC, u.id DESC',
             ['role' => 'tenant']
         );
@@ -1367,6 +1367,10 @@ final class AdminController extends BaseController
             $tenantEmail = (string) $tenant['email'];
             $tenantStatus = (string) $tenant['status'];
             $verified = !empty($tenant['email_verified_at']);
+            $appleId = trim((string) ($tenant['apple_id'] ?? ''));
+            $appleIdCell = $appleId !== ''
+                ? '<code>' . $this->escape($appleId) . '</code>'
+                : '<span class="muted">—</span>';
             $commands = '<a href="/admin/tenants?view=edit&amp;edit=' . $tenantId . '">Edit</a>
                 <form class="inline" method="post" action="/admin/tenants/' . $tenantId . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
@@ -1376,13 +1380,14 @@ final class AdminController extends BaseController
                 <td>' . PrecisionGridUi::resourceCell($tenantName, $tenantEmail) . '</td>
                 <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error') . '</td>
                 <td>' . PrecisionGridUi::status($verified ? 'Verified' : 'Not verified', $verified ? 'ok' : 'warning') . '</td>
+                <td>' . $appleIdCell . '</td>
                 <td>' . (int) $tenant['service_count'] . '</td>
                 <td>' . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($tenantName, $tenantEmail)
                 . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error')
-                . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div></dl><footer>'
+                . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div><div><dt>Apple ID</dt><dd>' . $appleIdCell . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</footer></article>';
         }
 
@@ -1441,7 +1446,7 @@ final class AdminController extends BaseController
                 <div class="pg-sheet-toolbar"><strong>Tenant Directory</strong><span class="muted">' . count($tenants) . ' accounts</span></div>
                 <div class="pg-sheet-scroll">
                   <table class="pg-sheet-table">
-                    <thead><tr><th>Tenant / Email</th><th>Status</th><th>Verification</th><th>Services</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
+                    <thead><tr><th>Tenant / Email</th><th>Status</th><th>Verification</th><th>Apple ID</th><th>Services</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>

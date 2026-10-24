@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "Sign in to use native outbound";
 "Native outbound is not available for this forward" = "Native outbound is not available for this forward";
 "The native outbound forward is unavailable. Refresh and try again" = "The native outbound forward is unavailable. Refresh and try again";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "The native outbound line you chose is unavailable. Turn on another line or turn native outbound off";
 "Timeout" = "Timeout";
 "Dashboard" = "Dashboard";
 "Lines" = "Lines";
@@ -223,3 +224,7 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress.";
 "Unsupported forwards" = "Unsupported forwards";
 "Target: %@" = "Target: %@";
+"The change was not applied to the current connection: %@" = "The change was not applied to the current connection: %@";
+"The connection is still reconnecting, so the change was not applied. Try again" = "The connection is still reconnecting, so the change was not applied. Try again";
+"The VPN connection is not available. Reconnect and try again" = "The VPN connection is not available. Reconnect and try again";
+"Disconnect to change this forward's node. The exit is always the forward's target." = "Disconnect to change this forward's node. The exit is always the forward's target.";

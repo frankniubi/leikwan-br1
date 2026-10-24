@@ -278,7 +278,10 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 			// An older Panel validates the platform against a fixed allow-list
 			// and rejects "openwrt". Degrade once to "linux" — which every
 			// deployed Panel accepts — and replay the request unchanged.
-			if pe, ok := businessErr.(*panelError); ok && pe.Code == "location_platform_invalid" && c.degradePlatform() {
+			if pe, ok := businessErr.(*panelError); ok && platformRejected(pe) && c.degradePlatform() {
+				// The replay targets the same endpoint, so it does not use up
+				// a failover attempt (degradePlatform succeeds only once).
+				attempt--
 				continue
 			}
 			// Business error: do not rotate the endpoint, but surface the
@@ -337,13 +340,25 @@ func (e *panelError) onlineLimitReached() bool {
 	return e != nil && e.Code == codeClientOnlineLimit
 }
 
+// platformRejected reports a Panel refusal of the "openwrt" platform tag. A
+// Panel whose exception handler does not know location_platform_invalid masks
+// it as a generic 422 validation_failed, so that shape counts too; the degrade
+// it triggers happens at most once and only while the tag is still "openwrt".
+func platformRejected(e *panelError) bool {
+	if e == nil {
+		return false
+	}
+	return e.Code == "location_platform_invalid" ||
+		(e.Status == http.StatusUnprocessableEntity && e.Code == "validation_failed")
+}
+
 func decodePanelError(status int, payload []byte) error {
 	out := &panelError{Status: status, Code: "http_" + itoa(status)}
 	var envelope struct {
-		OK      bool   `json:"ok"`
-		Error   string `json:"error"`
-		Limit   *int   `json:"online_device_limit"`
-		Active  *int   `json:"active_online_devices"`
+		OK      bool            `json:"ok"`
+		Error   json.RawMessage `json:"error"`
+		Limit   *int            `json:"online_device_limit"`
+		Active  *int            `json:"active_online_devices"`
 		Details struct {
 			Limit  *int `json:"online_device_limit"`
 			Active *int `json:"active_online_devices"`
@@ -354,13 +369,25 @@ func decodePanelError(status int, payload []byte) error {
 		} `json:"error_detail"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err == nil {
-		if envelope.Error != "" {
-			out.Code = envelope.Error
+		// "error" is a bare code on the agent endpoints, but the Panel's
+		// generic exception handler answers {"code","message","reference_id"}.
+		var code string
+		var object struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(envelope.Error, &code) == nil && code != "" {
+			out.Code = code
+		} else if json.Unmarshal(envelope.Error, &object) == nil && object.Code != "" {
+			out.Code = object.Code
+			out.Msg = object.Message
 		}
 		if envelope.Detail.Code != "" {
 			out.Code = envelope.Detail.Code
 		}
-		out.Msg = envelope.Detail.Message
+		if envelope.Detail.Message != "" {
+			out.Msg = envelope.Detail.Message
+		}
 		if out.onlineLimitReached() {
 			// The flat fields are canonical; details mirrors them for clients
 			// that only read the nested object.

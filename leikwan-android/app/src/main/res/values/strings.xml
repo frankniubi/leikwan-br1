@@ -262,6 +262,15 @@
     <string name="vpn_notification_channel_name">VPN Service</string>
     <string name="vpn_notification_channel_description">LeiKwan Bridge VPN status</string>
     <string name="vpn_notification_disconnect">Disconnect</string>
+    <string name="vpn_notification_reconnecting">Reconnecting...</string>
+    <string name="vpn_recovery_failed_title">VPN disconnected</string>
+    <string name="vpn_recovery_failed_body">Could not reconnect: %1$s. Open the app to connect again.</string>
+    <string name="vpn_recovery_needs_permission">VPN permission was withdrawn</string>
+    <string name="vpn_recovery_background_blocked">Android blocked the restart in the background. Allowing the app to ignore battery optimization prevents this</string>
+    <string name="battery_prompt_title">Keep the VPN running</string>
+    <string name="battery_prompt_message">Android battery optimization can stop the VPN in the background and keep it from reconnecting. Allow LeiKwan to ignore battery optimization?</string>
+    <string name="battery_prompt_allow">Allow</string>
+    <string name="battery_prompt_later">Not now</string>
     <string name="tunnels_strategy_heading">Connection strategy</string>
     <string name="tunnels_strategy_speed_max">Speed max</string>
     <string name="tunnels_strategy_speed_max_description">Combine healthy Slave paths for maximum throughput.</string>
@@ -306,6 +315,9 @@
     <string name="connections_node_picker_empty">No nodes yet. Import one to pair.</string>
     <string name="connections_error_select_service">Choose a service forward first</string>
     <string name="connections_error_select_node">Bring in a node first</string>
+    <string name="connections_locked_while_connected">Disconnect to change the service or its node.</string>
+    <string name="connections_error_node_unavailable">The node picked for this service is no longer available. Choose a node for it.</string>
+    <string name="connections_error_service_unavailable">The service you picked is no longer available. Choose a service.</string>
     <string name="connections_native_title">Native outbound</string>
     <string name="connections_native_enabled">Use native outbound</string>
     <string name="connections_native_scope">Traffic scope</string>
