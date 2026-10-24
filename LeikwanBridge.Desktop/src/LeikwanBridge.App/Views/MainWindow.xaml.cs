@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     // never persist an endpoint the user did not choose.
     private bool _suppressEndpointChangeHandling = true;
     private bool _updateFailureWasInstall;
+    private int _requiredUpdateCheckRunning;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly ConnectionRecoverySupervisor _connectionRecovery;
@@ -1264,6 +1265,10 @@ public partial class MainWindow : Window
         {
             UpdateUpdatePromptText();
         }
+        if (e.PropertyName == nameof(MainViewModel.IsUpdateRequired) && _vm.IsUpdateRequired)
+        {
+            _ = CheckForRequiredUpdateAsync();
+        }
         if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
         {
             ApplyProxyVisualState();
@@ -1568,7 +1573,8 @@ public partial class MainWindow : Window
 
     private async void OnDeferUpdateUntilRestart_Click(object sender, RoutedEventArgs e)
     {
-        if (_vm.AvailableUpdateArtifact == null)
+        // A required update cannot be deferred (the button is hidden as well).
+        if (_vm.AvailableUpdateArtifact == null || !_vm.CanDeferUpdate)
             return;
 
         _updateFailureWasInstall = true;
@@ -1584,6 +1590,27 @@ public partial class MainWindow : Window
         {
             _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "deferred update flow failed");
+        }
+    }
+
+    /// <summary>
+    /// The panel's minimum version is not met: fetch the manifest so the
+    /// required overlay can offer "Install now". A failed fetch leaves the
+    /// overlay up with Retry (RetryFailedUpdateAsync re-runs the check).
+    /// </summary>
+    private async Task CheckForRequiredUpdateAsync()
+    {
+        if (_vm.ShowUpdatePrompt || _vm.IsUpdateInProgress)
+            return;
+        if (Interlocked.Exchange(ref _requiredUpdateCheckRunning, 1) != 0)
+            return;
+        try
+        {
+            await CheckForUpdatesAsync(_lifecycleCts.Token);
+        }
+        finally
+        {
+            Volatile.Write(ref _requiredUpdateCheckRunning, 0);
         }
     }
 

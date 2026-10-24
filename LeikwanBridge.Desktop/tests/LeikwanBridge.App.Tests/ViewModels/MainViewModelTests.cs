@@ -656,6 +656,144 @@ public sealed class MainViewModelTests
         Assert.False(vm.IsUpdateOverlayVisible);
     }
 
+    private static MainViewModel GatedViewModel(string currentVersion = "0.1.20.68")
+    {
+        var vm = new MainViewModel();
+        vm.ConfigureClientUpdateGateForTests(currentVersion);
+        return vm;
+    }
+
+    private static WindowsClientAppArtifact Artifact(string version)
+        => new() { Version = version, ArtifactUrl = "https://panel.example.test/setup.exe", Sha256 = "ABC123" };
+
+    [Fact]
+    public void ClientUpdatePolicy_BelowMinimumShowsUndismissableOverlayWithoutInstaller()
+    {
+        var vm = GatedViewModel();
+
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("0.1.20.69", vm.RequiredUpdateMinimumVersion);
+        Assert.True(vm.IsUpdateOverlayVisible);
+        // No artifact yet (manifest not fetched / failed): only Retry, which re-checks.
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+        Assert.True(vm.IsUpdateRetryVisible);
+        Assert.False(vm.CanDeferUpdate);
+        Assert.False(vm.CanDismissUpdateError);
+        Assert.False(vm.IsOptionalUpdateTitleVisible);
+    }
+
+    [Theory]
+    [InlineData("0.1.20.68")]
+    [InlineData("0.1.20.67")]
+    [InlineData("")]
+    [InlineData("not-a-version")]
+    public void ClientUpdatePolicy_MetOrUnparseableMinimumDoesNotGate(string minimum)
+    {
+        var vm = GatedViewModel();
+
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = minimum });
+
+        Assert.False(vm.IsUpdateRequired);
+        Assert.False(vm.IsUpdateOverlayVisible);
+    }
+
+    [Fact]
+    public void ClientUpdatePolicy_RequiredPromptOffersInstallButNoDefer()
+    {
+        var vm = GatedViewModel();
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        vm.PresentUpdatePrompt(Artifact("0.1.20.69"));
+
+        Assert.True(vm.ShowUpdatePrompt);
+        Assert.NotNull(vm.AvailableUpdateArtifact);
+        Assert.False(vm.CanDeferUpdate);
+        Assert.False(vm.IsOptionalUpdateTitleVisible);
+        Assert.False(vm.IsUpdateRetryVisible);
+        Assert.False(vm.IsRequiredUpdateUnavailable);
+    }
+
+    [Fact]
+    public void ClientUpdatePolicy_OverlayStaysUpOnErrorsWithRetryOnly()
+    {
+        var vm = GatedViewModel();
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+        vm.PresentUpdatePrompt(Artifact("0.1.20.69"));
+
+        vm.ReportUpdateFailed("downloaded installer hash mismatch");
+        Assert.True(vm.IsUpdateOverlayVisible);
+        Assert.True(vm.IsUpdateRetryVisible);
+        Assert.False(vm.CanDismissUpdateError);
+
+        vm.DismissUpdateErrorCommand.Execute(null);
+        Assert.True(vm.ShowUpdateError);
+        Assert.True(vm.IsUpdateOverlayVisible);
+
+        vm.ReportUpdateCheckFailedForTests("manifest unreachable");
+        Assert.True(vm.IsUpdateOverlayVisible);
+        Assert.True(vm.IsUpdateRetryVisible);
+        Assert.False(vm.CanDismissUpdateError);
+    }
+
+    [Fact]
+    public void ClientUpdatePolicy_NoNewerArtifactKeepsGateWithRetry()
+    {
+        var vm = GatedViewModel();
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        vm.ReportNoUpdateAvailableForTests("0.1.20.68");
+
+        Assert.True(vm.IsUpdateOverlayVisible);
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+        Assert.True(vm.IsUpdateRetryVisible);
+        Assert.NotEqual("Already up to date (0.1.20.68).", vm.ConnectionStatus);
+    }
+
+    [Fact]
+    public async Task ClientUpdatePolicy_RetryWhileGatedRunsTheInjectedCheck()
+    {
+        var vm = GatedViewModel();
+        var attempts = 0;
+        vm.RetryUpdateHandler = () =>
+        {
+            attempts++;
+            return Task.CompletedTask;
+        };
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, attempts);
+        Assert.True(vm.IsUpdateOverlayVisible);
+    }
+
+    [Fact]
+    public void ClientUpdatePolicy_AbsentPolicyInLaterPullDoesNotClearGate()
+    {
+        var vm = GatedViewModel();
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        vm.ApplyClientUpdatePolicy(null);
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("0.1.20.69", vm.RequiredUpdateMinimumVersion);
+        Assert.True(vm.IsUpdateOverlayVisible);
+    }
+
+    [Fact]
+    public void ClientUpdatePolicy_LoweredMinimumLiftsGate()
+    {
+        var vm = GatedViewModel();
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.69" });
+
+        vm.ApplyClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "0.1.20.60" });
+
+        Assert.False(vm.IsUpdateRequired);
+        Assert.False(vm.IsUpdateOverlayVisible);
+    }
+
 
     [Fact]
     public void ApplyForwardSnapshot_BuildsConnectionQualityOverviewForMptcpWireGuardLegs()
