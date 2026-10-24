@@ -439,6 +439,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     fun selectNodeForForward(forwardId: Long, nodeId: Long) {
         val state = _state.value
+        // The running tunnel keeps the node it was built with; picks wait for a disconnect.
+        if (state.vpnStatus != VpnStatus.DISCONNECTED) return
         pickedNodeByForward[forwardId] = nodeId
         // Only the selected service's node is the one the connect path reads.
         if (forwardId == state.selectedForwardId) prefs.selectedProxyId = nodeId

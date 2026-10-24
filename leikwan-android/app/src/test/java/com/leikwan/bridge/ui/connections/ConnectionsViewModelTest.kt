@@ -208,6 +208,20 @@ class ConnectionsViewModelTest {
     }
 
     @Test
+    fun `a node pick while connected is refused instead of silently waiting for a reconnect`() {
+        val viewModel = vm(nodes = listOf(node(5, "HK"), node(6, "TW")), catalog = catalog(forward(10), selected = 10))
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+
+        viewModel.selectNodeForForward(10L, 6L)
+
+        assertEquals(5L, viewModel.state.value.nodeFor(10L)?.id)
+        assertEquals(5L, prefs.selectedProxyId)
+    }
+
+    @Test
     fun `the persisted node pick survives reopening the app`() {
         prefs.selectedForwardId = 10L
         prefs.selectedProxyId = 6L

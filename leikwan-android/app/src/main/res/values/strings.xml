@@ -306,6 +306,7 @@
     <string name="connections_node_picker_empty">No nodes yet. Import one to pair.</string>
     <string name="connections_error_select_service">Choose a service forward first</string>
     <string name="connections_error_select_node">Bring in a node first</string>
+    <string name="connections_locked_while_connected">Disconnect to change the service or its node.</string>
     <string name="connections_error_node_unavailable">The node picked for this service is no longer available. Choose a node for it.</string>
     <string name="connections_error_service_unavailable">The service you picked is no longer available. Choose a service.</string>
     <string name="connections_native_title">Native outbound</string>
