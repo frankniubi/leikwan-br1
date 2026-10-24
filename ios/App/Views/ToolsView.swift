@@ -5,6 +5,7 @@ import SwiftUI
 struct ToolsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmingSignOut = false
+    @State private var showingPrivacy = false
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,9 @@ struct ToolsView: View {
                     Toggle(isOn: $model.routing.enableIPv6) {
                         ToolRow(title: "IPv6", detail: L("Use IPv6 inside the tunnel"), systemImage: "6.circle")
                     }
+                    .onChange(of: model.routing.enableIPv6) { _ in
+                        Task { await model.applyToRunningTunnel() }
+                    }
                     HStack {
                         ToolRow(title: L("Remote DNS"), detail: nil, systemImage: "server.rack")
                         TextField("1.1.1.1", text: $model.routing.dnsServer)
@@ -41,11 +45,11 @@ struct ToolsView: View {
                 Section {
                     InfoRow(title: L("Profile"), value: model.profile?.displayName ?? "—")
                     InfoRow(title: L("Server"), value: model.profile?.server.host ?? "—", monospaced: true)
-                    if let backup = model.profile?.backupServer {
-                        InfoRow(title: L("Backup server"), value: backup.host, monospaced: true)
-                    }
                     InfoRow(title: L("Client ID"), value: model.profile.map { String($0.clientId) } ?? "—")
                     InfoRow(title: L("Device ID"), value: deviceID, monospaced: true)
+                    if model.isDemo {
+                        InfoRow(title: L("Mode"), value: L("Demo (no server connection)"))
+                    }
                     Button {
                         Task {
                             await model.refreshCatalog()
@@ -68,6 +72,15 @@ struct ToolsView: View {
                 .listRowBackground(Palette.surfaceContainer)
 
                 Section {
+                    Button {
+                        showingPrivacy = true
+                    } label: {
+                        ToolRow(title: L("What this app sends"), detail: nil, systemImage: "shield.lefthalf.filled")
+                    }
+                    .foregroundStyle(Palette.onSurface)
+                    Link(destination: PrivacyDisclosureView.policyURL) {
+                        ToolRow(title: L("Privacy Policy"), detail: nil, systemImage: "hand.raised")
+                    }
                     InfoRow(title: L("Version"), value: model.appVersion)
                     Button(role: .destructive) {
                         confirmingSignOut = true
@@ -84,6 +97,9 @@ struct ToolsView: View {
             .navigationTitle(L("Tools"))
             .confirmationDialog(L("Signing out disconnects the current connection."), isPresented: $confirmingSignOut, titleVisibility: .visible) {
                 Button(L("Sign out"), role: .destructive) { model.signOut() }
+            }
+            .sheet(isPresented: $showingPrivacy) {
+                PrivacyDisclosureView()
             }
         }
     }

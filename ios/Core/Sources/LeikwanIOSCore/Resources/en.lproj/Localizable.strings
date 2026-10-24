@@ -30,9 +30,9 @@
 "Global" = "Global";
 "Standard routing" = "Standard routing";
 "Unrestricted routing" = "Unrestricted routing";
-"Native outbound is not available for this plan or forward" = "Native outbound is not available for this plan or forward";
+"Native outbound is not available for this server or forward" = "Native outbound is not available for this server or forward";
 "The selected traffic scope is not available. Refresh and try again" = "The selected traffic scope is not available. Refresh and try again";
-"This plan does not include unrestricted routing" = "This plan does not include unrestricted routing";
+"This server does not include unrestricted routing" = "This server does not include unrestricted routing";
 "Native outbound authorization unavailable (service inactive or expired)" = "Native outbound authorization unavailable (service inactive or expired)";
 "The native outbound line changed. Refresh and try again" = "The native outbound line changed. Refresh and try again";
 "The native outbound line expired. Reconnect" = "The native outbound line expired. Reconnect";

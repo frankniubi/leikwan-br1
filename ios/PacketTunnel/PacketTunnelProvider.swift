@@ -16,6 +16,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var nativeLeases: NativeOutboundLeaseManager?
     /// Non-default bindings whose runtimes failed to start (binding id -> error).
     private var failedBindings: [String: String] = [:]
+    private let refreshLock = NSLock()
+    private var lastPathRefresh = Date.distantPast
     /// Ultra usage counters -> heartbeat rows; shared by the control loop and the lease manager.
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
@@ -179,6 +181,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func wake() {
         commandServer?.wake()
+        refreshControlPlane("device woke")
+    }
+
+    /// The default network changed (TunnelPlatformInterface). Path updates come in bursts, so
+    /// at most one refresh per 5 s.
+    func networkPathChanged() {
+        refreshLock.lock()
+        let now = Date()
+        let due = now.timeIntervalSince(lastPathRefresh) >= 5
+        if due { lastPathRefresh = now }
+        refreshLock.unlock()
+        if due { refreshControlPlane("network changed") }
+    }
+
+    /// Heartbeat and re-check the leases now rather than at the end of their waits: after a
+    /// sleep a renewal may already be overdue, and after a network change failed renewals can
+    /// succeed again.
+    private func refreshControlPlane(_ reason: String) {
+        TunnelLog.shared.write("\(reason): refreshing heartbeat and leases")
+        controlLoop?.nudge()
+        ultraLeases?.nudge()
+        nativeLeases?.nudge()
     }
 
     // MARK: Service lifecycle
@@ -325,7 +349,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return failedBindings[group] == nil
         }
         guard !forwards.isEmpty else { return }
-        let manager = UltraLeaseManager(client: client, forwards: forwards)
+        let essential = Set(forwards.filter { groups[$0.runtimeName] == nil }.map { $0.forwardID })
+        let manager = UltraLeaseManager(client: client, forwards: forwards, essentialForwardIDs: essential) { [weak self] message in
+            self?.handleUltraUnusable(message)
+        }
         ultraLeases = manager
         manager.start()
     }
@@ -351,8 +378,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 NativeOutboundLeaseManager.settleRuntimeFiles(native, ledger: self.usageLedger)
                 try self.runtimes.start([restarted])
             },
-            onFatal: { [weak self] message in
-                self?.handleNativeFatal(message)
+            onFatal: { [weak self] message, permanent in
+                self?.handleNativeFatal(message, permanent: permanent)
             }
         )
         nativeLeases = manager
@@ -365,9 +392,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// Native outbound lost its authorization or its lease expired unrenewed: stop forwarding,
-    /// like Android stopping the VPN. The launch snapshot is kept (the session is not revoked).
-    private func handleNativeFatal(_ message: String) {
+    /// like Android stopping the VPN. After an expiry the launch snapshot is kept, so VPN
+    /// On Demand can start the tunnel again; after a lost authorization it is removed, so On
+    /// Demand does not restart a plan that cannot work (the app turns On Demand off).
+    private func handleNativeFatal(_ message: String, permanent: Bool) {
         TunnelLog.shared.write("native outbound stopping the tunnel: \(message)", level: 1)
+        if permanent {
+            try? FileManager.default.removeItem(at: AppGroup.launchSnapshotURL)
+        }
+        stopUltraLeases()
+        stopNativeLeases()
+        stopService()
+        runtimes.stopAll()
+        cancelTunnelWithError(RuntimeHostError(message))
+    }
+
+    /// The default binding's Ultra forward has had no usable lease past its grace period: stop,
+    /// so iOS shows Disconnected rather than a Connected tunnel that carries nothing. The launch
+    /// snapshot is kept; VPN On Demand starts the tunnel again with a fresh lease attempt.
+    private func handleUltraUnusable(_ message: String) {
+        TunnelLog.shared.write("ultra lease unusable, stopping the tunnel: \(message)", level: 1)
         stopUltraLeases()
         stopNativeLeases()
         stopService()

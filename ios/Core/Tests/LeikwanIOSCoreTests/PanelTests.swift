@@ -211,6 +211,43 @@ final class PanelTests: XCTestCase {
         XCTAssertEqual(httpTransport.requests.count, 1)
     }
 
+    func testCdnEdgeErrorFailsOverLikeATransportFailure() async throws {
+        // Cloudflare answers 52x when its edge cannot reach the origin. The other address reaches
+        // the origin directly, so the request is retried there and that address stays active.
+        let transport = MockPanelTransport([.respond(522, ""), .respond(200, #"{"ok":true}"#)])
+        let client = PanelClient(endpoint: Fixtures.panel, fallback: Fixtures.backupPanel, credentials: credentials, transport: transport)
+        let response = try await client.heartbeat(HeartbeatRequest(osRelease: "17.5"))
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(transport.requests.map { $0.url?.host ?? "" }, ["panel.example.com", "backup.example.net"])
+        XCTAssertEqual(client.activeEndpoint, Fixtures.backupPanel)
+    }
+
+    func testApplicationErrorsDoNotFailOver() async throws {
+        for status in [401, 500] {
+            let transport = MockPanelTransport([.respond(status, #"{"error":"nope"}"#), .respond(200, #"{"ok":true}"#)])
+            let client = PanelClient(endpoint: Fixtures.panel, fallback: Fixtures.backupPanel, credentials: credentials, transport: transport)
+            do {
+                _ = try await client.heartbeat(HeartbeatRequest(osRelease: "17.5"))
+                XCTFail("expected error for \(status)")
+            } catch let error as PanelError {
+                XCTAssertFalse(error.isFailoverEligible, "\(status)")
+            }
+            XCTAssertEqual(transport.requests.count, 1, "\(status)")
+            XCTAssertEqual(client.activeEndpoint, Fixtures.panel, "\(status)")
+        }
+    }
+
+    func testFailoverEligibilityCoversNetworkAndCdnEdgeFailuresOnly() {
+        XCTAssertTrue(PanelError.transport(URLError(.timedOut)).isFailoverEligible)
+        for status in [502, 503, 504, 520, 521, 522, 523, 524, 525, 526] {
+            XCTAssertTrue(PanelError.http(status: status, message: "").isFailoverEligible, "\(status)")
+        }
+        for status in [400, 401, 403, 404, 409, 429, 500, 501, 505, 519, 527] {
+            XCTAssertFalse(PanelError.http(status: status, message: "").isFailoverEligible, "\(status)")
+        }
+        XCTAssertFalse(PanelError.invalidResponse("x").isFailoverEligible)
+    }
+
     func testDeviceLimitAndKickSurfaceAsTypedErrors() async {
         let limited = MockPanelTransport([.respond(429, #"{"error":"client_online_limit_reached","online_device_limit":1}"#)])
         do {

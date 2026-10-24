@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "原生出口需要先登入";
 "Native outbound is not available for this forward" = "目前轉發無法使用原生出口";
 "The native outbound forward is unavailable. Refresh and try again" = "原生出口轉發無法使用，請重新整理後再試";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "你選擇的原生出口線路無法使用。請開啟其他線路，或關閉原生出口";
 "Timeout" = "逾時";
 "Dashboard" = "儀表板";
 "Lines" = "線路";
@@ -39,7 +40,7 @@
 "Direct node" = "直連節點";
 "Binding exit · %@ · default of %@ bindings" = "綁定出口 · %@ · 預設，共 %@ 個綁定";
 "Binding exit · %@" = "綁定出口 · %@";
-"Online device limit of the plan reached; this device resumes when a slot frees up" = "線上裝置數已達方案上限，空出名額後會自動恢復";
+"Online device limit of this server reached; this device resumes when a slot frees up" = "線上裝置數已達此伺服器上限，空出名額後會自動恢復";
 "This device was signed out by the server" = "此裝置已被伺服器強制登出";
 "This device was banned by the server" = "此裝置已被伺服器封鎖";
 "The server does not trust this device" = "伺服器不信任此裝置";
@@ -223,3 +224,34 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS 支援 Ultra 轉發，以及 plain_tcp_mux 入口的 Bond 轉發。";
 "Unsupported forwards" = "暫不支援的轉發";
 "Target: %@" = "目標：%@";
+
+/* Privacy disclosure (App Store guideline 5.4) */
+"What this app sends" = "此 App 傳送的資訊";
+"Server address, Client ID and Agent Token" = "伺服器位址、Client ID 與 Agent Token";
+"Used to sign in and to authenticate every request to the server you entered." = "用於登入並向你填寫的伺服器驗證每一個請求。";
+"A device identifier" = "裝置識別碼";
+"A stable value derived from this installation. The server uses it to recognize this device and apply its device limit." = "由本次安裝衍生的固定值。伺服器用它辨識此裝置並執行裝置數量限制。";
+"Device model and iOS version" = "裝置型號與 iOS 版本";
+"Lets the server pick compatible settings and show this device in its own device list." = "讓伺服器選擇相容的設定，並在其裝置列表中顯示此裝置。";
+"Traffic volume" = "流量統計";
+"Bytes uploaded and downloaded per forward, so the server can account for usage and limits." = "每條轉發的上傳與下載位元組數，供伺服器計算用量與限額。";
+"Connection details" = "連線資訊";
+"The line selected, timestamps and error codes, used to connect and to troubleshoot." = "所選線路、時間戳與錯誤碼，用於建立連線與排查問題。";
+"Kept on this device. They leave it only if you copy or share them." = "僅保存在本機。只有在你複製或分享時才會離開裝置。";
+"Bridge connects this device to a server you choose. Before the first connection, this is exactly what leaves this device and why." = "Bridge 將此裝置連線到你自行選擇的伺服器。首次連線前，這裡準確說明哪些資訊會離開裝置以及原因。";
+"Never collected" = "絕不收集";
+"Message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK." = "絕不收集通訊內容、通訊錄、位置、照片與廣告識別碼（IDFA）。App 內沒有任何分析、廣告或當機回報 SDK。";
+"Who receives it" = "誰會收到";
+"The server address saved in your profile receives the data above. Your connections are carried through the relay lines that server assigns. The two preset addresses belong to the developer; with your own server, nothing is sent to the developer's servers." = "設定檔中儲存的伺服器位址會接收上述資訊。你的連線會經由該伺服器分配的中繼線路轉送。兩個預設位址由開發者營運；填寫自有伺服器時，不會有任何資料送往開發者伺服器。";
+"Privacy Policy" = "隱私權政策";
+"Privacy" = "隱私";
+"I understand" = "我已知悉";
+"Done" = "完成";
+
+"Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "網域解析會送往「工具」中設定的 DNS 伺服器（預設 1.1.1.1，直連網域為 8.8.8.8）。節點測速與訂閱匯入只連接你輸入的位址。隧道紀錄可能包含你連線的主機名稱，僅保存在本機。";
+"Lookups and logs" = "網域解析與紀錄";
+"Demo (no server connection)" = "示範（不連線伺服器）";
+"The change was not applied to the current connection: %@" = "變更未套用到目前連線：%@";
+"The connection is still reconnecting, so the change was not applied. Try again" = "連線仍在重新連線中，變更未套用，請再試一次";
+"The VPN connection is not available. Reconnect and try again" = "VPN 連線無法使用，請重新連線後再試";
+"Disconnect to change this forward's node. The exit is always the forward's target." = "中斷連線後才能更換此轉發的節點。出口始終是該轉發的目標。";

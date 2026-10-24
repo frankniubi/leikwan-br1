@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "Inicia sesión para usar la salida nativa";
 "Native outbound is not available for this forward" = "La salida nativa no está disponible para este reenvío";
 "The native outbound forward is unavailable. Refresh and try again" = "El reenvío de salida nativa no está disponible. Actualiza e inténtalo de nuevo";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "La línea de salida nativa que elegiste no está disponible. Activa otra línea o desactiva la salida nativa";
 "Timeout" = "Tiempo agotado";
 "Dashboard" = "Panel";
 "Lines" = "Líneas";
@@ -39,7 +40,7 @@
 "Direct node" = "Nodo directo";
 "Binding exit · %@ · default of %@ bindings" = "Salida por vínculo · %@ · predeterminado de %@ vínculos";
 "Binding exit · %@" = "Salida por vínculo · %@";
-"Online device limit of the plan reached; this device resumes when a slot frees up" = "Se alcanzó el límite de dispositivos del plan; este dispositivo se reanudará cuando haya un hueco libre";
+"Online device limit of this server reached; this device resumes when a slot frees up" = "Se alcanzó el límite de dispositivos de este servidor; este dispositivo se reanudará cuando haya un hueco libre";
 "This device was signed out by the server" = "El servidor cerró la sesión de este dispositivo";
 "This device was banned by the server" = "El servidor bloqueó este dispositivo";
 "The server does not trust this device" = "El servidor no confía en este dispositivo";
@@ -223,3 +224,34 @@
 "iOS supports Ultra forwards and Bond forwards with plain_tcp_mux ingress." = "iOS admite reenvíos Ultra y reenvíos Bond con entrada plain_tcp_mux.";
 "Unsupported forwards" = "Reenvíos no compatibles";
 "Target: %@" = "Destino: %@";
+
+/* Privacy disclosure (App Store guideline 5.4) */
+"What this app sends" = "Qué envía esta app";
+"Server address, Client ID and Agent Token" = "Dirección del servidor, Client ID y Agent Token";
+"Used to sign in and to authenticate every request to the server you entered." = "Se usan para iniciar sesión y autenticar cada solicitud al servidor que introdujiste.";
+"A device identifier" = "Un identificador de dispositivo";
+"A stable value derived from this installation. The server uses it to recognize this device and apply its device limit." = "Un valor estable derivado de esta instalación. El servidor lo usa para reconocer este dispositivo y aplicar su límite de dispositivos.";
+"Device model and iOS version" = "Modelo del dispositivo y versión de iOS";
+"Lets the server pick compatible settings and show this device in its own device list." = "Permite al servidor elegir ajustes compatibles y mostrar este dispositivo en su lista de dispositivos.";
+"Traffic volume" = "Volumen de tráfico";
+"Bytes uploaded and downloaded per forward, so the server can account for usage and limits." = "Bytes subidos y descargados por reenvío, para que el servidor pueda contabilizar el uso y los límites.";
+"Connection details" = "Detalles de la conexión";
+"The line selected, timestamps and error codes, used to connect and to troubleshoot." = "La línea seleccionada, marcas de tiempo y códigos de error, usados para conectar y diagnosticar.";
+"Kept on this device. They leave it only if you copy or share them." = "Se guardan en este dispositivo. Solo salen si los copias o los compartes.";
+"Bridge connects this device to a server you choose. Before the first connection, this is exactly what leaves this device and why." = "Bridge conecta este dispositivo a un servidor que tú eliges. Antes de la primera conexión, esto es exactamente lo que sale del dispositivo y por qué.";
+"Never collected" = "Nunca se recopila";
+"Message content, contacts, location, photos and the advertising identifier (IDFA) are never collected. The app contains no analytics, advertising or crash-reporting SDK." = "Nunca se recopilan el contenido de mensajes, los contactos, la ubicación, las fotos ni el identificador publicitario (IDFA). La app no incluye ningún SDK de analítica, publicidad o informes de fallos.";
+"Who receives it" = "Quién lo recibe";
+"The server address saved in your profile receives the data above. Your connections are carried through the relay lines that server assigns. The two preset addresses belong to the developer; with your own server, nothing is sent to the developer's servers." = "La dirección del servidor guardada en tu perfil recibe los datos anteriores. Tus conexiones se transmiten por las líneas de relé que asigna ese servidor. Las dos direcciones predefinidas pertenecen al desarrollador; con tu propio servidor, no se envía nada a los servidores del desarrollador.";
+"Privacy Policy" = "Política de privacidad";
+"Privacy" = "Privacidad";
+"I understand" = "Entiendo";
+"Done" = "Listo";
+
+"Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "Las consultas de dominio se envían a los servidores DNS configurados en Herramientas (por defecto 1.1.1.1; 8.8.8.8 para dominios directos). Las pruebas de latencia de nodos y las importaciones de suscripciones solo se conectan a las direcciones que introduces. Los registros del túnel pueden incluir los nombres de host a los que te conectas y permanecen en este dispositivo.";
+"Lookups and logs" = "Consultas y registros";
+"Demo (no server connection)" = "Demo (sin conexión al servidor)";
+"The change was not applied to the current connection: %@" = "El cambio no se aplicó a la conexión actual: %@";
+"The connection is still reconnecting, so the change was not applied. Try again" = "La conexión aún se está restableciendo, así que el cambio no se aplicó. Inténtalo de nuevo";
+"The VPN connection is not available. Reconnect and try again" = "La conexión VPN no está disponible. Vuelve a conectar e inténtalo de nuevo";
+"Disconnect to change this forward's node. The exit is always the forward's target." = "Desconecta para cambiar el nodo de este reenvío. La salida siempre es el destino del reenvío.";

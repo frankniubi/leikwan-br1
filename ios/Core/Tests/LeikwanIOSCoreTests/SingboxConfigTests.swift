@@ -43,7 +43,8 @@ final class SingboxConfigTests: XCTestCase {
 
         let inbound = (config["inbounds"] as! [[String: Any]])[0]
         XCTAssertEqual(inbound["type"] as? String, "tun")
-        XCTAssertEqual(inbound["address"] as? [String], ["172.19.0.1/30"])
+        XCTAssertEqual(inbound["address"] as? [String], ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "IPv6 captured with the toggle off")
+        XCTAssertNil(inbound["route_address"], "no custom routes: the packet tunnel installs 0.0.0.0/0 and ::/0")
         XCTAssertEqual(inbound["auto_route"] as? Bool, true)
         XCTAssertEqual(inbound["strict_route"] as? Bool, true)
         XCTAssertEqual(inbound["stack"] as? String, "mixed")
@@ -182,6 +183,22 @@ final class SingboxConfigTests: XCTestCase {
         let dnsServers = (config["dns"] as! [String: Any])["servers"] as! [[String: Any]]
         XCTAssertEqual(dnsServers[0]["type"] as? String, "udp")
         XCTAssertNil(dnsServers[0]["detour"])
+    }
+
+    func testIpv6AlwaysCapturedToggleOnlyChangesDns() throws {
+        for mode in [ProxyConnectionMode.services, .direct] {
+            for enabled in [false, true] {
+                let settings = SingboxSettings(dnsStrategy: "prefer_ipv4", enableIPv6: enabled)
+                let (config, _) = try build(nodes: [ssNode], settings: settings, mode: mode)
+                let inbound = (config["inbounds"] as! [[String: Any]])[0]
+                XCTAssertEqual(inbound["address"] as? [String], ["172.19.0.1/30", "fdfe:dcba:9876::1/126"])
+                XCTAssertEqual(inbound["strict_route"] as? Bool, true)
+                XCTAssertNil(inbound["route_address"])
+                XCTAssertNil(inbound["route_exclude_address"])
+                let dns = config["dns"] as! [String: Any]
+                XCTAssertEqual(dns["strategy"] as? String, enabled ? "prefer_ipv4" : "ipv4_only")
+            }
+        }
     }
 
     func testServicesModeWithoutRuntimeThrows() {
