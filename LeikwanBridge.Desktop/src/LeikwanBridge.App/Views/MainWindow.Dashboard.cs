@@ -104,6 +104,22 @@ public partial class MainWindow
         UpdateHttpModeNotice();
     }
 
+    // The running session keeps the service and mode it was started with, so
+    // the pickers stay locked (with the reason shown) until it is stopped.
+    private void ApplySwitchLock(bool locked)
+    {
+        if (DashServiceCombo is null || DashSwitchLockedNotice is null)
+            return;
+        var reason = locked ? FindResource("ProxySwitchRequiresDisconnect") : null;
+        DashSwitchLockedNotice.Visibility = locked ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var control in new System.Windows.Controls.Control[]
+            { DashServiceCombo, DashModeHttp, DashModeTun, DashModeProcess, ProxyModeCombo, ProxyPairedForwardCombo })
+        {
+            control.IsEnabled = !locked;
+            control.ToolTip = reason;
+        }
+    }
+
     private void UpdateHttpModeNotice()
     {
         if (DashModeHttpNotice is null || ProxyModeHttpNotice is null)

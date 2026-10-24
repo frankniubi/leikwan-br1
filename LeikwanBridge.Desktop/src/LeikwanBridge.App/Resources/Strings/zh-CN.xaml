@@ -222,6 +222,7 @@
     <system:String x:Key="ProxyModeTun">TUN（全设备）</system:String>
     <system:String x:Key="ProxyModeProcess">游戏加速</system:String>
     <system:String x:Key="ProxySelectedForwardUnavailable">所选服务当前不可用，请选择其他服务后再连接。</system:String>
+    <system:String x:Key="ProxySwitchRequiresDisconnect">请先断开连接，再切换服务或模式。</system:String>
     <system:String x:Key="ProxyModeHttpWebRtcNotice">HTTP 模式不覆盖浏览器 WebRTC，需全设备保护请用 TUN。</system:String>
     <system:String x:Key="ProxyImportNetchModes">导入 Netch 模式</system:String>
         <system:String x:Key="ProxyImport">导入并保存</system:String>
