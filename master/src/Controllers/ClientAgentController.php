@@ -14,6 +14,7 @@ use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\ClientUpdatePolicy;
 use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
@@ -959,6 +960,15 @@ final class ClientAgentController extends BaseController
         if (is_array($snapshot['native_outbound'] ?? null)) {
             $responsePayload['native_outbound'] = $snapshot['native_outbound'];
         }
+        // A minimum client version, only for the GUI clients that ship the update gate.
+        // Linux and OpenWrt never get this key, so their payload is unchanged.
+        $clientUpdate = ClientUpdatePolicy::forPlatform(
+            $platform,
+            isset($this->config) ? (string) $this->config->get(ClientUpdatePolicy::CONFIG_KEY, '') : ''
+        );
+        if ($clientUpdate !== null) {
+            $responsePayload['client_update'] = $clientUpdate;
+        }
         $response = $this->json($responsePayload);
         return $response->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
@@ -1085,6 +1095,13 @@ final class ClientAgentController extends BaseController
         if ($updateRequestToken !== '') {
             // A console update click must end the long poll, or the agent only sees it on its next full pull.
             $revisionExtra['update_request'] = $updateRequestToken;
+        }
+        $updatePolicyMarker = ClientUpdatePolicy::revisionMarker(
+            isset($this->config) ? (string) $this->config->get(ClientUpdatePolicy::CONFIG_KEY, '') : ''
+        );
+        if ($updatePolicyMarker !== '') {
+            // Changing the minimum version must end the long poll for clients waiting on a revision.
+            $revisionExtra['client_update_policy'] = $updatePolicyMarker;
         }
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             $clientAgentKey => $clientAgent,
