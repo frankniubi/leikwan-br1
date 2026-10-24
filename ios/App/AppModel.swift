@@ -397,11 +397,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Re-plans and hands the new plan to a running tunnel (routing edits).
+    /// Re-plans and hands the new plan to a running tunnel (routing edits). Failures show in the
+    /// banner: a change that did not reach the tunnel must not look applied.
     func applyToRunningTunnel() async {
-        guard tunnel.isConnected else { return }
+        guard tunnel.isRunning else { return }
         do {
-            await tunnel.reload(try buildLaunch())
+            let launch = try buildLaunch()
+            if let error = await tunnel.reload(launch) {
+                notice = L("The change was not applied to the current connection: %@", error)
+            }
         } catch {
             notice = Self.describe(error)
         }

@@ -153,6 +153,11 @@ private struct BindingCard: View {
     /// This binding runs on Connect.
     private var isRunning: Bool { row.isEnabled && !suspended }
 
+    /// A forward always exits at its target; its node only supplies the protocol settings for
+    /// that target. Swapping the node of a live forward cannot move the exit (and a node for a
+    /// different server breaks the binding), so the choice is locked while connected.
+    private var nodeLocked: Bool { row.forward != nil && (tunnel.isConnected || tunnel.isBusy) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -193,7 +198,7 @@ private struct BindingCard: View {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.onSurfaceVariant)
-                if let forward = row.forward, !suspended {
+                if let forward = row.forward, !suspended, !nodeLocked {
                     Menu {
                         Button(L("No node")) {
                             Task { await model.setNode(nil, forForward: forward.forwardId) }
@@ -226,6 +231,12 @@ private struct BindingCard: View {
             }
             .padding(10)
             .background(Palette.surfaceContainerHigh, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            if nodeLocked && !suspended {
+                Text(L("Disconnect to change this forward's node. The exit is always the forward's target."))
+                    .font(.caption2)
+                    .foregroundStyle(Palette.onSurfaceVariant)
+            }
 
             HStack(spacing: 8) {
                 Text(row.nodeSourceLabel)
@@ -276,7 +287,7 @@ private struct BindingCard: View {
                     .font(.subheadline)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
-            if row.forward != nil && !suspended {
+            if row.forward != nil && !suspended && !nodeLocked {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)

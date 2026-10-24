@@ -24,9 +24,14 @@ final class TunnelController: ObservableObject {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
     private var pollTask: Task<Void, Never>?
+    /// Reloads run one after another (see `reload`).
+    private var reloadQueue: Task<Void, Never>?
 
     var isConnected: Bool { status == .connected }
     var isBusy: Bool { status == .connecting || status == .disconnecting || status == .reasserting }
+    /// Up or coming up: a new plan has to reach it. The tunnel reports `.reasserting` while it
+    /// applies a reload, so a second change made meanwhile must not be dropped.
+    var isRunning: Bool { status == .connected || status == .connecting || status == .reasserting }
 
     func load() async {
         do {
@@ -73,13 +78,37 @@ final class TunnelController: ObservableObject {
         manager?.connection.stopVPNTunnel()
     }
 
-    /// Hands a new plan to a running tunnel without dropping the VPN.
-    func reload(_ launch: TunnelLaunchOptions) async {
-        guard isConnected else { return }
-        let reply = await send(TunnelRequest(command: .reload, launch: launch))
-        if let reply, let message = String(data: reply, encoding: .utf8), !message.isEmpty {
-            lastError = message
+    /// Hands a new plan to a running tunnel without dropping the VPN. Reloads are serialized,
+    /// and one requested while the tunnel is connecting or applying a previous reload waits
+    /// for it. Returns why the plan was not applied; nil when it was, or when no tunnel runs
+    /// (the next Connect uses the new plan anyway).
+    func reload(_ launch: TunnelLaunchOptions) async -> String? {
+        if isSimulated { return nil }
+        let previous = reloadQueue
+        let task = Task { () -> String? in
+            _ = await previous?.value
+            guard await self.waitWhileTransitioning() else {
+                return self.isRunning ? L("The connection is still reconnecting, so the change was not applied. Try again") : nil
+            }
+            switch await self.deliver(TunnelRequest(command: .reload, launch: launch)) {
+            case let .success(reply):
+                guard let reply, let message = String(data: reply, encoding: .utf8), !message.isEmpty else { return nil }
+                return message
+            case let .failure(error):
+                return error.localizedDescription
+            }
         }
+        reloadQueue = Task { _ = await task.value }
+        return await task.value
+    }
+
+    /// Waits (bounded) while the tunnel is connecting or reasserting; true once it is connected.
+    private func waitWhileTransitioning(timeoutSeconds: Double = 30) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while (status == .connecting || status == .reasserting) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return status == .connected
     }
 
     func fetchLogs() async -> [String] {
@@ -190,18 +219,30 @@ final class TunnelController: ObservableObject {
     }
 
     private func send(_ request: TunnelRequest) async -> Data? {
-        guard let session = manager?.connection as? NETunnelProviderSession,
-              let data = try? JSONEncoder().encode(request)
-        else {
-            return nil
+        if case let .success(reply) = await deliver(request) {
+            return reply
+        }
+        return nil
+    }
+
+    /// Like `send`, but tells "the tunnel replied nothing" apart from "the message never got there".
+    private func deliver(_ request: TunnelRequest) async -> Result<Data?, Error> {
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            return .failure(TunnelMessageError())
+        }
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(request)
+        } catch {
+            return .failure(error)
         }
         return await withCheckedContinuation { continuation in
             do {
                 try session.sendProviderMessage(data) { reply in
-                    continuation.resume(returning: reply)
+                    continuation.resume(returning: .success(reply))
                 }
             } catch {
-                continuation.resume(returning: nil)
+                continuation.resume(returning: .failure(error))
             }
         }
     }
@@ -209,6 +250,10 @@ final class TunnelController: ObservableObject {
     private static func isOurs(_ manager: NETunnelProviderManager) -> Bool {
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == tunnelBundleIdentifier
     }
+}
+
+struct TunnelMessageError: LocalizedError {
+    var errorDescription: String? { L("The VPN connection is not available. Reconnect and try again") }
 }
 
 struct SpeedSample: Identifiable, Equatable {

@@ -251,3 +251,7 @@
 "Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "Las consultas de dominio se envían a los servidores DNS configurados en Herramientas (por defecto 1.1.1.1; 8.8.8.8 para dominios directos). Las pruebas de latencia de nodos y las importaciones de suscripciones solo se conectan a las direcciones que introduces. Los registros del túnel pueden incluir los nombres de host a los que te conectas y permanecen en este dispositivo.";
 "Lookups and logs" = "Consultas y registros";
 "Demo (no server connection)" = "Demo (sin conexión al servidor)";
+"The change was not applied to the current connection: %@" = "El cambio no se aplicó a la conexión actual: %@";
+"The connection is still reconnecting, so the change was not applied. Try again" = "La conexión aún se está restableciendo, así que el cambio no se aplicó. Inténtalo de nuevo";
+"The VPN connection is not available. Reconnect and try again" = "La conexión VPN no está disponible. Vuelve a conectar e inténtalo de nuevo";
+"Disconnect to change this forward's node. The exit is always the forward's target." = "Desconecta para cambiar el nodo de este reenvío. La salida siempre es el destino del reenvío.";
