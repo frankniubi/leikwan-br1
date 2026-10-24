@@ -59,6 +59,12 @@ final class AppModel: ObservableObject {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
     }
 
+    /// CFBundleVersion: the build number (CI sets it to the run number, MARKETING_VERSION stays
+    /// "1.0"). Blank when missing, which omits X-Client-Build and never triggers the update gate.
+    var appBuild: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
+    }
+
     /// The signed-in profile; nil shows the sign-in screen.
     var profile: PanelProfile? { profiles.active }
 
@@ -272,7 +278,8 @@ final class AppModel: ObservableObject {
             agentToken: token,
             installId: Keychain.installID(),
             deviceName: Self.deviceName,
-            appVersion: appVersion
+            appVersion: appVersion,
+            appBuild: appBuild
         )
     }
 
@@ -430,7 +437,8 @@ final class AppModel: ObservableObject {
             agentToken: token,
             installID: Keychain.installID(),
             deviceName: Self.deviceName,
-            appVersion: appVersion
+            appVersion: appVersion,
+            appBuild: appBuild
         )
     }
 
