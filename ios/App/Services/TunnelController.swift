@@ -38,21 +38,30 @@ final class TunnelController: ObservableObject {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             if let existing = managers.first(where: Self.isOurs) {
                 attach(existing)
+                await disableOnDemandWithoutPlan()
             }
         } catch {
             lastError = error.localizedDescription
         }
     }
 
+    /// Connect also turns on VPN On Demand (connect on any network), so iOS starts the tunnel
+    /// again after it was stopped in the background (memory pressure, a lapsed lease) instead
+    /// of leaving the device unprotected until the app is opened.
     func connect(_ launch: TunnelLaunchOptions) async {
         lastError = nil
         do {
-            let manager = try await installedManager()
             let data = try launch.encoded()
-            // Also persisted by the tunnel; written here so a system-initiated
-            // restart works even if the first start fails early.
+            // Also persisted by the tunnel. Written before the profile is saved: enabling On
+            // Demand can start the tunnel by itself, and that start reads this snapshot.
             try? data.write(to: AppGroup.launchSnapshotURL, options: .atomic)
-            try manager.connection.startVPNTunnel(options: [TunnelLaunchOptions.optionKey: data as NSData])
+            let manager = try await installedManager()
+            switch manager.connection.status {
+            case .connecting, .connected, .reasserting:
+                return // On Demand already started it with this plan.
+            default:
+                try manager.connection.startVPNTunnel(options: [TunnelLaunchOptions.optionKey: data as NSData])
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -70,12 +79,36 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// A deliberate stop: On Demand goes off first, otherwise iOS would start the tunnel again.
     func disconnect() {
         if isSimulated {
             simulateConnection(false)
             return
         }
-        manager?.connection.stopVPNTunnel()
+        guard let manager else { return }
+        guard manager.isOnDemandEnabled else {
+            manager.connection.stopVPNTunnel()
+            return
+        }
+        manager.isOnDemandEnabled = false
+        Task {
+            do {
+                try await manager.saveToPreferences()
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+            manager.connection.stopVPNTunnel()
+        }
+    }
+
+    /// The tunnel removes its launch snapshot when the panel revokes the device or the plan no
+    /// longer allows the exit; On Demand would then only retry a start that cannot work.
+    private func disableOnDemandWithoutPlan() async {
+        guard let manager, manager.isOnDemandEnabled,
+              !FileManager.default.fileExists(atPath: AppGroup.launchSnapshotURL.path)
+        else { return }
+        manager.isOnDemandEnabled = false
+        try? await manager.saveToPreferences()
     }
 
     /// Hands a new plan to a running tunnel without dropping the VPN. Reloads are serialized,
@@ -134,6 +167,10 @@ final class TunnelController: ObservableObject {
         manager.protocolConfiguration = proto
         manager.localizedDescription = "Bridge"
         manager.isEnabled = true
+        let onDemand = NEOnDemandRuleConnect()
+        onDemand.interfaceTypeMatch = .any
+        manager.onDemandRules = [onDemand]
+        manager.isOnDemandEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.
         try await manager.loadFromPreferences()
@@ -169,6 +206,7 @@ final class TunnelController: ObservableObject {
                 snapshot = TunnelStatusSnapshot()
                 speedHistory = []
                 fetchDisconnectError()
+                Task { await self.disableOnDemandWithoutPlan() }
             }
         }
     }
