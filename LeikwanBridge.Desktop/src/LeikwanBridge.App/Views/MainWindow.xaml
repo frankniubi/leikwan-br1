@@ -343,6 +343,10 @@
                                                     <TextBlock Text="{DynamicResource ProxyModeProcess}" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
                                             </RadioButton>
+                                            <TextBlock x:Name="DashModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}"
+                                                       ToolTip="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
+                                                       FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap"
+                                                       TextTrimming="CharacterEllipsis" MaxHeight="30" Margin="4,4,0,0"/>
                                         </StackPanel>
                                     </Border>
 
@@ -1145,6 +1149,8 @@
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeProcess}" Tag="Process"/>
                                             </ComboBox>
+                                            <TextBlock x:Name="ProxyModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
+                                                       FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                                             <TextBlock Text="{DynamicResource ProxyPairedForwardHint}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
                                                        TextWrapping="Wrap" Margin="0,8,0,0"/>
                                             <WrapPanel HorizontalAlignment="Right" Margin="0,14,0,0">

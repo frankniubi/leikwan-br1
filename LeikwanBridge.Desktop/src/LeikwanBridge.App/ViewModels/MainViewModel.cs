@@ -428,9 +428,14 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_forward_required");
         SelectedProxyForwardId = forwardId;
         SetProxyProfileForForward(forwardId, profileId);
-        await StartProxyAsync(WindowsProxyMode.Http, profileId, ct: ct);
+        await StartProxyAsync(ChosenProxyMode, profileId, ct: ct);
         RefreshProxyForwardRows();
     }
+
+    public WindowsProxyMode ChosenProxyMode
+        => _config.ProxyModeChosen
+            && Enum.TryParse<WindowsProxyMode>(_config.ProxyActiveMode, ignoreCase: true, out var mode)
+            ? mode : WindowsProxyMode.Http;
 
     public async Task StopProxyForForwardAsync(int forwardId, CancellationToken ct = default)
     {

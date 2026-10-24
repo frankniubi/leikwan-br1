@@ -461,6 +461,24 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
     }
 
     [Fact]
+    public async Task RowConnectUsesTheChosenProxyMode()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host);
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("one.example.test", 30526);
+        _vm.Config.ProxyActiveMode = nameof(WindowsProxyMode.Tun);
+        _vm.Config.ProxyModeChosen = true;
+
+        await _vm.ProxyForwardRows[0].ConnectAsync();
+
+        Assert.Equal(WindowsProxyMode.Tun, _vm.ProxySnapshot.Mode);
+        using var document = JsonDocument.Parse(host.LastConfig);
+        Assert.Equal("tun", document.RootElement.GetProperty("inbounds")[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
     public async Task StartingRowHasCancelAndBlocksOtherRowsUntilCancellationCompletes()
     {
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

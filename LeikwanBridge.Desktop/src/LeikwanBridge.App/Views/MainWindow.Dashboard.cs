@@ -101,6 +101,20 @@ public partial class MainWindow
         {
             _syncingDashboardMode = false;
         }
+        UpdateHttpModeNotice();
+    }
+
+    private void UpdateHttpModeNotice()
+    {
+        if (DashModeHttpNotice is null || ProxyModeHttpNotice is null)
+            return;
+        var snapshot = _vm.ProxySnapshot;
+        var http = snapshot.State is WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting
+            ? snapshot.Mode == WindowsProxyMode.Http && !_vm.IsExternalProxyActive
+            : TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Http;
+        var visibility = http ? Visibility.Visible : Visibility.Collapsed;
+        DashModeHttpNotice.Visibility = visibility;
+        ProxyModeHttpNotice.Visibility = visibility;
     }
 
     private void OnDashServiceSelectionChanged(object sender, SelectionChangedEventArgs e)
