@@ -1,6 +1,8 @@
 {
   "locale": "en",
   "text": {
+    "Please Wait": "Please Wait",
+    "Too many attempts": "Too many attempts",
     "Access Control": "Access Control",
     "Account Bans": "Account Bans",
     "Add Rule": "Add Rule",
