@@ -23,6 +23,7 @@ import com.leikwan.bridge.service.ConnectProgress
 import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.service.LeikwanVpnService
 import com.leikwan.bridge.service.ProxyConnectionMode
+import com.leikwan.bridge.service.TrafficMonitor
 import com.leikwan.bridge.service.TunnelOrchestrator
 import com.leikwan.bridge.session.DeviceLimitGate
 import com.leikwan.bridge.session.DeviceLimitNotice
@@ -36,6 +37,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -135,6 +139,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     private val thirdPartyVpnBlocking: () -> Boolean = PanelNetwork::shouldHintThirdPartyVpn,
     private val routeSelectionState: StateFlow<Int?> = ConnectProgress.selectingRouteCandidates,
     vpnRunning: Boolean = LeikwanVpnService.isRunning,
+    /** Whether a tunnel is up, including one rebuilt by the service or stopped from outside the app. */
+    private val tunnelRunning: Flow<Boolean> = TrafficMonitor.state.map { it.runningSinceMs > 0L },
 ) : AndroidViewModel(app) {
 
     private val prefs = prefsOverride ?: Prefs.get(app)
@@ -184,6 +190,18 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         }
         viewModelScope.launch {
             routeSelectionState.collect { count -> _state.update { it.copy(selectingRouteCandidates = count) } }
+        }
+        viewModelScope.launch {
+            // Only settled states follow the service; a connect in progress owns CONNECTING.
+            tunnelRunning.distinctUntilChanged().drop(1).collect { running ->
+                _state.update {
+                    when {
+                        running && it.vpnStatus == VpnStatus.DISCONNECTED -> it.copy(vpnStatus = VpnStatus.CONNECTED)
+                        !running && it.vpnStatus == VpnStatus.CONNECTED -> it.copy(vpnStatus = VpnStatus.DISCONNECTED)
+                        else -> it
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             // A pairing changed on the panel (console or another device) re-asserts here; a local
@@ -332,6 +350,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                         || nativePolicy != activeNativeRoutePolicy
                 )
                 if (nativeAuthorizationChanged) {
+                    prefs.vpnConnectIntent = false
                     runCatching { stopConnect() }
                         .onFailure { Log.w(TAG, "Error stopping revoked native VPN", it) }
                     prefs.nativeOutboundSelected = false
@@ -377,6 +396,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         val current = _state.value
         if (selected && (!current.nativeVisible || current.nativeCarrier == null)) return
         if (!selected && current.nativeSelected && current.vpnStatus != VpnStatus.DISCONNECTED) {
+            prefs.vpnConnectIntent = false
             runCatching { stopConnect() }
                 .onFailure { Log.w(TAG, "Error stopping disabled native VPN", it) }
             _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED) }
@@ -461,6 +481,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             val s = _state.value
             if (s.vpnStatus != VpnStatus.DISCONNECTED) {
                 _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED) }
+                prefs.vpnConnectIntent = false
                 runCatching { stopConnect() }
                     .onFailure { Log.w(TAG, "Error stopping VPN", it) }
                 return@launch
@@ -505,8 +526,10 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 }
                 try {
                     startNativeConnect(nativeId, scope, bypass, routePolicy)
+                    prefs.vpnConnectIntent = true
                     _state.update { it.copy(vpnStatus = VpnStatus.CONNECTED) }
                 } catch (e: Exception) {
+                    prefs.vpnConnectIntent = false
                     _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = userError(e)) }
                     if (e is DeviceLimitReachedException) retryConnectAfterDeviceLimit()
                 }
@@ -525,8 +548,10 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             _state.update { it.copy(vpnStatus = VpnStatus.CONNECTING, error = null) }
             try {
                 startConnect(forwardId)
+                prefs.vpnConnectIntent = true
                 _state.update { it.copy(vpnStatus = VpnStatus.CONNECTED) }
             } catch (e: Exception) {
+                prefs.vpnConnectIntent = false
                 _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = userError(e)) }
                 if (e is DeviceLimitReachedException) retryConnectAfterDeviceLimit()
             }

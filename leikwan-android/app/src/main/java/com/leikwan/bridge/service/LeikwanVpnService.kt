@@ -11,11 +11,14 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.R
+import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.shared.deviceLimitMessage
@@ -44,10 +47,19 @@ import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import java.net.InetAddress
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val TAG = "LeikwanVpnService"
 private const val CHANNEL_ID = "leikwan_vpn"
 private const val NOTIFICATION_ID = 1
+private const val RECOVERY_FAILED_NOTIFICATION_ID = 2
 
 class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler {
 
@@ -59,6 +71,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             setUnderlyingNetworks(network?.let { arrayOf(it) })
         }
     }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var recoveryJob: Job? = null
 
 
     companion object {
@@ -67,6 +82,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         var isRunning: Boolean = false
             private set
         var configJson: String? = null
+        /** True while this service rebuilds a connection Android killed (see [VpnRecovery]). */
+        @Volatile
+        var recovering: Boolean = false
+            private set
         @Volatile
         var startupState: VpnStartupState = VpnStartupState.IDLE
             @VisibleForTesting internal set
@@ -90,12 +109,17 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
+            // Disconnected from the notification: the tunnel must not come back on its own.
+            runCatching { Prefs.get(this).vpnConnectIntent = false }
+            recovering = false
             stopVpn()
             return START_NOT_STICKY
         }
 
         val config = configJson
         if (config == null) {
+            if (recovering) return START_STICKY
+            if (VpnRecovery.shouldRecover(intent, connectIntentSet())) return recoverConnection()
             Log.e(TAG, "No config provided")
             startupState = VpnStartupState.FAILED
             lastStartError = getString(R.string.vpn_error_no_config)
@@ -103,6 +127,81 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             return START_NOT_STICKY
         }
 
+        startRuntime(config)
+        return START_STICKY
+    }
+
+    /**
+     * Android restarted this service (sticky restart, always-on VPN or boot) without the config,
+     * which lived in the killed process. Stay in the foreground and rebuild the user's last
+     * connection through the orchestrator; its config is started in place by [startRecoveredConfig].
+     */
+    private fun recoverConnection(): Int {
+        if (prepare(this) != null) {
+            // VPN consent was revoked; only the app can ask for it again.
+            runCatching { Prefs.get(this).vpnConnectIntent = false }
+            showRecoveryFailed(getString(R.string.vpn_recovery_needs_permission))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.vpn_notification_reconnecting)))
+        } catch (e: Exception) {
+            // Android 12+ refuses a background foreground start unless the app is exempt from
+            // battery optimization; the user has to reconnect from the app.
+            Log.w(TAG, "Cannot return to the foreground to reconnect", e)
+            showRecoveryFailed(getString(R.string.vpn_recovery_background_blocked))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        recovering = true
+        startupState = VpnStartupState.IDLE
+        lastStartError = null
+        Log.i(TAG, "Rebuilding the connection after the service was restarted")
+        recoveryJob = recoveryScope.launch {
+            var failure: Exception? = null
+            for (attempt in 1..VpnRecovery.ATTEMPTS) {
+                if (attempt > 1) delay(VpnRecovery.RETRY_DELAYS_MS[attempt - 2])
+                if (!recovering) return@launch
+                // The user disconnected in the app meanwhile.
+                if (!connectIntentSet()) break
+                try {
+                    TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failure = e
+                    Log.w(TAG, "Reconnect attempt $attempt failed", e)
+                }
+            }
+            mainHandler.post {
+                if (!recovering) return@post
+                recovering = false
+                if (connectIntentSet()) showRecoveryFailed(failure?.message ?: getString(R.string.vpn_error_no_config))
+                stopVpn()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun connectIntentSet(): Boolean = runCatching { Prefs.get(this).vpnConnectIntent }.getOrDefault(false)
+
+    /**
+     * Starts the rebuilt config in this service while it recovers; false when not recovering, and
+     * the caller then starts the service the usual way. Android may refuse a second background
+     * foreground start, which the running foreground service does not need.
+     */
+    fun startRecoveredConfig(): Boolean {
+        if (!recovering) return false
+        val config = configJson ?: return false
+        startupState = VpnStartupState.STARTING
+        lastStartError = null
+        mainHandler.post { startRuntime(config) }
+        return true
+    }
+
+    private fun startRuntime(config: String) {
         startupState = VpnStartupState.STARTING
         lastStartError = null
         isRunning = false
@@ -123,6 +222,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             server.startOrReloadService(config, OverrideOptions())
 
             isRunning = true
+            // A failed start keeps recovering set, so the stop below leaves the service in the
+            // foreground for the next rebuild attempt.
+            recovering = false
+            getSystemService(NotificationManager::class.java)?.cancel(RECOVERY_FAILED_NOTIFICATION_ID)
             TrafficMonitor.onStarted()
             startupState = VpnStartupState.RUNNING
             lastStartError = null
@@ -134,8 +237,6 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.e(TAG, "Failed to start VPN", e)
             stopVpn()
         }
-
-        return START_STICKY
     }
 
     private fun closeRuntime() {
@@ -169,6 +270,11 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         configJson = null
         isRunning = false
         TrafficMonitor.onStopped()
+        // The orchestrator stops the old tunnel before every rebuild; while recovering, the
+        // service stays in the foreground so the rebuilt config can start in place.
+        if (recovering) return
+        recoveryJob?.cancel()
+        recoveryJob = null
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
             lastStartError = null
@@ -178,6 +284,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        recovering = false
+        recoveryScope.cancel()
         TrafficMonitor.onStopped()
         closeRuntime()
         instance = null
@@ -191,6 +299,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onRevoke() {
+        // Another VPN took over or the user turned this one off in system settings.
+        runCatching { Prefs.get(this).vpnConnectIntent = false }
+        recovering = false
         stopVpn()
     }
 
@@ -442,6 +553,21 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.vpn_notification_disconnect), stopPending)
             .setOngoing(true)
             .build()
+    }
+
+    /** A rebuild after Android killed the VPN did not succeed; tapping opens the app to reconnect. */
+    private fun showRecoveryFailed(reason: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.vpn_recovery_failed_title))
+            .setContentText(reason)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.vpn_recovery_failed_body, reason)))
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentIntent(mainActivityPendingIntent())
+            .setAutoCancel(true)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java).notify(RECOVERY_FAILED_NOTIFICATION_ID, notification)
+        }.onFailure { Log.w(TAG, "Cannot post the reconnect failure", it) }
     }
 
     private fun updateNotification(status: String, detail: String? = null) {

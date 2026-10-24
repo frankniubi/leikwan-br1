@@ -59,6 +59,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -160,8 +162,11 @@ class TunnelOrchestrator internal constructor(
         loggingUltraLeaseClient().sendNative(socketPath, lease)
     },
     private val vpnServiceStarter: (Context) -> Unit = { appContext ->
-        val intent = Intent(appContext, LeikwanVpnService::class.java)
-        appContext.startForegroundService(intent)
+        // A service rebuilding a killed tunnel is already in the foreground: start in place.
+        if (LeikwanVpnService.instance?.startRecoveredConfig() != true) {
+            val intent = Intent(appContext, LeikwanVpnService::class.java)
+            appContext.startForegroundService(intent)
+        }
     },
     private val vpnStartupAwaiter: suspend () -> VpnStartupAwaitResult = {
         VpnStartupMonitor.await(
@@ -206,6 +211,9 @@ class TunnelOrchestrator internal constructor(
     private val processRunner: ProcessRunner by lazy {
         processRunnerFactory().also { runner -> runner.runtimeLineObserver = ::onRuntimeLine }
     }
+
+    /** One tunnel build at a time: a user connect, a renewal restart and a recovery never interleave. */
+    private val startLock = Mutex()
 
     /** Paces failure-driven Ultra renewals: one per burst, >= 20 s apart per forward. */
     private val ultraFailureRenewals = UltraFailureRenewalGate()
@@ -348,7 +356,27 @@ class TunnelOrchestrator internal constructor(
         return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }
 
-    suspend fun startForForward(forwardId: Long) = startForForward(forwardId, preserveControlLoop = false)
+    suspend fun startForForward(forwardId: Long) =
+        startLock.withLock { startForForward(forwardId, preserveControlLoop = false) }
+
+    /**
+     * Rebuilds the connection the user last started, after Android killed the app or the device
+     * rebooted. Uses the persisted picks only; it never chooses a service or node by itself.
+     */
+    suspend fun reconnectSaved() {
+        if (prefs.nativeOutboundSelected) {
+            val forwardId = prefs.nativeOutboundForwardId.takeIf { it > 0L }
+                ?: throw Exception("No saved native outbound to reconnect")
+            startNativeForForward(forwardId)
+        } else {
+            val forwardId = prefs.selectedForwardId.takeIf { it > 0L }
+                ?: throw Exception("No saved service to reconnect")
+            if (prefs.selectedProxyId <= 0L) throw Exception("No saved node to reconnect")
+            startForForward(forwardId)
+        }
+        // The user disconnected while the rebuild ran.
+        if (!prefs.vpnConnectIntent) stop()
+    }
 
     /** Starts the plan-authorized native SOCKS5 adapter and points TUN at its loopback facade. */
     suspend fun startNativeForForward(
@@ -356,7 +384,9 @@ class TunnelOrchestrator internal constructor(
         routeScope: String = prefs.nativeOutboundRouteScope,
         bypassChina: Boolean = prefs.nativeOutboundBypassChina,
         routePolicy: String = prefs.nativeOutboundRoutePolicy,
-    ) = startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
+    ) = startLock.withLock {
+        startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
+    }
 
     private suspend fun startNativeForForward(
         forwardId: Long,
@@ -1009,7 +1039,7 @@ class TunnelOrchestrator internal constructor(
             if (nextPolicy.forwardId != active.policy.forwardId
                 || nextPolicy.targetDigest != active.policy.targetDigest
                 || nextPolicy.transport != active.policy.transport) {
-                startForForward(mainForwardId, preserveControlLoop = true)
+                startLock.withLock { startForForward(mainForwardId, preserveControlLoop = true) }
                 return true
             }
             // The panel hands back the running grant until its renew_after has passed, so a
@@ -1301,13 +1331,15 @@ class TunnelOrchestrator internal constructor(
             val carrier = capability.carrier(active.forwardId)
                 ?: throw IllegalStateException("native_outbound_not_allowed")
             if (carrier.direction != active.direction) {
-                startNativeForForward(
-                    forwardId = active.forwardId,
-                    routeScope = active.routeScope,
-                    bypassChina = active.bypassChina,
-                    routePolicy = active.routePolicy,
-                    preserveControlLoop = true,
-                )
+                startLock.withLock {
+                    startNativeForForward(
+                        forwardId = active.forwardId,
+                        routeScope = active.routeScope,
+                        bypassChina = active.bypassChina,
+                        routePolicy = active.routePolicy,
+                        preserveControlLoop = true,
+                    )
+                }
                 return
             }
             val normalizedScope = NativeOutboundCapability.normalizeScope(active.routeScope)
@@ -1324,13 +1356,15 @@ class TunnelOrchestrator internal constructor(
                 // The Go adapter deliberately keeps one selected endpoint per policy
                 // generation. Rotate the static runtime only after the new policy has
                 // been pulled and validated; same-generation renewals stay in place.
-                startNativeForForward(
-                    forwardId = active.forwardId,
-                    routeScope = normalizedScope,
-                    bypassChina = active.bypassChina,
-                    routePolicy = normalizedRoutePolicy,
-                    preserveControlLoop = true,
-                )
+                startLock.withLock {
+                    startNativeForForward(
+                        forwardId = active.forwardId,
+                        routeScope = normalizedScope,
+                        bypassChina = active.bypassChina,
+                        routePolicy = normalizedRoutePolicy,
+                        preserveControlLoop = true,
+                    )
+                }
                 return
             }
 
@@ -1370,6 +1404,8 @@ class TunnelOrchestrator internal constructor(
             if (error is CancellationException) throw error
             if (error is PanelControlException || isNativeAuthorizationFailure(error)) {
                 Log.w(TAG, "Native outbound authorization changed; stopping VPN", error)
+                // Not a drop to recover from: a restart or reboot must not reconnect it.
+                prefs.vpnConnectIntent = false
                 stop()
                 throw error
             }

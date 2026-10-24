@@ -262,6 +262,15 @@
     <string name="vpn_notification_channel_name">VPN 服务</string>
     <string name="vpn_notification_channel_description">雷宽桥 VPN 状态</string>
     <string name="vpn_notification_disconnect">断开连接</string>
+    <string name="vpn_notification_reconnecting">正在重新连接...</string>
+    <string name="vpn_recovery_failed_title">VPN 已断开</string>
+    <string name="vpn_recovery_failed_body">未能自动重新连接：%1$s。请打开应用重新连接。</string>
+    <string name="vpn_recovery_needs_permission">VPN 权限已被撤销</string>
+    <string name="vpn_recovery_background_blocked">系统禁止在后台重启 VPN。允许应用忽略电池优化即可避免</string>
+    <string name="battery_prompt_title">保持 VPN 运行</string>
+    <string name="battery_prompt_message">系统的电池优化可能在后台停止 VPN，并阻止它自动重连。是否允许雷宽忽略电池优化？</string>
+    <string name="battery_prompt_allow">允许</string>
+    <string name="battery_prompt_later">暂不</string>
     <string name="tunnels_strategy_heading">连接策略</string>
     <string name="tunnels_strategy_speed_max">Speed max</string>
     <string name="tunnels_strategy_speed_max_description">聚合健康 Slave 路径，优先获得最大吞吐。</string>
