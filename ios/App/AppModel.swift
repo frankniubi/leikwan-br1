@@ -19,6 +19,12 @@ final class AppModel: ObservableObject {
     /// True while the App Review demo account is signed in (`DemoAccount`): no panel requests,
     /// no Network Extension.
     @Published private(set) var isDemo = false
+    /// True when the panel's `client_update` policy asks for a newer build than this one;
+    /// RootView then shows only UpdateRequiredView. The tunnel is left running. The demo account
+    /// never contacts the panel, so it is never set there.
+    @Published private(set) var updateRequired = false
+    /// Last `client_update` policy seen in this process: a later pull without the key keeps it.
+    private var clientUpdatePolicy: ClientUpdatePolicy?
     @Published var nodes: [ProxyNode] = [] {
         didSet { JSONStore.save(nodes, name: "nodes") }
     }
@@ -144,6 +150,7 @@ final class AppModel: ObservableObject {
             selectedForwardId: sameAccount ? selectedForwardID : nil,
             heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
         )
+        applyClientUpdate(result.response)
         var list = profiles
         let stored = list.upsert(draft)
         list.activeId = stored.id
@@ -185,6 +192,7 @@ final class AppModel: ObservableObject {
     /// reaches the panel (`refreshCatalog` and cloud sync both need a client).
     private func startDemo() {
         isDemo = true
+        updateRequired = false
         client = nil
         apply(DemoAccount.catalog(selectedForwardId: selectedForwardID))
     }
@@ -232,12 +240,20 @@ final class AppModel: ObservableObject {
                 selectedForwardId: selectedForwardID,
                 heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
             )
+            applyClientUpdate(result.response)
             apply(result.catalog)
             catalogError = nil
             scheduleCloudSync(after: result.response)
         } catch {
             catalogError = Self.describe(error)
         }
+    }
+
+    /// Updates the remembered `client_update` policy from a pull and re-evaluates the gate
+    /// against this build (fails open: see ClientUpdatePolicy).
+    private func applyClientUpdate(_ response: PullConfigsResponse) {
+        clientUpdatePolicy = ClientUpdatePolicy.merged(previous: clientUpdatePolicy, raw: response.raw)
+        updateRequired = clientUpdatePolicy?.requiresUpdate(currentBuild: appBuild) ?? false
     }
 
     private func apply(_ catalog: IOSForwardCatalog) {

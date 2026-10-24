@@ -228,3 +228,6 @@
 "The connection is still reconnecting, so the change was not applied. Try again" = "The connection is still reconnecting, so the change was not applied. Try again";
 "The VPN connection is not available. Reconnect and try again" = "The VPN connection is not available. Reconnect and try again";
 "Disconnect to change this forward's node. The exit is always the forward's target." = "Disconnect to change this forward's node. The exit is always the forward's target.";
+"Update required" = "Update required";
+"A newer version of Bridge is required. Install the latest version and open the app again." = "A newer version of Bridge is required. Install the latest version and open the app again.";
+"Check again" = "Check again";
