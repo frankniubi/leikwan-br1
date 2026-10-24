@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -25,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.leikwan.bridge.BuildConfig
 import com.leikwan.bridge.R
 import com.leikwan.bridge.update.AppUpdateState
@@ -140,5 +142,70 @@ private fun StatusLine(text: String, error: Boolean = false) {
         text,
         style = MaterialTheme.typography.bodySmall,
         color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * Non-dismissible gate shown while the panel requires a newer build (ClientUpdatePolicy).
+ * Back and outside taps do nothing and there is no dismiss button: the only action is the
+ * update itself (check -> download -> install, with retry on failure). It never touches the
+ * VPN, which keeps running underneath.
+ */
+@Composable
+fun RequiredUpdateDialog(
+    minimumVersion: String,
+    state: AppUpdateState,
+    onUpdate: () -> Unit,
+    onCheck: () -> Unit,
+    installedVersion: String = BuildConfig.VERSION_NAME,
+) {
+    // The single action: what it does depends on how far the update has got.
+    val step: Pair<Int, (() -> Unit)?> = when (state) {
+        is AppUpdateState.Available -> R.string.update_action_update to onUpdate
+        is AppUpdateState.ReadyToInstall -> R.string.update_action_install to onUpdate
+        is AppUpdateState.Failed -> R.string.update_retry to (if (state.info != null) onUpdate else onCheck)
+        AppUpdateState.UpToDate, AppUpdateState.Idle -> R.string.update_retry to onCheck
+        AppUpdateState.Checking, is AppUpdateState.Downloading -> R.string.update_action_update to null
+    }
+    val (label, action) = step
+    AlertDialog(
+        onDismissRequest = {},
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+        icon = { Icon(Icons.Filled.SystemUpdate, contentDescription = null) },
+        title = { Text(stringResource(R.string.update_required_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.update_required_body))
+                Text(
+                    stringResource(R.string.update_required_versions, minimumVersion, installedVersion),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                when (state) {
+                    AppUpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(stringResource(R.string.update_checking), style = MaterialTheme.typography.bodySmall)
+                    }
+                    is AppUpdateState.Downloading -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            stringResource(R.string.update_downloading_format, (state.progress * 100).toInt()),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth())
+                    }
+                    is AppUpdateState.ReadyToInstall -> StatusLine(stringResource(R.string.update_install_hint))
+                    is AppUpdateState.Failed -> StatusLine(stringResource(R.string.update_failed), error = true)
+                    AppUpdateState.UpToDate -> StatusLine(stringResource(R.string.update_required_unavailable))
+                    is AppUpdateState.Available, AppUpdateState.Idle -> Unit
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { action?.invoke() }, enabled = action != null) {
+                Text(stringResource(label))
+            }
+        },
+        dismissButton = null,
     )
 }

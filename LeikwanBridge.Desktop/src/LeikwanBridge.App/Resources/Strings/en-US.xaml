@@ -90,6 +90,9 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">Update Available</system:String>
     <system:String x:Key="UpdateVersionReady">Version {0} is ready to install.</system:String>
+    <system:String x:Key="UpdateRequiredTitle">Update Required</system:String>
+    <system:String x:Key="UpdateRequiredBody">A required update is available. Install it to keep using Bridge.</system:String>
+    <system:String x:Key="UpdateRequiredUnavailable">The required update could not be loaded yet. Check your connection and retry.</system:String>
     <system:String x:Key="UpdateFailedTitle">Update Failed</system:String>
     <system:String x:Key="ActionInstallNow">Install now</system:String>
     <system:String x:Key="ActionDeferUpdate">Wait until next restart</system:String>

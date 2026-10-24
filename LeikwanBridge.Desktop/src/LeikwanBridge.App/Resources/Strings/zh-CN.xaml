@@ -121,6 +121,9 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
     <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
+    <system:String x:Key="UpdateRequiredTitle">需要更新</system:String>
+    <system:String x:Key="UpdateRequiredBody">有一个必须安装的更新。请安装后继续使用 Bridge。</system:String>
+    <system:String x:Key="UpdateRequiredUnavailable">暂时无法获取必需的更新。请检查网络连接后重试。</system:String>
     <system:String x:Key="UpdateFailedTitle">更新失败</system:String>
     <system:String x:Key="ActionInstallNow">立即安装</system:String>
     <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>

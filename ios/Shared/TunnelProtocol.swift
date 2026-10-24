@@ -174,6 +174,9 @@ struct TunnelPanelSession: Codable, Equatable {
     var installID: String
     var deviceName: String
     var appVersion: String
+    /// CFBundleVersion, sent as X-Client-Build. Optional so a launch snapshot written by an
+    /// older build (no such key) still decodes.
+    var appBuild: String? = nil
 }
 
 /// Requests the app sends with NETunnelProviderSession.sendProviderMessage.

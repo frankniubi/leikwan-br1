@@ -53,6 +53,8 @@ import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
 import com.leikwan.bridge.session.EnrollmentResult
 import com.leikwan.bridge.session.PanelControlException
+import com.leikwan.bridge.update.AppUpdateController
+import com.leikwan.bridge.update.ClientUpdatePolicy
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.CancellationException
 import retrofit2.Retrofit
@@ -85,6 +87,8 @@ class PanelRepository(
     private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
     private val hostedNodeApiOverride: HostedNodeApi? = null,
     hostedNodeSyncOverride: HostedNodeSync? = null,
+    /** Fetches the update manifest once a pull says this build is below the panel minimum. */
+    private val onClientUpdateRequired: (Context) -> Unit = AppUpdateController::checkForRequiredUpdate,
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
@@ -433,6 +437,8 @@ class PanelRepository(
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
         DeviceLimitGate.clear()
+        // Every pull re-applies the minimum-version gate; the VPN keeps running either way.
+        if (ClientUpdatePolicy.applyFromPull(resp.clientUpdate)) onClientUpdateRequired(context)
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
             entitlements = resp.routeRuleEntitlements.orEmpty(),

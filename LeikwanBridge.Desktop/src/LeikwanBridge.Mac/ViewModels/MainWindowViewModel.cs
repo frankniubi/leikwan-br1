@@ -40,6 +40,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private bool _egressApplyReady;
     private bool _suppressEgressApply;
     private string _updateFailureStage = "check";
+    // Last minimum-version policy seen in a pull (memory only, never persisted).
+    private readonly ClientUpdateRequirement _updateRequirement;
     private bool _endpointPersistenceReady;
     private readonly Action<Action> _dispatch;
     private readonly TimeSpan _nativeTunMtuWatchInterval;
@@ -88,7 +90,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         Func<IReadOnlyDictionary<string, TrafficCounter>>? trafficCounters = null,
         INodeLibrary? nodeLibrary = null,
         string themeMode = MacAppearance.System,
-        Func<string, CancellationToken, Task>? saveThemeMode = null)
+        Func<string, CancellationToken, Task>? saveThemeMode = null,
+        string? currentAppVersion = null)
     {
         _controller = controller;
         _connections = connections;
@@ -105,6 +108,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _egressInterfaceCatalog = egressInterfaceCatalog ?? (label => EgressInterfaceCatalog.Enumerate(label));
         _dispatch = dispatch ?? Dispatch;
         _nativeTunMtuWatchInterval = nativeTunMtuWatchInterval ?? DefaultNativeTunMtuWatchInterval;
+        _updateRequirement = new ClientUpdateRequirement(
+            currentAppVersion ?? typeof(MainWindowViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.0.0");
         CloseToTray = closeToTray;
         Language = L.Normalize(language);
         LogLevel = DesktopLogLevel.Normalize(logLevel);
@@ -146,6 +151,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             AddLog(message);
         });
         _controller.UpdateAvailable += version => _dispatch(() => ShowUpdate(version));
+        _controller.ClientUpdatePolicyReceived += policy => _dispatch(() => ApplyClientUpdatePolicy(policy));
         if (_connections is not null)
         {
             _connections.SnapshotChanged += snapshot => _dispatch(() => ApplyConnectionSnapshot(snapshot));
@@ -203,6 +209,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _updateErrorMessage = string.Empty;
     [ObservableProperty] private bool _isUpdateInProgress;
     [ObservableProperty] private bool _showUpdateError;
+    [ObservableProperty] private bool _isUpdateRequired;
+    [ObservableProperty] private string _requiredUpdateMinimumVersion = string.Empty;
     [ObservableProperty] private bool _closeToTray;
     [ObservableProperty] private bool _autoStartEnabled;
     [ObservableProperty] private string _language = "en-US";
@@ -234,7 +242,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _proxyImportError = string.Empty;
 
     public bool HasForwards => Forwards.Count > 0;
-    public bool IsUpdateBannerVisible => IsUpdateVisible || ShowUpdateError;
+    /// <summary>The dismissible top banner; the required overlay replaces it while gated.</summary>
+    public bool IsUpdateBannerVisible => (IsUpdateVisible || ShowUpdateError) && !IsUpdateRequired;
+
+    /// <summary>Required overlay: Install, once the manifest offered a newer build and nothing failed.</summary>
+    public bool IsRequiredUpdateInstallVisible => IsUpdateRequired && IsUpdateVisible && !ShowUpdateError;
+
+    /// <summary>Required overlay: Retry after a failure, or a re-check while no update is known.</summary>
+    public bool IsRequiredUpdateRetryVisible
+        => IsUpdateRequired && !IsUpdateInProgress && (ShowUpdateError || !IsUpdateVisible);
+
+    /// <summary>Required overlay: no installable update known yet (manifest missing or not newer).</summary>
+    public bool IsRequiredUpdateUnavailable
+        => IsUpdateRequired && !IsUpdateVisible && !ShowUpdateError && !IsUpdateInProgress;
     public bool IsConnectionWorkspaceVisible => IsConnectionsVisible || IsPairingVisible;
     public string ConnectionWorkspaceTitle => IsPairingVisible
         ? L.T("PairingTitle", "Route pairing")
@@ -314,11 +334,44 @@ public sealed partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(ConnectionLabel));
     }
 
-    partial void OnIsUpdateVisibleChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateBannerVisible));
+    partial void OnIsUpdateVisibleChanged(bool value) => NotifyUpdateSurfaces();
 
-    partial void OnShowUpdateErrorChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateBannerVisible));
+    partial void OnShowUpdateErrorChanged(bool value) => NotifyUpdateSurfaces();
+
+    partial void OnIsUpdateRequiredChanged(bool value) => NotifyUpdateSurfaces();
+
+    partial void OnIsUpdateInProgressChanged(bool value) => NotifyUpdateSurfaces();
+
+    private void NotifyUpdateSurfaces()
+    {
+        OnPropertyChanged(nameof(IsUpdateBannerVisible));
+        OnPropertyChanged(nameof(IsRequiredUpdateInstallVisible));
+        OnPropertyChanged(nameof(IsRequiredUpdateRetryVisible));
+        OnPropertyChanged(nameof(IsRequiredUpdateUnavailable));
+    }
+
+    /// <summary>
+    /// Applies a full pull's <c>client_update</c> policy. Null (the pull
+    /// carried none) keeps the remembered policy. When the gate closes and no
+    /// update is known yet, the manifest is checked so Install can be offered.
+    /// The connection is never touched.
+    /// </summary>
+    public void ApplyClientUpdatePolicy(ClientUpdatePolicy? policy)
+    {
+        if (!_updateRequirement.Observe(policy))
+            return;
+        RequiredUpdateMinimumVersion = _updateRequirement.MinimumVersion;
+        var wasRequired = IsUpdateRequired;
+        IsUpdateRequired = _updateRequirement.IsRequired;
+        if (!IsUpdateRequired || wasRequired)
+            return;
+        Log.Warning(
+            "client_update_required current={Current} minimum={Minimum}",
+            _updateRequirement.CurrentVersion,
+            _updateRequirement.MinimumVersion);
+        if (!IsUpdateVisible && !IsUpdateInProgress && !IsUpdateInstalling)
+            _ = CheckForUpdatesAsync();
+    }
 
     partial void OnIsLoginVisibleChanged(bool value) => OnPropertyChanged(nameof(IsSignedIn));
 
@@ -1152,6 +1205,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void DismissUpdate()
     {
+        // A required update cannot be dismissed (the button is not shown either).
+        if (IsUpdateRequired)
+            return;
         IsUpdateVisible = false;
         UpdateVersion = string.Empty;
         ShowUpdateError = false;
@@ -1206,7 +1262,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     [RelayCommand]
     private Task RetryUpdateAsync()
-        => string.Equals(_updateFailureStage, "install", StringComparison.Ordinal)
+        => string.Equals(_updateFailureStage, "install", StringComparison.Ordinal) && IsUpdateVisible
             ? InstallUpdateAsync()
             : CheckForUpdatesAsync();
 
