@@ -100,11 +100,11 @@ data class ConnectionsUiState(
     val bridgedListenPort: Int
         get() = forwards.firstOrNull { it.forwardId == selectedForwardId }?.listenPort ?: 0
 
-    /** The node paired to [forwardId], falling back to the first enabled node. */
-    fun nodeFor(forwardId: Long): ProxyNode? {
-        if (nodes.isEmpty()) return null
-        return nodes.firstOrNull { it.id == nodeByForward[forwardId] } ?: nodes.first()
-    }
+    /**
+     * The node paired to [forwardId]; null when the node picked for it is gone. Forwards never
+     * paired already carry the first enabled node in [nodeByForward].
+     */
+    fun nodeFor(forwardId: Long): ProxyNode? = nodes.firstOrNull { it.id == nodeByForward[forwardId] }
 }
 
 class ConnectionsViewModel @JvmOverloads internal constructor(
@@ -141,6 +141,16 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     /** Pending retry after a device-limit refusal; the running VPN's control loop covers itself. */
     private var deviceLimitRetry: Job? = null
+
+    /**
+     * forwardId -> node the user picked (here, on the panel, or persisted for the selected
+     * forward). A picked node that goes away is never replaced by another one.
+     */
+    private val pickedNodeByForward = mutableMapOf<Long, Long>().apply {
+        if (prefs.selectedForwardId > 0L && prefs.selectedProxyId > 0L) {
+            put(prefs.selectedForwardId, prefs.selectedProxyId)
+        }
+    }
 
     private val _state = MutableStateFlow(
         ConnectionsUiState(
@@ -181,6 +191,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             hostedPairings.collect { pairings ->
                 _state.update { current ->
                     val applied = pairings.filter { (_, nodeId) -> current.nodes.any { it.id == nodeId } }
+                    pickedNodeByForward += applied
                     val next = current.copy(nodeByForward = current.nodeByForward + applied)
                     applied[next.selectedForwardId]?.let { prefs.selectedProxyId = it }
                     next
@@ -201,7 +212,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         refreshForwards()
     }
 
-    /** Re-assert a node for every forward, keeping valid existing picks and defaulting to the first node. */
+    /**
+     * Re-assert a node for every forward. A picked node is kept while it is enabled and otherwise
+     * leaves the forward unpaired (the user must choose again); only a forward never paired
+     * defaults to the first enabled node.
+     */
     private fun seedNodeByForward(
         forwards: List<ForwardListItem>,
         enabled: List<ProxyNode>,
@@ -209,13 +224,16 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     ): Map<Long, Long> {
         if (enabled.isEmpty()) return emptyMap()
         val hosted = hostedPairings.value
-        return forwards.associate { forward ->
-            val nodeId = prior[forward.forwardId]
-                ?.takeIf { id -> enabled.any { it.id == id } }
-                ?: hosted[forward.forwardId]?.takeIf { id -> enabled.any { it.id == id } }
-                ?: enabled.first().id
-            forward.forwardId to nodeId
-        }
+        fun usable(id: Long?) = id?.takeIf { candidate -> enabled.any { it.id == candidate } }
+        return forwards.mapNotNull { forward ->
+            val picked = pickedNodeByForward[forward.forwardId] ?: usable(hosted[forward.forwardId])
+            val nodeId = if (picked != null) {
+                usable(picked)
+            } else {
+                usable(prior[forward.forwardId]) ?: enabled.first().id
+            }
+            nodeId?.let { forward.forwardId to it }
+        }.toMap()
     }
 
     fun refreshForwards() {
@@ -229,11 +247,14 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             val activeNativeRoutePolicy = currentState.nativeRoutePolicy
             _state.update { it.copy(isLoading = true, error = null) }
             try {
-                val catalog = catalogFetcher(_state.value.selectedForwardId)
+                val requested = _state.value.selectedForwardId
+                val catalog = catalogFetcher(requested)
                 val forwards = catalog.visibleForwards
                 val desired = catalog.selectedForwardId
-                    ?: _state.value.selectedForwardId.takeIf { fid -> forwards.any { it.forwardId == fid } }
-                val selected = desired ?: forwards.firstOrNull()?.forwardId ?: 0L
+                    ?: requested.takeIf { fid -> forwards.any { it.forwardId == fid } }
+                // A picked service the panel no longer lists is reported, not swapped for another.
+                val pickedGone = desired == null && requested > 0L
+                val selected = desired ?: if (pickedGone) 0L else forwards.firstOrNull()?.forwardId ?: 0L
                 prefs.selectedForwardId = selected
                 val capability = catalog.nativeOutbound?.takeIf { it.isUsable() }
                 val nativeId = capability?.forwards
@@ -269,6 +290,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                     nativeSelected && forwards.any { it.forwardId == nativeId } -> nativeId
                     // A native rule cannot carry a node, so an ordinary connect never selects one.
                     selected in serviceIds -> selected
+                    pickedGone -> 0L
                     else -> serviceIds.firstOrNull() ?: selected
                 }
                 prefs.selectedForwardId = displayedSelected
@@ -289,6 +311,11 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                         nativeBypassChina = prefs.nativeOutboundBypassChina,
                         nativeRoutePolicy = nativePolicy,
                         isLoading = false,
+                        error = if (pickedGone && displayedSelected == 0L) {
+                            s(R.string.connections_error_service_unavailable)
+                        } else {
+                            current.error
+                        },
                     )
                     next.selectedForwardId.takeIf { it > 0 }?.let { fid ->
                         next.nodeFor(fid)?.let { prefs.selectedProxyId = it.id }
@@ -330,12 +357,10 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             selectNativeForward(forwardId)
             return
         }
-        val nodeId = current.nodeByForward[forwardId]
-            ?: current.nodes.firstOrNull()?.id
-            ?: 0L
+        val nodeId = current.nodeFor(forwardId)?.id ?: 0L
         prefs.selectedForwardId = forwardId
         prefs.nativeOutboundSelected = false
-        if (nodeId > 0L) prefs.selectedProxyId = nodeId
+        prefs.selectedProxyId = nodeId
         _state.update { it.copy(selectedForwardId = forwardId, nativeSelected = false) }
     }
 
@@ -414,7 +439,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     fun selectNodeForForward(forwardId: Long, nodeId: Long) {
         val state = _state.value
-        prefs.selectedProxyId = nodeId
+        pickedNodeByForward[forwardId] = nodeId
+        // Only the selected service's node is the one the connect path reads.
+        if (forwardId == state.selectedForwardId) prefs.selectedProxyId = nodeId
         _state.update {
             it.copy(nodeByForward = it.nodeByForward + (forwardId to nodeId))
         }
@@ -485,7 +512,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
             }
             val node = s.nodeFor(forwardId)
             if (node == null) {
-                _state.update { it.copy(error = s(R.string.connections_error_select_node)) }
+                val message = if (s.hasNode) R.string.connections_error_node_unavailable else R.string.connections_error_select_node
+                _state.update { it.copy(error = s(message)) }
                 return@launch
             }
             // A connection always rides the service forward (direct mode was removed from the UI).

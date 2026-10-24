@@ -184,6 +184,51 @@ class ConnectionsViewModelTest {
     }
 
     @Test
+    fun `a picked node that goes away is not replaced by another node`() {
+        val nodes = MutableStateFlow(listOf(node(5, "HK"), node(6, "TW")))
+        val started = mutableListOf<Long>()
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { nodes },
+            startConnect = { id -> started += id },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.selectNodeForForward(10L, 6L)
+
+        nodes.value = listOf(node(5, "HK"), node(6, "TW", enabled = false))
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.nodeFor(10L))
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertTrue(started.isEmpty())
+        assertEquals(app.getString(R.string.connections_error_node_unavailable), viewModel.state.value.error)
+    }
+
+    @Test
+    fun `the persisted node pick survives reopening the app`() {
+        prefs.selectedForwardId = 10L
+        prefs.selectedProxyId = 6L
+        val viewModel = vm(nodes = listOf(node(5, "HK"), node(6, "TW")), catalog = catalog(forward(10), forward(11)))
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(6L, viewModel.state.value.nodeFor(10L)?.id)
+        assertEquals(6L, prefs.selectedProxyId)
+    }
+
+    @Test
+    fun `a picked service the panel no longer lists is not swapped for the first one`() {
+        prefs.selectedForwardId = 12L
+        val viewModel = vm(nodes = listOf(node(5)), catalog = catalog(forward(10), forward(11)))
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0L, viewModel.state.value.selectedForwardId)
+        assertEquals(app.getString(R.string.connections_error_service_unavailable), viewModel.state.value.error)
+    }
+
+    @Test
     fun `device limit refusal shows the persistent notice and retries at the steady cadence`() {
         var attempts = 0
         val viewModel = ConnectionsViewModel(

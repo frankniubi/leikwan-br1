@@ -113,6 +113,8 @@ class SingboxConfigBuilder(
         nativeRouteScope: String = "global",
         nativeBypassChina: Boolean = false,
         nativeRoutePolicy: String? = null,
+        /** The node the user picked; the `proxy` selector starts on it, not on the first node. */
+        defaultProxyNodeId: Long? = null,
     ): CompiledConfigResult {
         require(nativeOutboundLease == null || nativeLocalProxy == null) { "native_proxy_endpoint_ambiguous" }
         require(nativeOutboundLease == null || nativeOutboundLease.isUsable()) { "native_lease_invalid" }
@@ -179,6 +181,7 @@ class SingboxConfigBuilder(
                 routeRuleRuntimeBindings,
                 nativeOutboundLease,
                 nativeLocalProxy,
+                defaultProxyNodeId,
             ),
         )
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
@@ -383,6 +386,7 @@ class SingboxConfigBuilder(
         routeRuleRuntimeBindings: List<ClientRuleSingboxBinding>,
         nativeOutboundLease: NativeOutboundLease?,
         nativeLocalProxy: NativeOutboundLocalProxy?,
+        defaultProxyNodeId: Long? = null,
     ): JsonArray {
         val outbounds = JsonArray()
         val proxyTags = mutableListOf<String>()
@@ -423,7 +427,12 @@ class SingboxConfigBuilder(
                 addProperty("type", "selector")
                 addProperty("tag", "proxy")
                 add("outbounds", JsonArray().apply { proxyTags.forEach { add(it) } })
-                addProperty("default", proxyTags.first())
+                // Traffic without a pinned node (app/rule "tunnel", rule-mode default) rides the
+                // picked node; the first node is only the choice when nothing was picked.
+                addProperty(
+                    "default",
+                    defaultProxyNodeId?.let { "proxy-$it" }?.takeIf { it in proxyTags } ?: proxyTags.first(),
+                )
             })
         } else if (proxyTags.isEmpty()) {
             outbounds.add(JsonObject().apply {

@@ -545,11 +545,9 @@ class TunnelOrchestrator internal constructor(
         try {
         Log.i(TAG, "Pulling forward configs...")
         val connectionMode = prefs.proxyConnectionMode
+        // A picked node that no longer exists fails selection below; it is not cleared, which
+        // would quietly turn an Ultra connect into the node-less bridge path.
         val proxyNodes = db.proxyNodeDao().getAllList()
-        val selectedProxyId = prefs.selectedProxyId
-        if (selectedProxyId > 0L && proxyNodes.none { it.id == selectedProxyId }) {
-            prefs.selectedProxyId = 0L
-        }
 
         val catalog = panelRepo.pullCatalog(forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId)
         val selectedForward = forwardId.takeIf { it > 0L }
@@ -678,6 +676,12 @@ class TunnelOrchestrator internal constructor(
                     throw Exception("No relay legs could be started")
                 }
                 unavailableNodeIds = missingRelayNodeIds + result.failedNodeIds
+                try {
+                    requirePickedNodesRunning(selection.selectedNode?.id, unavailableNodeIds, proxyNodes)
+                } catch (error: Exception) {
+                    legs.values.forEach { processRunner.stopForward(it.processKey) }
+                    throw error
+                }
                 RuntimeContext(
                     forwardId = forward.forwardId,
                     mode = forward.mode,
@@ -703,7 +707,12 @@ class TunnelOrchestrator internal constructor(
         val ultraGroups = selectedEffective?.takeIf { it.mode == ForwardMode.ULTRA }?.let { effective ->
             val mainNode = selection.selectedNode ?: return@let null
             val mainRuntime = baseRuntimeContext ?: return@let null
-            startUltraAppGroups(effective.runtimeContract, mainRuntime, mainNode, proxyNodes, binaries)
+            try {
+                startUltraAppGroups(effective.runtimeContract, mainRuntime, mainNode, proxyNodes, binaries)
+            } catch (error: Exception) {
+                stopRuntime(mainRuntime)
+                throw error
+            }
         }
         val runtimeContext = ultraGroups?.runtime ?: baseRuntimeContext
 
@@ -741,6 +750,7 @@ class TunnelOrchestrator internal constructor(
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
                 runtimeOnlyProxy = selectedEffective?.mode == ForwardMode.ULTRA,
+                defaultProxyNodeId = selection.selectedNode?.id,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
@@ -877,6 +887,33 @@ class TunnelOrchestrator internal constructor(
             }
         }
         return NodeLegsResult(legs, failed)
+    }
+
+    /**
+     * A node the user picked (the selected node, the rule-mode default node, a rule's or an app's
+     * node) must ride its own relay. When that relay could not start, the connect fails naming
+     * the node rather than letting its traffic fall through to another node.
+     */
+    internal suspend fun requirePickedNodesRunning(
+        selectedNodeId: Long?,
+        unavailableNodeIds: Set<Long>,
+        proxyNodes: List<ProxyNode>,
+    ) {
+        if (unavailableNodeIds.isEmpty()) return
+        val picked = linkedSetOf<Long>()
+        selectedNodeId?.let(picked::add)
+        prefs.appRouting.routingRules()
+            .filter { it.outcome == UserTrafficOutcome.TUNNEL }
+            .mapNotNullTo(picked) { it.targetNodeId }
+        if (prefs.routingSelectorEnabled) {
+            prefs.routingDefaultNodeId?.let(picked::add)
+            (userRuleStore.countryRules() + userRuleStore.categoryRules())
+                .filter { it.enabled && it.outcome == UserTrafficOutcome.TUNNEL }
+                .mapNotNullTo(picked) { it.targetNodeId }
+        }
+        val failed = picked.firstOrNull { it in unavailableNodeIds } ?: return
+        val name = proxyNodes.firstOrNull { it.id == failed }?.name?.takeIf { it.isNotBlank() } ?: "#$failed"
+        throw Exception("The relay for node $name could not start; not switching to another node")
     }
 
     private fun stopRuntime(runtimeContext: RuntimeContext?) {
@@ -1108,8 +1145,9 @@ class TunnelOrchestrator internal constructor(
 
     /**
      * Starts one Ultra runtime per other line that an app group rides, and gives every routed node
-     * a leg on its line's local port. A line that cannot start is skipped: its apps fall back to
-     * the selected node. Returns null when no group needs anything beyond the selected runtime.
+     * a leg on its line's local port. A group whose node or line cannot run fails the connect: its
+     * apps never fall back to the selected node. Returns null when no group needs anything beyond
+     * the selected runtime.
      */
     private suspend fun startUltraAppGroups(
         mainForward: ForwardContract,
@@ -1123,21 +1161,30 @@ class TunnelOrchestrator internal constructor(
         val legs = linkedMapOf(mainNode.id to ultraNodeLeg(mainNode.id, mainForward.forwardId, mainRuntime))
         val nodes = mutableListOf(mainNode)
         val extras = linkedMapOf<Long, ExtraUltraRuntime>()
-        for (group in groups) {
-            // One outbound per node: a node already routed (the selected one included) keeps its line.
-            if (group.nodeId in legs) continue
-            val node = proxyNodes.firstOrNull {
-                it.id == group.nodeId && it.enabled && !it.type.equals("wireguard", ignoreCase = true)
-            } ?: continue
-            val runtime = if (group.forwardId == mainForward.forwardId) {
-                mainRuntime
-            } else {
-                extras[group.forwardId]?.runtime
-                    ?: startExtraUltraRuntime(group.forwardId, binaries)?.also { extras[group.forwardId] = it }?.runtime
-                    ?: continue
+        try {
+            for (group in groups) {
+                // One outbound per node: a node already routed (the selected one included) keeps its line.
+                if (group.nodeId in legs) continue
+                val node = proxyNodes.firstOrNull {
+                    it.id == group.nodeId && it.enabled && !it.type.equals("wireguard", ignoreCase = true)
+                } ?: throw Exception("App group ${group.name}: its node is missing or disabled")
+                val runtime = if (group.forwardId == mainForward.forwardId) {
+                    mainRuntime
+                } else {
+                    extras[group.forwardId]?.runtime
+                        ?: startExtraUltraRuntime(group.forwardId, binaries)
+                            .also { extras[group.forwardId] = it }
+                            .runtime
+                }
+                legs[node.id] = ultraNodeLeg(node.id, group.forwardId, runtime)
+                nodes += node
             }
-            legs[node.id] = ultraNodeLeg(node.id, group.forwardId, runtime)
-            nodes += node
+        } catch (error: Exception) {
+            extras.forEach { (forwardId, extra) ->
+                processRunner.stopForward(forwardId)
+                UltraForwardRunner.cleanup(extra.runtime)
+            }
+            throw error
         }
         if (nodes.size == 1) return null
         val protectedConnectivity = extras.values
@@ -1162,15 +1209,14 @@ class TunnelOrchestrator internal constructor(
         protectedConnectivity = runtime.protectedConnectivity,
     )
 
-    /** Starts and leases an Ultra runtime for an app-group line; null when it cannot run. */
-    private suspend fun startExtraUltraRuntime(forwardId: Long, binaries: RuntimeBinaryPaths): ExtraUltraRuntime? {
+    /** Starts and leases an Ultra runtime for an app-group line; throws when it cannot run. */
+    private suspend fun startExtraUltraRuntime(forwardId: Long, binaries: RuntimeBinaryPaths): ExtraUltraRuntime {
         val forward = panelRepo.getCachedEffectiveForward(forwardId)
             ?.takeIf { it.mode == ForwardMode.ULTRA }
             ?.runtimeContract
         val policy = forward?.let(UltraPolicy::from)
         if (forward == null || policy == null) {
-            Log.w(TAG, "App-group line $forwardId is not an available Ultra service; its apps use the selected node")
-            return null
+            throw Exception("App group line #$forwardId is not an available Ultra service")
         }
         var processStarted = false
         return try {
@@ -1211,10 +1257,10 @@ class TunnelOrchestrator internal constructor(
                 leases.forEach(UltraLease::wipe)
             }
         } catch (error: Exception) {
-            if (error is CancellationException || error is PanelControlException) throw error
             if (processStarted) processRunner.stopForward(forwardId)
-            Log.w(TAG, "App-group line $forwardId failed to start; its apps use the selected node", error)
-            null
+            if (error is CancellationException || error is PanelControlException) throw error
+            Log.w(TAG, "App-group line $forwardId failed to start", error)
+            throw Exception("App group line #$forwardId could not start: ${error.message}", error)
         }
     }
 

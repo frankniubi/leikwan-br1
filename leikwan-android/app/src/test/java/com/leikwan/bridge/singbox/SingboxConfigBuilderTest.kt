@@ -392,6 +392,24 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
+    fun `proxy selector starts on the picked node rather than the first one`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val selector = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1), ssNode(2)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+                defaultProxyNodeId = 2L,
+            ).configJson
+        ).asJsonObject.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .single { it.get("tag").asString == "proxy" }
+
+        assertEquals("proxy-2", selector.get("default").asString)
+    }
+
+    @Test
     fun `tun inbound always captures ipv6 so it cannot leak around the tunnel`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
 
