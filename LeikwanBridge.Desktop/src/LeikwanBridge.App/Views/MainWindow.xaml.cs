@@ -688,22 +688,8 @@ public partial class MainWindow : Window
         var row = _vm.PairedProxyForwardRows.FirstOrDefault(item => item.ForwardId == _vm.SelectedProxyForwardId);
         if (row is null || !row.CanConnect)
             return;
-        try
-        {
-            await row.ConnectAsync();
-            SaveCurrentConfig();
-        }
-        catch (Exception ex)
-        {
-            if (ex is OperationCanceledException)
-            {
-                SetProxyReady();
-                Log.Debug(ex, "paired proxy start cancelled");
-                return;
-            }
-            SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to start local proxy for selected paired forward");
-        }
+        _vm.SelectedProxyProfileId = row.SelectedProfileId;
+        await StartSelectedProxyAsync();
     }
 
     private async void OnProxySelectedDisconnect_Click(object sender, RoutedEventArgs e)
@@ -1380,6 +1366,8 @@ public partial class MainWindow : Window
         ProxyProfileList.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
         ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
             && snapshot.Mode != WindowsProxyMode.Tun && !_vm.IsExternalProxyActive;
+        ApplySwitchLock(!ProxyLocalListenPortCombo.IsEnabled);
+        UpdateHttpModeNotice();
         UpdateNativeOutboundUi();
     }
 
@@ -1395,6 +1383,7 @@ public partial class MainWindow : Window
         ProxyForwardCombo.IsEnabled = false;
         ProxyPairedForwardCombo.IsEnabled = false;
         ProxyProfileList.IsEnabled = false;
+        ApplySwitchLock(true);
     }
 
     private void SetProxyReady()
@@ -1430,6 +1419,7 @@ public partial class MainWindow : Window
         ProxyForwardCombo.IsEnabled = true;
         ProxyPairedForwardCombo.IsEnabled = true;
         ProxyProfileList.IsEnabled = true;
+        ApplySwitchLock(false);
     }
 
     private void SetProxyTransientStatus(string message, bool error, bool preserveTitle)

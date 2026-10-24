@@ -50,6 +50,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
     private bool _disposed;
 
     public const string NativeOutboundDisplayName = "原生出口";
+    public const string ProcessLostErrorCode = "proxy_process_lost";
 
     /// <summary>Minimum spacing between two live-MTU apply attempts.</summary>
     public static readonly TimeSpan MtuApplyDefaultInterval = TimeSpan.FromSeconds(60);
@@ -101,6 +102,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         if (_mtuApplyMinInterval < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(mtuApplyMinInterval));
+        _processHost.UnexpectedExit += exitCode => _ = HandleUnexpectedExitAsync(exitCode);
     }
 
     public event Action<WindowsProxySnapshot>? SnapshotChanged;
@@ -975,6 +977,39 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
             await _nativeRelayHost.DisposeAsync();
             _gate.Dispose();
         }
+    }
+
+    private async Task HandleUnexpectedExitAsync(int exitCode)
+    {
+        try { await _gate.WaitAsync().ConfigureAwait(false); }
+        catch (ObjectDisposedException) { return; }
+        WindowsProxySnapshot? lost = null;
+        try
+        {
+            if (_disposed
+                || _snapshot.State != WindowsProxyConnectionState.Connected
+                || _processHost.IsRunning)
+                return;
+            Log.Warning("proxy process exited unexpectedly (exit code {ExitCode}, mode {Mode})", exitCode, _snapshot.Mode);
+            try { await StopCoreAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception exception) { Log.Warning(exception, "cleanup after unexpected proxy exit failed"); }
+            _activeProfileId = 0;
+            lost = _snapshot = _snapshot with
+            {
+                State = WindowsProxyConnectionState.Error,
+                SystemProxyEnabled = false,
+                ProcessProxyEnabled = false,
+                ErrorCode = ProcessLostErrorCode,
+            };
+        }
+        finally
+        {
+            try { _gate.Release(); }
+            catch (ObjectDisposedException) { }
+        }
+        // Outside the gate: subscribers reconnect, which needs the gate again.
+        if (lost is not null)
+            SnapshotChanged?.Invoke(lost);
     }
 
     private async Task StopCoreAsync(CancellationToken ct)

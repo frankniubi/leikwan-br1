@@ -71,7 +71,7 @@ final class OidcSessionStore
 
     private function ensureSession(): void
     {
-        if (session_status() !== PHP_SESSION_ACTIVE && !session_start()) {
+        if (session_status() !== PHP_SESSION_ACTIVE && !HttpSecurity::startSession()) {
             throw new RuntimeException('oidc_session_unavailable');
         }
         if (!isset($_SESSION) || !is_array($_SESSION)) {
@@ -99,11 +99,7 @@ final class OidcSessionStore
 
     private function localReturnTo(string $returnTo): string
     {
-        $decoded = rawurldecode($returnTo);
-        if ($returnTo === '' || !str_starts_with($returnTo, '/') || str_starts_with($decoded, '//') || str_contains($decoded, '\\')) {
-            return '/';
-        }
-        return $returnTo;
+        return LocalRedirectPath::sanitize($returnTo, '/');
     }
 
     private function randomUrlSafe(int $bytes): string

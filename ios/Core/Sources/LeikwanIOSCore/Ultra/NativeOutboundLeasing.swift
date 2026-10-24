@@ -275,9 +275,11 @@ public enum NativeOutboundPlanner {
         }
     }
 
-    /// Android ConnectionsViewModel reconciliation: the preferred carrier when still offered,
-    /// else the panel default, else the first; the preferred scope when the carrier allows it,
-    /// else its default; unrestricted only when allowed; bypass-China only for global.
+    /// Android ConnectionsViewModel reconciliation: the preferred carrier; with no preference
+    /// yet, the panel default, else the first. A preferred carrier that is no longer offered
+    /// gives nil (Connect fails visibly) instead of silently exiting through another region.
+    /// The preferred scope when the carrier allows it, else its default; unrestricted only when
+    /// allowed; bypass-China only for global.
     public static func effectiveSelection(
         availability: NativeOutboundAvailability?,
         eligibleForwardIds: Set<Int64>?,
@@ -290,12 +292,13 @@ public enum NativeOutboundPlanner {
         var chosen: NativeOutboundCarrier?
         if let preferred = preferredForwardId {
             chosen = carriers.first { $0.forwardId == preferred }
-        }
-        if chosen == nil, let defaultId = availability?.defaultForwardId {
-            chosen = carriers.first { $0.forwardId == defaultId }
-        }
-        if chosen == nil {
-            chosen = carriers.first
+        } else {
+            if let defaultId = availability?.defaultForwardId {
+                chosen = carriers.first { $0.forwardId == defaultId }
+            }
+            if chosen == nil {
+                chosen = carriers.first
+            }
         }
         guard let carrier = chosen else { return nil }
         let scope = carrier.effectiveScope(preferred: preferredScope)

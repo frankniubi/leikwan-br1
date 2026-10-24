@@ -19,14 +19,6 @@ extension AppModel {
         return bindingRows.first { $0.id == id }
     }
 
-    /// Entry "ip:port" for a forward card. Ultra entries come from the lease the
-    /// runtime selected (last known value while disconnected).
-    func endpointText(for forward: IOSSupportedForward) -> String {
-        if forward.kind == .ultra, let endpoint = tunnel.ultraEndpoints[forward.forwardId] {
-            return endpoint
-        }
-        return forward.endpointSummary
-    }
 
     var routeDetail: String? {
         if isNativeOutboundActive, let selection = nativeOutboundSelection {
@@ -47,15 +39,10 @@ extension IOSSupportedForward {
         return serviceName.isEmpty ? L("Forward #%@", String(describing: forwardId)) : serviceName
     }
 
-    /// Entry endpoint(s) as ip:port; Ultra entries come from leases at connect time.
-    var endpointSummary: String {
-        let endpoints = contract.endpoints
-        guard let first = endpoints.first else {
-            return "—"
-        }
-        let host = first.host.contains(":") ? "[\(first.host)]" : first.host
-        let more = endpoints.count > 1 ? "  +\(endpoints.count - 1)" : ""
-        return "\(host):\(first.port)\(more)"
+    /// The target the panel configured for this forward (destination ip:port).
+    var targetText: String {
+        let target = contract.target.trimmingCharacters(in: .whitespacesAndNewlines)
+        return target.isEmpty ? "—" : target
     }
 
     var kindLabel: String {

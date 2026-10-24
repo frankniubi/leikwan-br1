@@ -59,9 +59,10 @@ foreach (['Auth::requireClientAgent(', '->authorizeClientRequest(', '->requireAc
 // id format; an attested Android id never takes the desktop path.
 foreach ([
     '$this->deviceControls->isManagedDeviceId($headerDeviceId)',
-    "foreach (['windows', 'macos'] as \$family)",
+    "foreach (['windows', 'macos', 'ios'] as \$family)",
     "'/^windows-client-([1-9][0-9]*)-[a-f0-9]{16}$/'",
     "'/^macos-client-[a-f0-9]{32}$/'",
+    "'/^ios-client-([1-9][0-9]*)-[a-f0-9]{16}$/'",
 ] as $gate) {
     if (!str_contains($controller, $gate)) {
         fail('desktop gate is missing ' . $gate);

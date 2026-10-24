@@ -115,6 +115,19 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getLong("selected_proxy_id", 0L)
         set(v) = prefs.edit().putLong("selected_proxy_id", v).apply()
 
+    /**
+     * The user left the VPN connected. Set after a user connect succeeds, cleared when the user
+     * disconnects; while set, a service restarted by Android (or the device booting) rebuilds the
+     * connection from the persisted picks. Only the intent is stored: the sing-box config is bound
+     * to runtimes and short-lived credentials of the process that built it, so it is rebuilt.
+     */
+    var vpnConnectIntent: Boolean
+        get() = prefs.getBoolean("vpn_connect_intent", false)
+        set(v) {
+            // Written through at once: Android may kill the process right after a connect.
+            prefs.edit().putBoolean("vpn_connect_intent", v).commit()
+        }
+
     var proxyConnectionMode: ProxyConnectionMode
         get() = ProxyConnectionMode.fromStored(prefs.getString("proxy_connection_mode", ProxyConnectionMode.SERVICES.storedValue))
         set(v) = prefs.edit().putString("proxy_connection_mode", v.storedValue).apply()
@@ -244,6 +257,7 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("native_outbound_route_scope")
             .remove("native_outbound_bypass_china")
             .remove("native_outbound_route_policy")
+            .remove("vpn_connect_intent")
             .commit()
         check(cleared) { "failed to clear enrollment state" }
         if (clearIdentity) {

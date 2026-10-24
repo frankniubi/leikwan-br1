@@ -73,9 +73,11 @@ final class UltraTests: XCTestCase {
         let autoConfig = Fixtures.parseJSON(auto.configJSON)
         XCTAssertEqual(autoConfig["probe_target"] as? String, "1.1.1.1:53")
         XCTAssertEqual(autoConfig["auto_select"] as? Bool, true)
-        XCTAssertEqual(autoConfig["probe_duration_seconds"] as? Int, 30)
-        XCTAssertEqual(autoConfig["probe_samples"] as? Int, 30)
-        XCTAssertEqual(autoConfig["probe_interval_ms"] as? Int, 1000)
+        // The probe window fits the Network Extension start window (the runtime binds its
+        // listener only after the batch is probed); native outbound uses the same budget.
+        XCTAssertEqual(autoConfig["probe_duration_seconds"] as? Int, 5)
+        XCTAssertEqual(autoConfig["probe_samples"] as? Int, 20)
+        XCTAssertEqual(autoConfig["probe_interval_ms"] as? Int, 250)
         XCTAssertEqual(autoConfig["listen_port"] as? Int, 40001)
     }
 

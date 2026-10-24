@@ -13,6 +13,9 @@ metadata_path=""
 merge_versions=""
 managed_load_receipt=""
 ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals}"
+# 1 = Developer ID sign and notarize (needs the MACOS_DEVID_* and ASC_* secrets in the
+# environment). Off by default so local and fork builds keep the ad-hoc seal.
+developer_id_sign="${LEIKWAN_DEVELOPER_ID_SIGN:-0}"
 dry_run=0
 helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
@@ -57,6 +60,10 @@ done
 [[ -d "$repo_root" ]] || fail "repository root missing"
 repo_root="$(cd "$repo_root" && pwd)"
 output_dir="${output_dir:-$repo_root/artifacts/macos}"
+case "$developer_id_sign" in
+  0|1) ;;
+  *) fail "LEIKWAN_DEVELOPER_ID_SIGN must be 0 or 1" ;;
+esac
 
 sha256_file() {
   shasum -a 256 "$1" | awk '{print tolower($1)}'
@@ -377,7 +384,14 @@ mkdir -p "$dmg_root"
 ditto "$app" "$dmg_root/LeiKwan Bridge.app"
 ln -s /Applications "$dmg_root/Applications"
 rm -f "$dmg" "$update_zip" "$metadata"
-hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+if [[ "$developer_id_sign" -eq 1 ]]; then
+  # Developer ID signs, notarizes, and staples the app, then builds and notarizes the
+  # DMG itself. It must run before the archives below, which embed the app.
+  bash "$repo_root/scripts/sign-and-notarize-macos.sh" \
+    --app "$app" --dmg "$dmg" --report "$output_dir/leikwan-bridge-$suffix-signed-helpers.txt"
+else
+  hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+fi
 hdiutil verify "$dmg" >/dev/null
 mount_point="$work_dir/verify-mount"
 mkdir -p "$mount_point"

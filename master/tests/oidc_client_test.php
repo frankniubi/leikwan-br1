@@ -258,6 +258,15 @@ $userinfoPayload = [
 $withoutNbf = new OidcClient(new Config($envPath), $httpClient, static fn(): int => $now);
 assertSame('subject-123', $withoutNbf->authenticateCallback('authorization-code', $flow)['subject'], 'optional nbf claim may be absent');
 
+$userinfoPayload = [
+    'sub' => 'subject-123',
+    'email' => 'Person@Example.COM',
+    'email_verified' => false,
+    'name' => 'Example Person',
+];
+$unverifiedClient = new OidcClient(new Config($envPath), $httpClient, static fn(): int => $now);
+assertThrowsWithMessage(static fn() => $unverifiedClient->authenticateCallback('authorization-code', $flow), 'oidc_email_unverified', 'unverified provider email must be rejected with a distinct reason');
+
 $userinfoPayload = ['sub' => 'subject-123'];
 $missingUserinfoIdentity = new OidcClient(new Config($envPath), $httpClient, static function () use ($now): int {
     return $now;

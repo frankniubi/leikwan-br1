@@ -12,10 +12,18 @@ final class WhmcsIdentityService
 {
     private const CHALLENGE_TTL_MINUTES = 10;
 
+    /**
+     * Wrong codes a binding challenge accepts before it is burned. Six digits
+     * leave a 5 in 1,000,000 guess, and creating new challenges is limited by
+     * AuthRateLimiter::BINDING_REQUEST_* per user and per target email.
+     */
+    public const MAX_CHALLENGE_ATTEMPTS = 5;
+
     public function __construct(
         private Config $config,
         private Database $db,
         private ?WhmcsClient $whmcs = null,
+        private ?AuthRateLimiter $rateLimiter = null,
     ) {
         $this->whmcs ??= new WhmcsClient($config);
     }
@@ -49,25 +57,61 @@ final class WhmcsIdentityService
     public function requestBinding(int $userId, string $whmcsEmail = ''): array
     {
         $user = $this->bindingUser($userId);
+        $ownEmail = strtolower((string) ($user['email'] ?? ''));
         $targetEmail = strtolower(trim($whmcsEmail));
         if ($targetEmail === '') {
-            $targetEmail = strtolower((string) ($user['email'] ?? ''));
+            $targetEmail = $ownEmail;
+        }
+        if (!filter_var($targetEmail, FILTER_VALIDATE_EMAIL)) {
+            throw new ApiException('whmcs_binding_email_invalid', 422, ['message' => 'Please enter a valid Buy station email address.']);
         }
 
-        $profile = $this->profileByEmail($targetEmail);
-        if ($profile === null) {
-            if ($targetEmail === strtolower((string) ($user['email'] ?? ''))) {
+        // Every request is counted before the Buy station lookup, so a tenant
+        // can neither enumerate Buy station emails nor flood someone else's
+        // Buy station account with verification tickets.
+        try {
+            $this->rateLimiter()->hit([
+                AuthRateLimiter::bucket('whmcs-binding-request:user', (string) (int) $user['id'], AuthRateLimiter::BINDING_REQUEST_USER_LIMIT, AuthRateLimiter::BINDING_REQUEST_WINDOW_SECONDS),
+                AuthRateLimiter::bucket('whmcs-binding-request:email', $targetEmail, AuthRateLimiter::BINDING_REQUEST_EMAIL_LIMIT, AuthRateLimiter::BINDING_REQUEST_WINDOW_SECONDS),
+            ]);
+        } catch (ApiException $exception) {
+            $retryAfter = (int) ($exception->details()['retry_after'] ?? 60);
+            throw new ApiException('rate_limited', 429, [
+                'retry_after' => $retryAfter,
+                'message' => 'Too many Buy station verification requests. Please wait about ' . max(1, (int) ceil($retryAfter / 60)) . ' minute(s) and try again.',
+            ]);
+        }
+
+        if ($targetEmail === $ownEmail) {
+            // The tenant's own, already verified email: being explicit here
+            // reveals nothing about anyone else.
+            $profile = $this->profileByEmail($targetEmail);
+            if ($profile === null) {
                 throw new ApiException('whmcs_client_not_found', 404, ['message' => 'No Buy station account with the same email was found. If your Buy station uses another email, enter that email below and we will send a verification ticket.']);
             }
-
-            throw new ApiException('whmcs_client_not_found', 404, ['message' => 'No Buy station account was found for that email address.']);
-        }
-
-        if (strcasecmp((string) ($profile['email'] ?? ''), (string) ($user['email'] ?? '')) === 0) {
-            return [
-                'mode' => 'direct',
-                'user' => $this->bindUserToProfile($user, $profile),
-            ];
+            if (strcasecmp((string) ($profile['email'] ?? ''), $ownEmail) === 0) {
+                return [
+                    'mode' => 'direct',
+                    'user' => $this->bindUserToProfile($user, $profile),
+                ];
+            }
+        } else {
+            if (!empty($user['whmcs_client_id'])) {
+                throw new ApiException('whmcs_binding_conflict', 409, ['message' => 'Your panel account is already linked to a Buy station account.']);
+            }
+            $profile = $this->profileByEmail($targetEmail);
+            // Another email with no Buy station account, or whose account is
+            // already linked to a different panel account, gets the same
+            // answer as a real one: a challenge no code can satisfy. Otherwise
+            // this form would tell any tenant which emails exist at the Buy
+            // station.
+            if ($profile === null) {
+                return $this->decoyChallenge($user, $targetEmail);
+            }
+            $linkedUser = $this->boundUserForClient((int) ($profile['whmcs_client_id'] ?? 0));
+            if ($linkedUser !== null && (int) $linkedUser['id'] !== (int) $user['id']) {
+                return $this->decoyChallenge($user, $targetEmail);
+            }
         }
 
         if (
@@ -234,8 +278,37 @@ final class WhmcsIdentityService
     public function verifyLoginChallenge(string $publicToken, string $code): array
     {
         $challenge = $this->challengeByPublicToken($publicToken);
-        if (!hash_equals((string) $challenge['verification_code_hash'], hash('sha256', trim($code)))) {
-            throw new ApiException('whmcs_verification_code_invalid', 422, ['message' => 'The verification code is incorrect. Please open the Buy station ticket and try again.']);
+
+        // Claim one attempt atomically before comparing, so parallel guesses
+        // cannot get more than MAX_CHALLENGE_ATTEMPTS tries at one code.
+        $claimed = $this->db->execute(
+            'UPDATE whmcs_login_challenges
+             SET failed_attempts = failed_attempts + 1,
+                 updated_at = :updated_at
+             WHERE id = :id
+               AND verified_at IS NULL
+               AND failed_attempts < :max_attempts',
+            [
+                'id' => $challenge['id'],
+                'updated_at' => $this->now(),
+                'max_attempts' => self::MAX_CHALLENGE_ATTEMPTS,
+            ]
+        );
+        if ($claimed < 1) {
+            throw $this->burnedChallengeException();
+        }
+
+        $submitted = preg_replace('/\s+/', '', $code) ?? '';
+        $codeMatches = hash_equals((string) $challenge['verification_code_hash'], hash('sha256', $submitted));
+        if (!$codeMatches || (int) ($challenge['whmcs_client_id'] ?? 0) <= 0) {
+            $remaining = self::MAX_CHALLENGE_ATTEMPTS - ((int) ($challenge['failed_attempts'] ?? 0) + 1);
+            if ($remaining <= 0) {
+                throw $this->burnedChallengeException();
+            }
+            throw new ApiException('whmcs_verification_code_invalid', 422, [
+                'message' => 'The verification code is incorrect. ' . $remaining . ' attempt(s) left before this code is cancelled.',
+                'attempts_remaining' => $remaining,
+            ]);
         }
 
         $user = $this->db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $challenge['user_id']]);
@@ -249,6 +322,7 @@ final class WhmcsIdentityService
         $this->db->execute(
             'UPDATE whmcs_login_challenges
              SET verified_at = :verified_at,
+                 failed_attempts = CASE WHEN failed_attempts > 0 THEN failed_attempts - 1 ELSE 0 END,
                  updated_at = :updated_at
              WHERE id = :id',
             [
@@ -877,6 +951,9 @@ final class WhmcsIdentityService
         if (!empty($challenge['verified_at'])) {
             throw new ApiException('whmcs_challenge_used', 410, ['message' => 'This Buy station verification code has already been used.']);
         }
+        if ((int) ($challenge['failed_attempts'] ?? 0) >= self::MAX_CHALLENGE_ATTEMPTS) {
+            throw $this->burnedChallengeException();
+        }
 
         $expiresAt = strtotime((string) ($challenge['expires_at'] ?? ''));
         if ($expiresAt === false || $expiresAt < time()) {
@@ -966,6 +1043,59 @@ final class WhmcsIdentityService
         }
 
         return trim((string) (($client['firstname'] ?? '') . ' ' . ($client['lastname'] ?? '')));
+    }
+
+    private function burnedChallengeException(): ApiException
+    {
+        return new ApiException('whmcs_challenge_locked', 410, ['message' => 'Too many incorrect verification codes. This code has been cancelled; please request a new one.']);
+    }
+
+    /**
+     * A challenge row that looks like a real one to the requester but has no
+     * ticket and no usable code (whmcs_client_id 0, hash of random bytes).
+     *
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    private function decoyChallenge(array $user, string $targetEmail): array
+    {
+        $now = $this->now();
+        $publicToken = bin2hex(random_bytes(18));
+        $expiresAt = $this->future('+' . self::CHALLENGE_TTL_MINUTES . ' minutes');
+        $challengeId = $this->db->insert('whmcs_login_challenges', [
+            'public_token' => $publicToken,
+            'user_id' => $user['id'],
+            'whmcs_client_id' => 0,
+            'whmcs_user_id' => null,
+            'whmcs_email' => $targetEmail,
+            'verification_code_hash' => hash('sha256', random_bytes(32)),
+            'ticket_id' => null,
+            'ticket_tid' => null,
+            'ticket_access_code' => null,
+            'expires_at' => $expiresAt,
+            'verified_at' => null,
+            'closed_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return [
+            'mode' => 'challenge',
+            'id' => $challengeId,
+            'public_token' => $publicToken,
+            'user' => $user,
+            'ticket_id' => 0,
+            'ticket_tid' => '',
+            'ticket_access_code' => '',
+            'expires_at' => $expiresAt,
+            'email' => $targetEmail,
+            'display_name' => '',
+        ];
+    }
+
+    private function rateLimiter(): AuthRateLimiter
+    {
+        return $this->rateLimiter ??= new AuthRateLimiter($this->db);
     }
 
     private function generateChallengeCode(): string

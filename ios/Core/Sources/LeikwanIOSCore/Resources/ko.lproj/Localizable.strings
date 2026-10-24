@@ -30,9 +30,9 @@
 "Global" = "전역";
 "Standard routing" = "표준 라우팅";
 "Unrestricted routing" = "무제한 라우팅";
-"Native outbound is not available for this plan or forward" = "이 요금제 또는 포워드에서는 네이티브 아웃바운드를 사용할 수 없습니다";
+"Native outbound is not available for this server or forward" = "이 서버 또는 포워드에서는 네이티브 아웃바운드를 사용할 수 없습니다";
 "The selected traffic scope is not available. Refresh and try again" = "선택한 트래픽 범위를 사용할 수 없습니다. 새로고침 후 다시 시도하세요";
-"This plan does not include unrestricted routing" = "이 요금제에는 무제한 라우팅이 포함되어 있지 않습니다";
+"This server does not include unrestricted routing" = "이 서버에는 무제한 라우팅이 포함되어 있지 않습니다";
 "Native outbound authorization unavailable (service inactive or expired)" = "네이티브 아웃바운드 인증을 사용할 수 없습니다 (서비스 비활성 또는 만료)";
 "The native outbound line changed. Refresh and try again" = "네이티브 아웃바운드 회선이 변경되었습니다. 새로고침 후 다시 시도하세요";
 "The native outbound line expired. Reconnect" = "네이티브 아웃바운드 회선이 만료되었습니다. 다시 연결하세요";

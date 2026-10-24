@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -26,6 +27,10 @@ type sidecarConfig struct {
 	sessionGraceSeconds      float64
 	sessionLimit             int
 	udpConnectTimeoutSeconds float64
+	// allowPrivateHostnameTargets lets a hostname target resolve to a
+	// non-global address (loopback, RFC 1918, link-local, ...). It is off by
+	// default; IP-literal targets are never affected by it.
+	allowPrivateHostnameTargets bool
 }
 
 func (c sidecarConfig) validate() error {
@@ -117,11 +122,16 @@ func parseConfig(raw []byte) (sidecarConfig, error) {
 		if secret == "" {
 			secret = asJSONString(entry["hmac_secret"])
 		}
+		rateLimit, err := parseRateLimitMbps(entry["rate_limit_mbps"])
+		if err != nil {
+			return sidecarConfig{}, fmt.Errorf("forward %d: %w", forwardID, err)
+		}
 		forwards[forwardID] = forwardBinding{
-			forwardID:   forwardID,
-			secret:      []byte(secret),
-			targets:     targets,
-			staticToken: strings.TrimSpace(asJSONString(entry["token"])),
+			forwardID:     forwardID,
+			secret:        []byte(secret),
+			targets:       targets,
+			staticToken:   strings.TrimSpace(asJSONString(entry["token"])),
+			rateLimitMbps: rateLimit,
 		}
 	}
 	config := sidecarConfig{
@@ -141,10 +151,49 @@ func parseConfig(raw []byte) (sidecarConfig, error) {
 		return sidecarConfig{}, fmt.Errorf("listen_port is invalid")
 	}
 	config.listenPort = port
+	allowPrivate, err := boolOrDefault(document, "allow_private_hostname_targets", false)
+	if err != nil {
+		return sidecarConfig{}, err
+	}
+	config.allowPrivateHostnameTargets = allowPrivate
 	if err := config.validate(); err != nil {
 		return sidecarConfig{}, err
 	}
 	return config, nil
+}
+
+// maxRateLimitMbps bounds rate_limit_mbps. The panel and the standalone merge
+// script apply the same ceiling, so a larger value can only be a corrupt file.
+const maxRateLimitMbps = 100000
+
+// parseRateLimitMbps reads the optional per-forward sidecar speed limit. A
+// missing, null or empty value means unlimited (0). The value is in Mbps where
+// 1 Mbps = 1,000,000 bit/s, matching tools/ultra-client/policy.go. Anything
+// that is not a finite number in [0, maxRateLimitMbps] rejects the whole file,
+// so a reload never silently drops a limit the panel meant to enforce.
+func parseRateLimitMbps(value any) (float64, error) {
+	var text string
+	switch typed := value.(type) {
+	case nil:
+		return 0, nil
+	case json.Number:
+		text = typed.String()
+	case string:
+		text = strings.TrimSpace(typed)
+		if text == "" {
+			return 0, nil
+		}
+	default:
+		return 0, fmt.Errorf("rate_limit_mbps must be a number")
+	}
+	parsed, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("rate_limit_mbps must be a number")
+	}
+	if parsed < 0 || parsed > maxRateLimitMbps {
+		return 0, fmt.Errorf("rate_limit_mbps must be between 0 and %d", maxRateLimitMbps)
+	}
+	return parsed, nil
 }
 
 func parseTargets(value any) (map[string]struct{}, error) {
@@ -304,6 +353,35 @@ func stringOrDefault(document map[string]any, key string, fallback string) strin
 	return fallback
 }
 
+// boolOrDefault reads an optional boolean switch. A missing or null value is
+// the default; anything that is not clearly true or false rejects the file, so
+// a typo can never silently flip a security switch.
+func boolOrDefault(document map[string]any, key string, fallback bool) (bool, error) {
+	switch typed := document[key].(type) {
+	case nil:
+		return fallback, nil
+	case bool:
+		return typed, nil
+	case json.Number:
+		switch typed.String() {
+		case "0":
+			return false, nil
+		case "1":
+			return true, nil
+		}
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "":
+			return fallback, nil
+		case "true", "1", "yes", "on":
+			return true, nil
+		case "false", "0", "no", "off":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("%s must be a boolean", key)
+}
+
 func intOrDefault(document map[string]any, key string, fallback int) int {
 	value, ok := falsyIntOrDefault(document[key], fallback)
 	if !ok {
@@ -381,6 +459,7 @@ func summarizeConfig(config sidecarConfig) []byte {
 			"targets":          targets,
 			"has_secret":       len(binding.secret) > 0,
 			"has_static_token": binding.staticToken != "",
+			"rate_limit_mbps":  binding.rateLimitMbps,
 		})
 	}
 	return encodeJSON(map[string]any{

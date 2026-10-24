@@ -48,58 +48,70 @@ func (a *Agent) collectUsage() {
 	for _, state := range a.runtimes {
 		states = append(states, state)
 	}
+	gateway := a.gateway
 	a.mu.Unlock()
 
 	for _, state := range states {
-		status := state.status
-		if status == nil {
-			continue
+		generation := ""
+		if state.status != nil {
+			generation = state.status.PolicyGeneration
 		}
-		previous := state.lastCounters
-		deltaIn := status.BytesIn - previous.in
-		deltaOut := status.BytesOut - previous.out
-		if deltaIn < 0 {
-			deltaIn = status.BytesIn
-		}
-		if deltaOut < 0 {
-			deltaOut = status.BytesOut
-		}
-		if deltaIn == 0 && deltaOut == 0 {
-			continue
-		}
-		state.lastCounters = counterPair{in: status.BytesIn, out: status.BytesOut}
-
-		forwardID := state.forward.ForwardID
-		generation := status.PolicyGeneration
 		if generation == "" {
 			generation = policyGeneration(state.forward.UltraAccess)
 		}
-		a.store.UpdateUsage(func(usage *UsageState) {
-			usage.Sequence++
-			usage.PendingUltra = append(usage.PendingUltra, UltraUsageSnapshot{
-				ForwardID:        forwardID,
-				PolicyGeneration: generation,
-				Sequence:         usage.Sequence,
-				BytesIn:          deltaIn,
-				BytesOut:         deltaOut,
-			})
-		})
+		a.recordUsage(state.forward.ForwardID, generation, state.status, &state.lastCounters)
+	}
+	// The native relay is billed like any other Ultra forward (the desktop
+	// reports its native-usage snapshots the same way).
+	if gateway != nil {
+		gateway.collectRelayUsage()
+	}
+}
 
-		for _, feedback := range status.CandidateFeedback {
-			item := UltraCandidateFeedback{
-				ForwardID:        forwardID,
-				CandidateKeyHash: feedback.CandidateKeyHash,
-				LeaseHash:        feedback.LeaseHash,
-				Protocol:         feedback.Protocol,
-				Outcome:          feedback.Outcome,
-				Reason:           feedback.Reason,
-				EvidenceID:       feedback.EvidenceID,
-				ObservedAt:       feedback.ObservedAt,
-			}
-			a.store.UpdateUsage(func(usage *UsageState) {
-				usage.PendingFeedback = append(usage.PendingFeedback, item)
-			})
+// recordUsage turns one status document into a usage delta and candidate
+// feedback, advancing last.
+func (a *Agent) recordUsage(forwardID int, generation string, status *RuntimeStatus, last *counterPair) {
+	if status == nil {
+		return
+	}
+	deltaIn := status.BytesIn - last.in
+	deltaOut := status.BytesOut - last.out
+	if deltaIn < 0 {
+		deltaIn = status.BytesIn
+	}
+	if deltaOut < 0 {
+		deltaOut = status.BytesOut
+	}
+	if deltaIn == 0 && deltaOut == 0 {
+		return
+	}
+	*last = counterPair{in: status.BytesIn, out: status.BytesOut}
+
+	a.store.UpdateUsage(func(usage *UsageState) {
+		usage.Sequence++
+		usage.PendingUltra = append(usage.PendingUltra, UltraUsageSnapshot{
+			ForwardID:        forwardID,
+			PolicyGeneration: generation,
+			Sequence:         usage.Sequence,
+			BytesIn:          deltaIn,
+			BytesOut:         deltaOut,
+		})
+	})
+
+	for _, feedback := range status.CandidateFeedback {
+		item := UltraCandidateFeedback{
+			ForwardID:        forwardID,
+			CandidateKeyHash: feedback.CandidateKeyHash,
+			LeaseHash:        feedback.LeaseHash,
+			Protocol:         feedback.Protocol,
+			Outcome:          feedback.Outcome,
+			Reason:           feedback.Reason,
+			EvidenceID:       feedback.EvidenceID,
+			ObservedAt:       feedback.ObservedAt,
 		}
+		a.store.UpdateUsage(func(usage *UsageState) {
+			usage.PendingFeedback = append(usage.PendingFeedback, item)
+		})
 	}
 }
 

@@ -69,6 +69,57 @@ public sealed class WindowsProxyConnectionServiceTests
         Assert.Equal(WindowsProxyConnectionState.Error, service.Snapshot.State);
     }
 
+    [Fact]
+    public async Task UnexpectedProcessExitPublishesErrorAndClearsSystemProxy()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        var system = new FakeSystemProxy();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")), executable, temp.Path,
+            process, system, new FakeProcessAdapter());
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile { Name = "saved", Server = "node.example.test", Password = "secret" });
+        await service.StartAsync(WindowsProxyMode.Http, 1, forwardListenPort: 11059);
+        Assert.True(system.IsEnabled);
+        var lost = new TaskCompletionSource<WindowsProxySnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.SnapshotChanged += snapshot =>
+        {
+            if (snapshot.State == WindowsProxyConnectionState.Error)
+                lost.TrySetResult(snapshot);
+        };
+
+        process.Crash();
+
+        var snapshot = await lost.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WindowsProxyConnectionService.ProcessLostErrorCode, snapshot.ErrorCode);
+        Assert.False(snapshot.SystemProxyEnabled);
+        Assert.False(system.IsEnabled);
+    }
+
+    [Fact]
+    public async Task ProcessExitAfterUserStopIsIgnored()
+    {
+        using var temp = new TempStateDirectory();
+        var executable = Path.Combine(temp.Path, "sing-box.exe");
+        await File.WriteAllTextAsync(executable, "test");
+        var process = new FakeProcessHost();
+        await using var service = new WindowsProxyConnectionService(
+            new WindowsProxyProfileStore(Path.Combine(temp.Path, "profiles.json")), executable, temp.Path,
+            process, new FakeSystemProxy(), new FakeProcessAdapter());
+        await service.InitializeAsync();
+        await service.SaveProfileAsync(new WindowsProxyProfile { Name = "saved", Server = "node.example.test", Password = "secret" });
+        await service.StartAsync(WindowsProxyMode.Http, 1, forwardListenPort: 11059);
+        await service.StopAsync();
+
+        process.Crash();
+        await Task.Delay(50);
+
+        Assert.Equal(WindowsProxyConnectionState.Disconnected, service.Snapshot.State);
+    }
+
     [Theory]
     [InlineData("ss", "aes-256-gcm")]
     [InlineData("ss2022", "2022-blake3-aes-256-gcm")]
@@ -1231,6 +1282,8 @@ public sealed class WindowsProxyConnectionServiceTests
             return StopException is null ? Task.CompletedTask : Task.FromException(StopException);
         }
         public void SetRunning(bool value) => IsRunning = value;
+        public event Action<int>? UnexpectedExit;
+        public void Crash(int exitCode = 1) { IsRunning = false; UnexpectedExit?.Invoke(exitCode); }
         public ValueTask DisposeAsync() { IsRunning = false; return ValueTask.CompletedTask; }
     }
 

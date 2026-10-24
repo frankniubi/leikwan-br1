@@ -9,21 +9,27 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Throwable;
 use Leikwan\Master\Support\ExternalUoTPool;
+use Leikwan\Master\Support\ExternalUotCredentials;
+use Leikwan\Master\Support\ExternalUotUsageLedger;
+use Leikwan\Master\Support\ProvisioningService;
 
 /**
  * Per-host configuration for the operator-owned external UoT (UDP over TCP)
  * sidecar that install-external-uot.sh installs as /etc/leikwan-external-uot.json.
  *
- * The document is derived from the live database: every forward whose Ultra
+ * The document is derived from the live database: every live forward (enabled,
+ * not deleted or balance-suspended, active unexpired service; plan C1 of
+ * docs/plans/2026-10-21-external-uot-sidecar-enforcement.md) whose Ultra
  * combination has external_uot_enabled = 1 and whose external_uot_sidecar_target
- * points at the requesting host, together with that combination's
- * external_uot_token.  A freshly installed sidecar host can therefore be
+ * points at the requesting host, with that combination's HMAC secret, its
+ * static external_uot_token while EXTERNAL_UOT_ACCEPT_STATIC_TOKEN is on, the
+ * forward's target and its rate limit.  A freshly installed sidecar host can therefore be
  * configured without an operator-supplied bundle, which is what the Ultra
  * runtime needs so its external_uot UDP carrier stops depending on a failed
  * native UDP candidate.
  *
  * The body is wire compatible with tools/uot-sidecar's config parser
- * (listen_host, listen_port, the knob names and forwards.<id>.token), so it can
+ * (listen_host, listen_port, the knob names and forwards.<id>.{secret,token,targets,rate_limit_mbps}), so it can
  * be handed to the installer with --config <url> verbatim.  Panel-only metadata
  * lives under the "panel" key, which the sidecar ignores.
  */
@@ -56,25 +62,32 @@ final class ExternalUotConfigController extends BaseController
         if ($node === null) {
             return $this->json(['error' => 'unauthorized'], 401)->withHeaders(['Cache-Control' => 'no-store']);
         }
-        $combinations = $pool->combinationsForNode($node, $this->db->fetchAll(
+        $combinations = $this->withSecrets($pool->combinationsForNode($node, $this->db->fetchAll(
             'SELECT * FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
-        ));
+        )));
         [$host, $port] = self::splitTarget($node['target']);
-        $forwardIds = $this->forwardIdsByCombination($combinations);
+        $forwards = $this->forwardsByCombination($combinations);
         $payload = self::buildPayload(
             null,
             $combinations,
-            $forwardIds,
+            $forwards['live'],
             $port,
             $host,
             null,
-            $this->forwardTargets($forwardIds),
-            self::POOL_HEALTH_PROBE_TARGETS
+            $forwards['targets'],
+            self::POOL_HEALTH_PROBE_TARGETS,
+            $forwards['rate_limits'],
+            ExternalUotCredentials::acceptStaticToken($this->config)
         );
         unset($payload['panel']);
         $hash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         if ($request->method() === 'POST') {
             $body = $request->body();
+            // Metered bytes are real whatever config the node runs, so they
+            // are taken before the config_hash check.
+            if (is_array($body['usage'] ?? null)) {
+                $this->ingestUsage('pool:' . $id, $body['usage']);
+            }
             if (!is_bool($body['healthy'] ?? null) || !is_string($body['config_hash'] ?? null)
                 || !hash_equals($hash, $body['config_hash'])) {
                 return $this->json(['error' => 'pool_config_mismatch'], 409)->withHeaders(['Cache-Control' => 'no-store']);
@@ -117,14 +130,8 @@ final class ExternalUotConfigController extends BaseController
             if ($point === null) {
                 return $this->json(['error' => 'unauthorized'], 401)->withHeaders(['Cache-Control' => 'no-store']);
             }
-            $combinations = $this->db->fetchAll(
-                'SELECT id, external_uot_enabled, external_uot_sidecar_target, external_uot_token, '
-                . 'external_uot_queue_packets, external_uot_keepalive_seconds, '
-                . 'external_uot_reconnect_grace_seconds, external_uot_frame_payload_max '
-                . 'FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
-            );
-            $forwards = $this->forwardIdsByCombination($combinations);
-            $targets = $this->forwardTargets($forwards);
+            $combinations = $this->withSecrets($this->enabledCombinations());
+            $forwards = $this->forwardsByCombination($combinations);
         } catch (Throwable $exception) {
             error_log('external-uot-config: ' . $exception->getMessage());
 
@@ -137,11 +144,14 @@ final class ExternalUotConfigController extends BaseController
         $payload = self::buildPayload(
             $point,
             $combinations,
-            $forwards,
+            $forwards['live'],
             $requestedPort,
             '',
             null,
-            $targets
+            $forwards['targets'],
+            [],
+            $forwards['rate_limits'],
+            ExternalUotCredentials::acceptStaticToken($this->config)
         );
         $payload['panel']['request'] = [
             'agent_token' => $tokenSource,
@@ -157,31 +167,62 @@ final class ExternalUotConfigController extends BaseController
      * master/cli/external-uot-tokens.php on the panel host itself; it is never
      * routed, because the document carries every forward's sidecar token.
      *
+     * The standalone merge keeps forwards it is not told about, so the
+     * document also lists under "remove" every non-live forward of the
+     * combinations this host serves.
+     *
      * @return array<string, mixed>
      */
     public function renderForHost(string $host, int $listenPort = 0): array
     {
-        $combinations = $this->db->fetchAll(
-            'SELECT id, external_uot_enabled, external_uot_sidecar_target, external_uot_token, '
-            . 'external_uot_queue_packets, external_uot_keepalive_seconds, '
-            . 'external_uot_reconnect_grace_seconds, external_uot_frame_payload_max '
-            . 'FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
-        );
-        $forwards = $this->forwardIdsByCombination($combinations);
+        $combinations = $this->withSecrets($this->enabledCombinations());
+        $forwards = $this->forwardsByCombination($combinations);
 
-        return self::buildPayload(null, $combinations, $forwards, $listenPort, $host, null, $this->forwardTargets($forwards));
+        return self::buildPayload(
+            null,
+            $combinations,
+            $forwards['live'],
+            $listenPort,
+            $host,
+            null,
+            $forwards['targets'],
+            [],
+            $forwards['rate_limits'],
+            ExternalUotCredentials::acceptStaticToken($this->config),
+            $forwards['not_live']
+        );
+    }
+
+    /**
+     * Records a sidecar usage report; a bad report never fails the caller.
+     *
+     * @param array<string, mixed> $usage
+     */
+    public function ingestUsage(string $source, array $usage): void
+    {
+        try {
+            (new ExternalUotUsageLedger($this->db))->ingest($source, $usage);
+        } catch (Throwable $exception) {
+            error_log('external-uot usage ingest failed for ' . $source . ': ' . $exception->getMessage());
+        }
     }
 
     /**
      * @param array<string, mixed>|null $point
      * @param list<array<string, mixed>> $combinations
-     * @param array<int, list<int>> $forwardIdsByCombination
+     * @param array<int, list<int>> $forwardIdsByCombination the live forwards (plan C1)
      * @param array<int, string>|null $forwardTargets forward_id => "host:port".
      *        When given, every forward is bound to its own target instead of
      *        the sidecar's allow-any default; a forward without a usable target
      *        is skipped rather than published unbound.
      * @param list<string> $extraTargets also admitted by every bound forward
      *        (the pool health probe).
+     * @param array<int, int> $rateLimits forward_id => rate_limit_mbps (> 0 only)
+     * @param bool $includeStaticToken publish the combination's static token
+     *        next to its HMAC secret (EXTERNAL_UOT_ACCEPT_STATIC_TOKEN)
+     * @param array<int, list<int>>|null $notLiveByCombination when given, the
+     *        document gets "remove": the non-live forwards of every combination
+     *        this host and port serve
      * @return array<string, mixed>
      */
     public static function buildPayload(
@@ -192,7 +233,10 @@ final class ExternalUotConfigController extends BaseController
         string $requestedHost = '',
         ?string $now = null,
         ?array $forwardTargets = null,
-        array $extraTargets = []
+        array $extraTargets = [],
+        array $rateLimits = [],
+        bool $includeStaticToken = true,
+        ?array $notLiveByCombination = null
     ): array {
         $matchHost = self::normalizeHost((string) ($point['sidecar_host'] ?? $requestedHost));
 
@@ -217,7 +261,8 @@ final class ExternalUotConfigController extends BaseController
                 'id' => $combinationId,
                 'target' => self::normalizeHost($targetHost) . ':' . $targetPort,
                 'port' => $targetPort,
-                'token' => (string) ($combination['external_uot_token'] ?? ''),
+                'token' => $includeStaticToken ? (string) ($combination['external_uot_token'] ?? '') : '',
+                'secret' => trim((string) ($combination['external_uot_hmac_secret'] ?? '')),
                 'queue_packets' => (int) ($combination['external_uot_queue_packets'] ?? 0),
                 'keepalive_seconds' => (int) ($combination['external_uot_keepalive_seconds'] ?? 0),
                 'session_grace_seconds' => (int) ($combination['external_uot_reconnect_grace_seconds'] ?? 0),
@@ -238,18 +283,22 @@ final class ExternalUotConfigController extends BaseController
         $forwards = [];
         $combinationsSummary = [];
         $knobs = null;
+        $remove = [];
         foreach ($enabled as $combination) {
             if ($combination['port'] !== $effectivePort) {
                 $skipped[] = ['id' => $combination['id'], 'target' => $combination['target'], 'reason' => 'port-mismatch'];
                 continue;
+            }
+            foreach ($notLiveByCombination[$combination['id']] ?? [] as $forwardId) {
+                $remove[(int) $forwardId] = true;
             }
             $combinationForwards = $forwardIdsByCombination[$combination['id']] ?? [];
             if ($combinationForwards === []) {
                 $skipped[] = ['id' => $combination['id'], 'target' => $combination['target'], 'reason' => 'no-forwards'];
                 continue;
             }
-            if ($combination['token'] === '') {
-                $skipped[] = ['id' => $combination['id'], 'target' => $combination['target'], 'reason' => 'empty-token'];
+            if ($combination['token'] === '' && $combination['secret'] === '') {
+                $skipped[] = ['id' => $combination['id'], 'target' => $combination['target'], 'reason' => 'no-credentials'];
                 continue;
             }
             if ($knobs === null) {
@@ -273,7 +322,18 @@ final class ExternalUotConfigController extends BaseController
                         }
                     }
                 }
-                $forwards[$forwardId] = ['token' => $combination['token'], 'targets' => $bound];
+                $entry = [];
+                if ($combination['secret'] !== '') {
+                    $entry['secret'] = $combination['secret'];
+                }
+                if ($combination['token'] !== '') {
+                    $entry['token'] = $combination['token'];
+                }
+                $entry['targets'] = $bound;
+                if (($rateLimits[$forwardId] ?? 0) > 0) {
+                    $entry['rate_limit_mbps'] = (int) $rateLimits[$forwardId];
+                }
+                $forwards[$forwardId] = $entry;
             }
             $combinationsSummary[] = [
                 'id' => $combination['id'],
@@ -292,7 +352,7 @@ final class ExternalUotConfigController extends BaseController
             ];
         }
 
-        return [
+        $payload = [
             'listen_host' => self::DEFAULT_LISTEN_HOST,
             'listen_port' => $effectivePort,
             'forwards' => (object) $forwards,
@@ -312,78 +372,108 @@ final class ExternalUotConfigController extends BaseController
                 'skipped' => $skipped,
             ],
         ];
+        if ($notLiveByCombination !== null) {
+            $remove = array_values(array_diff(array_keys($remove), array_keys($forwards)));
+            sort($remove);
+            $payload['remove'] = $remove;
+        }
+
+        return $payload;
     }
 
     /**
-     * @param list<array<string, mixed>> $combinations
-     * @return array<int, list<int>>
+     * @return list<array<string, mixed>>
      */
-    private function forwardIdsByCombination(array $combinations): array
+    private function enabledCombinations(): array
     {
+        return $this->db->fetchAll(
+            'SELECT id, external_uot_enabled, external_uot_sidecar_target, external_uot_token, external_uot_hmac_secret, '
+            . 'external_uot_queue_packets, external_uot_keepalive_seconds, '
+            . 'external_uot_reconnect_grace_seconds, external_uot_frame_payload_max '
+            . 'FROM forward_combinations WHERE external_uot_enabled = 1 ORDER BY id ASC'
+        );
+    }
+
+    /**
+     * Gives every UoT-enabled combination its HMAC secret (generated once).
+     *
+     * @param list<array<string, mixed>> $combinations
+     * @return list<array<string, mixed>>
+     */
+    private function withSecrets(array $combinations): array
+    {
+        foreach ($combinations as &$combination) {
+            if ((int) ($combination['external_uot_enabled'] ?? 0) === 1) {
+                $combination['external_uot_hmac_secret'] = ExternalUotCredentials::ensureSecret($this->db, $combination);
+            }
+        }
+        unset($combination);
+
+        return $combinations;
+    }
+
+    /**
+     * Splits the forwards of the given combinations by plan C1 liveness and
+     * collects target and rate limit of the live ones.
+     *
+     * @param list<array<string, mixed>> $combinations
+     * @return array{live: array<int, list<int>>, not_live: array<int, list<int>>, targets: array<int, string>, rate_limits: array<int, int>}
+     */
+    private function forwardsByCombination(array $combinations): array
+    {
+        $result = ['live' => [], 'not_live' => [], 'targets' => [], 'rate_limits' => []];
         $combinationIds = [];
         foreach ($combinations as $combination) {
             $combinationId = (int) ($combination['id'] ?? 0);
             if ($combinationId > 0) {
-                $combinationIds[] = $combinationId;
+                $combinationIds[$combinationId] = $combinationId;
             }
         }
         if ($combinationIds === []) {
-            return [];
+            return $result;
         }
         $placeholders = implode(', ', array_fill(0, count($combinationIds), '?'));
+        // Same service expiry semantics as Auth::requireClientToken.
         $rows = $this->db->fetchAll(
-            'SELECT id, forward_combination_id FROM forwards WHERE forward_combination_id IN ('
-            . $placeholders . ') ORDER BY id ASC',
-            $combinationIds
+            'SELECT f.id, f.forward_combination_id, f.target_host, f.target_port, '
+            . 's.bandwidth_limit_mbps AS service_bandwidth_limit_mbps, '
+            . 'c.speed_limit_mbps AS line_speed_limit_mbps, '
+            . 'CASE WHEN f.enabled = 1 AND f.user_deleted_at IS NULL AND f.balance_suspended_at IS NULL '
+            . "AND s.status = 'active' AND (s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP()) "
+            . 'THEN 1 ELSE 0 END AS is_live '
+            . 'FROM forwards f '
+            . 'LEFT JOIN services s ON s.id = f.service_id '
+            . 'LEFT JOIN clients c ON c.id = f.line_client_id '
+            . 'WHERE f.forward_combination_id IN (' . $placeholders . ') ORDER BY f.id ASC',
+            array_values($combinationIds)
         );
-        $grouped = [];
         foreach ($rows as $row) {
             $combinationId = (int) ($row['forward_combination_id'] ?? 0);
             $forwardId = (int) ($row['id'] ?? 0);
             if ($combinationId <= 0 || $forwardId <= 0) {
                 continue;
             }
-            $grouped[$combinationId][] = $forwardId;
-        }
-
-        return $grouped;
-    }
-
-    /**
-     * forward_id => "host:port" for every forward the document will publish.
-     *
-     * @param array<int, list<int>> $forwardIdsByCombination
-     * @return array<int, string>
-     */
-    private function forwardTargets(array $forwardIdsByCombination): array
-    {
-        $ids = [];
-        foreach ($forwardIdsByCombination as $forwardIds) {
-            foreach ($forwardIds as $forwardId) {
-                $ids[(int) $forwardId] = true;
+            if ((int) ($row['is_live'] ?? 0) !== 1) {
+                $result['not_live'][$combinationId][] = $forwardId;
+                continue;
             }
-        }
-        if ($ids === []) {
-            return [];
-        }
-        $ids = array_keys($ids);
-        $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-        $rows = $this->db->fetchAll(
-            'SELECT id, target_host, target_port FROM forwards WHERE id IN (' . $placeholders . ') ORDER BY id ASC',
-            $ids
-        );
-        $targets = [];
-        foreach ($rows as $row) {
+            $result['live'][$combinationId][] = $forwardId;
             $host = trim((string) ($row['target_host'] ?? ''));
             $port = (int) ($row['target_port'] ?? 0);
-            if ((int) ($row['id'] ?? 0) > 0 && $host !== '' && $port > 0) {
-                $targets[(int) $row['id']] = (str_contains($host, ':') ? '[' . trim($host, '[]') . ']' : $host) . ':' . $port;
+            if ($host !== '' && $port > 0) {
+                $result['targets'][$forwardId] = (str_contains($host, ':') ? '[' . trim($host, '[]') . ']' : $host) . ':' . $port;
+            }
+            $rate = ProvisioningService::effectiveSpeedLimitMbps(
+                $row['service_bandwidth_limit_mbps'] ?? 0,
+                $row['line_speed_limit_mbps'] ?? 0
+            );
+            if ($rate !== null) {
+                $result['rate_limits'][$forwardId] = $rate;
             }
         }
 
-        return $targets;
+        return $result;
     }
-
     /**
      * Mirror of the sidecar's normalizeTarget (tools/uot-sidecar/protocol.go):
      * lower-cased host, canonical IP text, IPv6 in brackets, port 1-65535.

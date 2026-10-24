@@ -2,7 +2,7 @@ import LeikwanIOSCore
 import SwiftUI
 
 /// Sign-in: the saved profiles (server address + Client ID + Agent Token) and an editor for a
-/// new or changed one. The server address is whatever the user types; nothing is built in.
+/// new or changed one. The server address is typed or picked from the two built-in presets.
 struct LoginView: View {
     @EnvironmentObject private var model: AppModel
     @State private var editing: ProfileDraft?
@@ -143,7 +143,6 @@ struct ProfileDraft: Identifiable {
     var profileID: UUID?
     var name = ""
     var server = ""
-    var backupServer = ""
     var clientID = ""
     var token = ""
     var rememberToken = true
@@ -154,7 +153,6 @@ struct ProfileDraft: Identifiable {
         profileID = profile.id
         name = profile.name
         server = profile.server.urlString
-        backupServer = profile.backupServer?.urlString ?? ""
         clientID = String(profile.clientId)
         rememberToken = profile.rememberToken
     }
@@ -166,13 +164,6 @@ struct ProfileDraft: Identifiable {
         case .success(let endpoint): serverEndpoint = endpoint
         case .failure(let reason): return .failure(AppError(L("Server address: %@", Self.describe(reason))))
         }
-        var backup: PanelEndpoint?
-        if !backupServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            switch PanelEndpoint.parse(backupServer) {
-            case .success(let endpoint): backup = endpoint
-            case .failure(let reason): return .failure(AppError(L("Backup address: %@", Self.describe(reason))))
-            }
-        }
         guard let clientId = Int64(clientID.trimmingCharacters(in: .whitespaces)), clientId > 0 else {
             return .failure(AppError(L("Client ID must be a positive number")))
         }
@@ -180,7 +171,7 @@ struct ProfileDraft: Identifiable {
             id: profileID ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             server: serverEndpoint,
-            backupServer: backup,
+            backupServer: PanelPreset.backup(for: serverEndpoint),
             clientId: clientId,
             rememberToken: rememberToken
         ))
@@ -208,7 +199,7 @@ private struct ProfileForm: View {
     @FocusState private var focused: Field?
 
     private enum Field {
-        case name, server, backup, clientID, token
+        case name, server, clientID, token
     }
 
     init(draft: ProfileDraft, isNew: Bool, onDone: (() -> Void)?) {
@@ -228,6 +219,34 @@ private struct ProfileForm: View {
             && (!draft.token.isEmpty || hasSavedToken)
     }
 
+    /// The built-in address the server field currently holds, if any.
+    private var selectedPreset: PanelPreset? {
+        switch PanelEndpoint.parse(draft.server) {
+        case .success(let endpoint): return PanelPreset.matching(endpoint)
+        case .failure: return nil
+        }
+    }
+
+    /// One-tap entry points for the two panel addresses. They are shown only until one is
+    /// chosen; a custom address is typed into the server field as before.
+    private var serverPresets: some View {
+        HStack(spacing: 8) {
+            ForEach(PanelPreset.allCases, id: \.self) { preset in
+                Button {
+                    draft.server = preset.endpoint.urlString
+                } label: {
+                    Text(preset.title)
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .foregroundStyle(Palette.onSurfaceVariant)
+                        .background(Palette.surfaceContainer, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             InputField(title: L("Profile name (optional)"), systemImage: "tag") {
@@ -242,6 +261,9 @@ private struct ProfileForm: View {
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .server)
             }
+            if selectedPreset == nil {
+                serverPresets
+            }
             InputField(title: L("Client ID"), systemImage: "person.text.rectangle") {
                 TextField("e.g. 1024", text: $draft.clientID)
                     .keyboardType(.numberPad)
@@ -253,13 +275,6 @@ private struct ProfileForm: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .focused($focused, equals: .token)
-            }
-            InputField(title: L("Backup server address (optional)"), systemImage: "arrow.triangle.branch") {
-                TextField(L("Tried when the main address is unreachable"), text: $draft.backupServer)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .focused($focused, equals: .backup)
             }
 
             Toggle(L("Save Agent Token on this device"), isOn: $draft.rememberToken)

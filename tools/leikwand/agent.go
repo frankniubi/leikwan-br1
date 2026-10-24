@@ -21,12 +21,14 @@ type runtimeState struct {
 	contract string
 	policy   *UltraPolicy
 
-	leaseExpiry   time.Time
-	leaseIDs      []string
-	candidates    int
-	lastLeaseAt   time.Time
-	leaseFailures int
-	lastLeaseErr  string
+	leaseExpiry time.Time
+	// renewNotBefore holds renewals back until the grant can be renewed.
+	renewNotBefore time.Time
+	leaseIDs       []string
+	candidates     int
+	lastLeaseAt    time.Time
+	leaseFailures  int
+	lastLeaseErr   string
 
 	status       *RuntimeStatus
 	statusAt     time.Time
@@ -59,14 +61,26 @@ type Agent struct {
 	deviceNm string
 	log      *Logger
 
-	mu          sync.Mutex
-	runtimes    map[int]*runtimeState
-	forwards    map[int]ForwardConfig
-	nativeCap   *NativeOutboundCapability
-	lastPullAt  time.Time
-	lastPullErr string
-	clientMeta  ClientMeta
-	diagToken   string
+	mu       sync.Mutex
+	runtimes map[int]*runtimeState
+	// panelStopped holds forwards the Panel stopped out of band, keyed to the
+	// policy generation they were stopped under. A full pull still lists them,
+	// so without this the next config pull would restart them immediately.
+	panelStopped map[int]string
+	forwards     map[int]ForwardConfig
+	nativeCap    *NativeOutboundCapability
+	// nativeForwards are the Panel's native outbound carriers. They never
+	// run on the ordinary forward path; the gateway relay serves them.
+	nativeForwards map[int]ForwardConfig
+	lastPullAt     time.Time
+	// configLoaded is set by the first full (200) pull of this process. The
+	// persisted revision only describes a previous process's state, so it is
+	// never sent as since_revision before this process holds a config: a 304
+	// would leave the forwards and the native capability empty indefinitely.
+	configLoaded bool
+	lastPullErr  string
+	clientMeta   ClientMeta
+	diagToken    string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -84,6 +98,9 @@ type Agent struct {
 	wan           *wanManager
 	gateway       *gatewayManager
 	gatewaySignal chan struct{}
+
+	// bypass keeps every relay address out of the gateway TUN.
+	bypass *bypassRoutes
 
 	// secretStamp tracks the credential file so an operator (or a restored
 	// backup, or an out-of-band pairing) can enrol a running agent without
@@ -107,7 +124,10 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		deviceNm:         deviceNm,
 		log:              log,
 		runtimes:         map[int]*runtimeState{},
+		panelStopped:     map[int]string{},
 		forwards:         map[int]ForwardConfig{},
+		nativeForwards:   map[int]ForwardConfig{},
+		bypass:           newBypassRoutes(),
 		reconcile:        make(chan string, 16),
 		forceStatusFlush: make(chan struct{}, 1),
 		gatewaySignal:    make(chan struct{}, 1),
@@ -150,9 +170,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.UplinkEnabled {
 		start(a.uplinkLoop)
 	}
-	if a.cfg.gatewayActive() {
-		start(a.gatewayLoop)
-	}
+	// Always running: it idles while gateway mode is off, so enabling it from
+	// LuCI applies on reload.
+	start(a.gatewayLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding (mode=%s)", a.cfg.Mode)
@@ -202,9 +222,9 @@ func (a *Agent) pullLoop(ctx context.Context) {
 		cancel()
 		switch {
 		case err == nil:
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), false)
 		case errors.Is(err, errNotModified):
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), true)
 		default:
 			delay = a.notePullFailure(err)
 		}
@@ -253,13 +273,97 @@ func (a *Agent) clearPullFailureLocked() {
 
 func (a *Agent) pullOnce(ctx context.Context) error {
 	pullState := a.store.Pull()
+	a.mu.Lock()
+	loaded := a.configLoaded
+	a.mu.Unlock()
 	since := ""
-	if !pullState.LastPullAt.IsZero() {
+	if loaded && !pullState.LastPullAt.IsZero() && !a.grantRefreshDue(time.Now()) {
 		since = pullState.ConfigRevision
 	}
+	return a.pullWith(ctx, since, 20)
+}
+
+// freshPull fetches the current grants without the long-poll revision. The
+// native relay calls it before every lease, like the desktop's
+// ResolveFreshNativeOutboundLeasesAsync.
+func (a *Agent) freshPull(ctx context.Context) error {
+	pullCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return a.pullWith(pullCtx, "", 0)
+}
+
+// grantRefreshDue mirrors the desktop's NeedsUltraPolicyRefresh. Ultra grants
+// live about five minutes but are not part of the stable config revision, so
+// a long poll keeps answering 304 while they expire. Once any ordinary
+// forward's grant is past renew_after (or close to expiry) the next pull is a
+// full one. Native carriers are excluded; the gateway refreshes those itself.
+func (a *Agent) grantRefreshDue(now time.Time) bool {
+	next, ok := a.nextGrantRefresh()
+	return ok && !next.After(now)
+}
+
+// nextGrantRefresh is the earliest point at which an ordinary forward's grant
+// needs a full pull; ok is false when no ordinary forward is applied.
+func (a *Agent) nextGrantRefresh() (next time.Time, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, forward := range a.forwards {
+		at := grantRefreshAt(forward.UltraAccess)
+		if !ok || at.Before(next) {
+			next, ok = at, true
+		}
+	}
+	return next, ok
+}
+
+// grantRefreshAt is renew_after (or two minutes before expiry without one),
+// never later than the expiry. A missing or unreadable grant is due at once.
+func grantRefreshAt(policy *UltraPolicy) time.Time {
+	if policy == nil {
+		return time.Time{}
+	}
+	expiresAt, err := parseRFC3339(policy.ExpiresAt)
+	if err != nil {
+		return time.Time{}
+	}
+	refresh := expiresAt.Add(-2 * time.Minute)
+	if renewAfter, err := parseRFC3339(policy.RenewAfter); err == nil {
+		refresh = renewAfter
+	}
+	if refresh.After(expiresAt) {
+		return expiresAt
+	}
+	return refresh
+}
+
+// pullDelay is the wait before the next pull. A 304 carries no grants, so the
+// poll interval must not carry the loop past renew_after: grants live five
+// minutes with a one-minute renew window, and a long poll_interval (or a long
+// poll that ends after renew_after) would otherwise let them expire between
+// pulls. A full pull that still left a grant due falls back to the poll
+// interval, so a Panel that keeps serving it is not hammered.
+func (a *Agent) pullDelay(now time.Time, notModified bool) time.Duration {
+	delay := time.Duration(a.cfg.PollIntervalSecs) * time.Second
+	next, ok := a.nextGrantRefresh()
+	if !ok {
+		return delay
+	}
+	switch until := next.Sub(now); {
+	case until > 0:
+		if until+time.Second < delay {
+			delay = until + time.Second
+		}
+	case notModified:
+		// The next pull is a full one; do not sit out the interval first.
+		delay = time.Second
+	}
+	return delay
+}
+
+func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {
 	// The Panel caps the long poll at 25s; ask for a little less so the
 	// client-side timeout always fires first.
-	response, err := a.panel.Pull(ctx, since, 20)
+	response, err := a.panel.Pull(ctx, since, waitSeconds)
 	if errors.Is(err, errNotModified) {
 		a.store.UpdatePull(func(state *PullState) {
 			state.LastPullAt = time.Now()
@@ -280,6 +384,7 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 	a.mu.Lock()
 	a.clientMeta = response.Client
 	a.lastPullAt = time.Now()
+	a.configLoaded = true
 	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
@@ -311,7 +416,12 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 // runtime directly; reconcile decides what that means.
 func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	incoming := map[int]ForwardConfig{}
+	native := map[int]ForwardConfig{}
 	for _, forward := range forwards {
+		if acceptNativeForward(forward) {
+			native[forward.ForwardID] = forward
+			continue
+		}
 		if !acceptForward(forward) {
 			a.log.Debug("policy", "forward %d rejected locally (backend=%s client_mode=%s sidecar=%v aggregation=%v)",
 				forward.ForwardID, forward.BackendMode, forward.ClientMode, forward.SidecarRequired, forward.Aggregation)
@@ -321,14 +431,36 @@ func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	}
 	a.mu.Lock()
 	a.forwards = incoming
+	a.nativeForwards = native
 	a.mu.Unlock()
+}
+
+// acceptNativeForward selects native outbound carriers. The runtime contract
+// (docs/api/native-outbound.md section 6) keeps them off the ordinary path
+// entirely: no listener on listen_port, no ordinary lease, no readiness probe.
+func acceptNativeForward(forward ForwardConfig) bool {
+	if forward.ForwardID <= 0 || !forward.NativeOutboundEnabled {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(forward.ServiceStatus))
+	return status == "" || status == "active"
+}
+
+// config returns a copy of the live configuration; reloadConfig swaps it.
+func (a *Agent) config() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
 }
 
 // acceptForward mirrors the desktop client's UltraForwardPolicy: this runtime
 // speaks the Ultra protocol only, so forwards that need the bond/MPTCP/sidecar
 // data path are declined here rather than silently mis-served.
 func acceptForward(forward ForwardConfig) bool {
-	if forward.ForwardID <= 0 {
+	if forward.ForwardID <= 0 || forward.NativeOutboundEnabled {
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
@@ -367,10 +499,28 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	if !a.enrolled() {
 		return
 	}
+	// Ordinary forwards are served only in forward and hybrid mode. In gateway
+	// mode the router carries the LAN over the native carrier alone, so the
+	// client's other forwards get no listener and no lease here.
+	serving := a.config().forwardActive()
 	a.mu.Lock()
 	desired := make(map[int]ForwardConfig, len(a.forwards))
-	for k, v := range a.forwards {
-		desired[k] = v
+	if serving {
+		for k, v := range a.forwards {
+			if generation, stopped := a.panelStopped[k]; stopped {
+				if generation == policyGenerationOf(v) {
+					continue
+				}
+				// A new grant generation is the Panel re-enabling the forward.
+				delete(a.panelStopped, k)
+			}
+			desired[k] = v
+		}
+	}
+	for k := range a.panelStopped {
+		if _, listed := a.forwards[k]; !listed {
+			delete(a.panelStopped, k)
+		}
 	}
 	a.mu.Unlock()
 
@@ -391,7 +541,11 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	}
 	a.mu.Unlock()
 	for _, state := range stale {
-		a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		if serving {
+			a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		} else {
+			a.log.Info("runtime", "forward %d is not served in gateway mode; stopping", state.forward.ForwardID)
+		}
 		a.stopRuntime(state.proc, "withdrawn")
 		a.store.DeleteApplied(state.forward.ForwardID)
 	}
@@ -441,7 +595,7 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 		a.stopRuntime(state.proc, "replace")
 	}
 
-	proc, err := a.startRuntime(ctx, forward, false, forward.UltraAccess, "", "")
+	proc, err := a.startRuntime(ctx, forward, forward.UltraAccess)
 	if err != nil {
 		a.log.Error("runtime", "forward %d start failed: %v", forward.ForwardID, err)
 		a.markForwardError(forward.ForwardID, "start_failed")
@@ -810,7 +964,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 	if a.cfg.UplinkEnabled {
 		snapshot.Uplinks = a.uplinkViews()
 	}
-	if a.cfg.gatewayActive() {
+	if cfg := a.config(); cfg.GatewayEnabled || cfg.gatewayActive() {
 		snapshot.Gateway = a.gatewayView()
 	}
 	a.mu.Lock()

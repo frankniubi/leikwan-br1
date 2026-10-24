@@ -16,6 +16,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var nativeLeases: NativeOutboundLeaseManager?
     /// Non-default bindings whose runtimes failed to start (binding id -> error).
     private var failedBindings: [String: String] = [:]
+    private let refreshLock = NSLock()
+    private var lastPathRefresh = Date.distantPast
     /// Ultra usage counters -> heartbeat rows; shared by the control loop and the lease manager.
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
@@ -23,6 +25,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     )
 
     override func startTunnel(options: [String: NSObject]?) async throws {
+        do {
+            try await startTunnelRecordingFailure(options)
+        } catch {
+            TunnelLog.shared.write("tunnel start failed: \(error.localizedDescription)", level: 1)
+            throw error
+        }
+    }
+
+    private func startTunnelRecordingFailure(_ options: [String: NSObject]?) async throws {
         let launch = try resolveLaunch(options)
         self.launch = launch
 
@@ -47,20 +58,33 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         UltraLeaseManager.settleRuntimeFiles(launch.ultra, ledger: usageLedger)
         NativeOutboundLeaseManager.settleRuntimeFiles(launch.nativeOutbound, ledger: usageLedger)
         failedBindings = try runtimes.start(launch.runtimes, optionalGroups: launch.optionalRuntimeGroups)
+        // Lease delivery starts before sing-box: an Ultra runtime binds its local listener only
+        // after its first lease is installed, so starting sing-box first routes into a closed
+        // port (Android: deliver the lease, await the local port, then start sing-box). Both
+        // loops are torn down again on every start failure below.
+        startUltraLeases(launch)
+        startNativeLeases(launch)
+        await waitForLocalListeners(launch)
 
         var serverError: NSError?
         let server = LibboxNewCommandServer(platform, platform, &serverError)
         if let serverError {
+            stopUltraLeases()
+            stopNativeLeases()
             runtimes.stopAll()
             throw RuntimeHostError("create command server: \(serverError.localizedDescription)")
         }
         guard let server else {
+            stopUltraLeases()
+            stopNativeLeases()
             runtimes.stopAll()
             throw RuntimeHostError("create command server failed")
         }
         do {
             try server.start()
         } catch {
+            stopUltraLeases()
+            stopNativeLeases()
             runtimes.stopAll()
             throw RuntimeHostError("start command server: \(error.localizedDescription)")
         }
@@ -69,14 +93,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         do {
             try startService()
         } catch {
+            stopUltraLeases()
+            stopNativeLeases()
             server.close()
             commandServer = nil
             runtimes.stopAll()
             throw error
         }
-        // Started once the start can no longer fail, so a failed start leaks no lease loop.
-        startUltraLeases(launch)
-        startNativeLeases(launch)
         statusMonitor.start()
         if let client = launch.panel?.makeClient() {
             let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
@@ -144,7 +167,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case .reload:
             guard let next = request.launch else { return nil }
             do {
-                try apply(next)
+                try await apply(next)
                 return nil
             } catch {
                 return error.localizedDescription.data(using: .utf8)
@@ -158,6 +181,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func wake() {
         commandServer?.wake()
+        refreshControlPlane("device woke")
+    }
+
+    /// The default network changed (TunnelPlatformInterface). Path updates come in bursts, so
+    /// at most one refresh per 5 s.
+    func networkPathChanged() {
+        refreshLock.lock()
+        let now = Date()
+        let due = now.timeIntervalSince(lastPathRefresh) >= 5
+        if due { lastPathRefresh = now }
+        refreshLock.unlock()
+        if due { refreshControlPlane("network changed") }
+    }
+
+    /// Heartbeat and re-check the leases now rather than at the end of their waits: after a
+    /// sleep a renewal may already be overdue, and after a network change failed renewals can
+    /// succeed again.
+    private func refreshControlPlane(_ reason: String) {
+        TunnelLog.shared.write("\(reason): refreshing heartbeat and leases")
+        controlLoop?.nudge()
+        ultraLeases?.nudge()
+        nativeLeases?.nudge()
     }
 
     // MARK: Service lifecycle
@@ -198,7 +243,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Replaces the running plan: runtimes are restarted only when they
     /// changed, sing-box is reloaded in place.
-    private func apply(_ next: TunnelLaunchOptions) throws {
+    private func apply(_ next: TunnelLaunchOptions) async throws {
         try next.encoded().write(to: AppGroup.launchSnapshotURL, options: .atomic)
         let previous = launch
         launch = next
@@ -218,9 +263,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             NativeOutboundLeaseManager.settleRuntimeFiles(next.nativeOutbound, ledger: usageLedger)
             failedBindings = try runtimes.start(next.runtimes, optionalGroups: next.optionalRuntimeGroups)
         }
-        try startService()
         startUltraLeases(next)
         startNativeLeases(next)
+        // A restarted Ultra runtime has no listener until its lease lands again; keep sing-box
+        // from routing into the gap (the tunnel is already up, so the budget is shorter).
+        await waitForLocalListeners(next, budgetSeconds: Self.reloadListenerBudgetSeconds)
+        do {
+            try startService()
+        } catch {
+            stopUltraLeases()
+            stopNativeLeases()
+            throw error
+        }
         if previous?.panel != next.panel {
             controlLoop?.stop()
             controlLoop = nil
@@ -230,6 +284,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
                 controlLoop = loop
                 loop.start()
+            }
+        }
+    }
+
+    /// How long the tunnel start may spend waiting for the first Ultra listener. The Network
+    /// Extension must produce its network settings soon after `startTunnel`; the wait is a
+    /// head start, not a hard requirement, so a slow panel/probe window ends the wait and
+    /// sing-box starts with the runtime still working on its lease.
+    private static let startListenerBudgetSeconds: TimeInterval = 15
+    private static let reloadListenerBudgetSeconds: TimeInterval = 8
+
+    /// Waits (bounded, shared deadline) until the local listeners sing-box is about to dial
+    /// accept connections. See `UltraLocalListener` for why the runtime binds them late.
+    private func waitForLocalListeners(
+        _ plan: TunnelLaunchOptions,
+        budgetSeconds: TimeInterval = PacketTunnelProvider.startListenerBudgetSeconds
+    ) async {
+        let optional = plan.optionalRuntimeGroups
+        // Only the default binding gates the start: an optional binding that is slow to come up
+        // must not hold the tunnel, and it was already skipped when it failed to start.
+        var listeners: [(runtime: String, port: Int)] = plan.ultra.compactMap { forward in
+            if optional[forward.runtimeName] != nil { return nil }
+            return (forward.runtimeName, forward.listenPort)
+        }
+        if let native = plan.nativeOutbound {
+            listeners.append((native.runtimeName, native.socksPort))
+        }
+        let deadline = Date().addingTimeInterval(budgetSeconds)
+        for listener in listeners {
+            if let status = runtimes.status(named: listener.runtime), !status.running {
+                // A dead runtime never binds; the lease loop reports why on its own.
+                TunnelLog.shared.write("runtime \(listener.runtime) stopped: \(status.error ?? "unknown error")", level: 1)
+                continue
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                TunnelLog.shared.write("listener \(listener.port) not ready; sing-box starts and the runtime keeps leasing", level: 2)
+                continue
+            }
+            let outcome = await UltraRuntimeReadiness.waitForListenerAsync(
+                budgetSeconds: remaining,
+                probe: { UltraLocalListener.canConnect(port: listener.port) },
+                shouldAbort: { runtimes.status(named: listener.runtime)?.running == false }
+            )
+            switch outcome {
+            case let .ready(milliseconds):
+                TunnelLog.shared.write("listener \(listener.port) ready after \(milliseconds)ms")
+            case .timedOut:
+                TunnelLog.shared.write("listener \(listener.port) not ready after \(Int(remaining))s; sing-box starts and the runtime keeps leasing", level: 2)
+            case .aborted:
+                TunnelLog.shared.write("runtime \(listener.runtime) stopped while waiting for port \(listener.port)", level: 1)
             }
         }
     }
@@ -244,7 +349,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return failedBindings[group] == nil
         }
         guard !forwards.isEmpty else { return }
-        let manager = UltraLeaseManager(client: client, forwards: forwards)
+        let essential = Set(forwards.filter { groups[$0.runtimeName] == nil }.map { $0.forwardID })
+        let manager = UltraLeaseManager(client: client, forwards: forwards, essentialForwardIDs: essential) { [weak self] message in
+            self?.handleUltraUnusable(message)
+        }
         ultraLeases = manager
         manager.start()
     }
@@ -270,8 +378,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 NativeOutboundLeaseManager.settleRuntimeFiles(native, ledger: self.usageLedger)
                 try self.runtimes.start([restarted])
             },
-            onFatal: { [weak self] message in
-                self?.handleNativeFatal(message)
+            onFatal: { [weak self] message, permanent in
+                self?.handleNativeFatal(message, permanent: permanent)
             }
         )
         nativeLeases = manager
@@ -284,9 +392,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// Native outbound lost its authorization or its lease expired unrenewed: stop forwarding,
-    /// like Android stopping the VPN. The launch snapshot is kept (the session is not revoked).
-    private func handleNativeFatal(_ message: String) {
+    /// like Android stopping the VPN. After an expiry the launch snapshot is kept, so VPN
+    /// On Demand can start the tunnel again; after a lost authorization it is removed, so On
+    /// Demand does not restart a plan that cannot work (the app turns On Demand off).
+    private func handleNativeFatal(_ message: String, permanent: Bool) {
         TunnelLog.shared.write("native outbound stopping the tunnel: \(message)", level: 1)
+        if permanent {
+            try? FileManager.default.removeItem(at: AppGroup.launchSnapshotURL)
+        }
+        stopUltraLeases()
+        stopNativeLeases()
+        stopService()
+        runtimes.stopAll()
+        cancelTunnelWithError(RuntimeHostError(message))
+    }
+
+    /// The default binding's Ultra forward has had no usable lease past its grace period: stop,
+    /// so iOS shows Disconnected rather than a Connected tunnel that carries nothing. The launch
+    /// snapshot is kept; VPN On Demand starts the tunnel again with a fresh lease attempt.
+    private func handleUltraUnusable(_ message: String) {
+        TunnelLog.shared.write("ultra lease unusable, stopping the tunnel: \(message)", level: 1)
         stopUltraLeases()
         stopNativeLeases()
         stopService()

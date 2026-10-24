@@ -1,6 +1,7 @@
 {
   "locale": "zh-TW",
   "text": {
+    "Your Buy station email address is not verified yet. Sign in at buy.leikwanhost.com, verify your email address, then sign in here again.": "你在購買站（buy.leikwanhost.com）的電子郵件尚未驗證。請先登入購買站完成電子郵件驗證，再回到這裡登入。",
     "The billing site cannot be reached right now. Please try again later.": "暫時無法連線帳單站，請稍後再試。",
     "No nodes yet.": "還沒有節點。",
     "Supports Shadowsocks, SOCKS5 and VLESS.": "支援 Shadowsocks、SOCKS5、VLESS。",
@@ -1664,6 +1665,8 @@
     "Geo Profiles": "地區檔案",
     "IP subnet": "IP 子網",
     "Last Verified": "最近驗證",
+    "Apple ID": "Apple ID",
+    "iOS": "iOS",
     "Main Province": "主要省份",
     "Main province": "常用省份",
     "Mainland province": "中國大陸省份",

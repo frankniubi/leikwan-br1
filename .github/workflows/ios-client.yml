@@ -165,7 +165,7 @@ jobs:
           test -s "$app/PlugIns/PacketTunnel.appex/RuleSets/SHA256SUMS"
           # Visible metadata carries no brand, built-in server or third-party host.
           for plist in "$app/Info.plist" "$app/PlugIns/PacketTunnel.appex/Info.plist"; do
-            if plutil -p "$plist" | grep -i -E 'leikwan|nbwly|githubusercontent|ip\.sb|cdn-cgi'; then
+            if plutil -p "$plist" | grep -i -E 'nbwly|githubusercontent|ip\.sb|cdn-cgi|leikwanhost'; then
               echo "branded or external value in $plist" >&2
               exit 1
             fi
@@ -181,3 +181,135 @@ jobs:
           name: Bridge-unsigned-ipa
           path: ios/build/Bridge-unsigned.ipa
           retention-days: 14
+
+  # Uploads every non-PR run once the secrets exist; build number = run number.
+  testflight:
+    name: Signed build to TestFlight
+    # App Store Connect refuses uploads built with an older SDK: Xcode 26 / iOS 26 SDK.
+    runs-on: macos-26
+    needs: [frameworks, core-tests]
+    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 60
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      MANUAL_P12_BASE64: ${{ secrets.MANUAL_P12_BASE64 }}
+      MANUAL_P12_PASSWORD: ${{ secrets.MANUAL_P12_PASSWORD }}
+      MANUAL_PROFILE_APP_BASE64: ${{ secrets.MANUAL_PROFILE_APP_BASE64 }}
+      MANUAL_PROFILE_TUNNEL_BASE64: ${{ secrets.MANUAL_PROFILE_TUNNEL_BASE64 }}
+    steps:
+      - name: Check signing secrets
+        id: secrets
+        run: |
+          if [ -n "$APPLE_TEAM_ID" ] && [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "### TestFlight skipped: signing secrets are not set (see ios/scripts/apple_setup.py)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$MANUAL_P12_BASE64" ] && [ -n "$MANUAL_PROFILE_APP_BASE64" ] && [ -n "$MANUAL_PROFILE_TUNNEL_BASE64" ]; then
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "manual=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: actions/download-artifact@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+      - name: Install XcodeGen
+        if: steps.secrets.outputs.ready == 'true'
+        run: brew install xcodegen
+      - name: Write the API key
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" >> "$GITHUB_ENV"
+      - name: Import the distribution certificate and profiles
+        if: steps.secrets.outputs.ready == 'true' && steps.secrets.outputs.manual == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MANUAL_P12_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$keychain" -P "$MANUAL_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          profiles="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles"
+          printf '%s' "$MANUAL_PROFILE_APP_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$MANUAL_PROFILE_TUNNEL_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/tunnel.mobileprovision"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          cp "$RUNNER_TEMP/tunnel.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          security find-identity -v -p codesigning "$keychain"
+      - name: Generate project
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: xcodegen generate
+      # Manual, App Store profiles when the CI secrets carry them (a distribution profile
+      # needs no device UDIDs); automatic signing as a last resort.
+      - name: Archive
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          mkdir -p build
+          signing=()
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then
+            signing=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="Apple Distribution"
+              BRIDGE_APP_PROFILE="Bridge App Store"
+              BRIDGE_TUNNEL_PROFILE="Bridge Tunnel App Store"
+            )
+          else
+            signing=(CODE_SIGN_STYLE=Automatic)
+          fi
+          xcodebuild archive \
+            -project Bridge.xcodeproj -scheme Bridge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Bridge.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            "${signing[@]}" > build/archive.log 2>&1 \
+            || { grep -E 'error:|Provisioning|provisioning|Signing' build/archive.log | head -60; tail -40 build/archive.log; exit 1; }
+      - name: Export and upload to TestFlight
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          style=automatic
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then style=manual; fi
+          # Bundle ids contain dots, which plutil key paths cannot express.
+          STYLE="$style" python3 scripts/export_options.py build/ExportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath build/Bridge.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > build/export.log 2>&1 \
+            || { grep -E 'error:|Error|ITMS-' build/export.log | head -60; tail -40 build/export.log; exit 1; }
+          # The upload result lives only in this log; surface it in the job output.
+          grep -E 'Upload|upload|ITMS|Progress|No errors' build/export.log | tail -30 || true
+          echo "### Uploaded build ${{ github.run_number }} to TestFlight" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the API key and signing assets
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP"/app.mobileprovision "$RUNNER_TEMP"/tunnel.mobileprovision
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

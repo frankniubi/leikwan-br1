@@ -59,6 +59,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -160,8 +162,11 @@ class TunnelOrchestrator internal constructor(
         loggingUltraLeaseClient().sendNative(socketPath, lease)
     },
     private val vpnServiceStarter: (Context) -> Unit = { appContext ->
-        val intent = Intent(appContext, LeikwanVpnService::class.java)
-        appContext.startForegroundService(intent)
+        // A service rebuilding a killed tunnel is already in the foreground: start in place.
+        if (LeikwanVpnService.instance?.startRecoveredConfig() != true) {
+            val intent = Intent(appContext, LeikwanVpnService::class.java)
+            appContext.startForegroundService(intent)
+        }
     },
     private val vpnStartupAwaiter: suspend () -> VpnStartupAwaitResult = {
         VpnStartupMonitor.await(
@@ -206,6 +211,9 @@ class TunnelOrchestrator internal constructor(
     private val processRunner: ProcessRunner by lazy {
         processRunnerFactory().also { runner -> runner.runtimeLineObserver = ::onRuntimeLine }
     }
+
+    /** One tunnel build at a time: a user connect, a renewal restart and a recovery never interleave. */
+    private val startLock = Mutex()
 
     /** Paces failure-driven Ultra renewals: one per burst, >= 20 s apart per forward. */
     private val ultraFailureRenewals = UltraFailureRenewalGate()
@@ -348,7 +356,27 @@ class TunnelOrchestrator internal constructor(
         return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }
 
-    suspend fun startForForward(forwardId: Long) = startForForward(forwardId, preserveControlLoop = false)
+    suspend fun startForForward(forwardId: Long) =
+        startLock.withLock { startForForward(forwardId, preserveControlLoop = false) }
+
+    /**
+     * Rebuilds the connection the user last started, after Android killed the app or the device
+     * rebooted. Uses the persisted picks only; it never chooses a service or node by itself.
+     */
+    suspend fun reconnectSaved() {
+        if (prefs.nativeOutboundSelected) {
+            val forwardId = prefs.nativeOutboundForwardId.takeIf { it > 0L }
+                ?: throw Exception("No saved native outbound to reconnect")
+            startNativeForForward(forwardId)
+        } else {
+            val forwardId = prefs.selectedForwardId.takeIf { it > 0L }
+                ?: throw Exception("No saved service to reconnect")
+            if (prefs.selectedProxyId <= 0L) throw Exception("No saved node to reconnect")
+            startForForward(forwardId)
+        }
+        // The user disconnected while the rebuild ran.
+        if (!prefs.vpnConnectIntent) stop()
+    }
 
     /** Starts the plan-authorized native SOCKS5 adapter and points TUN at its loopback facade. */
     suspend fun startNativeForForward(
@@ -356,7 +384,9 @@ class TunnelOrchestrator internal constructor(
         routeScope: String = prefs.nativeOutboundRouteScope,
         bypassChina: Boolean = prefs.nativeOutboundBypassChina,
         routePolicy: String = prefs.nativeOutboundRoutePolicy,
-    ) = startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
+    ) = startLock.withLock {
+        startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
+    }
 
     private suspend fun startNativeForForward(
         forwardId: Long,
@@ -545,11 +575,9 @@ class TunnelOrchestrator internal constructor(
         try {
         Log.i(TAG, "Pulling forward configs...")
         val connectionMode = prefs.proxyConnectionMode
+        // A picked node that no longer exists fails selection below; it is not cleared, which
+        // would quietly turn an Ultra connect into the node-less bridge path.
         val proxyNodes = db.proxyNodeDao().getAllList()
-        val selectedProxyId = prefs.selectedProxyId
-        if (selectedProxyId > 0L && proxyNodes.none { it.id == selectedProxyId }) {
-            prefs.selectedProxyId = 0L
-        }
 
         val catalog = panelRepo.pullCatalog(forwardId.takeIf { it > 0L } ?: prefs.selectedForwardId)
         val selectedForward = forwardId.takeIf { it > 0L }
@@ -678,6 +706,12 @@ class TunnelOrchestrator internal constructor(
                     throw Exception("No relay legs could be started")
                 }
                 unavailableNodeIds = missingRelayNodeIds + result.failedNodeIds
+                try {
+                    requirePickedNodesRunning(selection.selectedNode?.id, unavailableNodeIds, proxyNodes)
+                } catch (error: Exception) {
+                    legs.values.forEach { processRunner.stopForward(it.processKey) }
+                    throw error
+                }
                 RuntimeContext(
                     forwardId = forward.forwardId,
                     mode = forward.mode,
@@ -703,7 +737,12 @@ class TunnelOrchestrator internal constructor(
         val ultraGroups = selectedEffective?.takeIf { it.mode == ForwardMode.ULTRA }?.let { effective ->
             val mainNode = selection.selectedNode ?: return@let null
             val mainRuntime = baseRuntimeContext ?: return@let null
-            startUltraAppGroups(effective.runtimeContract, mainRuntime, mainNode, proxyNodes, binaries)
+            try {
+                startUltraAppGroups(effective.runtimeContract, mainRuntime, mainNode, proxyNodes, binaries)
+            } catch (error: Exception) {
+                stopRuntime(mainRuntime)
+                throw error
+            }
         }
         val runtimeContext = ultraGroups?.runtime ?: baseRuntimeContext
 
@@ -741,6 +780,7 @@ class TunnelOrchestrator internal constructor(
                 routeRuleSnapshot = routeRuleSnapshot,
                 routeRuleRuntimeBindings = routeRuleRuntimePlan.singboxBindings,
                 runtimeOnlyProxy = selectedEffective?.mode == ForwardMode.ULTRA,
+                defaultProxyNodeId = selection.selectedNode?.id,
             )
         recordExplainability(routingSnapshot)
         val configJson = compiled.configJson
@@ -879,6 +919,33 @@ class TunnelOrchestrator internal constructor(
         return NodeLegsResult(legs, failed)
     }
 
+    /**
+     * A node the user picked (the selected node, the rule-mode default node, a rule's or an app's
+     * node) must ride its own relay. When that relay could not start, the connect fails naming
+     * the node rather than letting its traffic fall through to another node.
+     */
+    internal suspend fun requirePickedNodesRunning(
+        selectedNodeId: Long?,
+        unavailableNodeIds: Set<Long>,
+        proxyNodes: List<ProxyNode>,
+    ) {
+        if (unavailableNodeIds.isEmpty()) return
+        val picked = linkedSetOf<Long>()
+        selectedNodeId?.let(picked::add)
+        prefs.appRouting.routingRules()
+            .filter { it.outcome == UserTrafficOutcome.TUNNEL }
+            .mapNotNullTo(picked) { it.targetNodeId }
+        if (prefs.routingSelectorEnabled) {
+            prefs.routingDefaultNodeId?.let(picked::add)
+            (userRuleStore.countryRules() + userRuleStore.categoryRules())
+                .filter { it.enabled && it.outcome == UserTrafficOutcome.TUNNEL }
+                .mapNotNullTo(picked) { it.targetNodeId }
+        }
+        val failed = picked.firstOrNull { it in unavailableNodeIds } ?: return
+        val name = proxyNodes.firstOrNull { it.id == failed }?.name?.takeIf { it.isNotBlank() } ?: "#$failed"
+        throw Exception("The relay for node $name could not start; not switching to another node")
+    }
+
     private fun stopRuntime(runtimeContext: RuntimeContext?) {
         runtimeContext ?: return
         if (runtimeContext.nodeLegs.isNotEmpty()) {
@@ -972,7 +1039,7 @@ class TunnelOrchestrator internal constructor(
             if (nextPolicy.forwardId != active.policy.forwardId
                 || nextPolicy.targetDigest != active.policy.targetDigest
                 || nextPolicy.transport != active.policy.transport) {
-                startForForward(mainForwardId, preserveControlLoop = true)
+                startLock.withLock { startForForward(mainForwardId, preserveControlLoop = true) }
                 return true
             }
             // The panel hands back the running grant until its renew_after has passed, so a
@@ -1108,8 +1175,9 @@ class TunnelOrchestrator internal constructor(
 
     /**
      * Starts one Ultra runtime per other line that an app group rides, and gives every routed node
-     * a leg on its line's local port. A line that cannot start is skipped: its apps fall back to
-     * the selected node. Returns null when no group needs anything beyond the selected runtime.
+     * a leg on its line's local port. A group whose node or line cannot run fails the connect: its
+     * apps never fall back to the selected node. Returns null when no group needs anything beyond
+     * the selected runtime.
      */
     private suspend fun startUltraAppGroups(
         mainForward: ForwardContract,
@@ -1123,21 +1191,30 @@ class TunnelOrchestrator internal constructor(
         val legs = linkedMapOf(mainNode.id to ultraNodeLeg(mainNode.id, mainForward.forwardId, mainRuntime))
         val nodes = mutableListOf(mainNode)
         val extras = linkedMapOf<Long, ExtraUltraRuntime>()
-        for (group in groups) {
-            // One outbound per node: a node already routed (the selected one included) keeps its line.
-            if (group.nodeId in legs) continue
-            val node = proxyNodes.firstOrNull {
-                it.id == group.nodeId && it.enabled && !it.type.equals("wireguard", ignoreCase = true)
-            } ?: continue
-            val runtime = if (group.forwardId == mainForward.forwardId) {
-                mainRuntime
-            } else {
-                extras[group.forwardId]?.runtime
-                    ?: startExtraUltraRuntime(group.forwardId, binaries)?.also { extras[group.forwardId] = it }?.runtime
-                    ?: continue
+        try {
+            for (group in groups) {
+                // One outbound per node: a node already routed (the selected one included) keeps its line.
+                if (group.nodeId in legs) continue
+                val node = proxyNodes.firstOrNull {
+                    it.id == group.nodeId && it.enabled && !it.type.equals("wireguard", ignoreCase = true)
+                } ?: throw Exception("App group ${group.name}: its node is missing or disabled")
+                val runtime = if (group.forwardId == mainForward.forwardId) {
+                    mainRuntime
+                } else {
+                    extras[group.forwardId]?.runtime
+                        ?: startExtraUltraRuntime(group.forwardId, binaries)
+                            .also { extras[group.forwardId] = it }
+                            .runtime
+                }
+                legs[node.id] = ultraNodeLeg(node.id, group.forwardId, runtime)
+                nodes += node
             }
-            legs[node.id] = ultraNodeLeg(node.id, group.forwardId, runtime)
-            nodes += node
+        } catch (error: Exception) {
+            extras.forEach { (forwardId, extra) ->
+                processRunner.stopForward(forwardId)
+                UltraForwardRunner.cleanup(extra.runtime)
+            }
+            throw error
         }
         if (nodes.size == 1) return null
         val protectedConnectivity = extras.values
@@ -1162,15 +1239,14 @@ class TunnelOrchestrator internal constructor(
         protectedConnectivity = runtime.protectedConnectivity,
     )
 
-    /** Starts and leases an Ultra runtime for an app-group line; null when it cannot run. */
-    private suspend fun startExtraUltraRuntime(forwardId: Long, binaries: RuntimeBinaryPaths): ExtraUltraRuntime? {
+    /** Starts and leases an Ultra runtime for an app-group line; throws when it cannot run. */
+    private suspend fun startExtraUltraRuntime(forwardId: Long, binaries: RuntimeBinaryPaths): ExtraUltraRuntime {
         val forward = panelRepo.getCachedEffectiveForward(forwardId)
             ?.takeIf { it.mode == ForwardMode.ULTRA }
             ?.runtimeContract
         val policy = forward?.let(UltraPolicy::from)
         if (forward == null || policy == null) {
-            Log.w(TAG, "App-group line $forwardId is not an available Ultra service; its apps use the selected node")
-            return null
+            throw Exception("App group line #$forwardId is not an available Ultra service")
         }
         var processStarted = false
         return try {
@@ -1211,10 +1287,10 @@ class TunnelOrchestrator internal constructor(
                 leases.forEach(UltraLease::wipe)
             }
         } catch (error: Exception) {
-            if (error is CancellationException || error is PanelControlException) throw error
             if (processStarted) processRunner.stopForward(forwardId)
-            Log.w(TAG, "App-group line $forwardId failed to start; its apps use the selected node", error)
-            null
+            if (error is CancellationException || error is PanelControlException) throw error
+            Log.w(TAG, "App-group line $forwardId failed to start", error)
+            throw Exception("App group line #$forwardId could not start: ${error.message}", error)
         }
     }
 
@@ -1255,13 +1331,15 @@ class TunnelOrchestrator internal constructor(
             val carrier = capability.carrier(active.forwardId)
                 ?: throw IllegalStateException("native_outbound_not_allowed")
             if (carrier.direction != active.direction) {
-                startNativeForForward(
-                    forwardId = active.forwardId,
-                    routeScope = active.routeScope,
-                    bypassChina = active.bypassChina,
-                    routePolicy = active.routePolicy,
-                    preserveControlLoop = true,
-                )
+                startLock.withLock {
+                    startNativeForForward(
+                        forwardId = active.forwardId,
+                        routeScope = active.routeScope,
+                        bypassChina = active.bypassChina,
+                        routePolicy = active.routePolicy,
+                        preserveControlLoop = true,
+                    )
+                }
                 return
             }
             val normalizedScope = NativeOutboundCapability.normalizeScope(active.routeScope)
@@ -1278,13 +1356,15 @@ class TunnelOrchestrator internal constructor(
                 // The Go adapter deliberately keeps one selected endpoint per policy
                 // generation. Rotate the static runtime only after the new policy has
                 // been pulled and validated; same-generation renewals stay in place.
-                startNativeForForward(
-                    forwardId = active.forwardId,
-                    routeScope = normalizedScope,
-                    bypassChina = active.bypassChina,
-                    routePolicy = normalizedRoutePolicy,
-                    preserveControlLoop = true,
-                )
+                startLock.withLock {
+                    startNativeForForward(
+                        forwardId = active.forwardId,
+                        routeScope = normalizedScope,
+                        bypassChina = active.bypassChina,
+                        routePolicy = normalizedRoutePolicy,
+                        preserveControlLoop = true,
+                    )
+                }
                 return
             }
 
@@ -1324,6 +1404,8 @@ class TunnelOrchestrator internal constructor(
             if (error is CancellationException) throw error
             if (error is PanelControlException || isNativeAuthorizationFailure(error)) {
                 Log.w(TAG, "Native outbound authorization changed; stopping VPN", error)
+                // Not a drop to recover from: a restart or reboot must not reconnect it.
+                prefs.vpnConnectIntent = false
                 stop()
                 throw error
             }

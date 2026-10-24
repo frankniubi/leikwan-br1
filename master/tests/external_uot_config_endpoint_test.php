@@ -47,6 +47,10 @@ namespace Leikwan\Master\Database {
         public array $targetRows = [];
         /** @var list<array<string, mixed>> */
         public array $params = [];
+        /** @var array<int, string> combination id => stored external_uot_hmac_secret */
+        public array $secrets = [];
+        /** @var list<array{0: string, 1: array<string, mixed>}> */
+        public array $executed = [];
 
         public function __construct(...$ignored)
         {
@@ -57,12 +61,31 @@ namespace Leikwan\Master\Database {
         {
             $this->queries[] = $sql;
             $this->params[] = $params;
+            if (str_contains($sql, 'SELECT external_uot_hmac_secret FROM forward_combinations')) {
+                return ['external_uot_hmac_secret' => $this->secrets[(int) $params['id']] ?? null];
+            }
             // Mirrors "WHERE agent_token = ?": only the point's own token finds it.
             if ($this->pointRow === null || ($params[0] ?? null) !== ($this->pointRow['agent_token'] ?? null)) {
                 return null;
             }
 
             return $this->pointRow;
+        }
+
+        /** @param array<string, mixed> $params */
+        public function execute(string $sql, array $params = []): int
+        {
+            $this->queries[] = $sql;
+            $this->executed[] = [$sql, $params];
+            if (str_contains($sql, 'UPDATE forward_combinations SET external_uot_hmac_secret')) {
+                $id = (int) $params['id'];
+                if (($this->secrets[$id] ?? '') === '') {
+                    $this->secrets[$id] = (string) $params['secret'];
+                    return 1;
+                }
+            }
+
+            return 0;
         }
 
         /**
@@ -73,13 +96,23 @@ namespace Leikwan\Master\Database {
         {
             $this->queries[] = $sql;
             if (str_contains($sql, 'FROM forward_combinations')) {
-                return $this->combinationRows;
+                return array_map(function (array $row): array {
+                    if (isset($this->secrets[(int) $row['id']])) {
+                        $row['external_uot_hmac_secret'] = $this->secrets[(int) $row['id']];
+                    }
+                    return $row;
+                }, $this->combinationRows);
             }
-            if (str_contains($sql, 'target_host')) {
-                return $this->targetRows;
-            }
-            if (str_contains($sql, 'FROM forwards')) {
-                return $this->forwardRows;
+            if (str_contains($sql, 'FROM forwards f')) {
+                // The C1 predicates are evaluated by SQL; fixtures carry the
+                // outcome as is_live (default live).
+                $targets = [];
+                foreach ($this->targetRows as $row) {
+                    $targets[(int) $row['id']] = $row;
+                }
+                return array_map(static function (array $row) use ($targets): array {
+                    return $row + ($targets[(int) $row['id']] ?? []) + ['is_live' => 1];
+                }, $this->forwardRows);
             }
 
             return [];
@@ -93,6 +126,9 @@ namespace {
     require_once __DIR__ . '/../src/Controllers/BaseController.php';
     require_once __DIR__ . '/../src/Controllers/ExternalUotConfigController.php';
     require_once __DIR__ . '/../src/Support/ExternalUoTPool.php';
+    require_once __DIR__ . '/../src/Support/ExternalUotCredentials.php';
+    require_once __DIR__ . '/../src/Support/ExternalUotUsageLedger.php';
+    require_once __DIR__ . '/../src/Support/ProvisioningService.php';
 
     use Leikwan\Master\Config;
     use Leikwan\Master\Controllers\ExternalUotConfigController;
@@ -121,13 +157,14 @@ namespace {
         );
     }
 
-    function combination(int $id, bool $enabled, string $target, string $token, int $queue = 0, int $keepalive = 0, int $grace = 0, int $frame = 0): array
+    function combination(int $id, bool $enabled, string $target, string $token, int $queue = 0, int $keepalive = 0, int $grace = 0, int $frame = 0, ?string $secret = null): array
     {
         return [
             'id' => $id,
             'external_uot_enabled' => $enabled ? 1 : 0,
             'external_uot_sidecar_target' => $target,
             'external_uot_token' => $token,
+            'external_uot_hmac_secret' => $secret,
             'external_uot_queue_packets' => $queue,
             'external_uot_keepalive_seconds' => $keepalive,
             'external_uot_reconnect_grace_seconds' => $grace,
@@ -135,11 +172,11 @@ namespace {
         ];
     }
 
-    /** @return array{0: int, 1: array<string, mixed>} */
-    function call(array $query, ?array $point, array $combinations, array $forwardRows, ?string $remoteAddress = null, array $headers = [], ?array $targetRows = null): array
+    /** @return array{0: int, 1: array<string, mixed>, 2: string, 3: Database} */
+    function call(array $query, ?array $point, array $combinations, array $forwardRows, ?string $remoteAddress = null, array $headers = [], ?array $targetRows = null, ?Database $database = null): array
     {
         global $defaultTargetRows;
-        $database = new Database();
+        $database ??= new Database();
         $database->pointRow = $point;
         $database->combinationRows = $combinations;
         $database->forwardRows = $forwardRows;
@@ -154,7 +191,7 @@ namespace {
         $response = $controller->sidecarConfig($request, []);
         $decoded = json_decode($response->body(), true);
 
-        return [$response->status(), is_array($decoded) ? $decoded : [], $response->body()];
+        return [$response->status(), is_array($decoded) ? $decoded : [], $response->body(), $database];
     }
 
     $tokyoPoint = [
@@ -211,14 +248,18 @@ namespace {
     }
 
     // 1. The point's own bearer token merges every enabled combination on that host, lowest id first.
-    [$status, $payload] = call([], $tokyoPoint, $combinations, $forwardRows, null, $bearer);
+    [$status, $payload, , $database] = call([], $tokyoPoint, $combinations, $forwardRows, null, $bearer);
+    $secret57 = $database->secrets[57] ?? '';
+    $secret58 = $database->secrets[58] ?? '';
+    check(preg_match('/^[0-9a-f]{64}$/', $secret57) === 1, 'combination 57 got a 64-hex HMAC secret');
+    check($secret57 !== $secret58, 'every combination gets its own secret');
     checkSame(200, $status, 'bearer status');
     checkSame('0.0.0.0', $payload['listen_host'], 'listen_host');
     checkSame(7443, $payload['listen_port'], 'listen_port from combination target');
     checkSame(['170', '171', '172'], array_map('strval', array_keys($payload['forwards'])), 'forwards keyed by forward id');
-    checkSame(['token' => 'token-57', 'targets' => ['203.0.113.10:443']], $payload['forwards']['170'], 'per-forward token bound to its target');
-    checkSame(['token' => 'token-58', 'targets' => ['game.example.com:27015']], $payload['forwards']['171'], 'hostname target lower-cased');
-    checkSame(['token' => 'token-58', 'targets' => ['[2001:db8::5]:9000']], $payload['forwards']['172'], 'ipv6 target canonical and bracketed');
+    checkSame(['secret' => $secret57, 'token' => 'token-57', 'targets' => ['203.0.113.10:443']], $payload['forwards']['170'], 'per-forward secret and token bound to its target');
+    checkSame(['secret' => $secret58, 'token' => 'token-58', 'targets' => ['game.example.com:27015']], $payload['forwards']['171'], 'hostname target lower-cased');
+    checkSame(['secret' => $secret58, 'token' => 'token-58', 'targets' => ['[2001:db8::5]:9000']], $payload['forwards']['172'], 'ipv6 target canonical and bracketed');
     checkSame(128, $payload['queue_packets'], 'queue_packets from the lowest matching combination');
     checkSame(8, $payload['keepalive_seconds'], 'keepalive_seconds carried over');
     checkSame(20, $payload['session_grace_seconds'], 'reconnect grace maps to session_grace_seconds');
@@ -232,6 +273,7 @@ namespace {
         [
             ['id' => 57, 'target' => '185.220.238.143:7443', 'forwards' => [170]],
             ['id' => 58, 'target' => '185.220.238.143:7443', 'forwards' => [171, 172]],
+            ['id' => 64, 'target' => '185.220.238.143:7443', 'forwards' => [200]],
         ],
         $payload['panel']['combinations'],
         'combination summary is ordered and deduplicated'
@@ -243,7 +285,8 @@ namespace {
     checkSame('unparsable-target', $skippedReasons[60] ?? null, 'target without a port is reported, not guessed');
     checkSame('unparsable-target', $skippedReasons[63] ?? null, 'empty target is reported');
     checkSame('no-forwards', $skippedReasons[62] ?? null, 'combination without forwards is skipped');
-    checkSame('empty-token', $skippedReasons[64] ?? null, 'combination without a token is skipped');
+    // 64 has no static token but now gets a secret; only its untargeted forward is skipped.
+    checkSame('no-target', $skippedReasons[64] ?? null, 'combination without a static token publishes through its secret');
     check(!isset($skippedReasons[59]), 'disabled combination is ignored entirely');
     check(!isset($skippedReasons[51]), 'combination on another host is not reported as skipped');
     check(str_contains(json_encode($payload), '"forwards":{"170"'), 'forwards serialises as a JSON object');
@@ -272,7 +315,7 @@ namespace {
     ]);
     checkSame(['170'], array_map('strval', array_keys($payload['forwards'])), 'untargeted forwards are dropped');
     $noTarget = array_values(array_filter($payload['panel']['skipped'], static fn (array $entry): bool => $entry['reason'] === 'no-target'));
-    checkSame([171, 172], array_map(static fn (array $entry): int => $entry['forward_id'], $noTarget), 'untargeted forwards reported');
+    checkSame([171, 172, 200], array_map(static fn (array $entry): int => $entry['forward_id'], $noTarget), 'untargeted forwards reported');
 
     // 5. No enabled combination at all: still a usable document.
     [$status, $payload, $raw] = call([], $tokyoPoint, [combination(59, false, '185.220.238.143:7443', 'token-59')], [], null, $bearer);
@@ -300,6 +343,74 @@ namespace {
     checkSame('203.0.113.10:443', ExternalUotConfigController::normalizeForwardTarget(' 203.0.113.10:443 '), 'normalizer trims');
     checkSame(null, ExternalUotConfigController::normalizeForwardTarget('203.0.113.10'), 'normalizer refuses a missing port');
 
+    // 8. Plan C1: only live forwards are published, filtered in SQL with the
+    //    Auth::requireClientToken expiry semantics.
+    $liveRows = [
+        ['id' => 170, 'forward_combination_id' => 57, 'service_bandwidth_limit_mbps' => 100, 'line_speed_limit_mbps' => 50],
+        ['id' => 171, 'forward_combination_id' => 58, 'service_bandwidth_limit_mbps' => 0, 'line_speed_limit_mbps' => null],
+        ['id' => 172, 'forward_combination_id' => 58, 'service_bandwidth_limit_mbps' => 200, 'line_speed_limit_mbps' => 0],
+        ['id' => 173, 'forward_combination_id' => 57, 'is_live' => 0],
+        ['id' => 191, 'forward_combination_id' => 51, 'is_live' => 0],
+    ];
+    $liveTargets = array_merge($defaultTargetRows, [['id' => 173, 'target_host' => '203.0.113.30', 'target_port' => 53]]);
+    [$status, $payload, , $database] = call([], $tokyoPoint, $combinations, $liveRows, null, $bearer, $liveTargets);
+    checkSame(['170', '171', '172'], array_map('strval', array_keys($payload['forwards'])), 'non-live forward is not published');
+    $forwardSql = implode("\n", array_filter($database->queries, static fn (string $sql): bool => str_contains($sql, 'FROM forwards f')));
+    foreach ([
+        'f.enabled = 1', 'f.user_deleted_at IS NULL', 'f.balance_suspended_at IS NULL', "s.status = 'active'",
+        '(s.expire_at IS NULL OR s.expire_at > UTC_TIMESTAMP())', 'LEFT JOIN services s ON s.id = f.service_id',
+        'LEFT JOIN clients c ON c.id = f.line_client_id',
+    ] as $predicate) {
+        check(str_contains($forwardSql, $predicate), 'liveness query has ' . $predicate);
+    }
+    checkSame(50, $payload['forwards']['170']['rate_limit_mbps'] ?? null, 'rate limit is the smaller positive limit');
+    check(!array_key_exists('rate_limit_mbps', $payload['forwards']['171']), 'no limit means no rate_limit_mbps');
+    checkSame(200, $payload['forwards']['172']['rate_limit_mbps'] ?? null, 'a zero line limit does not mask the service limit');
+    check(!array_key_exists('remove', $payload), 'only the standalone render carries a remove list');
+
+    // 9. The secret is generated once and persisted; a stored secret is never replaced.
+    $secretUpdates = static fn (Database $db, int $id): int => count(array_filter(
+        $db->executed,
+        static fn (array $call): bool => str_contains($call[0], 'SET external_uot_hmac_secret') && (int) $call[1]['id'] === $id
+    ));
+    $firstSecret = $database->secrets[57];
+    call([], $tokyoPoint, $combinations, $liveRows, null, $bearer, $liveTargets, $database);
+    checkSame($firstSecret, $database->secrets[57], 'secret survives a second render');
+    checkSame(1, $secretUpdates($database, 57), 'secret written exactly once');
+    $preset = $combinations;
+    $preset[1] = combination(57, true, '185.220.238.143:7443', 'token-57', 128, 8, 20, 8192, str_repeat('ab', 32));
+    [, $payload, , $presetDb] = call([], $tokyoPoint, $preset, $liveRows, null, $bearer, $liveTargets);
+    checkSame(str_repeat('ab', 32), $payload['forwards']['170']['secret'] ?? null, 'stored secret is published');
+    checkSame(0, $secretUpdates($presetDb, 57), 'stored secret is never regenerated');
+
+    // 10. EXTERNAL_UOT_ACCEPT_STATIC_TOKEN (default on) controls the static token.
+    putenv('EXTERNAL_UOT_ACCEPT_STATIC_TOKEN=0');
+    [, $payload] = call([], $tokyoPoint, $preset, $liveRows, null, $bearer, $liveTargets);
+    checkSame(['secret' => str_repeat('ab', 32), 'targets' => ['203.0.113.10:443'], 'rate_limit_mbps' => 50], $payload['forwards']['170'], 'static token withheld when the flag is off');
+    putenv('EXTERNAL_UOT_ACCEPT_STATIC_TOKEN=1');
+    [, $payload] = call([], $tokyoPoint, $preset, $liveRows, null, $bearer, $liveTargets);
+    checkSame('token-57', $payload['forwards']['170']['token'] ?? null, 'static token published when the flag is on');
+    putenv('EXTERNAL_UOT_ACCEPT_STATIC_TOKEN');
+    [, $payload] = call([], $tokyoPoint, $preset, $liveRows, null, $bearer, $liveTargets);
+    checkSame('token-57', $payload['forwards']['170']['token'] ?? null, 'static token published by default');
+    $noCredentials = ExternalUotConfigController::buildPayload($tokyoPoint, [combination(57, true, '185.220.238.143:7443', '')], [57 => [170]]);
+    checkSame([], (array) $noCredentials['forwards'], 'no secret and no token publishes nothing');
+    checkSame('no-credentials', $noCredentials['panel']['skipped'][0]['reason'] ?? null, 'missing credentials are reported');
+
+    // 11. The standalone render lists the non-live forwards of the combinations it serves.
+    $standaloneDb = new Database();
+    $standaloneDb->combinationRows = $combinations;
+    $standaloneDb->forwardRows = $liveRows;
+    $standaloneDb->targetRows = $liveTargets;
+    $standalone = new ExternalUotConfigController(new Config());
+    (new ReflectionProperty(\Leikwan\Master\Controllers\BaseController::class, 'db'))->setValue($standalone, $standaloneDb);
+    $rendered = $standalone->renderForHost('185.220.238.143');
+    checkSame([170, 171, 172], array_map('intval', array_keys((array) $rendered['forwards'])), 'standalone render publishes live forwards');
+    checkSame([173], $rendered['remove'] ?? null, 'remove lists the non-live forwards of this host');
+    $otherHost = $standalone->renderForHost('70.36.96.183');
+    checkSame([191], $otherHost['remove'] ?? null, 'a combination whose forwards are all non-live still removes them');
+    checkSame([], (array) $otherHost['forwards'], 'nothing live on the other host');
+
     // Pool endpoint: host selection never substitutes for bearer authentication.
     putenv('EXTERNAL_UOT_POOL_JSON=' . json_encode([[
         'id' => 'la1', 'target' => 'la1.test:7443', 'secret' => str_repeat('s', 32),
@@ -324,6 +435,15 @@ namespace {
     checkSame(64, strlen($poolPayload['config_hash']), 'pool config digest');
     checkSame(409, $poolController->poolNode($poolRequest('POST', ['healthy' => true, 'config_hash' => str_repeat('0', 64)], str_repeat('s', 32)), ['id' => 'la1'])->status(), 'pool rejects stale config heartbeat');
     checkSame(401, $poolController->poolNode($poolRequest('POST', [], str_repeat('s', 32)), ['id' => 'la2'])->status(), 'pool token scoped to node');
+    // Heartbeat usage is ingested after authentication, even when the hash is stale.
+    $usageDoc = ['version' => 1, 'instance' => str_repeat('a', 32), 'forwards' => ['170' => ['to_target_bytes' => 10, 'from_target_bytes' => 20]]];
+    $poolDb->executed = [];
+    checkSame(409, $poolController->poolNode($poolRequest('POST', ['healthy' => true, 'config_hash' => str_repeat('0', 64), 'usage' => $usageDoc], str_repeat('s', 32)), ['id' => 'la1'])->status(), 'stale heartbeat with usage still 409');
+    $ingested = array_values(array_filter($poolDb->executed, static fn (array $call): bool => str_contains($call[0], 'external_uot_usage_counters')));
+    checkSame('pool:la1', $ingested[0][1]['source'] ?? null, 'heartbeat usage ingested as pool:<node id>');
+    $poolDb->executed = [];
+    checkSame(401, $poolController->poolNode($poolRequest('POST', ['usage' => $usageDoc], str_repeat('x', 32)), ['id' => 'la1'])->status(), 'unauthenticated heartbeat refused');
+    checkSame([], $poolDb->executed, 'unauthenticated usage is never ingested');
     putenv('EXTERNAL_UOT_POOL_JSON');
 
     if ($failures > 0) {

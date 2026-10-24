@@ -428,9 +428,14 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_forward_required");
         SelectedProxyForwardId = forwardId;
         SetProxyProfileForForward(forwardId, profileId);
-        await StartProxyAsync(WindowsProxyMode.Http, profileId, ct: ct);
+        await StartProxyAsync(ChosenProxyMode, profileId, ct: ct);
         RefreshProxyForwardRows();
     }
+
+    public WindowsProxyMode ChosenProxyMode
+        => _config.ProxyModeChosen
+            && Enum.TryParse<WindowsProxyMode>(_config.ProxyActiveMode, ignoreCase: true, out var mode)
+            ? mode : WindowsProxyMode.Http;
 
     public async Task StopProxyForForwardAsync(int forwardId, CancellationToken ct = default)
     {
@@ -739,6 +744,7 @@ public partial class MainViewModel : ObservableObject
         string? selectedGameId = null,
         CancellationToken ct = default)
     {
+        ForgetProxySession();
         if (profileId <= 0)
             throw new InvalidOperationException("proxy_saved_profile_required");
         await EnsureProxyServiceAsync(ct);
@@ -782,6 +788,8 @@ public partial class MainViewModel : ObservableObject
         _config.ProxyActiveProfileId = profileId;
         _config.ProxyActiveMode = mode.ToString();
         SelectedProxyGameId = !profile.IsExternal && mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
+        RememberProxySession(new ProxyRecoverySession(
+            false, mode, forward.ForwardId, profileId, SelectedProxyGameId, "global", false, false));
     }
 
     public async Task StartNativeOutboundAsync(
@@ -793,6 +801,7 @@ public partial class MainViewModel : ObservableObject
         bool? unrestrictedRoute = null,
         CancellationToken ct = default)
     {
+        ForgetProxySession();
         await EnsureProxyServiceAsync(ct);
         var capability = NativeOutboundCapability;
         if (capability is not { Enabled: true })
@@ -864,6 +873,8 @@ public partial class MainViewModel : ObservableObject
                 ? _config.GetEffectiveProxyDnsServers()
                 : null);
         StartNativeLeaseRenewalLoop();
+        RememberProxySession(new ProxyRecoverySession(
+            true, mode, forwardId, 0, _nativeActiveGameId, normalizedScope, effectiveBypassChina, useUnrestrictedRoute));
         AddLog($"Started {WindowsProxyConnectionService.NativeOutboundDisplayName} ({normalizedScope}).");
     }
 
@@ -911,6 +922,7 @@ public partial class MainViewModel : ObservableObject
 
     private async Task StopProxyAsync(string reason, CancellationToken ct)
     {
+        ForgetProxySession();
         CancelProxyForwardStart();
         await _proxyForwardGate.WaitAsync(ct);
         try
@@ -1190,6 +1202,8 @@ public partial class MainViewModel : ObservableObject
             NotifySelectedProxyPairingStateChanged();
             if (snapshot.State == WindowsProxyConnectionState.Error)
                 AddLog($"Proxy error: {snapshot.ErrorCode}");
+            if (IsProxyLostError(snapshot))
+                StartProxyRecovery();
         });
     }
 

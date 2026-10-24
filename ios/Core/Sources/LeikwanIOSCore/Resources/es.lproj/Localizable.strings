@@ -30,9 +30,9 @@
 "Global" = "Global";
 "Standard routing" = "Enrutamiento estándar";
 "Unrestricted routing" = "Enrutamiento sin restricciones";
-"Native outbound is not available for this plan or forward" = "La salida nativa no está disponible para este plan o reenvío";
+"Native outbound is not available for this server or forward" = "La salida nativa no está disponible para este servidor o reenvío";
 "The selected traffic scope is not available. Refresh and try again" = "El ámbito de tráfico elegido no está disponible. Actualiza e inténtalo de nuevo";
-"This plan does not include unrestricted routing" = "Este plan no incluye enrutamiento sin restricciones";
+"This server does not include unrestricted routing" = "Este servidor no incluye enrutamiento sin restricciones";
 "Native outbound authorization unavailable (service inactive or expired)" = "Autorización de salida nativa no disponible (servicio inactivo o vencido)";
 "The native outbound line changed. Refresh and try again" = "La línea de salida nativa cambió. Actualiza e inténtalo de nuevo";
 "The native outbound line expired. Reconnect" = "La línea de salida nativa venció. Vuelve a conectar";

@@ -33,7 +33,7 @@ function assertMacUltra(bool $condition, string $message): void
 $controllerType = new ReflectionClass(ClientAgentController::class);
 assertMacUltra($controllerType->hasMethod('usesUltraPolicyV2'), 'macOS Ultra v2 platform gate is missing');
 $platformGate = $controllerType->getMethod('usesUltraPolicyV2');
-foreach (['windows-desktop', 'linux', 'macos-desktop', 'macos-arm64'] as $platform) {
+foreach (['windows-desktop', 'linux', 'macos-desktop', 'macos-arm64', 'ios'] as $platform) {
     assertMacUltra($platformGate->invoke(null, $platform) === true, $platform . ' must use Ultra policy-v2');
 }
 assertMacUltra($platformGate->invoke(null, 'legacy-agent') === false, 'legacy agents must keep their existing contract');

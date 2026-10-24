@@ -154,12 +154,6 @@ private struct NativeCarrierCard: View {
                     .font(.headline)
                     .foregroundStyle(Palette.onSurface)
                     .lineLimit(1)
-                Text(forward.map { model.endpointText(for: $0) } ?? "—")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Palette.onSurfaceVariant)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .textSelection(.enabled)
             }
 
             HStack(spacing: 8) {

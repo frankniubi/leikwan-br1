@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"time"
 )
@@ -17,9 +18,10 @@ import (
 // MobileRuntime. The configuration JSON and the control-socket protocol are
 // the same ones the Android client uses with the standalone binary.
 
-// mobileStartupGrace is how long StartMobileRuntime waits for an immediate
-// failure (control socket bind) so the caller gets it synchronously.
-const mobileStartupGrace = 300 * time.Millisecond
+// mobileStartupGrace bounds how long StartMobileRuntime waits for the runtime to open its
+// control socket (the first thing serveRuntime does) so a startup failure is returned to the
+// host instead of a runtime that dies a moment later.
+const mobileStartupGrace = 3 * time.Second
 
 const mobileStopTimeout = 3 * time.Second
 
@@ -42,21 +44,35 @@ func StartMobileRuntime(configJSON []byte) (*MobileRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A socket a killed process left behind is removed by ControlServer.Listen, so remember
+	// the file name alone is not proof the new runtime bound: require a different file.
+	previous, _ := os.Lstat(config.ControlSocket)
 	rootContext, cancelRoot := context.WithCancel(context.Background())
 	runtime := &MobileRuntime{cancel: cancelRoot, done: make(chan struct{})}
 	go func() {
 		defer close(runtime.done)
 		runtime.setErr(serveRuntime(rootContext, cancelRoot, config))
 	}()
-	select {
-	case <-runtime.done:
-		cancelRoot()
-		if err := runtime.LastError(); err != nil {
-			return nil, err
+	deadline := time.Now().Add(mobileStartupGrace)
+	for {
+		select {
+		case <-runtime.done:
+			cancelRoot()
+			if err := runtime.LastError(); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("runtime stopped during startup")
+		default:
 		}
-		return nil, errors.New("runtime stopped during startup")
-	case <-time.After(mobileStartupGrace):
-		return runtime, nil
+		if info, err := os.Lstat(config.ControlSocket); err == nil && info.Mode()&os.ModeSocket != 0 &&
+			(previous == nil || previous.Mode()&os.ModeSocket == 0 || !os.SameFile(previous, info)) {
+			return runtime, nil
+		}
+		if time.Now().After(deadline) {
+			runtime.Stop()
+			return nil, errors.New("runtime did not open its control socket")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
