@@ -49,6 +49,7 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
     private Process? _watchedProcess;
+    private WindowsJobGroup? _job;
 
     public event Action<int>? UnexpectedExit;
 
@@ -146,6 +147,17 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
             var process = new Process { StartInfo = info, EnableRaisingEvents = true };
             if (!process.Start())
                 throw new InvalidOperationException("proxy_process_start_failed");
+            var job = WindowsJobGroup.Create(0);
+            if (!job.Attach(process))
+            {
+                job.Dispose();
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                process.Dispose();
+                throw new InvalidOperationException("proxy_process_job_attach_failed");
+            }
+            _job = job;
             if (info.RedirectStandardOutput)
             {
                 process.OutputDataReceived += (_, e) =>
@@ -255,8 +267,12 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     {
         Interlocked.Exchange(ref _watchedProcess, null);
         var process = Interlocked.Exchange(ref _process, null);
+        var job = Interlocked.Exchange(ref _job, null);
         if (process is null)
+        {
+            job?.Dispose();
             return;
+        }
         try
         {
             if (!process.HasExited)
@@ -282,7 +298,11 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
         catch (InvalidOperationException) { }
         catch (OperationCanceledException) { }
         catch (TimeoutException) { }
-        finally { process.Dispose(); }
+        finally
+        {
+            process.Dispose();
+            job?.Dispose();
+        }
     }
 
     private static void ForceKillTree(int processId)
