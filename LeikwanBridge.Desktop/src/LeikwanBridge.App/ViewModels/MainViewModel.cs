@@ -135,7 +135,11 @@ public partial class MainViewModel : ObservableObject
     public bool IsForwardPairingView => string.Equals(CurrentView, "Forwards", StringComparison.OrdinalIgnoreCase);
 
     partial void OnCurrentViewChanged(string value)
-        => OnPropertyChanged(nameof(IsForwardPairingView));
+    {
+        OnPropertyChanged(nameof(IsForwardPairingView));
+        if (string.Equals(value, "Dashboard", StringComparison.OrdinalIgnoreCase))
+            _ = RefreshAccessPolicyAsync();
+    }
 
     partial void OnShowUpdatePromptChanged(bool value) => NotifyUpdateOverlayState();
 
@@ -281,7 +285,11 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _config = new AgentConfig();
-        Forwards.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ForwardCount));
+        Forwards.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(ForwardCount));
+            OnPropertyChanged(nameof(SpeedLimitText));
+        };
         ProxyProfiles.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HostedNodeCount));
@@ -1538,6 +1546,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsConnected = true;
+        _ = RefreshAccessPolicyAsync(ct);
         if (deviceLimit is null)
         {
             ClearDeviceLimit();
@@ -1635,7 +1644,8 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NavigateTo(string view) => CurrentView = view;
+    private void NavigateTo(string view)
+        => CurrentView = string.Equals(view, "Nodes", StringComparison.OrdinalIgnoreCase) ? "Forwards" : view;
 
     [RelayCommand]
     private void SelectForward(ForwardViewModel? forward)

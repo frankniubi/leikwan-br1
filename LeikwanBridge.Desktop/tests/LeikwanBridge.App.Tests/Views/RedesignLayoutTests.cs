@@ -11,7 +11,7 @@ public sealed class RedesignLayoutTests
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [Fact]
-    public void SidebarNavigatesToDashboardServicesNodesAndSettings()
+    public void SidebarNavigatesToDashboardServicesConnectNativeAndSettings()
     {
         var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
         var targets = document.Descendants().Where(node => node.Name.LocalName == "Button"
@@ -19,18 +19,27 @@ public sealed class RedesignLayoutTests
                 && node.Attribute("Tag") is not null)
             .Select(node => (string?)node.Attribute("CommandParameter"))
             .ToList();
-        foreach (var view in new[] { "Dashboard", "Forwards", "Nodes", "Settings" })
+        foreach (var view in new[] { "Dashboard", "Forwards", "Proxy", "Native", "Settings" })
             Assert.Contains(view, targets);
+        // The nodes live on the services page now, so the old Nodes item is gone.
+        Assert.DoesNotContain("Nodes", targets);
+        // Native outbound is listed only while the plan assigns one.
+        var native = Assert.Single(document.Descendants().Where(node => node.Name.LocalName == "Button"
+            && (string?)node.Attribute("CommandParameter") == "Native"));
+        Assert.Equal("{Binding IsNativeOutboundVisible, Converter={StaticResource BoolToVis}}", (string?)native.Attribute("Visibility"));
     }
 
     [Fact]
-    public void DashboardHasTheCardGridAndAStartStopButton()
+    public void DashboardHasFourAccountCardsAboveTheForwardControls()
     {
         var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
         var dashboard = Named(document, "DashboardPanel");
-        foreach (var key in new[] { "DashNetworkSpeed", "DashTrafficUsage", "DashOutboundMode", "DashCurrentService", "DashConnections", "DashVersion" })
+        foreach (var key in new[] { "DashPlan", "DashUsage", "DashRateLimit", "DashProvince", "DashForwardControls" })
             Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource " + key + "}");
-        Assert.Equal("SpeedChart", Named(document, "DashSpeedChart").Name.LocalName);
+        foreach (var binding in new[] { "PlanText", "SpeedLimitText", "ProvinceText" })
+            Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{Binding " + binding + ", Converter={StaticResource ResourceText}}");
+        // Speed chart, mode radios and the current-service combo are not on the dashboard any more.
+        Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") is "DashSpeedChart" or "DashModeHttp" or "DashServiceCombo");
         Assert.Equal("OnCoreToggle_Click", (string?)Named(document, "CoreToggleButton").Attribute("Click"));
         var code = File.ReadAllText(AppFile("Views", "MainWindow.Dashboard.cs"));
         // The button reuses the paired-forward connect flow and the ordinary stop path.
@@ -39,15 +48,17 @@ public sealed class RedesignLayoutTests
     }
 
     [Fact]
-    public void NodesPageOffersImportCloudSyncBadgesAndPairing()
+    public void ServicesPageOffersImportCloudSyncBadgesAndPairing()
     {
         var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
-        var nodes = Named(document, "NodesPanel");
-        foreach (var handler in new[] { "OnNodesImport_Click", "OnNodesSyncAll_Click", "OnNodesRefreshCloud_Click", "OnNodeUpload_Click", "OnNodeCopyLink_Click" })
-            Assert.Contains(nodes.Descendants(), node => (string?)node.Attribute("Click") == handler);
-        Assert.Contains(nodes.Descendants(), node => (string?)node.Attribute("Visibility") == "{Binding IsHosted, Converter={StaticResource BoolToVis}}");
-        Assert.Contains(nodes.Descendants(), node => (string?)node.Attribute("ItemsSource") == "{Binding ProxyForwardRows}");
-        Assert.Contains(nodes, Named(document, "ForwardPairingNodeSection").Ancestors());
+        var page = Named(document, "ForwardPairingPanel");
+        foreach (var handler in new[] { "OnNodesImport_Click", "OnNodesSyncAll_Click", "OnNodesRefreshCloud_Click", "OnNodeUpload_Click", "OnNodeCopyLink_Click", "OnSaveForwardPairings_Click" })
+            Assert.Contains(page.Descendants(), node => (string?)node.Attribute("Click") == handler);
+        Assert.Contains(page.Descendants(), node => (string?)node.Attribute("Visibility") == "{Binding IsHosted, Converter={StaticResource BoolToVis}}");
+        Assert.Contains(page.Descendants(), node => (string?)node.Attribute("ItemsSource") == "{Binding ProxyForwardRows}");
+        Assert.Contains(page.Descendants(), node => (string?)node.Attribute(X + "Name") == "ForwardPairingNodeSection");
+        // One place per action: the separate nodes page and its duplicate pairing list are gone.
+        Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") is "NodesPanel" or "NodesPairingRows");
     }
 
     [Fact]

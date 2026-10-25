@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LeiKwan Bridge · Windows 动线预览</title>
+<style>
+:root{
+  --bg:#FAF8FF;--sidebar:#F3F3FE;--card:#EDEDF9;--surface:#E7E7F3;--input:#FFFFFF;--hover:#E1E2ED;
+  --text:#191B23;--muted:#434655;--border:#C3C6D7;
+  --primary:#004AC6;--on-primary:#FFFFFF;
+  --sec:#DBE1FF;--on-sec:#394C84;
+  --success:#16A34A;--warning:#D97706;--danger:#BA1A1A;--on-danger:#FFFFFF;
+  --warn-bg:rgba(217,119,6,.12);--danger-bg:rgba(186,26,26,.10);--ok-bg:rgba(22,163,74,.12);
+  --side-sel:#DBE1FF;--side-sel-text:#394C84;--side-text:#434655;
+}
+:root.dark{
+  --bg:#11131B;--sidebar:#191B23;--card:#1D1F27;--surface:#272A33;--input:#1D1F27;--hover:#32353F;
+  --text:#E1E2ED;--muted:#C3C6D7;--border:#434655;
+  --primary:#B4C5FF;--on-primary:#002D6F;
+  --sec:#33467E;--on-sec:#DBE1FF;
+  --success:#4ADE80;--warning:#FBBF24;--danger:#FFB4AB;--on-danger:#3C0A06;
+  --warn-bg:rgba(251,191,36,.12);--danger-bg:rgba(255,180,171,.12);--ok-bg:rgba(74,222,128,.12);
+  --side-sel:#33467E;--side-sel-text:#DBE1FF;--side-text:#C3C6D7;
+}
+[hidden]{display:none !important}
+*{box-sizing:border-box}
+body{margin:0;background:#E9EAF4;color:#191B23;font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;font-size:13px}
+
+/* outer toolbar (not part of the app) */
+.toolbar{display:flex;align-items:center;gap:16px;padding:10px 20px;background:#fff;border-bottom:1px solid #D7D9E6;position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.tb-title{display:flex;align-items:baseline;gap:10px}
+.tb-title b{font-size:15px}
+.tb-title span{color:#6B6F80}
+.tabs{display:flex;gap:4px;background:#F0F1F8;border-radius:10px;padding:3px}
+.tab,.tb-btn{height:30px;border:0;background:transparent;border-radius:8px;padding:0 12px;font:inherit;color:#434655;cursor:pointer}
+.tab.on{background:#fff;color:#004AC6;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.tb-btn{border:1px solid #D7D9E6;background:#fff}
+.tb-label{display:flex;align-items:center;gap:8px;color:#434655;white-space:nowrap}
+.tb-label select{height:30px;border:1px solid #D7D9E6;border-radius:8px;padding:0 8px;font:inherit;background:#fff}
+.tb-label input[type=checkbox]{width:16px;height:16px;accent-color:#004AC6;margin:0}
+.tb-note{color:#6B6F80;font-size:12px}
+.spacer{flex:1}
+
+#previewView{display:flex;justify-content:center;padding:24px 20px 60px}
+.scale-box{position:relative}
+.window{position:relative;width:1240px;height:820px;background:var(--bg);color:var(--text);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(30,35,70,.28);transform-origin:top left}
+.titlebar{height:32px;display:flex;align-items:center;justify-content:space-between;background:var(--sidebar);padding-left:14px;font-size:12px;color:var(--muted);flex:none}
+.wc{display:flex}
+.wc span{width:46px;height:32px;display:flex;align-items:center;justify-content:center;font-family:"Segoe Fluent Icons","Segoe MDL2 Assets";font-size:10px}
+.frame{flex:1;display:flex;min-height:0}
+
+.sidebar{width:236px;background:var(--sidebar);padding:14px 12px 16px;display:flex;flex-direction:column;flex:none}
+.brand{display:flex;align-items:center;gap:10px;padding:8px 8px 4px}
+.logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#004AC6,#2563EB);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.brand b{font-size:17px;font-weight:600}
+.account{font-size:11px;color:var(--side-text);padding:6px 8px 16px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.sb-spacer{flex:1}
+.nav-btn{display:flex;align-items:center;gap:12px;width:100%;height:40px;border:0;background:transparent;color:var(--side-text);border-radius:8px;padding:0 12px;font:inherit;cursor:pointer;text-align:left}
+.nav-btn:hover{background:var(--hover)}
+.nav-btn.on{background:var(--side-sel);color:var(--side-sel-text);font-weight:600}
+.nav-btn.quiet{height:34px;font-size:12px}
+.ico{font-family:"Segoe Fluent Icons","Segoe MDL2 Assets";font-style:normal;font-size:15px;width:18px;text-align:center;flex:none}
+.sb-status{display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:8px;border-radius:12px;background:var(--surface);font-size:12px}
+
+.content{flex:1;min-width:0;display:flex;flex-direction:column;padding:16px 26px 0}
+.page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;min-height:40px}
+.page-title{font-size:26px;font-weight:600;margin:0}
+.page{flex:1;min-height:0;overflow:auto;padding:0 6px 40px 0}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:14px}
+.card-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.card-h h2{font-size:15px;font-weight:600;margin:0}
+.inset{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.mono{font-family:Consolas,"Cascadia Mono",monospace}
+.hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.55}
+.label{font-size:12px;color:var(--muted);margin:12px 0 6px}
+.row{display:flex;align-items:center;gap:8px}
+.row.end{justify-content:flex-end}
+.warn-text{color:var(--warning)}
+.bad-text{color:var(--danger)}
+.ok-text{color:var(--success)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gap-top{margin-top:12px}
+.align-end{align-self:end}
+.divider{border-top:1px solid var(--border);margin:16px 0 14px}
+.check-col{display:flex;flex-direction:column;gap:2px;margin-top:12px}
+.note-bar{display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;font-size:12.5px;line-height:1.6}
+.note-bar .ico{color:var(--primary);margin-top:2px}
+
+.btn{height:34px;padding:0 16px;border-radius:17px;border:1px solid var(--border);background:transparent;color:var(--text);font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn:disabled{opacity:.45;cursor:default;background:transparent}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+.btn.primary:hover{filter:brightness(1.07);background:var(--primary)}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:var(--on-danger);font-weight:600}
+.btn.danger:hover{filter:brightness(1.05);background:var(--danger)}
+.btn.text-danger{color:var(--danger)}
+.btn.big{height:44px;padding:0 26px;font-size:14px}
+.btn.sm{height:28px;padding:0 12px;font-size:12px}
+.btn.full{width:100%;justify-content:center}
+
+input,select,textarea{font:inherit;color:var(--text);background:var(--input);border:1px solid var(--border);border-radius:10px;padding:7px 10px;width:100%;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--primary)}
+input:disabled,select:disabled{opacity:.5}
+input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--primary);flex:none}
+.check{display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer}
+.narrow-input{width:120px}
+
+.chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:10px;background:var(--sec);color:var(--on-sec);font-size:11px;font-weight:600;white-space:nowrap}
+.chip.gray{background:var(--surface);color:var(--muted);font-weight:500;border:1px solid var(--border)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none;display:inline-block}
+.dot.ok{background:var(--success)}
+.dot.warn{background:var(--warning)}
+.dot.bad{background:var(--danger)}
+
+.alert{border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:1.55;margin-bottom:10px;border:1px solid transparent}
+.alert .ico{margin-top:1px}
+.alert.bad{background:var(--danger-bg);border-color:rgba(186,26,26,.35)}
+.alert.bad .ico{color:var(--danger)}
+
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg.full{display:flex}
+.seg.full button{flex:1;justify-content:center}
+.seg button{height:30px;border:0;background:transparent;color:var(--muted);border-radius:15px;padding:0 14px;font:inherit;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--primary);color:var(--on-primary);font-weight:600}
+.seg button:disabled{opacity:.45;cursor:default}
+
+.switch{position:relative;width:40px;height:22px;border-radius:11px;background:var(--surface);border:1px solid var(--border);cursor:pointer;flex:none}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:left .15s}
+.switch.on{background:var(--primary);border-color:var(--primary)}
+.switch.on::after{left:21px;background:var(--on-primary)}
+
+/* dashboard: plan, usage, rate limit, province only */
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.dash-card{margin:0;min-height:176px;display:flex;flex-direction:column;gap:8px}
+.dash-k{font-size:13px;color:var(--muted);font-weight:600}
+.dash-v{font-size:30px;font-weight:600;line-height:1.2}
+.dash-v .small{font-size:14px;font-weight:400}
+.dash-foot{margin-top:auto}
+.bar{height:8px;border-radius:4px;background:var(--surface);border:1px solid var(--border);overflow:hidden;margin:4px 0 2px}
+.bar span{display:block;height:100%;background:var(--primary)}
+.dash-note{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.6}
+
+/* dashboard forward control list (same behaviour as the old dashboard) */
+.fwd-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.fwd{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;cursor:pointer;min-width:0}
+.fwd:hover{background:var(--hover)}
+.fwd.sel{border-color:var(--primary)}
+.fwd.native{cursor:default;border-style:dashed}
+.fwd.native:hover{background:var(--surface)}
+.fwd-detail{margin-top:12px}
+
+/* steps */
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px}
+.step{border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:var(--card);display:flex;gap:12px;align-items:center}
+.step .num{width:28px;height:28px;border-radius:50%;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:600;flex:none}
+.step.done .num{background:var(--success);border-color:var(--success);color:#fff}
+.step.active{border-color:var(--primary)}
+.step.active .num{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.step b{display:block;font-size:13px}
+.step small{color:var(--muted);font-size:12px}
+
+/* services and nodes */
+.split{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px;align-items:start}
+.node{display:flex;gap:10px;padding:10px 12px;border-radius:12px;border:1px solid transparent;cursor:pointer;margin-bottom:6px}
+.node:hover{background:var(--hover)}
+.node.on{border-color:var(--primary);background:var(--surface)}
+.node-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px}
+.empty{color:var(--muted);padding:10px 4px;line-height:1.55}
+.editor{margin-top:12px}
+.field{margin-top:10px}
+.field-row{display:grid;grid-template-columns:1fr 90px;gap:10px;margin-top:10px}
+.field-row .field{margin-top:0}
+.note{margin-top:10px;line-height:1.5}
+.svc{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.3fr) 60px auto;gap:14px;align-items:center;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:14px;margin-bottom:10px}
+.svc-info{min-width:0}
+.svc-info .row{margin-bottom:4px}
+.svc-listen{text-align:center}
+.svc-listen .switch{margin:6px auto 0}
+.col-h{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.col-h b{font-size:15px}
+
+/* connect and native outbound */
+.connect-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
+.status{color:var(--muted);line-height:1.5;text-align:right;max-width:360px}
+.game{margin-top:12px;margin-bottom:6px}
+.kv{display:grid;grid-template-columns:86px minmax(0,1fr);gap:10px 12px;margin:0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;min-width:0;word-break:break-all}
+.side .alert{margin-bottom:12px}
+.side .btn.full{margin-bottom:14px}
+.log{line-height:1.9;font-size:12px}
+
+/* toast */
+.toast{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:9px 16px;border-radius:10px;font-size:12px;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1}
+
+/* flow view (outside the window frame) */
+#flowView{background:#E9EAF4;min-height:100vh;padding:0 0 60px}
+.flow-wrap{max-width:1040px;margin:0 auto;padding:28px 24px;background:var(--bg);color:var(--text);border-radius:12px;margin-top:24px;box-shadow:0 20px 60px rgba(30,35,70,.18)}
+.flow-wrap h2{font-size:19px;margin:26px 0 10px}
+.flow-wrap h2:first-child{margin-top:0}
+.flow-wrap h3{font-size:14px;margin:18px 0 8px}
+.flow{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+.fbox{flex:1;min-width:190px;border:1px solid var(--border);border-radius:14px;padding:14px 16px;background:var(--card)}
+.fbox.good{border-color:var(--success)}
+.fbox.opt{border-style:dashed}
+.fbox b{display:block;margin-bottom:6px;font-size:15px}
+.fbox span{font-size:12.5px;color:var(--muted);line-height:1.6}
+.arrow{align-self:center;color:var(--muted);font-size:20px}
+.flow-wrap ol,.flow-wrap ul{line-height:1.8;padding-left:22px;margin:0}
+.flow-wrap li{margin-bottom:4px}
+.flow-wrap .rec{color:var(--success);font-weight:600}
+</style>
+</head>
+<body>
+
+<header class="toolbar">
+  <div class="tb-title"><b>LeiKwan Bridge</b><span>Windows 动线预览</span></div>
+  <nav class="tabs">
+    <button class="tab on" data-tab="preview">界面预览</button>
+    <button class="tab" data-tab="flow">动线说明</button>
+  </nav>
+  <div class="spacer"></div>
+  <label class="tb-label">预览状态
+    <select id="scenario">
+      <option value="new">新用户（还没有节点）</option>
+      <option value="unpaired">有节点，未配对</option>
+      <option value="paired" selected>已配对，未连接</option>
+      <option value="connected">已连接</option>
+      <option value="failed">连接失败（端口被占用）</option>
+    </select>
+  </label>
+  <label class="tb-label"><input type="checkbox" id="nativeToggle" checked> 有原生出口</label>
+  <button class="tb-btn" id="themeBtn">深色</button>
+  <span class="tb-note">静态原型，未改动 WPF 代码</span>
+</header>
+
+<main id="previewView">
+  <div class="scale-box" id="scaleBox">
+    <div class="window" id="win">
+      <div class="titlebar">
+        <span>LeiKwan Bridge</span>
+        <span class="wc"><span>&#xE921;</span><span>&#xE922;</span><span>&#xE8BB;</span></span>
+      </div>
+      <div class="frame">
+        <aside class="sidebar">
+          <div class="brand"><div class="logo">L</div><b>LeiKwan Bridge</b></div>
+          <div class="account">demo@example.com</div>
+          <nav class="nav" id="nav"></nav>
+          <div class="sb-spacer"></div>
+          <div class="sb-status"><span class="dot" id="sbDot"></span><span id="sbText"></span></div>
+          <button class="nav-btn quiet" data-action="noop" data-msg="预览：未检查更新"><span class="ico">&#xE895;</span>v0.1.20.74 · 检查更新</button>
+          <button class="nav-btn quiet" data-action="noop" data-msg="预览：未退出登录"><span class="ico">&#xF3B1;</span>退出登录</button>
+        </aside>
+        <section class="content">
+          <header class="page-head">
+            <h1 class="page-title" id="pageTitle"></h1>
+            <div class="row" id="pageActions"></div>
+          </header>
+          <div class="page" id="page"></div>
+        </section>
+      </div>
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+</main>
+
+<main id="flowView" hidden>
+  <div class="flow-wrap">
+    <h2>现在的动线：4 步，跨 4 个页面</h2>
+    <div class="flow">
+      <div class="fbox"><b>1 节点</b><span>导入或编辑节点（节点页）</span></div>
+      <div class="arrow">→</div>
+      <div class="fbox"><b>2 服务</b><span>把节点配对到服务（服务页）。节点页里还有一套配对。</span></div>
+      <div class="arrow">→</div>
+      <div class="fbox"><b>3 代理</b><span>选服务、选模式、点连接。连接设置默认折叠。</span></div>
+      <div class="arrow">→</div>
+      <div class="fbox"><b>4 仪表盘</b><span>逐条“启动”服务。这和代理页的“连接”是两套开关。</span></div>
+    </div>
+
+    <h3>现在的问题（已对照代码确认）</h3>
+    <ul>
+      <li>配对入口有两处。服务页的“转发配对”和节点页的“节点”列表，绑定的是同一份 <span class="mono">ProxyForwardRows</span>，用户要在两个页面之间来回找。</li>
+      <li>节点编辑入口有两处。节点页有编辑器；代理页的“连接设置”里还有一套手动填写（<span class="mono">ProxyManualSection</span>）。它在 XAML 里默认折叠，代码里没有让它显示的路径（只找到 XAML 里一处引用），所以按“新建节点”展开后，看不到编辑字段。</li>
+      <li>“连接设置”默认折叠（<span class="mono">ProxyNodeEditorExpander</span>），但绕过大陆 IP、DNS、本地端口都在里面，是每次连接都会碰到的选项。</li>
+      <li>仪表盘的“启动”只拉起转发监听（<span class="mono">ApplyForward</span>），代理页的“连接”会在转发之上再启动 sing-box。界面上两者都是按钮，用户分不清。</li>
+    </ul>
+
+    <h2>建议的动线：3 个固定页面，原生出口按需出现</h2>
+    <div class="flow">
+      <div class="fbox good"><b>1 服务与节点</b><span>导入节点、编辑节点、把节点配对到服务，全部在同一页完成。配对只保存配置，不发起连接。</span></div>
+      <div class="arrow">→</div>
+      <div class="fbox good"><b>2 连接</b><span>页首一句说明（中英文）。然后一页包办：选服务、选模式、连接，以及绕过大陆 IP、DNS、本地端口、游戏。整页不折叠。</span></div>
+      <div class="arrow">→</div>
+      <div class="fbox good"><b>3 仪表盘</b><span>上面四张卡：套餐、用量、速率限制、当前归属省份。下面是老版本的转发控制列表：启动、停止、转发详情、全部启动和全部停止。</span></div>
+    </div>
+    <div class="flow" style="margin-top:10px">
+      <div class="fbox opt"><b>原生出口（仅在有时显示）</b><span>从左侧导航拆出来，单独一项。只有套餐分配了原生出口时才出现，没有时整项隐藏。它使用套餐出口，不是用户自己的节点，所以不放进节点列表，也不混进“连接”。</span></div>
+    </div>
+
+    <h3>已按你的反馈确定</h3>
+    <ul>
+      <li>服务与节点合并为一页。</li>
+      <li>“连接设置”并入“连接”，整页不折叠，不再单独叫“连接设置”。</li>
+      <li>“原生出口”拆成导航里的独立一项，只在有原生出口时显示。</li>
+      <li>“代理”更名为“连接”。</li>
+      <li>仪表盘顶部只放套餐、用量、速率限制、当前归属省份四张卡，不展示代理连接状态和速率图表。</li>
+      <li>仪表盘下方保留老版本的转发控制列表（启动、停止、转发详情、全部启动和全部停止）。</li>
+      <li>“连接”页顶部加一句说明：该功能非必须，连接终端由使用者提供，可用其他软件往 127.0.0.1 连接，或从局域网连接。</li>
+    </ul>
+
+    <h3>仍需你确认的 3 个决定</h3>
+    <ol>
+      <li>配对是否改为即时保存，去掉“保存配对”按钮？<br><span class="rec">建议：是。</span> 预览里改下拉框就保存，并给一个“已自动保存”的提示。</li>
+      <li>服务上的“本地监听”开关要不要保留？它对应“其他代理软件指向 127.0.0.1”的场景。仪表盘的启动/停止和它是同一个开关，两处入口要留一处还是都留。<br><span class="rec">建议：保留，作为服务卡上的次要开关，不和“连接”混在一起。</span></li>
+      <li>侧栏底部的连接状态圆点要不要去掉？它在每个页面都显示，仪表盘本身已经不展示连接状态。<br><span class="rec">建议：保留。</span> 连接在别的页面时，它是唯一能一眼看到连接状态的地方。</li>
+    </ol>
+
+    <h3>数据来源（实现前要核对）</h3>
+    <ul>
+      <li>当前归属省份：后端已有，用来限制登录地区。这个版本先在 Windows 上只读展示，不在客户端计算。</li>
+      <li>套餐、用量、速率限制：预览里是示例数字。我还没有核对面板是否已经把这三项下发给 Windows 客户端，实现前需要确认接口。</li>
+    </ul>
+
+    <h3>实现范围（确认后再做，不改 Core、面板或协议）</h3>
+    <ul>
+      <li><span class="mono">MainWindow.xaml</span>：把 <span class="mono">ForwardPairingPanel</span> 和 <span class="mono">NodesPanel</span> 合并为一页，删除 <span class="mono">NodesPairingRows</span> 里的重复配对。</li>
+      <li><span class="mono">MainWindow.xaml</span>：仪表盘（<span class="mono">DashboardPanel</span>）只保留四张卡，速度图和服务概览移出；下方的转发控制区块（当前约 483–633 行）保留。</li>
+      <li><span class="mono">MainWindow.xaml</span>：代理页的 <span class="mono">ProxyNodeEditorExpander</span> 去掉 Expander，“连接设置”的内容并入“连接”卡片，整页常显；节点编辑只保留一套。</li>
+      <li><span class="mono">MainWindow.xaml</span>：把 <span class="mono">NativeOutboundCard</span> 移到独立的“原生出口”页。它的显示条件已经是 <span class="mono">NativeOutboundCapability.Enabled &amp;&amp; NativeOutboundForwards.Count &gt; 0</span>，导航项沿用这个条件。</li>
+      <li><span class="mono">MainWindow.xaml.cs</span>：<span class="mono">CurrentView</span> 切换与页面标题映射（约 1513–1537 行）加入“原生出口”项，并在它隐藏时回落到“连接”。</li>
+      <li>文案：zh-CN / en-US 新增“服务与节点”“连接”“原生出口”，以及连接页顶部的说明句。</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+const MODE_LABEL = {http:'HTTP', tun:'TUN（全设备）', process:'游戏加速'};
+const MODE_HINT = {
+  http:'<span class="warn-text">只代理遵循系统代理设置的程序。浏览器 WebRTC 不受保护，需要全设备保护请用 TUN。</span>',
+  tun:'全设备流量经过所选节点，需要管理员权限。',
+  process:'只加速选中的游戏进程，需要管理员权限。游戏可以稍后再启动。'
+};
+const NAV = [
+  {id:'dash', label:'仪表盘', icon:''},
+  {id:'services', label:'服务与节点', icon:''},
+  {id:'connect', label:'连接', icon:''},
+  {id:'native', label:'原生出口', icon:'', native:true},
+  {id:'logs', label:'日志', icon:''},
+  {id:'settings', label:'设置', icon:''}
+];
+const BASE = {
+  nodes: [
+    {id:'hk1', name:'HK-Node-01', proto:'SS', server:'hk1.example.net', port:8388, cloud:false},
+    {id:'sg1', name:'SG-Hosted', proto:'VLESS', server:'sg.example.net', port:443, cloud:true},
+    {id:'jp1', name:'Work SOCKS5', proto:'SOCKS5', server:'10.0.0.8', port:1080, cloud:false}
+  ],
+  services: [
+    {id:334, title:'CAN → HKG', proto:'TCP', port:32216, node:'hk1', listen:false},
+    {id:65, title:'SHA → TYO', proto:'TCP+UDP', port:32265, node:'sg1', listen:false},
+    {id:121, title:'CAN → TPE', proto:'TCP', port:32221, node:null, listen:false}
+  ]
+};
+
+let S = null;
+let page = 'dash';
+let hasNative = true;   // 套餐是否分配了原生出口；独立于服务与节点的状态
+
+function scenario(key){
+  const d = JSON.parse(JSON.stringify(BASE));
+  if (key === 'new'){ d.nodes = []; d.services.forEach(s => s.node = null); }
+  if (key === 'unpaired'){ d.services.forEach(s => s.node = null); }
+  if (key === 'connected'){ d.services[0].listen = true; }
+  S = Object.assign({
+    mode:'tun', dns:'remote', customDns:'8.8.8.8, 1.1.1.1', bypass:true, port:2082,
+    serviceId:334, nodeSel:'hk1', fwdSel:null,
+    connected: key === 'connected', failed: key === 'failed',
+    native: {forwardId:325, mode:'tun', bypass:true, unrestricted:false, running:false}
+  }, d);
+}
+
+const paired = () => S.services.filter(s => s.node);
+const nodeOf = id => S.nodes.find(n => n.id === id);
+const curSvc = () => paired().find(s => s.id === S.serviceId) || paired()[0] || null;
+const navItems = () => NAV.filter(n => !n.native || hasNative);
+function phase(){
+  if (!S.nodes.length) return 'new';
+  if (!paired().length) return 'unpaired';
+  if (S.failed) return 'failed';
+  if (S.connected) return 'connected';
+  return 'paired';
+}
+
+function stepsHtml(){
+  const n = S.nodes.length, p = paired().length, live = S.connected;
+  const st1 = n ? 'done' : 'active';
+  const st2 = !n ? 'todo' : (p ? 'done' : 'active');
+  const st3 = live ? 'done' : (p ? 'active' : 'todo');
+  const tick = '<i class="ico"></i>';
+  return `<div class="steps">
+    <div class="step ${st1}"><span class="num">${n ? tick : '1'}</span><div><b>添加节点</b><small>${n ? `已保存 ${n} 个节点` : '导入分享链接或新建节点'}</small></div></div>
+    <div class="step ${st2}"><span class="num">${p ? tick : '2'}</span><div><b>配对服务</b><small>${p ? `已配对 ${p} / ${S.services.length} 条服务` : '为服务选择一个节点'}</small></div></div>
+    <div class="step ${st3}"><span class="num">${live ? tick : '3'}</span><div><b>连接</b><small>${live ? '代理已开启' : '选择服务与模式后连接'}</small></div></div>
+  </div>`;
+}
+
+/* Dashboard: four account cards, then the forward control list from the old dashboard.
+   Forward state is the listener state (same flag as the services page 本地监听 switch).
+   Account values are sample data. */
+function fwdState(x){
+  if (x.listen) return {text:'已启动', tone:'ok', msg:''};
+  if (S.failed && x.id === 334) return {text:'不可用', tone:'bad', msg:'转发 #334：本地端口已被其他程序占用。'};
+  return {text:'已停止', tone:'', msg:''};
+}
+function setListen(x, on){
+  if (on && S.failed && x.id === 334){ toast('转发 #334 端口仍被占用，无法启动'); return; }
+  x.listen = on;
+}
+const QUALITY = {334:'良', 65:'优', 121:'良'};   // sample values
+
+function renderDash(){
+  const selected = S.services.find(x => String(x.id) === String(S.fwdSel));
+  const cards = S.services.map(x => {
+    const st = fwdState(x), on = x.listen;
+    return `<div class="fwd ${String(S.fwdSel) === String(x.id) ? 'sel' : ''}" data-fwd-select="${x.id}">
+      <div class="row"><span class="dot ${st.tone}"></span><b>${x.title}</b><span class="spacer"></span><span class="chip gray">${QUALITY[x.id]}</span></div>
+      <div class="small muted">#${x.id} · ${x.proto} · <span class="mono">127.0.0.1:${x.port}</span></div>
+      <div class="small">${st.text}</div>
+      ${st.msg ? `<div class="small bad-text">${st.msg}</div>` : ''}
+      <div class="row end" style="margin-top:auto"><button class="btn sm ${on ? '' : 'primary'}" data-fwd-toggle="${x.id}">${on ? '停止' : '启动'}</button></div>
+    </div>`;
+  }).join('');
+  const nativeCard = hasNative ? `<div class="fwd native">
+      <div class="row"><span class="dot"></span><b>SHA → TYO · #325</b></div>
+      <div class="small muted">（原生出站规则）</div>
+      <div class="small muted">在“原生出口”页配置，这里不启停。</div>
+    </div>` : '';
+  let detail = '';
+  if (selected){
+    const st = fwdState(selected);
+    detail = `<div class="inset fwd-detail">
+      <div class="row"><b>转发详情</b></div>
+      <dl class="kv" style="margin-top:10px">
+        <dt>转发</dt><dd>#${selected.id} ${selected.title}</dd>
+        <dt>状态</dt><dd>${st.text}</dd>
+        <dt>质量</dt><dd>${QUALITY[selected.id]}</dd>
+        <dt>消息</dt><dd>${st.msg || '—'}</dd>
+      </dl>
+      <div class="row end" style="margin-top:12px"><button class="btn sm ${selected.listen ? '' : 'primary'}" data-fwd-toggle="${selected.id}">${selected.listen ? '停止' : '启动'}</button></div>
+    </div>`;
+  }
+  return `<div class="dash-grid">
+    <div class="card dash-card">
+      <div class="dash-k">套餐</div>
+      <div class="dash-v">Plan 7 <span class="small muted">专线</span></div>
+      <div class="small muted">到期 2026-11-30</div>
+      <div class="dash-foot"><button class="btn sm" data-action="noop" data-msg="预览：未打开续费页面">续费</button></div>
+    </div>
+    <div class="card dash-card">
+      <div class="dash-k">用量</div>
+      <div class="dash-v">128.4 GB <span class="small muted">/ 500 GB</span></div>
+      <div class="bar"><span style="width:26%"></span></div>
+      <div class="small muted">已用 26%，下次重置 2026-11-01</div>
+    </div>
+    <div class="card dash-card">
+      <div class="dash-k">速率限制</div>
+      <div class="dash-v">300 Mbps</div>
+      <div class="small muted">套餐上限</div>
+    </div>
+    <div class="card dash-card">
+      <div class="dash-k">当前归属省份</div>
+      <div class="dash-v">广东</div>
+      <div class="small muted">由后端按账号下发，只读。登录地区限制依据此归属。</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-h"><h2>转发控制</h2><span class="spacer"></span><span class="small muted">${S.services.length} 个转发</span></div>
+    <div class="fwd-grid">${cards}${nativeCard}</div>
+    ${detail}
+  </div>
+  <div class="dash-note">以上数值为示例，仅用于版式预览。归属省份字段后端已有，Windows 先只读展示。</div>`;
+}
+
+function renderServices(){
+  const sel = S.nodes.find(n => n.id === S.nodeSel) || S.nodes[0];
+  const list = S.nodes.length ? S.nodes.map(n => {
+    const used = S.services.filter(s => s.node === n.id);
+    return `<div class="node ${sel && sel.id === n.id ? 'on' : ''}" data-node="${n.id}">
+      <div class="node-main">
+        <div class="row"><b>${n.name}</b>${n.cloud ? '<span class="chip">云端</span>' : ''}</div>
+        <div class="row small"><span class="chip gray">${n.proto}</span><span class="mono muted">${n.server}:${n.port}</span></div>
+        <div class="small muted">${used.length ? '配对到 ' + used.map(s => '#' + s.id).join('、') : '未配对'}</div>
+      </div></div>`;
+  }).join('') : '<div class="empty">还没有节点。粘贴分享链接导入，或点“新建”手动填写。</div>';
+
+  const editor = sel ? `<div class="inset editor">
+      <div class="row"><b>编辑节点</b><span class="spacer"></span>${sel.cloud ? '<span class="chip">云端</span>' : ''}</div>
+      <div class="field"><div class="label">名称</div><input value="${sel.name}"></div>
+      <div class="field-row">
+        <div><div class="label">服务器</div><input class="mono" value="${sel.server}"></div>
+        <div><div class="label">端口</div><input class="mono" value="${sel.port}"></div>
+      </div>
+      <div class="field"><div class="label">协议</div><span class="chip gray">${sel.proto}</span></div>
+      ${sel.cloud ? '<div class="small muted note">云端节点由面板保存，修改后同步到你的其它设备。</div>' : ''}
+      <div class="row end" style="margin-top:12px">
+        <button class="btn sm text-danger" data-action="noop" data-msg="预览：未删除">删除</button>
+        <button class="btn sm primary" data-action="noop" data-msg="预览：未保存">保存节点</button>
+      </div>
+    </div>` : '';
+
+  const svcs = S.services.map(x => `<div class="svc">
+      <div class="svc-info">
+        <div class="row"><b>${x.title}</b><span class="chip gray">#${x.id}</span></div>
+        <div class="small muted">${x.proto} · <span class="mono">127.0.0.1:${x.port}</span></div>
+      </div>
+      <div>
+        <div class="small muted">配对节点</div>
+        <select data-pair="${x.id}" ${S.nodes.length ? '' : 'disabled'} style="margin-top:4px">
+          <option value="">未配对</option>
+          ${S.nodes.map(m => `<option value="${m.id}" ${x.node === m.id ? 'selected' : ''}>${m.name}</option>`).join('')}
+        </select>
+        ${x.node ? '' : '<div class="small warn-text" style="margin-top:4px">连接前需要先配对节点</div>'}
+      </div>
+      <div class="svc-listen">
+        <div class="small muted">本地监听</div>
+        <div class="switch ${x.listen ? 'on' : ''}" data-listen="${x.id}" title="供其他代理软件指向 127.0.0.1 使用"></div>
+      </div>
+      <button class="btn sm" data-svc-connect="${x.id}" ${x.node ? '' : 'disabled'}>去连接</button>
+    </div>`).join('');
+
+  return `${stepsHtml()}
+    <div class="split">
+      <div class="card">
+        <div class="card-h"><h2>我的节点</h2><span class="small muted">${S.nodes.length} 个</span><span class="spacer"></span><button class="btn sm" data-action="noop" data-msg="预览：未打开节点编辑器">新建</button></div>
+        <div class="inset">
+          <textarea rows="2" placeholder="粘贴 ss:// · socks5:// · vless:// 分享链接"></textarea>
+          <div class="row end" style="margin-top:8px">
+            <button class="btn sm" data-action="noop" data-msg="预览：未粘贴">粘贴</button>
+            <button class="btn sm primary" data-action="noop" data-msg="预览：未导入">导入</button>
+          </div>
+        </div>
+        <div style="margin-top:12px">${list}</div>
+        ${editor}
+      </div>
+      <div>
+        <div class="card">
+          <div class="col-h"><b>服务</b><span class="small muted">每条服务选一个节点即可配对，修改后自动保存。配对只保存配置，不会发起连接。</span></div>
+          ${svcs}
+        </div>
+      </div>
+    </div>`;
+}
+
+/* 连接: one page, settings always visible. The note is the copy the user asked for, zh + en. */
+const CONNECT_NOTE = `<div class="note-bar">
+  <i class="ico"></i>
+  <div>
+    <div>该功能非必须，连接终端由使用者提供。您可使用其他软件，往 127.0.0.1 连接，或局域网连接。</div>
+    <div class="muted small">This feature is optional. The connection endpoint is provided by you. Connect from other software to 127.0.0.1, or from your local network.</div>
+  </div>
+</div>`;
+
+function renderConnect(){
+  return CONNECT_NOTE + renderConnectBody();
+}
+
+function renderConnectBody(){
+  const list = paired();
+  if (!list.length){
+    return `<div class="card" style="max-width:560px">
+      <div class="card-h"><h2>还没有配对的服务</h2></div>
+      <p class="muted" style="line-height:1.6;margin:0 0 14px">连接需要一个已配对节点的服务。先到“服务与节点”完成配对。</p>
+      <button class="btn primary" data-goto="services">前往服务与节点</button>
+    </div>`;
+  }
+  const s = curSvc(), n = nodeOf(s.node);
+  const live = S.connected, failed = S.failed;
+  const locked = live;
+  const statusText = live ? `已连接 · 127.0.0.1:${S.port} · 服务 #${s.id}`
+    : failed ? '连接失败，原因见右侧。'
+    : '就绪。选择服务与模式后点击连接。';
+  const btn = live
+    ? '<button class="btn danger" data-action="toggleConnect">断开连接</button>'
+    : `<button class="btn primary" data-action="toggleConnect">${failed ? '重试连接' : '连接'}</button>`;
+
+  const gameBlock = S.mode === 'process' ? `<div class="inset game">
+      <div class="row"><b>选择要加速的游戏</b><span class="spacer"></span>
+        <button class="btn sm" data-action="noop" data-msg="预览：未添加">添加游戏</button>
+        <button class="btn sm" data-action="noop" data-msg="预览：未导入">导入 Netch 模式</button>
+        <button class="btn sm" data-action="noop" data-msg="预览：未刷新">刷新</button>
+      </div>
+      <select style="margin-top:10px"><option>示例游戏 A · 启动器与主进程</option><option>示例游戏 B</option></select>
+      <div class="row" style="margin-top:10px"><span class="chip">当前加速：示例游戏 A</span><span class="spacer"></span><button class="btn sm" data-action="noop" data-msg="预览：未测试">测试 UDP</button></div>
+    </div>` : '';
+
+  const failAlert = failed ? `<div class="alert bad"><i class="ico"></i><div>转发 #${s.id}：本地端口已被其他程序占用。请关闭占用它的程序，或换一个本地端口。</div></div>
+    <button class="btn full" data-action="fixPort">换一个端口（改为 2083）</button>` : '';
+
+  return `<div class="connect-grid">
+    <div>
+      <div class="card">
+        <div class="card-h"><span class="spacer"></span><span class="status ${failed ? 'bad-text' : ''}">${statusText}</span>${btn}</div>
+        <div class="label" style="margin-top:0">服务</div>
+        <select id="svcSelect" ${locked ? 'disabled' : ''}>${list.map(x => `<option value="${x.id}" ${x.id === s.id ? 'selected' : ''}>#${x.id} · ${x.title} · ${nodeOf(x.node).name}</option>`).join('')}</select>
+        <div class="label">模式</div>
+        <div class="seg">${['http','tun','process'].map(m => `<button data-mode="${m}" class="${S.mode === m ? 'on' : ''}" ${locked ? 'disabled' : ''}>${MODE_LABEL[m]}</button>`).join('')}</div>
+        <div class="hint">${MODE_HINT[S.mode]}</div>
+        ${locked ? '<div class="hint">请先断开连接，再切换服务或模式。</div>' : ''}
+
+        <div class="divider"></div>
+        <label class="check"><input type="checkbox" id="bypass" ${S.bypass ? 'checked' : ''}> 绕过中国大陆 IP（直连）</label>
+        <div class="grid2" style="margin-top:10px">
+          <div>
+            <div class="label" style="margin-top:0">DNS 模式</div>
+            <div class="seg full">
+              <button data-dns="remote" class="${S.dns === 'remote' ? 'on' : ''}">通过节点远程解析</button>
+              <button data-dns="custom" class="${S.dns === 'custom' ? 'on' : ''}">自定义 DNS</button>
+            </div>
+          </div>
+          <div>
+            <div class="label" style="margin-top:0">DNS 地址</div>
+            <input id="dnsServers" class="mono" value="${S.customDns}" ${S.dns === 'custom' ? '' : 'disabled'}>
+          </div>
+        </div>
+        <div class="hint">远程模式会通过当前节点发送 DNS 请求；自定义模式支持用逗号分隔的 IPv4/IPv6 地址。</div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <div class="label" style="margin-top:0">本地代理端口（HTTP/SOCKS5）</div>
+            <input id="portInput" class="mono" value="${S.port}">
+          </div>
+          <div class="hint align-end" style="margin-top:0">HTTP 和游戏加速使用此端口；端口被占用时，游戏加速会自动选择附近的可用端口。</div>
+        </div>
+        ${gameBlock}
+      </div>
+    </div>
+
+    <div class="side">
+      ${failAlert}
+      <div class="card">
+        <div class="card-h"><h2>当前状态</h2></div>
+        <dl class="kv">
+          <dt>服务</dt><dd>#${s.id} ${s.title}</dd>
+          <dt>节点</dt><dd>${n.name} ${n.cloud ? '<span class="chip">云端</span>' : ''}</dd>
+          <dt>模式</dt><dd>${MODE_LABEL[S.mode]}</dd>
+          <dt>本地端口</dt><dd class="mono">127.0.0.1:${S.port}</dd>
+          <dt>绕过大陆</dt><dd>${S.bypass ? '是' : '否'}</dd>
+          <dt>DNS</dt><dd>${S.dns === 'remote' ? '通过节点远程解析' : '自定义'}</dd>
+          <dt>状态</dt><dd class="${live ? 'ok-text' : (failed ? 'bad-text' : '')}">${live ? '已开启' : (failed ? '失败' : '未开启')}</dd>
+        </dl>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderNative(){
+  const nv = S.native;
+  const status = nv.running ? '运行中' : '未启动';
+  const btn = nv.running
+    ? '<button class="btn danger" data-action="toggleNative">停止原生出口</button>'
+    : '<button class="btn primary" data-action="toggleNative">启动原生出口</button>';
+  return `<div class="connect-grid">
+    <div>
+      <div class="card">
+        <div class="card-h"><span class="chip gray">套餐分配</span><span class="spacer"></span><span class="status">${status}</span>${btn}</div>
+        <div class="small muted" style="line-height:1.55">使用套餐分配的原生 SOCKS5 出口，无需自带节点；凭据只在本机运行时短暂使用。</div>
+        <div class="grid2" style="margin-top:12px">
+          <div><div class="label" style="margin-top:0">默认载体 Forward</div><select id="natForward"><option value="325">SHA → TYO · #325</option></select></div>
+          <div><div class="label" style="margin-top:0">本机模式</div>
+            <select id="natMode">
+              <option value="tun" ${nv.mode === 'tun' ? 'selected' : ''}>TUN（全设备）</option>
+              <option value="http" ${nv.mode === 'http' ? 'selected' : ''}>HTTP</option>
+            </select>
+          </div>
+        </div>
+        <div class="check-col">
+          <label class="check"><input type="checkbox" id="natBypass" ${nv.bypass ? 'checked' : ''}> 绕过中国大陆 IP（直连）</label>
+          <label class="check"><input type="checkbox" id="natUnrestricted" ${nv.unrestricted ? 'checked' : ''}> 不限制完整路由（全部端口，不经 OpenGFW）</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <div class="card-h"><h2>当前状态</h2></div>
+        <dl class="kv">
+          <dt>载体</dt><dd>#325 SHA → TYO</dd>
+          <dt>模式</dt><dd>${nv.mode === 'tun' ? 'TUN（全设备）' : 'HTTP'}</dd>
+          <dt>绕过大陆</dt><dd>${nv.bypass ? '是' : '否'}</dd>
+          <dt>完整路由</dt><dd>${nv.unrestricted ? '不限制' : '默认'}</dd>
+          <dt>状态</dt><dd class="${nv.running ? 'ok-text' : ''}">${status}</dd>
+        </dl>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderLogs(){
+  return `<div class="card">
+    <div class="card-h"><h2>日志</h2><span class="small muted">本次不改动，沿用现有页面</span></div>
+    <div class="inset mono log">12:01:03&nbsp; Started forward 334.<br>12:01:04&nbsp; Proxy connected (tun).<br>12:04:40&nbsp; Forward 65 failed to start.</div>
+  </div>`;
+}
+
+function renderSettings(){
+  return `<div class="card">
+    <div class="card-h"><h2>设置</h2><span class="small muted">本次不改动，沿用现有页面</span></div>
+    <p class="muted" style="margin:0;line-height:1.6">应用设置（语言、主题、自动更新等）与“连接”里的选项是两件事。连接选项只放在连接页，这里不重复。</p>
+  </div>`;
+}
+
+const PAGES = {dash: renderDash, services: renderServices, connect: renderConnect, native: renderNative, logs: renderLogs, settings: renderSettings};
+
+function render(){
+  const dark = document.documentElement.classList.contains('dark');
+  if (page === 'native' && !hasNative) page = 'connect';
+  document.getElementById('nav').innerHTML = navItems().map(n =>
+    `<button class="nav-btn ${n.id === page ? 'on' : ''}" data-goto="${n.id}"><i class="ico">${n.icon}</i>${n.label}</button>`).join('');
+  document.getElementById('pageTitle').textContent = NAV.find(n => n.id === page).label;
+  document.getElementById('pageActions').innerHTML = page === 'services'
+    ? '<button class="btn sm" data-action="syncAll">全部同步到云端</button>'
+    : page === 'dash'
+    ? '<button class="btn sm" data-action="startAll">全部启动</button><button class="btn sm" data-action="stopAll">全部停止</button>'
+    : '';
+  document.getElementById('page').innerHTML = PAGES[page]();
+  const ph = phase();
+  const dot = document.getElementById('sbDot'), text = document.getElementById('sbText');
+  const map = {connected:['ok','代理已开启'], failed:['bad','连接失败'], paired:['', '代理未开启'], unpaired:['', '未配对'], new:['', '还没有节点']};
+  dot.className = 'dot ' + map[ph][0];
+  text.textContent = map[ph][1];
+  document.getElementById('themeBtn').textContent = dark ? '浅色' : '深色';
+}
+
+let toastTimer;
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function toggleConnect(){
+  if (!curSvc()) return;
+  if (S.failed){ S.failed = false; S.connected = true; return; }
+  S.connected = !S.connected;
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-goto],[data-action],[data-node],[data-listen],[data-mode],[data-dns],[data-svc-connect],[data-tab],[data-fwd-toggle],[data-fwd-select]');
+  if (!t) return;
+  const d = t.dataset;
+  if (d.tab){
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b === t));
+    document.getElementById('previewView').hidden = d.tab !== 'preview';
+    document.getElementById('flowView').hidden = d.tab !== 'flow';
+    return;
+  }
+  if (d.goto){ page = d.goto; return render(); }
+  if (d.node){ S.nodeSel = d.node; return render(); }
+  if (d.listen){ const s = S.services.find(x => String(x.id) === d.listen); setListen(s, !s.listen); return render(); }
+  if (d.fwdSelect){ S.fwdSel = String(S.fwdSel) === d.fwdSelect ? null : Number(d.fwdSelect); return render(); }
+  if (d.fwdToggle){ const s = S.services.find(x => String(x.id) === d.fwdToggle); setListen(s, !s.listen); return render(); }
+  if (d.mode){ if (!S.connected){ S.mode = d.mode; render(); } return; }
+  if (d.dns){ S.dns = d.dns; return render(); }
+  if (d.svcConnect){ S.serviceId = Number(d.svcConnect); page = 'connect'; return render(); }
+  switch (d.action){
+    case 'toggleConnect': toggleConnect(); break;
+    case 'toggleNative': S.native.running = !S.native.running; toast(S.native.running ? '预览：原生出口已标记为运行中' : '预览：原生出口已停止'); break;
+    case 'fixPort': S.failed = false; S.port = 2083; toast('已改为本地端口 2083，可以重新连接'); break;
+    case 'syncAll': toast('预览：未同步到云端'); break;
+    case 'startAll': S.services.forEach(x => setListen(x, true)); break;
+    case 'stopAll': S.services.forEach(x => x.listen = false); break;
+    case 'noop': toast(d.msg || '预览：未执行'); break;
+  }
+  render();
+});
+
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.pair !== undefined){
+    const s = S.services.find(x => String(x.id) === t.dataset.pair);
+    s.node = t.value || null;
+    toast('配对已自动保存');
+    return render();
+  }
+  if (t.id === 'svcSelect'){ S.serviceId = Number(t.value); return render(); }
+  if (t.id === 'bypass'){ S.bypass = t.checked; return render(); }
+  if (t.id === 'natMode'){ S.native.mode = t.value; return render(); }
+  if (t.id === 'natBypass'){ S.native.bypass = t.checked; return render(); }
+  if (t.id === 'natUnrestricted'){ S.native.unrestricted = t.checked; return render(); }
+  if (t.id === 'nativeToggle'){ hasNative = t.checked; return render(); }
+});
+
+document.addEventListener('input', e => {
+  if (e.target.id === 'portInput'){
+    const v = parseInt(e.target.value, 10);
+    if (!Number.isNaN(v)) S.port = v;
+  }
+  if (e.target.id === 'dnsServers') S.customDns = e.target.value;
+});
+
+document.getElementById('scenario').addEventListener('change', e => {
+  scenario(e.target.value);
+  render();
+});
+
+document.getElementById('themeBtn').addEventListener('click', () => {
+  document.documentElement.classList.toggle('dark');
+  render();
+});
+
+function fit(){
+  const s = Math.min(1, (window.innerWidth - 40) / 1240);
+  document.getElementById('win').style.transform = `scale(${s})`;
+  const box = document.getElementById('scaleBox');
+  box.style.width = (1240 * s) + 'px';
+  box.style.height = (820 * s) + 'px';
+}
+window.addEventListener('resize', fit);
+
+scenario('paired');
+fit();
+render();
+</script>
+</body>
+</html>

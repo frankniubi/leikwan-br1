@@ -38,7 +38,7 @@
 
     <!-- Navigation -->
     <system:String x:Key="NavDashboard">仪表盘</system:String>
-    <system:String x:Key="NavForwards">服务</system:String>
+    <system:String x:Key="NavForwards">服务与节点</system:String>
     <system:String x:Key="ForwardPairingTitle">转发配对</system:String>
     <system:String x:Key="ForwardPairingHint">该功能非必须，您可于其他代理软件将服务器地址改为 127.0.0.1 后使用</system:String>
     <system:String x:Key="ForwardPairingListHint">请选择每条线路对应的已保存节点。这里只保存配对，不会发起连接。</system:String>
@@ -175,7 +175,7 @@
     <system:String x:Key="ModeRace">竞速</system:String>
     <system:String x:Key="ModeSingle">直连</system:String>
     <!-- Local proxy -->
-    <system:String x:Key="NavProxy">代理</system:String>
+    <system:String x:Key="NavProxy">连接</system:String>
     <system:String x:Key="ProxyTitle">本地代理</system:String>
     <system:String x:Key="ProxySubtitle">同一个节点可用于 HTTP、全设备 TUN 或游戏加速。</system:String>
     <system:String x:Key="ProxyElevationHint">TUN 和游戏加速需要管理员权限。</system:String>
@@ -359,4 +359,49 @@
     <system:String x:Key="QualityUnavailable">不可用</system:String>
     <system:String x:Key="ProxyNativeOutboundUnrestricted">不限制完整路由（全部端口，不经 OpenGFW）</system:String>
     <system:String x:Key="OwnNodeLabel">自带节点</system:String>
+  <system:String x:Key="NavNative">原生出口</system:String>
+  <system:String x:Key="DashPlan">套餐</system:String>
+  <system:String x:Key="DashPlanHint">面板暂未向客户端下发套餐名。</system:String>
+  <system:String x:Key="DashPlanUnavailable">未提供</system:String>
+  <system:String x:Key="DashUsage">用量</system:String>
+  <system:String x:Key="DashUsageHint">本次运行期间的上下行流量。</system:String>
+  <system:String x:Key="DashRateLimit">速率限制</system:String>
+  <system:String x:Key="DashRateLimitHint">各线路速率上限的汇总。</system:String>
+  <system:String x:Key="DashRateLimitNone">不限速</system:String>
+  <system:String x:Key="DashRateLimitMixed">按线路不同</system:String>
+  <system:String x:Key="DashProvince">当前归属省份</system:String>
+  <system:String x:Key="DashProvinceHint">由后端按账号下发，只读。登录地区限制依据此归属。</system:String>
+  <system:String x:Key="DashProvinceUnavailable">未获取</system:String>
+  <system:String x:Key="Province_AH">安徽</system:String>
+  <system:String x:Key="Province_BJ">北京</system:String>
+  <system:String x:Key="Province_CQ">重庆</system:String>
+  <system:String x:Key="Province_FJ">福建</system:String>
+  <system:String x:Key="Province_GD">广东</system:String>
+  <system:String x:Key="Province_GS">甘肃</system:String>
+  <system:String x:Key="Province_GX">广西</system:String>
+  <system:String x:Key="Province_GZ">贵州</system:String>
+  <system:String x:Key="Province_HA">河南</system:String>
+  <system:String x:Key="Province_HB">湖北</system:String>
+  <system:String x:Key="Province_HE">河北</system:String>
+  <system:String x:Key="Province_HI">海南</system:String>
+  <system:String x:Key="Province_HL">黑龙江</system:String>
+  <system:String x:Key="Province_HN">湖南</system:String>
+  <system:String x:Key="Province_JL">吉林</system:String>
+  <system:String x:Key="Province_JS">江苏</system:String>
+  <system:String x:Key="Province_JX">江西</system:String>
+  <system:String x:Key="Province_LN">辽宁</system:String>
+  <system:String x:Key="Province_NM">内蒙古</system:String>
+  <system:String x:Key="Province_NX">宁夏</system:String>
+  <system:String x:Key="Province_QH">青海</system:String>
+  <system:String x:Key="Province_SC">四川</system:String>
+  <system:String x:Key="Province_SD">山东</system:String>
+  <system:String x:Key="Province_SH">上海</system:String>
+  <system:String x:Key="Province_SN">陕西</system:String>
+  <system:String x:Key="Province_SX">山西</system:String>
+  <system:String x:Key="Province_TJ">天津</system:String>
+  <system:String x:Key="Province_XJ">新疆</system:String>
+  <system:String x:Key="Province_XZ">西藏</system:String>
+  <system:String x:Key="Province_YN">云南</system:String>
+  <system:String x:Key="Province_ZJ">浙江</system:String>
+  <system:String x:Key="ProxyConnectNote">该功能非必须，连接终端由使用者提供。您可使用其他软件，往 127.0.0.1 连接，或局域网连接。</system:String>
 </ResourceDictionary>

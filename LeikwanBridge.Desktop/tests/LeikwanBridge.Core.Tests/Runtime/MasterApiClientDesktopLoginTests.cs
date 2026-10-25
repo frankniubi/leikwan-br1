@@ -54,6 +54,35 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task GetAccessPolicyAsync_ReadsHomeProvinceWithTheDeviceHeaders()
+    {
+        using var server = new HeaderCaptureServer(payload: """
+            {
+              "ok": true,
+              "protocol_version": 1,
+              "geo_lock_enabled": true,
+              "location_required": false,
+              "main_province_code": "GD"
+            }
+            """);
+        using var api = new MasterApiClient(
+            server.BaseUrl,
+            "agent-token-27",
+            "windows-device-123",
+            "Leikwan Bridge on DEVBOX",
+            "windows-desktop");
+
+        var status = await api.GetAccessPolicyAsync();
+
+        Assert.Equal("GD", status.MainProvinceCode);
+        Assert.True(status.GeoLockEnabled);
+        Assert.False(status.LocationRequired);
+        Assert.Equal("/api/client/access/policy", new Uri(server.LastRequestUrl).AbsolutePath);
+        Assert.Equal("windows-device-123", server.LastRequestHeaders["X-Device-Id"]);
+        Assert.Equal("windows-desktop", server.LastRequestHeaders["X-Device-Platform"]);
+    }
+
+    [Fact]
     public async Task PullConfigsAsync_SendsStableDeviceIdentityHeaders()
     {
         using var server = new HeaderCaptureServer();

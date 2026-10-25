@@ -7,7 +7,7 @@
 
     <!-- Navigation -->
     <system:String x:Key="NavDashboard">Dashboard</system:String>
-    <system:String x:Key="NavForwards">Services</system:String>
+    <system:String x:Key="NavForwards">Services &amp; nodes</system:String>
     <system:String x:Key="ForwardPairingTitle">Forward pairing</system:String>
     <system:String x:Key="ForwardPairingHint">This feature is optional. You can use another proxy app by setting its server address to 127.0.0.1.</system:String>
     <system:String x:Key="ForwardPairingListHint">Choose the saved node for each route. This page only saves pairings; it never starts a connection.</system:String>
@@ -146,7 +146,7 @@
     <system:String x:Key="ModeFilterAll">All</system:String>
     <system:String x:Key="ModeFilterMptcp">Multi-path</system:String>
     <!-- Local proxy -->
-    <system:String x:Key="NavProxy">Proxy</system:String>
+    <system:String x:Key="NavProxy">Connect</system:String>
     <system:String x:Key="ProxyTitle">Local Proxy</system:String>
     <system:String x:Key="ProxySubtitle">Use one node for HTTP, full-device TUN, or game acceleration.</system:String>
     <system:String x:Key="ProxyElevationHint">TUN and game acceleration require administrator permission.</system:String>
@@ -358,4 +358,49 @@
     <system:String x:Key="QualityDegraded">Degraded</system:String>
     <system:String x:Key="QualityUnavailable">Unavailable</system:String>
     <system:String x:Key="OwnNodeLabel">Your own node</system:String>
+  <system:String x:Key="NavNative">Native outbound</system:String>
+  <system:String x:Key="DashPlan">Plan</system:String>
+  <system:String x:Key="DashPlanHint">The panel does not send the plan name to the desktop yet.</system:String>
+  <system:String x:Key="DashPlanUnavailable">Not provided</system:String>
+  <system:String x:Key="DashUsage">Usage</system:String>
+  <system:String x:Key="DashUsageHint">Upload and download during this session.</system:String>
+  <system:String x:Key="DashRateLimit">Rate limit</system:String>
+  <system:String x:Key="DashRateLimitHint">Summary of the line speed limits.</system:String>
+  <system:String x:Key="DashRateLimitNone">Unlimited</system:String>
+  <system:String x:Key="DashRateLimitMixed">Varies by line</system:String>
+  <system:String x:Key="DashProvince">Home province</system:String>
+  <system:String x:Key="DashProvinceHint">Set by the account on the server and read-only. The sign-in region check uses it.</system:String>
+  <system:String x:Key="DashProvinceUnavailable">Not loaded</system:String>
+  <system:String x:Key="Province_AH">Anhui</system:String>
+  <system:String x:Key="Province_BJ">Beijing</system:String>
+  <system:String x:Key="Province_CQ">Chongqing</system:String>
+  <system:String x:Key="Province_FJ">Fujian</system:String>
+  <system:String x:Key="Province_GD">Guangdong</system:String>
+  <system:String x:Key="Province_GS">Gansu</system:String>
+  <system:String x:Key="Province_GX">Guangxi</system:String>
+  <system:String x:Key="Province_GZ">Guizhou</system:String>
+  <system:String x:Key="Province_HA">Henan</system:String>
+  <system:String x:Key="Province_HB">Hubei</system:String>
+  <system:String x:Key="Province_HE">Hebei</system:String>
+  <system:String x:Key="Province_HI">Hainan</system:String>
+  <system:String x:Key="Province_HL">Heilongjiang</system:String>
+  <system:String x:Key="Province_HN">Hunan</system:String>
+  <system:String x:Key="Province_JL">Jilin</system:String>
+  <system:String x:Key="Province_JS">Jiangsu</system:String>
+  <system:String x:Key="Province_JX">Jiangxi</system:String>
+  <system:String x:Key="Province_LN">Liaoning</system:String>
+  <system:String x:Key="Province_NM">Inner Mongolia</system:String>
+  <system:String x:Key="Province_NX">Ningxia</system:String>
+  <system:String x:Key="Province_QH">Qinghai</system:String>
+  <system:String x:Key="Province_SC">Sichuan</system:String>
+  <system:String x:Key="Province_SD">Shandong</system:String>
+  <system:String x:Key="Province_SH">Shanghai</system:String>
+  <system:String x:Key="Province_SN">Shaanxi</system:String>
+  <system:String x:Key="Province_SX">Shanxi</system:String>
+  <system:String x:Key="Province_TJ">Tianjin</system:String>
+  <system:String x:Key="Province_XJ">Xinjiang</system:String>
+  <system:String x:Key="Province_XZ">Tibet</system:String>
+  <system:String x:Key="Province_YN">Yunnan</system:String>
+  <system:String x:Key="Province_ZJ">Zhejiang</system:String>
+  <system:String x:Key="ProxyConnectNote">This feature is optional. The connection endpoint is provided by you. Connect from other software to 127.0.0.1, or from your local network.</system:String>
 </ResourceDictionary>

@@ -73,7 +73,6 @@ public partial class MainWindow : Window
             new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _vm.RetryUpdateHandler = RetryFailedUpdateAsync;
-        _vm.SpeedHistoryChanged += () => DashSpeedChart.SetSamples(_vm.SpeedInHistory, _vm.SpeedOutHistory);
         _vm.CloudPairingsApplied += () =>
         {
             SaveCurrentConfig();
@@ -715,8 +714,6 @@ public partial class MainWindow : Window
         ProxyProfileList.SelectedItem = null;
         _vm.ProxyEditor.Load(null);
         ProxyPassword.Password = string.Empty;
-        ProxyNodeEditorExpander.IsExpanded = true;
-        ProxyNodeEditorExpander.BringIntoView();
         SetProxyReady();
     }
 
@@ -726,8 +723,6 @@ public partial class MainWindow : Window
             return;
         _vm.ProxyEditor.Load(profile);
         ProxyPassword.Password = profile.Password;
-        ProxyNodeEditorExpander.IsExpanded = true;
-        ProxyNodeEditorExpander.BringIntoView();
     }
 
     private async void OnProxySave_Click(object sender, RoutedEventArgs e)
@@ -738,7 +733,6 @@ public partial class MainWindow : Window
             await _vm.SaveProxyProfileAsync();
             SaveCurrentConfig();
             PopulateProxyUi();
-            ProxyNodeEditorExpander.IsExpanded = false;
             ProxyPairedForwardCombo.BringIntoView();
             SetProxyReady();
         }
@@ -1180,7 +1174,6 @@ public partial class MainWindow : Window
         App.Config.ProxyActiveMode = selectedMode.ToString();
         App.Config.ProxyModeChosen = true;
         UpdateProxyModeVisibility();
-        SyncDashboardModeButtons();
     }
 
     private void UpdateProxyModeVisibility()
@@ -1196,7 +1189,6 @@ public partial class MainWindow : Window
         ProxyGameCard.Visibility = TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Process
             ? Visibility.Visible
             : Visibility.Collapsed;
-        SyncDashboardModeButtons();
     }
 
     private bool TryGetSelectedProxyMode(out WindowsProxyMode mode)
@@ -1212,7 +1204,7 @@ public partial class MainWindow : Window
     {
         if (NativeOutboundCard is null)
             return;
-        var visible = _vm.CurrentView == "Proxy"
+        var visible = _vm.CurrentView == "Native"
             && _vm.IsNativeOutboundVisible
             && _vm.NativeOutboundForwards.Count > 0;
         NativeOutboundCard.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
@@ -1510,26 +1502,33 @@ public partial class MainWindow : Window
 
     private void UpdateVisiblePanel()
     {
-        var pairing = _vm.CurrentView == "Forwards";
-        DashboardPanel.Visibility = _vm.CurrentView == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        var view = _vm.CurrentView;
+        // Native outbound is only listed while the plan assigns one; fall back to the connect page otherwise.
+        if (view == "Native" && !_vm.IsNativeOutboundVisible)
+        {
+            _vm.NavigateToCommand.Execute("Proxy");
+            return;
+        }
+        var pairing = view == "Forwards";
+        DashboardPanel.Visibility = view == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ForwardPairingPanel.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
-        NodesPanel.Visibility = _vm.CurrentView == "Nodes" ? Visibility.Visible : Visibility.Collapsed;
-        PageTitleText.SetResourceReference(TextBlock.TextProperty, _vm.CurrentView switch
+        PageTitleText.SetResourceReference(TextBlock.TextProperty, view switch
         {
             "Forwards" => "NavForwards",
-            "Nodes" => "NavNodes",
-            "Proxy" => "ProxyTitle",
+            "Proxy" => "NavProxy",
+            "Native" => "NavNative",
             "Log" => "NavLog",
             "Settings" => "NavSettings",
             _ => "NavDashboard",
         });
-        // The start / stop button belongs to the overview pages; the proxy page has its own controls.
-        CoreToggleButton.Visibility = _vm.CurrentView is "Dashboard" or "Forwards" or "Nodes"
+        // The start / stop button belongs to the overview pages; the connect page has its own controls.
+        CoreToggleButton.Visibility = view is "Dashboard" or "Forwards"
             ? Visibility.Visible
             : Visibility.Collapsed;
-        ProxyPanel.Visibility = _vm.CurrentView == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
-        LogPanel.Visibility = _vm.CurrentView == "Log" ? Visibility.Visible : Visibility.Collapsed;
-        SettingsPanel.Visibility = _vm.CurrentView == "Settings" ? Visibility.Visible : Visibility.Collapsed;
+        ProxyPanel.Visibility = view == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
+        NativePanel.Visibility = view == "Native" ? Visibility.Visible : Visibility.Collapsed;
+        LogPanel.Visibility = view == "Log" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = view == "Settings" ? Visibility.Visible : Visibility.Collapsed;
         SidebarStartAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
         SidebarStopAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
         ProxySavedNodesSidebar.Visibility = Visibility.Collapsed;
