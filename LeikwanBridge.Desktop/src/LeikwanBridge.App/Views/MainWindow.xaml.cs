@@ -789,6 +789,28 @@ public partial class MainWindow : Window
         }
         CaptureProxyDnsSettings();
         var mode = GetSelectedProxyMode();
+
+        // TUN and process mode run a local sing-box that needs administrator
+        // rights.  Rather than elevate sing-box on its own (a black console
+        // window plus an unkillable TUN), relaunch the whole app elevated and
+        // let it start the proxy as a captured child.  External profiles run
+        // through the forward without a local sing-box, so they never elevate.
+        if (ModeNeedsElevation(mode) && !_vm.IsExternalProxySelected && !WindowsProxyElevation.IsElevated())
+        {
+            App.Config.ProxyActiveMode = mode.ToString();
+            App.Config.ProxyActiveProfileId = profileId;
+            App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
+            App.Config.ProxyModeChosen = true;
+            SaveCurrentConfig();
+            SetProxyStarting();
+            if (await TryLaunchElevatedProxyAsync(profileId, gameId, mode))
+                return;
+            // Declined or could not relaunch: do not attempt a doomed
+            // non-elevated TUN that would only fail and tear the forward down.
+            SetProxyStatusError("administrator_required");
+            return;
+        }
+
         SetProxyStarting();
         try
         {
@@ -804,7 +826,7 @@ public partial class MainWindow : Window
                 Log.Debug(ex, "proxy start cancelled");
                 return;
             }
-            if (mode == WindowsProxyMode.Process
+            if (ModeNeedsElevation(mode)
                 && profileId > 0
                 && string.Equals(ex.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
             {
@@ -812,7 +834,7 @@ public partial class MainWindow : Window
                 App.Config.ProxyActiveProfileId = profileId;
                 App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
                 SaveCurrentConfig();
-                if (await TryLaunchElevatedProxyAsync(profileId, gameId))
+                if (await TryLaunchElevatedProxyAsync(profileId, gameId, mode))
                     return;
             }
 
@@ -820,6 +842,9 @@ public partial class MainWindow : Window
             Log.Warning(ex, "failed to start local proxy");
         }
     }
+
+    private static bool ModeNeedsElevation(WindowsProxyMode mode)
+        => mode is WindowsProxyMode.Tun or WindowsProxyMode.Process;
 
     private void OnNativeForwardSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -848,6 +873,16 @@ public partial class MainWindow : Window
             && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var parsed)
             ? parsed
             : WindowsProxyMode.Tun;
+        // Native outbound TUN/process mode also needs administrator rights for
+        // the local sing-box.  We do not yet relaunch the whole app elevated for
+        // this path (the session carries more state than the saved-profile
+        // request), so fail with a clear message instead of launching a sing-box
+        // that cannot create the TUN.
+        if (ModeNeedsElevation(mode) && !WindowsProxyElevation.IsElevated())
+        {
+            SetProxyStatusError("administrator_required");
+            return;
+        }
         SetProxyStarting();
         try
         {
@@ -902,9 +937,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> TryLaunchElevatedProxyAsync(int profileId, string? gameId)
+    private async Task<bool> TryLaunchElevatedProxyAsync(int profileId, string? gameId, WindowsProxyMode mode)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() || !ModeNeedsElevation(mode))
             return false;
 
         var executablePath = Process.GetCurrentProcess().MainModule?.FileName;
@@ -923,7 +958,7 @@ public partial class MainWindow : Window
                 WindowsProxyElevation.BuildRelaunchStartInfo(
                     executablePath,
                     new WindowsProxyStartRequest(
-                        WindowsProxyMode.Process,
+                        mode,
                         profileId,
                         gameId?.Trim() ?? string.Empty)));
             if (elevated is null)

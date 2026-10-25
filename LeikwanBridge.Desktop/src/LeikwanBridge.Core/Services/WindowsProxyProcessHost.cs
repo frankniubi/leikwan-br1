@@ -213,23 +213,28 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
         string configPath,
         WindowsProxyMode mode)
     {
+        // sing-box is always launched as an ordinary captured child, never via
+        // ShellExecute/runas.  TUN and process mode need administrator rights,
+        // but those are obtained by relaunching the whole app elevated (see
+        // WindowsProxyElevation); the elevated app then starts sing-box as a
+        // child that inherits its token.  Elevating sing-box on its own instead
+        // popped a visible console window (CreateNoWindow is ignored under
+        // ShellExecute), hid its output from the app, and left an unkillable
+        // elevated process whose strict_route TUN black-holed the network when
+        // the non-elevated parent could not stop it.
+        //
         // Secrets are in the ephemeral JSON only.  ArgumentList avoids a
         // shell-expanded command line and makes accidental password logging
         // impossible here.
-        var needsElevation = OperatingSystem.IsWindows()
-            && (mode is WindowsProxyMode.Tun or WindowsProxyMode.Process)
-            && !WindowsProxyElevation.IsElevated();
         var info = new ProcessStartInfo
         {
             FileName = executablePath,
-            UseShellExecute = needsElevation,
+            UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = !needsElevation,
-            RedirectStandardError = !needsElevation,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(executablePath) ?? AppContext.BaseDirectory,
         };
-        if (needsElevation)
-            info.Verb = "runas";
         info.ArgumentList.Add("run");
         info.ArgumentList.Add("-c");
         info.ArgumentList.Add(configPath);

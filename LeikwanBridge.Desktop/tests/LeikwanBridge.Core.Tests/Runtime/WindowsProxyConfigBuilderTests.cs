@@ -52,19 +52,24 @@ public sealed class WindowsProxyConfigBuilderTests
             "sing-box.exe", "C:\\Temp\\proxy.json", WindowsProxyMode.Http).Arguments);
     }
 
-    [Fact]
-    public void ProcessModeStartRequestsElevationOnWindows()
+    [Theory]
+    [InlineData(WindowsProxyMode.Http)]
+    [InlineData(WindowsProxyMode.Tun)]
+    [InlineData(WindowsProxyMode.Process)]
+    public void BuildStartInfoNeverElevatesSingBoxDirectly(WindowsProxyMode mode)
     {
-        if (!OperatingSystem.IsWindows() || WindowsProxyElevation.IsElevated())
-            return;
-
+        // sing-box is always a captured child; elevation is handled by
+        // relaunching the whole app, never with runas on sing-box itself.
+        // A runas child shows a console window, hides its output, and cannot be
+        // stopped by a non-elevated parent.
         var startInfo = WindowsProxyProcessHost.BuildStartInfo(
-            "sing-box.exe", "C:\\Temp\\proxy.json", WindowsProxyMode.Process);
+            "sing-box.exe", "C:\\Temp\\proxy.json", mode);
 
-        Assert.True(startInfo.UseShellExecute);
-        Assert.Equal("runas", startInfo.Verb);
-        Assert.False(startInfo.RedirectStandardOutput);
-        Assert.False(startInfo.RedirectStandardError);
+        Assert.False(startInfo.UseShellExecute);
+        Assert.True(startInfo.CreateNoWindow);
+        Assert.Equal(string.Empty, startInfo.Verb);
+        Assert.True(startInfo.RedirectStandardOutput);
+        Assert.True(startInfo.RedirectStandardError);
     }
 
     [Fact]
