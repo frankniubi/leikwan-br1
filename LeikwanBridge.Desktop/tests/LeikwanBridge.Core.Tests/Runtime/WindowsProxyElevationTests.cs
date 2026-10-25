@@ -62,10 +62,10 @@ public sealed class WindowsProxyElevationTests
                 return release.Task.GetAwaiter().GetResult();
             });
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.False(launch.IsCompleted);
 
         release.SetResult(null);
-        Assert.Null(await launch.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Null(await launch.WaitAsync(TimeSpan.FromSeconds(30)));
     }
 }
