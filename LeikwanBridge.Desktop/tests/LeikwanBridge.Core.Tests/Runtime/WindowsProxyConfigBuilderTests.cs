@@ -72,6 +72,44 @@ public sealed class WindowsProxyConfigBuilderTests
         Assert.True(startInfo.RedirectStandardError);
     }
 
+    [Theory]
+    [InlineData(WindowsProxyMode.Tun, true)]
+    [InlineData(WindowsProxyMode.Http, false)]
+    public void TunModeSendsManagedRuntimeTrafficDirectBeforeDnsHijack(WindowsProxyMode mode, bool expected)
+    {
+        // A saved node on a forward points the proxy outbound at the local
+        // Ultra listener; ultra-client's own relay traffic must not re-enter
+        // the TUN or the tunnel loops back into itself.
+        var profile = new WindowsProxyProfile
+        {
+            Protocol = WindowsProxyProtocol.Shadowsocks2022,
+            Server = "127.0.0.1",
+            Port = 8444,
+            Method = "2022-blake3-aes-256-gcm",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        };
+
+        var result = WindowsProxyConfigBuilder.Build(profile, mode, []);
+
+        using var document = JsonDocument.Parse(result.Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var processIndex = rules.FindIndex(rule => rule.TryGetProperty("process_name", out _));
+        Assert.Equal(expected, processIndex >= 0);
+        if (!expected)
+            return;
+
+        var rule = rules[processIndex];
+        Assert.Equal("direct", rule.GetProperty("outbound").GetString());
+        var names = rule.GetProperty("process_name").EnumerateArray().Select(item => item.GetString()).ToList();
+        Assert.Contains("ultra-client.exe", names);
+        Assert.Contains("wstunnel.exe", names);
+        Assert.DoesNotContain("sing-box.exe", names);
+        var dnsIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("action", out var action) && action.GetString() == "hijack-dns");
+        Assert.True(dnsIndex > processIndex);
+        Assert.True(document.RootElement.GetProperty("route").GetProperty("auto_detect_interface").GetBoolean());
+    }
+
     [Fact]
     public void TunModeAddsConservativeMtuAndGatewayUdpRejectBeforePrivateRoute()
     {
