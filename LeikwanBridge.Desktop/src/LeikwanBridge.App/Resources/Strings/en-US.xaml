@@ -189,6 +189,9 @@
     <system:String x:Key="ProxyErrLocalPortHeldBySystem">The local port is held by Windows, but no program owns it. This is common with WSL mirrored networking. Pick another local port.</system:String>
     <system:String x:Key="ProxyErrLocalPortReserved">Windows reserves this local port, so it cannot be opened. Pick another local port.</system:String>
     <system:String x:Key="ProxyErrAdministratorRequired">TUN mode needs administrator rights. Restart the client as administrator, or switch to HTTP mode.</system:String>
+    <system:String x:Key="ProxyErrPermissionRequired">LeiKwan Bridge does not have permission to finish this step. Restart it as administrator, then try again.</system:String>
+    <system:String x:Key="ProxyErrRuntimeUnavailable">The local proxy stopped unexpectedly. Connect again.</system:String>
+    <system:String x:Key="ProxyErrorForwardFormat">Forward #{0}: {1}</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">External tools can connect to the forward listening port. On this computer use 127.0.0.1 with the same port; from your LAN or another network use this computer's address.</system:String>
     <system:String x:Key="ProxyNew">New profile</system:String>
     <system:String x:Key="ProxyManualTitle">Manual node</system:String>

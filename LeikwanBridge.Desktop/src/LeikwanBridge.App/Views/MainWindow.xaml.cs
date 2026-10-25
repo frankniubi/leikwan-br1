@@ -838,7 +838,7 @@ public partial class MainWindow : Window
                     return;
             }
 
-            SetProxyStatusError(ex.Message);
+            SetProxyStatusError(ex.Message, (ex as ProxyForwardStartException)?.ForwardId ?? 0);
             Log.Warning(ex, "failed to start local proxy");
         }
     }
@@ -1369,7 +1369,7 @@ public partial class MainWindow : Window
             WindowsProxyConnectionState.Error =>
                 string.IsNullOrWhiteSpace(snapshot.ErrorCode)
                     ? (FindResource("ProxyError") as string ?? "Proxy failed")
-                    : LocalizedProxyError(snapshot.ErrorCode),
+                    : ProxyErrorText(snapshot.ErrorCode, snapshot.ErrorForwardId),
             _ => FindResource("ProxyReady") as string ?? "Ready",
         };
 
@@ -1439,27 +1439,37 @@ public partial class MainWindow : Window
         "local_port_held_by_system" => FindResource("ProxyErrLocalPortHeldBySystem") as string ?? code,
         "local_port_reserved" => FindResource("ProxyErrLocalPortReserved") as string ?? code,
         "administrator_required" => FindResource("ProxyErrAdministratorRequired") as string ?? code,
+        "permission_required" => FindResource("ProxyErrPermissionRequired") as string ?? code,
+        "proxy_runtime_unavailable" => FindResource("ProxyErrRuntimeUnavailable") as string ?? code,
+        "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? code,
+        "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? code,
+        "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? code,
+        "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? code,
+        "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? code,
+        "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? code,
+        "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? code,
+        "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? code,
+        "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? code,
+        "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? code,
         _ => code,
     };
 
-    private void SetProxyStatusError(string message)
+    /// <summary>
+    /// Banner text for a failure. A forward-scoped failure is prefixed with the
+    /// forward number so the user can tell which line failed.
+    /// </summary>
+    private string ProxyErrorText(string code, int forwardId)
     {
-        message = message switch
-        {
-            "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
-            "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
-            "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? message,
-            "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? message,
-            "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? message,
-            "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? message,
-            "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? message,
-            "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
-            "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,
-            "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? message,
-            _ => LocalizedProxyError(message),
-        };
+        var text = LocalizedProxyError(code);
+        return forwardId > 0
+            ? string.Format(FindResource("ProxyErrorForwardFormat") as string ?? "Forward #{0}: {1}", forwardId, text)
+            : text;
+    }
+
+    private void SetProxyStatusError(string message, int forwardId = 0)
+    {
         ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
-        ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;
+        ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : ProxyErrorText(message, forwardId);
         ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
         ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
         ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, "DangerBrush");

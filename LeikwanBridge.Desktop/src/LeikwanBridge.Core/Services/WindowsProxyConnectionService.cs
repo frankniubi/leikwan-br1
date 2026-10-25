@@ -1246,4 +1246,22 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
             return LocalPortFailure.Reserved;
         return "proxy_process_exited";
     }
+
+    /// <summary>
+    /// The code a start failure shows in the banner. Known causes become stable
+    /// codes; anything else keeps its own message so nothing is hidden.
+    /// </summary>
+    public static string FailureCode(Exception exception, Func<string?> livePortCause)
+    {
+        switch (exception)
+        {
+            case WindowsProxyProcessExitException exit:
+                var code = ClassifyProcessExit(exit.Diagnostics, livePortCause);
+                return code == "proxy_process_exited" ? exception.Message : code;
+            case UnauthorizedAccessException:
+                return "permission_required";
+            default:
+                return exception.Message;
+        }
+    }
 }

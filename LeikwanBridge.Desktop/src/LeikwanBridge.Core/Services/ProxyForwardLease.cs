@@ -16,6 +16,16 @@ public sealed class ProxyForwardLeaseCancellationException : OperationCanceledEx
     }
 }
 
+/// <summary>
+/// A proxy start that failed on one forward. Message is the stable error code, so
+/// callers that match on the message still work; ForwardId lets the UI name the line.
+/// </summary>
+public sealed class ProxyForwardStartException(int forwardId, string errorCode, Exception innerException)
+    : InvalidOperationException(errorCode, innerException)
+{
+    public int ForwardId { get; } = forwardId;
+}
+
 public sealed class ProxyForwardLease : IAsyncDisposable
 {
     private Func<CancellationToken, Task>? _stop;

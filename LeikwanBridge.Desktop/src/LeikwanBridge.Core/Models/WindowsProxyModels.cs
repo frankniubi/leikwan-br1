@@ -320,7 +320,8 @@ public sealed record WindowsProxySnapshot(
     int BypassAddressCount,
     bool SystemProxyEnabled,
     bool ProcessProxyEnabled,
-    string ErrorCode)
+    string ErrorCode,
+    int ErrorForwardId = 0)
 {
     public static WindowsProxySnapshot Disconnected { get; } = new(
         WindowsProxyConnectionState.Disconnected,

@@ -217,6 +217,9 @@
     <system:String x:Key="ProxyErrLocalPortHeldBySystem">本地端口被 Windows 保留，但找不到占用它的程序。常见于 WSL 镜像网络模式，请换一个本地端口。</system:String>
     <system:String x:Key="ProxyErrLocalPortReserved">Windows 保留了这个本地端口，无法打开。请换一个本地端口。</system:String>
     <system:String x:Key="ProxyErrAdministratorRequired">TUN 模式需要管理员权限。请以管理员身份重新启动客户端，或改用 HTTP 模式。</system:String>
+    <system:String x:Key="ProxyErrPermissionRequired">客户端没有足够的权限完成这一步。请以管理员身份重新启动客户端后再试。</system:String>
+    <system:String x:Key="ProxyErrRuntimeUnavailable">本地代理意外停止。请重新连接。</system:String>
+    <system:String x:Key="ProxyErrorForwardFormat">转发 #{0}：{1}</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>
     <system:String x:Key="ProxyManualTitle">手动填写节点</system:String>
