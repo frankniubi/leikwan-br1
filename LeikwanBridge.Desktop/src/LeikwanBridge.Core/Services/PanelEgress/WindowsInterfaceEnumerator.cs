@@ -51,7 +51,6 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
         public static readonly int FirstGateway = FirstWins + IntPtr.Size;
         public static readonly int Ipv4Metric = FirstGateway + IntPtr.Size;
         public static readonly int Ipv6Metric = Ipv4Metric + 4;
-        public static readonly int SocketAddressStride = IntPtr.Size + 8;
     }
 
     [DllImport("iphlpapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -122,8 +121,8 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
         var v6Index = Marshal.ReadInt32(adapter, Offsets.Ipv6IfIndex);
         var v4Metric = Marshal.ReadInt32(adapter, Offsets.Ipv4Metric);
         var v6Metric = Marshal.ReadInt32(adapter, Offsets.Ipv6Metric);
-        var gateways = ReadSocketAddressList(Marshal.ReadIntPtr(adapter, Offsets.FirstGateway));
-        var addresses = ReadSocketAddressList(Marshal.ReadIntPtr(adapter, Offsets.FirstUnicast));
+        var gateways = WindowsSocketAddressList.Read(Marshal.ReadIntPtr(adapter, Offsets.FirstGateway));
+        var addresses = WindowsSocketAddressList.Read(Marshal.ReadIntPtr(adapter, Offsets.FirstUnicast));
 
         return new NetworkAdapterInfo(
             friendlyName.Length == 0 ? description : friendlyName,
@@ -143,14 +142,21 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
 
     private static string ReadString(IntPtr pointer)
         => pointer == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUni(pointer) ?? string.Empty;
+}
 
-    private static List<IPAddress> ReadSocketAddressList(IntPtr first)
+// Unicast/gateway entries: 8-byte Length|Flags union, then Next, then lpSockaddr.
+public static class WindowsSocketAddressList
+{
+    public const int NextOffset = 8;
+    public static readonly int SockaddrOffset = NextOffset + IntPtr.Size;
+
+    public static List<IPAddress> Read(IntPtr first)
     {
         var addresses = new List<IPAddress>();
         var current = first;
         while (current != IntPtr.Zero)
         {
-            var sockaddr = Marshal.ReadIntPtr(current, 0);
+            var sockaddr = Marshal.ReadIntPtr(current, SockaddrOffset);
             if (sockaddr != IntPtr.Zero)
             {
                 var family = Marshal.ReadInt16(sockaddr, 0);
@@ -167,7 +173,7 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
                     addresses.Add(new IPAddress(bytes));
                 }
             }
-            current = Marshal.ReadIntPtr(current, Offsets.SocketAddressStride);
+            current = Marshal.ReadIntPtr(current, NextOffset);
         }
         return addresses;
     }
