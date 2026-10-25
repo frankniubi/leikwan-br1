@@ -1369,7 +1369,7 @@ public partial class MainWindow : Window
             WindowsProxyConnectionState.Error =>
                 string.IsNullOrWhiteSpace(snapshot.ErrorCode)
                     ? (FindResource("ProxyError") as string ?? "Proxy failed")
-                    : snapshot.ErrorCode,
+                    : LocalizedProxyError(snapshot.ErrorCode),
             _ => FindResource("ProxyReady") as string ?? "Ready",
         };
 
@@ -1433,6 +1433,15 @@ public partial class MainWindow : Window
             ProxyStatusText.Text = FindResource("ProxyReady") as string ?? "Ready";
     }
 
+    private string LocalizedProxyError(string code) => code switch
+    {
+        "local_port_in_use" => FindResource("ProxyErrLocalPortInUse") as string ?? code,
+        "local_port_held_by_system" => FindResource("ProxyErrLocalPortHeldBySystem") as string ?? code,
+        "local_port_reserved" => FindResource("ProxyErrLocalPortReserved") as string ?? code,
+        "administrator_required" => FindResource("ProxyErrAdministratorRequired") as string ?? code,
+        _ => code,
+    };
+
     private void SetProxyStatusError(string message)
     {
         message = message switch
@@ -1447,7 +1456,7 @@ public partial class MainWindow : Window
             "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
             "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,
             "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? message,
-            _ => message,
+            _ => LocalizedProxyError(message),
         };
         ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
         ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;

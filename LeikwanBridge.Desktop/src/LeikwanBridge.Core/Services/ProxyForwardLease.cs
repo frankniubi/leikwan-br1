@@ -37,7 +37,8 @@ public sealed class ProxyForwardLease : IAsyncDisposable
         Func<CancellationToken, Task> stop,
         CancellationToken ct = default,
         Func<ForwardConfig, CancellationToken, Task<bool>>? readinessProbe = null,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        Func<int, string?>? diagnosePort = null)
     {
         ArgumentNullException.ThrowIfNull(forward);
         if (forward.ForwardId <= 0 || forward.ListenPort is < 1 or > 65535
@@ -73,13 +74,15 @@ public sealed class ProxyForwardLease : IAsyncDisposable
             }
             if (exception is OperationCanceledException && !ct.IsCancellationRequested)
             {
+                var cause = (diagnosePort ?? LocalPortFailure.DiagnoseLive)(forward.ListenPort);
                 Log.Warning(
-                    "ordinary proxy forward readiness timed out forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward}",
+                    "ordinary proxy forward readiness timed out forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward} cause={Cause}",
                     forward.ForwardId,
                     forward.ListenPort,
                     forward.Transport,
-                    ownsForward);
-                throw new TimeoutException("proxy_forward_readiness_timeout", exception);
+                    ownsForward,
+                    cause ?? "unknown");
+                throw new TimeoutException(cause ?? "proxy_forward_readiness_timeout", exception);
             }
 
             if (exception is OperationCanceledException && ct.IsCancellationRequested)
