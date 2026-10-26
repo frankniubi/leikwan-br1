@@ -120,10 +120,14 @@ const haDeadStreamMaxAge = 3 * time.Second
 
 // haZeroByteCloseMaxAge bounds how soon after the first flight a clean remote
 // close must come to count as a zero-byte close. A relay that lost its upstream
-// closed ~10ms after the first flight on 2026-10-11, and relay round trips stay
-// well under this bound. A clean empty close that took longer looks like an
-// ordinary short exchange, not a relay with nowhere to send the stream.
-const haZeroByteCloseMaxAge = 500 * time.Millisecond
+// closed ~10ms after the first flight on 2026-10-11. On 2026-10-26 another relay
+// closed cleanly 1.07 to 2.08 s after a 1.8 to 2.2 KB first flight, with no
+// byte back, for minutes at a time. A 500ms bound let those through as ordinary
+// exchanges, so the path was never isolated. A real answer to a first flight
+// comes back well inside the silence bound, so a clean empty close within it
+// means the relay has nowhere to send the stream. The bound matches
+// haDeadStreamMaxAge: a longer silence is not counted at all.
+const haZeroByteCloseMaxAge = haDeadStreamMaxAge
 
 // haRelayOrderEpsilon tolerates the scheduling skew between the two copy
 // goroutines that observe the ends of one stream. The ordering itself has not

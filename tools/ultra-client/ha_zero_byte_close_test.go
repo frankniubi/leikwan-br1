@@ -148,7 +148,7 @@ func TestZeroByteCloseRequiresTheExactSignal(t *testing.T) {
 		},
 		"slow": func(store *PolicyStore, lease ProviderLease) {
 			for range zeroByteCloseStrikes * 2 {
-				noteRelayOutcome(store, nil, zeroByteIdent(lease, "t:1"), time.Now().Add(-2*time.Second), 64, 0, zeroByteOrder())
+				noteRelayOutcome(store, nil, zeroByteIdent(lease, "t:1"), time.Now().Add(-(haZeroByteCloseMaxAge + 500*time.Millisecond)), 64, 0, zeroByteOrder())
 			}
 		},
 		"local_first": func(store *PolicyStore, lease ProviderLease) {
