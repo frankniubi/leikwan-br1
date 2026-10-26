@@ -123,7 +123,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ./scripts/build-ultra-windows.ps1 -Version 2026.10.12.0 -ShortSha $env:GITHUB_SHA.Substring(0, 8) -SkipDefenderScan
+          ./scripts/build-ultra-windows.ps1 -Version 2026.10.26.1 -ShortSha $env:GITHUB_SHA.Substring(0, 8) -SkipDefenderScan
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish desktop app and headless client
