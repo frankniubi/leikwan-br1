@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Boots an iPhone Duo simulator, installs a simulator build of the app, launches it and saves
-# a screenshot of each display plus the app's recent log. Exits 0 without screenshots when
+# a screenshot of each display (cover and inner) plus the app's recent log. Exits 0 without screenshots when
 # this Xcode has no iPhone Duo simulator (Xcode 27.1 adds it).
 #
 #   duo-simulator-screenshots.sh <path/to/Bridge.app> <output dir>
@@ -39,9 +39,14 @@ bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.p
 xcrun simctl launch "$udid" "$bundle_id"
 sleep 10
 
-xcrun simctl io "$udid" screenshot "$out/duo.png"
-for display in internal external; do
-  xcrun simctl io "$udid" screenshot --display="$display" "$out/duo-$display.png" || true
+# The Duo simulator has two displays (cover and inner), so a plain screenshot fails and lists
+# them as `--display=<id>  <name> <width>x<height>`; capture each one.
+displays="$( { xcrun simctl io "$udid" screenshot "$out/duo.png" 2>&1 || true; } \
+  | sed -n 's/.*--display=\([0-9][0-9]*\) *\(.*\)$/\1 \2/p')"
+echo "$displays" | while read -r id name; do
+  [ -n "$id" ] || continue
+  label="$(printf '%s' "$name" | tr -c 'A-Za-z0-9' '-')"
+  xcrun simctl io "$udid" screenshot --display="$id" "$out/duo-display-$id-$label.png" || true
 done
 xcrun simctl spawn "$udid" log show --last 2m --style compact \
   --predicate 'process == "Bridge"' > "$out/bridge.log" 2>&1 || true
