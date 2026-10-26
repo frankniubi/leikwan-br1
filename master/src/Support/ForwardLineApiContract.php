@@ -316,6 +316,112 @@ final class ForwardLineApiContract
             || substr($packed, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00";
     }
 
+    /**
+     * Whether a RESOLVED address of a hostname target is one our relays must
+     * never dial for a tenant: loopback, private (RFC 1918, fc00::/7),
+     * link-local (169.254.0.0/16 incl. the 169.254.169.254 metadata service,
+     * fe80::/10), unspecified, multicast, 0.0.0.0/8, 100.64.0.0/10 (CGNAT),
+     * 192.0.0.0/24, 198.18.0.0/15, 240.0.0.0/4 incl. broadcast, and the
+     * IPv4-mapped, IPv4-compatible, NAT64 (64:ff9b::/96) and 6to4 (2002::/16)
+     * forms of those. The external UoT sidecar applies the same list when it
+     * dials a hostname target (tools/uot-sidecar/target_guard.go).
+     *
+     * IP-literal targets are NOT judged by this: they keep the checks in
+     * validateTargetHost() and ProvisioningService::assertTenantTargetIsPublic.
+     */
+    public static function isNonGlobalAddress(string $ip): bool
+    {
+        $packed = @inet_pton($ip);
+        if ($packed === false) {
+            return true;
+        }
+        if (strlen($packed) === 16) {
+            $prefix = substr($packed, 0, 12);
+            if ($prefix === "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff") {
+                $packed = substr($packed, 12);
+            } elseif ($prefix === str_repeat("\x00", 12)) {
+                // ::/96: ::, ::1 and the deprecated IPv4-compatible form.
+                return true;
+            }
+        }
+        $b = array_values(unpack('C*', $packed));
+        if (count($b) === 4) {
+            return self::isNonGlobalIpv4Bytes($b);
+        }
+        if ($b[0] === 0xff                                   // ff00::/8 multicast
+            || ($b[0] & 0xfe) === 0xfc                       // fc00::/7 unique local
+            || ($b[0] === 0xfe && ($b[1] & 0x80) === 0x80)) { // fe80::/10 link-local, fec0::/10 site-local
+            return true;
+        }
+        if (substr($packed, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00") {
+            return self::isNonGlobalIpv4Bytes(array_slice($b, 12, 4));
+        }
+        if ($b[0] === 0x20 && $b[1] === 0x02) {
+            return self::isNonGlobalIpv4Bytes(array_slice($b, 2, 4));
+        }
+        return false;
+    }
+
+    /** @param array<int, int> $b four IPv4 octets */
+    private static function isNonGlobalIpv4Bytes(array $b): bool
+    {
+        return $b[0] === 0
+            || $b[0] === 10
+            || $b[0] === 127
+            || ($b[0] === 100 && ($b[1] & 0xc0) === 64)
+            || ($b[0] === 169 && $b[1] === 254)
+            || ($b[0] === 172 && ($b[1] & 0xf0) === 16)
+            || ($b[0] === 192 && $b[1] === 0 && $b[2] === 0)
+            || ($b[0] === 192 && $b[1] === 168)
+            || ($b[0] === 198 && ($b[1] & 0xfe) === 18)
+            || $b[0] >= 224;
+    }
+
+    /**
+     * Resolve a hostname target's A and AAAA records the way a node would,
+     * for the panel-side SSRF check. Best effort: RES_OPTIONS keeps a dead
+     * resolver from stalling the request (glibc re-reads it per lookup), and
+     * any failure yields [] so an unresolvable name is accepted as before.
+     * The data plane re-checks at dial time; this only refuses the obvious.
+     *
+     * @return list<string>
+     */
+    public static function resolveTargetHostAddresses(string $host): array
+    {
+        $addresses = [];
+        $previous = getenv('RES_OPTIONS');
+        putenv('RES_OPTIONS=timeout:2 attempts:1');
+        try {
+            if (function_exists('dns_get_record')) {
+                $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+                if (is_array($records)) {
+                    foreach ($records as $record) {
+                        $ip = $record['ip'] ?? $record['ipv6'] ?? null;
+                        if (is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+                            $addresses[] = $ip;
+                        }
+                    }
+                }
+            }
+            if ($addresses === [] && function_exists('gethostbynamel')) {
+                // Falls back to the system resolver, which also reads /etc/hosts.
+                $ipv4 = @gethostbynamel($host);
+                if (is_array($ipv4)) {
+                    foreach ($ipv4 as $ip) {
+                        if (is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+                            $addresses[] = $ip;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            return [];
+        } finally {
+            putenv($previous === false ? 'RES_OPTIONS' : 'RES_OPTIONS=' . $previous);
+        }
+        return array_values(array_unique($addresses));
+    }
+
     /** @param array<string, mixed> $normalized */
     public static function requestHash(array $normalized): string
     {

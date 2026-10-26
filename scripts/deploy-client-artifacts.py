@@ -35,6 +35,7 @@ CANONICAL = {
     'tcp_accel_installer': ('install/install-tcp-accel.sh', '/artifacts/install-tcp-accel.sh'),
     'cfwg_latency_watchdog': ('client-agent/cfwg_latency_watchdog.py', '/artifacts/cfwg-latency-watchdog.py'),
     'client_lease_seal': ('client-agent/leikwan_lease_seal.py', '/artifacts/leikwan-lease-seal.py'),
+    'client_rate_limit': ('client-agent/leikwan_rate_limit.py', '/artifacts/leikwan-rate-limit.py'),
     'ultra_client_runtime_android_arm64': ('artifacts/ultra/ultra-client_android_arm64', '/artifacts/ultra/ultra-client_android_arm64'),
     'ultra_client_runtime_android_x86_64': ('artifacts/ultra/ultra-client_android_x86_64', '/artifacts/ultra/ultra-client_android_x86_64'),
     'macos_headless_installer': ('install/install-macos-headless.sh', '/artifacts/install-macos-headless.sh'),

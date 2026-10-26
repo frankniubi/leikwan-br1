@@ -24,30 +24,44 @@ final class TunnelController: ObservableObject {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
     private var pollTask: Task<Void, Never>?
+    /// Reloads run one after another (see `reload`).
+    private var reloadQueue: Task<Void, Never>?
 
     var isConnected: Bool { status == .connected }
     var isBusy: Bool { status == .connecting || status == .disconnecting || status == .reasserting }
+    /// Up or coming up: a new plan has to reach it. The tunnel reports `.reasserting` while it
+    /// applies a reload, so a second change made meanwhile must not be dropped.
+    var isRunning: Bool { status == .connected || status == .connecting || status == .reasserting }
 
     func load() async {
         do {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             if let existing = managers.first(where: Self.isOurs) {
                 attach(existing)
+                await disableOnDemandWithoutPlan()
             }
         } catch {
             lastError = error.localizedDescription
         }
     }
 
+    /// Connect also turns on VPN On Demand (connect on any network), so iOS starts the tunnel
+    /// again after it was stopped in the background (memory pressure, a lapsed lease) instead
+    /// of leaving the device unprotected until the app is opened.
     func connect(_ launch: TunnelLaunchOptions) async {
         lastError = nil
         do {
-            let manager = try await installedManager()
             let data = try launch.encoded()
-            // Also persisted by the tunnel; written here so a system-initiated
-            // restart works even if the first start fails early.
+            // Also persisted by the tunnel. Written before the profile is saved: enabling On
+            // Demand can start the tunnel by itself, and that start reads this snapshot.
             try? data.write(to: AppGroup.launchSnapshotURL, options: .atomic)
-            try manager.connection.startVPNTunnel(options: [TunnelLaunchOptions.optionKey: data as NSData])
+            let manager = try await installedManager()
+            switch manager.connection.status {
+            case .connecting, .connected, .reasserting:
+                return // On Demand already started it with this plan.
+            default:
+                try manager.connection.startVPNTunnel(options: [TunnelLaunchOptions.optionKey: data as NSData])
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -65,21 +79,69 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// A deliberate stop: On Demand goes off first, otherwise iOS would start the tunnel again.
     func disconnect() {
         if isSimulated {
             simulateConnection(false)
             return
         }
-        manager?.connection.stopVPNTunnel()
+        guard let manager else { return }
+        guard manager.isOnDemandEnabled else {
+            manager.connection.stopVPNTunnel()
+            return
+        }
+        manager.isOnDemandEnabled = false
+        Task {
+            do {
+                try await manager.saveToPreferences()
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+            manager.connection.stopVPNTunnel()
+        }
     }
 
-    /// Hands a new plan to a running tunnel without dropping the VPN.
-    func reload(_ launch: TunnelLaunchOptions) async {
-        guard isConnected else { return }
-        let reply = await send(TunnelRequest(command: .reload, launch: launch))
-        if let reply, let message = String(data: reply, encoding: .utf8), !message.isEmpty {
-            lastError = message
+    /// The tunnel removes its launch snapshot when the panel revokes the device or the plan no
+    /// longer allows the exit; On Demand would then only retry a start that cannot work.
+    private func disableOnDemandWithoutPlan() async {
+        guard let manager, manager.isOnDemandEnabled,
+              !FileManager.default.fileExists(atPath: AppGroup.launchSnapshotURL.path)
+        else { return }
+        manager.isOnDemandEnabled = false
+        try? await manager.saveToPreferences()
+    }
+
+    /// Hands a new plan to a running tunnel without dropping the VPN. Reloads are serialized,
+    /// and one requested while the tunnel is connecting or applying a previous reload waits
+    /// for it. Returns why the plan was not applied; nil when it was, or when no tunnel runs
+    /// (the next Connect uses the new plan anyway).
+    func reload(_ launch: TunnelLaunchOptions) async -> String? {
+        if isSimulated { return nil }
+        let previous = reloadQueue
+        let task = Task { () -> String? in
+            _ = await previous?.value
+            guard await self.waitWhileTransitioning() else {
+                return self.isRunning ? L("The connection is still reconnecting, so the change was not applied. Try again") : nil
+            }
+            switch await self.deliver(TunnelRequest(command: .reload, launch: launch)) {
+            case let .success(reply):
+                guard let reply, let message = String(data: reply, encoding: .utf8), !message.isEmpty else { return nil }
+                return message
+            case let .failure(error):
+                return error.localizedDescription
+            }
         }
+        reloadQueue = Task { _ = await task.value }
+        return await task.value
+    }
+
+    /// Waits (bounded) while the tunnel is connecting or reasserting; true once it is connected.
+    private func waitWhileTransitioning(timeoutSeconds: Double = 30) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while (status == .connecting || status == .reasserting) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return status == .connected
     }
 
     func fetchLogs() async -> [String] {
@@ -100,11 +162,15 @@ final class TunnelController: ObservableObject {
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = Self.tunnelBundleIdentifier
-        proto.serverAddress = "LeiKwan Bridge"
+        proto.serverAddress = "Bridge"
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
-        manager.localizedDescription = "LeiKwan Bridge"
+        manager.localizedDescription = "Bridge"
         manager.isEnabled = true
+        let onDemand = NEOnDemandRuleConnect()
+        onDemand.interfaceTypeMatch = .any
+        manager.onDemandRules = [onDemand]
+        manager.isOnDemandEnabled = true
         try await manager.saveToPreferences()
         // Reload so the connection object reflects the saved configuration.
         try await manager.loadFromPreferences()
@@ -140,6 +206,7 @@ final class TunnelController: ObservableObject {
                 snapshot = TunnelStatusSnapshot()
                 speedHistory = []
                 fetchDisconnectError()
+                Task { await self.disableOnDemandWithoutPlan() }
             }
         }
     }
@@ -190,18 +257,30 @@ final class TunnelController: ObservableObject {
     }
 
     private func send(_ request: TunnelRequest) async -> Data? {
-        guard let session = manager?.connection as? NETunnelProviderSession,
-              let data = try? JSONEncoder().encode(request)
-        else {
-            return nil
+        if case let .success(reply) = await deliver(request) {
+            return reply
+        }
+        return nil
+    }
+
+    /// Like `send`, but tells "the tunnel replied nothing" apart from "the message never got there".
+    private func deliver(_ request: TunnelRequest) async -> Result<Data?, Error> {
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            return .failure(TunnelMessageError())
+        }
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(request)
+        } catch {
+            return .failure(error)
         }
         return await withCheckedContinuation { continuation in
             do {
                 try session.sendProviderMessage(data) { reply in
-                    continuation.resume(returning: reply)
+                    continuation.resume(returning: .success(reply))
                 }
             } catch {
-                continuation.resume(returning: nil)
+                continuation.resume(returning: .failure(error))
             }
         }
     }
@@ -209,6 +288,10 @@ final class TunnelController: ObservableObject {
     private static func isOurs(_ manager: NETunnelProviderManager) -> Bool {
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == tunnelBundleIdentifier
     }
+}
+
+struct TunnelMessageError: LocalizedError {
+    var errorDescription: String? { L("The VPN connection is not available. Reconnect and try again") }
 }
 
 struct SpeedSample: Identifiable, Equatable {

@@ -30,6 +30,16 @@ follows the Android client, with these iOS-specific decisions:
   DOMAIN-KEYWORD / IP-CIDR / GEOIP rules, China bypass.
 - **Nodes**: Shadowsocks and SOCKS5, manual entry, `ss://` / `socks5://`
   import, subscriptions.
+- **iPhone Duo** (foldable; cover 5.4" 1398×2034 ≈ 466×678 pt, compact width;
+  inner 7.6" 1878×2670 ≈ 890×626 pt held open, regular width): built with the
+  iOS 27.1 SDK so the app fills both displays instead of running letterboxed
+  (`scripts/check-sdk.sh` enforces it in CI). iPhone supports landscape, because
+  the open Duo is held landscape. On iOS 18+ the shell is one `.sidebarAdaptable`
+  `TabView`, so folding (a size-class change) keeps the sections and any open
+  editor sheet. Its tab bar becomes the Duo's vertical bar. Centred single-column
+  screens use `readableColumn(maxWidth:)` (`App/Design/FoldLayout.swift`), which
+  moves the column beside an active fold (book pose). Layout follows size class
+  and safe areas, never the device model.
 
 ## Layout
 
@@ -44,7 +54,7 @@ follows the Android client, with these iOS-specific decisions:
 | `scripts/` | Framework build scripts. |
 | `project.yml` | XcodeGen spec for the app and extension targets. |
 
-## Building (macOS with Xcode, Go 1.25, rustup)
+## Building (macOS with Xcode 27.1 or later, Go 1.25, rustup)
 
 ```sh
 bash ios/scripts/build-go-mobile.sh      # ios/Frameworks/Libbox.xcframework (sing-box v1.13.12 + ultra)
@@ -55,7 +65,9 @@ cd ios && xcodegen generate && open Bridge.xcodeproj
 
 `.github/workflows/ios-client.yml` runs the same steps: Core tests, runtime
 host tests (Rust, leikwan-bond, ultra), both frameworks (cached), a simulator
-build and an unsigned device build packaged as `Bridge-unsigned.ipa`.
+build and an unsigned device build packaged as `Bridge-unsigned.ipa`. The app
+jobs run on the `xcode-27` runner with Xcode 27.1 and save iPhone Duo simulator
+screenshots (`scripts/duo-simulator-screenshots.sh`, artifact `iphone-duo-screenshots`).
 
 ## Signing and devices
 

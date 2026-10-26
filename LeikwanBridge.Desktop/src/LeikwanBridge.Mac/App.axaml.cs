@@ -291,7 +291,9 @@ public sealed partial class App : Application
             {
                 if (_availableUpdate is null)
                 {
-                    if (notifyWhenCurrent)
+                    // While the panel's minimum is unmet the required overlay
+                    // already says no installable update is known yet.
+                    if (notifyWhenCurrent && UpdateViewModel?.IsUpdateRequired != true)
                         _services.Controller.PublishNotice(L.T("NoticeUpToDate", "LeiKwan Bridge is up to date."));
                     UpdateViewModel?.ReportUpdateFinished();
                     return;

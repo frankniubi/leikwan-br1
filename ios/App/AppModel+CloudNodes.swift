@@ -499,8 +499,10 @@ extension AppModel {
     }
 
     var legacyBindingIDs: [BindingID] {
-        if let forwardID = selectedForwardID, catalog?.bindableForward(id: forwardID) != nil {
-            return [.forward(forwardID)]
+        if let forwardID = selectedForwardID {
+            // A chosen forward that is no longer offered is not swapped for a direct dial of the
+            // node; `resolvedBindings` still requests it, so Connect reports it unavailable.
+            return catalog?.bindableForward(id: forwardID) != nil ? [.forward(forwardID)] : []
         }
         if let nodeID = selectedNodeID { return [.direct(nodeId: nodeID)] }
         return []

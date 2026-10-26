@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS users (
     whmcs_bound_at DATETIME NULL,
     whmcs_last_synced_at DATETIME NULL,
     wallet_low_balance_threshold DECIMAL(10,2) NOT NULL DEFAULT 5.00,
-    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0
+    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0,
+    apple_id VARCHAR(191) NULL,
+    apple_id_submitted_at DATETIME NULL
 );
 
 CREATE TABLE IF NOT EXISTS oidc_identities (
@@ -92,6 +94,7 @@ CREATE TABLE IF NOT EXISTS whmcs_login_challenges (
     expires_at DATETIME NOT NULL,
     verified_at DATETIME NULL,
     closed_at DATETIME NULL,
+    failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_whmcs_login_challenges_user FOREIGN KEY (user_id) REFERENCES users(id),
@@ -182,6 +185,7 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     external_uot_enabled TINYINT(1) NOT NULL DEFAULT 0,
     external_uot_sidecar_target VARCHAR(255) NULL,
     external_uot_token VARCHAR(8192) NULL,
+    external_uot_hmac_secret VARCHAR(128) NULL,
     external_uot_queue_packets INT NOT NULL DEFAULT 256,
     external_uot_keepalive_seconds INT NOT NULL DEFAULT 10,
     external_uot_reconnect_grace_seconds INT NOT NULL DEFAULT 30,
@@ -1828,4 +1832,35 @@ CREATE TABLE IF NOT EXISTS client_hosted_node_pairings (
     updated_at DATETIME NOT NULL,
     PRIMARY KEY (client_id, forward_id),
     INDEX idx_client_hosted_node_pairings_node (node_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS external_uot_usage_counters (
+    source VARCHAR(191) NOT NULL,
+    instance_id CHAR(32) NOT NULL,
+    forward_id BIGINT NOT NULL,
+    to_target_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    from_target_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (source, instance_id, forward_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS external_uot_usage_daily (
+    forward_id BIGINT NOT NULL,
+    usage_date DATE NOT NULL,
+    service_id BIGINT NULL,
+    sidecar_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    client_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    billed_extra_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    reconciled_at DATETIME NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (forward_id, usage_date),
+    INDEX idx_external_uot_usage_daily_pending (reconciled_at, usage_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+    bucket_key CHAR(64) NOT NULL PRIMARY KEY,
+    window_started_at BIGINT UNSIGNED NOT NULL,
+    hits INT UNSIGNED NOT NULL DEFAULT 0,
+    expires_at BIGINT UNSIGNED NOT NULL,
+    INDEX idx_auth_rate_limits_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

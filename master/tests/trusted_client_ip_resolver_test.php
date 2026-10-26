@@ -51,6 +51,16 @@ assertSame(
     'trusted IPv4 proxy should supply the original client address'
 );
 assertSame(
+    '203.0.113.8',
+    $resolver->resolve(request('10.0.0.5', ['x-forwarded-for' => '192.0.2.66, 203.0.113.8'])),
+    'a client-supplied leftmost X-Forwarded-For entry must not replace the address the proxy appended'
+);
+assertSame(
+    '203.0.113.8',
+    $resolver->resolve(request('10.0.0.5', ['x-forwarded-for' => 'junk, 203.0.113.8, 10.0.0.9'])),
+    'trusted hops are skipped from the right and malformed client entries are ignored'
+);
+assertSame(
     '198.51.100.7',
     $resolver->resolve(request('198.51.100.7', ['x-forwarded-for' => '1.2.3.4'])),
     'untrusted peer must not override its source address'

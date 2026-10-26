@@ -152,6 +152,119 @@ def seal_lease(lease: dict, device_public: bytes) -> dict:
     return lease
 
 
+
+
+# --- native outbound -------------------------------------------------------
+# Enabled by the state file "native" = "1". The carrier mirrors what the
+# Panel publishes for a native forward: a loopback target the server chose,
+# an ordinary Ultra grant bound to that target, and the native_outbound
+# capability. The lease handler checks the request exactly as
+# ClientAgentController::resolveUltraLease does for purpose=native_outbound.
+NATIVE_ID = 50
+NATIVE_TARGET = "127.0.0.1:41000"
+NATIVE_LEASE_PROTOCOL = "leikwan-ultra-native-socks5-v1"
+
+
+def native_direction() -> str:
+    return state("native_direction", "SHA -> HKG")
+
+
+def native_scopes():
+    return [s for s in state("native_scopes", "intl_only global").split() if s]
+
+
+def native_unrestricted() -> bool:
+    return state("native_unrestricted", "1") == "1"
+
+
+def native_digest(direction: str, scope: str, policy_name: str, version: int) -> str:
+    parts = ["native-outbound:v%d" % version, str(NATIVE_ID), direction.strip().lower(), "tcp+udp", scope]
+    if version == 2:
+        parts.append(policy_name)
+    return sha256_hex("\n".join(parts))
+
+
+def native_forward() -> dict:
+    grant = policy(NATIVE_ID, NATIVE_TARGET)
+    grant["transport"] = "tcp+udp"
+    return {
+        "forward_id": NATIVE_ID, "service_status": "active", "mode": "single", "client_mode": "single",
+        "backend_mode": "ultra", "transport": "tcp+udp", "listen_port": 41000, "target": NATIVE_TARGET,
+        "aggregation_enabled": False, "sidecar_required": False,
+        "native_outbound": True, "native_direction": "sha_hkg",
+        "ultra_access": grant,
+    }
+
+
+def native_capability() -> dict:
+    return {
+        "enabled": True, "protocol": "socks5", "lease_protocol": NATIVE_LEASE_PROTOCOL, "transport": "tcp+udp",
+        "forward_ids": [NATIVE_ID], "default_forward_id": NATIVE_ID,
+        "route_scopes": native_scopes(), "default_route_scope": "global",
+        "unrestricted_allowed": native_unrestricted(),
+        "forwards": [{
+            "forward_id": NATIVE_ID, "direction": native_direction(),
+            "scope_digest": native_digest(native_direction(), "global", "restricted", 1),
+            "transport": "tcp+udp", "route_scopes": native_scopes(), "default_route_scope": "global",
+            "unrestricted_allowed": native_unrestricted(),
+        }],
+    }
+
+
+def native_lease_refusal(item: dict):
+    """Returns the Panel's error code for a bad native request, else None."""
+    if state("native", "0") != "1":
+        return "native_outbound_not_allowed"
+    if int(item.get("forward_id", 0)) != NATIVE_ID:
+        return "native_outbound_not_allowed"
+    if not str(item.get("session_ticket", "")).strip():
+        return "lease_scope_invalid"
+    route_policy = str(item.get("route_policy", "restricted") or "restricted").lower()
+    if route_policy not in ("restricted", "unrestricted"):
+        return "native_route_policy_not_allowed"
+    if route_policy == "unrestricted" and not native_unrestricted():
+        return "native_route_policy_not_allowed"
+    scope = str(item.get("route_scope", "global")).lower()
+    if scope not in native_scopes():
+        return "policy_scope_invalid"
+    digest = str(item.get("target_digest", "")).lower()
+    accepted = {native_digest(native_direction(), scope, route_policy, 2)}
+    if route_policy == "restricted":
+        accepted.add(native_digest(native_direction(), scope, route_policy, 1))
+    if digest not in accepted:
+        return "policy_scope_invalid"
+    return None
+
+
+def native_lease_frames(item: dict) -> list:
+    scope = str(item.get("route_scope", "global")).lower()
+    route_policy = str(item.get("route_policy", "restricted") or "restricted").lower()
+    version = 1 if route_policy == "restricted" else 2
+    ttl = int(state("native_ttl", "240"))
+    host = state("relay_host", "127.0.0.1")
+    port = int(state("relay_port", "19000"))
+    with LOCK:
+        global NATIVE_LEASES
+        NATIVE_LEASES += 1
+        serial = NATIVE_LEASES
+    return [{
+        "protocol": NATIVE_LEASE_PROTOCOL, "purpose": "native_outbound", "forward_id": NATIVE_ID,
+        "lease_id": "native-lease-%d" % serial, "policy_generation": HEX64,
+        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + min(ttl, 240))),
+        "transport": "tcp+udp", "rate_limit_mbps": 100, "quota_remaining_bytes": 1 << 30,
+        "selection_ref": hashlib.sha256(("native-ref-%d" % serial).encode()).hexdigest(),
+        "candidate_key_hash": hashlib.sha256(b"native-candidate").hexdigest(),
+        "direction": native_direction(), "route_scope": scope, "route_policy": route_policy,
+        "scope_digest": native_digest(native_direction(), scope, route_policy, version),
+        "endpoint": {"ip": host, "port": port},
+        "credential": {"user": "native-user", "password": "native-pass"},
+        "direct_ip_cidrs": [host + "/32"],
+    }]
+
+
+NATIVE_LEASES = 0
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -213,7 +326,12 @@ class Handler(BaseHTTPRequestHandler):
                     "sidecar_required": False,
                     "ultra_access": policy(forward_id, target),
                 })
+            native_on = state("native", "0") == "1"
+            if native_on:
+                forwards.append(native_forward())
+            self._write_state("pulls", str(PULLS))
             self._json(200, {
+                "native_outbound": native_capability() if native_on else None,
                 "ok": True,
                 "config_revision": "rev-%d" % PULLS,
                 "forward_revision": "frev-1",
@@ -272,7 +390,17 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "empty":
             self._json(200, {"ok": True, "leases": []})
             return
-        if mode == "invalid":
+        if forwards and str(forwards[0].get("purpose", "")).lower() == "native_outbound":
+            with open(os.path.join(STATE, "native_lease_requests.jsonl"), "a") as handle:
+                handle.write(json.dumps(forwards[0]) + "\n")
+            refusal = native_lease_refusal(forwards[0])
+            if refusal:
+                self._write_state("last_native_refusal", refusal)
+                self._json(409 if refusal != "native_outbound_not_allowed" else 403,
+                           {"ok": False, "error": refusal, "failures": {}})
+                return
+            frames = native_lease_frames(forwards[0])
+        elif mode == "invalid":
             # Five candidates exceeds the runtime's protocol limit of four, so
             # a correct agent must see the batch rejected instead of truncated.
             frames = [lease_frame(forward_id, target, "127.0.0.1", 1, i) for i in range(5)]
@@ -306,6 +434,10 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             HEARTBEATS.append(body)
         self._write_state("last_heartbeat.json", json.dumps(body))
+        if body.get("ultra_usage"):
+            with open(os.path.join(STATE, "usage.jsonl"), "a") as handle:
+                for item in body["ultra_usage"]:
+                    handle.write(json.dumps(item) + "\n")
         actions = []
         stop_id = state("action_stop")
         if stop_id:

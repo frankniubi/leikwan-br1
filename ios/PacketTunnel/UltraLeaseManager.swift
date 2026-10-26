@@ -12,13 +12,25 @@ import Security
 ///   (`awaiting` / `lapsed` written after our last delivery);
 /// * failures retry with ControlPlaneBackoff (full jitter, 5 s doubling to 60 s), device-limit
 ///   refusals every 60 s; the runtime keeps serving its current lease meanwhile (offline survival);
-/// * a terminal panel control stops the forward's loop (TunnelControlLoop tears the tunnel down).
+/// * a terminal panel control stops the forward's loop (TunnelControlLoop tears the tunnel down);
+/// * an essential forward (the default binding) left without a usable lease for
+///   `unusableGraceSeconds` (past the policy expiry, or since start when none was delivered)
+///   stops the tunnel, so iOS shows Disconnected (and on-demand can start it again) instead of
+///   a Connected tunnel that carries nothing.
 ///
 /// Leases are opened with the device lease key (`X-Leikwan-Lease-Key`) from this extension's
 /// Keychain and delivered over the runtime's control socket; they are never persisted.
 final class UltraLeaseManager {
+    /// Stops the tunnel; the argument is the user-facing reason.
+    typealias UnusableHandler = (_ message: String) -> Void
+
+    static let unusableGraceSeconds: TimeInterval = 180
+
     private let client: PanelClient
     private let forwards: [UltraForwardLaunch]
+    private let essentialForwardIDs: Set<Int64>
+    private let onUnusable: UnusableHandler
+    private let wakeup = LoopWakeup()
     private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.ultra-lease", attributes: .concurrent)
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
@@ -26,9 +38,11 @@ final class UltraLeaseManager {
     /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
     private var candidateEndpoints: [Int64: [String: String]] = [:]
 
-    init(client: PanelClient, forwards: [UltraForwardLaunch]) {
+    init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, onUnusable: @escaping UnusableHandler) {
         self.client = client
         self.forwards = forwards
+        self.essentialForwardIDs = essentialForwardIDs
+        self.onUnusable = onUnusable
     }
 
     /// Problem the app should show (no usable lease for a forward), if any.
@@ -61,6 +75,12 @@ final class UltraLeaseManager {
         for task in running { task.cancel() }
     }
 
+    /// Re-checks every forward now instead of at the end of its wait (device wake, network
+    /// change): an overdue renewal or a failing one is retried at once.
+    func nudge() {
+        wakeup.fire()
+    }
+
     /// Captures the final usage counters of these runtimes, then deletes their status files
     /// (Android `UltraUsageLedger.captureBeforeDelete`). Call while the runtimes are stopped:
     /// before starting them and after stopping them. Control sockets are removed by the runtime.
@@ -84,6 +104,7 @@ final class UltraLeaseManager {
         var active: Active?
         var pullFirst = false
         var first = true
+        let startedAt = Date()
         while !Task.isCancelled {
             if let current = active {
                 // Healthy: wait for the next check, renew only when due or when the runtime lost it.
@@ -136,13 +157,16 @@ final class UltraLeaseManager {
                     backoff.reset()
                     delayMs = 60_000
                 default:
+                    if stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt) { return }
                     reportFailure(error.description, forward: forward, active: active)
                     delayMs = backoff.nextDelayMs()
                 }
             } catch {
                 first = false
                 pullFirst = true
-                reportFailure(Self.describe(error), forward: forward, active: active)
+                let message = Self.describe(error)
+                if stopIfUnusable(message, forward: forward, active: active, startedAt: startedAt) { return }
+                reportFailure(message, forward: forward, active: active)
                 delayMs = backoff.nextDelayMs()
             }
             if Task.isCancelled { return }
@@ -280,6 +304,20 @@ final class UltraLeaseManager {
         setAlert(Self.userMessage(message), for: forward.forwardID)
     }
 
+    /// True when the tunnel is being stopped: an essential forward has had no usable lease for
+    /// `unusableGraceSeconds`. Device-limit refusals never get here (the device waits for a slot).
+    private func stopIfUnusable(_ message: String, forward: UltraForwardLaunch, active: Active?, startedAt: Date) -> Bool {
+        guard essentialForwardIDs.contains(forward.forwardID) else { return false }
+        let unusableSince = active?.policy.expiresAt ?? startedAt
+        let unusableFor = Date().timeIntervalSince(unusableSince)
+        guard unusableFor >= Self.unusableGraceSeconds else { return false }
+        TunnelLog.shared.write("ultra forward \(forward.forwardID): no usable lease for \(Int(unusableFor))s (\(message)); stopping the tunnel", level: 1)
+        let reason = Self.userMessage(message)
+        setAlert(reason, for: forward.forwardID)
+        onUnusable(L("Ultra forward %@: %@", String(describing: forward.forwardID), String(describing: reason)))
+        return true
+    }
+
     private func setAlert(_ message: String?, for forwardID: Int64) {
         lock.lock()
         alerts[forwardID] = message
@@ -287,8 +325,7 @@ final class UltraLeaseManager {
     }
 
     private func pause(seconds: Double) async {
-        let nanoseconds = UInt64(max(seconds, 0) * 1_000_000_000)
-        try? await Task.sleep(nanoseconds: nanoseconds)
+        await wakeup.sleep(seconds: seconds)
     }
 
     static func describe(_ error: Error) -> String {

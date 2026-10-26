@@ -11,6 +11,8 @@ final class TunnelPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, 
     private unowned let tunnel: PacketTunnelProvider
     private var networkSettings: NEPacketTunnelNetworkSettings?
     private var pathMonitor: NWPathMonitor?
+    /// Last default path seen ("status/interface"), to tell real changes from repeats.
+    private var lastPathKey: String?
 
     init(_ tunnel: PacketTunnelProvider) {
         self.tunnel = tunnel
@@ -188,6 +190,11 @@ final class TunnelPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, 
     }
 
     private func onUpdateDefaultInterface(_ listener: LibboxInterfaceUpdateListenerProtocol, _ path: Network.NWPath) {
+        let key = "\(path.status)/\(path.availableInterfaces.first?.name ?? "")"
+        if let previous = lastPathKey, previous != key, path.status == .satisfied {
+            tunnel.networkPathChanged()
+        }
+        lastPathKey = key
         guard path.status != .unsatisfied, let defaultInterface = path.availableInterfaces.first else {
             listener.updateDefaultInterface("", interfaceIndex: -1, isExpensive: false, isConstrained: false)
             return
@@ -203,6 +210,7 @@ final class TunnelPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, 
     public func closeDefaultInterfaceMonitor(_: LibboxInterfaceUpdateListenerProtocol?) throws {
         pathMonitor?.cancel()
         pathMonitor = nil
+        lastPathKey = nil
     }
 
     public func getInterfaces() throws -> LibboxNetworkInterfaceIteratorProtocol {
@@ -352,5 +360,6 @@ final class TunnelPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, 
         networkSettings = nil
         pathMonitor?.cancel()
         pathMonitor = nil
+        lastPathKey = nil
     }
 }

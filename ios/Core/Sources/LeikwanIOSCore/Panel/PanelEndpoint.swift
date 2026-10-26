@@ -116,13 +116,17 @@ public struct PanelCredentials: Equatable {
     public var installId: String
     public var deviceName: String
     public var appVersion: String
+    /// CFBundleVersion (the build number; CI sets it to the run number). Blank omits the
+    /// X-Client-Build header.
+    public var appBuild: String
 
-    public init(clientId: Int64, agentToken: String, installId: String, deviceName: String, appVersion: String) {
+    public init(clientId: Int64, agentToken: String, installId: String, deviceName: String, appVersion: String, appBuild: String = "") {
         self.clientId = clientId
         self.agentToken = agentToken
         self.installId = installId
         self.deviceName = deviceName
         self.appVersion = appVersion
+        self.appBuild = appBuild
     }
 
     public var deviceId: String {
@@ -141,6 +145,16 @@ public struct PanelCredentials: Equatable {
         if let name = IOSDeviceIdentity.sanitizeDeviceName(deviceName) {
             headers["X-Device-Name"] = name
         }
+        if let build = PanelCredentials.sanitizeBuild(appBuild) {
+            headers["X-Client-Build"] = build
+        }
         return headers
+    }
+
+    /// Trimmed build number without CR/LF, capped at 64 characters; nil when blank.
+    public static func sanitizeBuild(_ value: String) -> String? {
+        let flat = value.components(separatedBy: .newlines).joined()
+        let trimmed = String(flat.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

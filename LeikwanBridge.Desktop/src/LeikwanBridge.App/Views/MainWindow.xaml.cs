@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     // never persist an endpoint the user did not choose.
     private bool _suppressEndpointChangeHandling = true;
     private bool _updateFailureWasInstall;
+    private int _requiredUpdateCheckRunning;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly ConnectionRecoverySupervisor _connectionRecovery;
@@ -688,22 +689,8 @@ public partial class MainWindow : Window
         var row = _vm.PairedProxyForwardRows.FirstOrDefault(item => item.ForwardId == _vm.SelectedProxyForwardId);
         if (row is null || !row.CanConnect)
             return;
-        try
-        {
-            await row.ConnectAsync();
-            SaveCurrentConfig();
-        }
-        catch (Exception ex)
-        {
-            if (ex is OperationCanceledException)
-            {
-                SetProxyReady();
-                Log.Debug(ex, "paired proxy start cancelled");
-                return;
-            }
-            SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to start local proxy for selected paired forward");
-        }
+        _vm.SelectedProxyProfileId = row.SelectedProfileId;
+        await StartSelectedProxyAsync();
     }
 
     private async void OnProxySelectedDisconnect_Click(object sender, RoutedEventArgs e)
@@ -1278,6 +1265,10 @@ public partial class MainWindow : Window
         {
             UpdateUpdatePromptText();
         }
+        if (e.PropertyName == nameof(MainViewModel.IsUpdateRequired) && _vm.IsUpdateRequired)
+        {
+            _ = CheckForRequiredUpdateAsync();
+        }
         if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
         {
             ApplyProxyVisualState();
@@ -1380,6 +1371,8 @@ public partial class MainWindow : Window
         ProxyProfileList.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
         ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
             && snapshot.Mode != WindowsProxyMode.Tun && !_vm.IsExternalProxyActive;
+        ApplySwitchLock(!ProxyLocalListenPortCombo.IsEnabled);
+        UpdateHttpModeNotice();
         UpdateNativeOutboundUi();
     }
 
@@ -1395,6 +1388,7 @@ public partial class MainWindow : Window
         ProxyForwardCombo.IsEnabled = false;
         ProxyPairedForwardCombo.IsEnabled = false;
         ProxyProfileList.IsEnabled = false;
+        ApplySwitchLock(true);
     }
 
     private void SetProxyReady()
@@ -1430,6 +1424,7 @@ public partial class MainWindow : Window
         ProxyForwardCombo.IsEnabled = true;
         ProxyPairedForwardCombo.IsEnabled = true;
         ProxyProfileList.IsEnabled = true;
+        ApplySwitchLock(false);
     }
 
     private void SetProxyTransientStatus(string message, bool error, bool preserveTitle)
@@ -1578,7 +1573,8 @@ public partial class MainWindow : Window
 
     private async void OnDeferUpdateUntilRestart_Click(object sender, RoutedEventArgs e)
     {
-        if (_vm.AvailableUpdateArtifact == null)
+        // A required update cannot be deferred (the button is hidden as well).
+        if (_vm.AvailableUpdateArtifact == null || !_vm.CanDeferUpdate)
             return;
 
         _updateFailureWasInstall = true;
@@ -1594,6 +1590,27 @@ public partial class MainWindow : Window
         {
             _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "deferred update flow failed");
+        }
+    }
+
+    /// <summary>
+    /// The panel's minimum version is not met: fetch the manifest so the
+    /// required overlay can offer "Install now". A failed fetch leaves the
+    /// overlay up with Retry (RetryFailedUpdateAsync re-runs the check).
+    /// </summary>
+    private async Task CheckForRequiredUpdateAsync()
+    {
+        if (_vm.ShowUpdatePrompt || _vm.IsUpdateInProgress)
+            return;
+        if (Interlocked.Exchange(ref _requiredUpdateCheckRunning, 1) != 0)
+            return;
+        try
+        {
+            await CheckForUpdatesAsync(_lifecycleCts.Token);
+        }
+        finally
+        {
+            Volatile.Write(ref _requiredUpdateCheckRunning, 0);
         }
     }
 

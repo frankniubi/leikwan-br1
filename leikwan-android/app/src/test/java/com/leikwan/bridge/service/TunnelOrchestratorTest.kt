@@ -266,6 +266,55 @@ class TunnelOrchestratorTest {
     }
 
     @Test
+    fun `a picked node whose relay failed stops the connect instead of using another node`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("orchestrator-picked-leg-test-prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().commit()
+        val prefs = Prefs(sharedPrefs)
+        val userRuleStore = UserRoutingRuleStore(db)
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = userRuleStore,
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+        )
+        val taiwan = ssNode("taiwan").copy(id = 1L)
+        val hongKong = ssNode("hongkong").copy(id = 2L)
+        val nodes = listOf(taiwan, hongKong)
+
+        val selectedFailed = runCatching {
+            orchestrator.requirePickedNodesRunning(taiwan.id, setOf(taiwan.id), nodes)
+        }.exceptionOrNull()
+        assertTrue(selectedFailed?.message.orEmpty().contains("taiwan"))
+
+        // An unpicked node's failed relay only drops that outbound.
+        orchestrator.requirePickedNodesRunning(taiwan.id, setOf(hongKong.id), nodes)
+
+        prefs.routingSelectorEnabled = true
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "category-video",
+                kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                matchValue = "video",
+                outcome = UserTrafficOutcome.TUNNEL,
+                enabled = true,
+                targetNodeId = hongKong.id,
+            )
+        )
+        val ruleNodeFailed = runCatching {
+            orchestrator.requirePickedNodesRunning(taiwan.id, setOf(hongKong.id), nodes)
+        }.exceptionOrNull()
+        assertTrue(ruleNodeFailed?.message.orEmpty().contains("hongkong"))
+    }
+
+    @Test
     fun `node leg ports are allocated by index to avoid modulo collisions`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)

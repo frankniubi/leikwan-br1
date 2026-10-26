@@ -28,6 +28,7 @@
 "Sign in to use native outbound" = "原生出口需要先登入";
 "Native outbound is not available for this forward" = "目前轉發無法使用原生出口";
 "The native outbound forward is unavailable. Refresh and try again" = "原生出口轉發無法使用，請重新整理後再試";
+"The native outbound line you chose is unavailable. Turn on another line or turn native outbound off" = "你選擇的原生出口線路無法使用。請開啟其他線路，或關閉原生出口";
 "Timeout" = "逾時";
 "Dashboard" = "儀表板";
 "Lines" = "線路";
@@ -250,3 +251,10 @@
 "Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device." = "網域解析會送往「工具」中設定的 DNS 伺服器（預設 1.1.1.1，直連網域為 8.8.8.8）。節點測速與訂閱匯入只連接你輸入的位址。隧道紀錄可能包含你連線的主機名稱，僅保存在本機。";
 "Lookups and logs" = "網域解析與紀錄";
 "Demo (no server connection)" = "示範（不連線伺服器）";
+"The change was not applied to the current connection: %@" = "變更未套用到目前連線：%@";
+"The connection is still reconnecting, so the change was not applied. Try again" = "連線仍在重新連線中，變更未套用，請再試一次";
+"The VPN connection is not available. Reconnect and try again" = "VPN 連線無法使用，請重新連線後再試";
+"Disconnect to change this forward's node. The exit is always the forward's target." = "中斷連線後才能更換此轉發的節點。出口始終是該轉發的目標。";
+"Update required" = "需要更新";
+"A newer version of Bridge is required. Install the latest version and open the app again." = "需要較新版本的 Bridge。請安裝最新版本後重新開啟 App。";
+"Check again" = "重新檢查";

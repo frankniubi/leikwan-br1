@@ -54,7 +54,7 @@ class TunSetupPlannerTest {
     }
 
     @Test
-    fun `planner does not synthesize ipv6 when libbox supplies ipv4 only tun options`() {
+    fun `planner captures ipv6 when libbox supplies ipv4 only tun options`() {
         val plan = TunSetupPlanner.plan(
             TunOptionSnapshot(
                 autoRoute = true,
@@ -68,9 +68,29 @@ class TunSetupPlannerTest {
         )
 
         assertEquals(listOf(RoutePrefix("172.19.0.1", 30)), plan.inet4Addresses)
-        assertEquals(emptyList<RoutePrefix>(), plan.inet6Addresses)
         assertEquals(listOf(RoutePrefix("0.0.0.0", 0)), plan.inet4Routes)
-        assertEquals(emptyList<RoutePrefix>(), plan.inet6Routes)
+        // Otherwise IPv6 (WebRTC included) leaves on the physical network with the real address.
+        assertEquals(listOf(RoutePrefix("fdfe:dcba:9876::1", 126)), plan.inet6Addresses)
+        assertEquals(listOf(RoutePrefix("::", 0)), plan.inet6Routes)
+    }
+
+    @Test
+    fun `planner captures ipv4 when libbox supplies ipv6 only tun options`() {
+        val plan = TunSetupPlanner.plan(
+            TunOptionSnapshot(
+                autoRoute = true,
+                strictRoute = true,
+                inet4Addresses = emptyList(),
+                inet6Addresses = listOf(RoutePrefix("fdfe:dcba:9876::1", 126)),
+                inet4Routes = emptyList(),
+                inet6Routes = listOf(RoutePrefix("::", 0)),
+                dnsServer = "172.19.0.2",
+            )
+        )
+
+        assertEquals(listOf(RoutePrefix("172.19.0.1", 30)), plan.inet4Addresses)
+        assertEquals(listOf(RoutePrefix("0.0.0.0", 0)), plan.inet4Routes)
+        assertEquals(listOf(RoutePrefix("::", 0)), plan.inet6Routes)
     }
 
     @Test

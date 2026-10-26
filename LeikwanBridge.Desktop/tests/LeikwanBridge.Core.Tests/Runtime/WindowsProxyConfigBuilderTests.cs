@@ -89,6 +89,9 @@ public sealed class WindowsProxyConfigBuilderTests
         var root = document.RootElement;
         var tun = root.GetProperty("inbounds")[0];
         Assert.Equal("tun", tun.GetProperty("type").GetString());
+        Assert.Equal(
+            [WindowsProxyConfigBuilder.TunAddress, WindowsProxyConfigBuilder.TunIpv6Address],
+            tun.GetProperty("address").EnumerateArray().Select(item => item.GetString()).ToArray());
         Assert.Equal(1280, tun.GetProperty("mtu").GetInt32());
         Assert.True(tun.GetProperty("auto_route").GetBoolean());
         Assert.True(tun.GetProperty("strict_route").GetBoolean());
@@ -105,12 +108,15 @@ public sealed class WindowsProxyConfigBuilderTests
         var reject = rules[rejectIndex];
         Assert.Contains(reject.GetProperty("network").EnumerateArray(), item => item.GetString() == "udp");
         Assert.Contains(reject.GetProperty("ip_cidr").EnumerateArray(), item => item.GetString() == "172.19.0.2/32");
+        Assert.Contains(reject.GetProperty("ip_cidr").EnumerateArray(), item => item.GetString() == "fdfe:dcba:9876::2/128");
         Assert.Equal("drop", reject.GetProperty("method").GetString());
         Assert.Equal("proxy", root.GetProperty("route").GetProperty("final").GetString());
         Assert.Contains(tun.GetProperty("route_exclude_address").EnumerateArray(),
             item => item.GetString() == "198.51.100.7/32");
         Assert.Contains(tun.GetProperty("route_exclude_address").EnumerateArray(),
             item => item.GetString() == "127.0.0.0/8");
+        Assert.Contains(tun.GetProperty("route_exclude_address").EnumerateArray(),
+            item => item.GetString() == "::1/128");
     }
 
     [Fact]

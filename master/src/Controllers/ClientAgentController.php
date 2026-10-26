@@ -8,11 +8,13 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AuthRateLimiter;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\AccessPolicyService;
 use Leikwan\Master\Support\OpenWrtPairingCodeService;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\ClientOnlineSessionService;
+use Leikwan\Master\Support\ClientUpdatePolicy;
 use Leikwan\Master\Support\DeviceControlService;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\DesktopClientSessionService;
@@ -958,6 +960,15 @@ final class ClientAgentController extends BaseController
         if (is_array($snapshot['native_outbound'] ?? null)) {
             $responsePayload['native_outbound'] = $snapshot['native_outbound'];
         }
+        // A minimum client version, only for the GUI clients that ship the update gate.
+        // Linux and OpenWrt never get this key, so their payload is unchanged.
+        $clientUpdate = ClientUpdatePolicy::forPlatform(
+            $platform,
+            isset($this->config) ? (string) $this->config->get(ClientUpdatePolicy::CONFIG_KEY, '') : ''
+        );
+        if ($clientUpdate !== null) {
+            $responsePayload['client_update'] = $clientUpdate;
+        }
         $response = $this->json($responsePayload);
         return $response->withHeaders([
             'Cache-Control' => 'no-store, no-cache, must-revalidate',
@@ -1084,6 +1095,13 @@ final class ClientAgentController extends BaseController
         if ($updateRequestToken !== '') {
             // A console update click must end the long poll, or the agent only sees it on its next full pull.
             $revisionExtra['update_request'] = $updateRequestToken;
+        }
+        $updatePolicyMarker = ClientUpdatePolicy::revisionMarker(
+            isset($this->config) ? (string) $this->config->get(ClientUpdatePolicy::CONFIG_KEY, '') : ''
+        );
+        if ($updatePolicyMarker !== '') {
+            // Changing the minimum version must end the long poll for clients waiting on a revision.
+            $revisionExtra['client_update_policy'] = $updatePolicyMarker;
         }
         $configRevision = self::configRevision($forwardRevision, $agentConfig, [
             $clientAgentKey => $clientAgent,
@@ -1458,7 +1476,8 @@ final class ClientAgentController extends BaseController
         $platform = strtolower(trim($platform));
         return str_starts_with($platform, 'windows')
             || str_starts_with($platform, 'linux')
-            || str_starts_with($platform, 'macos');
+            || str_starts_with($platform, 'macos')
+            || str_starts_with($platform, 'ios');
     }
 
     /** @param array<string,mixed> $forward @return array<string,mixed> */
@@ -1738,17 +1757,29 @@ final class ClientAgentController extends BaseController
             return $this->json(['ok' => false, 'error' => 'email and password required'], 400);
         }
 
+        // Same budgets as the panel login form; throttled requests never reach
+        // the password check.
+        $limiter = new AuthRateLimiter($this->db);
+        $buckets = AuthRateLimiter::loginBuckets('client-login', AuthRateLimiter::clientIp($this->config, $request), $email);
+        try {
+            $limiter->hit($buckets);
+        } catch (ApiException $exception) {
+            $retryAfter = max(1, (int) ($exception->details()['retry_after'] ?? 60));
+            return $this->json(['ok' => false, 'error' => 'rate_limited', 'retry_after' => $retryAfter], 429)
+                ->withHeaders(['Retry-After' => (string) $retryAfter]);
+        }
+
         $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
 
         if (
+            !AuthRateLimiter::verifyPassword($password, $user['password_hash'] ?? null) ||
             $user === null ||
-            (string) $user['status'] !== 'active' ||
-            !is_string($user['password_hash']) ||
-            $user['password_hash'] === '' ||
-            !password_verify($password, (string) $user['password_hash'])
+            (string) $user['status'] !== 'active'
         ) {
             return $this->json(['ok' => false, 'error' => 'invalid credentials'], 401);
         }
+        $limiter->reset([$buckets[0]]);
+        $limiter->refund([$buckets[1]]);
 
         $loginDevice = $this->requestDeviceIdentity($request, false, 'device_uuid_invalid');
         if ($loginDevice !== '') {

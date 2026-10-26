@@ -22,7 +22,7 @@ struct ProxiesView: View {
                     }
 
                     SectionTitle(L("Bindings"), trailing: bindingsBadge)
-                    if model.isNativeOutboundActive {
+                    if model.nativeOutboundPreferences.enabled {
                         NativeActiveBanner()
                     } else {
                         Text(L("Each forward is bound to one node, and every enabled binding runs at the same time. Under Rules you can send an app through a specific binding; everything else uses the default binding."))
@@ -31,7 +31,7 @@ struct ProxiesView: View {
                     }
                     LazyVGrid(columns: bindingColumns, spacing: Metrics.gutter) {
                         ForEach(model.bindingRows) { row in
-                            BindingCard(row: row, suspended: model.isNativeOutboundActive)
+                            BindingCard(row: row, suspended: model.nativeOutboundPreferences.enabled)
                         }
                     }
 
@@ -72,7 +72,7 @@ struct ProxiesView: View {
     }
 
     private var bindingsBadge: AnyView? {
-        if model.isNativeOutboundActive {
+        if model.nativeOutboundPreferences.enabled {
             return AnyView(Pill(text: L("Paused"), fill: Palette.warningContainer, foreground: Palette.onWarningContainer))
         }
         guard let hidden = model.catalog?.unsupportedHiddenCount, hidden > 0 else { return nil }
@@ -153,6 +153,11 @@ private struct BindingCard: View {
     /// This binding runs on Connect.
     private var isRunning: Bool { row.isEnabled && !suspended }
 
+    /// A forward always exits at its target; its node only supplies the protocol settings for
+    /// that target. Swapping the node of a live forward cannot move the exit (and a node for a
+    /// different server breaks the binding), so the choice is locked while connected.
+    private var nodeLocked: Bool { row.forward != nil && (tunnel.isConnected || tunnel.isBusy) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -193,7 +198,7 @@ private struct BindingCard: View {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.onSurfaceVariant)
-                if let forward = row.forward, !suspended {
+                if let forward = row.forward, !suspended, !nodeLocked {
                     Menu {
                         Button(L("No node")) {
                             Task { await model.setNode(nil, forForward: forward.forwardId) }
@@ -226,6 +231,12 @@ private struct BindingCard: View {
             }
             .padding(10)
             .background(Palette.surfaceContainerHigh, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            if nodeLocked && !suspended {
+                Text(L("Disconnect to change this forward's node. The exit is always the forward's target."))
+                    .font(.caption2)
+                    .foregroundStyle(Palette.onSurfaceVariant)
+            }
 
             HStack(spacing: 8) {
                 Text(row.nodeSourceLabel)
@@ -276,7 +287,7 @@ private struct BindingCard: View {
                     .font(.subheadline)
                     .foregroundStyle(Palette.onSurfaceVariant)
             }
-            if row.forward != nil && !suspended {
+            if row.forward != nil && !suspended && !nodeLocked {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
                     .foregroundStyle(Palette.onSurfaceVariant)
@@ -300,7 +311,11 @@ private struct NativeActiveBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label {
-                Text(L("Native outbound \u{201C}%@\u{201D} is in use, so the bindings below do not run (their settings are kept).", String(describing: nativeTitle)))
+                if model.isNativeOutboundActive {
+                    Text(L("Native outbound \u{201C}%@\u{201D} is in use, so the bindings below do not run (their settings are kept).", String(describing: nativeTitle)))
+                } else {
+                    Text(L("The native outbound line you chose is unavailable. Turn on another line or turn native outbound off"))
+                }
             } icon: {
                 Image(systemName: "pause.circle.fill")
             }

@@ -15,6 +15,9 @@ public interface IWindowsProxyProcessHost : IAsyncDisposable
     Task<bool> WaitForTunReadyAsync(CancellationToken ct = default);
     Task<bool> WaitForListenerAsync(int port, CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
+
+    /// <summary>Raised with the exit code when a started process exits without <see cref="StopAsync"/>.</summary>
+    event Action<int>? UnexpectedExit { add { } remove { } }
 }
 
 public sealed class WindowsProxyProcessExitException : InvalidOperationException
@@ -45,6 +48,9 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     private readonly Action<string>? _onOutput;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
+    private Process? _watchedProcess;
+
+    public event Action<int>? UnexpectedExit;
 
     public WindowsProxyProcessHost(Action<string>? onOutput = null)
     {
@@ -173,6 +179,10 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
                     detail = NormalizeDiagnostics(diagnostics.ToString());
                 throw new WindowsProxyProcessExitException(process.ExitCode, detail);
             }
+            process.Exited += (_, _) => OnProcessExited(process);
+            Volatile.Write(ref _watchedProcess, process);
+            if (process.HasExited)
+                OnProcessExited(process);
         }
         catch
         {
@@ -226,8 +236,19 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
         return info;
     }
 
+    private void OnProcessExited(Process process)
+    {
+        if (!ReferenceEquals(Interlocked.CompareExchange(ref _watchedProcess, null, process), process))
+            return;
+        int exitCode;
+        try { exitCode = process.ExitCode; }
+        catch (InvalidOperationException) { exitCode = -1; }
+        UnexpectedExit?.Invoke(exitCode);
+    }
+
     private async Task StopCoreAsync()
     {
+        Interlocked.Exchange(ref _watchedProcess, null);
         var process = Interlocked.Exchange(ref _process, null);
         if (process is null)
             return;

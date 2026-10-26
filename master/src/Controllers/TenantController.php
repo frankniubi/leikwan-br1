@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\AppleId;
 use Leikwan\Master\Support\DebugCollectionStore;
 use Leikwan\Master\Support\ClientOnlineSessionService;
 use Leikwan\Master\Support\DeviceControlService;
@@ -21,6 +22,9 @@ use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
 {
+    /** Public TestFlight invite for the iOS build, released from the app center. */
+    public const IOS_TESTFLIGHT_INVITE_URL = 'https://testflight.apple.com/join/r1pGPj81';
+
     private AccessPolicyService $accessPolicy;
 
     public function __construct(
@@ -63,8 +67,14 @@ final class TenantController extends BaseController
             $serviceIds = array_map(static fn(array $service): int => (int) ($service['id'] ?? 0), $activeServices);
             $serviceIds = array_values(array_filter($serviceIds, static fn(int $id): bool => $id > 0));
             if ($serviceIds !== []) {
+                // Count rules that still exist. Deleting a forward is a soft
+                // delete (enabled = 0 + user_deleted_at set), so counting the
+                // table as-is made the number climb with every create/delete.
                 $forwardRow = $this->db->fetchOne(
-                    'SELECT COUNT(*) AS total FROM forwards WHERE service_id IN (' . implode(',', $serviceIds) . ')'
+                    'SELECT COUNT(*) AS total
+                     FROM forwards
+                     WHERE service_id IN (' . implode(',', $serviceIds) . ')
+                       AND user_deleted_at IS NULL'
                 );
                 $forwardCount = (int) ($forwardRow['total'] ?? 0);
             }
@@ -1080,6 +1090,7 @@ final class TenantController extends BaseController
             . '<dt>Main province</dt><dd>' . $this->escape($mainProvince !== '' ? $mainProvince : 'Not bound') . '</dd>'
             . '<dt>Last verified</dt><dd>' . $this->escape((string) ($profile['last_verified_at'] ?? 'Not verified')) . '</dd>'
             . '<dt>Next self-change</dt><dd>' . $this->escape($availableAt !== '' ? $availableAt : 'Available now') . '</dd>'
+            . '<dt>Apple ID <span class="muted">iOS</span></dt><dd>' . $this->renderAppleIdValue($user) . '</dd>'
             . '</dl>'
             . '<form method="post" action="/tenant/security/main-province"><input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<div class="form-grid"><div class="field"><label for="main-province">Main province</label>'
@@ -1102,6 +1113,23 @@ final class TenantController extends BaseController
             . $deviceRows . '</tbody></table></div></section>';
 
         return $this->page('Account Security', $body, $user, $this->tenantNav('security'));
+    }
+
+    /**
+     * The stored Apple ID, or the way to add one. Editing is intentionally not
+     * offered here: the value is recorded once, and support can correct it.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function renderAppleIdValue(array $user): string
+    {
+        $appleId = AppleId::normalize($user['apple_id'] ?? '');
+        if ($appleId === null) {
+            return '<span class="muted">未填写 · 到<a href="/tenant/clients">客户端</a>页面填写后可获取 TestFlight 邀请</span>';
+        }
+        $submittedAt = trim((string) ($user['apple_id_submitted_at'] ?? ''));
+        return '<code>' . $this->escape($appleId) . '</code>'
+            . ($submittedAt !== '' ? ' <span class="muted">· 提交于 ' . $this->escape($submittedAt) . ' UTC</span>' : '');
     }
 
     /** @param array<int, array<string, mixed>> $services */
@@ -1250,6 +1278,7 @@ final class TenantController extends BaseController
         }
 
         $installCommand = $this->clientAgentInstallCommand($client);
+        $iosSection = $this->tenantIosSection($user);
         $sessionService = new ClientOnlineSessionService($this->db);
         $onlineCount = $sessionService->activeCountForClient($clientId);
         $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
@@ -1372,46 +1401,49 @@ final class TenantController extends BaseController
         $dockerCommand = $this->dockerClientInstallCommand($client);
         $dockerComposeSnippet = $this->dockerClientComposeInline($client);
 
+        // No-GUI (CLI) clients lead each desktop card; the GUI app is collapsed below.
         $macosGuiSectionRaw = $this->renderMacClientInstallSection();
-        $macosSection = '';
+        $macosGuiBlock = '';
         if ($macosGuiSectionRaw !== '') {
-            $macosNoGuiBlock = '<details style="margin-top:12px;"><summary>无界面版 · macOS（launchd 守护进程）</summary>'
-                . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-                . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
-                . '<div class="actions">'
-                . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
-                . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
-                . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-                . '</div></details>';
-            $macosSection = str_replace('</section>', $macosNoGuiBlock . '</section>', $macosGuiSectionRaw);
-        } else {
-            $macosSection = '<section class="tenant-client-install__platform"><strong>'
-                . $this->platformIcon('macos')
-                . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版', 'windows_headless_client')) . '</strong>'
-                . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-                . '<details open><summary>安装命令</summary><pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
-                . '<div class="actions">' . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败') . '</div></details>'
-                . '</section>';
+            $macosGuiVersion = $this->macosClientReleaseVersion();
+            $macosGuiBlock = '<details style="margin-top:12px;"><summary>' . $this->platformIcon('macos')
+                . $this->escape('macOS' . ($macosGuiVersion !== '' ? ' ' . $macosGuiVersion : '') . ' · 图形界面版')
+                . '</summary>'
+                . $this->renderMacClientInstallBody()
+                . '</details>';
         }
+        $macosSection = '<section class="tenant-client-install__platform"><strong>'
+            . $this->platformIcon('macos')
+            . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 (CLI)', 'macos_headless_installer')) . '</strong>'
+            . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
+            . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+            . '</div>'
+            . $macosGuiBlock
+            . '</section>';
 
         $windowsSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</strong>'
-            . '<div class="actions">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
-            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . ' · 复制命令</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
-            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
-            . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('helper') . '无界面版 · Windows 系统服务</summary>'
-            . '<div class="muted" style="margin:8px 0 8px;">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . $this->escape($this->clientAppReleaseLabel('Windows · 无界面版 (CLI)', 'windows_headless_client')) . '</strong>'
+            . '<div class="muted">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
             . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
+            . '</div>'
+            . '<details style="margin-top:12px;"><summary>' . $this->platformIcon('windows')
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app') . ' · 图形界面版') . '</summary>'
+            . '<div class="actions" style="margin-top:8px;">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
+            . '<div class="muted" style="margin:10px 0 6px;">' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制命令', $this->windowsUpdateHelperCommand(), 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->windowsUpdateHelperUrl()) . '">下载助手</a>'
             . '</div></details>'
             . '</section>';
 
@@ -1449,6 +1481,7 @@ final class TenantController extends BaseController
             . '</div></section>'
             . $windowsSection
             . $macosSection
+            . $iosSection
             // Docker installation is hidden until container runtime acceptance passes.
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
@@ -1603,6 +1636,191 @@ final class TenantController extends BaseController
         }
 
         return Response::redirect('/tenant/clients');
+    }
+
+    /**
+     * Both gates of the iOS card read membership from the same rows: status
+     * alone is not enough, because nothing writes 'expired' to services.status.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function userServices(int $userId): array
+    {
+        return $this->db->fetchAll(
+            'SELECT status, expire_at FROM services WHERE user_id = :user_id',
+            ['user_id' => $userId]
+        );
+    }
+
+    /**
+     * iOS card for the app center.
+     *
+     * The TestFlight invite is per account: a tenant with a valid package types
+     * the Apple ID the invite should go to, the panel stores it (one per
+     * account), shows a short "inviting" state, and then releases the link. The
+     * Apple ID stays visible on Account Security and in the admin tenant
+     * directory so an invite can be traced.
+     *
+     * Copy is Chinese like the rest of the app center and is not routed through
+     * the client-side i18n dictionary: these sentences are assembled from
+     * concatenated fragments, and patch.js only replaces text nodes that match
+     * a dictionary key exactly.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function tenantIosSection(array $user): string
+    {
+        $appleId = AppleId::normalize($user['apple_id'] ?? '');
+        $hasMembership = AppleId::hasValidMembership($this->userServices((int) $user['id']));
+
+        $header = '<strong>' . $this->platformIcon('ios') . 'iOS · TestFlight</strong>';
+        if (!$hasMembership) {
+            return '<section class="tenant-client-install__platform" data-ios-testflight>'
+                . $header
+                . '<div class="muted">iOS 版通过 TestFlight 分发，需要有效套餐才能获取邀请。'
+                . '<a href="/tenant/plans">查看套餐</a></div>'
+                . '</section>';
+        }
+
+        if ($appleId !== null) {
+            return '<section class="tenant-client-install__platform" data-ios-testflight>'
+                . $header
+                . '<div class="muted">邀请已提交到 <code data-ios-apple-id>' . $this->escape($appleId) . '</code>'
+                . ' · <a href="/tenant/security">在账户安全中查看</a></div>'
+                . '<div class="actions">'
+                . '<a class="button" href="' . $this->escape(self::IOS_TESTFLIGHT_INVITE_URL) . '" target="_blank" rel="noopener">打开 TestFlight 邀请链接</a>'
+                . '</div>'
+                . $this->renderIosServerAddresses()
+                . '</section>';
+        }
+
+        // One-shot form: the Apple ID is recorded here, and the page then walks
+        // through the 5 s "inviting" state before revealing the invite link and
+        // the server address the app asks for on first launch.
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $inviteUrl = $this->escape(self::IOS_TESTFLIGHT_INVITE_URL);
+        $serverAddresses = $this->renderIosServerAddresses();
+        return '<section class="tenant-client-install__platform" data-ios-testflight>'
+            . $header
+            . '<div class="muted">TestFlight 邀请会发到你登录 App 用的 Apple ID。填写一次即可，'
+            . '之后可以在<a href="/tenant/security">账户安全</a>查看。</div>'
+            . '<form method="post" action="/tenant/clients/ios/apple-id" data-ios-form>'
+            . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+            . '<div class="field"><label for="tenant-ios-apple-id">Apple ID</label>'
+            . '<input id="tenant-ios-apple-id" type="email" name="apple_id" autocomplete="email" '
+            . 'placeholder="you@example.com" required maxlength="191"></div>'
+            . '<div class="actions"><button class="button" type="submit">申请 TestFlight 邀请</button></div>'
+            . '</form>'
+            . '<div class="muted tenant-client-install__ios-progress" data-ios-progress hidden>正在为你开通 TestFlight 邀请…</div>'
+            . '<div class="tenant-client-install__ios-invite" data-ios-invite hidden>'
+            . '<div class="muted">邀请已提交到 <code data-ios-apple-id></code>，请在 TestFlight 中接受。</div>'
+            . '<div class="actions">'
+            . '<a class="button" href="' . $inviteUrl . '" target="_blank" rel="noopener">打开 TestFlight 邀请链接</a>'
+            . '</div>'
+            . $serverAddresses
+            . '</div>'
+            . '<script data-ios-script>'
+            . '(function(){'
+            . 'var section=document.currentScript.parentNode;'
+            . 'var form=section.querySelector("[data-ios-form]");'
+            . 'var progress=section.querySelector("[data-ios-progress]");'
+            . 'var invite=section.querySelector("[data-ios-invite]");'
+            . 'if(!form||!progress||!invite){return;}'
+            . 'form.addEventListener("submit",function(event){'
+            . 'event.preventDefault();'
+            . 'if(form.getAttribute("data-busy")==="1"){return;}'
+            . 'form.setAttribute("data-busy","1");'
+            . 'var button=form.querySelector("button[type=submit]");'
+            . 'if(button){button.disabled=true;}'
+            . 'var body=new FormData(form);'
+            . 'fetch(form.action,{method:"POST",body:body,credentials:"same-origin",headers:{"Accept":"application/json"}})'
+            . '.then(function(response){return response.json().catch(function(){return {};}).then(function(data){return {ok:response.ok,data:data};});})'
+            . '.then(function(result){'
+            . 'if(!result.ok||!result.data||result.data.ok!==true){'
+            . 'form.removeAttribute("data-busy");'
+            . 'if(button){button.disabled=false;}'
+            . 'progress.textContent="Apple ID 未能保存，请检查后重试。";'
+            . 'progress.hidden=false;'
+            . 'return;'
+            . '}'
+            . 'var shown=invite.querySelector("[data-ios-apple-id]");'
+            . 'if(shown&&result.data.apple_id){shown.textContent=result.data.apple_id;}'
+            . 'form.hidden=true;'
+            . 'progress.textContent="正在允许 TestFlight 邀请…";'
+            . 'progress.hidden=false;'
+            . 'window.setTimeout(function(){progress.hidden=true;invite.hidden=false;},5000);'
+            . '});'
+            . '});'
+            . '})();'
+            . '</script>'
+            . '</section>';
+    }
+
+    /**
+     * The panel addresses to type into the iOS app's "Server address" field, in
+     * the order to try them. The Cloudflare edge is the normal one; the Aliyun
+     * CDN host is the backup that still answers from mainland networks when the
+     * Cloudflare edge does not.
+     */
+    private function renderIosServerAddresses(): string
+    {
+        $primary = $this->artifactBaseUrl();
+        $backup = $this->artifactMirrorBaseUrl();
+        if ($primary === '' && $backup === '') {
+            return '';
+        }
+
+        $row = function (string $label, string $url) : string {
+            return '<div class="tenant-client-install__ios-server">'
+                . '<span class="muted">' . $this->escape($label) . '</span>'
+                . '<code>' . $this->escape($url) . '</code>'
+                . $this->renderCopyButton('复制', $url, 'secondary', '已复制', '复制失败')
+                . '</div>';
+        };
+
+        $html = '<div class="tenant-client-install__ios-servers">'
+            . '<div class="muted">首次打开 App 时，把下面的服务器地址填进「Server address」：</div>';
+        if ($primary !== '') {
+            $html .= $row('会聚 Cloudflare', $primary);
+        }
+        if ($backup !== '' && $backup !== $primary) {
+            $html .= $row('会聚阿里云', $backup);
+        }
+        return $html . '</div>';
+    }
+
+    /**
+     * Record the Apple ID for the iOS TestFlight invite. The client-side flow
+     * posts here and then reveals the link itself, so the response is JSON.
+     */
+    public function submitIosAppleId(Request $request, array $params): Response
+    {
+        $user = $this->tenantUser();
+        if ($user === null) {
+            return Response::json(401, ['ok' => false, 'error' => 'user_auth_failed']);
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            // Same gate as the card: no invite without a live package, even if
+            // the POST is replayed after the package lapsed.
+            if (!AppleId::hasValidMembership($this->userServices((int) $user['id']))) {
+                throw new ApiException('membership_required', 403);
+            }
+            $claim = AppleId::claim($this->db, (int) $user['id'], $request->input('apple_id', ''));
+            return Response::json(200, [
+                'ok' => true,
+                'apple_id' => $claim['apple_id'],
+                'invite_url' => self::IOS_TESTFLIGHT_INVITE_URL,
+            ]);
+        } catch (ApiException $exception) {
+            return Response::json($exception->statusCode(), [
+                'ok' => false,
+                'error' => $exception->getMessage(),
+            ]);
+        } catch (\Throwable) {
+            return Response::json(500, ['ok' => false, 'error' => 'apple_id_save_failed']);
+        }
     }
 
     public function sidecarsPage(Request $request, array $params): Response

@@ -95,7 +95,10 @@ internal fun connectToggle(
 ): () -> Unit = {
     val turningOn = state.vpnStatus == VpnStatus.DISCONNECTED
     if (turningOn && activity != null) {
-        activity.requestVpnPermission { viewModel.toggleConnect() }
+        activity.requestVpnPermission {
+            viewModel.toggleConnect()
+            activity.offerBatteryOptimizationExemption()
+        }
     } else {
         viewModel.toggleConnect()
     }

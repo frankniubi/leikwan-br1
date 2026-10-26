@@ -118,7 +118,7 @@ final class OidcClient
             throw new RuntimeException('oidc_callback_invalid');
         }
         if ($this->config->getBool('OIDC_REQUIRE_EMAIL_VERIFIED', true) && $emailVerified !== true) {
-            throw new RuntimeException('oidc_callback_invalid');
+            throw new RuntimeException('oidc_email_unverified');
         }
 
         $identity = [

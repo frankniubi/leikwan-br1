@@ -255,8 +255,10 @@ public static class WindowsProxyConfigBuilder
                 {
                     // Native SOCKS5 carries DNS as real UDP. TCP DNS through
                     // the provider can be accepted at the SOCKS layer while
-                    // the upstream resolver closes the stream before replying.
-                    ["type"] = IsNativeRestrictedScope(nativeRouteScope) ? "udp" : "tcp",
+                    // the upstream resolver closes the stream before replying,
+                    // and every native scope resolves before the SOCKS handoff,
+                    // so a failing TCP resolver takes down all named traffic.
+                    ["type"] = nativeRouteScope is not null ? "udp" : "tcp",
                     ["tag"] = tag,
                     ["server"] = custom[index],
                     ["server_port"] = 53,
@@ -358,7 +360,7 @@ public static class WindowsProxyConfigBuilder
             ["type"] = "tun",
             ["tag"] = "tun-in",
             ["interface_name"] = TunInterfaceName,
-            ["address"] = new JsonArray(TunAddress),
+            ["address"] = new JsonArray(TunAddress, TunIpv6Address),
             // The runtime measures the native-UDP payload ceiling per association; an
             // MTU above it would only produce frames the path silently drops.
             ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
@@ -380,6 +382,8 @@ public static class WindowsProxyConfigBuilder
         {
             "127.0.0.0/8",
             "255.255.255.255/32",
+            "::1/128",
+            "ff00::/8",
         };
         routeExcludes.AddRange(bypassIps);
         if (routeExcludes.Count > 0)

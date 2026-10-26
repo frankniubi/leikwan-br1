@@ -51,26 +51,20 @@ object TunSetupPlanner {
         snapshot: TunOptionSnapshot,
         ownerPackageName: String? = null,
     ): TunSetupPlan {
-        val hasExplicitAddress = snapshot.inet4Addresses.isNotEmpty() || snapshot.inet6Addresses.isNotEmpty()
-        val inet4Addresses = snapshot.inet4Addresses.ifEmpty {
-            if (hasExplicitAddress) emptyList() else fallbackInet4Address
-        }
-        val inet6Addresses = snapshot.inet6Addresses.ifEmpty {
-            if (hasExplicitAddress) emptyList() else fallbackInet6Address
-        }
+        // Both families always get an address and a default route into the VPN. A family the
+        // VPN does not route stays on the physical network, so its traffic (WebRTC over IPv6,
+        // for one) would show the device's real address; sing-box carries or rejects it instead.
+        val inet4Addresses = snapshot.inet4Addresses.ifEmpty { fallbackInet4Address }
+        val inet6Addresses = snapshot.inet6Addresses.ifEmpty { fallbackInet6Address }
         val inet4Routes = if (snapshot.autoRoute && snapshot.inet4Routes.isNotEmpty()) {
             snapshot.inet4Routes
-        } else if (inet4Addresses.isNotEmpty()) {
-            fallbackInet4Routes
         } else {
-            emptyList()
+            fallbackInet4Routes
         }
         val inet6Routes = if (snapshot.autoRoute && snapshot.inet6Routes.isNotEmpty()) {
             snapshot.inet6Routes
-        } else if (inet6Addresses.isNotEmpty()) {
-            fallbackInet6Routes
         } else {
-            emptyList()
+            fallbackInet6Routes
         }
         val dnsServers = listOf(snapshot.dnsServer?.takeIf { it.isNotBlank() } ?: fallbackDnsServer)
         val owner = ownerPackageName?.takeIf { it.isNotBlank() }

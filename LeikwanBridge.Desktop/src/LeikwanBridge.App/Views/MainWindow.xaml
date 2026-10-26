@@ -122,7 +122,16 @@
                     HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel Margin="8">
                     <TextBlock Text="{DynamicResource UpdateAvailableTitle}" FontSize="22" FontWeight="Bold" Margin="0,0,0,8"
-                               Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
+                               Visibility="{Binding IsOptionalUpdateTitleVisible, Converter={StaticResource BoolToVis}}"/>
+                    <!-- Required update (panel minimum version): no Defer/Dismiss; the tunnel keeps running behind it. -->
+                    <TextBlock Text="{DynamicResource UpdateRequiredTitle}"
+                               FontSize="22" FontWeight="Bold" Margin="0,0,0,8"
+                               Visibility="{Binding IsUpdateRequired, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{DynamicResource UpdateRequiredBody}" TextWrapping="Wrap" Margin="0,0,0,8"
+                               Visibility="{Binding IsUpdateRequired, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{DynamicResource UpdateRequiredUnavailable}" TextWrapping="Wrap"
+                               Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,12"
+                               Visibility="{Binding IsRequiredUpdateUnavailable, Converter={StaticResource BoolToVis}}"/>
                     <TextBlock x:Name="UpdateVersionText"
                                Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,16"
                                Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
@@ -145,17 +154,17 @@
                                Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionRetryUpdate}"
                             Command="{Binding RetryUpdateCommand}" Margin="0,0,0,8"
-                            Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding IsUpdateRetryVisible, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionDismiss}"
                             Command="{Binding DismissUpdateErrorCommand}"
-                            Visibility="{Binding ShowUpdateError, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding CanDismissUpdateError, Converter={StaticResource BoolToVis}}"/>
 
                     <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ActionInstallNow}"
                             Click="OnInstallUpdateNow_Click" Margin="0,0,0,8"
                             Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
                     <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ActionDeferUpdate}"
                             Click="OnDeferUpdateUntilRestart_Click"
-                            Visibility="{Binding ShowUpdatePrompt, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding CanDeferUpdate, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
         </Grid>
@@ -322,27 +331,31 @@
                                                 <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE8AB;"/>
                                                 <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashOutboundMode}"/>
                                             </StackPanel>
-                                            <RadioButton x:Name="DashModeHttp" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Http"
+                                            <RadioButton x:Name="DashModeHttp" ToolTipService.ShowOnDisabled="True" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Http"
                                                          Checked="OnDashModeChecked" AutomationProperties.Name="System proxy mode">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xE774;" FontFamily="{StaticResource IconFont}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                                     <TextBlock Text="{DynamicResource ProxyModeHttp}" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
                                             </RadioButton>
-                                            <RadioButton x:Name="DashModeTun" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Tun"
+                                            <RadioButton x:Name="DashModeTun" ToolTipService.ShowOnDisabled="True" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Tun"
                                                          Checked="OnDashModeChecked" AutomationProperties.Name="TUN mode">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xEA18;" FontFamily="{StaticResource IconFont}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                                     <TextBlock Text="{DynamicResource ProxyModeTun}" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
                                             </RadioButton>
-                                            <RadioButton x:Name="DashModeProcess" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Process"
+                                            <RadioButton x:Name="DashModeProcess" ToolTipService.ShowOnDisabled="True" GroupName="DashMode" Style="{StaticResource SegmentButton}" Tag="Process"
                                                          Checked="OnDashModeChecked" AutomationProperties.Name="Process mode">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xE7FC;" FontFamily="{StaticResource IconFont}" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                                     <TextBlock Text="{DynamicResource ProxyModeProcess}" TextTrimming="CharacterEllipsis"/>
                                                 </StackPanel>
                                             </RadioButton>
+                                            <TextBlock x:Name="DashModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}"
+                                                       ToolTip="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
+                                                       FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap"
+                                                       TextTrimming="CharacterEllipsis" MaxHeight="30" Margin="4,4,0,0"/>
                                         </StackPanel>
                                     </Border>
 
@@ -353,9 +366,12 @@
                                                 <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE71B;"/>
                                                 <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashCurrentService}"/>
                                             </StackPanel>
+                                            <TextBlock DockPanel.Dock="Top" Text="{DynamicResource ProxySelectedForwardUnavailable}"
+                                                       Visibility="{Binding IsSelectedProxyForwardUnavailable, Converter={StaticResource BoolToVis}}"
+                                                       FontSize="11" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" Margin="0,0,0,8"/>
                                             <Grid>
                                                 <StackPanel Visibility="{Binding PairedProxyForwardRows.Count, Converter={StaticResource ZeroToVis}, ConverterParameter=invert}">
-                                                    <ComboBox x:Name="DashServiceCombo" ItemsSource="{Binding PairedProxyForwardRows}"
+                                                    <ComboBox x:Name="DashServiceCombo" ToolTipService.ShowOnDisabled="True" ItemsSource="{Binding PairedProxyForwardRows}"
                                                               SelectedValuePath="ForwardId" SelectedValue="{Binding SelectedProxyForwardId, Mode=TwoWay}"
                                                               SelectionChanged="OnDashServiceSelectionChanged"
                                                               AutomationProperties.Name="Current service">
@@ -377,6 +393,8 @@
                                                     </StackPanel>
                                                     <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRouteListenPort}" Margin="0,10,0,2"/>
                                                     <TextBlock Text="{Binding SelectedProxyPairedForwardEndpoint}" FontFamily="Consolas" FontSize="13"/>
+                                                    <TextBlock x:Name="DashSwitchLockedNotice" Text="{DynamicResource ProxySwitchRequiresDisconnect}" Visibility="Collapsed"
+                                                               FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                                                 </StackPanel>
                                                 <StackPanel Visibility="{Binding PairedProxyForwardRows.Count, Converter={StaticResource ZeroToVis}}">
                                                     <TextBlock Text="{DynamicResource DashPairHint}" Style="{StaticResource MutedText}" Margin="0,0,0,12"/>
@@ -1120,7 +1138,7 @@
                                             CornerRadius="16" Padding="16" Margin="0,0,0,12">
                                         <StackPanel>
                                             <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxySelectPairedForward}"/>
-                                            <ComboBox x:Name="ProxyPairedForwardCombo" ItemsSource="{Binding PairedProxyForwardRows}"
+                                            <ComboBox x:Name="ProxyPairedForwardCombo" ToolTipService.ShowOnDisabled="True" ItemsSource="{Binding PairedProxyForwardRows}"
                                                       SelectedValuePath="ForwardId" SelectedValue="{Binding SelectedProxyForwardId, Mode=TwoWay}"
                                                       SelectionChanged="OnProxyPairedForwardSelectionChanged"
                                                       AutomationProperties.Name="{DynamicResource ProxySelectPairedForward}" MinHeight="38">
@@ -1137,14 +1155,19 @@
                                                     </DataTemplate>
                                                 </ComboBox.ItemTemplate>
                                             </ComboBox>
+                                            <TextBlock Text="{DynamicResource ProxySelectedForwardUnavailable}"
+                                                       Visibility="{Binding IsSelectedProxyForwardUnavailable, Converter={StaticResource BoolToVis}}"
+                                                       FontSize="11" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                                             <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMode}" Margin="0,12,0,0"/>
-                                            <ComboBox x:Name="ProxyModeCombo" SelectedIndex="0" SelectionChanged="OnProxyModeSelectionChanged"
+                                            <ComboBox x:Name="ProxyModeCombo" ToolTipService.ShowOnDisabled="True" SelectedIndex="0" SelectionChanged="OnProxyModeSelectionChanged"
                                                       AutomationProperties.Name="Proxy mode" MinHeight="38">
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeSelect}" Tag=""/>
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeHttp}" Tag="Http"/>
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
                                                 <ComboBoxItem Content="{DynamicResource ProxyModeProcess}" Tag="Process"/>
                                             </ComboBox>
+                                            <TextBlock x:Name="ProxyModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
+                                                       FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                                             <TextBlock Text="{DynamicResource ProxyPairedForwardHint}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
                                                        TextWrapping="Wrap" Margin="0,8,0,0"/>
                                             <WrapPanel HorizontalAlignment="Right" Margin="0,14,0,0">

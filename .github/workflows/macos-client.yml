@@ -35,7 +35,8 @@ jobs:
   build-and-test:
     name: ${{ matrix.architecture }} native package
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # Two notarization waits (app, then DMG) run inside the build step on signed builds.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -180,10 +181,55 @@ jobs:
           )"
           printf 'MAC_CLIENT_VERSION=%s\n' "$version" >>"$GITHUB_ENV"
 
-      - name: Build ad-hoc signed native test package
+      # Developer ID signing needs the team certificate, so it runs only for pushes and
+      # dispatches in this repository, never for pull requests (same rule as iOS).
+      # Partial configuration fails: a silently ad-hoc release would look signed.
+      - name: Check Developer ID signing secrets
+        id: devid
+        shell: bash
+        env:
+          MACOS_DEVID_P12_BASE64: ${{ github.event_name != 'pull_request' && secrets.MACOS_DEVID_P12_BASE64 || '' }}
+          MACOS_DEVID_P12_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.MACOS_DEVID_P12_PASSWORD || '' }}
+          ASC_KEY_P8: ${{ github.event_name != 'pull_request' && secrets.ASC_KEY_P8 || '' }}
+          ASC_KEY_ID: ${{ github.event_name != 'pull_request' && secrets.ASC_KEY_ID || '' }}
+          ASC_ISSUER_ID: ${{ github.event_name != 'pull_request' && secrets.ASC_ISSUER_ID || '' }}
+        run: |
+          set -euo pipefail
+          present=0
+          missing=""
+          for name in MACOS_DEVID_P12_BASE64 MACOS_DEVID_P12_PASSWORD ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID; do
+            if [ -n "${!name:-}" ]; then
+              present=$((present + 1))
+            else
+              missing="$missing $name"
+            fi
+          done
+          if [ "$present" -eq 0 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### macOS build NOT notarized"
+              echo ""
+              echo "Developer ID signing secrets are not available to this run (pull request, or secrets unset). The app is ad-hoc signed only: Gatekeeper will not trust it, and it is not notarized."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$present" -eq 5 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "### macOS build: Developer ID signing and notarization enabled" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Developer ID secrets are partially set; missing:$missing"
+            exit 1
+          fi
+
+      - name: Build and package (Developer ID signed and notarized when secrets are set)
         id: build
         continue-on-error: true
         shell: bash
+        env:
+          LEIKWAN_DEVELOPER_ID_SIGN: ${{ steps.devid.outputs.ready == 'true' && '1' || '0' }}
+          MACOS_DEVID_P12_BASE64: ${{ github.event_name != 'pull_request' && secrets.MACOS_DEVID_P12_BASE64 || '' }}
+          MACOS_DEVID_P12_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.MACOS_DEVID_P12_PASSWORD || '' }}
+          ASC_KEY_P8: ${{ github.event_name != 'pull_request' && secrets.ASC_KEY_P8 || '' }}
+          ASC_KEY_ID: ${{ github.event_name != 'pull_request' && secrets.ASC_KEY_ID || '' }}
+          ASC_ISSUER_ID: ${{ github.event_name != 'pull_request' && secrets.ASC_ISSUER_ID || '' }}
         run: |
           set -euo pipefail
           bash scripts/build-macos-client.sh \
@@ -285,6 +331,36 @@ jobs:
             --version "$MAC_CLIENT_VERSION" --architecture "$architecture"
           codesign --verify --deep --strict --verbose=2 "$mount_point/LeiKwan Bridge.app"
           test "$(lipo -archs "$mount_point/LeiKwan Bridge.app/Contents/MacOS/LeikwanBridge.Mac")" = "$architecture"
+          if [[ "${{ steps.devid.outputs.ready }}" == "true" ]]; then
+            # Signed case: Gatekeeper must accept the stapled app and the DMG itself.
+            # stapler validate calls Apple's ticket service over the network, which can drop
+            # for a few seconds on the runner, so retry it.
+            validate_ticket() {
+              local attempt
+              for attempt in 1 2 3 4 5 6; do
+                xcrun stapler validate "$1" && return 0
+                echo "stapler validate attempt $attempt failed for $(basename "$1"); retrying"
+                sleep 20
+              done
+              echo "::error::stapler validate failed for $(basename "$1")"
+              return 1
+            }
+            validate_ticket "$mount_point/LeiKwan Bridge.app"
+            spctl --assess --type execute --verbose=4 "$mount_point/LeiKwan Bridge.app"
+            validate_ticket "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+            # Ultra runtime self-hash changes when re-signed; the panel must be told about
+            # it before clients use this build (see ULTRA_ATTESTATION_EXTRA_HASHES_JSON).
+            report="$GITHUB_WORKSPACE/artifacts/macos/leikwan-bridge-$suffix-signed-helpers.txt"
+            test -s "$report"
+            {
+              echo "### Developer ID signed helper hashes (register before client rollout)"
+              echo ""
+              echo '```'
+              cat "$report"
+              echo '```'
+            } >>"$GITHUB_STEP_SUMMARY"
+          fi
           cleanup_mount
           trap - EXIT
 

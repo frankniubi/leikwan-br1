@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "9856a4c389aceface71c7342655d894c512a8035784814109388e0b5005c85b8",
+    "sha256": "6822abb68fa6930abbd9da5f4699e80b12491a1feb6006e2104e2aacc91c6235",
     "size": 409776,
     "size_bytes": 409776,
-    "version": "2026.10.12.1"
+    "version": "2026.10.21.1"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -61,9 +61,9 @@
     "format": "elf-onefile-pyinstaller",
     "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
     "runtime_mode": "frozen",
-    "sha256": "46c673374e9590e04e83b3ef9d3b52c6ea7e0ddf1781a2605d1a1be198502ca1",
-    "size_bytes": 8950872,
-    "version": "2026.10.12.1"
+    "sha256": "ef7aec4e5bac5c26e4f1e4e65eb654f43232d7c6202bf9b3af4dce992e568480",
+    "size_bytes": 8936464,
+    "version": "2026.10.21.1"
   },
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
@@ -98,9 +98,9 @@
   "client_rate_limit": {
     "artifact_url": "/artifacts/leikwan-rate-limit.py",
     "path": "client-agent/leikwan_rate_limit.py",
-    "sha256": "917cf5ef1958a10a7277cf21deab3583cfed1598c54ba456b3b042b20496e4a5",
-    "size_bytes": 4981,
-    "version": "2026.08.29.1"
+    "sha256": "df07f8a55879ce21a41ea9856174c033f6539fc0339e236d3c7429a98c2a437a",
+    "size_bytes": 7218,
+    "version": "2026.10.21.1"
   },
   "external_uot_installer": {
     "artifact_url": "/artifacts/install-external-uot.sh",
@@ -783,9 +783,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
     },
-    "sha256": "68364949169c5ba57bad53ef03304ab4be8809fa99c3bdb3dc5805f90bec2ce7",
-    "size_bytes": 69920776,
-    "version": "0.1.20.67"
+    "sha256": "fc3b41975a6f411523eb0975815977d06c9477d3bc45638727c89c85dabd4634",
+    "size_bytes": 69929219,
+    "version": "0.1.20.68"
   },
   "windows_headless_client": {
     "architecture": "x86_64",

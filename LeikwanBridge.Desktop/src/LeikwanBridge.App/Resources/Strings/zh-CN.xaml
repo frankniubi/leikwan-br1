@@ -121,6 +121,9 @@
     <!-- Client picker / updates -->
     <system:String x:Key="UpdateAvailableTitle">有可用更新</system:String>
     <system:String x:Key="UpdateVersionReady">版本 {0} 已准备好安装。</system:String>
+    <system:String x:Key="UpdateRequiredTitle">需要更新</system:String>
+    <system:String x:Key="UpdateRequiredBody">有一个必须安装的更新。请安装后继续使用 Bridge。</system:String>
+    <system:String x:Key="UpdateRequiredUnavailable">暂时无法获取必需的更新。请检查网络连接后重试。</system:String>
     <system:String x:Key="UpdateFailedTitle">更新失败</system:String>
     <system:String x:Key="ActionInstallNow">立即安装</system:String>
     <system:String x:Key="ActionDeferUpdate">下次启动时再安装</system:String>
@@ -221,6 +224,11 @@
     <system:String x:Key="ProxyModeHttp">HTTP</system:String>
     <system:String x:Key="ProxyModeTun">TUN（全设备）</system:String>
     <system:String x:Key="ProxyModeProcess">游戏加速</system:String>
+    <system:String x:Key="ProxySelectedForwardUnavailable">所选服务当前不可用，请选择其他服务后再连接。</system:String>
+    <system:String x:Key="ProxySwitchRequiresDisconnect">请先断开连接，再切换服务或模式。</system:String>
+    <system:String x:Key="ProxyReconnecting">连接已断开，{0} 秒后重连（第 {1}/{2} 次）...</system:String>
+    <system:String x:Key="ProxyReconnectFailed">已重连 {0} 次仍失败，请点击连接重试。</system:String>
+    <system:String x:Key="ProxyModeHttpWebRtcNotice">HTTP 模式不覆盖浏览器 WebRTC，需全设备保护请用 TUN。</system:String>
     <system:String x:Key="ProxyImportNetchModes">导入 Netch 模式</system:String>
         <system:String x:Key="ProxyImport">导入并保存</system:String>
     <system:String x:Key="ProxyImportPrompt">粘贴分享链接</system:String>

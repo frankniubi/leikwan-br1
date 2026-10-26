@@ -141,6 +141,56 @@ func TestPanelDegradesPlatformOnceOnRejection(t *testing.T) {
 	}
 }
 
+// The deployed Panel's generic exception handler masks location_platform_invalid
+// as {"error":{"code":"validation_failed",...}}. The agent must still decode the
+// object envelope and degrade, or a router never completes its first pull.
+func TestPanelDegradesPlatformOnMaskedValidationError(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		platform := r.Header.Get("X-Device-Platform")
+		seen = append(seen, platform)
+		if platform != "linux" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeJSON(t, w, map[string]any{"error": map[string]any{
+				"code":         "validation_failed",
+				"message":      "The request data is invalid.",
+				"reference_id": "c53e0b1d5023dff2",
+			}})
+			return
+		}
+		writeJSON(t, w, map[string]any{"ok": true, "config_revision": "rev-ok"})
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	cfg.FallbackURL = "" // a single endpoint: the replay must not need a failover slot
+	client := newPanelClient(cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
+	if _, err := client.Pull(context.Background(), "", 0); err != nil {
+		t.Fatalf("pull after masked platform rejection: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "openwrt" || seen[1] != "linux" {
+		t.Fatalf("platform sequence = %v, want [openwrt linux]", seen)
+	}
+}
+
+// A masked 422 after the degrade is a real validation failure: it is surfaced
+// with its decoded code and message instead of degrading again.
+func TestDecodePanelErrorObjectEnvelope(t *testing.T) {
+	err := decodePanelError(http.StatusUnprocessableEntity,
+		[]byte(`{"error":{"code":"validation_failed","message":"The request data is invalid.","reference_id":"x"}}`))
+	pe, ok := err.(*panelError)
+	if !ok || pe.Code != "validation_failed" || pe.Msg != "The request data is invalid." {
+		t.Fatalf("decoded = %#v", err)
+	}
+	if !platformRejected(pe) {
+		t.Fatal("masked 422 must count as a platform rejection")
+	}
+	if platformRejected(&panelError{Status: http.StatusBadRequest, Code: "validation_failed"}) {
+		t.Fatal("a non-422 validation failure is not a platform rejection")
+	}
+}
+
 // Every request must carry the identity headers the panel binds device
 // sessions to; a missing one silently breaks the online-device accounting.
 func TestPanelSendsDeviceIdentityHeaders(t *testing.T) {
