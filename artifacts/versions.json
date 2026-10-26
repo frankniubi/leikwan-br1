@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "151454f802cb5bdad51d762fe8215b1f33b585aef912385aeafc9371961caaa6",
-    "size_bytes": 74686865,
-    "version": "0.2.45",
-    "version_code": 47
+    "sha256": "8420d79b3ad6f9867bcbbee134a41204c5819fbeaaa162492bec7bf693475bc7",
+    "size_bytes": 74744209,
+    "version": "0.2.46",
+    "version_code": 48
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -781,11 +781,11 @@
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
+      "ultra_client_runtime_windows": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46"
     },
-    "sha256": "9f80d01853e9ba7606c24e33fa6da62b7b1f326a719c19f0f59cd323f461e27a",
-    "size_bytes": 69942682,
-    "version": "0.1.20.76"
+    "sha256": "fc9c4125859617498d54a48e44017c09f4edd6f5f62b6bf3398f9c856466e9e1",
+    "size_bytes": 69947549,
+    "version": "0.1.20.77"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -793,16 +793,16 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "2e7f9ecff2bd816673063384bb8cd53662dcba7f24d014df46c64565d88901aa",
-    "size_bytes": 63789566,
-    "version": "0.1.20.66",
+    "sha256": "05562ebc51fb4e6c1f751418b8b556b32b87a2976f9b894ca279331d9b21f1cf",
+    "size_bytes": 63826277,
+    "version": "0.1.20.67",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
+      "ultra_client_runtime_windows": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46"
     }
   },
   "windows_headless_installer": {
