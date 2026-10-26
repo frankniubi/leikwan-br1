@@ -80,7 +80,8 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
                 {
                     Log.Warning("Ultra forward {ForwardId}: local port preflight blocked port {Port} code={Code} foreignPid={ForeignPid}",
                         forward.ForwardId, forward.ListenPort, preflight.ConflictCode, preflight.ForeignPid);
-                    throw new InvalidOperationException("ultra_port_conflict");
+                    throw new InvalidOperationException(
+                        LocalPortFailure.FromConflictCode(preflight.ConflictCode) ?? "ultra_port_conflict");
                 }
                 Log.Information("ultra port preflight complete blocked={Blocked} for forward {ForwardId}",
                     preflight.Blocked, forward.ForwardId);

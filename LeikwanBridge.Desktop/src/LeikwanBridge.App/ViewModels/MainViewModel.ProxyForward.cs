@@ -143,17 +143,23 @@ public partial class MainViewModel
         }
         catch (Exception exception)
         {
+            var cancelled = exception is OperationCanceledException;
+            var code = cancelled
+                ? string.Empty
+                : WindowsProxyConnectionService.FailureCode(exception, () => LocalPortFailure.DiagnoseLive(_proxyService!.ProxyPort));
             try { await _proxyService!.StopAsync(CancellationToken.None); }
             finally
             {
                 if (acquired is not null)
                     await acquired.DisposeAsync();
                 HandleProxySnapshotChanged(new WindowsProxySnapshot(
-                    exception is OperationCanceledException ? WindowsProxyConnectionState.Disconnected : WindowsProxyConnectionState.Error,
+                    cancelled ? WindowsProxyConnectionState.Disconnected : WindowsProxyConnectionState.Error,
                     mode, profile.Name, _proxyService!.ProxyPort, 0, false, false,
-                    exception is OperationCanceledException ? string.Empty : exception.Message));
+                    code, forward.ForwardId));
             }
-            throw;
+            if (cancelled)
+                throw;
+            throw new ProxyForwardStartException(forward.ForwardId, code, exception);
         }
         finally
         {
@@ -221,6 +227,7 @@ public partial class MainViewModel
                     SystemProxyEnabled = false,
                     ProcessProxyEnabled = false,
                     ErrorCode = "proxy_runtime_unavailable",
+                    ErrorForwardId = lease.Forward.ForwardId,
                 });
             }
         }

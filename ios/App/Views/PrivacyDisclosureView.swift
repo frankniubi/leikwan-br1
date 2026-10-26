@@ -111,8 +111,7 @@ struct PrivacyDisclosureView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 560)
-                .frame(maxWidth: .infinity)
+                .readableColumn(maxWidth: 560)
             }
             .pageBackground()
             .navigationTitle(L("Privacy"))
@@ -139,6 +138,8 @@ struct PrivacyDisclosureView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 12)
+                    .foldClear()
+                    // Outermost, so the bar stays full width behind the button on both sides of the fold.
                     .background(Palette.background.opacity(0.95))
                 }
             }

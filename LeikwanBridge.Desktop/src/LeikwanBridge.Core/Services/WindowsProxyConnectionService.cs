@@ -1216,7 +1216,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         }
     }
 
-    private static string ErrorCode(Exception exception)
+    private string ErrorCode(Exception exception)
     {
         var code = exception switch
         {
@@ -1226,7 +1226,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
                 => "sing_box_missing",
             FileNotFoundException => "proxy_config_missing",
             KeyNotFoundException => "proxy_profile_not_found",
-            WindowsProxyProcessExitException => "proxy_process_exited",
+            WindowsProxyProcessExitException exit => ClassifyProcessExit(exit.Diagnostics, () => LocalPortFailure.DiagnoseLive(_proxyPort)),
             UnauthorizedAccessException => "permission_required",
             _ => exception.Message,
         };
@@ -1235,5 +1235,33 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
             .Take(64)
             .ToArray());
         return normalized.Length == 0 ? "proxy_connection_failed" : normalized;
+    }
+
+    public static string ClassifyProcessExit(string diagnostics, Func<string?> livePortCause)
+    {
+        if (diagnostics.Contains("Only one usage", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
+            return livePortCause() ?? LocalPortFailure.InUse;
+        if (diagnostics.Contains("access permissions", StringComparison.OrdinalIgnoreCase))
+            return LocalPortFailure.Reserved;
+        return "proxy_process_exited";
+    }
+
+    /// <summary>
+    /// The code a start failure shows in the banner. Known causes become stable
+    /// codes; anything else keeps its own message so nothing is hidden.
+    /// </summary>
+    public static string FailureCode(Exception exception, Func<string?> livePortCause)
+    {
+        switch (exception)
+        {
+            case WindowsProxyProcessExitException exit:
+                var code = ClassifyProcessExit(exit.Diagnostics, livePortCause);
+                return code == "proxy_process_exited" ? exception.Message : code;
+            case UnauthorizedAccessException:
+                return "permission_required";
+            default:
+                return exception.Message;
+        }
     }
 }

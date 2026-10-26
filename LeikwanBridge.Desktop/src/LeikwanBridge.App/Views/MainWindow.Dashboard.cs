@@ -9,13 +9,12 @@ using Serilog;
 namespace LeikwanBridge.App.Views;
 
 /// <summary>
-/// Dashboard cards, the start / stop button, the Nodes page (cloud sync) and the theme picker.
+/// Dashboard start / stop button, the services-and-nodes actions (cloud sync, import) and the theme picker.
 /// Every action here reuses an existing flow: connect / disconnect go through the selected
 /// service row exactly like the proxy page, node edits through the saved-profile handlers.
 /// </summary>
 public partial class MainWindow
 {
-    private bool _syncingDashboardMode;
     private bool _suppressThemeHandling;
     private bool _themeSelectionReady;
 
@@ -45,7 +44,8 @@ public partial class MainWindow
         // Not ready yet: take the user to the page that completes the setup.
         if (_vm.PairedProxyForwardRows.Count == 0)
         {
-            _vm.NavigateToCommand.Execute("Forwards");
+            _vm.NavigateToCommand.Execute("Proxy");
+            ScrollToServicesSection();
             ForwardPairingStatus.Text = FindResource("DashPairHint") as string ?? "Pair a node with a service first.";
             return;
         }
@@ -70,50 +70,15 @@ public partial class MainWindow
 
     // ------------------------------------------------------------ dashboard cards
 
-    private void OnDashModeChecked(object sender, RoutedEventArgs e)
-    {
-        if (_syncingDashboardMode || !_proxyUiReady || sender is not System.Windows.Controls.RadioButton { Tag: string tag })
-            return;
-        foreach (var item in ProxyModeCombo.Items.OfType<ComboBoxItem>())
-        {
-            if (string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
-            {
-                ProxyModeCombo.SelectedItem = item;
-                SaveCurrentConfig();
-                return;
-            }
-        }
-    }
-
-    private void SyncDashboardModeButtons()
-    {
-        if (DashModeHttp is null)
-            return;
-        _syncingDashboardMode = true;
-        try
-        {
-            var hasMode = TryGetSelectedProxyMode(out var mode);
-            DashModeHttp.IsChecked = hasMode && mode == WindowsProxyMode.Http;
-            DashModeTun.IsChecked = hasMode && mode == WindowsProxyMode.Tun;
-            DashModeProcess.IsChecked = hasMode && mode == WindowsProxyMode.Process;
-        }
-        finally
-        {
-            _syncingDashboardMode = false;
-        }
-        UpdateHttpModeNotice();
-    }
-
     // The running session keeps the service and mode it was started with, so
     // the pickers stay locked (with the reason shown) until it is stopped.
     private void ApplySwitchLock(bool locked)
     {
-        if (DashServiceCombo is null || DashSwitchLockedNotice is null)
+        if (ProxySwitchLockedNotice is null)
             return;
         var reason = locked ? FindResource("ProxySwitchRequiresDisconnect") : null;
-        DashSwitchLockedNotice.Visibility = locked ? Visibility.Visible : Visibility.Collapsed;
-        foreach (var control in new System.Windows.Controls.Control[]
-            { DashServiceCombo, DashModeHttp, DashModeTun, DashModeProcess, ProxyModeCombo, ProxyPairedForwardCombo })
+        ProxySwitchLockedNotice.Visibility = locked ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var control in new System.Windows.Controls.Control[] { ProxyModeCombo, ProxyPairedForwardCombo })
         {
             control.IsEnabled = !locked;
             control.ToolTip = reason;
@@ -122,28 +87,14 @@ public partial class MainWindow
 
     private void UpdateHttpModeNotice()
     {
-        if (DashModeHttpNotice is null || ProxyModeHttpNotice is null)
+        if (ProxyModeHttpNotice is null)
             return;
         var snapshot = _vm.ProxySnapshot;
         var http = snapshot.State is WindowsProxyConnectionState.Connected or WindowsProxyConnectionState.Starting
             ? snapshot.Mode == WindowsProxyMode.Http && !_vm.IsExternalProxyActive
             : TryGetSelectedProxyMode(out var mode) && mode == WindowsProxyMode.Http;
-        var visibility = http ? Visibility.Visible : Visibility.Collapsed;
-        DashModeHttpNotice.Visibility = visibility;
-        ProxyModeHttpNotice.Visibility = visibility;
+        ProxyModeHttpNotice.Visibility = http ? Visibility.Visible : Visibility.Collapsed;
     }
-
-    private void OnDashServiceSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_proxyUiReady || DashServiceCombo.SelectedValue is not int forwardId || forwardId <= 0)
-            return;
-        _vm.SelectedProxyProfileId = _vm.GetProxyProfileIdForForward(forwardId);
-        SaveCurrentConfig();
-    }
-
-    private void OnDashOpenServices_Click(object sender, RoutedEventArgs e) => _vm.NavigateToCommand.Execute("Forwards");
-
-    private void OnOpenNodes_Click(object sender, RoutedEventArgs e) => _vm.NavigateToCommand.Execute("Nodes");
 
     // ------------------------------------------------------------ nodes page
 

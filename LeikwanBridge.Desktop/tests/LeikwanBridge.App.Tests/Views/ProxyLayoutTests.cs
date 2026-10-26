@@ -8,17 +8,19 @@ public sealed class ProxyLayoutTests
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [Fact]
-    public void RoutesAreVisibleBeforeCollapsedEditors()
+    public void RoutesAreVisibleBeforeConnectionSettings()
     {
         var document = Load();
         var routes = Named(document, "ProxyPairedForwardCombo");
         Assert.DoesNotContain(routes.Ancestors(), node => node.Name.LocalName == "Expander");
-        var ordinary = Named(document, "ProxyNodeEditorExpander");
-        var native = Named(document, "NativeOutboundExpander");
-        Assert.Equal("False", (string?)ordinary.Attribute("IsExpanded"));
+        var settings = Named(document, "ProxyConnectionSection");
         var order = document.Descendants().ToList();
-        Assert.True(order.IndexOf(routes) < order.IndexOf(ordinary));
-        Assert.True(order.IndexOf(ordinary) < order.IndexOf(native));
+        Assert.True(order.IndexOf(routes) < order.IndexOf(settings));
+        // Connection settings are part of the connect page and are never folded away.
+        Assert.DoesNotContain(settings.Ancestors(), node => node.Name.LocalName == "Expander");
+        Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") == "ProxyNodeEditorExpander");
+        // Native outbound has its own page now, not a section of the connect page.
+        Assert.DoesNotContain(routes.Ancestors(), node => (string?)node.Attribute(X + "Name") == "NativeOutboundCard");
         Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") == "ProxyStartButton");
     }
 
@@ -68,10 +70,9 @@ public sealed class ProxyLayoutTests
     }
 
     [Fact]
-    public void OrdinaryProxyUsesSingleDrawerWithClearlySeparatedConnectionSections()
+    public void ConnectPageKeepsSettingsInOnePageWithoutAnExpander()
     {
         var document = Load();
-        var ordinary = Named(document, "ProxyNodeEditorExpander");
         Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") == "ProxyAdvancedExpander");
 
         foreach (var control in new[] { "ProxyModeCombo", "ProxyBypassChinaCheckBox", "ProxyLocalListenPortCombo" })
@@ -97,11 +98,11 @@ public sealed class ProxyLayoutTests
     public void ForwardNavigationIsPairingOnlyAndHasAnExplicitSaveSurface()
     {
         var document = Load();
-        var nav = Assert.Single(document.Descendants().Where(node => node.Name.LocalName == "Button"), node =>
+        // Services and nodes is a section of the connect page, so it has no sidebar item of its own.
+        Assert.DoesNotContain(document.Descendants().Where(node => node.Name.LocalName == "Button"), node =>
             (string?)node.Attribute("CommandParameter") == "Forwards");
-        Assert.Equal("{DynamicResource NavForwards}", (string?)nav.Attribute("Content"));
-
         var panel = Named(document, "ForwardPairingPanel");
+        Assert.Contains(Named(document, "ConnectPanel").Descendants(), node => node == panel);
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource ForwardPairingHint}");
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Content") == "{DynamicResource ForwardPairingSave}");
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Click") == "OnSaveForwardPairings_Click");
@@ -133,7 +134,7 @@ public sealed class ProxyLayoutTests
         Assert.Contains(document.Descendants(), node => (string?)node.Attribute("Click") == "OnProxySelectedDisconnect_Click");
         Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") == "ProxyForwardRowsList");
         Assert.Equal("Collapsed", (string?)Named(document, "ProxySavedNodesSidebar").Attribute("Visibility"));
-        Assert.Equal("Visible", (string?)Named(document, "ProxyNodeEditorExpander").Attribute("Visibility"));
+        Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") == "ProxyNodeEditorExpander");
         Assert.Equal("Collapsed", (string?)Named(document, "ProxyManualSection").Attribute("Visibility"));
         Assert.Equal("Collapsed", (string?)Named(document, "ProxySaveNodeButton").Attribute("Visibility"));
     }

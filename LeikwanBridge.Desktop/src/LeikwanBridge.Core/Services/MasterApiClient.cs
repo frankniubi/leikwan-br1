@@ -105,6 +105,21 @@ public sealed partial class MasterApiClient : IDisposable
                ?? throw new InvalidOperationException("null client selection response");
     }
 
+    /// <summary>
+    /// Reads the account's access policy (home province for the login-region rule).
+    /// The request carries the same bearer token and device headers as the pull.
+    /// </summary>
+    public async Task<AccessPolicyStatus> GetAccessPolicyAsync(CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/access/policy";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var response = await SendAsync(request, ct);
+        await EnsureSuccessOrThrowAsync(response, ct);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<AccessPolicyStatus>(json, JsonOptions)
+            ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+    }
+
     public async Task<PullResponse> PullConfigsAsync(string? sinceRevision = null, int waitSeconds = 0, CancellationToken ct = default)
     {
         var query = new List<string>();

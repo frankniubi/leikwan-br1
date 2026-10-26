@@ -30,6 +30,7 @@ public class ForwardRuntimeManager : IDisposable
     private sealed record UltraStartupFailure(string Contract, int Attempts, DateTimeOffset RetryAfter);
     private readonly ConcurrentDictionary<int, UltraStartupFailure> _ultraStartupFailures = new();
     private readonly ConcurrentDictionary<int, DateTimeOffset> _lastBreakdownLog = new();
+    private readonly ConcurrentDictionary<int, string> _lastStartFailures = new();
 
     public event Action<int, string>? UltraRecoveryRequested;
 
@@ -477,6 +478,7 @@ public class ForwardRuntimeManager : IDisposable
                 string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
             _lastUltraLeaseDelivery[forward.ForwardId] = deliveryStartedAt;
             _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+            _lastStartFailures.TryRemove(forward.ForwardId, out _);
         }
         catch (Exception ex)
         {
@@ -489,6 +491,8 @@ public class ForwardRuntimeManager : IDisposable
                 effectiveSignature, attempts, _startupRetryClock().AddSeconds(delaySeconds));
             Log.Warning(ex, "Ultra runtime start failed for forward {ForwardId} ({ErrorType})",
                 forward.ForwardId, ex.GetType().Name);
+            // Start wraps its failure as ultra_runtime_start_failed; the cause is the inner code.
+            _lastStartFailures[forward.ForwardId] = ex.InnerException?.Message ?? ex.Message;
             StopForwardForPolicy(forward.ForwardId);
         }
         finally
@@ -647,6 +651,9 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     public bool IsForwardRunning(int forwardId) => _supervisor.IsRunning(forwardId);
+
+    /// <summary>The code from the last failed start of this forward, or null. Cleared by a successful start.</summary>
+    public string? GetLastStartFailure(int forwardId) => _lastStartFailures.TryGetValue(forwardId, out var code) ? code : null;
 
     public void StopAll()
     {

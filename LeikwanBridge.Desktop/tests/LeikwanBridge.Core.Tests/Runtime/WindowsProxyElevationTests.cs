@@ -31,16 +31,24 @@ public sealed class WindowsProxyElevationTests
     }
 
     [Fact]
-    public void ParseProxyStartRequestRequiresProcessAndPositiveProfile()
+    public void ParseProxyStartRequestAcceptsElevatedModesAndRequiresPositiveProfile()
     {
         Assert.True(WindowsProxyElevation.TryParseProxyStartRequest(
             [WindowsProxyElevation.ProxyStartArgument, "process", "7", "steam:counter-strike"],
-            out var request));
+            out var process));
         Assert.Equal(new WindowsProxyStartRequest(
-            WindowsProxyMode.Process, 7, "steam:counter-strike"), request);
+            WindowsProxyMode.Process, 7, "steam:counter-strike"), process);
 
+        // TUN also needs administrator rights, so it relaunches the app elevated
+        // through the same request.
+        Assert.True(WindowsProxyElevation.TryParseProxyStartRequest(
+            [WindowsProxyElevation.ProxyStartArgument, "tun", "7", ""],
+            out var tun));
+        Assert.Equal(new WindowsProxyStartRequest(WindowsProxyMode.Tun, 7, ""), tun);
+
+        // HTTP never elevates.
         Assert.False(WindowsProxyElevation.TryParseProxyStartRequest(
-            [WindowsProxyElevation.ProxyStartArgument, "tun", "7", "steam:counter-strike"],
+            [WindowsProxyElevation.ProxyStartArgument, "http", "7", ""],
             out _));
         Assert.False(WindowsProxyElevation.TryParseProxyStartRequest(
             [WindowsProxyElevation.ProxyStartArgument, "process", "0", "steam:counter-strike"],

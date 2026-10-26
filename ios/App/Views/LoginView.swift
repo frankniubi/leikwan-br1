@@ -38,8 +38,7 @@ struct LoginView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 32)
-            .frame(maxWidth: 480)
-            .frame(maxWidth: .infinity)
+            .readableColumn(maxWidth: 480)
         }
         .scrollDismissesKeyboard(.interactively)
         .pageBackground()
@@ -48,8 +47,7 @@ struct LoginView: View {
                 ScrollView {
                     ProfileForm(draft: draft, isNew: draft.profileID == nil) { editing = nil }
                         .padding(20)
-                        .frame(maxWidth: 480)
-                        .frame(maxWidth: .infinity)
+                        .readableColumn(maxWidth: 480)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .pageBackground()

@@ -34,12 +34,27 @@ struct RootView: View {
 
 /// Bottom navigation on iPhone, sidebar on iPad (FlClash: bar on mobile,
 /// rail on wide screens).
+///
+/// The size class changes while the app runs: folding or unfolding an iPhone Duo, rotating a
+/// large iPhone, resizing on iPad. On iOS 18 and later one adaptable `TabView` covers every
+/// width, so the sections keep their state and an open editor sheet stays up; switching between
+/// two containers would rebuild every section. Built with the iOS 27.1 SDK, the same tab bar
+/// moves into the Duo's vertical bar.
 private struct MainShell: View {
     @EnvironmentObject private var navigator: Navigator
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        if sizeClass == .regular {
+        if #available(iOS 18.0, *) {
+            TabView(selection: $navigator.section) {
+                ForEach(AppSection.allCases) { section in
+                    Tab(section.title, systemImage: section.systemImage, value: section) {
+                        SectionScreen(section: section)
+                    }
+                }
+            }
+            .tabViewStyle(.sidebarAdaptable)
+        } else if sizeClass == .regular {
             NavigationSplitView {
                 List(AppSection.allCases, selection: sectionSelection) { section in
                     Label(section.title, systemImage: section.systemImage)

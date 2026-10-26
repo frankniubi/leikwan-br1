@@ -102,16 +102,17 @@ public static class PortConflictPreflight
         string? installRoot,
         Action<int> killProcess,
         TimeSpan? quiesceTimeout = null,
-        Func<int, bool>? portExcluded = null)
+        Func<int, string?>? classifyFreePort = null)
     {
         var classification = Classify(ownerEnumerator(port), managedCurrentPids, pidToExe, installRoot);
 
         switch (classification.Class)
         {
             case PortOwnerClass.Free:
-                if ((portExcluded ?? IsPortExcludedByWindows)(port))
-                    return new PortPreflightResult(true, "PORT_EXCLUDED", 0, []);
-                return new PortPreflightResult(false, string.Empty, 0, []);
+                var freeConflict = (classifyFreePort ?? ClassifyFreePort)(port);
+                return freeConflict is null
+                    ? new PortPreflightResult(false, string.Empty, 0, [])
+                    : new PortPreflightResult(true, freeConflict, 0, []);
             case PortOwnerClass.ManagedCurrent:
                 return new PortPreflightResult(false, string.Empty, 0, []);
             case PortOwnerClass.Foreign:
@@ -152,38 +153,46 @@ public static class PortConflictPreflight
             installRoot,
             KillTree,
             TimeSpan.FromSeconds(5),
-            IsPortExcludedByWindows);
+            ClassifyFreePort);
     }
 
     /// <summary>
-    /// Detects Windows excluded-port ranges without parsing localized netsh
-    /// output. A free port that rejects a bind with AccessDenied is reserved by
-    /// the OS; AddressAlreadyInUse remains an owner-classification concern.
+    /// Explains why a port with no visible owner still cannot be listened on.
+    /// AccessDenied means Windows reserved it (excluded range). AddressAlreadyInUse
+    /// with no owner means the system holds it, e.g. WSL mirrored networking.
     /// </summary>
-    public static bool IsPortExcludedByWindows(int port)
+    public static string? ClassifyFreePort(int port)
     {
         if (!OperatingSystem.IsWindows() || port is < 1 or > 65535)
-            return false;
+            return null;
 
-        return BindIsAccessDenied(SocketType.Stream, ProtocolType.Tcp, port)
-            || BindIsAccessDenied(SocketType.Dgram, ProtocolType.Udp, port);
+        var errors = new[]
+        {
+            BindError(SocketType.Stream, ProtocolType.Tcp, port),
+            BindError(SocketType.Dgram, ProtocolType.Udp, port),
+        };
+        if (errors.Any(error => error == SocketError.AccessDenied))
+            return "PORT_EXCLUDED";
+        if (errors.Any(error => error == SocketError.AddressAlreadyInUse))
+            return "PORT_HELD_BY_SYSTEM";
+        return null;
     }
 
-    private static bool BindIsAccessDenied(SocketType socketType, ProtocolType protocolType, int port)
+    private static SocketError? BindError(SocketType socketType, ProtocolType protocolType, int port)
     {
         using var socket = new Socket(AddressFamily.InterNetwork, socketType, protocolType);
         try
         {
             socket.Bind(new IPEndPoint(IPAddress.Loopback, port));
-            return false;
+            return null;
         }
         catch (SocketException exception)
         {
-            return exception.SocketErrorCode == SocketError.AccessDenied;
+            return exception.SocketErrorCode;
         }
         catch
         {
-            return false;
+            return null;
         }
     }
 

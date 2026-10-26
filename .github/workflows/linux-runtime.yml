@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           go install mvdan.cc/garble@v0.17.0
-          version="2026.10.12.0.${GITHUB_SHA:0:8}"
+          version="2026.10.26.1.${GITHUB_SHA:0:8}"
           mkdir -p out
           cd tools/ultra-client
           for arch in amd64 arm64; do

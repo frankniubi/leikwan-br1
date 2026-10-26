@@ -16,6 +16,10 @@ struct BridgeApp: App {
                 .tint(Palette.primary)
                 .task {
                     await model.bootstrap()
+                    #if DEBUG
+                    await ScreenshotLaunch.signInToDemoIfRequested(model)
+                    ScreenshotLaunch.selectSectionIfRequested(navigator)
+                    #endif
                 }
         }
     }

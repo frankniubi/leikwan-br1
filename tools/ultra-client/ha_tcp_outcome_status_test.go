@@ -68,7 +68,9 @@ func TestHATCPOutcomePreservesRemoteErrorSourceWithoutScoring(t *testing.T) {
 		reason     string
 		localFirst bool
 	}{
-		{"ordinary_eof", io.EOF, "eof", false},
+		// A remote-first clean EOF inside the silence bound is a zero-byte close
+		// now, so the ordinary case is a local client that hung up first.
+		{"local_first_eof", io.EOF, "eof", true},
 		{"local_write_failure_without_read_error", nil, "complete", false},
 		{"provider_target_rejected", fmt.Errorf("wrapped: %w", errStreamCommandRejected), "target_connect_rejected", false},
 		{"local_first_remote_reset", syscall.ECONNRESET, "reset", true},

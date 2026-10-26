@@ -49,6 +49,7 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
     private Process? _watchedProcess;
+    private WindowsJobGroup? _job;
 
     public event Action<int>? UnexpectedExit;
 
@@ -146,6 +147,17 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
             var process = new Process { StartInfo = info, EnableRaisingEvents = true };
             if (!process.Start())
                 throw new InvalidOperationException("proxy_process_start_failed");
+            var job = WindowsJobGroup.Create(0);
+            if (!job.Attach(process))
+            {
+                job.Dispose();
+                try { process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                process.Dispose();
+                throw new InvalidOperationException("proxy_process_job_attach_failed");
+            }
+            _job = job;
             if (info.RedirectStandardOutput)
             {
                 process.OutputDataReceived += (_, e) =>
@@ -213,23 +225,28 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
         string configPath,
         WindowsProxyMode mode)
     {
+        // sing-box is always launched as an ordinary captured child, never via
+        // ShellExecute/runas.  TUN and process mode need administrator rights,
+        // but those are obtained by relaunching the whole app elevated (see
+        // WindowsProxyElevation); the elevated app then starts sing-box as a
+        // child that inherits its token.  Elevating sing-box on its own instead
+        // popped a visible console window (CreateNoWindow is ignored under
+        // ShellExecute), hid its output from the app, and left an unkillable
+        // elevated process whose strict_route TUN black-holed the network when
+        // the non-elevated parent could not stop it.
+        //
         // Secrets are in the ephemeral JSON only.  ArgumentList avoids a
         // shell-expanded command line and makes accidental password logging
         // impossible here.
-        var needsElevation = OperatingSystem.IsWindows()
-            && (mode is WindowsProxyMode.Tun or WindowsProxyMode.Process)
-            && !WindowsProxyElevation.IsElevated();
         var info = new ProcessStartInfo
         {
             FileName = executablePath,
-            UseShellExecute = needsElevation,
+            UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = !needsElevation,
-            RedirectStandardError = !needsElevation,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(executablePath) ?? AppContext.BaseDirectory,
         };
-        if (needsElevation)
-            info.Verb = "runas";
         info.ArgumentList.Add("run");
         info.ArgumentList.Add("-c");
         info.ArgumentList.Add(configPath);
@@ -250,8 +267,12 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
     {
         Interlocked.Exchange(ref _watchedProcess, null);
         var process = Interlocked.Exchange(ref _process, null);
+        var job = Interlocked.Exchange(ref _job, null);
         if (process is null)
+        {
+            job?.Dispose();
             return;
+        }
         try
         {
             if (!process.HasExited)
@@ -277,7 +298,11 @@ public sealed class WindowsProxyProcessHost : IWindowsProxyProcessHost
         catch (InvalidOperationException) { }
         catch (OperationCanceledException) { }
         catch (TimeoutException) { }
-        finally { process.Dispose(); }
+        finally
+        {
+            process.Dispose();
+            job?.Dispose();
+        }
     }
 
     private static void ForceKillTree(int processId)

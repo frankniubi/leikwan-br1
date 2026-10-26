@@ -38,7 +38,7 @@
 
     <!-- Navigation -->
     <system:String x:Key="NavDashboard">仪表盘</system:String>
-    <system:String x:Key="NavForwards">服务</system:String>
+    <system:String x:Key="NavForwards">服务与节点</system:String>
     <system:String x:Key="ForwardPairingTitle">转发配对</system:String>
     <system:String x:Key="ForwardPairingHint">该功能非必须，您可于其他代理软件将服务器地址改为 127.0.0.1 后使用</system:String>
     <system:String x:Key="ForwardPairingListHint">请选择每条线路对应的已保存节点。这里只保存配对，不会发起连接。</system:String>
@@ -85,6 +85,7 @@
     <system:String x:Key="FwdTransport">传输协议</system:String>
     <!-- 面板下发的原生出站规则：仅配置，无 Agent 托管运行时 -->
     <system:String x:Key="ForwardNativeOutboundRule">（原生出站规则）</system:String>
+  <system:String x:Key="ForwardNativeOutboundGoto">请移步左侧的「原生出口」页面使用。</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">启动</system:String>
@@ -175,7 +176,7 @@
     <system:String x:Key="ModeRace">竞速</system:String>
     <system:String x:Key="ModeSingle">直连</system:String>
     <!-- Local proxy -->
-    <system:String x:Key="NavProxy">代理</system:String>
+    <system:String x:Key="NavProxy">连接</system:String>
     <system:String x:Key="ProxyTitle">本地代理</system:String>
     <system:String x:Key="ProxySubtitle">同一个节点可用于 HTTP、全设备 TUN 或游戏加速。</system:String>
     <system:String x:Key="ProxyElevationHint">TUN 和游戏加速需要管理员权限。</system:String>
@@ -213,6 +214,13 @@
     <system:String x:Key="ProxyForwardRuntimeUnavailable">转发服务尚未就绪，请先连接面板。</system:String>
     <system:String x:Key="ProxyForwardPolicyUnavailable">线路策略暂时不可用，当前运行中的 runtime 已保留；面板恢复后请重试。</system:String>
     <system:String x:Key="ProxyForwardReadinessTimeout">线路监听未能及时就绪，请稍后重试。</system:String>
+    <system:String x:Key="ProxyErrLocalPortInUse">本地端口已被其他程序占用。请关闭占用它的程序，或换一个本地端口。</system:String>
+    <system:String x:Key="ProxyErrLocalPortHeldBySystem">本地端口被 Windows 保留，但找不到占用它的程序。常见于 WSL 镜像网络模式，请换一个本地端口。</system:String>
+    <system:String x:Key="ProxyErrLocalPortReserved">Windows 保留了这个本地端口，无法打开。请换一个本地端口。</system:String>
+    <system:String x:Key="ProxyErrAdministratorRequired">TUN 模式需要管理员权限。请以管理员身份重新启动客户端，或改用 HTTP 模式。</system:String>
+    <system:String x:Key="ProxyErrPermissionRequired">客户端没有足够的权限完成这一步。请以管理员身份重新启动客户端后再试。</system:String>
+    <system:String x:Key="ProxyErrRuntimeUnavailable">本地代理意外停止。请重新连接。</system:String>
+    <system:String x:Key="ProxyErrorForwardFormat">转发 #{0}：{1}</system:String>
     <system:String x:Key="ProxyExternalConnectionHint">您可使用外部连接工具发起连接, 但需注意, 如在本机发起连接, 需把IP地址改为 127.0.0.1 且端口一致；若从局域网或外部发起连接，则IP地址需改为此计算机之地址。</system:String>
     <system:String x:Key="ProxyNew">新建节点</system:String>
     <system:String x:Key="ProxyManualTitle">手动填写节点</system:String>
@@ -341,6 +349,8 @@
     <system:String x:Key="ForwardDetailsQuality">质量</system:String>
     <system:String x:Key="ForwardDetailsMessage">消息</system:String>
     <system:String x:Key="DashForwardsShownSuffix" xml:space="preserve"> 个转发</system:String>
+  <system:String x:Key="DashForwardTarget">目标地址</system:String>
+  <system:String x:Key="DashForwardPort">端口</system:String>
     <system:String x:Key="ForwardNumberPrefix">转发 #</system:String>
     <system:String x:Key="DashNever">从未</system:String>
     <system:String x:Key="StateStopped">已停止</system:String>
@@ -352,4 +362,49 @@
     <system:String x:Key="QualityUnavailable">不可用</system:String>
     <system:String x:Key="ProxyNativeOutboundUnrestricted">不限制完整路由（全部端口，不经 OpenGFW）</system:String>
     <system:String x:Key="OwnNodeLabel">自带节点</system:String>
+  <system:String x:Key="NavNative">原生出口</system:String>
+  <system:String x:Key="DashUsage">用量</system:String>
+  <system:String x:Key="DashUsageHint">本次运行期间的上下行流量。</system:String>
+  <system:String x:Key="DashRateLimit">速率限制</system:String>
+  <system:String x:Key="DashRateLimitHint">各线路速率上限的汇总。</system:String>
+  <system:String x:Key="DashRateLimitNone">不限速</system:String>
+  <system:String x:Key="DashRateLimitMixed">按线路不同</system:String>
+  <system:String x:Key="DashProvince">当前归属省份</system:String>
+  <system:String x:Key="DashProvinceHint">账号的归属省份，由面板设置，客户端只读。登录地区限制依据此判断。</system:String>
+  <system:String x:Key="DashProvinceNotConnected">未连接</system:String>
+  <system:String x:Key="DashProvinceReading">读取中</system:String>
+  <system:String x:Key="DashProvinceReadFailed">读取失败</system:String>
+  <system:String x:Key="DashProvinceNotSet">未设置</system:String>
+  <system:String x:Key="Province_AH">安徽</system:String>
+  <system:String x:Key="Province_BJ">北京</system:String>
+  <system:String x:Key="Province_CQ">重庆</system:String>
+  <system:String x:Key="Province_FJ">福建</system:String>
+  <system:String x:Key="Province_GD">广东</system:String>
+  <system:String x:Key="Province_GS">甘肃</system:String>
+  <system:String x:Key="Province_GX">广西</system:String>
+  <system:String x:Key="Province_GZ">贵州</system:String>
+  <system:String x:Key="Province_HA">河南</system:String>
+  <system:String x:Key="Province_HB">湖北</system:String>
+  <system:String x:Key="Province_HE">河北</system:String>
+  <system:String x:Key="Province_HI">海南</system:String>
+  <system:String x:Key="Province_HL">黑龙江</system:String>
+  <system:String x:Key="Province_HN">湖南</system:String>
+  <system:String x:Key="Province_JL">吉林</system:String>
+  <system:String x:Key="Province_JS">江苏</system:String>
+  <system:String x:Key="Province_JX">江西</system:String>
+  <system:String x:Key="Province_LN">辽宁</system:String>
+  <system:String x:Key="Province_NM">内蒙古</system:String>
+  <system:String x:Key="Province_NX">宁夏</system:String>
+  <system:String x:Key="Province_QH">青海</system:String>
+  <system:String x:Key="Province_SC">四川</system:String>
+  <system:String x:Key="Province_SD">山东</system:String>
+  <system:String x:Key="Province_SH">上海</system:String>
+  <system:String x:Key="Province_SN">陕西</system:String>
+  <system:String x:Key="Province_SX">山西</system:String>
+  <system:String x:Key="Province_TJ">天津</system:String>
+  <system:String x:Key="Province_XJ">新疆</system:String>
+  <system:String x:Key="Province_XZ">西藏</system:String>
+  <system:String x:Key="Province_YN">云南</system:String>
+  <system:String x:Key="Province_ZJ">浙江</system:String>
+  <system:String x:Key="ProxyConnectNote">该功能非必须，连接终端由使用者提供。您可使用其他软件，往 127.0.0.1 连接，或局域网连接。</system:String>
 </ResourceDictionary>

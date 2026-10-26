@@ -52,19 +52,62 @@ public sealed class WindowsProxyConfigBuilderTests
             "sing-box.exe", "C:\\Temp\\proxy.json", WindowsProxyMode.Http).Arguments);
     }
 
-    [Fact]
-    public void ProcessModeStartRequestsElevationOnWindows()
+    [Theory]
+    [InlineData(WindowsProxyMode.Http)]
+    [InlineData(WindowsProxyMode.Tun)]
+    [InlineData(WindowsProxyMode.Process)]
+    public void BuildStartInfoNeverElevatesSingBoxDirectly(WindowsProxyMode mode)
     {
-        if (!OperatingSystem.IsWindows() || WindowsProxyElevation.IsElevated())
+        // sing-box is always a captured child; elevation is handled by
+        // relaunching the whole app, never with runas on sing-box itself.
+        // A runas child shows a console window, hides its output, and cannot be
+        // stopped by a non-elevated parent.
+        var startInfo = WindowsProxyProcessHost.BuildStartInfo(
+            "sing-box.exe", "C:\\Temp\\proxy.json", mode);
+
+        Assert.False(startInfo.UseShellExecute);
+        Assert.True(startInfo.CreateNoWindow);
+        Assert.Equal(string.Empty, startInfo.Verb);
+        Assert.True(startInfo.RedirectStandardOutput);
+        Assert.True(startInfo.RedirectStandardError);
+    }
+
+    [Theory]
+    [InlineData(WindowsProxyMode.Tun, true)]
+    [InlineData(WindowsProxyMode.Http, false)]
+    public void TunModeSendsManagedRuntimeTrafficDirectBeforeDnsHijack(WindowsProxyMode mode, bool expected)
+    {
+        // A saved node on a forward points the proxy outbound at the local
+        // Ultra listener; ultra-client's own relay traffic must not re-enter
+        // the TUN or the tunnel loops back into itself.
+        var profile = new WindowsProxyProfile
+        {
+            Protocol = WindowsProxyProtocol.Shadowsocks2022,
+            Server = "127.0.0.1",
+            Port = 8444,
+            Method = "2022-blake3-aes-256-gcm",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        };
+
+        var result = WindowsProxyConfigBuilder.Build(profile, mode, []);
+
+        using var document = JsonDocument.Parse(result.Json);
+        var rules = document.RootElement.GetProperty("route").GetProperty("rules").EnumerateArray().ToList();
+        var processIndex = rules.FindIndex(rule => rule.TryGetProperty("process_name", out _));
+        Assert.Equal(expected, processIndex >= 0);
+        if (!expected)
             return;
 
-        var startInfo = WindowsProxyProcessHost.BuildStartInfo(
-            "sing-box.exe", "C:\\Temp\\proxy.json", WindowsProxyMode.Process);
-
-        Assert.True(startInfo.UseShellExecute);
-        Assert.Equal("runas", startInfo.Verb);
-        Assert.False(startInfo.RedirectStandardOutput);
-        Assert.False(startInfo.RedirectStandardError);
+        var rule = rules[processIndex];
+        Assert.Equal("direct", rule.GetProperty("outbound").GetString());
+        var names = rule.GetProperty("process_name").EnumerateArray().Select(item => item.GetString()).ToList();
+        Assert.Contains("ultra-client.exe", names);
+        Assert.Contains("wstunnel.exe", names);
+        Assert.DoesNotContain("sing-box.exe", names);
+        var dnsIndex = rules.FindIndex(rule =>
+            rule.TryGetProperty("action", out var action) && action.GetString() == "hijack-dns");
+        Assert.True(dnsIndex > processIndex);
+        Assert.True(document.RootElement.GetProperty("route").GetProperty("auto_detect_interface").GetBoolean());
     }
 
     [Fact]
