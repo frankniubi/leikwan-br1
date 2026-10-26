@@ -144,6 +144,7 @@ public sealed class ProxyForwardLeaseTests
     [Theory]
     [InlineData(false, 1)]
     [InlineData(true, 0)]
+    [Trait("Platform", "Windows")]
     public async Task TimeoutDoesNotAcceptAnotherProcessesListener(bool alreadyRunning, int expectedStops)
     {
         var stops = 0;
