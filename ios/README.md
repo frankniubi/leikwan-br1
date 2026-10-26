@@ -66,8 +66,14 @@ cd ios && xcodegen generate && open Bridge.xcodeproj
 `.github/workflows/ios-client.yml` runs the same steps: Core tests, runtime
 host tests (Rust, leikwan-bond, ultra), both frameworks (cached), a simulator
 build and an unsigned device build packaged as `Bridge-unsigned.ipa`. The app
-jobs run on the `xcode-27` runner with Xcode 27.1 and save iPhone Duo simulator
-screenshots (`scripts/duo-simulator-screenshots.sh`, artifact `iphone-duo-screenshots`).
+jobs run on the `xcode-27` runner with Xcode 27.1. The simulator build is folded
+through closed, half (90°), book (127°) and open (180°) on an iPhone Duo simulator,
+and each display is saved for the privacy cover, the sign-in screen and the demo
+dashboard (`scripts/duo-posture-screenshots.sh`, artifact `iphone-duo-screenshots`).
+Folding uses `scripts/hinge/` (MIT, from artemnovichkov/iPhone-Duo-by-Examples),
+which posts the hinge event Device Hub sends through a private interface, so it is
+tied to Xcode 27.1. The `-bridge_ci_demo` launch flag signs in to the App Review
+demo account in Debug builds only (`App/Services/ScreenshotLaunch.swift`).
 
 ## Signing and devices
 

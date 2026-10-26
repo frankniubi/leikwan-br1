@@ -187,12 +187,11 @@ jobs:
           name: Bridge-unsigned-ipa
           path: ios/build/Bridge-unsigned.ipa
           retention-days: 14
-      # Launches the simulator build on an iPhone Duo and keeps a screenshot of each display
-      # (a full-screen app, not a letterboxed one). Informational: never fails the build.
+      # Boots an iPhone Duo, folds it through closed, half, book and open, and keeps a screenshot of
+      # each display for the privacy cover, the sign-in screen and the dashboard.
       - name: iPhone Duo simulator screenshots
-        continue-on-error: true
         working-directory: ios
-        run: bash scripts/duo-simulator-screenshots.sh build/sim/Build/Products/Debug-iphonesimulator/Bridge.app build/duo
+        run: bash scripts/duo-posture-screenshots.sh build/sim/Build/Products/Debug-iphonesimulator/Bridge.app build/duo
       - uses: actions/upload-artifact@v4
         if: always()
         with:
