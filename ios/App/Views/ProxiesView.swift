@@ -52,6 +52,7 @@ struct ProxiesView: View {
                 }
                 .padding(Metrics.pagePadding)
                 .padding(.bottom, 88)
+                .foldClear()
             }
             .refreshable {
                 await model.refreshCatalog()

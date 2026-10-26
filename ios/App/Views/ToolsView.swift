@@ -93,6 +93,7 @@ struct ToolsView: View {
                 .listRowBackground(Palette.surfaceContainer)
             }
             .scrollContentBackground(.hidden)
+            .foldClear()
             .pageBackground()
             .navigationTitle(L("Tools"))
             .confirmationDialog(L("Signing out disconnects the current connection."), isPresented: $confirmingSignOut, titleVisibility: .visible) {

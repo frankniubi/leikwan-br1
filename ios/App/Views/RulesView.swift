@@ -124,6 +124,7 @@ struct RulesView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .foldClear()
             .pageBackground()
             .navigationTitle(L("Routing rules"))
             .toolbar { EditButton() }

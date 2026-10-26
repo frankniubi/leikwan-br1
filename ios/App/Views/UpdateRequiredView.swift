@@ -8,8 +8,21 @@ struct UpdateRequiredView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        // Scrolls when the height runs short (landscape, the iPhone Duo cover display);
+        // otherwise the minimum height keeps the message centred and the button at the bottom.
+        GeometryReader { geometry in
+            ScrollView {
+                content
+                    .frame(minHeight: geometry.size.height)
+                    .readableColumn(maxWidth: 520)
+            }
+        }
+        .background(Palette.background.ignoresSafeArea())
+    }
+
+    private var content: some View {
         VStack(spacing: 20) {
-            Spacer()
+            Spacer(minLength: 0)
 
             Image(systemName: "arrow.down.app")
                 .font(.system(size: 56, weight: .regular))
@@ -27,7 +40,7 @@ struct UpdateRequiredView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Spacer()
+            Spacer(minLength: 0)
 
             Button {
                 Task { await model.refreshCatalog() }
@@ -48,8 +61,5 @@ struct UpdateRequiredView: View {
         }
         .padding(.horizontal, Metrics.pagePadding * 2)
         .padding(.vertical, Metrics.pagePadding)
-        .frame(maxWidth: 520)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Palette.background.ignoresSafeArea())
     }
 }
