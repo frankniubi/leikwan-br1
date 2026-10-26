@@ -1,4 +1,5 @@
 #if DEBUG
+import Foundation
 import LeikwanIOSCore
 
 /// Debug builds only. `scripts/duo-posture-screenshots.sh` launches the app with
