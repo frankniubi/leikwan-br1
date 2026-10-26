@@ -122,15 +122,21 @@ jobs:
 
   app:
     name: Build app (simulator + unsigned device ipa)
-    runs-on: macos-15
+    # iPhone Duo: an app built with an SDK older than iOS 27.1 runs letterboxed on it, and the
+    # fold APIs (reserved regions) exist only from Xcode 27.1 on.
+    runs-on: xcode-27
     needs: [frameworks]
     timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: ios-frameworks
           path: ios/Frameworks
+      - name: Require the iOS 27.1 SDK
+        run: bash ios/scripts/check-sdk.sh
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project
@@ -181,17 +187,32 @@ jobs:
           name: Bridge-unsigned-ipa
           path: ios/build/Bridge-unsigned.ipa
           retention-days: 14
+      # Launches the simulator build on an iPhone Duo and keeps a screenshot of each display
+      # (a full-screen app, not a letterboxed one). Informational: never fails the build.
+      - name: iPhone Duo simulator screenshots
+        continue-on-error: true
+        working-directory: ios
+        run: bash scripts/duo-simulator-screenshots.sh build/sim/Build/Products/Debug-iphonesimulator/Bridge.app build/duo
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-duo-screenshots
+          path: ios/build/duo
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Uploads every non-PR run once the secrets exist; build number = run number.
   testflight:
     name: Signed build to TestFlight
-    # App Store Connect refuses uploads built with an older SDK: Xcode 26 / iOS 26 SDK.
-    runs-on: macos-26
+    # Xcode 27.1 / iOS 27.1 SDK: App Store Connect refuses older SDKs, and anything older than
+    # 27.1 runs letterboxed on iPhone Duo.
+    runs-on: xcode-27
     needs: [frameworks, core-tests]
     # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
     if: github.event_name != 'pull_request'
     timeout-minutes: 60
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -222,6 +243,9 @@ jobs:
         with:
           name: ios-frameworks
           path: ios/Frameworks
+      - name: Require the iOS 27.1 SDK
+        if: steps.secrets.outputs.ready == 'true'
+        run: bash ios/scripts/check-sdk.sh
       - name: Install XcodeGen
         if: steps.secrets.outputs.ready == 'true'
         run: brew install xcodegen

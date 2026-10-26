@@ -111,8 +111,7 @@ struct PrivacyDisclosureView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 560)
-                .frame(maxWidth: .infinity)
+                .readableColumn(maxWidth: 560)
             }
             .pageBackground()
             .navigationTitle(L("Privacy"))
