@@ -18,6 +18,7 @@ struct BridgeApp: App {
                     await model.bootstrap()
                     #if DEBUG
                     await ScreenshotLaunch.signInToDemoIfRequested(model)
+                    ScreenshotLaunch.selectSectionIfRequested(navigator)
                     #endif
                 }
         }

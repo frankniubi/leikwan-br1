@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Boots an iPhone Duo simulator, installs a Debug build of the app and photographs three screens
-# (the privacy cover, the sign-in screen, the demo dashboard) at four hinge postures on both
-# displays. scripts/hinge posts the same event as Device Hub's hinge slider.
+# Boots an iPhone Duo simulator, installs a Debug build of the app and photographs six screens
+# (the privacy cover, the sign-in screen, and the Dashboard, Lines, Rules and Tools tabs) at four
+# hinge postures on both displays. scripts/hinge posts the same event as Device Hub's hinge slider.
+# Simulators have no hinge readback, so the postures are verified from the screenshots.
 #
 #   duo-posture-screenshots.sh <path/to/Bridge.app> <output dir>
 #
@@ -53,9 +54,7 @@ shoot() {
   for degrees in 0 90 127 180; do
     "$hinge" -d "$udid" "$degrees"
     sleep 3
-    # Reading the angle back is best effort: it goes through devicectl, which may not cover simulators.
-    reading="$("$hinge" -d "$udid" get 2>/dev/null || echo "not readable")"
-    echo "$screen $degrees: set $degrees, read back $reading" | tee -a "$out/hinge.log"
+    echo "$screen $degrees: hinge set to $degrees" >> "$out/hinge.log"
     xcrun simctl io "$udid" screenshot --display=primary "$out/$screen-$degrees-outer.png"
     xcrun simctl io "$udid" screenshot --display=primary-1 "$out/$screen-$degrees-inner.png"
   done
@@ -65,6 +64,9 @@ shoot() {
 shoot privacy -privacy_disclosure_v1 NO
 shoot login -privacy_disclosure_v1 YES
 shoot dashboard -privacy_disclosure_v1 YES -bridge_ci_demo YES
+shoot proxies -privacy_disclosure_v1 YES -bridge_ci_demo YES -bridge_ci_section proxies
+shoot rules -privacy_disclosure_v1 YES -bridge_ci_demo YES -bridge_ci_section rules
+shoot tools -privacy_disclosure_v1 YES -bridge_ci_demo YES -bridge_ci_section tools
 
 xcrun simctl spawn "$udid" log show --last 5m --style compact \
   --predicate 'process == "Bridge"' > "$out/bridge.log" 2>&1 || true
